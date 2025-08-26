@@ -1,6 +1,7 @@
 import tkinter as tk
 
 from core.fitting.gda_merge import run_gda_merge_fits
+from core.progress_window import ProgressWindow
 from gui.base_gui import BaseAppGUI
 
 
@@ -62,33 +63,44 @@ class GDAMergeFitsApp(BaseAppGUI):
             self.root, text="Display Plots", variable=self.display_plots_var
         ).grid(row=7, column=0, columnspan=3, sticky=tk.W, padx=pad_x, pady=pad_y)
         self.lift_and_focus()
-        
+
         tk.Button(self.root, text="Run Merge Fits", command=self.run_merge_fits).grid(
             row=8, column=0, columnspan=3, pady=10, padx=pad_x
         )
 
     def run_merge_fits(self):
-        results_dir = self.results_dir_var.get()
-        outlier_relative_threshold = self.outlier_threshold_var.get()
-        rmse_threshold_factor = self.rmse_threshold_factor_var.get()
-        kd_threshold_factor = self.kd_threshold_factor_var.get()
-        save_plots = self.save_plots_var.get()
-        display_plots = self.display_plots_var.get()
-        save_results = self.save_results_var.get()
-        results_save_dir = self.save_results_entry_var.get()
-        plot_title = self.plot_title_var.get()
-        run_gda_merge_fits(
-            results_dir,
-            outlier_relative_threshold,
-            rmse_threshold_factor,
-            kd_threshold_factor,
-            save_plots,
-            display_plots,
-            save_results,
-            results_save_dir,
-            plot_title,
-        )
-        self.show_message("Merging fits completed!", is_error=False)
+        try:
+            results_dir = self.results_dir_var.get()
+            outlier_relative_threshold = self.outlier_threshold_var.get()
+            rmse_threshold_factor = self.rmse_threshold_factor_var.get()
+            kd_threshold_factor = self.kd_threshold_factor_var.get()
+            save_plots = self.save_plots_var.get()
+            display_plots = self.display_plots_var.get()
+            save_results = self.save_results_var.get()
+            results_save_dir = self.save_results_entry_var.get()
+            plot_title = self.plot_title_var.get()
+
+            # Show a progress indicator
+            with ProgressWindow(
+                self.root,
+                "Merging Fits in Progress",
+                "Merging fits in progress, please wait...",
+            ) as progress_window:
+                run_gda_merge_fits(
+                    results_dir,
+                    outlier_relative_threshold,
+                    rmse_threshold_factor,
+                    kd_threshold_factor,
+                    save_plots,
+                    display_plots,
+                    save_results,
+                    results_save_dir,
+                    plot_title,
+                )
+            self.show_message("Merging fits completed!", is_error=False)
+
+        except Exception as e:
+            self.show_message(f"Error: {str(e)}", is_error=True)
 
 
 if __name__ == "__main__":

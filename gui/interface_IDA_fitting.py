@@ -2,6 +2,7 @@ import tkinter as tk
 import traceback
 
 from core.fitting.ida import run_ida_fitting
+from core.progress_window import ProgressWindow
 from gui.base_gui import BaseAppGUI
 
 
@@ -123,24 +124,34 @@ class IDAFittingApp(BaseAppGUI):
             progress_label.pack(padx=20, pady=20)
             self.root.update_idletasks()
 
-            run_ida_fitting(
-                file_path,
-                results_file_path,
-                Kd_in_M,
-                h0_in_M,
-                g0_in_M,
-                number_of_fit_trials,
-                rmse_threshold_factor,
-                r2_threshold,
-                save_plots,
-                display_plots,
-                plots_dir,
-                save_results_bool,
-                results_save_dir,
-            )
+            # Show a progress indicator
+            with ProgressWindow(
+                self.root, "Fitting in Progress", "Fitting in progress, please wait..."
+            ) as progress_window:
+                result = run_ida_fitting(
+                    file_path,
+                    results_file_path,
+                    Kd_in_M,
+                    h0_in_M,
+                    g0_in_M,
+                    number_of_fit_trials,
+                    rmse_threshold_factor,
+                    r2_threshold,
+                    save_plots,
+                    display_plots,
+                    plots_dir,
+                    save_results_bool,
+                    results_save_dir,
+                )
 
-            progress_window.destroy()
-            self.show_message(f"Fitting completed!", is_error=False, row=13)
+            if not result:
+                self.show_message(
+                    "No valid fits found. Try loosening thresholds, adjusting bounds, or double checking your raw data for outliers.",
+                    is_error=True,
+                )
+            else:
+                self.show_message(f"Fitting completed!", is_error=False)
+
         except Exception as e:
             error_message = f"Error: {str(e)}\n{traceback.format_exc()}"
             self.show_message(error_message, is_error=True, row=13)

@@ -1,8 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from forward_model import compute_signal_ida
-from plot_utils import create_plots
+from core.forward_model import compute_signal_ida
+from utils.plot_utils import create_plots
 
 plot_config = {
     # defaults 

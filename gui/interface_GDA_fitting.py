@@ -1,6 +1,7 @@
 import tkinter as tk
 
 from core.fitting.gda import run_gda_fitting
+from core.progress_window import ProgressWindow
 from gui.base_gui import BaseAppGUI
 
 
@@ -101,22 +102,34 @@ class GDAFittingApp(BaseAppGUI):
             plots_dir = self.plots_dir_var.get()
             save_results = self.save_results_var.get()
             results_save_dir = self.results_save_dir_var.get()
-            run_gda_fitting(
-                file_path,
-                results_file_path,
-                Kd_in_M,
-                h0_in_M,
-                g0_in_M,
-                number_of_fit_trials,
-                rmse_threshold_factor,
-                r2_threshold,
-                save_plots,
-                display_plots,
-                plots_dir,
-                save_results,
-                results_save_dir,
-            )
-            self.show_message(f"Fitting completed!", is_error=False)
+
+            with ProgressWindow(
+                self.root,
+                "Fitting in Progress",
+                "GDA fitting in progress, please wait...",
+            ) as progress_window:
+                result = run_gda_fitting(
+                    file_path,
+                    results_file_path,
+                    Kd_in_M,
+                    h0_in_M,
+                    g0_in_M,
+                    number_of_fit_trials,
+                    rmse_threshold_factor,
+                    r2_threshold,
+                    save_plots,
+                    display_plots,
+                    plots_dir,
+                    save_results,
+                    results_save_dir,
+                )
+            if not result:
+                self.show_message(
+                    "No valid fits found. Try loosening thresholds, adjusting bounds, or double checking your raw data for outliers.",
+                    is_error=True,
+                )
+            else:
+                self.show_message(f"Fitting completed!", is_error=False)
         except Exception as e:
             self.show_message(f"Error: {str(e)}", is_error=True)
 

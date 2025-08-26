@@ -201,6 +201,5 @@ Temporary Items
 .vscode/*
 scratch/*
 app/*
-MyIcon.iconset/*
-AppIcon.png
 /data
+.github/copilot-instructions.md

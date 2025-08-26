@@ -1,6 +1,8 @@
 import numpy as np
 
-from forward_model import compute_signal_dba, compute_signal_gda, compute_signal_ida
+from core.forward_model import compute_signal_dba, compute_signal_gda, compute_signal_ida
+from utils.plot_utils import create_plots
+import matplotlib.pyplot as plt
 
 # params: [I0 (M^-1), Kg (M^-1), Id (M^-1), Ihd (M^-1)]
 
@@ -32,9 +34,6 @@ h0_values = np.array([0.0, 3e-05, 6e-05, 1e-04, 1.5e-04, 2.25e-04, 3e-04, 4e-04,
 d0 = 6e-06      # in (M)
 
 signal_values_dba = compute_signal_dba(params_dba, g0_values, d0)
-
-from plot_utils import create_plots
-import matplotlib.pyplot as plt
 
 fig, ax = create_plots()
 

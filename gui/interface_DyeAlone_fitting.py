@@ -1,6 +1,7 @@
 import tkinter as tk
 
 from core.fitting.dye_alone import DyeAloneFittingAlgorithm
+from core.progress_window import ProgressWindow
 from gui.base_gui import BaseAppGUI
 
 
@@ -60,10 +61,15 @@ class DyeAloneFittingApp(BaseAppGUI):
             self.show_message("Error: Please set all parameters.", is_error=True)
             return
         try:
-            algorithm = DyeAloneFittingAlgorithm()
-            algorithm.perform_fitting(
-                input_path, output_path, save_plots, display_plots, plots_dir
-            )
+            with ProgressWindow(
+                self.root,
+                "Fitting in Progress",
+                "Dye-alone fitting in progress, please wait...",
+            ) as progress_window:
+                algorithm = DyeAloneFittingAlgorithm()
+                algorithm.fit(
+                    input_path, output_path, save_plots, display_plots, plots_dir
+                )
             self.show_message(f"Results saved to: {output_path}")
         except Exception as e:
             self.show_message(f"Error: {str(e)}", is_error=True)
