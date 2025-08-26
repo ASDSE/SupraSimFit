@@ -16,6 +16,16 @@ from utils.stats_utils import prediction_interval, round_to_sigfigs
 
 
 class DyeAloneFittingAlgorithm(BaseFittingAlgorithm):
+    def load_data(self, file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as file:
+                self.data_lines = file.readlines()
+            return self.data_lines
+        except Exception as e:
+            print(f"Error reading file: {e}")
+            self.data_lines = None
+            return None
+        
     def fit(
         self, input_file_path, output_file_path, save_plots, display_plots, plots_dir
     ):
@@ -29,15 +39,6 @@ class DyeAloneFittingAlgorithm(BaseFittingAlgorithm):
         # Optionally, this could be used to export results in a different format
         pass
 
-    def load_data(self, file_path):
-        try:
-            with open(file_path, "r", encoding="utf-8") as file:
-                self.data_lines = file.readlines()
-            return self.data_lines
-        except Exception as e:
-            print(f"Error reading file: {e}")
-            self.data_lines = None
-            return None
 
     def split_replicas(self, data):
         if data is None:
