@@ -1,125 +1,68 @@
+"""Protocol definitions for I/O readers and writers.
+
+This module defines the interfaces that format-specific implementations
+must follow. Using Protocol (structural subtyping) allows duck-typing
+without requiring explicit inheritance.
 """
-Base interfaces for serialization in the fitting-tool core.io module.
 
-Defines abstract base classes for objects that can be saved/loaded, and for file readers/writers.
-"""
-
-from __future__ import annotations
-
-from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Protocol, runtime_checkable
 
 import pandas as pd
-import xarray as xr
-
-Tag = str  # e.g. "mset", "fit"
-Payload = Any  # pd.DataFrame | xr.Dataset | …
 
 
-class Serializable(ABC):
-    """
-    Common contract for anything that can be saved or loaded.
+@runtime_checkable
+class MeasurementReader(Protocol):
+    """Protocol for reading measurement data files.
 
-    Methods
-    -------
-    tag() : str
-        Return a short string identifier, e.g. 'mset', 'fit'.
-    to_dataframe() : pandas.DataFrame
-        Return a long DataFrame (one row per point).
-    to_dataset() : xarray.Dataset
-        Return a multi-dimensional Dataset.
+    Implementations must define:
+    - extensions: tuple of supported file extensions (e.g., ('.txt',))
+    - read(path) -> pd.DataFrame
     """
 
-    # --- identity ---------------------------------------------------------
-    @abstractmethod
-    def tag(self) -> str:
-        """
-        Return a short string identifier for the object.
+    extensions: tuple[str, ...]
 
-        Returns
-        -------
-        str
-            Identifier string, e.g. 'mset', 'fit'.
-        """
-        pass
-
-    # --- tabular and n-D views -------------------------------------------
-    @abstractmethod
-    def to_dataframe(self) -> pd.DataFrame:
-        """
-        Return a long-format DataFrame representation of the object.
-
-        Returns
-        -------
-        pandas.DataFrame
-            Long-format table, one row per data point.
-        """
-        pass
-
-    @abstractmethod
-    def to_dataset(self) -> xr.Dataset:
-        """
-        Return a multi-dimensional xarray.Dataset representation of the object.
-
-        Returns
-        -------
-        xarray.Dataset
-            Multi-dimensional dataset.
-        """
-        pass
-
-
-class Reader(ABC):
-    """
-    Low-level file parser that returns unwrapped data and tag.
-
-    Methods
-    -------
-    read_raw(path: Path) -> Tuple[str, Any]
-        Parse the file at the given path and return (tag, payload).
-    """
-
-    @abstractmethod
-    def read(self, path: Path) -> Tuple[Tag, Payload]:
-        """
-        Parse *path* and return (tag, payload).
+    def read(self, path: Path) -> pd.DataFrame:
+        """Read measurement data from file.
 
         Parameters
         ----------
-        path : pathlib.Path
-            Path to the file to parse.
+        path : Path
+            Path to input file.
 
         Returns
         -------
-        tag : str
-            Object type tag, e.g. 'mset', 'fit', etc.
-        payload : Any
-            Tidy DataFrame or xarray.Dataset carrying the metadata.
+        pd.DataFrame
+            Long-format DataFrame with columns:
+            - concentration: titrant concentration (M)
+            - signal: measured signal value
+            - replica: replica index (0, 1, 2, ...)
         """
         ...
 
 
-class Writer(ABC):
-    """
-    Serializes a single object type to a single file format.
+@runtime_checkable
+class ResultWriter(Protocol):
+    """Protocol for writing fit results.
 
-    Methods
-    -------
-    write(obj: Serializable, path: Path) -> None
-        Persist the object to the given path.
+    Implementations must define:
+    - extensions: tuple of supported file extensions (e.g., ('.txt',))
+    - write(results, path) -> None
     """
 
-    @abstractmethod
-    def write(self, obj: Serializable, path: Path) -> None:
-        """
-        Persist *obj* (MeasurementSet, FitResult, …) to *path*.
+    extensions: tuple[str, ...]
+
+    def write(self, results: dict, path: Path) -> None:
+        """Write fit results to file.
 
         Parameters
         ----------
-        obj : Serializable
-            The object to serialize.
-        path : pathlib.Path
-            The file path to write to.
+        results : dict
+            Fit results dictionary.
+        path : Path
+            Output file path.
         """
-        pass
+        ...
+
+
+__all__ = ['MeasurementReader', 'ResultWriter']

@@ -1,50 +1,60 @@
-"""
-I/O subsystem for the fitting-tool: unified serialization and deserialization of measurement and fit data.
+"""Minimal I/O module for measurement data and fit results.
 
-Overview
---------
-The `core.io` package provides a flexible, extensible framework for reading and writing
-measurement and model-fit data in a variety of formats. It is organized around a few key concepts:
-
-- **Base interfaces**: Abstract base classes define the contract for serializable objects (`Serializable`),
-  file readers (`Reader`), and file writers (`Writer`).
-
-- **Domain objects**: Concrete data containers such as `MeasurementSet` (for plate data) and `FitResult`
-  (for model fit outputs) implement the `Serializable` interface, providing conversion to/from
-  tabular and n-dimensional representations.
-
-- **Registries**: The system uses registries to map (object type, file extension) pairs to the appropriate
-  reader or writer implementation. This enables plugin support for new formats without modifying core logic.
-
-- **Serializers**: Reader and writer plugins for specific formats (e.g., Parquet, NetCDF, XLSX) are
-  discovered and registered automatically. Each plug-in implements the low-level details for a single format.
-
-Typical usage
--------------
-- To save a `MeasurementSet` or `FitResult`, call `core.io.save(obj, path)`.
-- To load an object, call `core.io.load(path)`; the correct reader and domain object are selected automatically.
-
-Submodules
+Public API
 ----------
-- `base`           : Abstract base classes for serialization.
-- `fit_result`     : Model fit result container.
-- `measurement_set`: Measurement data container.
-- `registry`       : Global registries and save/load entry points.
-- `serialize`      : Reader/writer plugins for various file formats.
-- `serialize_boot` : Bootstraps the serialization system by loading all registered readers/writers.
-- `serialize/readers` and `serialize/writers`: Specific file format readers and writers for measurement data and model fit results (e.g., XLSX, NetCDF, Parquet, etc.).
+load_measurements(path) -> pd.DataFrame
+    Load measurement data from file. Returns long-format DataFrame
+    with columns: concentration, signal, replica.
 
-The domain objects (`MeasurementSet`, `FitResult`) define I/O data structure, metadata handling, and data processing methods. They implement the `Serializable` interface, allowing conversion to/from data formats like DataFrame and xarray.Dataset.
+save_results(results, path) -> None
+    Save fit results dict to file.
 
-See the documentation in each submodule for details and usage examples.
+Supported formats: .txt (tab-separated, multi-replica)
 """
 
-# ensure all plug-ins register
-from . import serialize_boot  # noqa: E402  (import after registry)
-from .fit_result import FitResult
-from .measurement_set import MeasurementSet
-from .registry import load, save
+from pathlib import Path
 
-_ = serialize_boot  # to prevent unused import removal by linters
+import pandas as pd
 
-__all__ = ["load", "save", "MeasurementSet", "FitResult"]
+# Auto-register built-in formats
+from core.io.formats import txt  # noqa: F401
+from core.io.registry import get_reader, get_writer
+
+
+def load_measurements(path: str | Path) -> pd.DataFrame:
+    """Load measurement data from file.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to measurement file.
+
+    Returns
+    -------
+    pd.DataFrame
+        Long-format DataFrame with columns:
+        - concentration: titrant concentration (M)
+        - signal: measured signal value
+        - replica: replica index (0, 1, 2, ...)
+    """
+    path = Path(path)
+    reader = get_reader(path)
+    return reader.read(path)
+
+
+def save_results(results: dict, path: str | Path) -> None:
+    """Save fit results to file.
+
+    Parameters
+    ----------
+    results : dict
+        Fit results dictionary with parameter values, uncertainties, etc.
+    path : str or Path
+        Output file path.
+    """
+    path = Path(path)
+    writer = get_writer(path)
+    writer.write(results, path)
+
+
+__all__ = ['load_measurements', 'save_results']

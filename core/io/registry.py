@@ -1,96 +1,103 @@
-"""
-Global registries and entry points for serialization plug-ins in the fitting-tool.
+"""Format registry for I/O dispatch.
 
-This module manages the registration and lookup of file readers and writers for different
-object types and file formats. It provides decorators for registering new plug-ins and
-entry points for saving and loading domain objects.
-
-Functions
----------
-register_writer(tag, ext)
-    Decorator to register a Writer for a given object type and file extension.
-register_reader(ext)
-    Decorator to register a Reader for a given file extension.
-save(obj, path)
-    Save a Serializable object to the specified path using the appropriate writer.
-load(path)
-    Load a Serializable object from the specified path using the appropriate reader.
+Simple dict-based registry — no decorators, no magic.
+Readers and writers register themselves on module import.
 """
 
-import warnings
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Type
 
-from .base import Reader, Serializable, Writer
+from core.io.base import MeasurementReader, ResultWriter
 
-WriterKey = Tuple[str, str]  # (tag, '.ext')
-ReaderKey = str  # '.ext'
-
-_writers: Dict[WriterKey, Writer] = {}
-_readers: Dict[ReaderKey, Reader] = {}
+# Explicit registries — format implementations register on import
+READERS: Dict[str, Type[MeasurementReader]] = {}
+WRITERS: Dict[str, Type[ResultWriter]] = {}
 
 
-def register_writer(tag: str, ext: str):
-    ext = ext.lower()
+def register_reader(reader_cls: Type[MeasurementReader]) -> Type[MeasurementReader]:
+    """Register a reader class for its supported extensions.
 
-    def decorator(cls):
-        _writers[(tag, ext)] = cls()
-        return cls
+    Parameters
+    ----------
+    reader_cls : Type[MeasurementReader]
+        Reader class with `extensions` attribute.
 
-    return decorator
-
-
-def register_reader(ext: str):
-    ext = ext.lower()
-
-    def decorator(cls):
-        _readers[ext] = cls()
-        return cls
-
-    return decorator
+    Returns
+    -------
+    Type[MeasurementReader]
+        The same class (allows use as decorator).
+    """
+    for ext in reader_cls.extensions:
+        READERS[ext.lower()] = reader_cls
+    return reader_cls
 
 
-def save(obj: Serializable, path: Path):
-    tag = obj.tag()
+def register_writer(writer_cls: Type[ResultWriter]) -> Type[ResultWriter]:
+    """Register a writer class for its supported extensions.
+
+    Parameters
+    ----------
+    writer_cls : Type[ResultWriter]
+        Writer class with `extensions` attribute.
+
+    Returns
+    -------
+    Type[ResultWriter]
+        The same class (allows use as decorator).
+    """
+    for ext in writer_cls.extensions:
+        WRITERS[ext.lower()] = writer_cls
+    return writer_cls
+
+
+def get_reader(path: Path) -> MeasurementReader:
+    """Get a reader instance for the given file path.
+
+    Parameters
+    ----------
+    path : Path
+        File path to read.
+
+    Returns
+    -------
+    MeasurementReader
+        Reader instance for the file's extension.
+
+    Raises
+    ------
+    ValueError
+        If no reader is registered for the file extension.
+    """
     ext = path.suffix.lower()
-    try:
-        _writers[(tag, ext)].write(obj, path)
-    except KeyError as err:
-        raise ValueError(f"No writer for object '{tag}' to *{ext} files") from err
+    if ext not in READERS:
+        supported = list(READERS.keys())
+        raise ValueError(f"No reader for '{ext}'. Supported: {supported}")
+    return READERS[ext]()
 
 
-def load(path: Path):
-    ext = Path(path).suffix.lower()
-    try:
-        tag, payload = _readers[ext].read(path)  # returns (tag, df|ds|...)
-    except KeyError as err:
-        raise ValueError(f"No reader for *{ext} files") from err
+def get_writer(path: Path) -> ResultWriter:
+    """Get a writer instance for the given file path.
 
-    from .fit_result import FitResult
-    from .measurement_set import MeasurementSet
+    Parameters
+    ----------
+    path : Path
+        File path to write.
 
-    factory = {
-        "mset": MeasurementSet.from_serialisable,
-        "fit": FitResult.from_serialisable,
-    }
+    Returns
+    -------
+    ResultWriter
+        Writer instance for the file's extension.
 
-    obj = factory[tag](
-        payload
-    )  # data object (MeasurementSet or FitResult, pd.DataFrame or xr.Dataset)
+    Raises
+    ------
+    ValueError
+        If no writer is registered for the file extension.
+    """
+    ext = path.suffix.lower()
+    if ext not in WRITERS:
+        supported = list(WRITERS.keys())
+        raise ValueError(f"No writer for '{ext}'. Supported: {supported}")
+    return WRITERS[ext]()
 
-    # For signaling future I/O structure changes
-    # e.g. if we rename "signal" to "fluorescence" in v2, old files can be detected and migrated automatically.
-    # if we later overhaul the layout, we bump SCHEMA_VERSION, adjust the loader accordingly, and we’ll know exactly which files need migration.
-    EXPECTED_VERSION = {
-        "mset": MeasurementSet.SCHEMA_VERSION,
-        "fit": FitResult.SCHEMA_VERSION,
-    }
 
-    if obj.meta.get("schema_version") != EXPECTED_VERSION[tag]:
-        warnings.warn(
-            f"{tag} schema v{obj.meta.get('schema_version')} "
-            f"!= expected v{EXPECTED_VERSION[tag]}",
-            UserWarning,
-        )
-
-    return obj
+__all__ = ['register_reader', 'register_writer', 'get_reader', 'get_writer']
