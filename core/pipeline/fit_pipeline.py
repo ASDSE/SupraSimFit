@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from core.assays.base import BaseAssay
+from core.assays.dye_alone import DyeAloneAssay
 from core.optimizer.filters import aggregate_fits, calculate_fit_metrics
 from core.optimizer.multistart import FitAttempt, multistart_minimize
 
@@ -214,7 +215,7 @@ def fit_assay(
     )
 
 
-def fit_linear_assay(assay: 'DyeAloneAssay') -> FitResult:
+def fit_linear_assay(assay: DyeAloneAssay) -> FitResult:
     """Fit a dye-alone assay using simple linear regression.
 
     This is a specialized function for the linear dye-alone case,

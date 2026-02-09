@@ -82,7 +82,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         x_label='[Dye] / M',
         y_label='Signal / a.u.',
         default_bounds={
-            'Ka_guest': (1e3, 1e12),  # Association constant (M^-1)
+            'Ka_guest': (1e-8, 1e12),  # Association constant (M^-1)
             'I0': (0, 1e6),
             'I_dye_free': (0, 1e6),
             'I_dye_bound': (0, 1e6),
@@ -90,8 +90,8 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         units={
             'Ka_guest': 'M^-1',
             'I0': 'a.u.',
-            'I_dye_free': 'a.u.',
-            'I_dye_bound': 'a.u.',
+            'I_dye_free': 'M^-1',
+            'I_dye_bound': 'M^-1',
         },
     ),
     AssayType.IDA: AssayMetadata(
@@ -100,7 +100,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         x_label='[Guest] / M',
         y_label='Signal / a.u.',
         default_bounds={
-            'Ka_guest': (1e3, 1e12),  # Association constant (M^-1)
+            'Ka_guest': (1e-8, 1e12),  # Association constant (M^-1)
             'I0': (0, 1e6),
             'I_dye_free': (0, 1e6),
             'I_dye_bound': (0, 1e6),
@@ -108,8 +108,8 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         units={
             'Ka_guest': 'M^-1',
             'I0': 'a.u.',
-            'I_dye_free': 'a.u.',
-            'I_dye_bound': 'a.u.',
+            'I_dye_free': 'M^-1',
+            'I_dye_bound': 'M^-1',
         },
     ),
     AssayType.DBA_HtoD: AssayMetadata(
@@ -118,7 +118,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         x_label='[Host] / M',
         y_label='Signal / a.u.',
         default_bounds={
-            'Ka_dye': (1e3, 1e12),  # Association constant (M^-1)
+            'Ka_dye': (1e-8, 1e12),  # Association constant (M^-1)
             'I0': (0, 1e6),
             'I_dye_free': (0, 1e6),
             'I_dye_bound': (0, 1e6),
@@ -126,8 +126,8 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         units={
             'Ka_dye': 'M^-1',
             'I0': 'a.u.',
-            'I_dye_free': 'a.u.',
-            'I_dye_bound': 'a.u.',
+            'I_dye_free': 'M^-1',
+            'I_dye_bound': 'M^-1',
         },
     ),
     AssayType.DBA_DtoH: AssayMetadata(
@@ -136,7 +136,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         x_label='[Dye] / M',
         y_label='Signal / a.u.',
         default_bounds={
-            'Ka_dye': (1e3, 1e12),  # Association constant (M^-1)
+            'Ka_dye': (1e-8, 1e12),  # Association constant (M^-1)
             'I0': (0, 1e6),
             'I_dye_free': (0, 1e6),
             'I_dye_bound': (0, 1e6),
@@ -144,8 +144,8 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         units={
             'Ka_dye': 'M^-1',
             'I0': 'a.u.',
-            'I_dye_free': 'a.u.',
-            'I_dye_bound': 'a.u.',
+            'I_dye_free': 'M^-1',
+            'I_dye_bound': 'M^-1',
         },
     ),
     AssayType.DYE_ALONE: AssayMetadata(
@@ -158,7 +158,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'intercept': (-1e6, 1e6),
         },
         units={
-            'slope': 'a.u./M',
+            'slope': 'M^-1',
             'intercept': 'a.u.',
         },
     ),
