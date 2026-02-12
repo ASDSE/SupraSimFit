@@ -25,23 +25,24 @@ All core modules implemented with correct scientific conventions:
 
 ## High-level architecture
 
-- **Core domain (`core/`)** — ACTIVE REFACTOR TARGET
-  - New structure: `assays/`, `models/`, `optimizer/`, `pipeline/`
-  - I/O layer: being rewritten from scratch (minimal Strategy pattern)
+- **Core domain (`core/`)** — REFACTOR COMPLETE (Phases 1–3)
+  - Structure: `assays/`, `models/`, `optimizer/`, `pipeline/`, `io/`
+  - Legacy: `forward_model.py` (aligned with new naming), `progress_window.py`
 - **GUI (`gui/`)** — PAUSED
-  - Currently Tkinter-based. Interface files to be deleted.
+  - Tkinter-based (`base_gui.py`). Interface files deleted.
   - Future PyQt 6 migration deferred.
 - **Utilities (`utils/`)** — LOW PRIORITY
   - Plotting, stats, converters. Will be cleaned up after core refactor.
-- **Legacy fitting (`core/fitting/`)** — TO BE DELETED
-  - All files superseded by new `core/assays/` + `core/pipeline/`
+- **Tests (`tests/`)** — P1–P4 COMPLETE (62 tests)
 
-## Target Architecture (Core Refactor)
+## Architecture (Core Refactor — IMPLEMENTED)
 
-### Directory structure
+### Directory structure (actual)
 ```
 core/
 ├── units.py              # Shared pint UnitRegistry
+├── forward_model.py      # Legacy forward model (naming aligned)
+├── progress_window.py    # Legacy GUI progress bar
 ├── assays/               # Domain: assay definitions
 │   ├── registry.py       # AssayType enum + AssayMetadata + ASSAY_REGISTRY
 │   ├── base.py           # BaseAssay ABC
@@ -50,17 +51,20 @@ core/
 │   ├── ida.py            # IDAAssay
 │   └── dye_alone.py      # DyeAloneAssay
 ├── models/               # Forward models (pure math, unit-free)
-│   ├── equilibrium.py    # DBA, competitive equilibrium
-│   └── linear.py         # Linear model for dye-alone
+│   ├── equilibrium.py    # dba_signal, gda_signal, ida_signal
+│   └── linear.py         # linear_signal (dye-alone)
 ├── optimizer/            # Fitting engine (stateless)
 │   ├── multistart.py     # Multi-start L-BFGS-B
 │   ├── linear_fit.py     # Linear regression
-│   └── filters.py        # RMSE/R² filtering, aggregation
+│   └── filters.py        # RMSE/R² filtering, median+MAD aggregation
 ├── pipeline/             # Orchestration
-│   └── fit_pipeline.py   # FitPipeline.run()
-└── io/                   # I/O layer (readers/writers)
-    ├── readers.py        # TxtReader
-    └── writers.py        # ResultWriter
+│   └── fit_pipeline.py   # FitConfig, FitResult, fit_assay()
+└── io/                   # I/O layer (minimal Strategy pattern)
+    ├── __init__.py        # Public API: load_measurements(), save_results()
+    ├── base.py            # MeasurementReader, ResultWriter protocols
+    ├── registry.py        # Format dispatch (explicit dict, no decorators)
+    └── formats/
+        └── txt.py         # TxtReader, TxtWriter (multi-replica aware)
 ```
 
 ### Assay Dispatch Pattern: Enum-Keyed Registry
@@ -88,7 +92,7 @@ class AssayMetadata:
 ASSAY_REGISTRY: dict[AssayType, AssayMetadata] = {
     AssayType.GDA: AssayMetadata(
         display_name="GDA",
-        parameter_keys=("K_D", "I0", "I_HG"),
+        parameter_keys=("Ka_guest", "I0", "I_dye_free", "I_dye_bound"),
         x_label="[Guest] / M",
         y_label="Signal / a.u."
     ),
@@ -201,8 +205,11 @@ uv run pytest --tb=short        # Shorter tracebacks
 
 ## Key Domain Concepts
 
-- **MeasurementSet** – experimental data (signal vs. concentration, multiple replicas).
-- **FitResult** – fitted parameters, uncertainties, diagnostics, metadata.
+- **BaseAssay** – ABC for all assay types; subclassed by GDAAssay, IDAAssay, DBAAssay, DyeAloneAssay.
+- **AssayMetadata** – frozen dataclass holding display name, parameter keys, axis labels, default bounds.
+- **ASSAY_REGISTRY** – dict mapping `AssayType` enum → `AssayMetadata`.
+- **FitConfig** – dataclass configuring a fit run (bounds, n_trials, custom_bounds).
+- **FitResult** – dataclass holding fitted parameters, uncertainties, diagnostics.
 - **Assay types** – GDA, IDA, DBA (host↔dye), Dye Alone.
 - **Forward model** – parameters + conditions → predicted signal.
 
@@ -221,13 +228,13 @@ uv run pytest --tb=short        # Shorter tracebacks
 - Filter by RMSE/R² threshold.
 - Aggregate via median + MAD for robustness.
 
-### Current I/O (to be replaced — 2026-02-03)
-- Old registry pattern with decorators: **DELETE**
-- New design: minimal Strategy pattern with explicit dict
-- Formats: `.txt` only initially (`.xlsx` later, BMG when needed)
+### I/O Pattern (implemented 2026-02-03)
+- Minimal Strategy pattern with explicit dict registry (no decorators)
+- Formats: `.txt` only currently (`.xlsx` planned)
 - Multi-replica handling: long format DataFrame with `replica` column
+- Public API: `load_measurements()`, `save_results()` in `core/io/__init__.py`
 
-### New I/O Structure (planned)
+### I/O Structure (actual)
 ```
 core/io/
 ├── __init__.py      # Public API: load_measurements(), save_results()

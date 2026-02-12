@@ -33,27 +33,6 @@ degenerate manifold due to mass conservation on the fixed species:
 - Added Section 5 "Parameter Identifiability and Signal Coefficient Degeneracy" to `docs/scientific-summary.md`
 - Covers: mathematical derivation, consequences table, 6 inspection steps, 4 mitigation strategies
 
-## Recent updates (2026-02-06)
-
-### Phase 3: Testing — P1-P4 COMPLETE ✅
-- **62 tests total, all passing** (`uv run pytest`, ~10 min)
-- **P1: Parameter recovery** (11 tests) — Ka recovery for DBA, GDA, IDA, DyeAlone
-  - Signal coefficient tests removed (structural degeneracy — see parameter identifiability note)
-  - Signal reconstruction tests added instead
-  - GDA needs 500 trials and g0=20µM for reliable convergence
-  - RNG seeded (`np.random.seed(42)`) via autouse fixture for determinism
-- **P2: Forward model math** (14 tests) — Linear, DBA, competitive model tests
-- **P3: Fail-fast contracts** (23 tests) — Constructor validation for all assay types
-- **P4: I/O round-trip** (14 tests) — TxtReader, TxtWriter, registry dispatch
-
-### Key Finding: Signal Coefficient Degeneracy
-In DBA and IDA, signal coefficients (I0, I_dye_free, I_dye_bound) form a
-degenerate manifold: `[H_free] + [HD] = h0` (constant for fixed species).
-Different coefficient triplets produce identical signals. Only Ka (which
-controls curve shape) is independently identifiable. Tests use tight signal
-bounds (±20% of truth) to constrain the degenerate subspace and let Ka
-recovery work cleanly. This is TASK004 to address in the registry bounds.
-
 ## Recent updates (2026-02-03)
 
 ### Testing Strategy Formalized
@@ -115,7 +94,7 @@ core/io/
 ## Recent updates (2026-01-28)
 
 - Started TASK001 by mapping GUI-to-core fitting entry points.
-- Drafted initial public API wrappers in core/api.py (NOW TO BE REVERTED).
+- Drafted initial public API wrappers in `core/api.py` (REVERTED on 2026-01-30).
 
 ## Recent updates (2026-01-26)
 
@@ -152,25 +131,17 @@ core/io/
 - [x] Plan pint integration (boundary stripping)
 - [x] Create parameter/assay dependency matrix
 
-### Implementation Phase 1 (COMPLETE)
-- [x] Create core/units.py (pint UnitRegistry)
-- [x] Create core/assays/registry.py (AssayType enum + metadata)
-- [x] Create core/assays/base.py (BaseAssay ABC)
-- [x] Create core/models/equilibrium.py (forward models)
-- [x] Create core/models/linear.py (dye-alone model)
-- [x] Create core/optimizer/multistart.py (L-BFGS-B wrapper)
-- [x] Create core/optimizer/filters.py (RMSE/R² filtering)
-- [x] Create core/optimizer/linear_fit.py (linear regression)
-- [x] Create core/pipeline/fit_pipeline.py (orchestration)
-- [x] Create GDAAssay, IDAAssay, DBAAssay, DyeAloneAssay
-- [x] Revert core/api.py and API exports from core/__init__.py
-- [x] Add pint to requirements.txt
+### Implementation Phases (ALL COMPLETE)
+- [x] Phase 1: Core modules (2026-01-30)
+- [x] Phase 1.5: Scientific remediation (2026-01-31)
+- [x] Phase 2: Scorched Earth cleanup + minimal I/O (2026-02-03)
+- [x] Phase 3: Testing P1–P4 (2026-02-09)
 
-### Implementation Phase 2 (TODO)
-- [ ] Wire I/O layer to new assay structure
-- [ ] Add end-to-end tests with real data files
-- [ ] Migrate old fitting entry points to use new architecture
-- [ ] Delete/archive old core/fitting/*.py modules
+### Remaining
+- [ ] TASK004: Fix registry default bounds (informed by degeneracy analysis)
+- [ ] P5: Optimizer boundary tests
+- [ ] P6: End-to-end integration tests with real data
+- [ ] DBA DtoH signal bug investigation
 
 ## Known gaps
 

@@ -29,7 +29,7 @@ After restoring 4-parameter fitting (TASK003 remediation), define reasonable def
 ### Subtasks
 | ID | Description | Status | Updated | Notes |
 |----|-------------|--------|---------|-------|
-| 4.1 | Review legacy bounds for Id/Ihd | Not Started | 2026-01-31 | Check core/fitting/*.py |
+| 4.1 | Review legacy bounds for Id/Ihd | Not Started | 2026-01-31 | Legacy `core/fitting/` deleted; review `core/assays/registry.py` instead |
 | 4.2 | Update GDA default_bounds | Not Started | 2026-01-31 | Add I_dye_free, I_dye_bound |
 | 4.3 | Update IDA default_bounds | Not Started | 2026-01-31 | Add I_dye_free, I_dye_bound |
 | 4.4 | Update DBA default_bounds | Not Started | 2026-01-31 | Add I_dye_free, I_dye_bound |

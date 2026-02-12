@@ -48,10 +48,11 @@ In DBA/IDA, mass conservation on the fixed species collapses the 3 signal parame
 
 ## Architecture Design (confirmed 2026-01-30)
 
-### New directory structure
+### New directory structure (actual)
 ```
 core/
 ├── units.py              # Shared pint UnitRegistry
+├── forward_model.py      # Legacy forward model (naming aligned)
 ├── assays/               # Domain: assay definitions
 │   ├── registry.py       # AssayType enum + AssayMetadata + ASSAY_REGISTRY
 │   ├── base.py           # BaseAssay ABC
@@ -60,17 +61,20 @@ core/
 │   ├── ida.py            # IDAAssay
 │   └── dye_alone.py      # DyeAloneAssay
 ├── models/               # Forward models (pure math, unit-free)
-│   ├── equilibrium.py    # DBA, competitive equilibrium
-│   └── linear.py         # Linear model for dye-alone
+│   ├── equilibrium.py    # dba_signal, gda_signal, ida_signal
+│   └── linear.py         # linear_signal (dye-alone)
 ├── optimizer/            # Fitting engine (stateless)
 │   ├── multistart.py     # Multi-start L-BFGS-B
 │   ├── linear_fit.py     # Linear regression
-│   └── filters.py        # RMSE/R² filtering, aggregation
+│   └── filters.py        # RMSE/R² filtering, median+MAD aggregation
 ├── pipeline/             # Orchestration
-│   └── fit_pipeline.py   # FitPipeline.run()
-└── io/                   # I/O layer (readers/writers)
-    ├── readers.py        # TxtReader
-    └── writers.py        # ResultWriter
+│   └── fit_pipeline.py   # FitConfig, FitResult, fit_assay()
+└── io/                   # I/O layer (minimal Strategy pattern)
+    ├── __init__.py        # Public API: load_measurements(), save_results()
+    ├── base.py            # MeasurementReader, ResultWriter protocols
+    ├── registry.py        # Format dispatch (explicit dict, no decorators)
+    └── formats/
+        └── txt.py         # TxtReader, TxtWriter (multi-replica aware)
 ```
 
 ### Key design decisions
@@ -96,7 +100,7 @@ core/
 ## Working assumptions
 
 - GUI breakage is acceptable.
-- Full-plate fitting stays as-is (legacy).
+- Full-plate fitting: DELETED (2026-02-02 decision).
 - De-scoping overengineered features is encouraged.
 
 ## Implementation Status
