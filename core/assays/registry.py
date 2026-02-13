@@ -55,13 +55,24 @@ class AssayMetadata:
     display_name : str
         Human-readable name for display in GUI and plots.
     parameter_keys : Tuple[str, ...]
-        Names of fitted parameters in order.
+        Names of fitted parameters in order.  The optimizer receives
+        parameters in this order; ``params_to_dict`` / ``params_from_dict``
+        on :class:`BaseAssay` use this ordering.
     x_label : str
         Label for x-axis in plots.
     y_label : str
         Label for y-axis in plots.
     default_bounds : Dict[str, Tuple[float, float]]
-        Default (lower, upper) bounds for each parameter.
+        Default ``(lower, upper)`` bounds keyed by parameter name.
+        :meth:`BaseAssay.get_default_bounds` returns a copy of this dict.
+        ``_resolve_bounds`` in the pipeline converts to positional arrays
+        for the optimizer.
+    log_scale_keys : Tuple[str, ...]
+        Parameter names that should be sampled in log₁₀ space during
+        multi-start initialisation.  Typically association constants
+        that span many orders of magnitude (e.g. ``Ka_dye``, ``Ka_guest``).
+        Used as the *assay-level default* when the user does not override
+        ``FitConfig.log_scale_params``.
     units : Dict[str, str]
         Unit strings for each parameter (for display/export).
     """
@@ -71,6 +82,7 @@ class AssayMetadata:
     x_label: str
     y_label: str
     default_bounds: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    log_scale_keys: Tuple[str, ...] = ()
     units: Dict[str, str] = field(default_factory=dict)
 
 
@@ -82,11 +94,12 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         x_label='[Dye] / M',
         y_label='Signal / a.u.',
         default_bounds={
-            'Ka_guest': (1e-8, 1e12),  # Association constant (M^-1)
-            'I0': (0, 1e6),
-            'I_dye_free': (0, 1e6),
-            'I_dye_bound': (0, 1e6),
+            'Ka_guest': (1e-8, 1e12),  # Association constant (M⁻¹)
+            'I0': (0, 1e6),  # Background signal (a.u.)
+            'I_dye_free': (0, 1e6),  # Signal per free dye (a.u. M⁻¹)
+            'I_dye_bound': (0, 1e6),  # Signal per bound dye (a.u. M⁻¹)
         },
+        log_scale_keys=('Ka_guest',),
         units={
             'Ka_guest': 'M^-1',
             'I0': 'a.u.',
@@ -100,11 +113,12 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         x_label='[Guest] / M',
         y_label='Signal / a.u.',
         default_bounds={
-            'Ka_guest': (1e-8, 1e12),  # Association constant (M^-1)
-            'I0': (0, 1e6),
-            'I_dye_free': (0, 1e6),
-            'I_dye_bound': (0, 1e6),
+            'Ka_guest': (1e-8, 1e12),  # Association constant (M⁻¹)
+            'I0': (0, 1e6),  # Background signal (a.u.)
+            'I_dye_free': (0, 1e6),  # Signal per free dye (a.u. M⁻¹)
+            'I_dye_bound': (0, 1e6),  # Signal per bound dye (a.u. M⁻¹)
         },
+        log_scale_keys=('Ka_guest',),
         units={
             'Ka_guest': 'M^-1',
             'I0': 'a.u.',
@@ -118,11 +132,12 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         x_label='[Host] / M',
         y_label='Signal / a.u.',
         default_bounds={
-            'Ka_dye': (1e-8, 1e12),  # Association constant (M^-1)
-            'I0': (0, 1e6),
-            'I_dye_free': (0, 1e6),
-            'I_dye_bound': (0, 1e6),
+            'Ka_dye': (1e-8, 1e12),  # Association constant (M⁻¹)
+            'I0': (0, 1e6),  # Background signal (a.u.)
+            'I_dye_free': (0, 1e6),  # Signal per free dye (a.u. M⁻¹)
+            'I_dye_bound': (0, 1e6),  # Signal per bound dye (a.u. M⁻¹)
         },
+        log_scale_keys=('Ka_dye',),
         units={
             'Ka_dye': 'M^-1',
             'I0': 'a.u.',
@@ -136,11 +151,12 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         x_label='[Dye] / M',
         y_label='Signal / a.u.',
         default_bounds={
-            'Ka_dye': (1e-8, 1e12),  # Association constant (M^-1)
-            'I0': (0, 1e6),
-            'I_dye_free': (0, 1e6),
-            'I_dye_bound': (0, 1e6),
+            'Ka_dye': (1e-8, 1e12),  # Association constant (M⁻¹)
+            'I0': (0, 1e6),  # Background signal (a.u.)
+            'I_dye_free': (0, 1e6),  # Signal per free dye (a.u. M⁻¹)
+            'I_dye_bound': (0, 1e6),  # Signal per bound dye (a.u. M⁻¹)
         },
+        log_scale_keys=('Ka_dye',),
         units={
             'Ka_dye': 'M^-1',
             'I0': 'a.u.',
@@ -154,9 +170,10 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         x_label='[Dye] / M',
         y_label='Signal / a.u.',
         default_bounds={
-            'slope': (0, 1e12),
-            'intercept': (-1e6, 1e6),
+            'slope': (0, 1e12),  # ΔSignal / Δ[Dye] (a.u. M⁻¹)
+            'intercept': (-1e6, 1e6),  # Signal at zero dye (a.u.)
         },
+        log_scale_keys=(),
         units={
             'slope': 'M^-1',
             'intercept': 'a.u.',

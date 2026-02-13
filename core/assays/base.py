@@ -131,18 +131,18 @@ class BaseAssay(ABC):
         resid = self.residuals(params)
         return float(np.sum(resid**2))
 
-    def get_default_bounds(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Get default parameter bounds from registry.
+    def get_default_bounds(self) -> Dict[str, Tuple[float, float]]:
+        """Get default parameter bounds as a name-keyed dictionary.
+
+        Returns the ``default_bounds`` dictionary from the assay registry,
+        keyed by parameter name.
 
         Returns
         -------
-        Tuple[np.ndarray, np.ndarray]
-            (lower_bounds, upper_bounds) arrays.
+        Dict[str, Tuple[float, float]]
+            ``{param_name: (lower, upper), ...}``
         """
-        meta = self.registry_metadata
-        lower = np.array([meta.default_bounds[k][0] for k in self.parameter_keys])
-        upper = np.array([meta.default_bounds[k][1] for k in self.parameter_keys])
-        return lower, upper
+        return dict(self.registry_metadata.default_bounds)
 
     def params_to_dict(self, params: np.ndarray) -> Dict[str, float]:
         """Convert parameter array to named dictionary.

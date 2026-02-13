@@ -52,7 +52,7 @@ def generate_initial_guesses(
         (lower, upper) bounds for each parameter.
     log_scale_params : List[int], optional
         Indices of parameters that should be sampled in log space.
-        This is useful for parameters like K_D that span many orders of magnitude.
+        This is useful for parameters like Ka that span many orders of magnitude.
 
     Returns
     -------
