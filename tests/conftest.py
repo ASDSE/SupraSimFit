@@ -77,12 +77,24 @@ DYE_ALONE_TRUE = {
 # nonlinear model.  Tight bounds simulate the realistic workflow where
 # I_dye_free / I_dye_bound are known from a prior DBA calibration.
 # Ka bounds remain wide (log-scale sampled).
-RECOVERY_BOUNDS = [
-    (1e-8, 1e12),  # Ka (M^-1) — wide, log-scale sampled
-    (-100, 100),  # I0 — tight around 0
-    (4e7, 6e7),  # I_dye_free — ±20% of 5e7
-    (2.5e8, 3.5e8),  # I_dye_bound — ±20% of 3e8
-]
+
+# Shared signal-coefficient bounds (same for every non-linear assay)
+_SIGNAL_BOUNDS = {
+    'I0': (-100, 100),  # tight around 0
+    'I_dye_free': (4e7, 6e7),  # ±20 % of 5e7
+    'I_dye_bound': (2.5e8, 3.5e8),  # ±20 % of 3e8
+}
+
+# Per-assay-family bounds  (Ka key differs)
+DBA_RECOVERY_BOUNDS = {
+    'Ka_dye': (1e-8, 1e12),  # wide, log-scale sampled
+    **_SIGNAL_BOUNDS,
+}
+
+GDA_IDA_RECOVERY_BOUNDS = {
+    'Ka_guest': (1e-8, 1e12),  # wide, log-scale sampled
+    **_SIGNAL_BOUNDS,
+}
 
 
 # ---------------------------------------------------------------------------

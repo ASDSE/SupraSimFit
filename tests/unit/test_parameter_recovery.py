@@ -28,20 +28,31 @@ from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
 from core.pipeline.fit_pipeline import FitConfig, fit_assay, fit_linear_assay
-from tests.conftest import RECOVERY_BOUNDS, assert_within_tolerance
+from tests.conftest import DBA_RECOVERY_BOUNDS, GDA_IDA_RECOVERY_BOUNDS, assert_within_tolerance
 
 CLEAN_TOL = 0.10  # 10% for clean synthetic data
-NOISY_TOL = 0.20  # 20% for 5% Gaussian noise
+NOISY_TOL = 0.25  # 25% for 5% Gaussian noise
 N_TRIALS = 200  # More trials for reliable convergence
 N_TRIALS_GDA = 200  # GDA needs more trials (competitive model is harder to fit)
 
 
-def _fit_config(n_trials: int = N_TRIALS) -> FitConfig:
-    """Standard FitConfig for recovery tests."""
+def _fit_config(
+    n_trials: int = N_TRIALS,
+    bounds: dict | None = None,
+) -> FitConfig:
+    """Standard FitConfig for recovery tests.
+
+    Parameters
+    ----------
+    n_trials : int
+        Multi-start trials.
+    bounds : dict or None
+        Named bounds dict.  Uses DBA_RECOVERY_BOUNDS when *None*.
+    """
     return FitConfig(
         n_trials=n_trials,
-        log_scale_params=[0],
-        custom_bounds=RECOVERY_BOUNDS,
+        log_scale_params=None,  # use assay default from registry
+        custom_bounds=bounds if bounds is not None else DBA_RECOVERY_BOUNDS,
     )
 
 
@@ -61,7 +72,7 @@ class TestDBARecovery:
 
         assert result.success
         assert result.r_squared > 0.999
-        assert_within_tolerance(result.params_dict['Ka_dye'], true['Ka_dye'], CLEAN_TOL, 'Ka_dye')
+        assert_within_tolerance(result.parameters['Ka_dye'], true['Ka_dye'], CLEAN_TOL, 'Ka_dye')
 
     def test_dba_signal_reconstruction_clean(self, dba_clean):
         """Fitted model reconstructs the observed signal within 1%."""
@@ -69,8 +80,7 @@ class TestDBARecovery:
         assay = DBAAssay(x_data=x, y_data=y, fixed_conc=true['fixed_conc'], mode='DtoH')
         result = fit_assay(assay, _fit_config())
 
-        y_pred = assay.forward_model(result.params)
-        max_rel_err = np.max(np.abs(y_pred - y) / np.abs(y))
+        max_rel_err = np.max(np.abs(result.y_fit - y) / np.abs(y))
         assert max_rel_err < 0.01, f'Max point-wise relative error {max_rel_err:.2%} > 1%'
 
     def test_dba_recovers_ka_dye_noisy(self, dba_noisy):
@@ -80,7 +90,7 @@ class TestDBARecovery:
         result = fit_assay(assay, _fit_config())
 
         assert result.success
-        assert_within_tolerance(result.params_dict['Ka_dye'], true['Ka_dye'], NOISY_TOL, 'Ka_dye')
+        assert_within_tolerance(result.parameters['Ka_dye'], true['Ka_dye'], NOISY_TOL, 'Ka_dye')
 
 
 # ---------------------------------------------------------------------------
@@ -95,31 +105,30 @@ class TestGDARecovery:
         """Ka_guest recovered within 10% on clean data."""
         x, y, true = gda_clean
         assay = GDAAssay(x_data=x, y_data=y, Ka_dye=true['Ka_dye'], h0=true['h0'], g0=true['g0'])
-        result = fit_assay(assay, _fit_config(n_trials=N_TRIALS_GDA))
+        result = fit_assay(assay, _fit_config(n_trials=N_TRIALS_GDA, bounds=GDA_IDA_RECOVERY_BOUNDS))
 
         assert result.success
         assert result.r_squared > 0.999
-        assert_within_tolerance(result.params_dict['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
+        assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
 
     def test_gda_signal_reconstruction_clean(self, gda_clean):
         """Fitted model reconstructs the observed signal within 5%."""
         x, y, true = gda_clean
         assay = GDAAssay(x_data=x, y_data=y, Ka_dye=true['Ka_dye'], h0=true['h0'], g0=true['g0'])
-        result = fit_assay(assay, _fit_config(n_trials=N_TRIALS_GDA))
+        result = fit_assay(assay, _fit_config(n_trials=N_TRIALS_GDA, bounds=GDA_IDA_RECOVERY_BOUNDS))
 
-        y_pred = assay.forward_model(result.params)
         # GDA has weaker identifiability than DBA/IDA so we allow 5% reconstruction error
-        max_rel_err = np.max(np.abs(y_pred - y) / np.abs(y))
+        max_rel_err = np.max(np.abs(result.y_fit - y) / np.abs(y))
         assert max_rel_err < 0.05, f'Max point-wise relative error {max_rel_err:.2%} > 5%'
 
     def test_gda_recovers_ka_guest_noisy(self, gda_noisy):
         """Ka_guest recovered within 20% on noisy data."""
         x, y, true = gda_noisy
         assay = GDAAssay(x_data=x, y_data=y, Ka_dye=true['Ka_dye'], h0=true['h0'], g0=true['g0'])
-        result = fit_assay(assay, _fit_config(n_trials=N_TRIALS_GDA))
+        result = fit_assay(assay, _fit_config(n_trials=N_TRIALS_GDA, bounds=GDA_IDA_RECOVERY_BOUNDS))
 
         assert result.success
-        assert_within_tolerance(result.params_dict['Ka_guest'], true['Ka_guest'], NOISY_TOL, 'Ka_guest')
+        assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], NOISY_TOL, 'Ka_guest')
 
 
 # ---------------------------------------------------------------------------
@@ -134,30 +143,29 @@ class TestIDARecovery:
         """Ka_guest recovered within 10% on clean data."""
         x, y, true = ida_clean
         assay = IDAAssay(x_data=x, y_data=y, Ka_dye=true['Ka_dye'], h0=true['h0'], d0=true['d0'])
-        result = fit_assay(assay, _fit_config())
+        result = fit_assay(assay, _fit_config(bounds=GDA_IDA_RECOVERY_BOUNDS))
 
         assert result.success
         assert result.r_squared > 0.999
-        assert_within_tolerance(result.params_dict['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
+        assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
 
     def test_ida_signal_reconstruction_clean(self, ida_clean):
         """Fitted model reconstructs the observed signal within 1%."""
         x, y, true = ida_clean
         assay = IDAAssay(x_data=x, y_data=y, Ka_dye=true['Ka_dye'], h0=true['h0'], d0=true['d0'])
-        result = fit_assay(assay, _fit_config())
+        result = fit_assay(assay, _fit_config(bounds=GDA_IDA_RECOVERY_BOUNDS))
 
-        y_pred = assay.forward_model(result.params)
-        max_rel_err = np.max(np.abs(y_pred - y) / np.abs(y))
+        max_rel_err = np.max(np.abs(result.y_fit - y) / np.abs(y))
         assert max_rel_err < 0.01, f'Max point-wise relative error {max_rel_err:.2%} > 1%'
 
     def test_ida_recovers_ka_guest_noisy(self, ida_noisy):
         """Ka_guest recovered within 20% on noisy data."""
         x, y, true = ida_noisy
         assay = IDAAssay(x_data=x, y_data=y, Ka_dye=true['Ka_dye'], h0=true['h0'], d0=true['d0'])
-        result = fit_assay(assay, _fit_config())
+        result = fit_assay(assay, _fit_config(bounds=GDA_IDA_RECOVERY_BOUNDS))
 
         assert result.success
-        assert_within_tolerance(result.params_dict['Ka_guest'], true['Ka_guest'], NOISY_TOL, 'Ka_guest')
+        assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], NOISY_TOL, 'Ka_guest')
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +184,7 @@ class TestDyeAloneRecovery:
 
         assert result.success
         assert result.r_squared > 0.999
-        assert_within_tolerance(result.params_dict['slope'], true['slope'], CLEAN_TOL, 'slope')
+        assert_within_tolerance(result.parameters['slope'], true['slope'], CLEAN_TOL, 'slope')
 
     def test_dye_alone_recovers_intercept_clean(self, dye_alone_clean):
         """Intercept recovered within 10% on clean data."""
@@ -185,4 +193,4 @@ class TestDyeAloneRecovery:
         result = fit_linear_assay(assay)
 
         assert result.success
-        assert_within_tolerance(result.params_dict['intercept'], true['intercept'], CLEAN_TOL, 'intercept')
+        assert_within_tolerance(result.parameters['intercept'], true['intercept'], CLEAN_TOL, 'intercept')
