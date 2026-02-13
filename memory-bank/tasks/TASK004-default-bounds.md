@@ -2,7 +2,7 @@
 
 **Status:** Pending  
 **Added:** 2026-01-31  
-**Updated:** 2026-02-09
+**Updated:** 2026-02-13
 
 ## Original Request
 After restoring 4-parameter fitting (TASK003 remediation), define reasonable default bounds for the additional signal coefficient (`I_dye_free` or `I_dye_bound`) in the ASSAY_REGISTRY.
@@ -11,7 +11,7 @@ After restoring 4-parameter fitting (TASK003 remediation), define reasonable def
 - Legacy code fits 4 parameters: `[I0, Ka, Id, Ihd]` (now `[I0, Ka_*, I_dye_free, I_dye_bound]`)
 - Current registry has bounds `I_dye_free: (0, 1e6)` and `I_dye_bound: (0, 1e6)` — too narrow for realistic per-Molar coefficients (~5e7, ~3e8)
 - **Key insight from degeneracy analysis (2026-02-09)**: Signal coefficients are structurally non-identifiable in DBA/IDA. Wide bounds allow the degenerate manifold to produce arbitrarily wrong individual values while fitting perfectly. Tight bounds (±20% of expected values) constrain the manifold and improve Ka recovery.
-- Need to determine physically reasonable default bounds accounting for this degeneracy
+- **Named bounds API available (2026-02-13)**: `FitConfig.custom_bounds` now accepts `Dict[str, Tuple]` with partial overrides. `bounds_from_dye_alone()` can derive `I_dye_free`/`I0` bounds from calibration. The infrastructure for users to tighten bounds is in place; this task is about setting sensible *defaults* in the registry.
 
 ## Blocked By
 - TASK003 subtasks 3.17–3.23 (scientific remediation)

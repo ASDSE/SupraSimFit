@@ -48,7 +48,11 @@ core/
 │   ├── linear_fit.py      # Linear regression
 │   └── filters.py         # RMSE/R² filtering, median+MAD aggregation
 ├── pipeline/              # Orchestration
-│   └── fit_pipeline.py    # FitConfig, FitResult, fit_assay()
+│   └── fit_pipeline.py    # FitConfig, FitResult, fit_assay(), fit_measurement_set()
+├── data_processing/       # Multi-replica data handling
+│   ├── measurement_set.py # MeasurementSet (immutable 2D numpy container)
+│   ├── preprocessing.py   # PreprocessingStep Protocol + ZScoreReplicaFilter
+│   └── plotting.py        # prepare_plot_data() (GUI-friendly dict, no matplotlib)
 └── io/                    # I/O layer (minimal Strategy pattern)
     ├── __init__.py         # Public API: load_measurements(), save_results()
     ├── base.py             # MeasurementReader, ResultWriter protocols
@@ -60,14 +64,18 @@ gui/                       # GUI (PAUSED — interface files deleted)
 ├── dialogs/
 └── widgets/
 utils/                     # Plotting, stats, fitting helpers
-tests/                     # pytest test suite (62 tests, all passing)
+tests/                     # pytest test suite (149 tests, all passing)
 ├── conftest.py            # Shared fixtures, synthetic data generators, RNG seed
 ├── data/                  # Committed test fixtures
 └── unit/
     ├── test_parameter_recovery.py  # P1: Ka recovery + signal reconstruction
     ├── test_models.py              # P2: Forward model math
     ├── test_fail_fast.py           # P3: Constructor validation
-    └── test_io.py                  # P4: I/O round-trip
+    ├── test_io.py                  # P4: I/O round-trip
+    ├── test_param_handling.py      # P5: Named bounds, log-scale, bounds_from_dye_alone (32)
+    ├── test_measurement_set.py     # MeasurementSet tests (30)
+    ├── test_preprocessing.py       # Preprocessing tests (13)
+    └── test_fit_results.py         # FitResult serialization tests (12)
 docs/                      # Scientific documentation
 data/                      # Sample data files
 examples/                  # Usage examples
@@ -83,9 +91,9 @@ memory-bank/               # Agent memory bank
   - `uv run pytest -v` for verbose output
   - `uv run pytest -k "test_gda"` for specific tests
   - `uv run pytest --tb=short` for shorter tracebacks
-  - **62 tests, all passing** (P1–P4 complete as of 2026-02-09)
-  - Runtime: ~10 minutes (dominated by multi-start optimization in P1)
-- **Tolerance**: 10% for clean synthetic data, 20% for 5% Gaussian noise
+  - **149 tests, all passing** (P1–P5 + MeasurementSet + Preprocessing + FitResult as of 2026-02-13)
+  - Runtime: ~3 minutes
+- **Tolerance**: 10% for clean synthetic data, 25% for 5% Gaussian noise
 - **Parameter identifiability**: Signal coefficients are structurally degenerate in DBA/IDA; tests verify Ka recovery + signal reconstruction only
 
 ## Conventions

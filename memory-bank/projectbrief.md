@@ -22,7 +22,7 @@ Build a research‑grade toolkit for fitting molecular binding assays (GDA, IDA,
 
 - **Core fitting logic redesign** — modular assay classes, shared optimizer, decoupled I/O.
 - I/O for `.txt` and `.xlsx` only.
-- Testing: P1–P4 complete (62 tests). P5–P6 pending.
+- Testing: P1–P5 complete (149 tests). P6 pending.
 
 ## Out of scope (for now)
 

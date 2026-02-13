@@ -1,6 +1,6 @@
 # System Patterns and Architecture
 
-## Current Status (2026-02-09)
+## Current Status (2026-02-13)
 
 **Strategy Pivot**: GUI paused, Public API postponed, focus solely on Core Fitting Logic refactor.
 
@@ -8,18 +8,21 @@
 **Phase 2: Scorched Earth Cleanup + Minimal I/O: COMPLETE** ✅
 **Phase 3: Testing (P1–P4): COMPLETE** ✅ (62 tests, all passing)
 **Scientific Documentation: COMPLETE** ✅ (Parameter identifiability, docs/scientific-summary.md Section 5)
+**Phase 4: Data Processing Layer: COMPLETE** ✅ (MeasurementSet, preprocessing, FitResult refactor)
+**Named Parameter Handling Refactor: COMPLETE** ✅ (Named bounds, log-scale, bounds_from_dye_alone — 149 tests total)
 
 All core modules implemented with correct scientific conventions:
 - `core/units.py` — pint UnitRegistry with boundary stripping utilities
 - `core/assays/` — registry, base ABC, and concrete assay classes (GDA, IDA, DBA, DyeAlone)
 - `core/models/` — equilibrium.py and linear.py forward models (4-param, unified naming)
 - `core/optimizer/` — multistart.py, filters.py, linear_fit.py
-- `core/pipeline/` — fit_pipeline.py with FitConfig and FitResult
+- `core/pipeline/` — fit_pipeline.py with FitConfig and FitResult (serializable, decoupled)
+- `core/io/` — minimal Strategy pattern with TxtReader/TxtWriter
+- `core/data_processing/` — MeasurementSet, preprocessing pipeline, plot data helper
 - `core/forward_model.py` — Legacy code aligned with new naming convention
 
 **Remaining work:**
 - TASK004: Fix registry default bounds (informed by degeneracy analysis)
-- P5: Optimizer boundary tests
 - P6: End-to-end integration tests
 - DBA DtoH signal bug investigation
 
@@ -58,7 +61,11 @@ core/
 │   ├── linear_fit.py     # Linear regression
 │   └── filters.py        # RMSE/R² filtering, median+MAD aggregation
 ├── pipeline/             # Orchestration
-│   └── fit_pipeline.py   # FitConfig, FitResult, fit_assay()
+│   └── fit_pipeline.py   # FitConfig, FitResult, fit_assay(), fit_measurement_set()
+├── data_processing/      # Multi-replica data handling
+│   ├── measurement_set.py  # MeasurementSet (immutable 2D numpy container)
+│   ├── preprocessing.py    # PreprocessingStep Protocol + registry + ZScoreReplicaFilter
+│   └── plotting.py         # prepare_plot_data() — GUI-friendly dict output
 └── io/                   # I/O layer (minimal Strategy pattern)
     ├── __init__.py        # Public API: load_measurements(), save_results()
     ├── base.py            # MeasurementReader, ResultWriter protocols
@@ -88,6 +95,7 @@ class AssayMetadata:
     x_label: str
     y_label: str
     default_bounds: dict = field(default_factory=dict)
+    log_scale_keys: Tuple[str, ...] = ()  # Params sampled in log₁₀ space
 
 ASSAY_REGISTRY: dict[AssayType, AssayMetadata] = {
     AssayType.GDA: AssayMetadata(
@@ -178,7 +186,10 @@ tests/
     ├── test_parameter_recovery.py  # P1: Ka recovery + signal reconstruction
     ├── test_models.py             # P2: Forward model math
     ├── test_fail_fast.py          # P3: Constructor validation
-    └── test_io.py                 # P4: I/O round-trip
+    ├── test_io.py                 # P4: I/O round-trip
+    ├── test_measurement_set.py    # MeasurementSet construction, access, to_assay
+    ├── test_preprocessing.py      # Z-score filter, registry, pipeline
+    └── test_fit_results.py        # FitResult properties, serialization
 ```
 
 ### Parameter Identifiability (2026-02-09)
@@ -189,7 +200,7 @@ Signal coefficients (I0, I_dye_free, I_dye_bound) are NOT individually identifia
 2. **P2: Forward Model Math** — Known inputs → expected outputs
 3. **P3: Fail-Fast Contracts** — Missing params, NaN, negative K
 4. **P4: I/O Round-Trip** — Write→Read preserves data exactly
-5. **P5: Optimizer Boundaries** — Bounds enforced, edge cases handled
+5. **P5: Parameter Handling** — Named bounds, log-scale semantics, bounds_from_dye_alone, registry consistency
 6. **P6: Integration** — End-to-end with real data files
 
 ### Pytest Workflow
@@ -208,8 +219,9 @@ uv run pytest --tb=short        # Shorter tracebacks
 - **BaseAssay** – ABC for all assay types; subclassed by GDAAssay, IDAAssay, DBAAssay, DyeAloneAssay.
 - **AssayMetadata** – frozen dataclass holding display name, parameter keys, axis labels, default bounds.
 - **ASSAY_REGISTRY** – dict mapping `AssayType` enum → `AssayMetadata`.
-- **FitConfig** – dataclass configuring a fit run (bounds, n_trials, custom_bounds).
+- **FitConfig** – dataclass configuring a fit run (named `Dict[str, Tuple]` bounds, `List[str]` log-scale params, n_trials).
 - **FitResult** – dataclass holding fitted parameters, uncertainties, diagnostics.
+- **bounds_from_dye_alone()** – derives I_dye_free/I0 bounds from dye-alone calibration for downstream fits.
 - **Assay types** – GDA, IDA, DBA (host↔dye), Dye Alone.
 - **Forward model** – parameters + conditions → predicted signal.
 
@@ -252,9 +264,66 @@ core/io/
 | Assays | Data containers, forward model ref | models, units |
 | Models | Pure math, unit-free | numpy, scipy |
 | Optimizer | Fit execution, stateless | scipy.optimize |
-| Pipeline | Orchestration | assays, optimizer, io |
+| Pipeline | Orchestration, FitResult | assays, optimizer |
+| Data Processing | Multi-replica containers, preprocessing | assays (via to_assay) |
 | I/O | Read/write, validation | pandas, units |
 | Plotting | External, optional | matplotlib, assay metadata |
+
+### Data Processing Patterns (2026-02-10)
+
+#### MeasurementSet
+- Immutable 2D numpy container (n_replicas × n_points) with shared concentration grid
+- UUID hex string identity for loose coupling to FitResult
+- `_active_mask` (dict[str, bool]) is the only mutable field — tracks which replicas are active
+- `to_assay()` bridges to BaseAssay subclasses for fitting
+
+#### FitResult (Refactored)
+- Fully decoupled from BaseAssay — no assay reference stored
+- Parameters/uncertainties as `dict[str, float]` (named, not positional ndarray)
+- `x_fit`/`y_fit` stored directly — no need to reconstruct from model
+- `to_dict()` / `from_dict()` for JSON-safe serialization
+- `success` property: `r_squared > 0 and len(parameters) > 0`
+- Failure case: explicit FitResult with diagnostic metadata + actionable hint
+
+#### Preprocessing Registry
+- `PreprocessingStep` Protocol: `name: str`, `process(ms) -> ms`
+- Dict-based registry: `PREPROCESSING_STEPS`, `register_step()`, `get_step()`
+- `apply_preprocessing(ms, steps, log)` pipeline runner
+- Built-in `ZScoreReplicaFilter`: median + MAD (robust), threshold=3.5
+
+#### Z-Score Masking Effect (Scientific)
+With population std, a single outlier's z-score is bounded at `2(n-1)/n` (exactly 2.0 for n=5).
+Solution: use robust estimators (median + MAD with 0.6745 normalization factor).
+
+### Named Parameter Handling (2026-02-13)
+
+#### Design: Named Bounds + Log-Scale
+Parameters are identified by **name** (string keys matching `parameter_keys`), not positional index.
+
+```python
+# FitConfig (breaking API change)
+@dataclass
+class FitConfig:
+    custom_bounds: Optional[Dict[str, Tuple[float, float]]] = None  # Partial overrides
+    log_scale_params: Optional[List[str]] = None  # None=assay default, []=linear, names=override
+```
+
+#### Resolution Flow
+1. `_resolve_bounds(assay, custom_bounds)` — merges user dict with `assay.get_default_bounds_dict()`; unknown keys → ValueError
+2. `_resolve_log_scale(assay, log_scale_params)` — None → `assay.registry_metadata.log_scale_keys`; names → indices
+3. Optimizer receives positional arrays (translation happens in `fit_assay()`)
+
+#### Assay-Level Log-Scale Defaults
+`AssayMetadata.log_scale_keys` defines which params are sampled in log₁₀ space by default:
+- DBA: `('Ka_dye',)` — index 0
+- GDA/IDA: `('Ka_guest',)` — index 0
+- DYE_ALONE: `()` — no log-scale
+
+#### Dye-Alone → Downstream Priors
+`bounds_from_dye_alone(result, margin=0.2)` extracts signal bounds from a calibration:
+- slope → `I_dye_free` bounds (±margin)
+- intercept → `I0` bounds (±margin)
+- Returns `Dict[str, Tuple]` for direct merge: `FitConfig(custom_bounds={**priors, 'Ka_guest': ...})`
 
 ## Concurrency
 

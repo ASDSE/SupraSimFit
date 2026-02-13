@@ -8,11 +8,15 @@ Major strategic change:
 3. **Sole focus: restructure Core Models and Fitting Logic.**
 4. **Public API work is postponed** — revert/undo recent `core/api.py` changes.
 
-## Current focus (2026-02-09)
+## Current focus (2026-02-13)
 
-**Phase 3: Testing — COMPLETE ✅ (62 tests, all passing)**
+**Named Parameter Handling Refactor — COMPLETE ✅**
 
-All P1–P4 test categories implemented and passing. Scientific documentation on parameter identifiability added to `docs/scientific-summary.md`.
+Refactored the entire parameter/bounds API from brittle positional indices to
+named (Dict-based) parameters.  Fixed the `log_scale_params=None` silent bug,
+added partial bound overrides, and a `bounds_from_dye_alone()` helper.
+
+**149 tests total, all passing.**
 
 ### Completed Phases
 - **Phase 1**: Core modules ✅ (2026-01-30)
@@ -20,6 +24,8 @@ All P1–P4 test categories implemented and passing. Scientific documentation on
 - **Phase 2**: Scorched Earth cleanup + minimal I/O ✅ (2026-02-03)
 - **Phase 3**: Testing P1–P4 ✅ (2026-02-09)
 - **Scientific documentation**: Parameter identifiability section ✅ (2026-02-09)
+- **Phase 4**: Data Processing Layer ✅ (2026-02-10)
+- **Named Parameter Handling**: Bounds + log-scale refactor ✅ (2026-02-13)
 
 ### Test Summary
 | Category | Tests | Description |
@@ -28,17 +34,62 @@ All P1–P4 test categories implemented and passing. Scientific documentation on
 | P2: Forward Model Math | 14 | Known inputs → expected outputs |
 | P3: Fail-Fast Contracts | 23 | Constructor validation for all assay types |
 | P4: I/O Round-Trip | 14 | TxtReader, TxtWriter, registry dispatch |
-| **Total** | **62** | All passing (~10 min runtime) |
+| P5: Parameter Handling | 32 | Named bounds, log-scale semantics, bounds_from_dye_alone, registry consistency |
+| MeasurementSet | 30 | Construction, immutability, UUID, replica management, data access |
+| Preprocessing | 13 | Z-score outlier detection, registry, pipeline |
+| FitResult Serialization | 12 | Properties, round-trip, JSON safety |
+| **Total** | **149** | All passing (~3 min runtime) |
+
+### Phase 4 Summary
+
+#### MeasurementSet (`core/data_processing/measurement_set.py`)
+- Multi-replica in-memory data container (2D numpy: n_replicas × n_points)
+- Immutable concentrations/signals (read-only views), mutable `_active_mask` only
+- `from_dataframe()`, `iter_replicas()`, `average_signal()`, `to_assay()`, `set_active()`/`reset_active()`
+- UUID-based loose coupling to FitResult
+
+#### FitResult Refactor (`core/pipeline/fit_pipeline.py`)
+- **Removed**: `params` (ndarray), `params_dict` (property), `uncertainties` (ndarray), `assay` (BaseAssay), `all_attempts` (list)
+- **Added**: `parameters` (dict), `uncertainties` (dict), `x_fit`, `y_fit` (ndarray), `assay_type` (str), `model_name` (str), `conditions` (dict), `fit_config` (dict), `measurement_set_id`, `source_file`, `id` (UUID), `timestamp` (ISO-8601)
+- **Added**: `to_dict()`, `from_dict()`, `success` property, `fit_measurement_set()` convenience function
+- **Bug fix**: Silent fallback in `fit_assay()` removed — now returns explicit failure FitResult with diagnostic metadata + actionable hint when no fits pass filtering
+
+#### Preprocessing (`core/data_processing/preprocessing.py`)
+- `PreprocessingStep` Protocol with `process(ms) -> ms` signature
+- Dict-based registry (mirrors IO pattern): `PREPROCESSING_STEPS`, `register_step()`, `get_step()`
+- `apply_preprocessing()` pipeline runner with processing log
+- Built-in: `ZScoreReplicaFilter` — uses robust estimators (median + MAD, 0.6745 normalization) for outlier detection. Default threshold=3.5, min_replicas=3.
+
+#### Plotting Helper (`core/data_processing/plotting.py`)
+- `prepare_plot_data(ms, fit_results, show_dropped)` — GUI-friendly dict output, no matplotlib dependency
+
+### Key Scientific Finding: Z-Score Masking Effect
+With population std (`ddof=0`) and n replicas, a single extreme outlier's z-score is mathematically bounded at `2 * (n-1)/n` (for n=5, exactly 2.0). This means mean+std z-score CANNOT detect single outliers in small samples regardless of how extreme they are. Solution: use robust estimators (median + MAD) which are unaffected by the outlier.
 
 ### Key Scientific Finding: Signal Coefficient Degeneracy
 In DBA/IDA, mass conservation on the fixed species collapses the 3 signal parameters (I0, I_dye_free, I_dye_bound) into 2 effective DOFs (offset + contrast). Ka remains identifiable (controls curve shape). Documented in `docs/scientific-summary.md` Section 5.
 
+### Named Parameter Handling Refactor (2026-02-13)
+
+Four user concerns addressed:
+1. **`log_scale_params=None` silent bug** — `None` no longer hardcodes `[0]`; uses assay-level default from `AssayMetadata.log_scale_keys`
+2. **Brittle positional bounds** — `FitConfig.custom_bounds` changed from `List[Tuple]` to `Dict[str, Tuple]`
+3. **No partial overrides** — `_resolve_bounds()` merges user dict with registry defaults; unknown keys raise `ValueError`
+4. **No dye-alone priors** — `bounds_from_dye_alone()` converts slope→`I_dye_free`, intercept→`I0` bounds
+
+#### Files Modified
+- `core/assays/registry.py` — Added `log_scale_keys: Tuple[str, ...]` to `AssayMetadata`, set for all 5 assay types
+- `core/assays/base.py` — Added `get_default_bounds_dict()` returning `Dict[str, Tuple]`
+- `core/pipeline/fit_pipeline.py` — Breaking API changes to `FitConfig`, added `_resolve_bounds()`, `_resolve_log_scale()`, `bounds_from_dye_alone()`
+- `core/pipeline/__init__.py` — Added `bounds_from_dye_alone` export
+- `tests/conftest.py` — `RECOVERY_BOUNDS` split into `DBA_RECOVERY_BOUNDS` + `GDA_IDA_RECOVERY_BOUNDS` (named dicts)
+- `tests/unit/test_parameter_recovery.py` — Updated to use named bounds and `log_scale_params=None`
+- `tests/unit/test_param_handling.py` — **NEW** — 32 tests for named bounds, log-scale, bounds_from_dye_alone, registry consistency
+
 ### Next Steps
 1. **TASK004**: Fix registry default bounds for realistic signal coefficients (informed by degeneracy analysis)
-2. **P5**: Optimizer boundary tests
-3. **P6**: End-to-end integration tests with real data
-4. Investigate DBA DtoH model bug: `dba_signal` uses `y_free` (free HOST) with `I_dye_free` coefficient — possible naming/logic error
-5. Clean up scratch diagnostic files (`scratch/test_diag*.py`)
+2. **P6**: End-to-end integration tests with real data
+3. Investigate DBA DtoH model bug: `dba_signal` uses `y_free` (free HOST) with `I_dye_free` coefficient — possible naming/logic error
 
 ## Development reality
 
@@ -179,10 +230,7 @@ Logic review against legacy `forward_model.py` revealed critical bugs — **ALL 
 
 ## Recent updates
 
+- 2026-02-13: **Named parameter handling refactor COMPLETE** — Dict-based bounds, named log-scale, bounds_from_dye_alone(). 149 tests.
+- 2026-02-10: **Phase 4 Data Processing COMPLETE** — MeasurementSet, preprocessing, FitResult refactor. 117 tests.
 - 2026-02-09: **Scientific documentation** — Parameter identifiability section added to `docs/scientific-summary.md` (Section 5).
 - 2026-02-09: **Phase 3 Testing COMPLETE** — 62 tests passing, all P1–P4 categories.
-- 2026-02-06: Diagnosed signal coefficient degeneracy — root cause of P1 test failures.
-- 2026-02-03: **Phase 2 Scorched Earth COMPLETE** — cleanup + minimal I/O.
-- 2026-01-31: **Scientific Remediation COMPLETE** — 4-param fitting restored.
-- 2026-01-30: **Phase 1 implementation complete** — all core modules.
-- 2026-01-30: Major strategy pivot — GUI paused, API postponed, core refactor only.
