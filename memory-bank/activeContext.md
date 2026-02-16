@@ -16,7 +16,13 @@ Refactored the entire parameter/bounds API from brittle positional indices to
 named (Dict-based) parameters.  Fixed the `log_scale_params=None` silent bug,
 added partial bound overrides, and a `bounds_from_dye_alone()` helper.
 
-**149 tests total, all passing.**
+**Code critique follow-up (2026-02-13):**
+- API unified: `get_default_bounds_dict()` renamed to `get_default_bounds()`, old positional version deleted
+- Non-negative enforcement: `_window()` in `bounds_from_dye_alone` clamps both lo and hi to ≥ 0
+- Legacy alias `RECOVERY_BOUNDS = DBA_RECOVERY_BOUNDS` deleted (zero legacy tolerance)
+- Section 4.4 added to `docs/scientific-summary.md`: Physical Constraints
+
+**150 tests total, all passing.**
 
 ### Completed Phases
 - **Phase 1**: Core modules ✅ (2026-01-30)
@@ -34,11 +40,11 @@ added partial bound overrides, and a `bounds_from_dye_alone()` helper.
 | P2: Forward Model Math | 14 | Known inputs → expected outputs |
 | P3: Fail-Fast Contracts | 23 | Constructor validation for all assay types |
 | P4: I/O Round-Trip | 14 | TxtReader, TxtWriter, registry dispatch |
-| P5: Parameter Handling | 32 | Named bounds, log-scale semantics, bounds_from_dye_alone, registry consistency |
+| P5: Parameter Handling | 33 | Named bounds, log-scale semantics, bounds_from_dye_alone, non-negative clamping, registry consistency |
 | MeasurementSet | 30 | Construction, immutability, UUID, replica management, data access |
 | Preprocessing | 13 | Z-score outlier detection, registry, pipeline |
 | FitResult Serialization | 12 | Properties, round-trip, JSON safety |
-| **Total** | **149** | All passing (~3 min runtime) |
+| **Total** | **150** | All passing (~3 min runtime) |
 
 ### Phase 4 Summary
 
@@ -79,10 +85,10 @@ Four user concerns addressed:
 
 #### Files Modified
 - `core/assays/registry.py` — Added `log_scale_keys: Tuple[str, ...]` to `AssayMetadata`, set for all 5 assay types
-- `core/assays/base.py` — Added `get_default_bounds_dict()` returning `Dict[str, Tuple]`
+- `core/assays/base.py` — `get_default_bounds()` returns `Dict[str, Tuple]` (unified, old positional version deleted)
 - `core/pipeline/fit_pipeline.py` — Breaking API changes to `FitConfig`, added `_resolve_bounds()`, `_resolve_log_scale()`, `bounds_from_dye_alone()`
 - `core/pipeline/__init__.py` — Added `bounds_from_dye_alone` export
-- `tests/conftest.py` — `RECOVERY_BOUNDS` split into `DBA_RECOVERY_BOUNDS` + `GDA_IDA_RECOVERY_BOUNDS` (named dicts)
+- `tests/conftest.py` — `DBA_RECOVERY_BOUNDS` + `GDA_IDA_RECOVERY_BOUNDS` (named dicts); legacy `RECOVERY_BOUNDS` alias deleted
 - `tests/unit/test_parameter_recovery.py` — Updated to use named bounds and `log_scale_params=None`
 - `tests/unit/test_param_handling.py` — **NEW** — 32 tests for named bounds, log-scale, bounds_from_dye_alone, registry consistency
 
@@ -230,7 +236,7 @@ Logic review against legacy `forward_model.py` revealed critical bugs — **ALL 
 
 ## Recent updates
 
-- 2026-02-13: **Named parameter handling refactor COMPLETE** — Dict-based bounds, named log-scale, bounds_from_dye_alone(). 149 tests.
+- 2026-02-13: **Named parameter handling refactor COMPLETE** — Dict-based bounds, named log-scale, bounds_from_dye_alone(). API unified (dict-only `get_default_bounds()`), non-negative clamping, legacy aliases purged. 150 tests.
 - 2026-02-10: **Phase 4 Data Processing COMPLETE** — MeasurementSet, preprocessing, FitResult refactor. 117 tests.
 - 2026-02-09: **Scientific documentation** — Parameter identifiability section added to `docs/scientific-summary.md` (Section 5).
 - 2026-02-09: **Phase 3 Testing COMPLETE** — 62 tests passing, all P1–P4 categories.

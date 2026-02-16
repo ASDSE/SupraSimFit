@@ -21,16 +21,16 @@ Addressed four parameter-handling concerns. All changes are breaking API changes
 
 #### Changes
 - **`AssayMetadata.log_scale_keys`** — New `Tuple[str, ...]` field on AssayMetadata defining assay-level default log-scale params (Ka_dye for DBA, Ka_guest for GDA/IDA, empty for DYE_ALONE)
-- **`BaseAssay.get_default_bounds_dict()`** — New method returning `Dict[str, Tuple[float, float]]` for merge-friendly named bounds
+- **`BaseAssay.get_default_bounds()`** — Returns `Dict[str, Tuple[float, float]]` for merge-friendly named bounds (old positional version deleted)
 - **`FitConfig` breaking changes**:
   - `custom_bounds`: `Optional[List[Tuple]]` → `Optional[Dict[str, Tuple]]` (partial override, merges with registry defaults)
   - `log_scale_params`: `Optional[List[int]]` → `Optional[List[str]]` (None=assay default, []=force linear, names=user override)
 - **`_resolve_bounds()`** — Merges user dict overrides with registry defaults; validates unknown keys with ValueError
 - **`_resolve_log_scale()`** — Converts param names → indices; None uses assay default; validates unknown names
-- **`bounds_from_dye_alone(result, margin=0.2)`** — Converts dye-alone slope→I_dye_free, intercept→I0 bounds with configurable margin
-- **Test updates**: `RECOVERY_BOUNDS` split into `DBA_RECOVERY_BOUNDS` + `GDA_IDA_RECOVERY_BOUNDS` (named dicts); 32 new tests in `test_param_handling.py`
+- **`bounds_from_dye_alone(result, margin=0.2)`** — Converts dye-alone slope→I_dye_free, intercept→I0 bounds with configurable margin; both lo and hi clamped to ≥ 0 (physical constraint)
+- **Test updates**: `DBA_RECOVERY_BOUNDS` + `GDA_IDA_RECOVERY_BOUNDS` (named dicts); legacy `RECOVERY_BOUNDS` alias deleted; 33 tests in `test_param_handling.py`
 
-#### Test Suite: 149 tests, all passing (~3 min)
+#### Test Suite: 150 tests, all passing (~3 min)
 - **32 new**: `test_param_handling.py` — named bounds merge, log-scale semantics, bounds_from_dye_alone, registry consistency
 - **Updated**: `test_parameter_recovery.py` — named bounds + `log_scale_params=None`
 

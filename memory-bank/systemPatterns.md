@@ -309,7 +309,7 @@ class FitConfig:
 ```
 
 #### Resolution Flow
-1. `_resolve_bounds(assay, custom_bounds)` — merges user dict with `assay.get_default_bounds_dict()`; unknown keys → ValueError
+1. `_resolve_bounds(assay, custom_bounds)` — merges user dict with `assay.get_default_bounds()`; unknown keys → ValueError
 2. `_resolve_log_scale(assay, log_scale_params)` — None → `assay.registry_metadata.log_scale_keys`; names → indices
 3. Optimizer receives positional arrays (translation happens in `fit_assay()`)
 
