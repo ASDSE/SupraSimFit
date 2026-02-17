@@ -15,11 +15,12 @@
   - `pandas` – tabular data handling (I/O layer)
 - **Visualization**
   - `matplotlib` – publication‑quality plots (via `utils/plot_utils.py`)
+  - `pyqtgraph==0.14.0` – interactive Qt-native plots for GUI (`gui/plotting/`)
 - **Units**
   - `pint>=0.24` – physical units with boundary‑stripping strategy (implemented in `core/units.py`)
-- **GUI** (PAUSED)
-  - Current: **Tkinter** (standard library) — `main.py`
-  - Future: **PyQt 6** — deferred until after core refactor
+- **GUI**
+  - Current: **Tkinter** (standard library) — `main.py` (legacy entry point)
+  - **PyQt6==6.10.2** — GUI plotting layer active (`gui/plotting/` subpackage)
 - **Packaging / build**
   - `pyinstaller` – standalone executables (`FittingApp.spec`)
 
@@ -59,23 +60,38 @@ core/
     ├── registry.py         # Format dispatch (explicit dict, no decorators)
     └── formats/
         └── txt.py          # TxtReader, TxtWriter (multi-replica aware)
-gui/                       # GUI (PAUSED — interface files deleted)
+gui/                       # GUI layer
 ├── base_gui.py
 ├── dialogs/
-└── widgets/
+├── widgets/
+└── plotting/              # PyQtGraph plotting subpackage (2026-02-17)
+    ├── __init__.py        # Re-exports PlotWidget, FitSummaryWidget, PlotStyleWidget
+    ├── colors.py          # REPLICA_PALETTE, FIT_PALETTE, rgba()
+    ├── plot_style.py      # DEFAULT_STYLE, PlotStyleWidget (ParameterTree)
+    ├── plot_widget.py     # PlotWidget consuming prepare_plot_data() output
+    └── fit_summary_widget.py  # FitSummaryWidget for FitResult display
 utils/                     # Plotting, stats, fitting helpers
-tests/                     # pytest test suite (149 tests, all passing)
-├── conftest.py            # Shared fixtures, synthetic data generators, RNG seed
+tests/                     # pytest test suite (251 tests, all passing)
+├── conftest.py            # Shared fixtures, synthetic data generators, RNG seed, minimal_plot_data
 ├── data/                  # Committed test fixtures
-└── unit/
-    ├── test_parameter_recovery.py  # P1: Ka recovery + signal reconstruction
-    ├── test_models.py              # P2: Forward model math
-    ├── test_fail_fast.py           # P3: Constructor validation
-    ├── test_io.py                  # P4: I/O round-trip
-    ├── test_param_handling.py      # P5: Named bounds, log-scale, bounds_from_dye_alone (32)
-    ├── test_measurement_set.py     # MeasurementSet tests (30)
-    ├── test_preprocessing.py       # Preprocessing tests (13)
-    └── test_fit_results.py         # FitResult serialization tests (12)
+├── unit/
+│   ├── test_parameter_recovery.py  # P1: Ka recovery + signal reconstruction
+│   ├── test_models.py              # P2: Forward model math
+│   ├── test_fail_fast.py           # P3: Constructor validation
+│   ├── test_io.py                  # P4: I/O round-trip
+│   ├── test_param_handling.py      # P5: Named bounds, log-scale, bounds_from_dye_alone (32)
+│   ├── test_optimizer.py           # P5b: Optimizer boundary tests (42)
+│   ├── test_measurement_set.py     # MeasurementSet tests (30)
+│   ├── test_preprocessing.py       # Preprocessing tests (13)
+│   ├── test_fit_results.py         # FitResult serialization tests (12)
+│   └── gui/                        # GUI tests
+│       ├── test_colors.py          # 8 tests, no QApp
+│       ├── test_fit_summary_logic.py  # 17 tests, no QApp
+│       ├── test_plot_widget.py     # 6 tests, QApp
+│       ├── test_fit_summary_widget.py # 4 tests, QApp
+│       └── test_style_roundtrip.py # 2 tests, QApp
+└── integration/
+    └── test_pipeline_e2e.py        # P6: End-to-end pipeline (22)
 docs/                      # Scientific documentation
 data/                      # Sample data files
 examples/                  # Usage examples
@@ -91,8 +107,8 @@ memory-bank/               # Agent memory bank
   - `uv run pytest -v` for verbose output
   - `uv run pytest -k "test_gda"` for specific tests
   - `uv run pytest --tb=short` for shorter tracebacks
-  - **149 tests, all passing** (P1–P5 + MeasurementSet + Preprocessing + FitResult as of 2026-02-13)
-  - Runtime: ~3 minutes
+  - **251 tests, all passing** (as of 2026-02-17)
+  - Runtime: ~6 minutes
 - **Tolerance**: 10% for clean synthetic data, 25% for 5% Gaussian noise
 - **Parameter identifiability**: Signal coefficients are structurally degenerate in DBA/IDA; tests verify Ka recovery + signal reconstruction only
 
@@ -110,4 +126,4 @@ memory-bank/               # Agent memory bank
 - Backwards compatibility is **not** a requirement during refactoring.
 - Production‑grade stability, SLAs, or long‑term API guarantees are **not** goals.
 - I/O support: `.txt` only currently. `.xlsx` planned next.
-- GUI development: PAUSED (breakage acceptable).
+- GUI development: `gui/plotting/` layer added and tested; main window wiring still pending.

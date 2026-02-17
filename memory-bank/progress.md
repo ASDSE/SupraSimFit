@@ -7,6 +7,47 @@
 - Public API work: POSTPONED (revert recent core/api.py)
 - Full-plate fitting: **DELETE** (changed from LEGACY on 2026-02-02)
 
+## Recent updates (2026-02-17)
+
+### GUI Plotting Module — COMPLETE ✅ (TASK005)
+
+Added `gui/plotting/` subpackage using PyQtGraph as rendering engine.
+
+#### New files
+- `gui/plotting/colors.py` — 8-color `REPLICA_PALETTE`, `FIT_PALETTE`, scalar color constants, `rgba()` helper
+- `gui/plotting/plot_style.py` — `DEFAULT_STYLE` dict, `PlotStyleWidget` (ParameterTree-backed), `line_style_to_qt()`
+- `gui/plotting/plot_widget.py` — `PlotWidget` consuming `prepare_plot_data()` output; clear-and-redraw on `update_plot()`, in-place mutation on `apply_style()`
+- `gui/plotting/fit_summary_widget.py` — `FitSummaryWidget` with parameter table + quality metrics; `_lookup_assay_type()` + `_fmt_value()` as module-level helpers
+- `gui/plotting/__init__.py` — re-exports `PlotWidget`, `FitSummaryWidget`, `PlotStyleWidget`
+
+#### New dependencies
+- `pyqtgraph==0.14.0`
+- `pyqt6==6.10.2`
+
+#### Tests (37 new, in `tests/unit/gui/`)
+| File | QApp | Tests |
+|------|------|-------|
+| `test_colors.py` | No | 8 |
+| `test_fit_summary_logic.py` | No | 17 |
+| `test_plot_widget.py` | Yes | 6 |
+| `test_fit_summary_widget.py` | Yes | 4 |
+| `test_style_roundtrip.py` | Yes | 2 |
+
+**Total: 251 tests, all passing.**
+
+---
+
+## Recent updates (2026-02-16)
+
+### P5+P6 Tests — COMPLETE ✅ (TASK003 fully done)
+
+- **P5**: 42 optimizer boundary tests in `tests/unit/test_optimizer.py`
+- **P6**: 22 end-to-end integration tests in `tests/integration/test_pipeline_e2e.py`
+- **Total**: 214 tests, all passing (~6 min)
+- Chained workflow finding: dye-alone only constrains I_dye_free and I0; I_dye_bound needs separate bounds
+
+---
+
 ## Recent updates (2026-02-13)
 
 ### Named Parameter Handling Refactor — COMPLETE ✅
@@ -174,9 +215,10 @@ core/io/
 | I/O | ✅ REWRITTEN | Minimal Strategy pattern, .txt support |
 | Public API | POSTPONED | core/api.py reverted |
 | Pint integration | IMPLEMENTED | core/units.py with boundary stripping |
-| Testing | ✅ P1-P5 + Phase 4 | 149 tests, all passing (2026-02-13) |
+| Testing | ✅ P1-P6 COMPLETE | 251 tests, all passing (2026-02-17) |
 | Data Processing | ✅ COMPLETE | MeasurementSet, preprocessing, FitResult refactor |
 | Parameter Handling | ✅ COMPLETE | Named bounds, log-scale, bounds_from_dye_alone (2026-02-13) |
+| GUI Plotting | ✅ COMPLETE | PyQtGraph `gui/plotting/` subpackage (2026-02-17) |
 | Scientific docs | ✅ UPDATED | Parameter identifiability section added |
 | Legacy fitting | ✅ DELETED | core/fitting/ removed |
 
@@ -205,8 +247,8 @@ core/io/
 
 ### Remaining
 - [ ] TASK004: Fix registry default bounds (informed by degeneracy analysis)
-- [ ] P6: End-to-end integration tests with real data
 - [ ] DBA DtoH signal bug investigation
+- [ ] TASK001: Define public API surface (now unblocked)
 
 ## Known gaps
 
@@ -217,7 +259,7 @@ core/io/
 - **Old core/fitting/*.py must be deleted** — ✅ DONE (Scorched Earth).
 - **GUI interfaces must be deleted** — ✅ DONE (9 files removed).
 - Default bounds for 4th signal parameter not yet defined (TASK004) — informed by degeneracy analysis.
-- End-to-end tests with real data files not yet written (P6).
+- ~~End-to-end tests with real data files not yet written (P6).~~ ✅ DONE (2026-02-16)
 - DBA DtoH signal model: `I_dye_free` applied to `y_free` (free HOST) — possible naming/logic bug.
 
 ## Process notes

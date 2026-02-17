@@ -8,21 +8,18 @@ Major strategic change:
 3. **Sole focus: restructure Core Models and Fitting Logic.**
 4. **Public API work is postponed** — revert/undo recent `core/api.py` changes.
 
-## Current focus (2026-02-13)
+## Current focus (2026-02-17)
 
-**Named Parameter Handling Refactor — COMPLETE ✅**
+**TASK005 GUI Plotting Module — COMPLETE ✅** (2026-02-17)
 
-Refactored the entire parameter/bounds API from brittle positional indices to
-named (Dict-based) parameters.  Fixed the `log_scale_params=None` silent bug,
-added partial bound overrides, and a `bounds_from_dye_alone()` helper.
+New `gui/plotting/` subpackage added using PyQtGraph as the rendering engine.
+37 new tests added; 251 tests total, all passing.
 
-**Code critique follow-up (2026-02-13):**
-- API unified: `get_default_bounds_dict()` renamed to `get_default_bounds()`, old positional version deleted
-- Non-negative enforcement: `_window()` in `bounds_from_dye_alone` clamps both lo and hi to ≥ 0
-- Legacy alias `RECOVERY_BOUNDS = DBA_RECOVERY_BOUNDS` deleted (zero legacy tolerance)
-- Section 4.4 added to `docs/scientific-summary.md`: Physical Constraints
+**TASK003 Core Fitting Logic Refactor — COMPLETE ✅** (2026-02-16)
 
-**150 tests total, all passing.**
+All phases done. P5 optimizer boundary tests and P6 end-to-end integration tests added on 2026-02-16.
+
+**251 tests total, all passing.**
 
 ### Completed Phases
 - **Phase 1**: Core modules ✅ (2026-01-30)
@@ -32,6 +29,7 @@ added partial bound overrides, and a `bounds_from_dye_alone()` helper.
 - **Scientific documentation**: Parameter identifiability section ✅ (2026-02-09)
 - **Phase 4**: Data Processing Layer ✅ (2026-02-10)
 - **Named Parameter Handling**: Bounds + log-scale refactor ✅ (2026-02-13)
+- **P5+P6 Tests**: Optimizer boundaries + end-to-end integration ✅ (2026-02-16)
 
 ### Test Summary
 | Category | Tests | Description |
@@ -40,11 +38,18 @@ added partial bound overrides, and a `bounds_from_dye_alone()` helper.
 | P2: Forward Model Math | 14 | Known inputs → expected outputs |
 | P3: Fail-Fast Contracts | 23 | Constructor validation for all assay types |
 | P4: I/O Round-Trip | 14 | TxtReader, TxtWriter, registry dispatch |
-| P5: Parameter Handling | 33 | Named bounds, log-scale semantics, bounds_from_dye_alone, non-negative clamping, registry consistency |
+| P5a: Parameter Handling | 33 | Named bounds, log-scale semantics, bounds_from_dye_alone, registry consistency |
+| P5b: Optimizer Boundaries | 42 | generate_initial_guesses, multistart_minimize, filters, aggregation, metrics |
+| P6: Integration | 22 | End-to-end pipeline (DBA/GDA/IDA/DyeAlone), chained workflow, FitConfig, failure modes |
 | MeasurementSet | 30 | Construction, immutability, UUID, replica management, data access |
 | Preprocessing | 13 | Z-score outlier detection, registry, pipeline |
 | FitResult Serialization | 12 | Properties, round-trip, JSON safety |
-| **Total** | **150** | All passing (~3 min runtime) |
+| GUI: colors | 8 | Palette bounds, `rgba()` packing — no QApp |
+| GUI: fit summary logic | 17 | `_lookup_assay_type()`, `_fmt_value()` edge cases — no QApp |
+| GUI: plot widget | 6 | `update_plot()` item counts, `_clear_items()` — QApp |
+| GUI: fit summary widget | 4 | Row count, metrics, `clear()`, unknown assay — QApp |
+| GUI: style roundtrip | 2 | Signal wiring, `apply_style` on empty plot — QApp |
+| **Total** | **251** | All passing (~6 min runtime) |
 
 ### Phase 4 Summary
 
@@ -92,10 +97,29 @@ Four user concerns addressed:
 - `tests/unit/test_parameter_recovery.py` — Updated to use named bounds and `log_scale_params=None`
 - `tests/unit/test_param_handling.py` — **NEW** — 32 tests for named bounds, log-scale, bounds_from_dye_alone, registry consistency
 
+### GUI Plotting Module (2026-02-17)
+
+**`gui/plotting/` — new subpackage**
+
+| Module | Contents |
+|--------|----------|
+| `colors.py` | `REPLICA_PALETTE` (8-color), `FIT_PALETTE`, scalar color constants, `rgba()` |
+| `plot_style.py` | `DEFAULT_STYLE`, `PlotStyleWidget(QWidget)` with `pg.ParameterTree` and `style_changed` signal, `line_style_to_qt()` |
+| `plot_widget.py` | `PlotWidget(QWidget)` wrapping `pg.PlotWidget`; `update_plot()` / `apply_style()` / `set_axis_labels()` / `_clear_items()` |
+| `fit_summary_widget.py` | `FitSummaryWidget(QWidget)` — parameters table + quality metrics; `_lookup_assay_type()`, `_fmt_value()` module-level helpers |
+| `__init__.py` | Re-exports `PlotWidget`, `FitSummaryWidget`, `PlotStyleWidget` |
+
+**Dependencies added:** `pyqtgraph==0.14.0`, `pyqt6==6.10.2`
+
+**Integration pattern:** Caller resolves assay labels from `ASSAY_REGISTRY`, passes as strings to `PlotWidget(x_label=..., y_label=...)`. `PlotWidget` has no dependency on `ASSAY_REGISTRY`. `style_changed` signal wired directly to `apply_style()`.
+
+**`minimal_plot_data` fixture** added to `tests/conftest.py`.
+
 ### Next Steps
 1. **TASK004**: Fix registry default bounds for realistic signal coefficients (informed by degeneracy analysis)
-2. **P6**: End-to-end integration tests with real data
-3. Investigate DBA DtoH model bug: `dba_signal` uses `y_free` (free HOST) with `I_dye_free` coefficient — possible naming/logic error
+2. Investigate DBA DtoH model bug: `dba_signal` uses `y_free` (free HOST) with `I_dye_free` coefficient — possible naming/logic error
+3. **TASK001**: Define public API surface (deferred until after core refactor — now unblocked)
+4. Build PyQt6 main window wiring `PlotWidget`, `FitSummaryWidget`, `PlotStyleWidget` together
 
 ## Development reality
 
@@ -236,7 +260,8 @@ Logic review against legacy `forward_model.py` revealed critical bugs — **ALL 
 
 ## Recent updates
 
-- 2026-02-13: **Named parameter handling refactor COMPLETE** — Dict-based bounds, named log-scale, bounds_from_dye_alone(). API unified (dict-only `get_default_bounds()`), non-negative clamping, legacy aliases purged. 150 tests.
+- 2026-02-17: **GUI Plotting Module COMPLETE** — `gui/plotting/` subpackage with PyQtGraph. 37 new tests. 251 tests total.
+- 2026-02-16: **P5+P6 tests COMPLETE** — 42 optimizer boundary tests + 22 end-to-end integration tests. TASK003 fully complete. 214 tests.
+- 2026-02-13: **Named parameter handling refactor COMPLETE** — Dict-based bounds, named log-scale, bounds_from_dye_alone(). 150 tests.
 - 2026-02-10: **Phase 4 Data Processing COMPLETE** — MeasurementSet, preprocessing, FitResult refactor. 117 tests.
-- 2026-02-09: **Scientific documentation** — Parameter identifiability section added to `docs/scientific-summary.md` (Section 5).
 - 2026-02-09: **Phase 3 Testing COMPLETE** — 62 tests passing, all P1–P4 categories.

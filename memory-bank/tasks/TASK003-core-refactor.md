@@ -64,7 +64,7 @@ Chose **Enum-Keyed Registry Pattern**:
 
 ## Progress Tracking
 
-**Overall Status:** In Progress - 98% (P1–P4 tests complete, P5/P6 remaining)
+**Overall Status:** Completed - 100% (all P1–P6 tests complete, 214 tests passing)
 
 ### Subtasks
 | ID | Description | Status | Updated | Notes |
@@ -101,8 +101,8 @@ Chose **Enum-Keyed Registry Pattern**:
 | 3.30 | Implement P2-P4: Core test categories | Complete | 2026-02-06 | P2 (14), P3 (23), P4 (14) = 51 tests |
 | 3.31 | Diagnose signal coefficient degeneracy | Complete | 2026-02-09 | Root cause: mass conservation collapses 3 params to 2 DOFs |
 | 3.32 | Document parameter identifiability | Complete | 2026-02-09 | docs/scientific-summary.md Section 5 |
-| 3.33 | Implement P5: Optimizer boundary tests | Not Started | 2026-02-09 | |
-| 3.34 | Implement P6: End-to-end integration tests | Not Started | 2026-02-09 | |
+| 3.33 | Implement P5: Optimizer boundary tests | Complete | 2026-02-16 | 42 tests in tests/unit/test_optimizer.py |
+| 3.34 | Implement P6: End-to-end integration tests | Complete | 2026-02-16 | 22 tests in tests/integration/test_pipeline_e2e.py |
 
 ## Progress Log
 ### 2026-02-09 (Phase 3: Testing COMPLETE + Scientific Documentation)

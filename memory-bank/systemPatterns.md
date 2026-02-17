@@ -1,15 +1,16 @@
 # System Patterns and Architecture
 
-## Current Status (2026-02-13)
+## Current Status (2026-02-17)
 
-**Strategy Pivot**: GUI paused, Public API postponed, focus solely on Core Fitting Logic refactor.
+**Strategy Pivot**: GUI paused (core-only), Public API postponed. Core refactor COMPLETE. GUI plotting layer added.
 
 **Phase 1 + Scientific Remediation: COMPLETE** ✅
 **Phase 2: Scorched Earth Cleanup + Minimal I/O: COMPLETE** ✅
 **Phase 3: Testing (P1–P4): COMPLETE** ✅ (62 tests, all passing)
 **Scientific Documentation: COMPLETE** ✅ (Parameter identifiability, docs/scientific-summary.md Section 5)
 **Phase 4: Data Processing Layer: COMPLETE** ✅ (MeasurementSet, preprocessing, FitResult refactor)
-**Named Parameter Handling Refactor: COMPLETE** ✅ (Named bounds, log-scale, bounds_from_dye_alone — 149 tests total)
+**Named Parameter Handling Refactor: COMPLETE** ✅ (Named bounds, log-scale, bounds_from_dye_alone — 214 tests total)
+**GUI Plotting Module: COMPLETE** ✅ (`gui/plotting/` PyQtGraph subpackage — 251 tests total)
 
 All core modules implemented with correct scientific conventions:
 - `core/units.py` — pint UnitRegistry with boundary stripping utilities
@@ -20,11 +21,12 @@ All core modules implemented with correct scientific conventions:
 - `core/io/` — minimal Strategy pattern with TxtReader/TxtWriter
 - `core/data_processing/` — MeasurementSet, preprocessing pipeline, plot data helper
 - `core/forward_model.py` — Legacy code aligned with new naming convention
+- `gui/plotting/` — PyQtGraph rendering layer (colors, style, plot widget, fit summary)
 
 **Remaining work:**
 - TASK004: Fix registry default bounds (informed by degeneracy analysis)
-- P6: End-to-end integration tests
 - DBA DtoH signal bug investigation
+- Build PyQt6 main window wiring gui/plotting widgets
 
 ## High-level architecture
 
