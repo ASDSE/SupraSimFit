@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import math
 from typing import Optional
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.pipeline.fit_pipeline import FitResult
+from gui.plotting.labels import _fmt_value, fmt_param, fmt_unit
 
 
 class FitSummaryWidget(QWidget):
@@ -81,10 +82,17 @@ class FitSummaryWidget(QWidget):
         for row, (key, value) in enumerate(params.items()):
             unc = uncertainties.get(key, float("nan"))
             unit = units.get(key, "")
-            self._table.setItem(row, 0, QTableWidgetItem(key))
+
+            lbl_name = QLabel(fmt_param(key))
+            lbl_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setCellWidget(row, 0, lbl_name)
+
             self._table.setItem(row, 1, QTableWidgetItem(_fmt_value(value)))
             self._table.setItem(row, 2, QTableWidgetItem(_fmt_value(unc)))
-            self._table.setItem(row, 3, QTableWidgetItem(unit))
+
+            lbl_unit = QLabel(fmt_unit(unit))
+            lbl_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setCellWidget(row, 3, lbl_unit)
 
         self._rmse_label.setText(_fmt_value(result.rmse))
         self._r2_label.setText(f"{result.r_squared:.4f}")
@@ -119,29 +127,3 @@ def _lookup_assay_type(assay_type_str: str) -> Optional[AssayType]:
         if at.name == assay_type_str:
             return at
     return None
-
-
-def _fmt_value(value: float) -> str:
-    """Format a float for display.
-
-    Uses scientific notation for |v| >= 1e5 or |v| < 1e-3 (and v != 0).
-    Returns ``"NaN"`` / ``"Inf"`` for special values.
-
-    Parameters
-    ----------
-    value : float
-
-    Returns
-    -------
-    str
-    """
-    if math.isnan(value):
-        return "NaN"
-    if math.isinf(value):
-        return "Inf" if value > 0 else "-Inf"
-    if value == 0.0:
-        return "0.0"
-    abs_v = abs(value)
-    if abs_v >= 1e5 or abs_v < 1e-3:
-        return f"{value:.4e}"
-    return f"{value:.6g}"

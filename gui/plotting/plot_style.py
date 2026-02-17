@@ -7,21 +7,6 @@ from PyQt6.QtWidgets import QVBoxLayout, QWidget
 import pyqtgraph as pg
 from pyqtgraph.parametertree import Parameter, ParameterTree
 
-from gui.plotting.colors import (
-    AVERAGE_LINE_COLOR,
-    DROPPED_REPLICA_COLOR,
-    ERROR_BAR_COLOR,
-    FIT_PALETTE,
-    REPLICA_PALETTE,
-    rgba,
-)
-
-try:
-    from PyQt6.QtCore import Qt
-    _PenStyle = Qt.PenStyle
-except ImportError:
-    _PenStyle = None
-
 DEFAULT_STYLE: dict = {
     "data_points": {
         "symbol": "o",
@@ -32,7 +17,6 @@ DEFAULT_STYLE: dict = {
         "symbol": "x",
         "size": 8,
         "alpha": 120,
-        "visible": True,
     },
     "average_line": {
         "width": 2,
@@ -48,33 +32,58 @@ DEFAULT_STYLE: dict = {
         "width": 1,
     },
     "visibility": {
-        "show_replicas": True,
+        "show_data_points": True,
+        "show_dropped": True,
         "show_average": True,
         "show_fit": True,
         "show_error_bars": True,
     },
+    "legend": {
+        "font_size": 10,
+        "show_replicas": True,
+        "show_average": True,
+        "show_fit": True,
+    },
+    "annotations": {
+        "show_fit_results": False,
+        "font_size": 9,
+    },
+    "grid": {
+        "show_major": True,
+        "major_opacity": 120,
+        "show_minor": True,
+        "minor_opacity": 50,
+    },
 }
+
+_MARKER_LIMITS = {
+    "Circle":   "o",
+    "Square":   "s",
+    "Triangle": "t",
+    "Diamond":  "d",
+    "Plus":     "+",
+    "Cross":    "x",
+}
+
+_LINE_STYLE_LIMITS = ["Solid", "Dashed", "Dotted"]
 
 _PARAMS_SPEC = [
     {
         "name": "Data points",
         "type": "group",
         "children": [
-            {"name": "Symbol", "type": "list", "value": "o",
-             "limits": ["o", "s", "t", "d", "+"]},
+            {"name": "Marker", "type": "list", "value": "o", "limits": _MARKER_LIMITS},
             {"name": "Size", "type": "int", "value": 8, "limits": (2, 20)},
-            {"name": "Alpha", "type": "int", "value": 200, "limits": (0, 255)},
+            {"name": "Opacity", "type": "int", "value": 200, "limits": (0, 255)},
         ],
     },
     {
         "name": "Dropped replicas",
         "type": "group",
         "children": [
-            {"name": "Symbol", "type": "list", "value": "x",
-             "limits": ["o", "s", "t", "d", "+", "x"]},
+            {"name": "Marker", "type": "list", "value": "x", "limits": _MARKER_LIMITS},
             {"name": "Size", "type": "int", "value": 8, "limits": (2, 20)},
-            {"name": "Alpha", "type": "int", "value": 120, "limits": (0, 255)},
-            {"name": "Visible", "type": "bool", "value": True},
+            {"name": "Opacity", "type": "int", "value": 120, "limits": (0, 255)},
         ],
     },
     {
@@ -82,8 +91,8 @@ _PARAMS_SPEC = [
         "type": "group",
         "children": [
             {"name": "Width", "type": "int", "value": 2, "limits": (1, 8)},
-            {"name": "Style", "type": "list", "value": "solid",
-             "limits": ["solid", "dash", "dot"]},
+            {"name": "Style", "type": "list", "value": "Solid",
+             "limits": _LINE_STYLE_LIMITS},
             {"name": "Visible", "type": "bool", "value": True},
         ],
     },
@@ -92,42 +101,77 @@ _PARAMS_SPEC = [
         "type": "group",
         "children": [
             {"name": "Width", "type": "int", "value": 2, "limits": (1, 8)},
-            {"name": "Style", "type": "list", "value": "solid",
-             "limits": ["solid", "dash", "dot"]},
+            {"name": "Style", "type": "list", "value": "Solid",
+             "limits": _LINE_STYLE_LIMITS},
         ],
     },
     {
         "name": "Visibility",
         "type": "group",
         "children": [
-            {"name": "Show replicas", "type": "bool", "value": True},
+            {"name": "Show data points", "type": "bool", "value": True},
+            {"name": "Show dropped replicas", "type": "bool", "value": True},
             {"name": "Show average", "type": "bool", "value": True},
             {"name": "Show fit", "type": "bool", "value": True},
             {"name": "Show error bars", "type": "bool", "value": True},
         ],
     },
+    {
+        "name": "Legend",
+        "type": "group",
+        "children": [
+            {"name": "Font size", "type": "int", "value": 10, "limits": (6, 18)},
+            {"name": "Show replicas", "type": "bool", "value": True},
+            {"name": "Show average", "type": "bool", "value": True},
+            {"name": "Show fit", "type": "bool", "value": True},
+        ],
+    },
+    {
+        "name": "Annotations",
+        "type": "group",
+        "children": [
+            {"name": "Show fit results", "type": "bool", "value": False},
+            {"name": "Font size", "type": "int", "value": 9, "limits": (7, 14)},
+        ],
+    },
+    {
+        "name": "Grid",
+        "type": "group",
+        "children": [
+            {"name": "Show major grid", "type": "bool", "value": True},
+            {"name": "Major opacity", "type": "int", "value": 120, "limits": (0, 255)},
+            {"name": "Show minor grid", "type": "bool", "value": True},
+            {"name": "Minor opacity", "type": "int", "value": 50, "limits": (0, 255)},
+        ],
+    },
 ]
+
+_LINE_STYLE_MAP = {
+    "Solid":  "solid",
+    "Dashed": "dash",
+    "Dotted": "dot",
+}
 
 
 def line_style_to_qt(style_str: str):
     """Map style string to Qt.PenStyle.
 
-    Parameters
-    ----------
-    style_str : str
-        One of ``"solid"``, ``"dash"``, ``"dot"``.
+    Accepts both internal strings (``"solid"``, ``"dash"``, ``"dot"``)
+    and display strings (``"Solid"``, ``"Dashed"``, ``"Dotted"``).
 
     Returns
     -------
     Qt.PenStyle
     """
     from PyQt6.QtCore import Qt
+    # Normalise display → internal
+    normalised = _LINE_STYLE_MAP.get(style_str, style_str)
     mapping = {
         "solid": Qt.PenStyle.SolidLine,
-        "dash": Qt.PenStyle.DashLine,
-        "dot": Qt.PenStyle.DotLine,
+        "dash":  Qt.PenStyle.DashLine,
+        "dot":   Qt.PenStyle.DotLine,
     }
-    return mapping.get(style_str, Qt.PenStyle.SolidLine)
+    return mapping.get(normalised, Qt.PenStyle.SolidLine)
 
 
 class PlotStyleWidget(QWidget):
@@ -160,15 +204,14 @@ class PlotStyleWidget(QWidget):
         p = self._params
         return {
             "data_points": {
-                "symbol": p["Data points", "Symbol"],
+                "symbol": p["Data points", "Marker"],
                 "size": p["Data points", "Size"],
-                "alpha": p["Data points", "Alpha"],
+                "alpha": p["Data points", "Opacity"],
             },
             "dropped_replicas": {
-                "symbol": p["Dropped replicas", "Symbol"],
+                "symbol": p["Dropped replicas", "Marker"],
                 "size": p["Dropped replicas", "Size"],
-                "alpha": p["Dropped replicas", "Alpha"],
-                "visible": p["Dropped replicas", "Visible"],
+                "alpha": p["Dropped replicas", "Opacity"],
             },
             "average_line": {
                 "width": p["Average line", "Width"],
@@ -184,9 +227,26 @@ class PlotStyleWidget(QWidget):
                 "width": 1,
             },
             "visibility": {
-                "show_replicas": p["Visibility", "Show replicas"],
+                "show_data_points": p["Visibility", "Show data points"],
+                "show_dropped": p["Visibility", "Show dropped replicas"],
                 "show_average": p["Visibility", "Show average"],
                 "show_fit": p["Visibility", "Show fit"],
                 "show_error_bars": p["Visibility", "Show error bars"],
+            },
+            "legend": {
+                "font_size": p["Legend", "Font size"],
+                "show_replicas": p["Legend", "Show replicas"],
+                "show_average": p["Legend", "Show average"],
+                "show_fit": p["Legend", "Show fit"],
+            },
+            "annotations": {
+                "show_fit_results": p["Annotations", "Show fit results"],
+                "font_size": p["Annotations", "Font size"],
+            },
+            "grid": {
+                "show_major": p["Grid", "Show major grid"],
+                "major_opacity": p["Grid", "Major opacity"],
+                "show_minor": p["Grid", "Show minor grid"],
+                "minor_opacity": p["Grid", "Minor opacity"],
             },
         }
