@@ -1,0 +1,424 @@
+"""P5: Optimizer boundary tests.
+
+Unit tests for edge cases and boundary conditions in the multi-start
+optimizer and result filtering/aggregation functions.
+
+Covers:
+- generate_initial_guesses: empty bounds, single/zero trials, log-scale
+- multistart_minimize: convergence, sorting, failure handling
+- filter_by_rmse / filter_by_r_squared: empty input, thresholds
+- compute_median_params / compute_mad: empty, single, known values
+- aggregate_fits: empty after filtering, single/multiple passing
+- calculate_fit_metrics: perfect fit, constant y, known values
+"""
+
+import numpy as np
+import pytest
+
+from core.optimizer.filters import (
+    aggregate_fits,
+    calculate_fit_metrics,
+    compute_mad,
+    compute_median_params,
+    filter_by_r_squared,
+    filter_by_rmse,
+)
+from core.optimizer.multistart import FitAttempt, generate_initial_guesses, multistart_minimize
+
+
+def _make_attempt(params, cost=1.0, rmse=0.1, r_squared=0.99, success=True):
+    """Create a FitAttempt with sensible defaults."""
+    return FitAttempt(
+        params=np.array(params, dtype=float),
+        cost=cost,
+        rmse=rmse,
+        r_squared=r_squared,
+        success=success,
+    )
+
+
+# ---------------------------------------------------------------------------
+# generate_initial_guesses
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateInitialGuesses:
+
+    def test_zero_trials_returns_empty(self):
+        guesses = generate_initial_guesses(0, [(0, 1)])
+        assert guesses == []
+
+    def test_single_trial(self):
+        guesses = generate_initial_guesses(1, [(0, 10)])
+        assert len(guesses) == 1
+        assert guesses[0].shape == (1,)
+
+    def test_empty_bounds_returns_zero_length_arrays(self):
+        guesses = generate_initial_guesses(5, [])
+        assert len(guesses) == 5
+        for g in guesses:
+            assert g.shape == (0,)
+
+    def test_guesses_within_bounds(self):
+        bounds = [(1.0, 5.0), (10.0, 20.0), (-3.0, 3.0)]
+        guesses = generate_initial_guesses(50, bounds)
+        for g in guesses:
+            for i, (lo, hi) in enumerate(bounds):
+                assert lo <= g[i] <= hi, f'param {i}: {g[i]} not in [{lo}, {hi}]'
+
+    def test_correct_shape(self):
+        guesses = generate_initial_guesses(10, [(0, 1)] * 4)
+        assert len(guesses) == 10
+        for g in guesses:
+            assert g.shape == (4,)
+
+    def test_log_scale_positive_bounds(self):
+        bounds = [(1e-8, 1e12)]
+        guesses = generate_initial_guesses(100, bounds, log_scale_params=[0])
+        values = np.array([g[0] for g in guesses])
+        assert np.all(values >= 1e-8)
+        assert np.all(values <= 1e12)
+        # Log-scale should span many orders of magnitude
+        log_range = np.log10(values.max()) - np.log10(values.min())
+        assert log_range > 5, f'Log range {log_range} too narrow for log-scale sampling'
+
+    def test_log_scale_non_positive_lower_falls_back_to_linear(self):
+        """When lower bound is 0, log-scale falls back to linear (no log10(0) crash)."""
+        bounds = [(0.0, 100.0)]
+        guesses = generate_initial_guesses(50, bounds, log_scale_params=[0])
+        for g in guesses:
+            assert 0.0 <= g[0] <= 100.0
+
+    def test_equal_bounds_gives_fixed_value(self):
+        bounds = [(5.0, 5.0), (3.0, 3.0)]
+        guesses = generate_initial_guesses(10, bounds)
+        for g in guesses:
+            assert g[0] == 5.0
+            assert g[1] == 3.0
+
+
+# ---------------------------------------------------------------------------
+# multistart_minimize
+# ---------------------------------------------------------------------------
+
+
+class TestMultistartMinimize:
+
+    def test_simple_quadratic(self):
+        """Minimizes f(x) = (x-3)^2 with bounds [0, 10]."""
+        results = multistart_minimize(
+            objective=lambda x: (x[0] - 3.0) ** 2,
+            bounds=[(0.0, 10.0)],
+            n_trials=10,
+        )
+        assert len(results) > 0
+        assert results[0].params[0] == pytest.approx(3.0, abs=1e-4)
+        assert results[0].cost == pytest.approx(0.0, abs=1e-8)
+
+    def test_results_sorted_by_cost(self):
+        results = multistart_minimize(
+            objective=lambda x: (x[0] - 5.0) ** 2,
+            bounds=[(0.0, 10.0)],
+            n_trials=20,
+        )
+        costs = [r.cost for r in results]
+        assert costs == sorted(costs)
+
+    def test_custom_initial_guesses(self):
+        """Provided initial_guesses are used instead of random generation."""
+        guesses = [np.array([2.0]), np.array([4.0])]
+        results = multistart_minimize(
+            objective=lambda x: (x[0] - 3.0) ** 2,
+            bounds=[(0.0, 10.0)],
+            initial_guesses=guesses,
+        )
+        assert len(results) == 2
+
+    def test_compute_metrics_callback(self):
+        """compute_metrics populates rmse and r_squared fields."""
+        results = multistart_minimize(
+            objective=lambda x: (x[0] - 3.0) ** 2,
+            bounds=[(0.0, 10.0)],
+            n_trials=5,
+            compute_metrics=lambda params: (0.042, 0.998),
+        )
+        for r in results:
+            assert r.rmse == 0.042
+            assert r.r_squared == 0.998
+
+    def test_all_attempts_fail_returns_empty(self):
+        """Objective that always raises returns empty results."""
+        def bad_objective(x):
+            raise RuntimeError('always fails')
+
+        results = multistart_minimize(
+            objective=bad_objective,
+            bounds=[(0.0, 10.0)],
+            n_trials=5,
+        )
+        assert results == []
+
+    def test_without_compute_metrics_uses_cost_fallback(self):
+        """Without compute_metrics, rmse = sqrt(cost) and r_squared = NaN."""
+        results = multistart_minimize(
+            objective=lambda x: (x[0] - 3.0) ** 2,
+            bounds=[(0.0, 10.0)],
+            n_trials=3,
+            compute_metrics=None,
+        )
+        for r in results:
+            assert r.rmse == pytest.approx(np.sqrt(r.cost), rel=1e-6)
+            assert np.isnan(r.r_squared)
+
+
+# ---------------------------------------------------------------------------
+# filter_by_rmse
+# ---------------------------------------------------------------------------
+
+
+class TestFilterByRmse:
+
+    def test_empty_input(self):
+        assert filter_by_rmse([]) == []
+
+    def test_single_result_passes(self):
+        a = _make_attempt([1.0], rmse=0.5)
+        assert len(filter_by_rmse([a])) == 1
+
+    def test_all_identical_rmse_all_pass(self):
+        attempts = [_make_attempt([i], rmse=0.1) for i in range(5)]
+        result = filter_by_rmse(attempts, threshold_factor=1.0)
+        assert len(result) == 5
+
+    def test_threshold_factor_1_keeps_only_best(self):
+        attempts = [
+            _make_attempt([1], rmse=0.1),
+            _make_attempt([2], rmse=0.2),
+            _make_attempt([3], rmse=0.5),
+        ]
+        result = filter_by_rmse(attempts, threshold_factor=1.0)
+        assert len(result) == 1
+        assert result[0].rmse == 0.1
+
+    def test_explicit_reference_rmse(self):
+        attempts = [
+            _make_attempt([1], rmse=0.1),
+            _make_attempt([2], rmse=0.3),
+            _make_attempt([3], rmse=0.5),
+        ]
+        # reference_rmse=0.2, threshold_factor=2.0 → threshold=0.4
+        result = filter_by_rmse(attempts, threshold_factor=2.0, reference_rmse=0.2)
+        assert len(result) == 2  # rmse 0.1 and 0.3 pass; 0.5 doesn't
+
+    def test_large_threshold_keeps_all(self):
+        attempts = [_make_attempt([i], rmse=i * 0.1) for i in range(1, 6)]
+        result = filter_by_rmse(attempts, threshold_factor=1000.0)
+        assert len(result) == 5
+
+
+# ---------------------------------------------------------------------------
+# filter_by_r_squared
+# ---------------------------------------------------------------------------
+
+
+class TestFilterByRSquared:
+
+    def test_empty_input(self):
+        assert filter_by_r_squared([]) == []
+
+    def test_min_zero_passes_all(self):
+        attempts = [
+            _make_attempt([1], r_squared=0.5),
+            _make_attempt([2], r_squared=-0.1),
+            _make_attempt([3], r_squared=0.99),
+        ]
+        result = filter_by_r_squared(attempts, min_r_squared=0.0)
+        assert len(result) == 2  # -0.1 < 0.0 fails
+
+    def test_min_negative_passes_all(self):
+        attempts = [
+            _make_attempt([1], r_squared=0.5),
+            _make_attempt([2], r_squared=-0.1),
+        ]
+        result = filter_by_r_squared(attempts, min_r_squared=-1.0)
+        assert len(result) == 2
+
+    def test_min_one_strict(self):
+        attempts = [
+            _make_attempt([1], r_squared=0.999),
+            _make_attempt([2], r_squared=1.0),
+        ]
+        result = filter_by_r_squared(attempts, min_r_squared=1.0)
+        assert len(result) == 1
+        assert result[0].r_squared == 1.0
+
+    def test_nan_r_squared_filtered_out(self):
+        attempts = [
+            _make_attempt([1], r_squared=np.nan),
+            _make_attempt([2], r_squared=0.95),
+        ]
+        result = filter_by_r_squared(attempts, min_r_squared=0.9)
+        assert len(result) == 1
+        assert result[0].r_squared == 0.95
+
+
+# ---------------------------------------------------------------------------
+# compute_median_params
+# ---------------------------------------------------------------------------
+
+
+class TestComputeMedianParams:
+
+    def test_empty_returns_none(self):
+        assert compute_median_params([]) is None
+
+    def test_single_result(self):
+        a = _make_attempt([3.0, 7.0])
+        result = compute_median_params([a])
+        np.testing.assert_array_equal(result, [3.0, 7.0])
+
+    def test_odd_count(self):
+        attempts = [
+            _make_attempt([1.0]),
+            _make_attempt([3.0]),
+            _make_attempt([5.0]),
+        ]
+        result = compute_median_params(attempts)
+        assert result[0] == pytest.approx(3.0)
+
+    def test_even_count(self):
+        attempts = [
+            _make_attempt([2.0]),
+            _make_attempt([4.0]),
+        ]
+        result = compute_median_params(attempts)
+        assert result[0] == pytest.approx(3.0)
+
+
+# ---------------------------------------------------------------------------
+# compute_mad
+# ---------------------------------------------------------------------------
+
+
+class TestComputeMad:
+
+    def test_empty_returns_none(self):
+        assert compute_mad([]) is None
+
+    def test_single_result_is_zero(self):
+        a = _make_attempt([3.0, 7.0])
+        result = compute_mad([a])
+        np.testing.assert_array_equal(result, [0.0, 0.0])
+
+    def test_identical_params_zero(self):
+        attempts = [_make_attempt([5.0, 10.0]) for _ in range(4)]
+        result = compute_mad(attempts)
+        np.testing.assert_array_equal(result, [0.0, 0.0])
+
+    def test_known_mad_value(self):
+        """MAD of [1, 2, 3]: median=2, |deviations|=[1, 0, 1], MAD=1."""
+        attempts = [
+            _make_attempt([1.0]),
+            _make_attempt([2.0]),
+            _make_attempt([3.0]),
+        ]
+        result = compute_mad(attempts)
+        assert result[0] == pytest.approx(1.0)
+
+    def test_asymmetric_data(self):
+        """MAD of [1, 2, 3, 100]: median=2.5, |dev|=[1.5, 0.5, 0.5, 97.5], MAD=1.0."""
+        attempts = [
+            _make_attempt([1.0]),
+            _make_attempt([2.0]),
+            _make_attempt([3.0]),
+            _make_attempt([100.0]),
+        ]
+        result = compute_mad(attempts)
+        assert result[0] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# aggregate_fits
+# ---------------------------------------------------------------------------
+
+
+class TestAggregateFits:
+
+    def test_empty_input(self):
+        median, mad, n = aggregate_fits([])
+        assert median is None
+        assert mad is None
+        assert n == 0
+
+    def test_all_filtered_out(self):
+        """All results have low R² → none pass filtering."""
+        attempts = [
+            _make_attempt([1.0], rmse=0.1, r_squared=0.5),
+            _make_attempt([2.0], rmse=0.2, r_squared=0.3),
+        ]
+        median, mad, n = aggregate_fits(attempts, min_r_squared=0.9)
+        assert median is None
+        assert mad is None
+        assert n == 0
+
+    def test_single_passing_fit(self):
+        attempts = [
+            _make_attempt([5.0], rmse=0.01, r_squared=0.99),
+            _make_attempt([10.0], rmse=0.5, r_squared=0.5),
+        ]
+        median, mad, n = aggregate_fits(attempts, min_r_squared=0.9)
+        assert n == 1
+        assert median[0] == pytest.approx(5.0)
+        np.testing.assert_array_equal(mad, [0.0])
+
+    def test_multiple_passing(self):
+        attempts = [
+            _make_attempt([4.0], rmse=0.01, r_squared=0.99),
+            _make_attempt([5.0], rmse=0.01, r_squared=0.99),
+            _make_attempt([6.0], rmse=0.01, r_squared=0.99),
+        ]
+        median, mad, n = aggregate_fits(attempts, min_r_squared=0.9)
+        assert n == 3
+        assert median[0] == pytest.approx(5.0)
+        assert mad[0] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# calculate_fit_metrics
+# ---------------------------------------------------------------------------
+
+
+class TestCalculateFitMetrics:
+
+    def test_perfect_fit(self):
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        rmse, r2 = calculate_fit_metrics(y, y)
+        assert rmse == pytest.approx(0.0, abs=1e-15)
+        assert r2 == pytest.approx(1.0)
+
+    def test_constant_y_observed(self):
+        """When all y_observed are identical, ss_tot=0 → R²=0."""
+        y_obs = np.array([5.0, 5.0, 5.0])
+        y_pred = np.array([4.0, 5.0, 6.0])
+        rmse, r2 = calculate_fit_metrics(y_obs, y_pred)
+        assert r2 == 0.0
+        assert rmse > 0
+
+    def test_known_values(self):
+        """Hand-computed RMSE and R² for simple data."""
+        y_obs = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([1.1, 2.0, 2.9])
+        residuals = y_obs - y_pred
+        expected_rmse = np.sqrt(np.mean(residuals ** 2))
+        ss_res = np.sum(residuals ** 2)
+        ss_tot = np.sum((y_obs - np.mean(y_obs)) ** 2)
+        expected_r2 = 1 - ss_res / ss_tot
+
+        rmse, r2 = calculate_fit_metrics(y_obs, y_pred)
+        assert rmse == pytest.approx(expected_rmse)
+        assert r2 == pytest.approx(expected_r2)
+
+    def test_single_point_perfect(self):
+        y = np.array([42.0])
+        rmse, r2 = calculate_fit_metrics(y, y)
+        assert rmse == pytest.approx(0.0, abs=1e-15)
