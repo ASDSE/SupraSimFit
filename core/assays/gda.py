@@ -19,6 +19,7 @@ import numpy as np
 from core.assays.base import BaseAssay
 from core.assays.registry import AssayType
 from core.models.equilibrium import gda_signal
+from core.units import validate_association_constant, validate_concentration
 
 
 @dataclass
@@ -73,7 +74,11 @@ class GDAAssay(BaseAssay):
         if self.g0 is None:
             raise ValueError('g0 is required (total guest concentration)')
 
-        # Validate positive values
+        # Validate dimensionality (Quantity → float in SI) or positivity (float)
+        self.Ka_dye = validate_association_constant(self.Ka_dye)
+        self.h0 = validate_concentration(self.h0)
+        self.g0 = validate_concentration(self.g0)
+
         if self.Ka_dye <= 0:
             raise ValueError('Ka_dye must be positive')
         if self.h0 <= 0:

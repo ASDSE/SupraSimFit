@@ -19,6 +19,7 @@ import numpy as np
 from core.assays.base import BaseAssay
 from core.assays.registry import AssayType
 from core.models.equilibrium import ida_signal
+from core.units import validate_association_constant, validate_concentration
 
 
 @dataclass
@@ -73,7 +74,11 @@ class IDAAssay(BaseAssay):
         if self.d0 is None:
             raise ValueError('d0 is required (total dye concentration)')
 
-        # Validate positive values
+        # Validate dimensionality (Quantity → float in SI) or positivity (float)
+        self.Ka_dye = validate_association_constant(self.Ka_dye)
+        self.h0 = validate_concentration(self.h0)
+        self.d0 = validate_concentration(self.d0)
+
         if self.Ka_dye <= 0:
             raise ValueError('Ka_dye must be positive')
         if self.h0 <= 0:

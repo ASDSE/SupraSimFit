@@ -21,6 +21,7 @@ import numpy as np
 from core.assays.base import BaseAssay
 from core.assays.registry import AssayType
 from core.models.equilibrium import dba_signal
+from core.units import validate_concentration
 
 
 @dataclass
@@ -69,6 +70,9 @@ class DBAAssay(BaseAssay):
         # Enforce required parameters (fail fast)
         if self.fixed_conc is None:
             raise ValueError('fixed_conc is required (fixed component concentration)')
+
+        # Validate dimensionality (Quantity → float in M) or keep float
+        self.fixed_conc = validate_concentration(self.fixed_conc)
 
         if self.fixed_conc <= 0:
             raise ValueError('fixed_conc must be positive')

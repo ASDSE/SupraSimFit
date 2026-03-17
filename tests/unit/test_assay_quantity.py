@@ -1,0 +1,108 @@
+"""Tests for assay constructors accepting pint Quantity conditions."""
+
+import numpy as np
+import pint
+import pytest
+
+from core.assays.dba import DBAAssay
+from core.assays.gda import GDAAssay
+from core.assays.ida import IDAAssay
+from core.units import Q_
+
+# Shared dummy data
+_x = np.linspace(1e-7, 50e-6, 10)
+_y = np.ones(10)
+
+
+class TestGDAQuantityConditions:
+    """GDA assay accepts Quantity conditions with dimensional validation."""
+
+    def test_quantity_conditions_accepted(self):
+        assay = GDAAssay(
+            x_data=_x,
+            y_data=_y,
+            Ka_dye=Q_(5e5, '1/M'),
+            h0=Q_(10, 'µM'),
+            g0=Q_(20, 'µM'),
+        )
+        assert assay.Ka_dye == pytest.approx(5e5)
+        assert assay.h0 == pytest.approx(10e-6)
+        assert assay.g0 == pytest.approx(20e-6)
+
+    def test_float_conditions_still_work(self):
+        assay = GDAAssay(
+            x_data=_x,
+            y_data=_y,
+            Ka_dye=5e5,
+            h0=10e-6,
+            g0=20e-6,
+        )
+        assert assay.Ka_dye == 5e5
+
+    def test_wrong_dimensionality_Ka_raises(self):
+        with pytest.raises(pint.DimensionalityError):
+            GDAAssay(
+                x_data=_x,
+                y_data=_y,
+                Ka_dye=Q_(10, 'µM'),  # concentration, not 1/concentration
+                h0=10e-6,
+                g0=20e-6,
+            )
+
+    def test_wrong_dimensionality_h0_raises(self):
+        with pytest.raises(pint.DimensionalityError):
+            GDAAssay(
+                x_data=_x,
+                y_data=_y,
+                Ka_dye=5e5,
+                h0=Q_(10, '1/M'),  # 1/M is not a concentration
+                g0=20e-6,
+            )
+
+
+class TestIDAQuantityConditions:
+    """IDA assay accepts Quantity conditions with dimensional validation."""
+
+    def test_quantity_conditions_accepted(self):
+        assay = IDAAssay(
+            x_data=_x,
+            y_data=_y,
+            Ka_dye=Q_(5e5, 'M^-1'),
+            h0=Q_(10, 'µM'),
+            d0=Q_(5, 'µM'),
+        )
+        assert assay.Ka_dye == pytest.approx(5e5)
+        assert assay.h0 == pytest.approx(10e-6)
+        assert assay.d0 == pytest.approx(5e-6)
+
+    def test_wrong_dimensionality_d0_raises(self):
+        with pytest.raises(pint.DimensionalityError):
+            IDAAssay(
+                x_data=_x,
+                y_data=_y,
+                Ka_dye=5e5,
+                h0=10e-6,
+                d0=Q_(5, '1/M'),  # wrong: should be concentration
+            )
+
+
+class TestDBAQuantityConditions:
+    """DBA assay accepts Quantity fixed_conc with dimensional validation."""
+
+    def test_quantity_fixed_conc_accepted(self):
+        assay = DBAAssay(
+            x_data=_x,
+            y_data=_y,
+            fixed_conc=Q_(10, 'µM'),
+            mode='DtoH',
+        )
+        assert assay.fixed_conc == pytest.approx(10e-6)
+
+    def test_wrong_dimensionality_fixed_conc_raises(self):
+        with pytest.raises(pint.DimensionalityError):
+            DBAAssay(
+                x_data=_x,
+                y_data=_y,
+                fixed_conc=Q_(10, '1/M'),  # wrong: should be concentration
+                mode='DtoH',
+            )

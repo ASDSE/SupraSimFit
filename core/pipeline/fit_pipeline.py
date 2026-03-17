@@ -24,6 +24,7 @@ from core.assays.dye_alone import DyeAloneAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.optimizer.filters import aggregate_fits, calculate_fit_metrics
 from core.optimizer.multistart import FitAttempt, multistart_minimize
+from core.units import Q_
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,34 @@ class FitResult:
         """Whether the fit was successful (at least one passing fit)."""
         return self.n_passing > 0
 
+    def parameters_with_units(self) -> Dict[str, Any]:
+        """Return parameters as ``pint.Quantity`` values.
+
+        Uses the registry ``units`` dict for the assay type to wrap each
+        parameter value.  Parameters without a registered unit are returned
+        as bare floats.
+
+        Returns
+        -------
+        Dict[str, pint.Quantity | float]
+        """
+        from core.assays.registry import ASSAY_REGISTRY, AssayType
+
+        try:
+            at = AssayType[self.assay_type]
+            units = ASSAY_REGISTRY[at].units
+        except KeyError:
+            units = {}
+
+        result: Dict[str, Any] = {}
+        for k, v in self.parameters.items():
+            unit_str = units.get(k)
+            if unit_str and unit_str != 'a.u.':
+                result[k] = Q_(v, unit_str)
+            else:
+                result[k] = v
+        return result
+
     # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
@@ -104,11 +133,22 @@ class FitResult:
         """Convert to a JSON-safe dictionary.
 
         ``np.ndarray`` fields are converted to plain Python lists.
+        Parameter units are looked up from the assay registry and
+        included under `'parameter_units'`.
 
         Returns
         -------
         dict[str, Any]
         """
+        from core.assays.registry import ASSAY_REGISTRY, AssayType
+
+        # Look up units from registry
+        try:
+            at = AssayType[self.assay_type]
+            units = dict(ASSAY_REGISTRY[at].units)
+        except KeyError:
+            units = {}
+
         return {
             'id': self.id,
             'timestamp': self.timestamp,
@@ -120,6 +160,7 @@ class FitResult:
             'fit_config': self.fit_config,
             'parameters': self.parameters,
             'uncertainties': self.uncertainties,
+            'parameter_units': units,
             'rmse': self.rmse,
             'r_squared': self.r_squared,
             'n_passing': self.n_passing,

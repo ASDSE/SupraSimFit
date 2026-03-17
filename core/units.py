@@ -22,6 +22,9 @@ Example
 1e-06
 """
 
+from __future__ import annotations
+
+import numpy as np
 import pint
 
 # Single shared UnitRegistry for the entire application
@@ -38,14 +41,21 @@ ureg.define('picomolar = 1e-12 * molar = pM')
 # Type alias for type hints (using string for forward reference)
 Quantity = pint.Quantity
 
+# ---------------------------------------------------------------------------
+# Canonical unit string constants — single source of truth
+# ---------------------------------------------------------------------------
+MOLAR = 'M'  # base concentration unit
+PER_MOLAR = '1/M'  # association constant unit  (Ka)
+AU = 'dimensionless'  # arbitrary units (signals)
 
-def strip_units(value: 'pint.Quantity', target_unit: str = 'M') -> float:
+
+def strip_units(value: pint.Quantity, target_unit: str = 'M') -> float:
     """Strip units from a quantity, converting to target unit first.
 
     Parameters
     ----------
     value : Quantity
-        A pint Quantity with concentration units.
+        A pint Quantity with compatible units.
     target_unit : str
         The unit to convert to before stripping (default: 'M' for molar).
 
@@ -63,7 +73,7 @@ def strip_units(value: 'pint.Quantity', target_unit: str = 'M') -> float:
     return value.to(target_unit).magnitude
 
 
-def ensure_quantity(value, default_unit: str = 'M') -> 'pint.Quantity':
+def ensure_quantity(value, default_unit: str = 'M') -> pint.Quantity:
     """Ensure a value is a Quantity, adding default units if needed.
 
     Parameters
@@ -88,3 +98,87 @@ def ensure_quantity(value, default_unit: str = 'M') -> 'pint.Quantity':
     if isinstance(value, Quantity):
         return value
     return Q_(value, default_unit)
+
+
+# ---------------------------------------------------------------------------
+# Dimensionality validation helpers
+# ---------------------------------------------------------------------------
+
+
+def validate_concentration(value) -> float:
+    """Validate that *value* is a concentration and return its magnitude in M.
+
+    Accepts a ``pint.Quantity`` with concentration dimensionality **or** a
+    bare ``float`` (assumed to be in M for backward compatibility).
+
+    Parameters
+    ----------
+    value : float or Quantity
+        Concentration value.
+
+    Returns
+    -------
+    float
+        Magnitude in molar (M).
+
+    Raises
+    ------
+    pint.DimensionalityError
+        If *value* is a Quantity but not a concentration.
+    """
+    if isinstance(value, Quantity):
+        return value.to(MOLAR).magnitude
+    return float(value)
+
+
+def validate_association_constant(value) -> float:
+    """Validate that *value* is an association constant and return magnitude in M⁻¹.
+
+    Accepts a ``pint.Quantity`` with ``1/[concentration]`` dimensionality
+    **or** a bare ``float`` (assumed to be in M⁻¹ for backward compatibility).
+
+    Parameters
+    ----------
+    value : float or Quantity
+        Association constant value.
+
+    Returns
+    -------
+    float
+        Magnitude in M⁻¹.
+
+    Raises
+    ------
+    pint.DimensionalityError
+        If *value* is a Quantity but not ``1/[concentration]``.
+    """
+    if isinstance(value, Quantity):
+        return value.to(PER_MOLAR).magnitude
+    return float(value)
+
+
+def to_base_units(value, expected_unit: str) -> float:
+    """Convert *value* to *expected_unit* and return the bare magnitude.
+
+    If *value* is already a plain number it is returned unchanged.
+
+    Parameters
+    ----------
+    value : float, np.ndarray, or Quantity
+        The value to convert.
+    expected_unit : str
+        The pint-parseable target unit string (e.g. ``'M'``, ``'1/M'``).
+
+    Returns
+    -------
+    float or np.ndarray
+        The magnitude in *expected_unit*.
+
+    Raises
+    ------
+    pint.DimensionalityError
+        If *value* is a Quantity with incompatible dimensionality.
+    """
+    if isinstance(value, Quantity):
+        return value.to(expected_unit).magnitude
+    return value
