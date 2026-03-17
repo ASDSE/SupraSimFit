@@ -1,5 +1,5 @@
 <p align="center">
-   <img src="assets/logo-suprasense.svg" alt="Logo" style="width:80%; display:block; margin:auto;">
+   <img src="assets/logo-suprasense.svg" alt="Suprasense Logo" width:="80%"/>
 </p>
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
@@ -78,11 +78,10 @@ scipy>=1.7.0       # L-BFGS-B optimization and statistical functions
 ```
 
 **Key Technology Choices:**
-- **scipy.optimize**: L-BFGS-B constrained optimization selected for superior handling of parameter bounds with active-set strategy
+- **scipy.optimize**: L-BFGS-B bound-constrained quasi-Newton optimization with efficient handling of parameter bounds
 - **Tkinter**: Cross-platform GUI compatibility without external dependencies
 - **Cross-Platform Distribution**: PyInstaller-based executable generation through GitHub Actions CI/CD
 - **BMG Labtech Plate Readers**: Direct processing of plate reader Excel exports with automatic 96-well layout extraction for high-throughput analysis
-
 ## 🛠️ Installation
 
 ### Option 1: Pre-built Executables (Recommended for End Users)
