@@ -65,7 +65,7 @@ def prepare_plot_data(
     fits: list[Dict[str, Any]] = []
     if fit_results:
         for fr in fit_results:
-            label = f'{fr.assay_type} ({fr.model_name})'
+            label = 'Best Fit'
             fits.append(
                 {
                     'x': fr.x_fit,

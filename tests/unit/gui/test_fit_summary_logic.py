@@ -5,7 +5,8 @@ import math
 import pytest
 
 from core.assays.registry import AssayType
-from gui.plotting.fit_summary_widget import _fmt_value, _lookup_assay_type
+from gui.plotting.fit_summary_widget import _lookup_assay_type
+from gui.plotting.labels import _fmt_value
 
 
 # ------------------------------------------------------------------

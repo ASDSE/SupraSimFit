@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QTableWidget,
     QTableWidgetItem,
@@ -25,41 +24,34 @@ class FitSummaryWidget(QWidget):
 
     Layout
     ------
-    - ``QGroupBox("Fitted Parameters")`` → ``QTableWidget`` with columns:
-      Parameter | Value | ± Uncertainty | Units
-    - ``QGroupBox("Fit Quality")`` → ``QFormLayout`` with RMSE, R²,
-      Fits passing.
+    - ``QGroupBox("Fitted Parameters")`` with columns:
+      Parameter | Value | +/- Uncertainty | Units
+    - ``QGroupBox("Fit Quality")`` with RMSE, R-squared, Fits passing.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # --- Parameters table ---
         self._params_group = QGroupBox("Fitted Parameters")
         self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["Parameter", "Value", "± Uncertainty", "Units"])
+        self._table.setHorizontalHeaderLabels(["Parameter", "Value", "\u00b1 Uncertainty", "Units"])
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         params_layout = QVBoxLayout(self._params_group)
         params_layout.addWidget(self._table)
 
-        # --- Quality metrics ---
         self._quality_group = QGroupBox("Fit Quality")
         quality_layout = QFormLayout(self._quality_group)
-        self._rmse_label = QLabel("—")
-        self._r2_label = QLabel("—")
-        self._passing_label = QLabel("—")
+        self._rmse_label = QLabel("\u2014")
+        self._r2_label = QLabel("\u2014")
+        self._passing_label = QLabel("\u2014")
         quality_layout.addRow("RMSE:", self._rmse_label)
-        quality_layout.addRow("R²:", self._r2_label)
+        quality_layout.addRow("R\u00b2:", self._r2_label)
         quality_layout.addRow("Fits passing:", self._passing_label)
 
-        main_layout = QVBoxLayout(self)
-        main_layout.addWidget(self._params_group)
-        main_layout.addWidget(self._quality_group)
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        main_layout = QHBoxLayout(self)
+        main_layout.addWidget(self._params_group, stretch=3)
+        main_layout.addWidget(self._quality_group, stretch=1)
 
     def update_result(self, result: FitResult) -> None:
         """Populate the widget from a ``FitResult``.
@@ -101,16 +93,12 @@ class FitSummaryWidget(QWidget):
     def clear(self) -> None:
         """Reset all fields to their empty state."""
         self._table.setRowCount(0)
-        self._rmse_label.setText("—")
-        self._r2_label.setText("—")
-        self._passing_label.setText("—")
+        self._rmse_label.setText("\u2014")
+        self._r2_label.setText("\u2014")
+        self._passing_label.setText("\u2014")
 
 
-# ------------------------------------------------------------------
-# Module-level helpers (accessible for testing)
-# ------------------------------------------------------------------
-
-def _lookup_assay_type(assay_type_str: str) -> Optional[AssayType]:
+def _lookup_assay_type(assay_type_str: str) -> AssayType | None:
     """Reverse-lookup AssayType by its ``.name`` string.
 
     Parameters
@@ -123,7 +111,7 @@ def _lookup_assay_type(assay_type_str: str) -> Optional[AssayType]:
     AssayType | None
         ``None`` if not found.
     """
-    for at in AssayType:
-        if at.name == assay_type_str:
-            return at
-    return None
+    try:
+        return AssayType[assay_type_str]
+    except KeyError:
+        return None

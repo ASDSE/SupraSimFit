@@ -18,6 +18,8 @@ import pandas as pd
 
 # Auto-register built-in formats
 from core.io.formats import txt  # noqa: F401
+from core.io.formats import csv_reader  # noqa: F401
+from core.io.formats import xlsx_reader  # noqa: F401
 from core.io.registry import get_reader, get_writer
 
 

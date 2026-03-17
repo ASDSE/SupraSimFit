@@ -44,4 +44,5 @@ def rgba(rgb: tuple[int, int, int], alpha: int = 255) -> tuple[int, int, int, in
     -------
     tuple[int, int, int, int]
     """
-    return (rgb[0], rgb[1], rgb[2], alpha)
+    r, g, b = rgb
+    return (r, g, b, alpha)

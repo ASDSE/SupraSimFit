@@ -137,7 +137,7 @@ class TestRegistryDispatch:
 
     def test_unsupported_format_raises(self):
         with pytest.raises(ValueError, match='No reader'):
-            get_reader(Path('test.csv'))
+            get_reader(Path('test.xyz'))
 
     def test_unsupported_writer_raises(self):
         with pytest.raises(ValueError, match='No writer'):
