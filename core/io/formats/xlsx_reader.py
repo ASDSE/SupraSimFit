@@ -19,7 +19,9 @@ Dependencies: ``openpyxl`` (already required by ``FittingApp.spec``).
 from pathlib import Path
 
 import pandas as pd
+from openpyxl import load_workbook
 
+from core.io.formats.bmg_reader import is_bmg_workbook, parse_bmg_workbook
 from core.io.registry import register_reader
 
 _CONC_NAMES = {"concentration", "conc", "x", "[conc]", "titrant"}
@@ -27,7 +29,12 @@ _SIGNAL_NAMES = {"signal", "y", "fluorescence", "intensity", "emission"}
 
 
 class XlsxReader:
-    """Reader for Excel measurement files."""
+    """Reader for Excel measurement files.
+
+    Dispatches on workbook structure: BMG plate-reader exports are
+    routed to :func:`bmg_reader.parse_bmg_workbook`, and everything
+    else falls through to the structured long/wide-format path.
+    """
 
     extensions = (".xlsx", ".xls")
 
@@ -43,20 +50,34 @@ class XlsxReader:
         -------
         pd.DataFrame
             Long-format DataFrame with columns:
-            ``concentration``, ``signal``, ``replica``.
+            ``concentration``, ``signal``, ``replica``. BMG imports
+            additionally carry ``df.attrs['bmg_placeholder_concentrations']``
+            and ``df.attrs['bmg_metadata']``.
 
         Raises
         ------
         ValueError
             If columns cannot be identified or no data is found.
         """
-        xl = pd.ExcelFile(path, engine="openpyxl")
+        wb = load_workbook(path, data_only=True, read_only=True)
+        try:
+            if is_bmg_workbook(wb):
+                df, _meta = parse_bmg_workbook(wb)
+                return df
+            # Hand the already-parsed workbook to pandas so we don't re-read
+            # the file from disk just to dispatch the structured fallback.
+            return self._read_structured(wb, path)
+        finally:
+            wb.close()
+
+    def _read_structured(self, wb, path: Path) -> pd.DataFrame:
+        """Pandas-based long / wide / multi-sheet fallback."""
+        xl = pd.ExcelFile(wb, engine="openpyxl")
         sheet_names = xl.sheet_names
 
         if len(sheet_names) > 1:
             return self._parse_multi_sheet(xl, sheet_names)
 
-        # Single sheet — delegate to column-based detection
         df = xl.parse(sheet_names[0])
         return self._parse_single_sheet(df, path)
 
