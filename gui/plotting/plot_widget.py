@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
+from PyQt6.QtCore import QPointF, QRectF
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
@@ -26,6 +27,37 @@ _SUPERSCRIPT_DIGITS = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹�
 def _format_exponent_unicode(exp: int) -> str:
     """Convert an integer exponent to Unicode superscript, e.g. 5 → '⁵', -3 → '⁻³'."""
     return str(exp).translate(_SUPERSCRIPT_DIGITS)
+
+
+class _ErrorBarSample(pg.ItemSample):
+    """Legend sample that renders an error-bar glyph instead of a line.
+
+    pyqtgraph's default :class:`ItemSample` only knows how to paint
+    curves, scatter markers, and bar graphs. Passing a plain
+    ``PlotCurveItem`` for the error-bar legend entry therefore draws a
+    plain horizontal line, which is visually indistinguishable from the
+    mean line. Subclassing and overriding ``paint`` lets us draw a
+    ``┬ ┴`` glyph (vertical stem with two caps) that matches the on-plot
+    error bars.
+    """
+
+    _WIDTH = 20
+    _HEIGHT = 20
+
+    def paint(self, p, *args):  # type: ignore[override]
+        pen = self.item.opts.get('pen') if hasattr(self.item, 'opts') else None
+        if pen is None:
+            return
+        p.setPen(pen)
+        # Vertical stem
+        p.drawLine(QPointF(10.0, 3.0), QPointF(10.0, 17.0))
+        # Top cap
+        p.drawLine(QPointF(5.0, 3.0), QPointF(15.0, 3.0))
+        # Bottom cap
+        p.drawLine(QPointF(5.0, 17.0), QPointF(15.0, 17.0))
+
+    def boundingRect(self):  # type: ignore[override]
+        return QRectF(0.0, 0.0, float(self._WIDTH), float(self._HEIGHT))
 
 
 class ScientificAxisItem(pg.AxisItem):
@@ -193,6 +225,7 @@ class PlotWidget(QWidget):
         *,
         x_label: str | None = None,
         y_label: str | None = None,
+        preserve_positions: bool = False,
     ) -> None:
         """Clear and redraw from a ``prepare_plot_data()`` dict.
 
@@ -204,8 +237,17 @@ class PlotWidget(QWidget):
             Override x-axis label.
         y_label : str, optional
             Override y-axis label.
+        preserve_positions : bool
+            If False (the default), reset the remembered legend corner
+            and annotation position so overlays are re-placed on the
+            uncovered quadrant of the new data. Set to True when the
+            caller is redrawing the *same* data (e.g. an x-axis unit
+            rescale) and wants user-dragged positions to survive.
         """
         self._last_plot_data = plot_data
+        if not preserve_positions:
+            self._legend_corner = None
+            self._annotation_pos = None
         self._clear_items()
 
         style = self._style
@@ -327,11 +369,13 @@ class PlotWidget(QWidget):
                 self._fit_items.append(item)
                 self._fit_labels.append(fit.get('label', f'fit {i}'))
 
+        # Auto-range first so _find_least_occupied_corner sees the new
+        # view rect; otherwise it'd pick the corner from the previous
+        # data range and the legend could end up over the data points.
+        self._pg_widget.getViewBox().autoRange()
         self._rebuild_legend()
         self._rebuild_annotation()
         self._update_axis_labels_with_exponents()
-        # Force auto-range so all data is visible after x-unit rescaling
-        self._pg_widget.getViewBox().autoRange()
 
     def apply_style(self, style: dict) -> None:
         """Mutate existing plot items in-place with new style settings.
@@ -347,12 +391,14 @@ class PlotWidget(QWidget):
         new_x_unit = style['axes'].get('x_unit', 'µM')
         if old_x_unit != new_x_unit and self._last_plot_data:
             # x-unit change requires rescaling all data — do a full redraw
+            # but keep legend/annotation exactly where the user left them.
             fit_results_backup = list(self._fit_results)
             self._style = style
             self.update_plot(
                 self._last_plot_data,
                 x_label=self._last_x_label_base,
                 y_label=self._last_y_label,
+                preserve_positions=True,
             )
             self._fit_results = fit_results_backup
             self._rebuild_annotation()
@@ -607,41 +653,56 @@ class PlotWidget(QWidget):
             self._legend.addItem(self._average_item, 'Mean')
             entry_count += 1
         if leg.get('show_error_bars', True) and vis['show_error_bars'] and self._error_bar_item is not None:
-            # Create a small dummy line item to represent error bars in legend
+            # Custom sample draws a ┬ ┴ glyph so the legend entry is
+            # visually distinct from the average line.
             eb_color = self._style['error_bars'].get('color', ERROR_BAR_COLOR)
             eb_pen = pg.mkPen(color=eb_color, width=self._style['error_bars'].get('width', 1))
-            eb_legend_item = pg.PlotCurveItem(pen=eb_pen)
-            self._legend.addItem(eb_legend_item, 'Mean \u00b1 SD')
+            eb_stub = pg.PlotCurveItem(pen=eb_pen)
+            self._legend.addItem(_ErrorBarSample(eb_stub), 'Mean \u00b1 SD')
             entry_count += 1
         if leg['show_fit'] and vis['show_fit']:
             for item, label in zip(self._fit_items, self._fit_labels):
                 self._legend.addItem(item, label)
                 entry_count += 1
 
-        # Position legend in least-occupied corner
-        corner = self._find_least_occupied_corner()
-        offsets = {
-            'top-right': (10, 10),
-            'top-left': (10, 10),
-            'bottom-right': (10, 10),
-            'bottom-left': (10, 10),
-        }
-        anchors = {
-            'top-right': (1, 0),
-            'top-left': (0, 0),
-            'bottom-right': (1, 1),
-            'bottom-left': (0, 1),
-        }
-        # pyqtgraph LegendItem.anchor maps (itemAnchor, parentAnchor, offset)
-        parent_anchor = anchors[corner]
-        self._legend.anchor(
-            itemPos=parent_anchor,
-            parentPos=parent_anchor,
-            offset=offsets[corner],
-        )
-        # Remember the chosen corner so overlays (annotation, fit summary)
-        # can avoid overlapping the legend. ``None`` when the legend is empty.
-        self._legend_corner = corner if entry_count > 0 else None
+        # Background brush — applied on every rebuild so the colour
+        # picker updates live. Falls back to the legacy inline default.
+        bg = self._style['legend'].get('background_color', (255, 255, 255, 200))
+        brush = pg.mkBrush(color=tuple(bg))
+        if hasattr(self._legend, 'setBrush'):
+            self._legend.setBrush(brush)
+        else:
+            self._legend.opts['brush'] = brush
+            self._legend.update()
+
+        # Position legend once per data load. On later rebuilds (style
+        # changes, x-unit rescales, visibility toggles) leave the anchor
+        # alone: pyqtgraph's GraphicsWidgetAnchor already tracks the
+        # legend's current position, including any user drag, so
+        # touching it would clobber those.
+        if entry_count == 0:
+            self._legend_corner = None
+        elif self._legend_corner is None:
+            corner = self._find_least_occupied_corner()
+            offsets = {
+                'top-right': (10, 10),
+                'top-left': (10, 10),
+                'bottom-right': (10, 10),
+                'bottom-left': (10, 10),
+            }
+            anchors = {
+                'top-right': (1, 0),
+                'top-left': (0, 0),
+                'bottom-right': (1, 1),
+                'bottom-left': (0, 1),
+            }
+            parent_anchor = anchors[corner]
+            self._legend.anchor(
+                itemPos=parent_anchor,
+                parentPos=parent_anchor,
+                offset=offsets[corner],
+            )
+            self._legend_corner = corner
 
     def _clear_items(self) -> None:
         """Remove all data items and reset the legend."""
@@ -782,7 +843,11 @@ class PlotWidget(QWidget):
                 lines.append('')
 
         body = '<br>'.join(lines)
-        html = f'<div style="font-size:{font_pt}pt; background-color: rgba(255,255,255,200); padding:4px; border:1px solid #aaa;">{body}</div>'
+        bg_rgba = self._style['annotations'].get('background_color', (255, 255, 255, 200))
+        r, g, b = int(bg_rgba[0]), int(bg_rgba[1]), int(bg_rgba[2])
+        a_frac = (bg_rgba[3] if len(bg_rgba) >= 4 else 255) / 255.0
+        bg_css = f'rgba({r},{g},{b},{a_frac:.3f})'
+        html = f'<div style="font-size:{font_pt}pt; background-color: {bg_css}; padding:4px; border:1px solid #aaa;">{body}</div>'
         # Choose annotation corner, excluding the one occupied by the legend
         # so the fit-results overlay never covers the legend on a fresh build.
         corner = self._find_least_occupied_corner(exclude=self._legend_corner)
@@ -796,15 +861,8 @@ class PlotWidget(QWidget):
         self._annotation_item = pg.TextItem(html=html, anchor=anchor)
         self._annotation_item.setFlag(self._annotation_item.GraphicsItemFlag.ItemIsMovable)
         self._pg_widget.addItem(self._annotation_item)
-        # If the previously-remembered position lived in the legend's corner,
-        # drop it so the annotation relocates rather than stacking on top of it.
-        if self._annotation_pos is not None and self._legend_corner is not None:
-            vr = self._pg_widget.getViewBox().viewRect()
-            cx, cy = vr.center().x(), vr.center().y()
-            px, py = self._annotation_pos.x(), self._annotation_pos.y()
-            pos_corner = f'{"bottom" if py < cy else "top"}-{"left" if px < cx else "right"}'
-            if pos_corner == self._legend_corner:
-                self._annotation_pos = None
+        # Sticky: once a position is remembered (either the initial
+        # auto-placed one or a user drag), re-use it on every rebuild.
         if self._annotation_pos is not None:
             self._annotation_item.setPos(self._annotation_pos)
         else:

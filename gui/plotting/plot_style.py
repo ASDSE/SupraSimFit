@@ -59,10 +59,12 @@ DEFAULT_STYLE: dict = {
         'show_average': True,
         'show_error_bars': True,
         'show_fit': True,
+        'background_color': (255, 255, 255, 200),
     },
     'annotations': {
         'show_fit_results': False,
         'font_size': 14,
+        'background_color': (255, 255, 255, 200),
     },
 }
 
@@ -157,6 +159,7 @@ _PARAMS_SPEC = [
         'expanded': False,
         'children': [
             {'name': 'Font size', 'type': 'int', 'value': 14, 'limits': (6, 24)},
+            {'name': 'Background', 'type': 'color', 'value': (255, 255, 255, 200)},
             {'name': 'Show replicas', 'type': 'bool', 'value': True},
             {'name': 'Show dropped', 'type': 'bool', 'value': True},
             {'name': 'Show average', 'type': 'bool', 'value': True},
@@ -171,6 +174,7 @@ _PARAMS_SPEC = [
         'children': [
             {'name': 'Show fit results', 'type': 'bool', 'value': False},
             {'name': 'Font size', 'type': 'int', 'value': 14, 'limits': (7, 24)},
+            {'name': 'Background', 'type': 'color', 'value': (255, 255, 255, 200)},
         ],
     },
 ]
@@ -287,6 +291,7 @@ class PlotStyleWidget(QWidget):
             },
             'legend': {
                 'font_size': p['Legend', 'Font size'],
+                'background_color': _qcolor_to_tuple(p['Legend', 'Background']),
                 'show_replicas': p['Legend', 'Show replicas'],
                 'show_dropped': p['Legend', 'Show dropped'],
                 'show_average': p['Legend', 'Show average'],
@@ -296,6 +301,7 @@ class PlotStyleWidget(QWidget):
             'annotations': {
                 'show_fit_results': p['Annotations', 'Show fit results'],
                 'font_size': p['Annotations', 'Font size'],
+                'background_color': _qcolor_to_tuple(p['Annotations', 'Background']),
             },
         }
 
@@ -335,6 +341,7 @@ class PlotStyleWidget(QWidget):
             ('Visibility', 'Show fit'): ('visibility', 'show_fit'),
             ('Visibility', 'Show error bars'): ('visibility', 'show_error_bars'),
             ('Legend', 'Font size'): ('legend', 'font_size'),
+            ('Legend', 'Background'): ('legend', 'background_color'),
             ('Legend', 'Show replicas'): ('legend', 'show_replicas'),
             ('Legend', 'Show dropped'): ('legend', 'show_dropped'),
             ('Legend', 'Show average'): ('legend', 'show_average'),
@@ -342,6 +349,7 @@ class PlotStyleWidget(QWidget):
             ('Legend', 'Show fit'): ('legend', 'show_fit'),
             ('Annotations', 'Show fit results'): ('annotations', 'show_fit_results'),
             ('Annotations', 'Font size'): ('annotations', 'font_size'),
+            ('Annotations', 'Background'): ('annotations', 'background_color'),
         }
         # Block signals to avoid emitting per-param changes
         self._params.blockSignals(True)
