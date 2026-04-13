@@ -15,6 +15,10 @@ pytest.importorskip('PyQt6')
 
 from PyQt6.QtCore import QCoreApplication, QSettings
 
+# Generic key the tests can hammer without having to track what
+# production-side preferences actually exist.
+_TEST_KEY = 'test/demo_flag'
+
 
 @pytest.fixture(autouse=True)
 def _isolated_settings():
@@ -32,18 +36,18 @@ def _isolated_settings():
 def test_get_bool_returns_default_when_unset():
     from gui.preferences import get_bool
 
-    assert get_bool('bmg/skip_import_prompt', default=False) is False
-    assert get_bool('bmg/skip_import_prompt', default=True) is True
+    assert get_bool(_TEST_KEY, default=False) is False
+    assert get_bool(_TEST_KEY, default=True) is True
 
 
 def test_set_and_get_bool_round_trip():
-    from gui.preferences import BMG_SKIP_IMPORT_PROMPT, get_bool, set_bool
+    from gui.preferences import get_bool, set_bool
 
-    set_bool(BMG_SKIP_IMPORT_PROMPT, True)
-    assert get_bool(BMG_SKIP_IMPORT_PROMPT) is True
+    set_bool(_TEST_KEY, True)
+    assert get_bool(_TEST_KEY) is True
 
-    set_bool(BMG_SKIP_IMPORT_PROMPT, False)
-    assert get_bool(BMG_SKIP_IMPORT_PROMPT) is False
+    set_bool(_TEST_KEY, False)
+    assert get_bool(_TEST_KEY) is False
 
 
 def test_string_backed_values_are_coerced():
@@ -51,6 +55,6 @@ def test_string_backed_values_are_coerced():
     from gui.preferences import get_bool
 
     s = QSettings()
-    s.setValue('bmg/skip_import_prompt', 'true')
+    s.setValue(_TEST_KEY, 'true')
     s.sync()
-    assert get_bool('bmg/skip_import_prompt') is True
+    assert get_bool(_TEST_KEY) is True

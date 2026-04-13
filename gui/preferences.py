@@ -50,7 +50,3 @@ def get_bool(key: str, default: bool = False) -> bool:
 def set_bool(key: str, value: bool) -> None:
     """Persist a boolean preference."""
     _settings().setValue(key, bool(value))
-
-
-# Known keys — keep them centralised so typos show up at review time.
-BMG_SKIP_IMPORT_PROMPT = 'bmg/skip_import_prompt'

@@ -108,17 +108,15 @@ class FittingSession(QWidget):
             QMessageBox.warning(self, 'No Data', 'Load a measurement file first.')
             return
 
-        # BMG placeholder guard — always on, regardless of the "don't show
-        # again" preference. Fitting with column indices 1..N as
+        # BMG placeholder guard — fitting with column indices 1..N as
         # concentrations would silently produce meaningless Ka values.
         if ms.metadata.get(BMG_PLACEHOLDER_KEY):
             QMessageBox.warning(
                 self,
                 'Concentrations Required',
-                'This dataset was imported from a BMG plate reader export '
-                'and still holds placeholder concentrations (1&hellip;N). '
-                'Enter the real concentration vector before running the '
-                'fit &mdash; opening the Concentration Vector dialog now.',
+                'BMG import: placeholder concentrations are still in '
+                'place. Enter the real concentration vector before '
+                'running the fit.',
             )
             self._data_panel.open_concentration_dialog()
             return
@@ -447,12 +445,12 @@ class FittingSession(QWidget):
             self._maybe_show_bmg_prompt(ms)
 
     def _maybe_show_bmg_prompt(self, ms: MeasurementSet) -> None:
-        """Show the BMG import prompt unless the user opted out."""
-        from gui.preferences import BMG_SKIP_IMPORT_PROMPT, get_bool, set_bool
+        """Surface the BMG placeholder warning on every BMG import.
 
-        if get_bool(BMG_SKIP_IMPORT_PROMPT, default=False):
-            return
-
+        No opt-out: the fit-time guard blocks fitting until real
+        concentrations are supplied, so a one-shot notification here is
+        the lowest-friction path to making that contract visible.
+        """
         from gui.dialogs.bmg_prompt_dialog import BMGConcentrationPromptDialog
 
         source = ms.metadata.get('source_file', '')
@@ -463,10 +461,7 @@ class FittingSession(QWidget):
             n_points=ms.n_points,
             parent=self,
         )
-        result = dlg.exec()
-        if dlg.skip_future_prompts():
-            set_bool(BMG_SKIP_IMPORT_PROMPT, True)
-        if result == dlg.DialogCode.Accepted:
+        if dlg.exec() == dlg.DialogCode.Accepted:
             self._data_panel.open_concentration_dialog()
 
     def _on_data_cleared(self) -> None:
