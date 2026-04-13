@@ -6,23 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (
-    QFileDialog,
-    QGroupBox,
-    QHBoxLayout,
-    QMessageBox,
-    QScrollArea,
-    QSplitter,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtWidgets import QFileDialog, QGroupBox, QHBoxLayout, QMessageBox, QScrollArea, QSplitter, QVBoxLayout, QWidget
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-
-_DEMO_IDA_PATH = Path(__file__).parent.parent / "data" / "IDA_system.txt"
 from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
 from core.pipeline.fit_pipeline import FitConfig, FitResult
+from core.units import Quantity
 from gui.app_state import SessionState
 from gui.plotting.fit_summary_widget import FitSummaryWidget
 from gui.plotting.plot_style import PlotStyleWidget
@@ -32,8 +22,54 @@ from gui.widgets.bounds_panel import BoundsPanel
 from gui.widgets.data_panel import DataPanel
 from gui.widgets.fit_config_panel import FitConfigPanel
 from gui.widgets.preprocessing_panel import PreprocessingPanel
+from gui.widgets.info_button import InfoGroupBox
 from gui.widgets.replica_panel import ReplicaPanel
 from gui.workers import FitWorker
+
+_PLOT_STYLE_HELP_HTML = """
+<h3>Plot Style</h3>
+
+<p><b>What This Section Is For</b></p>
+<p>Controls for the interactive plot on the right: which series are
+visible (replicas, average, error bars, fit curves), axis/tick/legend
+font sizes, marker shapes and palette, line widths and colors, and the
+x-axis display unit. Changes apply live &mdash; no need to re-run the
+fit.</p>
+
+<p><b>What Affects What</b></p>
+<ul>
+  <li><b>Visibility</b> &mdash; toggles whole series on or off. Hidden
+      series are not drawn and do not appear in the legend.</li>
+  <li><b>Axes</b> &mdash; font sizes for labels/ticks and the x-axis
+      unit (nM / &micro;M / mM / M). Data is stored in M internally and
+      rescaled at render time.</li>
+  <li><b>Replicas, Dropped Replicas, Average Line, Fit Curves, Error
+      Bars</b> &mdash; per-series style groups.</li>
+  <li><b>Legend, Annotations</b> &mdash; toggle the legend and the
+      draggable fit-results overlay.</li>
+</ul>
+
+<p><b>Save and Reuse: Style Templates</b></p>
+<p>You can save the entire Plot Style configuration and reload it
+later, so you don&rsquo;t have to reconfigure fonts, colors, and
+visibility every session.</p>
+<ul>
+  <li><b>Import &rarr; Load Style Template&hellip;</b> &mdash; load a
+      <code>.json</code> template (all controls update at once).</li>
+  <li><b>Export &rarr; Save Style Template</b> &mdash; write the
+      current style to a <code>.json</code> file you can share or
+      commit to your project.</li>
+</ul>
+<p>Style templates round-trip exactly, so they&rsquo;re a good way to
+enforce a consistent look across figures in a paper or lab report.</p>
+
+<p><b>Tip</b></p>
+<p>If the fit-results annotation or the legend ends up in an awkward
+spot, drag them with the mouse. The app remembers the drag position
+until you toggle the corresponding overlay off and back on.</p>
+"""
+
+_DEMO_IDA_PATH = Path(__file__).parent.parent / 'data' / 'IDA_system.txt'
 
 
 class FittingSession(QWidget):
@@ -68,7 +104,7 @@ class FittingSession(QWidget):
         """Start a background fitting run."""
         ms = self._state.measurement_set
         if ms is None:
-            QMessageBox.warning(self, "No Data", "Load a measurement file first.")
+            QMessageBox.warning(self, 'No Data', 'Load a measurement file first.')
             return
 
         assay_cls = self._assay_panel.get_assay_class()
@@ -94,40 +130,66 @@ class FittingSession(QWidget):
         self._fit_worker.finished.connect(self._on_fit_complete)
         self._fit_worker.error.connect(self._on_fit_error)
         self._fit_worker.start()
-        self.status_message.emit("Fitting…")
+        self.status_message.emit('Fitting…')
 
     def load_demo_ida(self) -> None:
-        """Load the bundled IDA demo dataset and run a fit with default settings."""
+        """Load the bundled IDA demo dataset and run a fit with default settings.
+
+        Resets all panels to defaults first so every click produces an
+        identical, reproducible result regardless of prior session state.
+        """
         if not _DEMO_IDA_PATH.exists():
-            QMessageBox.warning(self, "Demo Data Missing", f"Could not find:\n{_DEMO_IDA_PATH}")
+            QMessageBox.warning(self, 'Demo Data Missing', f'Could not find:\n{_DEMO_IDA_PATH}')
             return
+
+        # 1. Reset all panels to IDA defaults
         self._assay_panel.set_assay_type(AssayType.IDA)
+        self._bounds_panel.reset_to_defaults()
+        self._fit_panel.set_config(FitConfig())
+
+        # 2. Load data (triggers _on_data_loaded → resets replicas, clears results)
         self._data_panel.load_file(str(_DEMO_IDA_PATH))
+
+        # 3. Apply z-score outlier removal with default settings
+        self._preprocess_panel.apply()
+
+        # 4. Run fit
         self.run_fit()
 
     def export_results(self) -> None:
         """Export current fit results to JSON."""
         if not self._state.fit_results:
-            QMessageBox.information(self, "No Results", "Run a fit first.")
+            QMessageBox.information(self, 'No Results', 'Run a fit first.')
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Fit Results", "results.json", "JSON (*.json)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, 'Export Fit Results', 'results.json', 'JSON (*.json)')
         if not path:
             return
         from gui.session import export_results
+
         export_results(self._state.fit_results, path)
-        self.status_message.emit(f"Results exported to {path}")
+        self.status_message.emit(f'Results exported to {path}')
+
+    def export_results_txt(self) -> None:
+        """Export current fit results as a human-readable text report."""
+        if not self._state.fit_results:
+            QMessageBox.information(self, 'No Results', 'Run a fit first.')
+            return
+        path, _ = QFileDialog.getSaveFileName(self, 'Export Results (TXT)', 'results.txt', 'Text files (*.txt)')
+        if not path:
+            return
+        from gui.session import export_results_txt
+
+        export_results_txt(self._state.fit_results, path)
+        self.status_message.emit(f'Results exported to {path}')
 
     def import_results(self) -> None:
         """Import fit results from JSON and replot."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import Fit Results", "", "JSON (*.json);;All files (*)"
-        )
+        path, _ = QFileDialog.getOpenFileName(self, 'Import Fit Results', '', 'JSON (*.json);;All files (*)')
         if not path:
             return
         try:
             from gui.session import import_results
+
             results = import_results(path)
             if self._state.measurement_set is not None:
                 # Raw data already loaded — overlay imported fits immediately
@@ -150,40 +212,78 @@ class FittingSession(QWidget):
                     meta = ASSAY_REGISTRY[self._state.assay_type]
                     last = results[-1]
                     plot_data = {
-                        'concentrations': last.x_fit,
+                        'concentrations': last.x_fit.magnitude,
                         'active_replicas': [],
                         'dropped_replicas': [],
                         'average': None,
                         'fits': [
-                            {'x': r.x_fit, 'y': r.y_fit, 'label': 'Best Fit', 'id': r.id}
+                            {
+                                'x': r.x_fit.magnitude,
+                                'y': r.y_fit.magnitude,
+                                'label': 'Best Fit',
+                                'id': r.id,
+                            }
                             for r in results
                         ],
                     }
-                    self._plot_widget.update_plot(
-                        plot_data, x_label=meta.x_label, y_label=meta.y_label
-                    )
+                    self._plot_widget.update_plot(plot_data, x_label=meta.x_label, y_label=meta.y_label)
                     self._plot_widget.set_fit_results(results)
             if results:
                 self._summary_widget.update_result(results[-1])
-            self.status_message.emit(f"Imported {len(results)} result(s) from {path}")
+            self.status_message.emit(f'Imported {len(results)} result(s) from {path}')
         except Exception as exc:
-            QMessageBox.warning(self, "Import Error", str(exc))
+            QMessageBox.warning(self, 'Import Error', str(exc))
 
     def export_plot(self) -> None:
         """Save the current plot as PNG or SVG."""
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Plot",
-            "plot.png",
-            "PNG image (*.png);;SVG vector (*.svg)",
+            'Save Plot',
+            'plot.png',
+            'PNG image (*.png);;SVG vector (*.svg)',
         )
         if not path:
             return
         try:
             self._plot_widget.export_image(path)
-            self.status_message.emit(f"Plot saved to {path}")
+            self.status_message.emit(f'Plot saved to {path}')
         except Exception as exc:
-            QMessageBox.warning(self, "Export Error", str(exc))
+            QMessageBox.warning(self, 'Export Error', str(exc))
+
+    def save_style_template(self) -> None:
+        """Save current plot style settings to a JSON file."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            'Save Style Template',
+            'style_template.json',
+            'JSON (*.json)',
+        )
+        if not path:
+            return
+        from gui.plotting.plot_style import save_style_json
+
+        style = self._style_widget.widget.current_style()
+        save_style_json(style, path)
+        self.status_message.emit(f'Style template saved to {path}')
+
+    def load_style_template(self) -> None:
+        """Load plot style settings from a JSON file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            'Load Style Template',
+            '',
+            'JSON (*.json);;All files (*)',
+        )
+        if not path:
+            return
+        try:
+            from gui.plotting.plot_style import load_style_json
+
+            style = load_style_json(path)
+            self._style_widget.widget.load_style(style)
+            self.status_message.emit(f'Style template loaded from {path}')
+        except Exception as exc:
+            QMessageBox.warning(self, 'Load Error', str(exc))
 
     # ------------------------------------------------------------------
     # UI construction
@@ -214,7 +314,12 @@ class FittingSession(QWidget):
         self._assay_panel = AssayConfigPanel()
         self._fit_panel = FitConfigPanel()
         self._bounds_panel = BoundsPanel()
-        self._style_widget = _Grouped("Plot Style", PlotStyleWidget())
+        self._style_widget = _Grouped(
+            'Plot Style',
+            PlotStyleWidget(),
+            info_title='Plot Style',
+            info_html=_PLOT_STYLE_HELP_HTML,
+        )
 
         for widget in (
             self._data_panel,
@@ -286,9 +391,7 @@ class FittingSession(QWidget):
         self._refresh_plot()
         active = ms.n_active
         total = ms.n_replicas
-        self.status_message.emit(
-            f"Loaded: {ms.n_points} pts × {total} replicas — {active}/{total} active"
-        )
+        self.status_message.emit(f'Loaded: {ms.n_points} pts × {total} replicas — {active}/{total} active')
 
     def _on_data_cleared(self) -> None:
         self._state.measurement_set = None
@@ -302,14 +405,12 @@ class FittingSession(QWidget):
         self._refresh_plot()
         ms = self._state.measurement_set
         if ms:
-            self.status_message.emit(
-                f"Preprocessing applied — {ms.n_active}/{ms.n_replicas} replicas active"
-            )
+            self.status_message.emit(f'Preprocessing applied — {ms.n_active}/{ms.n_replicas} replicas active')
 
     def _on_preprocessing_reset(self) -> None:
         self._replica_panel.refresh()
         self._refresh_plot()
-        self.status_message.emit("Replicas reset — all active")
+        self.status_message.emit('Replicas reset — all active')
 
     def _on_replicas_changed(self) -> None:
         self._refresh_plot()
@@ -335,14 +436,11 @@ class FittingSession(QWidget):
         self._refresh_plot()
         self._summary_widget.update_result(result)
         self._plot_widget.set_fit_results(self._state.fit_results)
-        self.status_message.emit(
-            f"Fit complete — R²={result.r_squared:.4f}, RMSE={result.rmse:.4e}, "
-            f"{result.n_passing}/{result.n_total} trials passed"
-        )
+        self.status_message.emit(f'Fit complete — R²={result.r_squared:.4f}, RMSE={result.rmse:.4e}, {result.n_passing}/{result.n_total} trials passed')
 
     def _on_fit_error(self, msg: str) -> None:
-        QMessageBox.warning(self, "Fit Error", msg)
-        self.status_message.emit(f"Fit failed: {msg}")
+        QMessageBox.warning(self, 'Fit Error', msg)
+        self.status_message.emit(f'Fit failed: {msg}')
 
     # ------------------------------------------------------------------
     # Helpers
@@ -365,7 +463,7 @@ class FittingSession(QWidget):
         self._plot_widget.set_axis_labels(x, y)
 
 
-class _Grouped(QGroupBox):
+class _GroupedPlain(QGroupBox):
     """Thin wrapper that places an existing widget inside a QGroupBox."""
 
     def __init__(self, title: str, widget: QWidget, parent=None):
@@ -374,3 +472,34 @@ class _Grouped(QGroupBox):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addWidget(widget)
+
+
+class _GroupedWithInfo(InfoGroupBox):
+    """Plain wrapper around :class:`InfoGroupBox` exposing ``self.widget``."""
+
+    def __init__(
+        self,
+        title: str,
+        widget: QWidget,
+        info_title: str,
+        info_html: str,
+        parent=None,
+    ):
+        super().__init__(title, info_title, info_html, parent)
+        self.widget = widget
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.addWidget(widget)
+
+
+def _Grouped(
+    title: str,
+    widget: QWidget,
+    parent=None,
+    info_title: str | None = None,
+    info_html: str | None = None,
+):
+    """Factory: return a plain or info-bearing group-box wrapper."""
+    if info_html is not None:
+        return _GroupedWithInfo(title, widget, info_title or title, info_html, parent)
+    return _GroupedPlain(title, widget, parent)

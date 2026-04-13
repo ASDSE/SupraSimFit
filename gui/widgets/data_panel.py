@@ -8,16 +8,18 @@ import pandas as pd
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QFileDialog,
-    QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
 )
 
 from core.data_processing.measurement_set import MeasurementSet
 from core.io import load_measurements
 from core.io.registry import READERS
+from gui.widgets.info_button import InfoGroupBox
 
 
 def _build_file_filter() -> str:
@@ -29,7 +31,76 @@ def _build_file_filter() -> str:
     return f"Measurement files ({all_exts});;All files (*)"
 
 
-class DataPanel(QGroupBox):
+def _build_data_help_html() -> str:
+    """Build the Data panel help dialog HTML, listing supported formats dynamically."""
+    exts = sorted(READERS.keys())
+    ext_list = ", ".join(f"<code>{e}</code>" for e in exts) or "(none registered)"
+    tab = "&#9;"
+    return f"""
+<h3>Loading Measurement Data</h3>
+
+<p><b>What This Section Is For</b></p>
+<p>Where the fitting session gets its raw numbers. Everything below
+(outlier removal, replica selection, bounds, fit configuration, plot
+style) operates on the measurements you load here.</p>
+
+<p><b>Supported File Formats</b></p>
+<p>Reader selection is automatic from the file extension. Currently
+registered: {ext_list}.</p>
+
+<p><b>TXT &mdash; Tab-Separated, Multi-Replica</b></p>
+<p>The default format. One header row followed by tab-separated rows of
+<i>concentration</i> and <i>signal</i>. The parser detects a header row
+whenever its first cell is non-numeric &mdash; typical values are
+<code>var</code>, <code>concentration</code>, <code>conc</code>, or
+<code>x</code>. Additional replicas are appended as new blocks, each
+starting with another header row:</p>
+<pre style="background:#f3f3f3; padding:6px;">
+var{tab}signal
+0.0{tab}506.246
+2.985e-05{tab}1064.85
+&hellip;
+var{tab}signal
+0.0{tab}503.103
+2.985e-05{tab}1058.21
+&hellip;
+</pre>
+<p>Blank lines and lines starting with <code>#</code> are ignored.
+Concentrations are parsed as floats in molar; if yours aren&rsquo;t in
+M, fix them afterwards via the <b>Concentration Vector</b> dialog
+(which lets you enter values in nM / &micro;M / mM / M and converts to
+molar internally).</p>
+
+<p><b>CSV &mdash; Long or Wide</b></p>
+<p>CSV files work in two shapes. <i>Long</i> format uses three named
+columns (<code>concentration</code>, <code>signal</code>, and
+optionally <code>replica</code>). <i>Wide</i> format puts concentration
+in the first column and one replica per remaining column. Column names
+are matched case-insensitively and several aliases are accepted:
+<code>concentration</code> / <code>conc</code> / <code>x</code> /
+<code>[conc]</code> / <code>titrant</code> for the x column, and
+<code>signal</code> / <code>y</code> / <code>fluorescence</code> /
+<code>intensity</code> / <code>emission</code> for the y column.
+Repeated-header CSVs (the same shape as TXT) are also accepted.</p>
+
+<p><b>Excel &mdash; <code>.xlsx</code> / <code>.xls</code></b></p>
+<p>Supported via the Excel reader; the same long / wide detection
+applies to the first sheet of the workbook.</p>
+
+<p><b>How to Feed In Data</b></p>
+<ul>
+  <li><b>Import &rarr; Import Data&hellip;</b> (<code>Ctrl+O</code>)
+      &mdash; pick any supported file.</li>
+  <li><b>Demo IDA</b> toolbar button &mdash; loads a bundled example so
+      you can try the fitter without your own data.</li>
+  <li><b>Import &rarr; Import Fit Results&hellip;</b> &mdash; reload a
+      previously exported <code>.json</code> fit, optionally without
+      the raw data.</li>
+</ul>
+"""
+
+
+class DataPanel(InfoGroupBox):
     """Load measurement data files and manage concentration vectors.
 
     Signals
@@ -44,7 +115,12 @@ class DataPanel(QGroupBox):
     data_cleared = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__("Data", parent)
+        super().__init__(
+            "Data",
+            info_title="Loading measurement data",
+            info_html=_build_data_help_html(),
+            parent=parent,
+        )
         self._ms: MeasurementSet | None = None
         self._source_path: str | None = None
         self._setup_ui()
@@ -63,11 +139,18 @@ class DataPanel(QGroupBox):
         layout.addWidget(self._file_label)
         layout.addWidget(self._info_label)
 
-        # Concentration vector button (enabled after data is loaded)
-        self._conc_btn = QPushButton("Conc. Vector…")
+        # Concentration vector button (enabled after data is loaded).
+        # Wrap in an HBox with a trailing stretch so the button hugs its text
+        # instead of stretching to the full panel width.
+        self._conc_btn = QPushButton("Concentration Vector")
         self._conc_btn.setEnabled(False)
+        self._conc_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._conc_btn.clicked.connect(self._on_conc_vector)
-        layout.addWidget(self._conc_btn)
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.addWidget(self._conc_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
 
     # ------------------------------------------------------------------
     # Public API

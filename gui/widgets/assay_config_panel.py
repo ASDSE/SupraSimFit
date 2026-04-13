@@ -9,64 +9,29 @@ from PyQt6.QtWidgets import QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, Q
 
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.units import Q_
+from core.units import Q_, Quantity
+from gui.assay_descriptions import ASSAY_DESCRIPTIONS
 from gui.widgets.assay_conditions import ASSAY_CONDITIONS, ConditionField, assay_class, condition_fields
+from gui.widgets.info_button import InfoButton
 
-# Unit definitions derived from pint (single source of truth).
-# Each entry: (display_label, scale_factor_to_base_unit)
-_CONCENTRATION_UNITS: list[tuple[str, float]] = [
-    ('nM', float(Q_(1, 'nM').to('M').magnitude)),
-    ('µM', float(Q_(1, 'µM').to('M').magnitude)),
-    ('mM', float(Q_(1, 'millimolar').to('M').magnitude)),
-    ('M', 1.0),
-]
-_BINDING_CONSTANT_UNITS: list[tuple[str, float]] = [
-    ('M⁻¹', 1.0),
-    ('kM⁻¹', float(Q_(1, 'millimolar**-1').to('M**-1').magnitude)),
-    ('MM⁻¹', float(Q_(1, 'µM**-1').to('M**-1').magnitude)),
-]
-
-# Default unit labels by unit_type
-_DEFAULT_UNIT: dict[str, str] = {
-    'concentration': 'µM',
-    'binding_constant': 'M⁻¹',
+# Display choices derived from ConditionField.unit_type
+_UNIT_TYPE_CHOICES: dict[str, tuple[tuple[str, ...], str]] = {
+    'concentration': (('nM', 'µM', 'mM', 'M'), 'µM'),
+    'binding_constant': (('M⁻¹',), 'M⁻¹'),
 }
 
 _LOCALE_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
 
 
-def _units_for_type(unit_type: str) -> list[tuple[str, float]]:
-    if unit_type == 'concentration':
-        return _CONCENTRATION_UNITS
-    if unit_type == 'binding_constant':
-        return _BINDING_CONSTANT_UNITS
-    return []
-
-
-def _spinbox_range_for_unit(unit_label: str) -> tuple[float, float, int]:
-    """Return (min, max, decimals) appropriate for the given unit label."""
-    ranges: dict[str, tuple[float, float, int]] = {
-        'nM': (0.0, 1e9, 3),
-        'µM': (0.0, 1e6, 3),
-        'mM': (0.0, 1e3, 4),
-        'M': (0.0, 1.0, 6),
-        'M⁻¹': (0.0, 1e15, 3),
-        'kM⁻¹': (0.0, 1e12, 3),
-        'MM⁻¹': (0.0, 1e9, 3),
-    }
-    return ranges.get(unit_label, (0.0, 1e15, 3))
-
-
 class _UnitWidget(QWidget):
     """Spinbox paired with an optional unit selector.
 
-    For fields with ``unit_type`` of ``"concentration"`` or
-    ``"binding_constant"`` a ``QComboBox`` is shown next to the spinbox.
-    Changing the unit converts the displayed value so the physical quantity
-    stays constant.
+    For fields with display choices (concentration, binding constant) a
+    ``QComboBox`` is shown next to the spinbox.  Changing the unit converts
+    the displayed value so the physical quantity stays constant.
 
-    ``value()`` always returns the quantity in the base unit (M or M⁻¹).
-    ``setValue(v)`` accepts a value in the base unit.
+    ``value()`` always returns a ``pint.Quantity`` in the base unit.
+    ``setValue(v)`` accepts a float in the base unit.
 
     Signals
     -------
@@ -78,8 +43,11 @@ class _UnitWidget(QWidget):
 
     def __init__(self, field: ConditionField, parent=None):
         super().__init__(parent)
-        self._unit_type = field.unit_type
-        self._units = _units_for_type(field.unit_type)
+        self._base_unit: str = field.unit or ''
+        entry = _UNIT_TYPE_CHOICES.get(field.unit_type)
+        choices = entry[0] if entry else ()
+        default_lbl = entry[1] if entry else ''
+        self._units: list[tuple[str, float]] = [(label, float(Q_(1, label).to(self._base_unit).magnitude)) for label in choices] if choices and self._base_unit else []
         self._current_scale: float = 1.0
 
         layout = QHBoxLayout(self)
@@ -94,8 +62,7 @@ class _UnitWidget(QWidget):
             self._combo = QComboBox()
             for label, _ in self._units:
                 self._combo.addItem(label)
-            default_label = _DEFAULT_UNIT.get(field.unit_type, self._units[0][0])
-            default_idx = next((i for i, (lbl, _) in enumerate(self._units) if lbl == default_label), 0)
+            default_idx = next((i for i, (lbl, _) in enumerate(self._units) if lbl == default_lbl), 0)
             self._combo.setCurrentIndex(default_idx)
             self._current_scale = self._units[default_idx][1]
             self._combo.currentIndexChanged.connect(self._on_unit_changed)
@@ -114,9 +81,9 @@ class _UnitWidget(QWidget):
 
         self._spinbox.valueChanged.connect(self._on_spinbox_changed)
 
-    def value(self) -> float:
-        """Return value in base unit (M or M⁻¹)."""
-        return self._spinbox.value() * self._current_scale
+    def value(self) -> Quantity:
+        """Return value as a Quantity in the base unit (M or M⁻¹)."""
+        return Q_(self._spinbox.value() * self._current_scale, self._base_unit)
 
     def setValue(self, base_value: float) -> None:
         """Set widget from a base-unit value."""
@@ -130,14 +97,9 @@ class _UnitWidget(QWidget):
             self._combo.setToolTip(tip)
 
     def _apply_range_for_current_unit(self) -> None:
-        if self._combo is not None:
-            label = self._combo.currentText()
-        else:
-            label = ''
-        lo, hi, dp = _spinbox_range_for_unit(label)
         self._spinbox.blockSignals(True)
-        self._spinbox.setRange(lo, hi)
-        self._spinbox.setDecimals(dp)
+        self._spinbox.setRange(0.0, 1e15)
+        self._spinbox.setDecimals(3)
         self._spinbox.blockSignals(False)
 
     def _on_unit_changed(self, idx: int) -> None:
@@ -208,12 +170,21 @@ class AssayConfigPanel(QGroupBox):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        # Assay type selector
+        # Assay type selector + info button
         self._combo = QComboBox()
         for at in ASSAY_CONDITIONS:
             self._combo.addItem(ASSAY_REGISTRY[at].display_name, userData=at)
         self._combo.currentIndexChanged.connect(self._on_type_changed)
-        layout.addWidget(self._combo)
+
+        self._assay_info_btn = InfoButton('Assay type', '')
+
+        combo_row = QWidget()
+        combo_lay = QHBoxLayout(combo_row)
+        combo_lay.setContentsMargins(0, 0, 0, 0)
+        combo_lay.setSpacing(6)
+        combo_lay.addWidget(self._combo, 1)
+        combo_lay.addWidget(self._assay_info_btn)
+        layout.addWidget(combo_row)
 
         # Dynamic conditions form
         self._form_widget = QWidget()
@@ -221,8 +192,19 @@ class AssayConfigPanel(QGroupBox):
         self._form_layout.setContentsMargins(0, 4, 0, 0)
         layout.addWidget(self._form_widget)
 
-        # Populate initial form
+        # Populate initial form + info text
         self._rebuild_form(self._current_type)
+        self._refresh_assay_info(self._current_type)
+
+    def _refresh_assay_info(self, assay_type: AssayType) -> None:
+        title, body = ASSAY_DESCRIPTIONS.get(
+            assay_type.name,
+            (
+                ASSAY_REGISTRY[assay_type].display_name,
+                f'<p>No description available for <b>{assay_type.name}</b>.</p>',
+            ),
+        )
+        self._assay_info_btn.set_content(title, body)
 
     def _rebuild_form(self, assay_type: AssayType) -> None:
         # Clear previous widgets
@@ -254,5 +236,6 @@ class AssayConfigPanel(QGroupBox):
         at = self._combo.itemData(idx)
         self._current_type = at
         self._rebuild_form(at)
+        self._refresh_assay_info(at)
         self.assay_type_changed.emit(at)
         self.conditions_changed.emit()

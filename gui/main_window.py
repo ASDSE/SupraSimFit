@@ -2,18 +2,9 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtCore import QLocale
+from PyQt6.QtCore import QLocale, Qt
 from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
-    QStatusBar,
-    QTabWidget,
-    QToolBar,
-)
+from PyQt6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QTabWidget, QToolBar, QToolButton
 
 from gui.fitting_session import FittingSession
 
@@ -62,6 +53,22 @@ QTabBar::tab:selected {
 QTabBar::tab:!selected:hover {
     background: rgba(245,245,245,0.95);
 }
+QGroupBox {
+    font-size: 14px;
+    font-weight: bold;
+    margin-top: 22px;
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-radius: 5px;
+    padding: 14px 6px 6px 6px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 2px 8px;
+    color: rgba(20, 40, 90, 0.9);
+    background: transparent;
+}
 """
 
 
@@ -104,9 +111,9 @@ class FittingMainWindow(QMainWindow):
         self._tabs.tabBar().setExpanding(False)
 
         # "+" button to open new sessions, placed at the top-right corner
-        plus_btn = QPushButton("+")
+        plus_btn = QPushButton('+')
         plus_btn.setFixedSize(28, 28)
-        plus_btn.setToolTip("New Session (Ctrl+T)")
+        plus_btn.setToolTip('New Session (Ctrl+T)')
         plus_btn.clicked.connect(self._new_session)
         self._tabs.setCornerWidget(plus_btn, Qt.Corner.TopRightCorner)
 
@@ -118,11 +125,31 @@ class FittingMainWindow(QMainWindow):
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.addToolBar(tb)
 
-        self._act_load = QAction('Load Data', self)
+        # Import actions (grouped under the Import button)
+        self._act_load = QAction('Import Data\u2026', self)
         self._act_load.setShortcut(QKeySequence.StandardKey.Open)
-        self._act_load.setToolTip('Load measurement data into the active session (Ctrl+O)')
+        self._act_load.setToolTip('Import measurement data into the active session (Ctrl+O)')
         self._act_load.triggered.connect(self._on_load)
-        tb.addAction(self._act_load)
+        # Register action on the main window so the Ctrl+O shortcut is active
+        # even though the action is not placed directly on the toolbar.
+        self.addAction(self._act_load)
+
+        self._act_import = QAction('Import Fit Results\u2026', self)
+        self._act_import.setToolTip('Import fit results from JSON for re-plotting')
+        self._act_import.triggered.connect(self._on_import)
+
+        self._act_load_style = QAction('Load Style Template\u2026', self)
+        self._act_load_style.setToolTip('Load plot style settings from a JSON file')
+        self._act_load_style.triggered.connect(self._on_load_style)
+
+        import_menu = QMenu(self)
+        import_menu.addAction(self._act_load)
+        import_menu.addAction(self._act_import)
+        import_menu.addSeparator()
+        import_menu.addAction(self._act_load_style)
+
+        self._import_btn = self._make_menu_button('Import', import_menu, 'Import / Load options')
+        tb.addWidget(self._import_btn)
 
         self._act_demo = QAction('Demo IDA', self)
         self._act_demo.setToolTip('Load bundled IDA demo data and run a fit with default settings')
@@ -139,21 +166,51 @@ class FittingMainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        self._act_export = QAction('Export Results', self)
+        # Export actions
+        self._act_export = QAction('Export Results (JSON)', self)
         self._act_export.setShortcut(QKeySequence.StandardKey.Save)
         self._act_export.setToolTip('Export fit results to JSON (Ctrl+S)')
         self._act_export.triggered.connect(self._on_export)
-        tb.addAction(self._act_export)
 
-        self._act_import = QAction('Import Results', self)
-        self._act_import.setToolTip('Import fit results from JSON for re-plotting')
-        self._act_import.triggered.connect(self._on_import)
-        tb.addAction(self._act_import)
+        self._act_export_txt = QAction('Export Results (TXT)', self)
+        self._act_export_txt.setToolTip('Export fit results as a human-readable text report')
+        self._act_export_txt.triggered.connect(self._on_export_txt)
 
         self._act_save_plot = QAction('Save Plot', self)
         self._act_save_plot.setToolTip('Export the current plot as PNG or SVG')
         self._act_save_plot.triggered.connect(self._on_save_plot)
-        tb.addAction(self._act_save_plot)
+
+        self._act_save_style = QAction('Save Style Template', self)
+        self._act_save_style.setToolTip('Save current plot style settings to a JSON file')
+        self._act_save_style.triggered.connect(self._on_save_style)
+
+        export_menu = QMenu(self)
+        export_menu.addAction(self._act_export)
+        export_menu.addAction(self._act_export_txt)
+        export_menu.addSeparator()
+        export_menu.addAction(self._act_save_plot)
+        export_menu.addSeparator()
+        export_menu.addAction(self._act_save_style)
+
+        self._export_btn = self._make_menu_button('Export', export_menu, 'Export / Save options')
+        tb.addWidget(self._export_btn)
+
+    @staticmethod
+    def _make_menu_button(label: str, menu: QMenu, tooltip: str) -> QToolButton:
+        """Create a toolbar button that pops a menu without the Qt auto-arrow.
+
+        The default ``InstantPopup`` mode draws a dropdown triangle in the
+        bottom-right corner of the button; hiding the ``menu-indicator`` via
+        stylesheet gives a clean text-only button while preserving the menu.
+        """
+        btn = QToolButton()
+        btn.setText(label)
+        btn.setToolTip(tooltip)
+        btn.setAutoRaise(False)
+        btn.setMenu(menu)
+        btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        btn.setStyleSheet('QToolButton::menu-indicator { image: none; width: 0; }')
+        return btn
 
     def _setup_menus(self) -> None:
         mb = self.menuBar()
@@ -172,8 +229,12 @@ class FittingMainWindow(QMainWindow):
         file_menu.addAction(self._act_fit)
         file_menu.addSeparator()
         file_menu.addAction(self._act_export)
+        file_menu.addAction(self._act_export_txt)
         file_menu.addAction(self._act_import)
         file_menu.addAction(self._act_save_plot)
+        file_menu.addSeparator()
+        file_menu.addAction(self._act_save_style)
+        file_menu.addAction(self._act_load_style)
         file_menu.addSeparator()
         quit_act = QAction('&Quit', self)
         quit_act.setShortcut(QKeySequence.StandardKey.Quit)
@@ -242,6 +303,11 @@ class FittingMainWindow(QMainWindow):
         if session:
             session.export_results()
 
+    def _on_export_txt(self) -> None:
+        session = self.active_session()
+        if session:
+            session.export_results_txt()
+
     def _on_import(self) -> None:
         session = self.active_session()
         if session:
@@ -251,6 +317,16 @@ class FittingMainWindow(QMainWindow):
         session = self.active_session()
         if session:
             session.export_plot()
+
+    def _on_save_style(self) -> None:
+        session = self.active_session()
+        if session:
+            session.save_style_template()
+
+    def _on_load_style(self) -> None:
+        session = self.active_session()
+        if session:
+            session.load_style_template()
 
 
 def launch() -> None:

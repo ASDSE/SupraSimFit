@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (
-    QCheckBox,
-    QGroupBox,
-    QHBoxLayout,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtWidgets import QCheckBox, QGridLayout, QGroupBox, QHBoxLayout, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from core.data_processing.measurement_set import MeasurementSet
+
+_COLS_PER_ROW = 4
+
+
+def _display_label(index: int) -> str:
+    """Map a zero-based replica index to an A–Z display label.
+
+    For indices 0–25 returns 'A'–'Z'.  Beyond that, returns 'AA', 'AB', etc.
+    """
+    if index < 26:
+        return chr(65 + index)
+    # Overflow: AA, AB, ...
+    return chr(65 + index // 26 - 1) + chr(65 + index % 26)
 
 
 class ReplicaPanel(QGroupBox):
@@ -31,7 +36,7 @@ class ReplicaPanel(QGroupBox):
     replicas_changed = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__("Replicas", parent)
+        super().__init__('Replicas', parent)
         self._ms: MeasurementSet | None = None
         self._checkboxes: dict[str, QCheckBox] = {}
         self._auto_dropped: set[str] = set()  # dropped by preprocessing
@@ -54,10 +59,7 @@ class ReplicaPanel(QGroupBox):
         if self._ms is None:
             return
         # Track which replicas were just auto-dropped
-        newly_inactive = {
-            rid for rid in self._ms.replica_ids
-            if not self._ms.is_active(rid)
-        }
+        newly_inactive = {rid for rid in self._ms.replica_ids if not self._ms.is_active(rid)}
         self._auto_dropped = newly_inactive
         self._rebuild()
 
@@ -87,26 +89,26 @@ class ReplicaPanel(QGroupBox):
     def _setup_ui(self) -> None:
         outer = QVBoxLayout(self)
 
-        # Scroll area for many replicas
+        # Grid layout for compact replica checkboxes
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(160)
+        scroll.setMaximumHeight(120)
         container = QWidget()
-        self._replica_layout = QVBoxLayout(container)
+        self._replica_layout = QGridLayout(container)
         self._replica_layout.setContentsMargins(4, 4, 4, 4)
-        self._replica_layout.setSpacing(2)
+        self._replica_layout.setSpacing(4)
         scroll.setWidget(container)
         outer.addWidget(scroll)
 
         btn_row = QHBoxLayout()
-        reset_btn = QPushButton("Reset All")
+        reset_btn = QPushButton('Reset All')
         reset_btn.clicked.connect(self.reset_all)
         btn_row.addWidget(reset_btn)
         btn_row.addStretch()
         outer.addLayout(btn_row)
 
     def _rebuild(self) -> None:
-        """Rebuild the checkbox list from current MeasurementSet state."""
+        """Rebuild the checkbox grid from current MeasurementSet state."""
         # Clear existing
         self._checkboxes.clear()
         while self._replica_layout.count():
@@ -117,21 +119,22 @@ class ReplicaPanel(QGroupBox):
         if self._ms is None:
             return
 
-        for rid in self._ms.replica_ids:
+        for i, rid in enumerate(self._ms.replica_ids):
             active = self._ms.is_active(rid)
-            label = rid
+            display = _display_label(i)
+            label = display
             if rid in self._auto_dropped:
-                label = f"{rid}  (z-score)"
+                label = f'{display} (z)'
             cb = QCheckBox(label)
             cb.setChecked(active)
             if rid in self._auto_dropped:
-                cb.setStyleSheet("color: #888;")
+                cb.setStyleSheet('color: #888;')
+            cb.setToolTip(f'Replica {rid}')
             # Capture rid in closure
             cb.toggled.connect(lambda checked, r=rid: self._on_toggled(r, checked))
             self._checkboxes[rid] = cb
-            self._replica_layout.addWidget(cb)
-
-        self._replica_layout.addStretch()
+            row, col = divmod(i, _COLS_PER_ROW)
+            self._replica_layout.addWidget(cb, row, col)
 
     # ------------------------------------------------------------------
     # Slots
@@ -146,6 +149,7 @@ class ReplicaPanel(QGroupBox):
             self._auto_dropped.discard(rid)
             cb = self._checkboxes.get(rid)
             if cb:
-                cb.setText(rid)
-                cb.setStyleSheet("")
+                idx = list(self._ms.replica_ids).index(rid)
+                cb.setText(_display_label(idx))
+                cb.setStyleSheet('')
         self.replicas_changed.emit()

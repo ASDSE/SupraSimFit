@@ -8,6 +8,7 @@ from typing import Any, Optional
 from core.assays.registry import AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, FitResult
+from core.units import Quantity
 
 
 @dataclass
@@ -28,7 +29,7 @@ class SessionState:
 
     # Fit configuration
     fit_config: FitConfig = field(default_factory=FitConfig)
-    custom_bounds: Optional[dict[str, tuple[float, float]]] = None
+    custom_bounds: Optional[dict[str, tuple[Quantity, Quantity]]] = None
 
     # Preprocessing steps spec — passed to apply_preprocessing()
     preprocessing_steps: list[dict] = field(default_factory=list)

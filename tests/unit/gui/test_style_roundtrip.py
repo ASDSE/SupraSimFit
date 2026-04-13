@@ -43,7 +43,7 @@ def test_style_signal_updates_plot_style(qapp, minimal_plot_data):
     # Change a parameter directly via the Parameter tree
     params = style_widget._params
     new_size = initial_size + 2
-    params["Data points", "Size"] = new_size
+    params["Replicas", "Size"] = new_size
 
     # apply_style should have been called via signal; check _style updated
     assert pw._style["data_points"]["size"] == new_size
