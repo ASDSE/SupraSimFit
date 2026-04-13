@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from PyQt6.QtCore import QLocale, Qt, pyqtSignal
-from PyQt6.QtWidgets import QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
@@ -13,6 +13,7 @@ from core.units import Q_, Quantity
 from gui.assay_descriptions import ASSAY_DESCRIPTIONS
 from gui.widgets.assay_conditions import ASSAY_CONDITIONS, ConditionField, assay_class, condition_fields
 from gui.widgets.info_button import InfoButton
+from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox
 
 # Display choices derived from ConditionField.unit_type
 _UNIT_TYPE_CHOICES: dict[str, tuple[tuple[str, ...], str]] = {
@@ -54,7 +55,7 @@ class _UnitWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        self._spinbox = QDoubleSpinBox()
+        self._spinbox = NoScrollDoubleSpinBox()
         self._spinbox.setLocale(_LOCALE_EN)
         layout.addWidget(self._spinbox, stretch=1)
 

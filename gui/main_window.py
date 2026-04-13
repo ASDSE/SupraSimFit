@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QCoreApplication, QLocale, Qt
+from PyQt6.QtCore import QCoreApplication, QEvent, QLocale, QObject, Qt
 from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QTabWidget, QToolBar, QToolButton
+from PyQt6.QtWidgets import QAbstractSpinBox, QApplication, QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QTabWidget, QToolBar, QToolButton
 
 from gui.fitting_session import FittingSession
 from gui.preferences import APP_NAME, ORG_NAME
+
+
+class _SpinBoxWheelRedirect(QObject):
+    """Block non-focused spinboxes from swallowing wheel events.
+
+    Qt's event-filter mechanism cannot propagate a consumed wheel event
+    to the target's parent, so we simply eat the event when a spinbox
+    lacks focus. The user's primary complaint — accidentally changing
+    values while scrolling the sidebar — is fixed; the sidebar scroll
+    pauses while the cursor is over a pyqtgraph ParameterTree spinbox
+    but no longer mutates its value. Our project-owned spinboxes go
+    through :class:`gui.widgets.numeric_inputs.NoScrollSpinBox` /
+    :class:`NoScrollDoubleSpinBox` instead, which ``event.ignore()``
+    and so let Qt forward the wheel up to the scroll area cleanly.
+    """
+
+    def eventFilter(self, obj, event):  # type: ignore[override]
+        if event.type() == QEvent.Type.Wheel and isinstance(obj, QAbstractSpinBox):
+            if not obj.hasFocus():
+                return True
+        return False
 
 _APP_QSS = """
 QToolBar {
@@ -357,6 +378,12 @@ def launch() -> None:
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyleSheet(_APP_QSS)
+
+    # Block non-focused spinboxes from stealing wheel events while the
+    # user scrolls the sidebar. Kept alive on the app so Qt doesn't GC it.
+    app._spinbox_wheel_filter = _SpinBoxWheelRedirect(app)  # type: ignore[attr-defined]
+    app.installEventFilter(app._spinbox_wheel_filter)  # type: ignore[attr-defined]
+
     window = FittingMainWindow()
     window.show()
     sys.exit(app.exec())

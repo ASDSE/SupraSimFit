@@ -196,11 +196,12 @@ class BoundsPanel(QGroupBox):
         self._form_layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._form_widget)
 
-        # Reset defaults button — compact
+        # Reset defaults button — compact, centred
         reset_row = QHBoxLayout()
         reset_btn = QPushButton('Reset to Defaults')
         reset_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         reset_btn.clicked.connect(self.reset_to_defaults)
+        reset_row.addStretch(1)
         reset_row.addWidget(reset_btn)
         reset_row.addStretch(1)
         layout.addLayout(reset_row)
@@ -215,12 +216,13 @@ class BoundsPanel(QGroupBox):
         dye_cb_row.addStretch(1)
         layout.addLayout(dye_cb_row)
 
-        # Load dye-alone button — compact
+        # Load dye-alone button — compact, centred
         dye_btn_row = QHBoxLayout()
         self._dye_alone_btn = QPushButton('Load Dye-Alone…')
         self._dye_alone_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._dye_alone_btn.setEnabled(False)
         self._dye_alone_btn.clicked.connect(self._on_load_dye_alone)
+        dye_btn_row.addStretch(1)
         dye_btn_row.addWidget(self._dye_alone_btn)
         dye_btn_row.addStretch(1)
         layout.addLayout(dye_btn_row)

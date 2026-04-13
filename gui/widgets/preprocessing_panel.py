@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QLocale, pyqtSignal
-from PyQt6.QtWidgets import QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy, QSpinBox, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.preprocessing import apply_preprocessing
 from gui.widgets.info_button import InfoButton
+from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, NoScrollSpinBox
 
 _LOCALE_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
 
@@ -17,9 +18,8 @@ _ZSCORE_HELP_HTML = """
 <p><b>What It Does</b></p>
 <p>At every concentration point the panel compares the replicas against each
 other. A replica whose signal looks <i>unusually far</i> from its siblings at
-any concentration is flagged as an outlier and removed from the fit. Dropped
-replicas are not deleted &mdash; they are simply ignored while fitting. You can
-restore them at any time with <b>Reset</b>.</p>
+any concentration is flagged as an outlier and deactivated. Dropped replicas
+are not deleted &mdash; only ignored while fitting.</p>
 
 <p><b>The Math (Robust / Modified Z-Score)</b></p>
 <p>For each concentration <i>j</i>, let
@@ -53,6 +53,20 @@ which improves parameter uncertainties and reduces bias from a single bad
 replica. If your fit looks poor, try tightening the threshold first
 (e.g. 3.5 &rarr; 2.5) and rerun &mdash; but inspect which replicas get dropped
 before trusting the result.</p>
+
+<p><b>Applying Repeatedly: It's Iterative, Not Idempotent</b></p>
+<p>Each Apply recomputes median and MAD on the <i>currently active</i>
+replicas only &mdash; replicas you (or a previous Apply) already dropped are
+excluded entirely from both the statistics and the candidate pool. This is
+<b>intentional</b>: one extreme outlier inflates MAD and can mask smaller
+outliers behind it, so the cleanest way to handle multiple bad replicas is
+to peel the worst one first, re-estimate median/MAD, and apply again. Each
+pass can therefore drop additional replicas.</p>
+<p>The flip side: lowering the threshold and clicking Apply again does
+<b>not</b> reconsider anything that&rsquo;s already dropped &mdash; those
+replicas stay dropped. To run a new threshold against the full dataset,
+click <b>Reset</b> first to re-activate every replica, then Apply with the
+new value.</p>
 """
 
 
@@ -147,7 +161,7 @@ class PreprocessingPanel(QGroupBox):
         form = QFormLayout()
 
         # Z-Score threshold with inline info button
-        self._threshold_spin = QDoubleSpinBox()
+        self._threshold_spin = NoScrollDoubleSpinBox()
         self._threshold_spin.setLocale(_LOCALE_EN)
         self._threshold_spin.setRange(0.5, 10.0)
         self._threshold_spin.setSingleStep(0.5)
@@ -164,7 +178,7 @@ class PreprocessingPanel(QGroupBox):
         form.addRow('Z-score threshold:', thr_row)
 
         # Min replicas
-        self._min_rep_spin = QSpinBox()
+        self._min_rep_spin = NoScrollSpinBox()
         self._min_rep_spin.setLocale(_LOCALE_EN)
         self._min_rep_spin.setRange(2, 20)
         self._min_rep_spin.setValue(3)
@@ -173,7 +187,7 @@ class PreprocessingPanel(QGroupBox):
 
         layout.addLayout(form)
 
-        # Buttons — compact, hug their labels
+        # Buttons — compact, centred within the group
         btn_row = QHBoxLayout()
         apply_btn = QPushButton('Apply')
         apply_btn.setToolTip('Apply Z-score outlier filter to active replicas')
@@ -183,6 +197,7 @@ class PreprocessingPanel(QGroupBox):
         reset_btn.setToolTip('Re-activate all replicas')
         reset_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         reset_btn.clicked.connect(self._on_reset)
+        btn_row.addStretch(1)
         btn_row.addWidget(apply_btn)
         btn_row.addWidget(reset_btn)
         btn_row.addStretch(1)

@@ -4,16 +4,15 @@ from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QSpinBox,
     QWidget,
 )
 
 from core.pipeline.fit_pipeline import FitConfig
 from gui.widgets.info_button import InfoButton
+from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, NoScrollSpinBox
 
 _TRIALS_HELP_HTML = """
 <h3>Trials &mdash; Multi-Start Optimization Budget</h3>
@@ -155,7 +154,7 @@ class FitConfigPanel(QGroupBox):
     def _setup_ui(self) -> None:
         form = QFormLayout(self)
 
-        self._trials_spin = QSpinBox()
+        self._trials_spin = NoScrollSpinBox()
         self._trials_spin.setRange(10, 10_000)
         self._trials_spin.setSingleStep(10)
         self._trials_spin.setValue(100)
@@ -163,7 +162,7 @@ class FitConfigPanel(QGroupBox):
         self._trials_spin.valueChanged.connect(self.config_changed)
         form.addRow("Trials:", self._with_info(self._trials_spin, "Trials", _TRIALS_HELP_HTML))
 
-        self._rmse_spin = QDoubleSpinBox()
+        self._rmse_spin = NoScrollDoubleSpinBox()
         self._rmse_spin.setRange(1.0, 10.0)
         self._rmse_spin.setSingleStep(0.1)
         self._rmse_spin.setDecimals(2)
@@ -174,7 +173,7 @@ class FitConfigPanel(QGroupBox):
         self._rmse_spin.valueChanged.connect(self.config_changed)
         form.addRow("RMSE factor:", self._with_info(self._rmse_spin, "RMSE factor", _RMSE_HELP_HTML))
 
-        self._r2_spin = QDoubleSpinBox()
+        self._r2_spin = NoScrollDoubleSpinBox()
         self._r2_spin.setRange(0.0, 1.0)
         self._r2_spin.setSingleStep(0.01)
         self._r2_spin.setDecimals(2)

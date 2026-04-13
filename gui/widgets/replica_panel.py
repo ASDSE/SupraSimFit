@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QCheckBox, QGridLayout, QGroupBox, QHBoxLayout, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QCheckBox, QGridLayout, QGroupBox, QHBoxLayout, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from core.data_processing.measurement_set import MeasurementSet
 
@@ -102,9 +102,11 @@ class ReplicaPanel(QGroupBox):
 
         btn_row = QHBoxLayout()
         reset_btn = QPushButton('Reset All')
+        reset_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         reset_btn.clicked.connect(self.reset_all)
+        btn_row.addStretch(1)
         btn_row.addWidget(reset_btn)
-        btn_row.addStretch()
+        btn_row.addStretch(1)
         outer.addLayout(btn_row)
 
     def _rebuild(self) -> None:

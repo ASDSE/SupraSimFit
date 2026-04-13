@@ -166,6 +166,7 @@ class DataPanel(InfoGroupBox):
         self._conc_btn.clicked.connect(self.open_concentration_dialog)
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.addStretch(1)
         btn_row.addWidget(self._conc_btn)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
@@ -265,10 +266,12 @@ class DataPanel(InfoGroupBox):
             df = pd.DataFrame(rows)
             # Drop the BMG placeholder flag — once real concentrations are in,
             # the dataset is ready to fit. Everything else carries over.
+            # source_file is already stored inside ms.metadata (from_dataframe
+            # sweeps it in via **metadata), so fold it into carry instead of
+            # passing it a second time as an explicit kwarg.
             carry = {k: v for k, v in ms.metadata.items() if k != BMG_PLACEHOLDER_KEY}
-            new_ms = MeasurementSet.from_dataframe(
-                df, source_file=self._source_path, **carry
-            )
+            carry['source_file'] = self._source_path
+            new_ms = MeasurementSet.from_dataframe(df, **carry)
             self._ms = new_ms
             self._update_info()
             self.data_loaded.emit(new_ms)
