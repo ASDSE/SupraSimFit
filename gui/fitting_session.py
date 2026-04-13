@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QFileDialog, QGroupBox, QHBoxLayout, QMessageBox, QS
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
+from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.pipeline.fit_pipeline import FitConfig, FitResult
 from core.units import Quantity
 from gui.app_state import SessionState
@@ -107,6 +108,21 @@ class FittingSession(QWidget):
             QMessageBox.warning(self, 'No Data', 'Load a measurement file first.')
             return
 
+        # BMG placeholder guard — always on, regardless of the "don't show
+        # again" preference. Fitting with column indices 1..N as
+        # concentrations would silently produce meaningless Ka values.
+        if ms.metadata.get(BMG_PLACEHOLDER_KEY):
+            QMessageBox.warning(
+                self,
+                'Concentrations Required',
+                'This dataset was imported from a BMG plate reader export '
+                'and still holds placeholder concentrations (1&hellip;N). '
+                'Enter the real concentration vector before running the '
+                'fit &mdash; opening the Concentration Vector dialog now.',
+            )
+            self._data_panel.open_concentration_dialog()
+            return
+
         assay_cls = self._assay_panel.get_assay_class()
         conditions = self._assay_panel.current_conditions()
         config = self._fit_panel.current_config()
@@ -181,6 +197,40 @@ class FittingSession(QWidget):
 
         export_results_txt(self._state.fit_results, path)
         self.status_message.emit(f'Results exported to {path}')
+
+    def export_raw_data(self) -> None:
+        """Export the currently loaded raw measurements to TXT or CSV.
+
+        The output format is chosen by the file extension and round-trips
+        through the existing :class:`TxtReader` and :class:`CsvReader`.
+        """
+        ms = self._state.measurement_set
+        if ms is None:
+            QMessageBox.information(self, 'No Data', 'Load a measurement file first.')
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            'Export Raw Data',
+            'measurements.txt',
+            'Text file (*.txt);;CSV file (*.csv)',
+        )
+        if not path:
+            return
+        suffix = Path(path).suffix.lower()
+        try:
+            if suffix == '.csv':
+                from core.io.formats.measurement_writer import write_measurements_csv
+                write_measurements_csv(ms, path)
+            else:
+                # Default to TXT if the user typed a different extension.
+                from core.io.formats.measurement_writer import write_measurements_txt
+                if suffix != '.txt':
+                    path = str(Path(path).with_suffix('.txt'))
+                write_measurements_txt(ms, path)
+        except Exception as exc:
+            QMessageBox.warning(self, 'Export Error', f'Failed to write raw data:\n{exc}')
+            return
+        self.status_message.emit(f'Raw data exported to {path}')
 
     def import_results(self) -> None:
         """Import fit results from JSON and replot."""
@@ -392,6 +442,32 @@ class FittingSession(QWidget):
         active = ms.n_active
         total = ms.n_replicas
         self.status_message.emit(f'Loaded: {ms.n_points} pts × {total} replicas — {active}/{total} active')
+
+        if ms.metadata.get(BMG_PLACEHOLDER_KEY):
+            self._maybe_show_bmg_prompt(ms)
+
+    def _maybe_show_bmg_prompt(self, ms: MeasurementSet) -> None:
+        """Show the BMG import prompt unless the user opted out."""
+        from gui.preferences import BMG_SKIP_IMPORT_PROMPT, get_bool, set_bool
+
+        if get_bool(BMG_SKIP_IMPORT_PROMPT, default=False):
+            return
+
+        from gui.dialogs.bmg_prompt_dialog import BMGConcentrationPromptDialog
+
+        source = ms.metadata.get('source_file', '')
+        filename = Path(source).name if source else '(unknown)'
+        dlg = BMGConcentrationPromptDialog(
+            filename=filename,
+            n_replicas=ms.n_replicas,
+            n_points=ms.n_points,
+            parent=self,
+        )
+        result = dlg.exec()
+        if dlg.skip_future_prompts():
+            set_bool(BMG_SKIP_IMPORT_PROMPT, True)
+        if result == dlg.DialogCode.Accepted:
+            self._data_panel.open_concentration_dialog()
 
     def _on_data_cleared(self) -> None:
         self._state.measurement_set = None

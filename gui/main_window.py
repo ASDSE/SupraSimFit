@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QLocale, Qt
+from PyQt6.QtCore import QCoreApplication, QLocale, Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QTabWidget, QToolBar, QToolButton
 
 from gui.fitting_session import FittingSession
+from gui.preferences import APP_NAME, ORG_NAME
 
 _APP_QSS = """
 QToolBar {
@@ -176,6 +177,12 @@ class FittingMainWindow(QMainWindow):
         self._act_export_txt.setToolTip('Export fit results as a human-readable text report')
         self._act_export_txt.triggered.connect(self._on_export_txt)
 
+        self._act_export_raw = QAction('Export Raw Data\u2026', self)
+        self._act_export_raw.setToolTip(
+            'Export the currently loaded replicas and concentrations to TXT or CSV'
+        )
+        self._act_export_raw.triggered.connect(self._on_export_raw)
+
         self._act_save_plot = QAction('Save Plot', self)
         self._act_save_plot.setToolTip('Export the current plot as PNG or SVG')
         self._act_save_plot.triggered.connect(self._on_save_plot)
@@ -187,6 +194,7 @@ class FittingMainWindow(QMainWindow):
         export_menu = QMenu(self)
         export_menu.addAction(self._act_export)
         export_menu.addAction(self._act_export_txt)
+        export_menu.addAction(self._act_export_raw)
         export_menu.addSeparator()
         export_menu.addAction(self._act_save_plot)
         export_menu.addSeparator()
@@ -230,6 +238,7 @@ class FittingMainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._act_export)
         file_menu.addAction(self._act_export_txt)
+        file_menu.addAction(self._act_export_raw)
         file_menu.addAction(self._act_import)
         file_menu.addAction(self._act_save_plot)
         file_menu.addSeparator()
@@ -308,6 +317,11 @@ class FittingMainWindow(QMainWindow):
         if session:
             session.export_results_txt()
 
+    def _on_export_raw(self) -> None:
+        session = self.active_session()
+        if session:
+            session.export_raw_data()
+
     def _on_import(self) -> None:
         session = self.active_session()
         if session:
@@ -335,6 +349,11 @@ def launch() -> None:
 
     # Force English locale globally: dot as decimal separator, comma as thousands
     QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
+
+    # Set org/app identity before QApplication so QSettings (used by
+    # gui.preferences) lands in the correct per-user location.
+    QCoreApplication.setOrganizationName(ORG_NAME)
+    QCoreApplication.setApplicationName(APP_NAME)
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyleSheet(_APP_QSS)

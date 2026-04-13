@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 
 from core.data_processing.measurement_set import MeasurementSet
 from core.io import load_measurements
+from core.io.formats.bmg_reader import BMG_METADATA_KEY, BMG_PLACEHOLDER_KEY
 from core.io.registry import READERS
 from gui.widgets.info_button import InfoGroupBox
 
@@ -84,8 +85,19 @@ are matched case-insensitively and several aliases are accepted:
 Repeated-header CSVs (the same shape as TXT) are also accepted.</p>
 
 <p><b>Excel &mdash; <code>.xlsx</code> / <code>.xls</code></b></p>
-<p>Supported via the Excel reader; the same long / wide detection
-applies to the first sheet of the workbook.</p>
+<p>Two shapes are auto-detected:</p>
+<ul>
+  <li><b>Structured workbooks</b> follow the same long / wide rules as
+      CSV (multi-sheet = one sheet per replica).</li>
+  <li><b>BMG plate-reader exports</b> are recognised from the
+      <i>Microplate End point</i> sheet and the 8&times;12 (or
+      16&times;24) plate grid. Each plate <b>row</b> becomes one
+      replica, each plate <b>column</b> becomes one concentration
+      point. BMG files do not carry concentration values &mdash; the
+      reader assigns placeholder positions <b>1&hellip;N</b> and a
+      dialog opens so you can enter (or load) the real vector. The
+      fit refuses to run until you do.</li>
+</ul>
 
 <p><b>How to Feed In Data</b></p>
 <ul>
@@ -97,6 +109,12 @@ applies to the first sheet of the workbook.</p>
       previously exported <code>.json</code> fit, optionally without
       the raw data.</li>
 </ul>
+
+<p><b>Saving What You Loaded</b></p>
+<p>Use <b>Export &rarr; Export Raw Data&hellip;</b> to write the current
+replicas + concentrations back out as TXT or CSV &mdash; handy for
+converting a BMG plate into a re-loadable flat file once real
+concentrations are in place.</p>
 """
 
 
@@ -145,7 +163,7 @@ class DataPanel(InfoGroupBox):
         self._conc_btn = QPushButton("Concentration Vector")
         self._conc_btn.setEnabled(False)
         self._conc_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self._conc_btn.clicked.connect(self._on_conc_vector)
+        self._conc_btn.clicked.connect(self.open_concentration_dialog)
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.addWidget(self._conc_btn)
@@ -166,7 +184,16 @@ class DataPanel(InfoGroupBox):
             return
         try:
             df = load_measurements(path)
-            ms = MeasurementSet.from_dataframe(df, source_file=str(path))
+            # Forward reader-level flags (e.g. BMG placeholder concentrations)
+            # onto the MeasurementSet so downstream widgets can react to them.
+            extra_metadata: dict = {
+                k: df.attrs[k]
+                for k in (BMG_PLACEHOLDER_KEY, BMG_METADATA_KEY)
+                if k in df.attrs
+            }
+            ms = MeasurementSet.from_dataframe(
+                df, source_file=str(path), **extra_metadata
+            )
             self._ms = ms
             self._source_path = path
             self._update_info()
@@ -189,11 +216,13 @@ class DataPanel(InfoGroupBox):
     def measurement_set(self) -> MeasurementSet | None:
         return self._ms
 
-    # ------------------------------------------------------------------
-    # Private
-    # ------------------------------------------------------------------
+    def open_concentration_dialog(self) -> None:
+        """Open the concentration-vector editor for the current MeasurementSet.
 
-    def _on_conc_vector(self) -> None:
+        Public entry point used by the Concentration Vector button and by
+        :class:`~gui.fitting_session.FittingSession` (both the BMG import
+        prompt and the fit-time guard). A no-op when no data is loaded.
+        """
         if self._ms is None:
             return
         from gui.dialogs.concentration_dialog import ConcentrationDialog
@@ -203,6 +232,10 @@ class DataPanel(InfoGroupBox):
             new_conc = dlg.result_concentrations()
             if new_conc is not None:
                 self._rebuild_ms_with_concentrations(new_conc)
+
+    # ------------------------------------------------------------------
+    # Private
+    # ------------------------------------------------------------------
 
     def _update_info(self) -> None:
         if self._ms is None:
@@ -215,8 +248,6 @@ class DataPanel(InfoGroupBox):
 
     def _rebuild_ms_with_concentrations(self, new_conc) -> None:
         """Rebuild MeasurementSet with a new concentration vector."""
-        import numpy as np
-
         ms = self._ms
         if len(new_conc) != ms.n_points:
             QMessageBox.warning(
@@ -232,7 +263,12 @@ class DataPanel(InfoGroupBox):
                 for j, (c, s) in enumerate(zip(new_conc, sig)):
                     rows.append({"concentration": c, "signal": float(s), "replica": i})
             df = pd.DataFrame(rows)
-            new_ms = MeasurementSet.from_dataframe(df, source_file=self._source_path)
+            # Drop the BMG placeholder flag — once real concentrations are in,
+            # the dataset is ready to fit. Everything else carries over.
+            carry = {k: v for k, v in ms.metadata.items() if k != BMG_PLACEHOLDER_KEY}
+            new_ms = MeasurementSet.from_dataframe(
+                df, source_file=self._source_path, **carry
+            )
             self._ms = new_ms
             self._update_info()
             self.data_loaded.emit(new_ms)
