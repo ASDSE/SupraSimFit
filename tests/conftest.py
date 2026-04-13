@@ -22,6 +22,7 @@ import pytest
 
 from core.models.equilibrium import dba_signal, gda_signal, ida_signal
 from core.models.linear import linear_signal
+from core.units import Q_, Quantity
 
 # ---------------------------------------------------------------------------
 # True parameter values (ground truth for recovery tests)
@@ -80,19 +81,19 @@ DYE_ALONE_TRUE = {
 
 # Shared signal-coefficient bounds (same for every non-linear assay)
 _SIGNAL_BOUNDS = {
-    'I0': (-100, 100),  # tight around 0
-    'I_dye_free': (4e7, 6e7),  # ±20 % of 5e7
-    'I_dye_bound': (2.5e8, 3.5e8),  # ±20 % of 3e8
+    'I0': (Q_(-100, 'au'), Q_(100, 'au')),
+    'I_dye_free': (Q_(4e7, 'au/M'), Q_(6e7, 'au/M')),
+    'I_dye_bound': (Q_(2.5e8, 'au/M'), Q_(3.5e8, 'au/M')),
 }
 
 # Per-assay-family bounds  (Ka key differs)
 DBA_RECOVERY_BOUNDS = {
-    'Ka_dye': (1e-8, 1e12),  # wide, log-scale sampled
+    'Ka_dye': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
     **_SIGNAL_BOUNDS,
 }
 
 GDA_IDA_RECOVERY_BOUNDS = {
-    'Ka_guest': (1e-8, 1e12),  # wide, log-scale sampled
+    'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
     **_SIGNAL_BOUNDS,
 }
 
@@ -199,28 +200,28 @@ def _make_dye_alone_data(true: dict, n_points: int = 15, noise_frac: float = 0.0
 def dba_clean():
     """DBA synthetic data with no noise."""
     x, y = _make_dba_data(DBA_TRUE)
-    return x, y, DBA_TRUE
+    return Q_(x, 'M'), Q_(y, 'au'), DBA_TRUE
 
 
 @pytest.fixture
 def gda_clean():
     """GDA synthetic data with no noise."""
     x, y = _make_gda_data(GDA_TRUE)
-    return x, y, GDA_TRUE
+    return Q_(x, 'M'), Q_(y, 'au'), GDA_TRUE
 
 
 @pytest.fixture
 def ida_clean():
     """IDA synthetic data with no noise."""
     x, y = _make_ida_data(IDA_TRUE)
-    return x, y, IDA_TRUE
+    return Q_(x, 'M'), Q_(y, 'au'), IDA_TRUE
 
 
 @pytest.fixture
 def dye_alone_clean():
     """DyeAlone synthetic data with no noise."""
     x, y = _make_dye_alone_data(DYE_ALONE_TRUE)
-    return x, y, DYE_ALONE_TRUE
+    return Q_(x, 'M'), Q_(y, 'au'), DYE_ALONE_TRUE
 
 
 # ---------------------------------------------------------------------------
@@ -232,21 +233,21 @@ def dye_alone_clean():
 def dba_noisy():
     """DBA synthetic data with 5% Gaussian noise."""
     x, y = _make_dba_data(DBA_TRUE, noise_frac=0.05)
-    return x, y, DBA_TRUE
+    return Q_(x, 'M'), Q_(y, 'au'), DBA_TRUE
 
 
 @pytest.fixture
 def gda_noisy():
     """GDA synthetic data with 5% Gaussian noise."""
     x, y = _make_gda_data(GDA_TRUE, noise_frac=0.05)
-    return x, y, GDA_TRUE
+    return Q_(x, 'M'), Q_(y, 'au'), GDA_TRUE
 
 
 @pytest.fixture
 def ida_noisy():
     """IDA synthetic data with 5% Gaussian noise."""
     x, y = _make_ida_data(IDA_TRUE, noise_frac=0.05)
-    return x, y, IDA_TRUE
+    return Q_(x, 'M'), Q_(y, 'au'), IDA_TRUE
 
 
 # ---------------------------------------------------------------------------
@@ -259,8 +260,8 @@ def assert_within_tolerance(fitted, true, tolerance, param_name='parameter'):
 
     Parameters
     ----------
-    fitted : float
-        Fitted parameter value.
+    fitted : float or Quantity
+        Fitted parameter value (magnitude extracted if Quantity).
     true : float
         Ground truth value.
     tolerance : float
@@ -268,8 +269,10 @@ def assert_within_tolerance(fitted, true, tolerance, param_name='parameter'):
     param_name : str
         Parameter name for error message.
     """
-    rel_error = abs(fitted - true) / abs(true)
-    assert rel_error <= tolerance, f'{param_name}: fitted={fitted:.4e}, true={true:.4e}, rel_error={rel_error:.1%} > tolerance={tolerance:.0%}'
+    fitted_val = float(fitted.magnitude) if isinstance(fitted, Quantity) else float(fitted)
+    true_val = float(true)
+    rel_error = abs(fitted_val - true_val) / abs(true_val)
+    assert rel_error <= tolerance, f'{param_name}: fitted={fitted_val:.4e}, true={true_val:.4e}, rel_error={rel_error:.1%} > tolerance={tolerance:.0%}'
 
 
 @pytest.fixture
@@ -277,9 +280,9 @@ def minimal_plot_data():
     """Minimal plot data dict matching ``prepare_plot_data()`` output shape."""
     x = np.linspace(0, 1e-4, 20)
     return {
-        "concentrations": x,
-        "active_replicas": [("r1", x * 1.1 + 0.01), ("r2", x * 0.9 + 0.02)],
-        "dropped_replicas": [("r3", x * 1.5)],
-        "average": x * 1.0 + 0.015,
-        "fits": [{"x": x, "y": x * 1.05 + 0.012, "label": "GDA fit", "id": "abc123"}],
+        'concentrations': x,
+        'active_replicas': [('r1', x * 1.1 + 0.01), ('r2', x * 0.9 + 0.02)],
+        'dropped_replicas': [('r3', x * 1.5)],
+        'average': x * 1.0 + 0.015,
+        'fits': [{'x': x, 'y': x * 1.05 + 0.012, 'label': 'GDA fit', 'id': 'abc123'}],
     }

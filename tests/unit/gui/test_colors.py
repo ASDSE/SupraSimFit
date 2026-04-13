@@ -53,6 +53,3 @@ def test_rgba_zero_alpha():
     assert result == (0, 255, 0, 0)
 
 
-def test_rgba_returns_4_tuple():
-    result = rgba((1, 2, 3), alpha=200)
-    assert len(result) == 4

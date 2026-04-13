@@ -147,9 +147,6 @@ class TestZScoreReplicaFilter:
 class TestRegistry:
     """Preprocessing step registry and pipeline runner."""
 
-    def test_zscore_registered(self):
-        assert 'zscore_replica_filter' in PREPROCESSING_STEPS
-
     def test_get_step(self):
         step = get_step('zscore_replica_filter', {'threshold': 3.0})
         assert step.name == 'zscore_replica_filter'

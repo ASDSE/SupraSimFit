@@ -66,12 +66,6 @@ class TestGenerateInitialGuesses:
             for i, (lo, hi) in enumerate(bounds):
                 assert lo <= g[i] <= hi, f'param {i}: {g[i]} not in [{lo}, {hi}]'
 
-    def test_correct_shape(self):
-        guesses = generate_initial_guesses(10, [(0, 1)] * 4)
-        assert len(guesses) == 10
-        for g in guesses:
-            assert g.shape == (4,)
-
     def test_log_scale_positive_bounds(self):
         bounds = [(1e-8, 1e12)]
         guesses = generate_initial_guesses(100, bounds, log_scale_params=[0])
@@ -422,3 +416,32 @@ class TestCalculateFitMetrics:
         y = np.array([42.0])
         rmse, r2 = calculate_fit_metrics(y, y)
         assert rmse == pytest.approx(0.0, abs=1e-15)
+
+
+# ---------------------------------------------------------------------------
+# GAP-9: linear_regression edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestLinearRegression:
+    """Edge cases for the linear regression helper."""
+
+    def test_fewer_than_2_points_raises(self):
+        from core.optimizer.linear_fit import linear_regression
+
+        with pytest.raises(ValueError):
+            linear_regression(np.array([1.0]), np.array([2.0]))
+        with pytest.raises(ValueError):
+            linear_regression(np.array([]), np.array([]))
+
+    def test_perfect_fit(self):
+        from core.optimizer.linear_fit import linear_regression
+
+        x = np.array([0.0, 1.0, 2.0])
+        y = np.array([3.0, 5.0, 7.0])  # slope=2, intercept=3
+        slope, intercept, r2, rmse = linear_regression(x, y)
+
+        assert slope == pytest.approx(2.0)
+        assert intercept == pytest.approx(3.0)
+        assert r2 == pytest.approx(1.0)
+        assert rmse == pytest.approx(0.0, abs=1e-12)

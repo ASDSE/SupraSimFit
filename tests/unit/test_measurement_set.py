@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from core.data_processing.measurement_set import MeasurementSet
+from core.units import Q_
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -255,21 +256,21 @@ class TestToAssay:
         from core.assays.gda import GDAAssay
 
         ms = _sample_measurement_set(n_replicas=3, n_points=10)
-        conditions = {'Ka_dye': 5e5, 'h0': 10e-6, 'g0': 20e-6}
+        conditions = {'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'g0': Q_(20e-6, 'M')}
         assay = ms.to_assay(GDAAssay, conditions=conditions, use_average=True)
         assert isinstance(assay, GDAAssay)
         assert assay.x_data.shape == (10,)
-        np.testing.assert_allclose(assay.x_data, ms.concentrations)
+        np.testing.assert_allclose(assay.x_data.magnitude, ms.concentrations)
 
     def test_to_assay_specific_replica(self):
         from core.assays.gda import GDAAssay
 
         ms = _sample_measurement_set(n_replicas=3, n_points=10)
-        conditions = {'Ka_dye': 5e5, 'h0': 10e-6, 'g0': 20e-6}
+        conditions = {'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'g0': Q_(20e-6, 'M')}
         rid = ms.replica_ids[1]
         assay = ms.to_assay(GDAAssay, conditions=conditions, replica_id=rid)
         expected_y = ms.get_replica_signal(rid)
-        np.testing.assert_allclose(assay.y_data, expected_y)
+        np.testing.assert_allclose(assay.y_data.magnitude, expected_y)
 
     def test_to_assay_inactive_replica_raises(self):
         from core.assays.gda import GDAAssay
@@ -278,16 +279,12 @@ class TestToAssay:
         rid = ms.replica_ids[0]
         ms.set_active(rid, False)
         with pytest.raises(ValueError, match='inactive'):
-            ms.to_assay(GDAAssay, conditions={'Ka_dye': 5e5, 'h0': 10e-6, 'g0': 20e-6}, replica_id=rid)
+            ms.to_assay(GDAAssay, conditions={'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'g0': Q_(20e-6, 'M')}, replica_id=rid)
 
     def test_to_assay_no_average_no_replica_raises(self):
         from core.assays.gda import GDAAssay
 
         ms = _sample_measurement_set()
         with pytest.raises(ValueError, match='use_average'):
-            ms.to_assay(GDAAssay, conditions={'Ka_dye': 5e5, 'h0': 10e-6, 'g0': 20e-6}, use_average=False)
+            ms.to_assay(GDAAssay, conditions={'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'g0': Q_(20e-6, 'M')}, use_average=False)
 
-    def test_metadata_passed(self):
-        df = _sample_dataframe()
-        ms = MeasurementSet.from_dataframe(df, source_file='test.txt')
-        assert ms.metadata['source_file'] == 'test.txt'

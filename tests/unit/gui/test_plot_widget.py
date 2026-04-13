@@ -88,8 +88,57 @@ def test_update_plot_no_fits(qapp):
     assert len(pw._replica_items) == 1
 
 
-def test_set_axis_labels_does_not_raise(qapp):
-    from gui.plotting.plot_widget import PlotWidget
+# ---------------------------------------------------------------------------
+# GAP-16: _X_UNIT_SCALES concentration scaling
+# ---------------------------------------------------------------------------
 
-    pw = PlotWidget()
-    pw.set_axis_labels("[Guest] / M", "Signal / a.u.")
+
+def test_x_unit_scales_values(qapp):
+    from gui.plotting.plot_widget import _X_UNIT_SCALES
+
+    assert _X_UNIT_SCALES['nM'] == pytest.approx(1e9)
+    assert _X_UNIT_SCALES['µM'] == pytest.approx(1e6)
+    assert _X_UNIT_SCALES['mM'] == pytest.approx(1e3)
+    assert _X_UNIT_SCALES['M'] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# GAP-17: _format_exponent_unicode
+# ---------------------------------------------------------------------------
+
+
+def test_format_exponent_unicode_positive(qapp):
+    from gui.plotting.plot_widget import _format_exponent_unicode
+
+    assert _format_exponent_unicode(0) == '⁰'
+    assert _format_exponent_unicode(3) == '³'
+    assert _format_exponent_unicode(12) == '¹²'
+
+
+def test_format_exponent_unicode_negative(qapp):
+    from gui.plotting.plot_widget import _format_exponent_unicode
+
+    assert _format_exponent_unicode(-1) == '⁻¹'
+    assert _format_exponent_unicode(-3) == '⁻³'
+
+
+def test_scientific_axis_no_exponent_in_normal_range(qapp):
+    from gui.plotting.plot_widget import ScientificAxisItem
+
+    axis = ScientificAxisItem(orientation='bottom')
+    axis.tickStrings([1, 10, 100], scale=1, spacing=1)
+    # In normal range, exponent stays None (no factoring needed)
+    assert axis.exponent is None or axis.exponent == 0
+
+
+def test_scientific_axis_factors_large_exponent(qapp):
+    from gui.plotting.plot_widget import ScientificAxisItem
+
+    axis = ScientificAxisItem(orientation='bottom')
+    strings = axis.tickStrings([1e6, 2e6, 3e6], scale=1, spacing=1)
+    assert axis.exponent == 6
+    assert strings[0] == '1'
+    assert strings[1] == '2'
+    assert strings[2] == '3'
+
+

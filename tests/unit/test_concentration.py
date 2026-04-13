@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from core.data_processing.concentration import load_concentration_vector, save_concentration_vector
+from core.data_processing.concentration import extract_concentrations_from_file, load_concentration_vector, save_concentration_vector
 
 
 class TestConcentrationRoundTrip:
@@ -60,3 +60,16 @@ class TestConcentrationRoundTrip:
         path.write_text('{"concentrations": [], "unit": "M"}')
         with pytest.raises(ValueError, match='non-empty'):
             load_concentration_vector(path)
+
+
+class TestExtractConcentrations:
+    def test_extract_from_txt_file(self, tmp_path):
+        """Extracts unique sorted concentrations from a measurement file."""
+        data = 'var\tsignal\n0.0\t100\n1e-6\t200\n2e-6\t300\nvar\tsignal\n0.0\t110\n1e-6\t210\n2e-6\t310\n'
+        p = tmp_path / 'extract.txt'
+        p.write_text(data)
+
+        conc = extract_concentrations_from_file(p)
+
+        assert len(conc) == 3
+        np.testing.assert_allclose(conc, [0.0, 1e-6, 2e-6])
