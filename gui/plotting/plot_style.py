@@ -30,12 +30,12 @@ DEFAULT_STYLE: dict = {
         'alpha': 255,
     },
     'average_line': {
-        'width': 4,
+        'width': 3,
         'style': 'dash',
         'color': (0, 0, 0, 255),
     },
     'fit_curves': {
-        'width': 4,
+        'width': 3,
         'style': 'dash',
         'color': (23, 190, 207, 255),
     },
@@ -136,7 +136,7 @@ _PARAMS_SPEC = [
         'type': 'group',
         'expanded': False,
         'children': [
-            {'name': 'Width', 'type': 'int', 'value': 4, 'limits': (1, 8)},
+            {'name': 'Width', 'type': 'int', 'value': 3, 'limits': (1, 8)},
             {'name': 'Style', 'type': 'list', 'value': 'Dashed', 'limits': _LINE_STYLE_LIMITS},
             {'name': 'Color', 'type': 'color', 'value': (23, 190, 207, 255)},
         ],
