@@ -24,7 +24,7 @@ from core.assays.dye_alone import DyeAloneAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.optimizer.filters import aggregate_fits, calculate_fit_metrics
 from core.optimizer.multistart import FitAttempt, multistart_minimize
-from core.units import Q_
+from core.units import Q_, Quantity
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +33,15 @@ logger = logging.getLogger(__name__)
 class FitResult:
     """Serializable container for fitting results.
 
-    Designed for persistence and traceability.  Links back to its source
-    ``MeasurementSet`` by ID (loose coupling, no object reference).
+    All fitted parameter values and uncertainties are stored as
+    ``pint.Quantity`` objects with proper units.
 
     Attributes
     ----------
-    parameters : dict[str, float]
-        Best-fit parameter name → value.
-    uncertainties : dict[str, float]
-        Parameter name → uncertainty (MAD of filtered fits).
+    parameters : dict[str, Quantity]
+        Best-fit parameter name → Quantity value.
+    uncertainties : dict[str, Quantity]
+        Parameter name → uncertainty (MAD of filtered fits) as Quantity.
     rmse : float
         Root mean squared error of the fit.
     r_squared : float
@@ -50,16 +50,16 @@ class FitResult:
         Number of fits that passed filtering criteria.
     n_total : int
         Total number of fit attempts.
-    x_fit : np.ndarray
+    x_fit : Quantity
         Concentration grid used for fitting (for plotting the curve).
-    y_fit : np.ndarray
+    y_fit : Quantity
         Model prediction at ``x_fit``.
     assay_type : str
         Assay type name (e.g. ``"GDA"``, ``"IDA"``).
     model_name : str
         Model identifier (e.g. ``"equilibrium_4param"``, ``"linear"``).
-    conditions : dict[str, float]
-        Assay conditions used (``Ka_dye``, ``h0``, etc.).
+    conditions : dict[str, Any]
+        Assay conditions used (Quantity values for ``Ka_dye``, ``h0``, etc.).
     fit_config : dict[str, Any]
         Snapshot of the fitting configuration.
     measurement_set_id : str | None
@@ -74,17 +74,17 @@ class FitResult:
         Additional metadata about the fit.
     """
 
-    parameters: Dict[str, float]
-    uncertainties: Dict[str, float]
+    parameters: Dict[str, Quantity]
+    uncertainties: Dict[str, Quantity]
     rmse: float
     r_squared: float
     n_passing: int
     n_total: int
-    x_fit: np.ndarray
-    y_fit: np.ndarray
+    x_fit: Quantity
+    y_fit: Quantity
     assay_type: str
     model_name: str
-    conditions: Dict[str, float] = field(default_factory=dict)
+    conditions: Dict[str, Any] = field(default_factory=dict)
     fit_config: Dict[str, Any] = field(default_factory=dict)
     measurement_set_id: Optional[str] = None
     source_file: Optional[str] = None
@@ -97,34 +97,6 @@ class FitResult:
         """Whether the fit was successful (at least one passing fit)."""
         return self.n_passing > 0
 
-    def parameters_with_units(self) -> Dict[str, Any]:
-        """Return parameters as ``pint.Quantity`` values.
-
-        Uses the registry ``units`` dict for the assay type to wrap each
-        parameter value.  Parameters without a registered unit are returned
-        as bare floats.
-
-        Returns
-        -------
-        Dict[str, pint.Quantity | float]
-        """
-        from core.assays.registry import ASSAY_REGISTRY, AssayType
-
-        try:
-            at = AssayType[self.assay_type]
-            units = ASSAY_REGISTRY[at].units
-        except KeyError:
-            units = {}
-
-        result: Dict[str, Any] = {}
-        for k, v in self.parameters.items():
-            unit_str = units.get(k)
-            if unit_str and unit_str != 'a.u.':
-                result[k] = Q_(v, unit_str)
-            else:
-                result[k] = v
-        return result
-
     # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
@@ -132,9 +104,9 @@ class FitResult:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to a JSON-safe dictionary.
 
-        ``np.ndarray`` fields are converted to plain Python lists.
-        Parameter units are looked up from the assay registry and
-        included under `'parameter_units'`.
+        ``Quantity`` fields are converted to ``{value, unit}`` pairs.
+        ``np.ndarray`` / Quantity array fields are converted to plain
+        Python lists.
 
         Returns
         -------
@@ -149,6 +121,27 @@ class FitResult:
         except KeyError:
             units = {}
 
+        # Serialize parameters as magnitudes
+        params_serial = {}
+        for k, v in self.parameters.items():
+            params_serial[k] = float(v.magnitude)
+
+        unc_serial = {}
+        for k, v in self.uncertainties.items():
+            unc_serial[k] = float(v.magnitude)
+
+        # Serialize conditions
+        cond_serial = {}
+        for k, v in self.conditions.items():
+            if isinstance(v, Quantity):
+                cond_serial[k] = float(v.magnitude)
+            else:
+                cond_serial[k] = v
+
+        # Serialize x_fit / y_fit
+        x_list = self.x_fit.magnitude.tolist()
+        y_list = self.y_fit.magnitude.tolist()
+
         return {
             'id': self.id,
             'timestamp': self.timestamp,
@@ -156,17 +149,17 @@ class FitResult:
             'source_file': self.source_file,
             'assay_type': self.assay_type,
             'model_name': self.model_name,
-            'conditions': self.conditions,
+            'conditions': cond_serial,
             'fit_config': self.fit_config,
-            'parameters': self.parameters,
-            'uncertainties': self.uncertainties,
+            'parameters': params_serial,
+            'uncertainties': unc_serial,
             'parameter_units': units,
             'rmse': self.rmse,
             'r_squared': self.r_squared,
             'n_passing': self.n_passing,
             'n_total': self.n_total,
-            'x_fit': self.x_fit.tolist(),
-            'y_fit': self.y_fit.tolist(),
+            'x_fit': x_list,
+            'y_fit': y_list,
             'metadata': self.metadata,
         }
 
@@ -183,15 +176,41 @@ class FitResult:
         -------
         FitResult
         """
+        from core.assays.registry import ASSAY_REGISTRY, AssayType
+
+        # Look up units from registry or dict
+        param_units = d.get('parameter_units', {})
+        if not param_units:
+            try:
+                at = AssayType[d['assay_type']]
+                param_units = dict(ASSAY_REGISTRY[at].units)
+            except KeyError:
+                param_units = {}
+
+        # Reconstruct Quantity parameters
+        parameters = {}
+        for k, v in d['parameters'].items():
+            unit = param_units.get(k)
+            parameters[k] = Q_(v, unit) if unit else Q_(v, 'dimensionless')
+
+        uncertainties = {}
+        for k, v in d['uncertainties'].items():
+            unit = param_units.get(k)
+            uncertainties[k] = Q_(v, unit) if unit else Q_(v, 'dimensionless')
+
+        # Reconstruct x_fit / y_fit as Quantities
+        x_fit = Q_(np.asarray(d['x_fit']), 'M')
+        y_fit = Q_(np.asarray(d['y_fit']), 'au')
+
         return cls(
-            parameters=d['parameters'],
-            uncertainties=d['uncertainties'],
+            parameters=parameters,
+            uncertainties=uncertainties,
             rmse=d['rmse'],
             r_squared=d['r_squared'],
             n_passing=d['n_passing'],
             n_total=d['n_total'],
-            x_fit=np.asarray(d['x_fit']),
-            y_fit=np.asarray(d['y_fit']),
+            x_fit=x_fit,
+            y_fit=y_fit,
             assay_type=d['assay_type'],
             model_name=d['model_name'],
             conditions=d.get('conditions', {}),
@@ -206,46 +225,13 @@ class FitResult:
 
 @dataclass
 class FitConfig:
-    """Configuration for the fitting pipeline.
-
-    Attributes
-    ----------
-    n_trials : int
-        Number of multi-start optimisation trials (default 100).
-    rmse_threshold_factor : float
-        Multiplier applied to the best RMSE to define the acceptance
-        window for ``aggregate_fits`` (default 1.5).
-    min_r_squared : float
-        Minimum R² for a fit attempt to be accepted (default 0.9).
-    log_scale_params : list[str] or None
-        Parameter **names** that should be sampled in log₁₀ space during
-        multi-start initialisation.  Useful for association constants
-        that span many orders of magnitude.
-
-        * ``None`` (default) — use the assay-level default defined in
-          ``AssayMetadata.log_scale_keys``.
-        * ``[]`` — force *all* parameters to be sampled linearly.
-        * ``['Ka_guest']`` — override to a specific set of names.
-    custom_bounds : dict[str, tuple[float, float]] or None
-        Named, *partial* bound overrides.  Only the parameters you
-        specify are changed; all others keep their registry defaults.
-        Keys must match entries in the assay’s ``parameter_keys``.
-
-        Examples
-        --------
-        >>> # Tighten Ka only; I0/I_dye_free/I_dye_bound keep defaults
-        >>> FitConfig(custom_bounds={'Ka_guest': (1e4, 1e8)})
-
-        >>> # Inform signal bounds from a prior dye-alone fit
-        >>> priors = bounds_from_dye_alone(dye_result, margin=0.2)
-        >>> FitConfig(custom_bounds={**priors, 'Ka_guest': (1e4, 1e8)})
-    """
+    """Configuration for the fitting pipeline."""
 
     n_trials: int = 100
     rmse_threshold_factor: float = 1.5
     min_r_squared: float = 0.9
     log_scale_params: Optional[List[str]] = None
-    custom_bounds: Optional[Dict[str, Tuple[float, float]]] = None
+    custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
 
 
 def _model_name_for_assay(assay: BaseAssay) -> str:
@@ -257,73 +243,39 @@ def _model_name_for_assay(assay: BaseAssay) -> str:
 
 def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
     """Serialize a FitConfig to a plain dict."""
+    custom_bounds: Optional[Dict[str, List[float]]] = None
+    if config.custom_bounds is not None:
+        custom_bounds = {}
+        for key, (lo, hi) in config.custom_bounds.items():
+            custom_bounds[key] = [float(lo.magnitude), float(hi.magnitude)]
     return {
         'n_trials': config.n_trials,
         'rmse_threshold_factor': config.rmse_threshold_factor,
         'min_r_squared': config.min_r_squared,
         'log_scale_params': config.log_scale_params,
-        'custom_bounds': ({k: list(v) for k, v in config.custom_bounds.items()} if config.custom_bounds is not None else None),
+        'custom_bounds': custom_bounds,
     }
 
 
 def _resolve_bounds(
     assay: BaseAssay,
-    custom_bounds: Optional[Dict[str, Tuple[float, float]]],
-) -> List[Tuple[float, float]]:
-    """Merge user overrides with registry defaults → positional bounds list.
-
-    Parameters
-    ----------
-    assay : BaseAssay
-        Assay whose registry defaults to start from.
-    custom_bounds : dict or None
-        Named partial overrides.  ``None`` means “use registry defaults”.
-
-    Returns
-    -------
-    List[Tuple[float, float]]
-        Positional bounds in ``parameter_keys`` order, ready for the
-        optimizer.
-
-    Raises
-    ------
-    ValueError
-        If *custom_bounds* contains a key not in ``parameter_keys``.
-    """
+    custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]],
+) -> Dict[str, Tuple[Quantity, Quantity]]:
+    """Merge user overrides with registry defaults -> named bounds dict."""
     bounds_dict = assay.get_default_bounds()
     if custom_bounds is not None:
         unknown = set(custom_bounds) - set(assay.parameter_keys)
         if unknown:
             raise ValueError(f'Unknown parameter(s) in custom_bounds: {sorted(unknown)}. Valid keys: {list(assay.parameter_keys)}')
         bounds_dict.update(custom_bounds)
-    return [bounds_dict[k] for k in assay.parameter_keys]
+    return bounds_dict
 
 
 def _resolve_log_scale(
     assay: BaseAssay,
     log_scale_params: Optional[List[str]],
 ) -> List[int]:
-    """Convert parameter names → positional indices for the optimizer.
-
-    Parameters
-    ----------
-    assay : BaseAssay
-        The assay being fitted.
-    log_scale_params : list[str] or None
-        * ``None`` — use assay default (``AssayMetadata.log_scale_keys``).
-        * ``[]`` — force linear sampling for every parameter.
-        * ``['Ka_guest', ...]`` — user-specified names.
-
-    Returns
-    -------
-    List[int]
-        Positional indices into the parameter array.
-
-    Raises
-    ------
-    ValueError
-        If any name is not in ``parameter_keys``.
-    """
+    """Convert parameter names -> positional indices for the optimizer."""
     if log_scale_params is None:
         names = list(assay.registry_metadata.log_scale_keys)
     else:
@@ -338,6 +290,21 @@ def _resolve_log_scale(
     return indices
 
 
+def _wrap_params_as_quantities(
+    params: np.ndarray,
+    assay: BaseAssay,
+) -> Dict[str, Quantity]:
+    """Wrap optimizer float params into named Quantity dict."""
+    from core.assays.registry import ASSAY_REGISTRY
+
+    units = ASSAY_REGISTRY[assay.assay_type].units
+    result = {}
+    for key, value in zip(assay.parameter_keys, params):
+        unit = units.get(key, 'dimensionless')
+        result[key] = Q_(float(value), unit)
+    return result
+
+
 def fit_assay(
     assay: BaseAssay,
     config: Optional[FitConfig] = None,
@@ -347,21 +314,12 @@ def fit_assay(
 ) -> FitResult:
     """Fit an assay using multi-start optimisation.
 
-    This is the main entry point for non-linear fitting.  It:
-
-    1. Resolves parameter bounds (registry defaults merged with any
-       user overrides from ``config.custom_bounds``).
-    2. Determines which parameters to sample in log space.
-    3. Runs multi-start L-BFGS-B optimisation.
-    4. Filters and aggregates results via median + MAD.
-
     Parameters
     ----------
     assay : BaseAssay
-        The assay data to fit.
+        The assay data to fit (with Quantity x_data/y_data).
     config : FitConfig, optional
-        Fitting configuration.  Uses ``FitConfig()`` defaults when
-        omitted.
+        Fitting configuration.
     measurement_set_id : str, optional
         UUID of the source ``MeasurementSet`` for traceability.
     source_file : str, optional
@@ -370,18 +328,22 @@ def fit_assay(
     Returns
     -------
     FitResult
-        Serializable container with fitted parameters, uncertainties,
-        and diagnostics.  Check ``result.success`` to see whether any
-        fits passed the quality filter.
+        With Quantity parameters, uncertainties, x_fit, y_fit.
     """
     if config is None:
         config = FitConfig()
 
-    # Merge user overrides with registry defaults
-    bounds = _resolve_bounds(assay, config.custom_bounds)
+    # Resolve bounds (Quantity dicts)
+    bounds_dict = _resolve_bounds(assay, config.custom_bounds)
 
-    # Resolve log-scale parameters (names → indices)
+    # Extract float bounds for scipy
+    float_bounds = [(float(bounds_dict[k][0].magnitude), float(bounds_dict[k][1].magnitude)) for k in assay.parameter_keys]
+
+    # Resolve log-scale parameters (names -> indices)
     log_scale = _resolve_log_scale(assay, config.log_scale_params)
+
+    # y_data magnitude for metrics
+    y_data_mag = assay.y_data.magnitude
 
     # Define objective function
     def objective(params: np.ndarray) -> float:
@@ -390,12 +352,12 @@ def fit_assay(
     # Define metrics function
     def compute_metrics(params: np.ndarray) -> Tuple[float, float]:
         y_pred = assay.forward_model(params)
-        return calculate_fit_metrics(assay.y_data, y_pred)
+        return calculate_fit_metrics(y_data_mag, y_pred.magnitude)
 
     # Run multi-start optimization
     all_attempts = multistart_minimize(
         objective=objective,
-        bounds=bounds,
+        bounds=float_bounds,
         n_trials=config.n_trials,
         log_scale_params=log_scale,
         compute_metrics=compute_metrics,
@@ -413,7 +375,7 @@ def fit_assay(
         if all_attempts:
             best = all_attempts[0]
             logger.warning(
-                'No fits passed filtering (n_trials=%d, rmse_factor=%.1f, min_r²=%.2f). Best attempt: RMSE=%.4e, R²=%.4f. Consider relaxing filtering thresholds or adjusting bounds.',
+                'No fits passed filtering (n_trials=%d, rmse_factor=%.1f, min_r2=%.2f). Best attempt: RMSE=%.4e, R2=%.4f.',
                 config.n_trials,
                 config.rmse_threshold_factor,
                 config.min_r_squared,
@@ -441,8 +403,8 @@ def fit_assay(
             r_squared=0.0,
             n_passing=0,
             n_total=len(all_attempts) if all_attempts else config.n_trials,
-            x_fit=assay.x_data.copy(),
-            y_fit=np.full_like(assay.x_data, np.nan),
+            x_fit=assay.x_data,
+            y_fit=Q_(np.full(len(assay.x_data), np.nan), 'au'),
             assay_type=assay.assay_type.name,
             model_name=_model_name_for_assay(assay),
             conditions=assay.get_conditions(),
@@ -454,21 +416,21 @@ def fit_assay(
 
     # Calculate metrics for median parameters
     y_pred = assay.forward_model(median_params)
-    rmse, r_squared = calculate_fit_metrics(assay.y_data, y_pred)
+    rmse, r_squared = calculate_fit_metrics(y_data_mag, y_pred.magnitude)
 
-    # Build named dicts
-    params_dict = assay.params_to_dict(median_params)
-    unc_dict = assay.params_to_dict(mad)
+    # Build Quantity parameter dicts
+    params_q = _wrap_params_as_quantities(median_params, assay)
+    unc_q = _wrap_params_as_quantities(mad, assay)
     y_fit = assay.forward_model(median_params)
 
     return FitResult(
-        parameters=params_dict,
-        uncertainties=unc_dict,
+        parameters=params_q,
+        uncertainties=unc_q,
         rmse=rmse,
         r_squared=r_squared,
         n_passing=n_passing,
         n_total=len(all_attempts),
-        x_fit=assay.x_data.copy(),
+        x_fit=assay.x_data,
         y_fit=y_fit,
         assay_type=assay.assay_type.name,
         model_name=_model_name_for_assay(assay),
@@ -487,9 +449,6 @@ def fit_linear_assay(
 ) -> FitResult:
     """Fit a dye-alone assay using simple linear regression.
 
-    This is a specialized function for the linear dye-alone case,
-    which doesn't need multi-start optimization.
-
     Parameters
     ----------
     assay : DyeAloneAssay
@@ -502,19 +461,24 @@ def fit_linear_assay(
     Returns
     -------
     FitResult
-        Container with fitted slope, intercept, and diagnostics.
     """
     slope, intercept, r_squared, rmse = assay.fit_linear()
-    y_fit = assay.forward_model(np.array([slope, intercept]))
+    y_fit = assay.forward_model(np.array([slope.magnitude, intercept.magnitude]))
 
     return FitResult(
-        parameters={'slope': slope, 'intercept': intercept},
-        uncertainties={'slope': np.nan, 'intercept': np.nan},
-        rmse=rmse,
+        parameters={
+            'slope': slope,
+            'intercept': intercept,
+        },
+        uncertainties={
+            'slope': Q_(np.nan, slope.units),
+            'intercept': Q_(np.nan, intercept.units),
+        },
+        rmse=float(rmse.magnitude),
         r_squared=r_squared,
         n_passing=1,
         n_total=1,
-        x_fit=assay.x_data.copy(),
+        x_fit=assay.x_data,
         y_fit=y_fit,
         assay_type=assay.assay_type.name,
         model_name='linear',
@@ -529,69 +493,40 @@ def fit_linear_assay(
 def bounds_from_dye_alone(
     result: FitResult,
     margin: float = 0.2,
-) -> Dict[str, Tuple[float, float]]:
+) -> Dict[str, Tuple[Quantity, Quantity]]:
     """Derive signal-coefficient bounds from a dye-alone calibration.
 
-    A dye-alone (linear) fit yields ``slope`` and ``intercept``.
-    Physically:
-
-    * **slope** = ΔSignal / Δ[Dye] ≈ ``I_dye_free`` (signal per unit
-      free-dye concentration).
-    * **intercept** = Signal at [Dye]=0 ≈ ``I0`` (background signal).
-
-    This function converts those fitted values into named bound overrides
-    that can be merged directly into :attr:`FitConfig.custom_bounds` for
-    a downstream DBA / GDA / IDA fit, constraining the otherwise
-    degenerate signal coefficients.
+    Returns Quantity bound tuples suitable for ``FitConfig.custom_bounds``.
 
     Parameters
     ----------
     result : FitResult
         A *successful* dye-alone fit (``model_name == "linear"``).
     margin : float
-        Fractional margin applied symmetrically around each value
-        (default 0.2 → ±20 %).  The resulting window is
-        ``[max(0, value * (1 - margin)),  value * (1 + margin)]``.
-        Lower bounds are clamped to zero because signal intensities
-        and association constants are non-negative physical quantities.
+        Fractional margin (default 0.2 = +/-20%).
 
     Returns
     -------
-    Dict[str, Tuple[float, float]]
-        Partial bounds dict, e.g.
-        ``{'I_dye_free': (4e7, 6e7), 'I0': (80, 120)}``.
-        Lower bounds are clamped to zero (signal intensities are
-        non-negative physical quantities).
-        Merge with other overrides via ``{**bounds_from_dye_alone(r), ...}``.
-
-    Raises
-    ------
-    ValueError
-        If *result* is not a successful linear (dye-alone) fit.
-
-    Examples
-    --------
-    >>> dye_result = fit_linear_assay(dye_assay)
-    >>> priors = bounds_from_dye_alone(dye_result, margin=0.2)
-    >>> config = FitConfig(custom_bounds={**priors, 'Ka_guest': (1e4, 1e8)})
+    Dict[str, Tuple[Quantity, Quantity]]
     """
     if result.model_name != 'linear':
         raise ValueError(f"Expected a dye-alone (linear) FitResult, got model_name='{result.model_name}'")
     if not result.success:
         raise ValueError('Cannot derive bounds from a failed fit')
 
-    slope = result.parameters['slope']
-    intercept = result.parameters['intercept']
+    slope_q = result.parameters['slope']
+    intercept_q = result.parameters['intercept']
 
-    def _window(value: float) -> Tuple[float, float]:
-        half = abs(value) * margin if abs(value) > 0 else margin
-        lo = max(0.0, value - half)
-        hi = max(0.0, value + half)
-        return (lo, hi)
+    def _window(value: Quantity, margin_frac: float) -> Tuple[Quantity, Quantity]:
+        mag = float(value.magnitude)
+        half = abs(mag) * margin_frac if abs(mag) > 0 else margin_frac
+        lo = max(0.0, mag - half)
+        hi = max(0.0, mag + half)
+        return (Q_(lo, value.units), Q_(hi, value.units))
 
     return {
-        'I_dye_free': _window(slope),
-        'I0': _window(intercept),
+        'I_dye_free': _window(slope_q, margin),
+        'I0': _window(intercept_q, margin),
     }
 
 
@@ -613,7 +548,7 @@ def fit_measurement_set(
     assay_cls : Type[BaseAssay]
         Concrete assay class.
     conditions : dict
-        Assay-specific conditions (``Ka_dye``, ``h0``, etc.).
+        Assay-specific conditions as Quantity values.
     config : FitConfig, optional
         Fitting configuration.
     use_average : bool
@@ -624,7 +559,6 @@ def fit_measurement_set(
     Returns
     -------
     FitResult
-        With ``measurement_set_id`` automatically populated.
     """
     assay = ms.to_assay(
         assay_cls,

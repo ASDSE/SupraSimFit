@@ -66,10 +66,12 @@ def prepare_plot_data(
     if fit_results:
         for fr in fit_results:
             label = 'Best Fit'
+            x = fr.x_fit.magnitude
+            y = fr.y_fit.magnitude
             fits.append(
                 {
-                    'x': fr.x_fit,
-                    'y': fr.y_fit,
+                    'x': x,
+                    'y': y,
                     'label': label,
                     'id': fr.id,
                 }
@@ -79,6 +81,7 @@ def prepare_plot_data(
         'concentrations': np.array(ms.concentrations),
         'active_replicas': active,
         'dropped_replicas': dropped,
+        'all_replica_ids': tuple(ms.replica_ids),
         'average': avg,
         'fits': fits,
     }

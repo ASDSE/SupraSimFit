@@ -22,7 +22,7 @@ Example
 >>> from core.assays.registry import AssayType, ASSAY_REGISTRY
 >>> meta = ASSAY_REGISTRY[AssayType.GDA]
 >>> meta.display_name
-'GDA'
+'GDA (Guest Displacement Assay)'
 >>> meta.parameter_keys
 ('Ka_guest', 'I0', 'I_dye_free', 'I_dye_bound')
 """
@@ -30,6 +30,8 @@ Example
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, Tuple
+
+from core.units import Q_, Quantity
 
 
 class AssayType(Enum):
@@ -81,103 +83,79 @@ class AssayMetadata:
     parameter_keys: Tuple[str, ...]
     x_label: str
     y_label: str
-    default_bounds: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    default_bounds: Dict[str, Tuple[Quantity, Quantity]] = field(default_factory=dict)
     log_scale_keys: Tuple[str, ...] = ()
-    units: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def units(self) -> Dict[str, str]:
+        """Derive unit strings from default_bounds Quantities."""
+        return {k: str(lo.units) for k, (lo, _) in self.default_bounds.items()}
 
 
 # Central registry mapping AssayType -> AssayMetadata
 ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
     AssayType.GDA: AssayMetadata(
-        display_name='GDA',
+        display_name='GDA (Guest Displacement Assay)',
         parameter_keys=('Ka_guest', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='Dye',
         y_label='Signal [a.u.]',
         default_bounds={
-            'Ka_guest': (1e-8, 1e12),  # Association constant (M⁻¹)
-            'I0': (0, 1e8),  # Background signal (a.u.)
-            'I_dye_free': (0, 1e12),  # Signal per free dye (a.u. M⁻¹)
-            'I_dye_bound': (0, 1e12),  # Signal per bound dye (a.u. M⁻¹)
+            'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
+            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
+            'I_dye_free': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
         },
         log_scale_keys=('Ka_guest',),
-        units={
-            'Ka_guest': 'M^-1',
-            'I0': 'a.u.',
-            'I_dye_free': 'M^-1',
-            'I_dye_bound': 'M^-1',
-        },
     ),
     AssayType.IDA: AssayMetadata(
-        display_name='IDA',
+        display_name='IDA (Indicator Displacement Assay)',
         parameter_keys=('Ka_guest', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='Guest',
         y_label='Signal [a.u.]',
         default_bounds={
-            'Ka_guest': (1e-8, 1e12),  # Association constant (M⁻¹)
-            'I0': (0, 1e8),  # Background signal (a.u.)
-            'I_dye_free': (0, 1e12),  # Signal per free dye (a.u. M⁻¹)
-            'I_dye_bound': (0, 1e12),  # Signal per bound dye (a.u. M⁻¹)
+            'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
+            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
+            'I_dye_free': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
         },
         log_scale_keys=('Ka_guest',),
-        units={
-            'Ka_guest': 'M^-1',
-            'I0': 'a.u.',
-            'I_dye_free': 'M^-1',
-            'I_dye_bound': 'M^-1',
-        },
     ),
     AssayType.DBA_HtoD: AssayMetadata(
-        display_name='DBA (Host→Dye)',
+        display_name='DBA Host→Dye (Direct Binding Assay)',
         parameter_keys=('Ka_dye', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='Host',
         y_label='Signal [a.u.]',
         default_bounds={
-            'Ka_dye': (1e-8, 1e12),  # Association constant (M⁻¹)
-            'I0': (0, 1e8),  # Background signal (a.u.)
-            'I_dye_free': (0, 1e12),  # Signal per free dye (a.u. M⁻¹)
-            'I_dye_bound': (0, 1e12),  # Signal per bound dye (a.u. M⁻¹)
+            'Ka_dye': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
+            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
+            'I_dye_free': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
         },
         log_scale_keys=('Ka_dye',),
-        units={
-            'Ka_dye': 'M^-1',
-            'I0': 'a.u.',
-            'I_dye_free': 'M^-1',
-            'I_dye_bound': 'M^-1',
-        },
     ),
     AssayType.DBA_DtoH: AssayMetadata(
-        display_name='DBA (Dye→Host)',
+        display_name='DBA Dye→Host (Direct Binding Assay)',
         parameter_keys=('Ka_dye', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='[Dye] / M',
         y_label='Signal / a.u.',
         default_bounds={
-            'Ka_dye': (1e-8, 1e12),  # Association constant (M⁻¹)
-            'I0': (0, 1e8),  # Background signal (a.u.)
-            'I_dye_free': (0, 1e12),  # Signal per free dye (a.u. M⁻¹)
-            'I_dye_bound': (0, 1e12),  # Signal per bound dye (a.u. M⁻¹)
+            'Ka_dye': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
+            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
+            'I_dye_free': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
         },
         log_scale_keys=('Ka_dye',),
-        units={
-            'Ka_dye': 'M^-1',
-            'I0': 'a.u.',
-            'I_dye_free': 'M^-1',
-            'I_dye_bound': 'M^-1',
-        },
     ),
     AssayType.DYE_ALONE: AssayMetadata(
-        display_name='Dye Alone',
+        display_name='Dye Alone (Linear Calibration)',
         parameter_keys=('slope', 'intercept'),
         x_label='Dye',
         y_label='Signal [a.u.]',
         default_bounds={
-            'slope': (0, 1e12),  # ΔSignal / Δ[Dye] (a.u. M⁻¹)
-            'intercept': (-1e6, 1e6),  # Signal at zero dye (a.u.)
+            'slope': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'intercept': (Q_(-1e6, 'au'), Q_(1e6, 'au')),
         },
         log_scale_keys=(),
-        units={
-            'slope': 'M^-1',
-            'intercept': 'a.u.',
-        },
     ),
 }
 

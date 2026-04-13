@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 from core.assays.base import BaseAssay
+from core.units import Q_
 
 logger = logging.getLogger(__name__)
 
@@ -319,8 +320,8 @@ class MeasurementSet:
             raise ValueError('Either set use_average=True or provide a replica_id')
 
         return assay_cls(
-            x_data=np.array(self.concentrations),  # writeable copy
-            y_data=y,
+            x_data=Q_(np.array(self.concentrations), 'M'),
+            y_data=Q_(y, 'au'),
             name=self.metadata.get('source_file', ''),
             **conditions,
         )

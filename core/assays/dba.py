@@ -21,7 +21,7 @@ import numpy as np
 from core.assays.base import BaseAssay
 from core.assays.registry import AssayType
 from core.models.equilibrium import dba_signal
-from core.units import validate_concentration
+from core.units import Q_, Quantity
 
 
 @dataclass
@@ -33,33 +33,18 @@ class DBAAssay(BaseAssay):
 
     Attributes
     ----------
-    x_data : np.ndarray
+    x_data : Quantity
         Titrant concentrations (M) - host for HtoD, dye for DtoH.
-    y_data : np.ndarray
-        Observed signal values.
-    fixed_conc : float
+    y_data : Quantity
+        Observed signal values (au).
+    fixed_conc : Quantity
         Fixed component concentration (M) - dye for HtoD, host for DtoH.
     mode : str
         Titration mode: 'HtoD' or 'DtoH'.
-    name : str
-        Optional identifier for this dataset.
-    metadata : Dict[str, Any]
-        Additional metadata.
-
-    Example
-    -------
-    >>> assay = DBAAssay(
-    ...     x_data=dye_conc,    # Dye concentrations in M (titrant)
-    ...     y_data=signal,
-    ...     fixed_conc=10e-6,   # 10 µM host (fixed)
-    ...     mode='DtoH',
-    ... )
-    >>> predicted = assay.forward_model(params)
     """
 
-    # Required physical parameters - no defaults (fail fast)
-    fixed_conc: Optional[float] = None  # Fixed concentration (M)
-    mode: str = 'DtoH'  # 'HtoD' or 'DtoH' (default: Dye→Host)
+    fixed_conc: Optional[Quantity] = None
+    mode: str = 'DtoH'
 
     assay_type: AssayType = field(init=False)
 
@@ -67,14 +52,16 @@ class DBAAssay(BaseAssay):
         """Validate data and set assay type based on mode."""
         super().__post_init__()
 
-        # Enforce required parameters (fail fast)
         if self.fixed_conc is None:
             raise ValueError('fixed_conc is required (fixed component concentration)')
 
-        # Validate dimensionality (Quantity → float in M) or keep float
-        self.fixed_conc = validate_concentration(self.fixed_conc)
+        if not isinstance(self.fixed_conc, Quantity):
+            raise TypeError(f'fixed_conc must be a pint Quantity, got {type(self.fixed_conc).__name__}')
 
-        if self.fixed_conc <= 0:
+        # Normalize to base units so .magnitude is always M
+        object.__setattr__(self, 'fixed_conc', self.fixed_conc.to('M'))
+
+        if self.fixed_conc.magnitude <= 0:
             raise ValueError('fixed_conc must be positive')
 
         if self.mode == 'HtoD':
@@ -84,33 +71,31 @@ class DBAAssay(BaseAssay):
         else:
             raise ValueError(f"mode must be 'HtoD' or 'DtoH', got '{self.mode}'")
 
-    def forward_model(self, params: np.ndarray) -> np.ndarray:
+    def forward_model(self, params: np.ndarray) -> Quantity:
         """Compute predicted signal from parameters.
 
         Parameters
         ----------
         params : np.ndarray
-            [Ka_dye, I0, I_dye_free, I_dye_bound] where:
-            - Ka_dye: association constant for host-dye (M^-1)
-            - I0: background signal
-            - I_dye_free: signal coefficient for free dye
-            - I_dye_bound: signal coefficient for host-dye complex
+            [Ka_dye, I0, I_dye_free, I_dye_bound] as bare floats
+            from the optimizer, in canonical units.
 
         Returns
         -------
-        np.ndarray
-            Predicted signal values.
+        Quantity
+            Predicted signal values in au.
         """
         Ka_dye, I0, I_dye_free, I_dye_bound = params
 
-        return dba_signal(
+        result = dba_signal(
             I0=I0,
             Ka_dye=Ka_dye,
             I_dye_free=I_dye_free,
             I_dye_bound=I_dye_bound,
-            x_titrant=self.x_data,
-            y_fixed=self.fixed_conc,
+            x_titrant=self.x_data.magnitude,
+            y_fixed=self.fixed_conc.magnitude,
         )
+        return Q_(result, 'au')
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.

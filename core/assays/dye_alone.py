@@ -15,6 +15,7 @@ import numpy as np
 from core.assays.base import BaseAssay
 from core.assays.registry import AssayType
 from core.models.linear import linear_signal
+from core.units import Q_, Quantity
 
 
 @dataclass
@@ -43,21 +44,22 @@ class DyeAloneAssay(BaseAssay):
 
     assay_type: AssayType = field(init=False, default=AssayType.DYE_ALONE)
 
-    def forward_model(self, params: np.ndarray) -> np.ndarray:
+    def forward_model(self, params: np.ndarray) -> Quantity:
         """Compute predicted signal from parameters.
 
         Parameters
         ----------
         params : np.ndarray
-            [slope, intercept]
+            [slope, intercept] as bare floats from optimizer.
 
         Returns
         -------
-        np.ndarray
-            Predicted signal values.
+        Quantity
+            Predicted signal values in au.
         """
         slope, intercept = params
-        return linear_signal(slope, intercept, self.x_data)
+        result = linear_signal(slope, intercept, self.x_data.magnitude)
+        return Q_(result, 'au')
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.
@@ -74,9 +76,13 @@ class DyeAloneAssay(BaseAssay):
 
         Returns
         -------
-        Tuple[float, float, float, float]
-            (slope, intercept, r_squared, rmse)
+        Tuple[Quantity, Quantity, float, Quantity]
+            (slope, intercept, r_squared, rmse) with proper units.
         """
         from core.optimizer.linear_fit import linear_regression
 
-        return linear_regression(self.x_data, self.y_data)
+        slope, intercept, r_squared, rmse = linear_regression(
+            self.x_data.magnitude,
+            self.y_data.magnitude,
+        )
+        return Q_(slope, 'au/M'), Q_(intercept, 'au'), r_squared, Q_(rmse, 'au')

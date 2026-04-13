@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from core.assays.registry import AssayMetadata, AssayType, get_metadata
+from core.units import Q_, Quantity
 
 
 @dataclass
@@ -28,18 +29,18 @@ class BaseAssay(ABC):
 
     Attributes
     ----------
-    x_data : np.ndarray
+    x_data : Quantity
         Independent variable (e.g., titrant concentration in M).
-    y_data : np.ndarray
-        Observed signal values.
+    y_data : Quantity
+        Observed signal values (in au).
     name : str
         Optional identifier for this dataset.
     metadata : Dict[str, Any]
         Additional metadata (source file, date, etc.).
     """
 
-    x_data: np.ndarray
-    y_data: np.ndarray
+    x_data: Quantity
+    y_data: Quantity
     name: str = ''
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -48,8 +49,15 @@ class BaseAssay(ABC):
 
     def __post_init__(self):
         """Validate data after initialization."""
-        self.x_data = np.asarray(self.x_data)
-        self.y_data = np.asarray(self.y_data)
+        if not isinstance(self.x_data, Quantity):
+            raise TypeError(f'x_data must be a pint Quantity, got {type(self.x_data).__name__}')
+        if not isinstance(self.y_data, Quantity):
+            raise TypeError(f'y_data must be a pint Quantity, got {type(self.y_data).__name__}')
+
+        # Normalize to base units so .magnitude is always M / au
+        object.__setattr__(self, 'x_data', self.x_data.to('M'))
+        object.__setattr__(self, 'y_data', self.y_data.to('au'))
+
         if self.x_data.shape != self.y_data.shape:
             raise ValueError(f'x_data and y_data must have same shape, got {self.x_data.shape} and {self.y_data.shape}')
 
@@ -100,18 +108,18 @@ class BaseAssay(ABC):
         """
         pass
 
-    def residuals(self, params: np.ndarray) -> np.ndarray:
+    def residuals(self, params: np.ndarray) -> Quantity:
         """Compute residuals (observed - predicted).
 
         Parameters
         ----------
         params : np.ndarray
-            Parameter values.
+            Parameter values (bare floats from optimizer).
 
         Returns
         -------
-        np.ndarray
-            Residual values.
+        Quantity
+            Residual values in signal units.
         """
         return self.y_data - self.forward_model(params)
 
@@ -121,25 +129,25 @@ class BaseAssay(ABC):
         Parameters
         ----------
         params : np.ndarray
-            Parameter values.
+            Parameter values (bare floats from optimizer).
 
         Returns
         -------
         float
-            Sum of squared residuals.
+            Sum of squared residuals (dimensionless).
         """
         resid = self.residuals(params)
-        return float(np.sum(resid**2))
+        return float(np.sum(resid.magnitude**2))
 
-    def get_default_bounds(self) -> Dict[str, Tuple[float, float]]:
+    def get_default_bounds(self) -> Dict[str, Tuple[Quantity, Quantity]]:
         """Get default parameter bounds as a name-keyed dictionary.
 
         Returns the ``default_bounds`` dictionary from the assay registry,
-        keyed by parameter name.
+        keyed by parameter name.  Values are Quantity tuples.
 
         Returns
         -------
-        Dict[str, Tuple[float, float]]
+        Dict[str, Tuple[Quantity, Quantity]]
             ``{param_name: (lower, upper), ...}``
         """
         return dict(self.registry_metadata.default_bounds)
