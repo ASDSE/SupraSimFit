@@ -1,12 +1,21 @@
-"""HTML display labels for parameter names and units.
+"""HTML display labels for parameter names.
 
 Used by FitSummaryWidget and plot annotations to render math-style names
 in Qt widgets that support HTML (QLabel, QFormLayout, pg.TextItem).
+
+Value and unit formatting is handled by Pint's built-in formatters:
+  - ``f"{Q_(value, unit):.3g~H}"`` for HTML values+units
+  - ``f"{Q_(value, 'dimensionless'):.3g~P}"`` for pretty Unicode values
+  - ``f"{ureg.Unit(unit_str):~H}"`` for HTML unit display
+
+Reciprocal units (e.g. 1/M) are post-processed into negative-exponent
+notation (M⁻¹ / M<sup>−1</sup>) because Pint 0.25 does not have a
+format modifier for that.
 """
 
 from __future__ import annotations
 
-import math
+from core.units import ureg
 
 PARAM_LABELS: dict[str, str] = {
     'Ka_guest': '<b>K<sub>a(G)</sub></b>',
@@ -18,96 +27,38 @@ PARAM_LABELS: dict[str, str] = {
     'intercept': '<b>intercept</b>',
 }
 
-UNIT_LABELS: dict[str, str] = {
-    'M^-1': 'M<sup>&#8722;1</sup>',
-    'a.u.': 'a.u.',
-}
-
-_SUPERSCRIPT_TABLE = {
-    '0': '⁰',
-    '1': '¹',
-    '2': '²',
-    '3': '³',
-    '4': '⁴',
-    '5': '⁵',
-    '6': '⁶',
-    '7': '⁷',
-    '8': '⁸',
-    '9': '⁹',
-    '-': '⁻',
-    '+': '⁺',
-}
-
-
-def _to_superscript(n: int) -> str:
-    """Convert an integer exponent to Unicode superscript characters."""
-    return ''.join(_SUPERSCRIPT_TABLE.get(c, c) for c in str(n))
-
 
 def fmt_param(name: str) -> str:
-    """Return HTML display label for a parameter name, fallback to raw name.
-
-    Parameters
-    ----------
-    name : str
-        Internal parameter key (e.g. ``"Ka_guest"``).
-
-    Returns
-    -------
-    str
-        HTML string (e.g. ``"K<sub>a,guest</sub>"``).
-    """
+    """Return HTML display label for a parameter name, fallback to raw name."""
     return PARAM_LABELS.get(name, name)
 
 
-def _fmt_value(value: float, decimals: int = 2) -> str:
-    """Format a float for display using ×10ⁿ notation.
+def fmt_unit_html(unit_str: str) -> str:
+    """Format a unit string as abbreviated HTML with negative exponents.
 
-    Uses scientific notation for |v| >= 1e5 or |v| < 1e-3 (and v != 0).
-    Returns ``"NaN"`` / ``"Inf"`` for special values.
-
-    Parameters
-    ----------
-    value : float
-    decimals : int
-        Number of significant figures (default 2).
-
-    Returns
-    -------
-    str
+    Pint's ``~H`` formatter renders reciprocal units as fractions (e.g.
+    ``1/M``).  This function post-processes the output to use superscript
+    negative exponents instead (e.g. ``M<sup>−1</sup>``).
     """
-    if math.isnan(value):
-        return 'NaN'
-    if math.isinf(value):
-        return 'Inf' if value > 0 else '-Inf'
-    if value == 0.0:
-        return '0.0'
-    abs_v = abs(value)
-    fmt = f'.{decimals}g'
-    if abs_v >= 1e3 or abs_v < 1e-3:
-        exp = int(math.floor(math.log10(abs_v)))
-        mantissa = value / 10**exp
-        exp_str = _to_superscript(exp)
-        if abs(mantissa - 1.0) < 1e-9:
-            return f'10{exp_str}'
-        elif abs(mantissa + 1.0) < 1e-9:
-            return f'\u221210{exp_str}'
-        else:
-            return f'{mantissa:{fmt}}\xd710{exp_str}'  # × = \xd7
-    return f'{value:{fmt}}'
+    if not unit_str:
+        return ''
+    formatted = f'{ureg.Unit(unit_str):~H}'
+    if formatted.startswith('1/'):
+        base = formatted[2:].strip()
+        return f'{base}<sup>−1</sup>'
+    return formatted
 
 
-def fmt_unit(unit: str) -> str:
-    """Return HTML display label for a unit string, fallback to raw string.
+def fmt_unit_pretty(unit_str: str) -> str:
+    """Format a unit string as abbreviated Unicode with negative exponents.
 
-    Parameters
-    ----------
-    unit : str
-        Raw unit string (e.g. ``"M^-1"``).
-
-    Returns
-    -------
-    str
-        HTML string (e.g. ``"M<sup>&#8722;1</sup>"``).
+    Like :func:`fmt_unit_html` but returns plain Unicode (e.g. ``M⁻¹``)
+    suitable for text files.
     """
-    return UNIT_LABELS.get(unit, unit)
+    if not unit_str:
+        return ''
+    formatted = f'{ureg.Unit(unit_str):~P}'
+    if formatted.startswith('1/'):
+        base = formatted[2:].strip()
+        return f'{base}⁻¹'
+    return formatted

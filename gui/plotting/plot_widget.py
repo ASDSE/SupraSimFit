@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -9,63 +10,97 @@ import pyqtgraph as pg
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
-from gui.plotting.colors import (
-    AVERAGE_LINE_COLOR,
-    BACKGROUND_COLOR,
-    DROPPED_REPLICA_COLOR,
-    ERROR_BAR_COLOR,
-    FIT_PALETTE,
-    FOREGROUND_COLOR,
-    REPLICA_PALETTE,
-    rgba,
-)
-from gui.plotting.labels import _fmt_value, fmt_param, fmt_unit
+from core.units import Q_, Quantity, ureg
+from gui.plotting.colors import AVERAGE_LINE_COLOR, BACKGROUND_COLOR, DROPPED_REPLICA_COLOR, ERROR_BAR_COLOR, FIT_PALETTE, FOREGROUND_COLOR, PALETTES, REPLICA_PALETTE, rgba
+from gui.plotting.labels import fmt_param, fmt_unit_html
 from gui.plotting.plot_style import DEFAULT_STYLE, line_style_to_qt
+from gui.widgets.replica_panel import _display_label
 
-_X_UNIT_SCALES: dict[str, float] = {"nM": 1e9, "µM": 1e6, "mM": 1e3, "M": 1.0}
+_X_UNIT_SCALES: dict[str, float] = {label: float(Q_(1, label).to('M').magnitude) for label in ('nM', 'µM', 'mM', 'M')}
+# Invert: we need M→display, i.e. multiply M value to get display value
+_X_UNIT_SCALES = {k: 1.0 / v for k, v in _X_UNIT_SCALES.items()}
+
+_SUPERSCRIPT_DIGITS = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻')
 
 
-def _to_superscript(n: int) -> str:
-    """Convert an integer to a Unicode superscript string."""
-    table = {
-        '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-        '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
-        '-': '⁻', '+': '⁺',
-    }
-    return ''.join(table.get(c, c) for c in str(n))
+def _format_exponent_unicode(exp: int) -> str:
+    """Convert an integer exponent to Unicode superscript, e.g. 5 → '⁵', -3 → '⁻³'."""
+    return str(exp).translate(_SUPERSCRIPT_DIGITS)
 
 
 class ScientificAxisItem(pg.AxisItem):
-    """AxisItem that formats tick labels in scientific notation.
+    """AxisItem that formats tick labels with a shared exponent.
 
-    Values in the range [0.01, 10 000] are displayed as plain numbers.
-    Values outside that range use Unicode superscript notation, e.g.
-    ``10⁻⁶`` or ``2.5×10⁻⁷``.  SI prefix auto-scaling is disabled so
-    that concentrations are shown in their native units.
+    When all tick values share a common order of magnitude (outside the
+    [0.01, 10 000] range), the exponent is factored out and stored in
+    :attr:`exponent`.  Tick labels then show plain mantissa values (e.g.
+    "2", "4", "6") and the caller appends "×10ⁿ" once to the axis label.
+
+    Values in [0.01, 10 000] are displayed as plain numbers with no
+    exponent factored out.  SI prefix auto-scaling is disabled.
+
+    Parameters
+    ----------
+    use_exponent : bool
+        If ``False``, tick labels are always plain ``:g``-formatted values
+        and no exponent is factored out.  Useful for axes where the caller
+        already handles unit scaling (e.g. concentration with a user-selected
+        unit).
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, use_exponent: bool = True, **kwargs):
         super().__init__(*args, **kwargs)
         self.enableAutoSIPrefix(False)
+        self.exponent: int | None = None
+        self._use_exponent = use_exponent
+        self.on_exponent_changed: Callable[[int | None], None] | None = None
+
+    def _set_exponent(self, exp: int | None) -> None:
+        """Update exponent, firing callback only on change.
+
+        The callback guard (``exp != self.exponent``) prevents infinite
+        recursion: ``setLabel`` → ``update()`` → ``tickStrings`` →
+        same exponent → no callback.
+        """
+        if exp != self.exponent:
+            self.exponent = exp
+            if self.on_exponent_changed is not None:
+                self.on_exponent_changed(exp)
 
     def tickStrings(self, values, scale, spacing):
+        if not values:
+            self._set_exponent(None)
+            return []
+
+        if not self._use_exponent:
+            self._set_exponent(None)
+            return [f'{v * scale:g}' for v in values]
+
+        # Compute common exponent from the maximum absolute value
+        abs_vals = [abs(v * scale) for v in values if v * scale != 0]
+        if not abs_vals:
+            self._set_exponent(None)
+            return ['0'] * len(values)
+
+        max_abs = max(abs_vals)
+
+        # Only factor out exponent for values outside the "plain" range
+        if 1e-2 <= max_abs <= 1e4:
+            self._set_exponent(None)
+            return [f'{v * scale:g}' for v in values]
+
+        exp = int(np.floor(np.log10(max_abs)))
+        self._set_exponent(exp)
+        divisor = 10**exp
+
         strings = []
         for v in values:
             v_scaled = v * scale
             if v_scaled == 0:
                 strings.append('0')
-            elif abs(v_scaled) >= 1e4 or (0 < abs(v_scaled) < 1e-2):
-                exp = int(np.floor(np.log10(abs(v_scaled))))
-                mantissa = v_scaled / 10 ** exp
-                exp_str = _to_superscript(exp)
-                if abs(mantissa - 1.0) < 1e-9:
-                    strings.append(f'10{exp_str}')
-                elif abs(mantissa + 1.0) < 1e-9:
-                    strings.append(f'\u221210{exp_str}')
-                else:
-                    strings.append(f'{mantissa:.2g}\xd710{exp_str}')
             else:
-                strings.append(f'{v_scaled:g}')
+                mantissa = v_scaled / divisor
+                strings.append(f'{mantissa:g}')
         return strings
 
 
@@ -122,18 +157,28 @@ class PlotWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._pg_widget)
 
+        # Wire exponent callbacks so axis labels update reactively after paint
+        left_ax: ScientificAxisItem = self._pg_widget.getAxis('left')
+        left_ax.on_exponent_changed = self._on_y_exponent_changed
+        bottom_ax: ScientificAxisItem = self._pg_widget.getAxis('bottom')
+        bottom_ax.on_exponent_changed = self._on_x_exponent_changed
+
         self._style: dict = DEFAULT_STYLE
 
         self._replica_items: list[pg.ScatterPlotItem] = []
         self._dropped_item: pg.ScatterPlotItem | None = None
+        self._dropped_items: list[pg.ScatterPlotItem] = []
         self._average_item: pg.PlotCurveItem | None = None
         self._error_bar_item: pg.ErrorBarItem | None = None
         self._error_cap_items: list[pg.PlotCurveItem] = []
         self._fit_items: list[pg.PlotCurveItem] = []
         self._annotation_item: pg.TextItem | None = None
         self._annotation_pos: pg.Point | None = None
+        self._legend_corner: str | None = None
 
         self._replica_ids: list[str] = []
+        self._all_replica_ids: tuple[str, ...] = ()
+        self._dropped_replica_ids: list[str] = []
         self._fit_labels: list[str] = []
         self._fit_results: list[Any] = []
 
@@ -178,12 +223,19 @@ class PlotWidget(QWidget):
 
         x = np.asarray(plot_data.get('concentrations', [])) * x_scale
 
+        # Resolve the active palette
+        palette_name = style['data_points'].get('palette', 'Default (Tab10)')
+        palette = PALETTES.get(palette_name, REPLICA_PALETTE)
+
+        # Store full replica id list for correct legend labels
+        self._all_replica_ids = tuple(plot_data.get('all_replica_ids', ()))
+
         # Active replicas — outlined markers for matplotlib-like look
         active = plot_data.get('active_replicas', [])
         self._replica_ids = []
         if style['visibility']['show_data_points']:
             for i, (rid, sig) in enumerate(active):
-                color = REPLICA_PALETTE[i % len(REPLICA_PALETTE)]
+                color = palette[i % len(palette)]
                 item = pg.ScatterPlotItem(
                     x=x,
                     y=np.asarray(sig),
@@ -197,21 +249,24 @@ class PlotWidget(QWidget):
                 self._replica_items.append(item)
                 self._replica_ids.append(str(rid))
 
-        # Dropped replicas
+        # Dropped replicas — individual items so each gets its own legend entry
         dropped = plot_data.get('dropped_replicas', [])
+        self._dropped_replica_ids = []
         if dropped and style['visibility']['show_dropped']:
-            all_x = np.concatenate([x] * len(dropped))
-            all_y = np.concatenate([np.asarray(sig) for _, sig in dropped])
-            self._dropped_item = pg.ScatterPlotItem(
-                x=all_x,
-                y=all_y,
-                symbol=style['dropped_replicas']['symbol'],
-                size=style['dropped_replicas']['size'],
-                pen=pg.mkPen(None),
-                brush=pg.mkBrush(rgba(DROPPED_REPLICA_COLOR, style['dropped_replicas']['alpha'])),
-                name='dropped',
-            )
-            self._pg_widget.addItem(self._dropped_item)
+            self._dropped_items = []
+            for rid, sig in dropped:
+                item = pg.ScatterPlotItem(
+                    x=x,
+                    y=np.asarray(sig),
+                    symbol=style['dropped_replicas']['symbol'],
+                    size=style['dropped_replicas']['size'],
+                    pen=pg.mkPen(None),
+                    brush=pg.mkBrush(rgba(DROPPED_REPLICA_COLOR, style['dropped_replicas']['alpha'])),
+                    name=None,
+                )
+                self._pg_widget.addItem(item)
+                self._dropped_items.append(item)
+                self._dropped_replica_ids.append(str(rid))
 
         # Average line + error bars — always create items when data permits so
         # that apply_style() can toggle visibility without requiring a full redraw.
@@ -219,8 +274,9 @@ class PlotWidget(QWidget):
         if avg is not None and len(active) > 0:
             avg_arr = np.asarray(avg)
             show_avg = style['visibility']['show_average']
+            avg_color = style['average_line'].get('color', AVERAGE_LINE_COLOR)
             pen = pg.mkPen(
-                color=AVERAGE_LINE_COLOR,
+                color=avg_color,
                 width=style['average_line']['width'],
                 style=line_style_to_qt(style['average_line']['style']),
             )
@@ -247,9 +303,7 @@ class PlotWidget(QWidget):
                         self._draw_error_caps(x, avg_arr, std, eb_color, eb_width, cap_size)
                 else:
                     # Hide by setting empty data (ErrorBarItem doesn't support setVisible reliably)
-                    self._error_bar_item.setData(
-                        x=np.array([]), y=np.array([]), height=np.array([])
-                    )
+                    self._error_bar_item.setData(x=np.array([]), y=np.array([]), height=np.array([]))
                 self._last_error_bar_data = (x, avg_arr, std)
 
         # Fit curves
@@ -257,7 +311,7 @@ class PlotWidget(QWidget):
         self._fit_labels = []
         if style['visibility']['show_fit']:
             for i, fit in enumerate(fits):
-                color = FIT_PALETTE[i % len(FIT_PALETTE)]
+                color = style['fit_curves'].get('color', FIT_PALETTE[i % len(FIT_PALETTE)])
                 pen = pg.mkPen(
                     color=color,
                     width=style['fit_curves']['width'],
@@ -275,6 +329,9 @@ class PlotWidget(QWidget):
 
         self._rebuild_legend()
         self._rebuild_annotation()
+        self._update_axis_labels_with_exponents()
+        # Force auto-range so all data is visible after x-unit rescaling
+        self._pg_widget.getViewBox().autoRange()
 
     def apply_style(self, style: dict) -> None:
         """Mutate existing plot items in-place with new style settings.
@@ -303,9 +360,13 @@ class PlotWidget(QWidget):
 
         self._style = style
 
+        # Resolve palette
+        palette_name = style['data_points'].get('palette', 'Default (Tab10)')
+        palette = PALETTES.get(palette_name, REPLICA_PALETTE)
+
         dp = style['data_points']
         for i, item in enumerate(self._replica_items):
-            color = REPLICA_PALETTE[i % len(REPLICA_PALETTE)]
+            color = palette[i % len(palette)]
             item.setSymbol(dp['symbol'])
             item.setSize(dp['size'])
             item.setPen(pg.mkPen(color=rgba(color, 220), width=0.8))
@@ -318,16 +379,26 @@ class PlotWidget(QWidget):
             self._dropped_item.setSize(dr['size'])
             self._dropped_item.setBrush(pg.mkBrush(rgba(DROPPED_REPLICA_COLOR, dr['alpha'])))
             self._dropped_item.setVisible(style['visibility']['show_dropped'])
+        for item in getattr(self, '_dropped_items', []):
+            item.setSymbol(dr['symbol'])
+            item.setSize(dr['size'])
+            item.setBrush(pg.mkBrush(rgba(DROPPED_REPLICA_COLOR, dr['alpha'])))
+            item.setVisible(style['visibility']['show_dropped'])
 
         al = style['average_line']
         if self._average_item is not None:
-            self._average_item.setPen(
-                pg.mkPen(
-                    color=AVERAGE_LINE_COLOR,
-                    width=al['width'],
-                    style=line_style_to_qt(al['style']),
-                )
+            avg_color = al.get('color', AVERAGE_LINE_COLOR)
+            pen = pg.mkPen(
+                color=avg_color,
+                width=al['width'],
+                style=line_style_to_qt(al['style']),
             )
+            # Reset opts['pen'] directly before setPen: pyqtgraph short-circuits
+            # ``setPen`` when the stored pen compares equal, which happens when a
+            # QColor is mutated in-place by the ParameterTree color picker.
+            self._average_item.opts['pen'] = None
+            self._average_item.setPen(pen)
+            self._average_item.update()
             self._average_item.setVisible(style['visibility']['show_average'])
 
         # Error bars: use setData with empty arrays to reliably hide/show
@@ -344,7 +415,9 @@ class PlotWidget(QWidget):
             if visible and self._last_error_bar_data is not None:
                 x_eb, avg_eb, std_eb = self._last_error_bar_data
                 self._error_bar_item.setData(
-                    x=x_eb, y=avg_eb, height=2 * std_eb,
+                    x=x_eb,
+                    y=avg_eb,
+                    height=2 * std_eb,
                     pen=pg.mkPen(color=eb_color, width=eb_width),
                 )
                 cap_size = style['error_bars'].get('cap_size', 5)
@@ -352,13 +425,11 @@ class PlotWidget(QWidget):
                     self._draw_error_caps(x_eb, avg_eb, std_eb, eb_color, eb_width, cap_size)
             else:
                 # Clear by setting empty data
-                self._error_bar_item.setData(
-                    x=np.array([]), y=np.array([]), height=np.array([])
-                )
+                self._error_bar_item.setData(x=np.array([]), y=np.array([]), height=np.array([]))
 
         fc = style['fit_curves']
         for i, item in enumerate(self._fit_items):
-            color = FIT_PALETTE[i % len(FIT_PALETTE)]
+            color = fc.get('color', FIT_PALETTE[i % len(FIT_PALETTE)])
             item.setPen(
                 pg.mkPen(
                     color=color,
@@ -384,6 +455,7 @@ class PlotWidget(QWidget):
 
         self._rebuild_legend()
         self._rebuild_annotation()
+        self._update_axis_labels_with_exponents()
 
     def set_axis_labels(self, x_label: str, y_label: str) -> None:
         """Update axis labels.
@@ -428,15 +500,46 @@ class PlotWidget(QWidget):
             If the file extension is not ``.png`` or ``.svg``.
         """
         from pathlib import Path as _Path
+
+        import pyqtgraph.exporters
+
         ext = _Path(path).suffix.lower()
-        if ext == ".png":
+        if ext == '.png':
             exporter = pg.exporters.ImageExporter(self._pg_widget.getPlotItem())
             exporter.export(path)
-        elif ext == ".svg":
+        elif ext == '.svg':
             exporter = pg.exporters.SVGExporter(self._pg_widget.getPlotItem())
             exporter.export(path)
         else:
             raise ValueError(f"Unsupported export format: '{ext}'. Use .png or .svg")
+
+    def _set_axis_label(self, axis: str, base_label: str, exp: int | None) -> None:
+        """Set an axis label, appending ×10ⁿ if *exp* is not None."""
+        if exp is not None:
+            exp_str = _format_exponent_unicode(exp)
+            self._pg_widget.setLabel(axis, f'{base_label}  (×10{exp_str})')
+        else:
+            self._pg_widget.setLabel(axis, base_label)
+
+    def _on_y_exponent_changed(self, exp: int | None) -> None:
+        """Update y-axis label reactively when the exponent changes during paint."""
+        self._set_axis_label('left', self._last_y_label or '', exp)
+
+    def _on_x_exponent_changed(self, exp: int | None) -> None:
+        """Update x-axis label reactively when the exponent changes during paint."""
+        x_unit = self._style['axes'].get('x_unit', 'µM')
+        self._set_axis_label('bottom', f'{self._last_x_label_base or ""} [{x_unit}]', exp)
+
+    def _update_axis_labels_with_exponents(self) -> None:
+        """Set axis labels with exponent suffix if known.
+
+        Exponents may be stale on the first call (before the initial
+        paint); the ``on_exponent_changed`` callbacks on each
+        :class:`ScientificAxisItem` correct them reactively once
+        ``tickStrings`` runs during paint.
+        """
+        self._on_y_exponent_changed(self._pg_widget.getAxis('left').exponent)
+        self._on_x_exponent_changed(self._pg_widget.getAxis('bottom').exponent)
 
     def _draw_error_caps(
         self,
@@ -477,21 +580,74 @@ class PlotWidget(QWidget):
 
         Legend entries are only added when the corresponding item is both
         configured to appear in the legend AND is currently visible.
+        The legend is placed in the least-occupied corner of the plot.
         """
         leg = self._style['legend']
         vis = self._style['visibility']
         self._legend.clear()
+        entry_count = 0
         if leg['show_replicas'] and vis['show_data_points']:
             for item, rid in zip(self._replica_items, self._replica_ids):
-                self._legend.addItem(item, rid)
+                # Use original replica index from full id list for correct label
+                if self._all_replica_ids and rid in self._all_replica_ids:
+                    idx = self._all_replica_ids.index(rid)
+                else:
+                    idx = self._replica_ids.index(rid)
+                self._legend.addItem(item, _display_label(idx))
+                entry_count += 1
+        if leg.get('show_dropped', True) and vis['show_dropped']:
+            for item, rid in zip(getattr(self, '_dropped_items', []), self._dropped_replica_ids):
+                if self._all_replica_ids and rid in self._all_replica_ids:
+                    idx = self._all_replica_ids.index(rid)
+                else:
+                    idx = 0
+                self._legend.addItem(item, f'{_display_label(idx)} (dropped)')
+                entry_count += 1
         if leg['show_average'] and vis['show_average'] and self._average_item is not None:
-            self._legend.addItem(self._average_item, 'average')
+            self._legend.addItem(self._average_item, 'Mean')
+            entry_count += 1
+        if leg.get('show_error_bars', True) and vis['show_error_bars'] and self._error_bar_item is not None:
+            # Create a small dummy line item to represent error bars in legend
+            eb_color = self._style['error_bars'].get('color', ERROR_BAR_COLOR)
+            eb_pen = pg.mkPen(color=eb_color, width=self._style['error_bars'].get('width', 1))
+            eb_legend_item = pg.PlotCurveItem(pen=eb_pen)
+            self._legend.addItem(eb_legend_item, 'Mean \u00b1 SD')
+            entry_count += 1
         if leg['show_fit'] and vis['show_fit']:
             for item, label in zip(self._fit_items, self._fit_labels):
                 self._legend.addItem(item, label)
+                entry_count += 1
+
+        # Position legend in least-occupied corner
+        corner = self._find_least_occupied_corner()
+        offsets = {
+            'top-right': (10, 10),
+            'top-left': (10, 10),
+            'bottom-right': (10, 10),
+            'bottom-left': (10, 10),
+        }
+        anchors = {
+            'top-right': (1, 0),
+            'top-left': (0, 0),
+            'bottom-right': (1, 1),
+            'bottom-left': (0, 1),
+        }
+        # pyqtgraph LegendItem.anchor maps (itemAnchor, parentAnchor, offset)
+        parent_anchor = anchors[corner]
+        self._legend.anchor(
+            itemPos=parent_anchor,
+            parentPos=parent_anchor,
+            offset=offsets[corner],
+        )
+        # Remember the chosen corner so overlays (annotation, fit summary)
+        # can avoid overlapping the legend. ``None`` when the legend is empty.
+        self._legend_corner = corner if entry_count > 0 else None
 
     def _clear_items(self) -> None:
         """Remove all data items and reset the legend."""
+        # Preserve annotation position before clearing
+        if self._annotation_item is not None:
+            self._annotation_pos = self._annotation_item.pos()
         all_items = [
             self._annotation_item,
             self._dropped_item,
@@ -500,6 +656,7 @@ class PlotWidget(QWidget):
             *self._replica_items,
             *self._fit_items,
             *self._error_cap_items,
+            *getattr(self, '_dropped_items', []),
         ]
         for item in all_items:
             if item is not None:
@@ -507,21 +664,71 @@ class PlotWidget(QWidget):
 
         self._replica_items = []
         self._dropped_item = None
+        self._dropped_items = []
         self._average_item = None
         self._error_bar_item = None
         self._error_cap_items = []
         self._fit_items = []
         self._annotation_item = None
-        self._annotation_pos = None
         self._last_error_bar_data = None
 
         self._replica_ids = []
+        self._dropped_replica_ids = []
         self._fit_labels = []
         self._fit_results = []
 
         plot_item = self._pg_widget.getPlotItem()
         if plot_item.legend is not None:
             plot_item.legend.clear()
+
+    def _find_least_occupied_corner(self, exclude: str | None = None) -> str:
+        """Determine which corner of the view has the fewest data points.
+
+        Parameters
+        ----------
+        exclude : str, optional
+            Corner to exclude (e.g. already used by legend).
+
+        Returns
+        -------
+        str
+            One of 'top-left', 'top-right', 'bottom-left', 'bottom-right'.
+        """
+        vr = self._pg_widget.getViewBox().viewRect()
+        cx = vr.center().x()
+        cy = vr.center().y()
+
+        # Collect all visible data points
+        all_x: list[float] = []
+        all_y: list[float] = []
+        for item in self._replica_items:
+            if item.isVisible():
+                data = item.getData()
+                if data[0] is not None:
+                    all_x.extend(data[0].tolist())
+                    all_y.extend(data[1].tolist())
+        if self._dropped_item is not None and self._dropped_item.isVisible():
+            data = self._dropped_item.getData()
+            if data[0] is not None:
+                all_x.extend(data[0].tolist())
+                all_y.extend(data[1].tolist())
+        for item in getattr(self, '_dropped_items', []):
+            if item.isVisible():
+                data = item.getData()
+                if data[0] is not None:
+                    all_x.extend(data[0].tolist())
+                    all_y.extend(data[1].tolist())
+
+        counts = {'top-left': 0, 'top-right': 0, 'bottom-left': 0, 'bottom-right': 0}
+        for px, py in zip(all_x, all_y):
+            h = 'left' if px < cx else 'right'
+            v = 'bottom' if py < cy else 'top'
+            counts[f'{v}-{h}'] += 1
+
+        if exclude:
+            counts.pop(exclude, None)
+
+        return min(counts, key=counts.get)
 
     def _rebuild_annotation(self) -> None:
         """Add or remove a draggable TextItem showing fit results."""
@@ -555,29 +762,58 @@ class PlotWidget(QWidget):
 
             for key, val in result.parameters.items():
                 unc = result.uncertainties.get(key, float('nan'))
-                unit = units_dict.get(key, '')
-                unit_html = f' {fmt_unit(unit)}' if unit else ''
-                lines.append(
-                    f'{fmt_param(key)} = {_fmt_value(val)} &plusmn; {_fmt_value(unc)}{unit_html}'
-                )
+                unit_str = units_dict.get(key, '')
+                unit_html = f' {fmt_unit_html(unit_str)}' if unit_str else ''
+                val_mag = float(val.magnitude) if isinstance(val, Quantity) else float(val)
+                unc_mag = float(unc.magnitude) if isinstance(unc, Quantity) else float(unc)
+                # Format with Pint HTML for proper superscripts, then strip unit
+                if unit_str:
+                    val_html = f'{Q_(val_mag, unit_str):.3g~H}'.rsplit(' ', 1)[0]
+                    unc_html = f'{Q_(unc_mag, unit_str):.3g~H}'.rsplit(' ', 1)[0]
+                else:
+                    val_html = f'{val_mag:.3g}'
+                    unc_html = f'{unc_mag:.3g}'
+                lines.append(f'{fmt_param(key)} = {val_html} &plusmn; {unc_html}{unit_html}')
 
-            lines.append(f'<b>R\u00b2:</b> {_fmt_value(result.r_squared, decimals=2)}')
-            lines.append(f'<b>RMSE:</b> {_fmt_value(result.rmse, decimals=2)}')
+            lines.append(f'<b>R\u00b2:</b> {result.r_squared:.4f}')
+            lines.append(f'<b>RMSE:</b> {Q_(result.rmse, "au"):.3g~H}')
 
             if idx < len(self._fit_results) - 1:
                 lines.append('')
 
         body = '<br>'.join(lines)
-        html = (
-            f'<div style="font-size:{font_pt}pt; background-color:'
-            f' rgba(255,255,255,200); padding:4px; border:1px solid #aaa;">'
-            f'{body}</div>'
-        )
-        self._annotation_item = pg.TextItem(html=html, anchor=(0, 0))
+        html = f'<div style="font-size:{font_pt}pt; background-color: rgba(255,255,255,200); padding:4px; border:1px solid #aaa;">{body}</div>'
+        # Choose annotation corner, excluding the one occupied by the legend
+        # so the fit-results overlay never covers the legend on a fresh build.
+        corner = self._find_least_occupied_corner(exclude=self._legend_corner)
+        anchor_map = {
+            'top-right': (1, 0),
+            'top-left': (0, 0),
+            'bottom-right': (1, 1),
+            'bottom-left': (0, 1),
+        }
+        anchor = anchor_map[corner]
+        self._annotation_item = pg.TextItem(html=html, anchor=anchor)
         self._annotation_item.setFlag(self._annotation_item.GraphicsItemFlag.ItemIsMovable)
         self._pg_widget.addItem(self._annotation_item)
+        # If the previously-remembered position lived in the legend's corner,
+        # drop it so the annotation relocates rather than stacking on top of it.
+        if self._annotation_pos is not None and self._legend_corner is not None:
+            vr = self._pg_widget.getViewBox().viewRect()
+            cx, cy = vr.center().x(), vr.center().y()
+            px, py = self._annotation_pos.x(), self._annotation_pos.y()
+            pos_corner = f'{"bottom" if py < cy else "top"}-{"left" if px < cx else "right"}'
+            if pos_corner == self._legend_corner:
+                self._annotation_pos = None
         if self._annotation_pos is not None:
             self._annotation_item.setPos(self._annotation_pos)
         else:
             vr = self._pg_widget.getViewBox().viewRect()
-            self._annotation_item.setPos(vr.left(), vr.top() + vr.height())
+            pos_map = {
+                'top-right': (vr.right(), vr.top() + vr.height()),
+                'top-left': (vr.left(), vr.top() + vr.height()),
+                'bottom-right': (vr.right(), vr.top()),
+                'bottom-left': (vr.left(), vr.top()),
+            }
+            px, py = pos_map[corner]
+            self._annotation_item.setPos(px, py)

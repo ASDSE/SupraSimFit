@@ -2,176 +2,197 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
-import pyqtgraph as pg
 from pyqtgraph.parametertree import Parameter, ParameterTree
 
+from gui.plotting.colors import PALETTE_NAMES
+
 DEFAULT_STYLE: dict = {
-    "axes": {
-        "label_font_size": 18,
-        "tick_font_size": 16,
-        "x_unit": "µM",
+    'axes': {
+        'label_font_size': 18,
+        'tick_font_size': 16,
+        'x_unit': 'µM',
     },
-    "data_points": {
-        "symbol": "o",
-        "size": 10,
-        "alpha": 200,
+    'data_points': {
+        'symbol': 'o',
+        'size': 10,
+        'alpha': 200,
+        'palette': 'Default (Tab10)',
     },
-    "dropped_replicas": {
-        "symbol": "x",
-        "size": 8,
-        "alpha": 120,
+    'dropped_replicas': {
+        'symbol': 'x',
+        'size': 11,
+        'alpha': 255,
     },
-    "average_line": {
-        "width": 1,
-        "style": "dash",
+    'average_line': {
+        'width': 4,
+        'style': 'dash',
+        'color': (0, 0, 0, 255),
     },
-    "fit_curves": {
-        "width": 2,
-        "style": "dash",
+    'fit_curves': {
+        'width': 4,
+        'style': 'dash',
+        'color': (23, 190, 207, 255),
     },
-    "error_bars": {
-        "visible": True,
-        "width": 2,
-        "color": (80, 80, 80),
-        "cap_size": 2,
+    'error_bars': {
+        'visible': True,
+        'width': 2,
+        'color': (80, 80, 80),
+        'cap_size': 2,
     },
-    "visibility": {
-        "show_data_points": True,
-        "show_dropped": True,
-        "show_average": False,
-        "show_fit": True,
-        "show_error_bars": True,
+    'visibility': {
+        'show_data_points': True,
+        'show_dropped': True,
+        'show_average': False,
+        'show_fit': True,
+        'show_error_bars': True,
     },
-    "legend": {
-        "font_size": 14,
-        "show_replicas": True,
-        "show_average": True,
-        "show_fit": True,
+    'legend': {
+        'font_size': 14,
+        'show_replicas': True,
+        'show_dropped': True,
+        'show_average': True,
+        'show_error_bars': True,
+        'show_fit': True,
     },
-    "annotations": {
-        "show_fit_results": False,
-        "font_size": 14,
+    'annotations': {
+        'show_fit_results': False,
+        'font_size': 14,
     },
 }
 
 _MARKER_LIMITS = {
-    "Circle":   "o",
-    "Square":   "s",
-    "Triangle": "t",
-    "Diamond":  "d",
-    "Plus":     "+",
-    "Cross":    "x",
+    'Circle': 'o',
+    'Square': 's',
+    'Triangle': 't',
+    'Diamond': 'd',
+    'Plus': '+',
+    'Cross': 'x',
 }
 
-_LINE_STYLE_LIMITS = ["Solid", "Dashed", "Dotted"]
+_LINE_STYLE_LIMITS = ['Solid', 'Dashed', 'Dotted']
 
 _PARAMS_SPEC = [
     # Visibility is first — the most common thing to toggle
     {
-        "name": "Visibility",
-        "type": "group",
-        "children": [
-            {"name": "Show data points", "type": "bool", "value": True},
-            {"name": "Show dropped replicas", "type": "bool", "value": True},
-            {"name": "Show average", "type": "bool", "value": False},
-            {"name": "Show error bars", "type": "bool", "value": True},
-            {"name": "Show fit", "type": "bool", "value": True},
+        'name': 'Visibility',
+        'type': 'group',
+        'children': [
+            {'name': 'Show replicas', 'type': 'bool', 'value': True},
+            {'name': 'Show dropped replicas', 'type': 'bool', 'value': True},
+            {'name': 'Show average', 'type': 'bool', 'value': False},
+            {'name': 'Show error bars', 'type': 'bool', 'value': True},
+            {'name': 'Show fit', 'type': 'bool', 'value': True},
         ],
     },
     {
-        "name": "Axes",
-        "type": "group",
-        "children": [
-            {"name": "Label font size", "type": "int", "value": 14, "limits": (6, 24)},
-            {"name": "Tick font size",  "type": "int", "value": 14, "limits": (6, 24)},
-            {"name": "X-axis unit", "type": "list", "value": "µM",
-             "limits": ["nM", "µM", "mM", "M"]},
+        'name': 'Axes',
+        'type': 'group',
+        'expanded': False,
+        'children': [
+            {'name': 'Label font size', 'type': 'int', 'value': 18, 'limits': (6, 24)},
+            {'name': 'Tick font size', 'type': 'int', 'value': 16, 'limits': (6, 24)},
+            {'name': 'x-axis unit', 'type': 'list', 'value': 'µM', 'limits': ['nM', 'µM', 'mM', 'M']},
         ],
     },
     {
-        "name": "Data points",
-        "type": "group",
-        "children": [
-            {"name": "Marker", "type": "list", "value": "o", "limits": _MARKER_LIMITS},
-            {"name": "Size", "type": "int", "value": 10, "limits": (2, 20)},
-            {"name": "Opacity", "type": "int", "value": 200, "limits": (0, 255)},
+        'name': 'Replicas',
+        'type': 'group',
+        'expanded': False,
+        'children': [
+            {'name': 'Marker', 'type': 'list', 'value': 'o', 'limits': _MARKER_LIMITS},
+            {'name': 'Size', 'type': 'int', 'value': 10, 'limits': (2, 20)},
+            {'name': 'Opacity', 'type': 'int', 'value': 200, 'limits': (0, 255)},
+            {'name': 'Color palette', 'type': 'list', 'value': 'Default (Tab10)', 'limits': PALETTE_NAMES},
         ],
     },
     {
-        "name": "Dropped replicas",
-        "type": "group",
-        "children": [
-            {"name": "Marker", "type": "list", "value": "x", "limits": _MARKER_LIMITS},
-            {"name": "Size", "type": "int", "value": 8, "limits": (2, 20)},
-            {"name": "Opacity", "type": "int", "value": 120, "limits": (0, 255)},
+        'name': 'Dropped replicas',
+        'type': 'group',
+        'expanded': False,
+        'children': [
+            {'name': 'Marker', 'type': 'list', 'value': 'x', 'limits': _MARKER_LIMITS},
+            {'name': 'Size', 'type': 'int', 'value': 11, 'limits': (2, 20)},
+            {'name': 'Opacity', 'type': 'int', 'value': 255, 'limits': (0, 255)},
         ],
     },
     {
-        "name": "Average line",
-        "type": "group",
-        "children": [
-            {"name": "Width", "type": "int", "value": 1, "limits": (1, 8)},
-            {"name": "Style", "type": "list", "value": "Dashed",
-             "limits": _LINE_STYLE_LIMITS},
+        'name': 'Average line',
+        'type': 'group',
+        'expanded': False,
+        'children': [
+            {'name': 'Width', 'type': 'int', 'value': 4, 'limits': (1, 8)},
+            {'name': 'Style', 'type': 'list', 'value': 'Dashed', 'limits': _LINE_STYLE_LIMITS},
+            {'name': 'Color', 'type': 'color', 'value': (0, 0, 0, 255)},
         ],
     },
     {
-        "name": "Fit curves",
-        "type": "group",
-        "children": [
-            {"name": "Width", "type": "int", "value": 2, "limits": (1, 8)},
-            {"name": "Style", "type": "list", "value": "Dashed",
-             "limits": _LINE_STYLE_LIMITS},
+        'name': 'Fit curves',
+        'type': 'group',
+        'expanded': False,
+        'children': [
+            {'name': 'Width', 'type': 'int', 'value': 4, 'limits': (1, 8)},
+            {'name': 'Style', 'type': 'list', 'value': 'Dashed', 'limits': _LINE_STYLE_LIMITS},
+            {'name': 'Color', 'type': 'color', 'value': (23, 190, 207, 255)},
         ],
     },
     {
-        "name": "Error bars",
-        "type": "group",
-        "children": [
-            {"name": "Width", "type": "int", "value": 2, "limits": (1, 5)},
-            {"name": "Color", "type": "color", "value": (80, 80, 80, 255)},
-            {"name": "Cap size", "type": "int", "value": 2, "limits": (0, 30)},
+        'name': 'Error bars',
+        'type': 'group',
+        'expanded': False,
+        'children': [
+            {'name': 'Width', 'type': 'int', 'value': 2, 'limits': (1, 8)},
+            {'name': 'Color', 'type': 'color', 'value': (80, 80, 80, 255)},
+            {'name': 'Cap size', 'type': 'int', 'value': 2, 'limits': (0, 30)},
         ],
     },
     {
-        "name": "Legend",
-        "type": "group",
-        "children": [
-            {"name": "Font size", "type": "int", "value": 14, "limits": (6, 24)},
-            {"name": "Show replicas", "type": "bool", "value": True},
-            {"name": "Show average", "type": "bool", "value": True},
-            {"name": "Show fit", "type": "bool", "value": True},
+        'name': 'Legend',
+        'type': 'group',
+        'expanded': False,
+        'children': [
+            {'name': 'Font size', 'type': 'int', 'value': 14, 'limits': (6, 24)},
+            {'name': 'Show replicas', 'type': 'bool', 'value': True},
+            {'name': 'Show dropped', 'type': 'bool', 'value': True},
+            {'name': 'Show average', 'type': 'bool', 'value': True},
+            {'name': 'Show error bars', 'type': 'bool', 'value': True},
+            {'name': 'Show fit', 'type': 'bool', 'value': True},
         ],
     },
     {
-        "name": "Annotations",
-        "type": "group",
-        "children": [
-            {"name": "Show fit results", "type": "bool", "value": False},
-            {"name": "Font size", "type": "int", "value": 14, "limits": (7, 24)},
+        'name': 'Annotations',
+        'type': 'group',
+        'expanded': False,
+        'children': [
+            {'name': 'Show fit results', 'type': 'bool', 'value': False},
+            {'name': 'Font size', 'type': 'int', 'value': 14, 'limits': (7, 24)},
         ],
     },
 ]
 
 _LINE_STYLE_MAP = {
-    "Solid":  "solid",
-    "Dashed": "dash",
-    "Dotted": "dot",
+    'Solid': 'solid',
+    'Dashed': 'dash',
+    'Dotted': 'dot',
 }
 
 
 _PEN_STYLE_MAP: dict[str, Qt.PenStyle] = {
-    "solid": Qt.PenStyle.SolidLine,
-    "dash":  Qt.PenStyle.DashLine,
-    "dot":   Qt.PenStyle.DotLine,
+    'solid': Qt.PenStyle.SolidLine,
+    'dash': Qt.PenStyle.DashLine,
+    'dot': Qt.PenStyle.DotLine,
 }
 
 
 def _qcolor_to_tuple(color) -> tuple:
     """Convert a QColor (or tuple) from ParameterTree to an (R, G, B, A) tuple."""
     from PyQt6.QtGui import QColor
+
     if isinstance(color, QColor):
         return (color.red(), color.green(), color.blue(), color.alpha())
     if hasattr(color, '__iter__'):
@@ -209,9 +230,7 @@ class PlotStyleWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._params = Parameter.create(
-            name="Style", type="group", children=_PARAMS_SPEC
-        )
+        self._params = Parameter.create(name='Style', type='group', children=_PARAMS_SPEC)
         self._tree = ParameterTree(showHeader=False)
         self._tree.setParameters(self._params, showTop=False)
         self._params.sigTreeStateChanged.connect(self._on_change)
@@ -227,50 +246,147 @@ class PlotStyleWidget(QWidget):
         """Return a copy of the current style as a plain dict."""
         p = self._params
         return {
-            "axes": {
-                "label_font_size": p["Axes", "Label font size"],
-                "tick_font_size":  p["Axes", "Tick font size"],
-                "x_unit":          p["Axes", "X-axis unit"],
+            'axes': {
+                'label_font_size': p['Axes', 'Label font size'],
+                'tick_font_size': p['Axes', 'Tick font size'],
+                'x_unit': p['Axes', 'x-axis unit'],
             },
-            "data_points": {
-                "symbol": p["Data points", "Marker"],
-                "size": p["Data points", "Size"],
-                "alpha": p["Data points", "Opacity"],
+            'data_points': {
+                'symbol': p['Replicas', 'Marker'],
+                'size': p['Replicas', 'Size'],
+                'alpha': p['Replicas', 'Opacity'],
+                'palette': p['Replicas', 'Color palette'],
             },
-            "dropped_replicas": {
-                "symbol": p["Dropped replicas", "Marker"],
-                "size": p["Dropped replicas", "Size"],
-                "alpha": p["Dropped replicas", "Opacity"],
+            'dropped_replicas': {
+                'symbol': p['Dropped replicas', 'Marker'],
+                'size': p['Dropped replicas', 'Size'],
+                'alpha': p['Dropped replicas', 'Opacity'],
             },
-            "average_line": {
-                "width": p["Average line", "Width"],
-                "style": p["Average line", "Style"],
+            'average_line': {
+                'width': p['Average line', 'Width'],
+                'style': p['Average line', 'Style'],
+                'color': _qcolor_to_tuple(p['Average line', 'Color']),
             },
-            "fit_curves": {
-                "width": p["Fit curves", "Width"],
-                "style": p["Fit curves", "Style"],
+            'fit_curves': {
+                'width': p['Fit curves', 'Width'],
+                'style': p['Fit curves', 'Style'],
+                'color': _qcolor_to_tuple(p['Fit curves', 'Color']),
             },
-            "error_bars": {
-                "visible": p["Visibility", "Show error bars"],
-                "width": p["Error bars", "Width"],
-                "color": _qcolor_to_tuple(p["Error bars", "Color"]),
-                "cap_size": p["Error bars", "Cap size"],
+            'error_bars': {
+                'visible': p['Visibility', 'Show error bars'],
+                'width': p['Error bars', 'Width'],
+                'color': _qcolor_to_tuple(p['Error bars', 'Color']),
+                'cap_size': p['Error bars', 'Cap size'],
             },
-            "visibility": {
-                "show_data_points": p["Visibility", "Show data points"],
-                "show_dropped": p["Visibility", "Show dropped replicas"],
-                "show_average": p["Visibility", "Show average"],
-                "show_fit": p["Visibility", "Show fit"],
-                "show_error_bars": p["Visibility", "Show error bars"],
+            'visibility': {
+                'show_data_points': p['Visibility', 'Show replicas'],
+                'show_dropped': p['Visibility', 'Show dropped replicas'],
+                'show_average': p['Visibility', 'Show average'],
+                'show_fit': p['Visibility', 'Show fit'],
+                'show_error_bars': p['Visibility', 'Show error bars'],
             },
-            "legend": {
-                "font_size": p["Legend", "Font size"],
-                "show_replicas": p["Legend", "Show replicas"],
-                "show_average": p["Legend", "Show average"],
-                "show_fit": p["Legend", "Show fit"],
+            'legend': {
+                'font_size': p['Legend', 'Font size'],
+                'show_replicas': p['Legend', 'Show replicas'],
+                'show_dropped': p['Legend', 'Show dropped'],
+                'show_average': p['Legend', 'Show average'],
+                'show_error_bars': p['Legend', 'Show error bars'],
+                'show_fit': p['Legend', 'Show fit'],
             },
-            "annotations": {
-                "show_fit_results": p["Annotations", "Show fit results"],
-                "font_size": p["Annotations", "Font size"],
+            'annotations': {
+                'show_fit_results': p['Annotations', 'Show fit results'],
+                'font_size': p['Annotations', 'Font size'],
             },
         }
+
+    def load_style(self, style: dict) -> None:
+        """Apply a style dict to the ParameterTree, updating all widgets.
+
+        Parameters
+        ----------
+        style : dict
+            Style dict in the same format as ``current_style()`` returns.
+            Missing keys are silently skipped.
+        """
+        p = self._params
+        _map = {
+            ('Axes', 'Label font size'): ('axes', 'label_font_size'),
+            ('Axes', 'Tick font size'): ('axes', 'tick_font_size'),
+            ('Axes', 'x-axis unit'): ('axes', 'x_unit'),
+            ('Replicas', 'Marker'): ('data_points', 'symbol'),
+            ('Replicas', 'Size'): ('data_points', 'size'),
+            ('Replicas', 'Opacity'): ('data_points', 'alpha'),
+            ('Replicas', 'Color palette'): ('data_points', 'palette'),
+            ('Dropped replicas', 'Marker'): ('dropped_replicas', 'symbol'),
+            ('Dropped replicas', 'Size'): ('dropped_replicas', 'size'),
+            ('Dropped replicas', 'Opacity'): ('dropped_replicas', 'alpha'),
+            ('Average line', 'Width'): ('average_line', 'width'),
+            ('Average line', 'Style'): ('average_line', 'style'),
+            ('Average line', 'Color'): ('average_line', 'color'),
+            ('Fit curves', 'Width'): ('fit_curves', 'width'),
+            ('Fit curves', 'Style'): ('fit_curves', 'style'),
+            ('Fit curves', 'Color'): ('fit_curves', 'color'),
+            ('Error bars', 'Width'): ('error_bars', 'width'),
+            ('Error bars', 'Color'): ('error_bars', 'color'),
+            ('Error bars', 'Cap size'): ('error_bars', 'cap_size'),
+            ('Visibility', 'Show replicas'): ('visibility', 'show_data_points'),
+            ('Visibility', 'Show dropped replicas'): ('visibility', 'show_dropped'),
+            ('Visibility', 'Show average'): ('visibility', 'show_average'),
+            ('Visibility', 'Show fit'): ('visibility', 'show_fit'),
+            ('Visibility', 'Show error bars'): ('visibility', 'show_error_bars'),
+            ('Legend', 'Font size'): ('legend', 'font_size'),
+            ('Legend', 'Show replicas'): ('legend', 'show_replicas'),
+            ('Legend', 'Show dropped'): ('legend', 'show_dropped'),
+            ('Legend', 'Show average'): ('legend', 'show_average'),
+            ('Legend', 'Show error bars'): ('legend', 'show_error_bars'),
+            ('Legend', 'Show fit'): ('legend', 'show_fit'),
+            ('Annotations', 'Show fit results'): ('annotations', 'show_fit_results'),
+            ('Annotations', 'Font size'): ('annotations', 'font_size'),
+        }
+        # Block signals to avoid emitting per-param changes
+        self._params.blockSignals(True)
+        try:
+            for (group, name), (section, key) in _map.items():
+                if section in style and key in style[section]:
+                    val = style[section][key]
+                    # Color tuples need conversion for ParameterTree
+                    if isinstance(val, (list, tuple)) and len(val) >= 3:
+                        from PyQt6.QtGui import QColor
+
+                        val = QColor(*val)
+                    p[group, name] = val
+        finally:
+            self._params.blockSignals(False)
+        # Emit one change after restoring all values
+        self.style_changed.emit(self.current_style())
+
+
+def save_style_json(style: dict, path: str | Path) -> None:
+    """Save a style dict to a JSON file.
+
+    Parameters
+    ----------
+    style : dict
+        As returned by ``PlotStyleWidget.current_style()``.
+    path : str or Path
+        Destination file path.
+    """
+    with open(path, 'w') as f:
+        json.dump(style, f, indent=2)
+
+
+def load_style_json(path: str | Path) -> dict:
+    """Load a style dict from a JSON file.
+
+    Parameters
+    ----------
+    path : str or Path
+        Source file path.
+
+    Returns
+    -------
+    dict
+        Style dict suitable for ``PlotStyleWidget.load_style()``.
+    """
+    with open(path) as f:
+        return json.load(f)
