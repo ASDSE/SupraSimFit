@@ -1,348 +1,204 @@
 <p align="center">
-   <img src="assets/logo-suprasense.svg" alt="Suprasense Logo" width:="80%"/>
+   <img src="assets/logo-suprasense.svg" alt="Suprasense Logo" width="80%"/>
 </p>
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Build and Release](https://github.com/ahmadomira/fitting-tool/actions/workflows/build_and_release.yml/badge.svg)](https://github.com/ahmadomira/fitting-tool/actions/workflows/build_and_release.yml)
-[![Latest Release](https://img.shields.io/github/v/release/ahmadomira/fitting-tool?label=Latest%20Release)](https://github.com/ahmadomira/fitting-tool/releases/latest)
+[![Python](https://img.shields.io/badge/python-3.13%2B-blue.svg)](https://www.python.org/downloads/)
+[![Build and Release](https://github.com/ASDSE/SupraSimFit/actions/workflows/build_and_release.yml/badge.svg)](https://github.com/ASDSE/SupraSimFit/actions/workflows/build_and_release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/ASDSE/SupraSimFit?label=Latest%20Release)](https://github.com/ASDSE/SupraSimFit/releases/latest)
 
 # Molecular Binding Assay Fitting Toolkit
 
-A Python-based application for analyzing molecular binding interactions using various spectroscopic assays. This tool provides robust mathematical fitting algorithms based on **forward modeling** approaches that overcome limitations of traditional data transformation methods commonly used in supramolecular chemistry and biochemistry.
+A desktop application for fitting equilibrium binding models to fluorescence titration data. It is aimed at supramolecular and biochemical researchers who need to extract association constants (Ka) from indicator-displacement, guest-displacement, and direct-binding assays using robust forward-modelling rather than linearised transforms.
 
-## 🧬 Overview
+The app ships a PyQt6 GUI with interactive plots, per-replica outlier removal, and one-click import of BMG plate-reader Excel exports.
 
-### Forward Modeling Approach
+## Download
 
-Unlike traditional binding analysis methods that rely on data transformation (Scatchard plots, Hill plots, double-reciprocal plots), this application employs **direct forward modeling** where theoretical binding curves are fitted directly to raw experimental data. This approach offers several key advantages:
+Packaged builds for each OS are published on the [Releases page](https://github.com/ASDSE/SupraSimFit/releases/latest):
 
-- **Preserves Error Structure**: Maintains native measurement uncertainties without distortion from data transformation
-- **Physical Constraints**: Parameters are bounded by thermodynamically reasonable values, ensuring physically meaningful results
-- **Handles Complex Systems**: Naturally accommodates competitive binding and ligand depletion scenarios
-- **Robust Validation**: Model assessment occurs in the original measurement space where experimental errors are best understood
+- macOS — `FittingApp-<version>-macos.zip`
+- Windows — `FittingApp-<version>-windows.zip`
+- Linux — `FittingApp-<version>-linux.zip`
 
-### Supported Assay Types
+Unzip and launch the executable or `.app` bundle. No Python installation required.
 
-This application enables analysis of experimental data from various spectroscopic assays:
+## Quick start (from source)
 
-- **GDA (Guest Displacement Assay)**: Quantifies guest binding affinity by monitoring displacement of a preformed host-indicator complex - particularly valuable for spectroscopically silent hosts and guests, and superior for insoluble or weakly binding guests
-- **IDA (Indicator Displacement Assay)**: Determines binding constants using competitive displacement of indicator dyes - enables detection in complex biological matrices through ultra-high-affinity reporter pairs
-- **DBA (Direct Binding Assay)**: Direct measurement of host-guest or dye-host binding interactions available in both titration modes - monitors spectroscopic changes upon complex formation but limited in complex matrices due to competitive binding from naturally occurring interferents
-- **Dye Alone**: Linear calibration fitting for indicator dyes - establishes baseline fluorescence properties and corrects for inner filter effects in competitive binding assays
-
-The application features an intuitive Tkinter-based graphical user interface with advanced data visualization, comprehensive statistical analysis, and flexible result export capabilities. 
-
-## 🚀 Features
-
-### Core Analysis Capabilities
-- **Multiple Assay Types**: Support for GDA, IDA, DBA (both host-to-dye and dye-to-host titrations), and dye alone calibration
-- **Advanced Optimization**: L-BFGS-B constrained optimization with multi-start global optimization for robust parameter estimation
-- **Ensemble-Based Uncertainty**: Parameter uncertainties estimated through ensemble statistics from multiple optimization runs, capturing nonlinear uncertainty propagation
-- **Physical Constraints**: Thermodynamically bounded parameters ensure meaningful binding constants and fluorescence coefficients
-
-### Statistical Analysis & Quality Control
-- **Multi-Level Quality Assessment**: R²/RMSE filtering with adaptive thresholds and parameter ensemble validation
-- **Robust Parameter Estimation**: Median-based statistics from optimization ensembles provide outlier-resistant results
-- **Comprehensive Error Analysis**: Confidence intervals that account for both optimization uncertainty and experimental variability
-- **Model Validation**: Goodness-of-fit metrics and residual analysis in the original measurement space
-
-### Data Processing & Visualization
-- **Data Visualization**: Publication-quality plots with unified styling and export options
-- **Result Merging**: Statistical combination of multiple fitting results with outlier detection using median absolute deviation criteria
-- **Cross-Platform**: Available for Windows, macOS, and Linux with automated build system
-- **Laboratory Integration**: Direct processing of BMG plate reader files with standardized data workflows
-
-### Planned Enhancements
-- 🚧 **Parallel Processing**: Multi-threading support for simultaneous analysis of multiple datasets
-- 🚧 **Automated Testing**: Comprehensive validation of mathematical algorithms and data processing
-- 🚧 **Jupyter Integration**: Included notebooks for advanced analysis and method development
-
-## 📋 Requirements
-
-### System Requirements
-- Python 3.8 or higher
-- Operating System: Windows 10+, macOS 10.14+, or Linux (Ubuntu 18.04+)
-- RAM: 2GB minimum, 4GB recommended
-- Storage: 500MB free space
-
-### Python Dependencies
-
-**Core Analysis Engine:**
-```
-matplotlib>=3.5.0  # Publication-quality visualizations with customizable styling
-numpy>=1.21.0      # Numerical array operations and mathematical computations
-pandas>=1.3.0      # BMG Labtech plate reader file processing and structured data manipulation  
-scipy>=1.7.0       # L-BFGS-B optimization and statistical functions
-```
-
-**Key Technology Choices:**
-- **scipy.optimize**: L-BFGS-B bound-constrained quasi-Newton optimization with efficient handling of parameter bounds
-- **Tkinter**: Cross-platform GUI compatibility without external dependencies
-- **Cross-Platform Distribution**: PyInstaller-based executable generation through GitHub Actions CI/CD
-- **BMG Labtech Plate Readers**: Direct processing of plate reader Excel exports with automatic 96-well layout extraction for high-throughput analysis
-## 🛠️ Installation
-
-### Option 1: Pre-built Executables (Recommended for End Users)
-
-Download the latest release for your operating system from the [Releases](../../releases) page:
-
-- **Windows**: `windows-executable.zip`
-- **macOS**: `macos-executable.zip`
-- **Linux** (Ubuntu): `linux-executable.zip`
-
-### Option 2: Run from Source
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/your-username/fitting_app.git
-   cd fitting_app
-   ```
-
-2. **Create a virtual environment (recommended):**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. **Run the application:**
-   ```bash
-   python main.py
-   ```
-
-### Option 3: Development Installation
-
-For developers wanting to contribute or modify the code:
+Requirements: Python **3.13+** and [**uv**](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/your-username/fitting_app.git
-cd fitting_app
-pip install -e .
-pip install -r requirements.txt
+git clone https://github.com/ASDSE/SupraSimFit.git
+cd SupraSimFit
+uv sync
+uv run run_app.py
 ```
 
-## 📖 Usage Guide
+To try the app immediately without loading your own data, click **Demo IDA** in the toolbar — it loads a bundled IDA dataset and runs a fit with sensible defaults.
 
-### Getting Started
+## Usage
 
-1. **Launch the application** by using the pre-built executable or running `python main.py` 
-2. **Select your assay type** from the main interface
-3. **Load your data** using the file browser (supports .txt files, see `./data`)
-4. **Configure fitting parameters** in the interface
-5. **Run the fitting** and analyze results
+### 1. Load data
 
-### Data Format
+Use **Load Data** (Ctrl+O) in the toolbar. Supported input formats:
 
-Currently, input data should be in tab-delimited format with the following structure:
+| Format | Extension | Notes |
+|---|---|---|
+| Tab-separated text | `.txt` | Multi-replica blocks; see below |
+| Comma-separated | `.csv` | Long-format, wide-format, or multi-replica blocks |
+| BMG plate reader | `.xlsx` / `.xls` | Auto-detected; non-BMG Excel files fall back to a structured reader |
 
-#### For DBA/GDA/IDA Assays:
+**TXT layout** — each replica is a block that starts with a header row (`var` and `signal`, separated by a tab). Lines beginning with `#` are treated as comments.
+
 ```
-var   signal
-0.0   1.000
-1e-6  0.995
-2e-6  0.987
+var     signal
+0.0     506.246
+2.985e-05       1064.85
+...
+var     signal
+0.0     503.100
+2.985e-05       1059.21
 ...
 ```
 
-### 🚧 Advanced Features
-
-#### Result Merging
-Combine multiple independent fitting results and perform a final fit:
-1. Select "Merge Fits" for your assay type
-2. Load multiple result files
-3. Perform a final fit over combined fits
-3. Generate combined statistics and plots
-
-## 📁 Project Structure
+**CSV layout** — either long-format (recommended) or wide-format with one column per replica. Column names are matched case-insensitively; `concentration`, `conc`, `x`, `[conc]`, or `titrant` are accepted for the independent variable, and `signal`, `y`, `fluorescence`, `intensity`, or `emission` for the dependent variable.
 
 ```
-fitting_app/
-├── main.py                   # Application entry point
-├── requirements.txt
-├── README.md                 # This file
-├── core/                     # Core fitting algorithms
-│   ├── fitting/              # Assay-specific fitting modules
-│   │   ├── gda.py 
-│   │   ├── ida.py 
-│   │   ├── dba_host_to_dye.py
-│   │   ├── dba_dye_to_host.py 
-│   │   └── dye_alone.py 
-│   ├── base_fitting_app.py    # Base fitting framework
-│   ├── fitting_utils.py       # Utility functions
-│   └── forward_model.py       # Mathematical models
-├── gui/                       # User interface modules
-│   ├── main_interface.py
-│   ├── interface_*_fitting.py
-│   └── interface_*_merge_fits.py
-├── utils/                     # General utilities
-├── assets/                    # icons & logos
-├── tests/                     # Unit tests
-├── examples/                  # Example data and scripts
-├── notebooks/                 # Jupyter analysis notebooks
-├── data/                      # Sample datasets
-├── docs/
-└── build/
-    └── FittingApp.spec        # Build configuration
+concentration,signal,replica
+1e-7,506.246,0
+2e-7,612.300,0
+1e-7,503.100,1
+2e-7,610.000,1
 ```
 
-## 🔬 Scientific Background
+Concentrations are stored internally in **Molar**. The GUI accepts input in nM/µM/mM/M and converts automatically. Example datasets with reference parameters live in [data/](data/) — see [data/Readme.md](data/Readme.md).
 
-### Binding Models
+### 2. Configure and fit
 
-The application implements rigorous binding models based on mass action kinetics and equilibrium thermodynamics:
+1. Pick the assay type in the **Assay** panel.
+2. Enter the known experimental conditions for that assay (e.g. `[Host]₀`, `[Dye]₀`, `Ka_dye`). These fields are unit-aware and accept any supported concentration or binding-constant unit.
+3. In the **Bounds** panel, review or tighten the parameter bounds. Defaults cover a wide physically reasonable range; narrower bounds produce better-conditioned fits when prior information is available.
+4. In the **Fit Configuration** panel, adjust:
+   - **Number of starts** — how many multi-start trials the optimiser runs (default 100). More starts → more robust estimate, at the cost of runtime.
+   - **R² / RMSE filtering** — minimum R² and RMSE tolerance factor used to reject failed fits before aggregation.
+5. Optionally use the **Outlier Removal** panel to drop noisy replicas via a modified Z-score filter (default threshold 3.5, MAD-based).
+6. Click **Run Fit**. Fitting runs off the main thread, and results appear in the plot and summary panel when it finishes.
+
+See the [Scientific background](#scientific-background) below for how each of these configuration options maps onto the underlying physics.
+
+### 3. Export results
+
+From the **File** menu:
+
+- **Export Fit Results (JSON)** — full result ensemble (parameters, statistics, source file). Re-importable via *Import Results*.
+- **Export Results (TXT)** — human-readable report.
+- **Export Raw Data** — round-trip the loaded measurements back to `.txt` or `.csv`.
+- **Export Plot** — save the current plot as PNG or SVG.
+
+## Scientific background
+
+### Binding models
+
+All assays are described with **association constants** (Ka) and rigorous mass-action equilibria.
 
 #### Direct Binding Assay (DBA)
 
-DBA measures direct binding interactions through spectroscopic signal changes upon complex formation.
+Direct measurement of host–guest or dye–host binding interactions, available in both titration modes. Monitors spectroscopic changes upon complex formation, but is limited in complex matrices due to competitive binding from naturally occurring interferents.
 
-**Equilibrium:**
-```
-Host + Dye ⇌ Host-Dye Complex
-Ka = [Host-Dye] / ([Host][Dye])
-```
+A host `H` binds directly to a spectroscopically active dye `D`:
 
-**Signal Equation:**
 ```
-I = I₀ + I_dye × [Dye] + I_complex × [Host-Dye]
+H + D ⇌ HD        Ka_dye = [HD] / ([H][D])
 ```
 
-Where I₀ is baseline fluorescence, and I_dye, I_complex are molar fluorescence coefficients.
+The observed fluorescence signal is modelled as a four-parameter linear combination:
 
-#### Competitive Binding Assays (IDA & GDA)
-
-These assays involve coupled equilibria where two species compete for the same binding site.
-
-**Equilibria:**
 ```
-Host + Dye ⇌ Host-Dye     (Ka_dye)
-Host + Guest ⇌ Host-Guest (Ka_guest)  
+I = I0 + I_dye_free · [D_free] + I_dye_bound · [HD]
 ```
 
-The mathematical framework handles the coupled mass balance equations numerically, accounting for competitive displacement based on relative binding affinities.
+where `I0` absorbs baseline offsets and `I_dye_free`, `I_dye_bound` are the per-species molar signal coefficients. The app supports both titration modes: host titrated into dye (`DBA_HtoD`) and dye titrated into host (`DBA_DtoH`).
 
-### Key Methodological Advances
+#### Indicator Displacement Assay (IDA)
 
-- **Forward Modeling**: Direct fitting of binding equations to raw data, avoiding transformation artifacts
-- **Physical Constraints**: Binding constants bounded by thermodynamically reasonable ranges (10² to 10¹⁰ M⁻¹)
-- **Statistical Rigor**: Multiple optimization runs provide robust uncertainty estimates for all parameters
+Determines binding constants by competitive displacement of indicator dyes — enabling detection in complex biological matrices through ultra-high-affinity reporter pairs. IDA involves two coupled equilibria, where the reporter dye and the analyte guest compete for the same host binding site:
 
-## 🔧 Building from Source & Quality Assurance
+```
+H + D ⇌ HD        Ka_dye    (assumed known, measured via DBA first)
+H + G ⇌ HG        Ka_guest  (the quantity being fitted)
+```
 
-### Prerequisites for Building
-- Python 3.8+
-- PyInstaller
-- All dependencies from requirements.txt
+The guest `G` is titrated into a preformed `HD` complex. As `G` displaces `D`, the observed signal tracks the free-dye / bound-dye ratio, letting the fit recover `Ka_guest` from the same 4-parameter signal model as DBA applied to the coupled mass-balance at each titration point.
 
-### Build Commands
+#### Guest Displacement Assay (GDA)
 
-**Build executable:**
+Quantifies guest binding affinity by monitoring displacement of a preformed host–indicator complex — particularly valuable for spectroscopically silent hosts and guests, and superior for insoluble or weakly binding guests that are difficult to measure by IDA.
+
+Mechanistically, GDA shares the same coupled equilibria as IDA, but the *dye* is titrated into a pre-equilibrated host + guest mixture instead of the guest being titrated into `HD`. The fitted quantity is again `Ka_guest`.
+
+#### Dye Alone
+
+Linear calibration fitting for indicator dyes — establishes baseline fluorescence properties and helps correct for inner-filter effects in competitive binding assays. Concretely, a linear fit of dye-only fluorescence against dye concentration yields the free-dye response (`I_dye_free`) and baseline (`I0`), which can then be used as priors or fixed values for subsequent DBA/IDA/GDA fits.
+
+### Why forward modelling
+
+Historical fitting methods (Scatchard, Hill, double-reciprocal) rearrange the binding isotherm so it can be fit with linear regression. Those transforms:
+
+- distort the measurement noise structure (non-uniform error weighting in the transformed space),
+- lose validity in ligand-depletion regimes, and
+- cannot handle coupled competitive equilibria without strong approximations.
+
+This toolkit instead fits the raw signal directly with the full nonlinear model — so the residual is evaluated in the measurement space where the experimental error is best understood.
+
+### Fitting strategy
+
+The nonlinear binding likelihood is typically multi-modal, so single-start gradient methods get trapped in local minima. The toolkit uses:
+
+- **Multi-start L-BFGS-B** — the constrained quasi-Newton optimiser is launched from many random initial parameter vectors (the `n_trials` knob), with Ka parameters sampled in log space (they span several orders of magnitude).
+- **Physical bounds** — every parameter has lower/upper bounds so the search stays inside a thermodynamically reasonable region (Ka defaults: 10⁻⁸ to 10¹² M⁻¹). Tighten these in the Bounds panel when you have prior knowledge.
+- **Quality filter** — after all starts complete, failed fits are rejected by `min_r_squared` and by an RMSE tolerance factor (`rmse_threshold_factor × best_RMSE`). Only survivors are aggregated.
+- **Robust aggregation** — the final parameter estimate is the **median** of the surviving ensemble, and uncertainty is reported as the **median absolute deviation (MAD)**. This captures nonlinear uncertainty propagation without assuming a Gaussian posterior and is robust to a handful of bad fits slipping through the filter.
+- **Replica outlier removal** — the optional Z-score preprocessing step uses a *modified* Z-score based on the median and MAD, so it is not biased by the very outliers it is trying to flag.
+
+### Identifiability note
+
+In the 4-parameter signal model, the coefficients `I0`, `I_dye_free`, and `I_dye_bound` are **structurally degenerate** for DBA and IDA — only `Ka` is uniquely identifiable from a single titration. The app fits the full 4-parameter model because it reconstructs the observed signal faithfully, but only `Ka` should be reported as a physical constant across datasets. Fixing the signal coefficients with a dye-alone calibration (see [data/Readme.md](data/Readme.md)) breaks the degeneracy when stronger constraints are needed.
+
+## Development
+
 ```bash
-pyinstaller --clean -y --distpath ./dist --workpath ./build FittingApp.spec
+uv sync                # install runtime + dev dependencies
+uv run pytest          # run the test suite
+uv run run_app.py      # launch the GUI
 ```
 
-**Development build:**
+The GUI can also be launched directly as a module: `uv run python -m gui.main_window`.
+
+Build a standalone executable with PyInstaller:
+
 ```bash
-python -m build
+uv run --with pyinstaller pyinstaller --clean -y \
+    --distpath ./dist --workpath ./build FittingApp.spec
 ```
 
-The built executable will be available in the `dist/` directory.
+## Dependencies
 
-## 🧪 Testing & Validation
+Runtime dependencies are pinned in [pyproject.toml](pyproject.toml):
 
-**Current Validation Methods:**
-- **Real-world Performance**: Typical fitting quality metrics (R² > 0.99) across diverse molecular systems
-- **Parameter Consistency**: Multi-start optimization ensures reproducible binding constants within statistical uncertainty
-- **Physical Validation**: All fitted parameters maintain thermodynamic validity and experimental constraints
+- `numpy`, `scipy` — numerics and L-BFGS-B optimisation
+- `pandas`, `openpyxl` — tabular I/O and Excel / BMG plate-reader import
+- `pint` — unit-aware parameter conversion
+- `PyQt6`, `pyqtgraph` — GUI and interactive plots
 
-**Future Testing Framework:**
-- 🚧 Comprehensive unittest suite for core algorithms
-- 🚧 Integration tests for data processing workflows  
-- 🚧 Performance benchmarking across dataset sizes
-- 🚧 Cross-validation with literature binding constants 
+## License
 
-### Quality Assurance
-
-- **Version Control**: Git-based change tracking and collaboration with systematic commit practices
-- **Continuous Deployment**: Automated multi-platform builds (Windows, macOS, Linux) through GitHub Actions CI/CD pipeline
-- **Mathematical Validation**: Forward modeling algorithms validated against theoretical binding isotherms
-
-**Planned Quality Enhancements:**
-- 🚧 **Cross-Platform Testing**: Automated validation across operating systems ensures consistent performance
-- 🚧 **Continuous Integration**: Enhanced cross-platform compatibility verification with automated regression testing
-- 🚧 **Code Standardization**: Automated formatting (Black) and style checking (pylint) for maintainable codebase
-
-## 🤝 Contributing
-
-We welcome contributions! Our contributing guideline:
-
-1. **Fork the repository**
-2. **Create a feature branch:** `git checkout -b feature/amazing-feature`
-3. **Make your changes** and add tests
-4. **Ensure tests pass:** `python -m pytest`
-5. **Commit changes:** `git commit -m 'Add amazing feature'`
-6. **Push to branch:** `git push origin feature/amazing-feature`
-7. **Open a Pull Request**
-
-### 🚧 Development Guidelines
-
-- Follow PEP 8 style guidelines
-- Add docstrings to all functions and classes following [Numpy's docstring standard](https://numpydoc.readthedocs.io/en/latest/format.html#docstring-standard)
-- Include unit tests for new features
-
-## 📊 Example Workflows
-
-### Basic IDA Analysis
-
-🚧 Coming soon
-
-### Batch Processing
-
-🚧 Coming soon
-
-## 📈 Performance
-
-- **Fitting Speed**: Typical datasets (8 replicas X 11 measurement points) fit in <1 second
-- **Memory Usage**: <100MB for standard datasets
-- **Scalability**: Tested with datasets up to 10,000 points
-
-## 📝 Citation
-
-🚧 WIP
-
-## 🐛 Troubleshooting
-
-**Fitting convergence issues:**
-- Check data quality and remove outliers
-- Adjust initial parameter estimates
-- Verify data format matches expected structure
-
-### Getting Help
-
-- **Issues**: Report bugs via [GitHub Issues](https://github.com/ahmadomira/fitting-tool/issues)
-- **Discussions**: Join conversations in [GitHub Discussions](https://github.com/ahmadomira/fitting-tool/discussions)
-- **Documentation Page**: 🚧 Coming soon
-
-## 📄 License
-
-This project is licensed under the GPL 3.0 License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-🚧 WIP
+GPL 3.0 — see [LICENSE](LICENSE).
 
 ## References
 
-1. Sinn, S., Spuling, E., Bräse, S., & Biedermann, F. (2019). Rational design and implementation of a cucurbit[8]uril-based indicator-displacement assay for application in blood serum. *Chemical Science*, 10(28), 6584-6593. https://doi.org/10.1039/C9SC00705A
-
-2. Sinn, S., Krämer, J., & Biedermann, F. (2020). Teaching old indicators even more tricks: binding affinity measurements with the guest-displacement assay (GDA). *Chemical Communications*, 56(49), 6620-6623. https://doi.org/10.1039/D0CC01841D
+1. Sinn, S., Spuling, E., Bräse, S., & Biedermann, F. (2019). Rational design and implementation of a cucurbit[8]uril-based indicator-displacement assay for application in blood serum. *Chemical Science*, 10(28), 6584-6593. <https://doi.org/10.1039/C9SC00705A>
+2. Sinn, S., Krämer, J., & Biedermann, F. (2020). Teaching old indicators even more tricks: binding affinity measurements with the guest-displacement assay (GDA). *Chemical Communications*, 56(49), 6620-6623. <https://doi.org/10.1039/D0CC01841D>
 
 ---
-
-**Last Updated**: August 2025
 
 **Contact:** contact@suprabank.org
