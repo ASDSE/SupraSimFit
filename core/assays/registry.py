@@ -136,7 +136,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
     AssayType.DBA_DtoH: AssayMetadata(
         display_name='DBA Dye→Host (Direct Binding Assay)',
         parameter_keys=('Ka_dye', 'I0', 'I_dye_free', 'I_dye_bound'),
-        x_label='[Dye] / M',
+        x_label='[Dye]',
         y_label='Signal / a.u.',
         default_bounds={
             'Ka_dye': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
