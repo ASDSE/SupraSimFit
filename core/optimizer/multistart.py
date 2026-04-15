@@ -11,6 +11,8 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 from scipy.optimize import minimize
 
+from core.optimizer.scaling import ParamScaler
+
 
 @dataclass
 class FitAttempt:
@@ -85,54 +87,65 @@ def multistart_minimize(
     initial_guesses: Optional[List[np.ndarray]] = None,
     log_scale_params: Optional[List[int]] = None,
     compute_metrics: Optional[Callable[[np.ndarray], Tuple[float, float]]] = None,
+    scaler: Optional[ParamScaler] = None,
 ) -> List[FitAttempt]:
     """Run L-BFGS-B optimizer from multiple starting points.
 
     Parameters
     ----------
     objective : Callable[[np.ndarray], float]
-        Objective function to minimize. Should return sum of squared residuals.
+        Raw-space objective; should return sum of squared residuals.
     bounds : List[Tuple[float, float]]
-        (lower, upper) bounds for each parameter.
+        (lower, upper) bounds for each parameter, in raw space.
     n_trials : int
         Number of optimization runs.
     initial_guesses : List[np.ndarray], optional
-        Pre-computed initial guesses. If None, generated randomly.
+        Pre-computed raw-space initial guesses. If None, generated randomly.
     log_scale_params : List[int], optional
         Indices of parameters to sample in log space for random initialization.
     compute_metrics : Callable, optional
-        Function that takes params and returns (rmse, r_squared).
+        Function that takes raw params and returns (rmse, r_squared).
         If None, RMSE is computed from cost, R² is set to NaN.
+    scaler : ParamScaler, optional
+        If provided, optimizer runs in the scaler's internal (tilded) space;
+        callers still pass and receive raw parameters.
 
     Returns
     -------
     List[FitAttempt]
-        Results from all optimization attempts, sorted by cost (ascending).
+        Raw-space attempts sorted by raw cost (ascending).
     """
     if initial_guesses is None:
         initial_guesses = generate_initial_guesses(n_trials, bounds, log_scale_params)
 
+    opt_bounds, opt_objective, opt_initial = bounds, objective, initial_guesses
+    if scaler is not None:
+        opt_bounds = scaler.bounds_to_internal(bounds)
+        opt_objective = scaler.wrap_objective(objective)
+        opt_initial = [scaler.to_internal(g) for g in initial_guesses]
+
     results = []
-    for guess in initial_guesses:
+    for opt_guess in opt_initial:
         try:
-            result = minimize(
-                objective,
-                guess,
-                method='L-BFGS-B',
-                bounds=bounds,
-            )
+            result = minimize(opt_objective, opt_guess, method='L-BFGS-B', bounds=opt_bounds)
+
+            if scaler is not None:
+                params_raw = scaler.to_external(result.x)
+                cost_raw = float(result.fun) * scaler.loss_scale
+            else:
+                params_raw = result.x
+                cost_raw = float(result.fun)
 
             if compute_metrics is not None:
-                rmse, r_squared = compute_metrics(result.x)
+                rmse, r_squared = compute_metrics(params_raw)
             else:
-                # Approximate RMSE from cost if n_points not available
-                rmse = np.sqrt(result.fun)
+                rmse = np.sqrt(cost_raw)
                 r_squared = np.nan
 
             results.append(
                 FitAttempt(
-                    params=result.x,
-                    cost=result.fun,
+                    params=params_raw,
+                    cost=cost_raw,
                     rmse=rmse,
                     r_squared=r_squared,
                     success=result.success,
@@ -147,40 +160,3 @@ def multistart_minimize(
     return results
 
 
-def fit_with_multistart(
-    objective: Callable[[np.ndarray], float],
-    bounds: List[Tuple[float, float]],
-    n_trials: int = 100,
-    log_scale_params: Optional[List[int]] = None,
-    compute_metrics: Optional[Callable[[np.ndarray], Tuple[float, float]]] = None,
-) -> Tuple[Optional[FitAttempt], List[FitAttempt]]:
-    """Convenience function for multi-start fitting with best result.
-
-    Parameters
-    ----------
-    objective : Callable[[np.ndarray], float]
-        Objective function to minimize.
-    bounds : List[Tuple[float, float]]
-        Parameter bounds.
-    n_trials : int
-        Number of optimization runs.
-    log_scale_params : List[int], optional
-        Parameters to sample in log space.
-    compute_metrics : Callable, optional
-        Function to compute (rmse, r_squared) from params.
-
-    Returns
-    -------
-    Tuple[Optional[FitAttempt], List[FitAttempt]]
-        (best_result, all_results). best_result is None if all attempts failed.
-    """
-    all_results = multistart_minimize(
-        objective=objective,
-        bounds=bounds,
-        n_trials=n_trials,
-        log_scale_params=log_scale_params,
-        compute_metrics=compute_metrics,
-    )
-
-    best = all_results[0] if all_results else None
-    return best, all_results

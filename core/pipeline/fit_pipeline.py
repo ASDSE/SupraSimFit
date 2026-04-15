@@ -24,6 +24,7 @@ from core.assays.dye_alone import DyeAloneAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.optimizer.filters import aggregate_fits, calculate_fit_metrics
 from core.optimizer.multistart import FitAttempt, multistart_minimize
+from core.optimizer.scaling import ParamScaler
 from core.units import Q_, Quantity
 
 logger = logging.getLogger(__name__)
@@ -232,6 +233,7 @@ class FitConfig:
     min_r_squared: float = 0.9
     log_scale_params: Optional[List[str]] = None
     custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
+    rescale_parameters: bool = True
 
 
 def _model_name_for_assay(assay: BaseAssay) -> str:
@@ -254,6 +256,7 @@ def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
         'min_r_squared': config.min_r_squared,
         'log_scale_params': config.log_scale_params,
         'custom_bounds': custom_bounds,
+        'rescale_parameters': config.rescale_parameters,
     }
 
 
@@ -354,6 +357,10 @@ def fit_assay(
         y_pred = assay.forward_model(params)
         return calculate_fit_metrics(y_data_mag, y_pred.magnitude)
 
+    scaler: Optional[ParamScaler] = None
+    if config.rescale_parameters:
+        scaler = ParamScaler.from_assay(assay)
+
     # Run multi-start optimization
     all_attempts = multistart_minimize(
         objective=objective,
@@ -361,6 +368,7 @@ def fit_assay(
         n_trials=config.n_trials,
         log_scale_params=log_scale,
         compute_metrics=compute_metrics,
+        scaler=scaler,
     )
 
     # Aggregate results

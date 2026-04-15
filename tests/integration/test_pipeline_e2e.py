@@ -28,8 +28,8 @@ from tests.conftest import DBA_RECOVERY_BOUNDS, DBA_TRUE, DYE_ALONE_TRUE, GDA_ID
 
 CLEAN_TOL = 0.10
 NOISY_TOL = 0.25
-N_TRIALS_CLEAN = 50
-N_TRIALS_NOISY = 80
+N_TRIALS_CLEAN = 100
+N_TRIALS_NOISY = 120
 
 # Dye-alone ground truth CONSISTENT with binding assay signal coefficients.
 # The dye-alone slope = I_dye_free and intercept = I0 from the binding model.
@@ -229,7 +229,11 @@ class TestFitConfigCustomization:
         config_strict = FitConfig(n_trials=20, custom_bounds=DBA_RECOVERY_BOUNDS, min_r_squared=0.999)
         config_relaxed = FitConfig(n_trials=20, custom_bounds=DBA_RECOVERY_BOUNDS, min_r_squared=0.0)
 
+        # Re-seed before each fit so both runs see identical multistart state;
+        # otherwise the RNG drifts between calls and the comparison is meaningless.
+        np.random.seed(42)
         result_strict = fit_assay(assay, config_strict)
+        np.random.seed(42)
         result_relaxed = fit_assay(assay, config_relaxed)
 
         assert result_relaxed.n_passing >= result_strict.n_passing
