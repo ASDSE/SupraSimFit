@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -126,12 +127,7 @@ class FittingSession(QWidget):
         config = self._fit_panel.current_config()
         custom_bounds = self._bounds_panel.current_bounds()
         if custom_bounds:
-            config = FitConfig(
-                n_trials=config.n_trials,
-                rmse_threshold_factor=config.rmse_threshold_factor,
-                min_r_squared=config.min_r_squared,
-                custom_bounds=custom_bounds,
-            )
+            config = replace(config, custom_bounds=custom_bounds)
 
         self._fit_worker = FitWorker(
             ms,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -80,6 +81,38 @@ it. If the aggregate parameter is clearly wrong but the plot looks okay,
 tighten the factor to weed out partial-convergence runs.</p>
 """
 
+_RESCALE_HELP_HTML = """
+<h3>Rescale &mdash; Parameter Conditioning for the Optimiser</h3>
+
+<p><b>What It Does</b></p>
+<p>Before each fit, every parameter is multiplied by a data-derived
+factor so all of them are on the same numerical scale (roughly
+order&nbsp;1). After the optimiser has converged, the parameters are
+transformed back to physical units for display. You always see
+results in M<sup>&minus;1</sup>, a.u., etc.</p>
+
+<p><b>Why It Matters</b></p>
+<p>L-BFGS-B converges faster and more reliably when all parameters
+live on a similar scale. In raw units K<sub>a</sub> (~10<sup>7</sup>
+M<sup>&minus;1</sup>) and I<sub>0</sub> (~10<sup>3</sup> a.u.) differ
+by many orders of magnitude &mdash; a badly conditioned problem where
+one gradient direction dominates and the optimiser wastes steps. After
+rescaling, more multi-start trials succeed and the robust median
+estimate is tighter.</p>
+
+<p><b>Why It&rsquo;s Safe</b></p>
+<p>The rescaling is an exact, invertible affine transform. It doesn&rsquo;t
+change what is being fit &mdash; only the numerical coordinates the
+optimiser sees. Your bounds, parameter values, and uncertainties are
+identical in meaning to an unrescaled fit; they are simply reported in
+the same physical units you entered them in.</p>
+
+<p><b>When to Turn It Off</b></p>
+<p>Leave it on by default. Disable only for a direct comparison with a
+raw-space fit.</p>
+"""
+
+
 _R2_HELP_HTML = """
 <h3>Min R<sup>2</sup> &mdash; Minimum Coefficient of Determination</h3>
 
@@ -140,12 +173,14 @@ class FitConfigPanel(QGroupBox):
             n_trials=self._trials_spin.value(),
             rmse_threshold_factor=self._rmse_spin.value(),
             min_r_squared=self._r2_spin.value(),
+            rescale_parameters=self._rescale_check.isChecked(),
         )
 
     def set_config(self, config: FitConfig) -> None:
         self._trials_spin.setValue(config.n_trials)
         self._rmse_spin.setValue(config.rmse_threshold_factor)
         self._r2_spin.setValue(config.min_r_squared)
+        self._rescale_check.setChecked(config.rescale_parameters)
 
     # ------------------------------------------------------------------
     # UI
@@ -181,6 +216,17 @@ class FitConfigPanel(QGroupBox):
         self._r2_spin.setToolTip("Minimum R² for a trial to pass the acceptance filter.")
         self._r2_spin.valueChanged.connect(self.config_changed)
         form.addRow("Min R²:", self._with_info(self._r2_spin, "Min R²", _R2_HELP_HTML))
+
+        self._rescale_check = QCheckBox()
+        self._rescale_check.setChecked(FitConfig().rescale_parameters)
+        self._rescale_check.setToolTip(
+            "Rescale parameters to O(1) for the optimiser; results are shown in physical units."
+        )
+        self._rescale_check.toggled.connect(self.config_changed)
+        form.addRow(
+            "Rescale parameters:",
+            self._with_info(self._rescale_check, "Rescale parameters for fitting", _RESCALE_HELP_HTML),
+        )
 
     @staticmethod
     def _with_info(widget: QWidget, title: str, html: str) -> QWidget:
