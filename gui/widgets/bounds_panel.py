@@ -9,7 +9,7 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.units import Q_, Quantity
 from gui.parameter_descriptions import PARAMETER_DESCRIPTIONS
 from gui.plotting.labels import fmt_param
-from gui.widgets.info_button import InfoButton
+from gui.widgets.info_button import InfoButton, InfoGroupBox
 
 
 _DYE_ALONE_PRIOR_HTML = """
@@ -108,7 +108,20 @@ class _BoundRow(QWidget):
         return _parse_sci(self._hi.text()) or 1.0
 
 
-class BoundsPanel(QGroupBox):
+_BOUNDS_SECTION_HELP_HTML = """
+<h3>Parameter Bounds</h3>
+<p>Lower and upper limits for each fitted parameter. The optimiser
+searches only within these bounds. Defaults come from the assay
+registry; edit them to constrain the search if you have prior
+knowledge.</p>
+<p>See the <i>i</i> next to each parameter for its physical meaning.
+See the <i>i</i> next to &ldquo;Use dye-alone priors&rdquo; for how
+calibration data can tighten signal-coefficient bounds
+automatically.</p>
+"""
+
+
+class BoundsPanel(InfoGroupBox):
     """Registry-driven parameter bounds editor.
 
     Auto-populates from ``ASSAY_REGISTRY[assay_type].default_bounds`` when the
@@ -127,7 +140,7 @@ class BoundsPanel(QGroupBox):
     dye_alone_requested = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__('Parameter Bounds', parent)
+        super().__init__('Parameter Bounds', 'Parameter Bounds', _BOUNDS_SECTION_HELP_HTML, parent)
         self._rows: dict[str, _BoundRow] = {}
         self._defaults: dict[str, tuple[float, float]] = {}
         self._units: dict[str, str] = {}  # key -> unit string for Quantity wrapping

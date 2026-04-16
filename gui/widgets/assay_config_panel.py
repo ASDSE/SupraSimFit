@@ -12,7 +12,7 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.units import Q_, Quantity
 from gui.assay_descriptions import ASSAY_DESCRIPTIONS
 from gui.widgets.assay_conditions import ASSAY_CONDITIONS, ConditionField, assay_class, condition_fields
-from gui.widgets.info_button import InfoButton
+from gui.widgets.info_button import InfoButton, InfoGroupBox
 from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox
 
 # Display choices derived from ConditionField.unit_type
@@ -117,7 +117,18 @@ class _UnitWidget(QWidget):
         self.value_changed.emit()
 
 
-class AssayConfigPanel(QGroupBox):
+_SECTION_HELP_HTML = """
+<h3>Assay Configuration</h3>
+<p>Select the assay type (DBA, GDA, IDA, Dye Alone) and enter the
+experimental conditions (concentrations, known binding constants) used
+in the measurement. The form updates automatically when you switch
+assay type.</p>
+<p>See the <i>i</i> next to the assay selector for a description of
+each assay model.</p>
+"""
+
+
+class AssayConfigPanel(InfoGroupBox):
     """Registry-driven assay type selector and dynamic conditions form.
 
     The combo box is populated from :data:`ASSAY_CONDITIONS`.  Switching the
@@ -136,7 +147,7 @@ class AssayConfigPanel(QGroupBox):
     conditions_changed = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__('Assay Configuration', parent)
+        super().__init__('Assay Configuration', 'Assay Configuration', _SECTION_HELP_HTML, parent)
         self._current_type: AssayType = AssayType.GDA
         self._field_widgets: dict[str, _UnitWidget] = {}
         self._setup_ui()

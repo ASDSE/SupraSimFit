@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.pipeline.fit_pipeline import FitConfig
-from gui.widgets.info_button import InfoButton
+from gui.widgets.info_button import InfoButton, InfoGroupBox
 from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, NoScrollSpinBox
 
 _TRIALS_HELP_HTML = """
@@ -80,6 +80,73 @@ loosen the factor &mdash; the trial population was too small to estimate
 it. If the aggregate parameter is clearly wrong but the plot looks okay,
 tighten the factor to weed out partial-convergence runs.</p>
 """
+
+_PER_REPLICATE_HELP_HTML = """
+<h3>Fit per replicate &mdash; pooled passing trials</h3>
+
+<p><b>Average mode (default, off)</b></p>
+<p>All active replicates are averaged into a single curve, then the
+fitter runs one multi-start optimisation on that average. Every
+starting point that produces an acceptable fit (low RMSE, high
+R<sup>2</sup>) is kept. The reported parameter is the <i>median</i> of
+those acceptable fits and the &plusmn; value is their spread (MAD).
+This tells you how tight the optimiser landscape is &mdash; <b>not</b>
+how reproducible your experiment is.</p>
+
+<p><b>Per-replicate mode (on)</b></p>
+<p>Every active replicate is fit on its own with a full multi-start
+run. From each replicate, every trial that passes the acceptance
+filter (R<sup>2</sup>, RMSE) is retained. All those passing trials from
+all replicates are then <b>pooled into one flat collection</b>. The
+reported parameter is the median of that pool and the &plusmn; value
+is the MAD of the same pool. This captures both the optimiser spread
+<i>and</i> the experimental spread across replicates in one honest
+distribution &mdash; the kind you can quote in a paper or draw
+box-and-whisker plots from.</p>
+
+<p><b>What this means in practice</b></p>
+<ul>
+  <li>A replicate with many acceptable fits contributes proportionally
+      more samples to the pool. This is the intended behaviour: a
+      well-converging replicate carries more information than a barely
+      converging one.</li>
+  <li>The pool contains every passing trial, not per-replicate
+      summaries &mdash; so box-whiskers, histograms, and confidence
+      intervals drawn from it are statistically meaningful rather than
+      based on just N&nbsp;= (number of replicates) points.</li>
+  <li>The plot curve labelled <i>Median Fit</i> is the forward model
+      evaluated at the pooled median parameters.</li>
+</ul>
+
+<p><b>When to use per-replicate mode</b></p>
+<ul>
+  <li>You want a defensible uncertainty estimate on K<sub>a</sub> and
+      the signal coefficients.</li>
+  <li>You suspect one replicate may disagree with the rest &mdash;
+      per-replicate fitting exposes this (the disagreeing replicate
+      shows up as a cluster in the pool), while averaging hides it.</li>
+  <li>You will produce per-parameter distribution plots downstream.</li>
+</ul>
+
+<p><b>What to watch out for</b></p>
+<ul>
+  <li><b>Few replicates</b>: the pool is built from N replicates. With
+      only one or two, the pool reflects mostly optimiser spread on
+      each individual trace. Three replicates is a good minimum; four
+      or more is better.</li>
+  <li><b>Noisy individual traces</b>: a very noisy single replicate may
+      fail to converge. Those replicates are skipped and listed in a
+      warning so you know exactly which ones dropped out.</li>
+  <li><b>Slower</b>: each replicate runs its own multi-start, so the
+      fit takes roughly <i>N</i> times longer. Usually still seconds.</li>
+  <li><b>Fit curve looks the same</b>: when your replicates agree well,
+      the median parameter values in per-replicate mode are very close
+      to the average-mode values, so the plotted curve may look
+      unchanged. The real difference shows up in the reported
+      &plusmn;&nbsp;uncertainty, not in the curve shape.</li>
+</ul>
+"""
+
 
 _RESCALE_HELP_HTML = """
 <h3>Rescale &mdash; Parameter Conditioning for the Optimiser</h3>
@@ -149,7 +216,15 @@ in the measurement).</p>
 """
 
 
-class FitConfigPanel(QGroupBox):
+_SECTION_HELP_HTML = """
+<h3>Fit Configuration</h3>
+<p>Controls for the multi-start optimiser: how many trials to run, how
+strictly to filter them, and whether to fit each replicate
+independently. See the <i>i</i> next to each setting for details.</p>
+"""
+
+
+class FitConfigPanel(InfoGroupBox):
     """Editor for :class:`~core.pipeline.fit_pipeline.FitConfig` parameters.
 
     Signals
@@ -161,7 +236,7 @@ class FitConfigPanel(QGroupBox):
     config_changed = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__("Fit Configuration", parent)
+        super().__init__("Fit Configuration", "Fit Configuration", _SECTION_HELP_HTML, parent)
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -174,6 +249,7 @@ class FitConfigPanel(QGroupBox):
             rmse_threshold_factor=self._rmse_spin.value(),
             min_r_squared=self._r2_spin.value(),
             rescale_parameters=self._rescale_check.isChecked(),
+            per_replicate=self._per_replicate_check.isChecked(),
         )
 
     def set_config(self, config: FitConfig) -> None:
@@ -181,6 +257,7 @@ class FitConfigPanel(QGroupBox):
         self._rmse_spin.setValue(config.rmse_threshold_factor)
         self._r2_spin.setValue(config.min_r_squared)
         self._rescale_check.setChecked(config.rescale_parameters)
+        self._per_replicate_check.setChecked(config.per_replicate)
 
     # ------------------------------------------------------------------
     # UI
@@ -228,6 +305,17 @@ class FitConfigPanel(QGroupBox):
             self._with_info(self._rescale_check, "Rescale parameters for fitting", _RESCALE_HELP_HTML),
         )
 
+        self._per_replicate_check = QCheckBox()
+        self._per_replicate_check.setChecked(FitConfig().per_replicate)
+        self._per_replicate_check.setToolTip(
+            "Fit each replicate independently; uncertainties reflect replicate-to-replicate spread."
+        )
+        self._per_replicate_check.toggled.connect(self.config_changed)
+        form.addRow(
+            "Fit per replicate:",
+            self._with_info(self._per_replicate_check, "Fit per replicate", _PER_REPLICATE_HELP_HTML),
+        )
+
     @staticmethod
     def _with_info(widget: QWidget, title: str, html: str) -> QWidget:
         """Wrap ``widget`` in an HBox together with a trailing info button.
@@ -240,8 +328,9 @@ class FitConfigPanel(QGroupBox):
         row = QWidget()
         lay = QHBoxLayout(row)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-        widget.setFixedWidth(120)
+        lay.setSpacing(15)
+        if not isinstance(widget, QCheckBox):
+            widget.setFixedWidth(120)
         lay.addWidget(widget)
         lay.addWidget(InfoButton(title, html))
         lay.addStretch(1)

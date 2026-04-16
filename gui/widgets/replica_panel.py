@@ -6,6 +6,7 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QCheckBox, QGridLayout, QGroupBox, QHBoxLayout, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from core.data_processing.measurement_set import MeasurementSet
+from gui.widgets.info_button import InfoGroupBox
 
 _COLS_PER_ROW = 4
 
@@ -21,7 +22,16 @@ def _display_label(index: int) -> str:
     return chr(65 + index // 26 - 1) + chr(65 + index % 26)
 
 
-class ReplicaPanel(QGroupBox):
+_SECTION_HELP_HTML = """
+<h3>Replicates</h3>
+<p>Each checkbox represents one replicate trace. Unchecked replicates
+are excluded from averaging and fitting. Replicas marked
+<i>(z-score)</i> were deactivated automatically by the outlier removal
+step &mdash; you can re-activate them manually here.</p>
+"""
+
+
+class ReplicaPanel(InfoGroupBox):
     """Show one checkbox per replica and allow toggling active/inactive state.
 
     Auto-dropped replicas (deactivated by preprocessing) are visually
@@ -36,7 +46,7 @@ class ReplicaPanel(QGroupBox):
     replicas_changed = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__('Replicas', parent)
+        super().__init__('Replicas', 'Replicates', _SECTION_HELP_HTML, parent)
         self._ms: MeasurementSet | None = None
         self._checkboxes: dict[str, QCheckBox] = {}
         self._auto_dropped: set[str] = set()  # dropped by preprocessing

@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessag
 
 from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.preprocessing import apply_preprocessing
-from gui.widgets.info_button import InfoButton
+from gui.widgets.info_button import InfoButton, InfoGroupBox
 from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, NoScrollSpinBox
 
 _LOCALE_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
@@ -70,7 +70,17 @@ new value.</p>
 """
 
 
-class PreprocessingPanel(QGroupBox):
+_SECTION_HELP_HTML = """
+<h3>Outlier Removal</h3>
+<p>Automatically flag replicate traces that deviate strongly from the
+others, so they are excluded from the fit. Click <b>Apply</b> to run
+the filter; click <b>Reset</b> to re-activate all replicas.</p>
+<p>See the <i>i</i> next to the Z-score threshold for details on the
+detection method.</p>
+"""
+
+
+class PreprocessingPanel(InfoGroupBox):
     """Configure and apply outlier removal to a MeasurementSet.
 
     Exposes the Z-Score replica filter.  If the configured minimum replica
@@ -89,7 +99,7 @@ class PreprocessingPanel(QGroupBox):
     preprocessing_reset = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__('Outlier Removal', parent)
+        super().__init__('Outlier Removal', 'Outlier Removal', _SECTION_HELP_HTML, parent)
         self._ms: MeasurementSet | None = None
         self._setup_ui()
         self.setEnabled(False)
