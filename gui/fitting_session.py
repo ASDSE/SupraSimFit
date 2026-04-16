@@ -6,8 +6,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QFileDialog, QGroupBox, QHBoxLayout, QMessageBox, QScrollArea, QSplitter, QVBoxLayout, QWidget
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import QFileDialog, QGroupBox, QHBoxLayout, QMessageBox, QScrollArea, QSplitter, QStackedWidget, QTabBar, QVBoxLayout, QWidget
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
@@ -26,6 +26,7 @@ from gui.widgets.fit_config_panel import FitConfigPanel
 from gui.widgets.preprocessing_panel import PreprocessingPanel
 from gui.widgets.info_button import InfoGroupBox
 from gui.widgets.replica_panel import ReplicaPanel
+from gui.plotting.distribution_widget import DistributionWidget
 from gui.workers import FitWorker
 
 _PLOT_STYLE_HELP_HTML = """
@@ -128,6 +129,26 @@ class FittingSession(QWidget):
         custom_bounds = self._bounds_panel.current_bounds()
         if custom_bounds:
             config = replace(config, custom_bounds=custom_bounds)
+
+        if config.per_replicate and ms.n_active < 3:
+            proceed = QMessageBox.warning(
+                self,
+                'Few replicates for per-replicate fitting',
+                (
+                    f'You have {ms.n_active} active replicate(s). Per-replicate '
+                    f'fitting will still run, but the reported uncertainty is '
+                    f'based on very few measurements and may not be statistically '
+                    f'meaningful.\n\n'
+                    f'For a reliable experimental uncertainty estimate, use at '
+                    f'least 3 — ideally 4 or more — active replicates.\n\n'
+                    f'Proceed anyway?'
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if proceed != QMessageBox.StandardButton.Yes:
+                self.status_message.emit('Fit cancelled — too few replicates for per-replicate mode.')
+                return
 
         self._fit_worker = FitWorker(
             ms,
@@ -264,7 +285,7 @@ class FittingSession(QWidget):
                             {
                                 'x': r.x_fit.magnitude,
                                 'y': r.y_fit.magnitude,
-                                'label': 'Best Fit',
+                                'label': 'Median Fit',
                                 'id': r.id,
                             }
                             for r in results
@@ -380,17 +401,37 @@ class FittingSession(QWidget):
         left_scroll.setWidget(left_container)
         splitter.addWidget(left_scroll)
 
-        # ---- Right panel (plot + summary) ---------------------------
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        # ---- Right panel (tabbed plot area + summary, vertically resizable)
+        right_splitter = QSplitter(Qt.Orientation.Vertical)
+        right_splitter.setChildrenCollapsible(False)
 
+        # Tabbed plot area: Fit Curve | Distributions
+        plot_area = QWidget()
+        plot_area_layout = QVBoxLayout(plot_area)
+        plot_area_layout.setContentsMargins(0, 0, 0, 0)
+        plot_area_layout.setSpacing(0)
+
+        self._plot_tab_bar = QTabBar()
+        self._plot_tab_bar.addTab('Fit Curve')
+        self._plot_tab_bar.addTab('Distributions')
+        plot_area_layout.addWidget(self._plot_tab_bar)
+
+        self._plot_stack = QStackedWidget()
         self._plot_widget = PlotWidget()
+        self._distribution_widget = DistributionWidget()
+        self._plot_stack.addWidget(self._plot_widget)
+        self._plot_stack.addWidget(self._distribution_widget)
+        plot_area_layout.addWidget(self._plot_stack, stretch=1)
+
+        self._plot_tab_bar.currentChanged.connect(self._plot_stack.setCurrentIndex)
+
         self._summary_widget = FitSummaryWidget()
 
-        right_layout.addWidget(self._plot_widget, stretch=3)
-        right_layout.addWidget(self._summary_widget, stretch=1)
-        splitter.addWidget(right_widget)
+        right_splitter.addWidget(plot_area)
+        right_splitter.addWidget(self._summary_widget)
+        right_splitter.setStretchFactor(0, 3)
+        right_splitter.setStretchFactor(1, 1)
+        splitter.addWidget(right_splitter)
 
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -418,8 +459,9 @@ class FittingSession(QWidget):
 
         self._bounds_panel.bounds_changed.connect(self._on_bounds_changed)
 
-        # Direct widget-to-widget: style → plot
+        # Direct widget-to-widget: style → plot / distributions
         self._style_widget.widget.style_changed.connect(self._plot_widget.apply_style)
+        self._style_widget.widget.style_changed.connect(self._distribution_widget.apply_style)
 
     # ------------------------------------------------------------------
     # Slots
@@ -432,6 +474,7 @@ class FittingSession(QWidget):
         self._preprocess_panel.set_measurement_set(ms)
         self._replica_panel.set_measurement_set(ms)
         self._summary_widget.clear()
+        self._distribution_widget.clear()
         self._refresh_plot()
         active = ms.n_active
         total = ms.n_replicas
@@ -466,6 +509,7 @@ class FittingSession(QWidget):
         self._state.fit_results.clear()
         self._replica_panel.clear()
         self._summary_widget.clear()
+        self._distribution_widget.clear()
 
     def _on_preprocessing_applied(self) -> None:
         self._replica_panel.refresh()
@@ -503,7 +547,33 @@ class FittingSession(QWidget):
         self._refresh_plot()
         self._summary_widget.update_result(result)
         self._plot_widget.set_fit_results(self._state.fit_results)
-        self.status_message.emit(f'Fit complete — R²={result.r_squared:.4f}, RMSE={result.rmse:.4e}, {result.n_passing}/{result.n_total} trials passed')
+        self._distribution_widget.update_result(result)
+
+        if result.uncertainty_source == 'replicate':
+            n_fit = result.metadata.get('n_replicas_fit', result.n_passing)
+            n_total = result.metadata.get('n_replicas_total', result.n_total)
+            self.status_message.emit(
+                f'Per-replicate fit complete — R²={result.r_squared:.4f}, '
+                f'RMSE={result.rmse:.4e}, {n_fit}/{n_total} replicates fit'
+            )
+            failures = result.metadata.get('replica_failures') or {}
+            if failures:
+                details = '\n'.join(f'  • {rid}: {reason}' for rid, reason in failures.items())
+                QMessageBox.warning(
+                    self,
+                    'Some replicates were skipped',
+                    (
+                        f'{len(failures)} of {n_total} replicates could not be fit '
+                        f'and were excluded from the aggregate.\n\n'
+                        f'Skipped replicates:\n{details}\n\n'
+                        f'The aggregate below is based on the {n_fit} successful replicate(s).'
+                    ),
+                )
+        else:
+            self.status_message.emit(
+                f'Fit complete — R²={result.r_squared:.4f}, RMSE={result.rmse:.4e}, '
+                f'{result.n_passing}/{result.n_total} trials passed'
+            )
 
     def _on_fit_error(self, msg: str) -> None:
         QMessageBox.warning(self, 'Fit Error', msg)
