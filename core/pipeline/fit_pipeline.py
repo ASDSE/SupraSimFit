@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
@@ -22,7 +22,7 @@ import numpy as np
 from core.assays.base import BaseAssay
 from core.assays.dye_alone import DyeAloneAssay
 from core.data_processing.measurement_set import MeasurementSet
-from core.optimizer.filters import aggregate_fits, calculate_fit_metrics
+from core.optimizer.filters import calculate_fit_metrics, filter_fits
 from core.optimizer.multistart import FitAttempt, multistart_minimize
 from core.optimizer.scaling import ParamScaler
 from core.units import Q_, Quantity
@@ -73,6 +73,26 @@ class FitResult:
         ISO-8601 creation timestamp.
     metadata : dict[str, Any]
         Additional metadata about the fit.
+    uncertainty_source : str
+        ``"optimizer"`` (default): uncertainties are the spread of the
+        multistart passing-trial pool on a single signal.  ``"replicate"``:
+        uncertainties are the spread of the pooled passing trials across
+        every active replicate (populated by
+        :func:`fit_measurement_set_per_replicate`).
+    replica_fits : list[FitResult] | None
+        Per-replicate fit results when this is an aggregate from
+        :func:`fit_measurement_set_per_replicate`; ``None`` for single-signal
+        fits.  Retained for diagnostic inspection only — the reported
+        ``parameters`` and ``uncertainties`` are computed directly from
+        the pooled ``parameter_samples``, not from these.
+    parameter_samples : dict[str, np.ndarray] | None
+        One flat array per parameter key holding every passing trial's
+        parameter value (length == ``n_passing``).  In average mode this
+        is the multistart pool on the single averaged signal; in
+        per-replicate mode it is the concatenation of passing trials
+        across every active replicate (the pool downstream box-and-whisker
+        plots consume).  Both ``parameters`` (median) and
+        ``uncertainties`` (MAD) are computed directly from this pool.
     """
 
     parameters: Dict[str, Quantity]
@@ -92,6 +112,9 @@ class FitResult:
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     metadata: Dict[str, Any] = field(default_factory=dict)
+    uncertainty_source: str = 'optimizer'
+    replica_fits: Optional[List['FitResult']] = None
+    parameter_samples: Optional[Dict[str, np.ndarray]] = None
 
     @property
     def success(self) -> bool:
@@ -143,6 +166,17 @@ class FitResult:
         x_list = self.x_fit.magnitude.tolist()
         y_list = self.y_fit.magnitude.tolist()
 
+        replica_fits_serial: Optional[List[Dict[str, Any]]] = None
+        if self.replica_fits is not None:
+            replica_fits_serial = [rf.to_dict() for rf in self.replica_fits]
+
+        parameter_samples_serial: Optional[Dict[str, List[float]]] = None
+        if self.parameter_samples is not None:
+            parameter_samples_serial = {
+                k: [float(v) for v in arr]
+                for k, arr in self.parameter_samples.items()
+            }
+
         return {
             'id': self.id,
             'timestamp': self.timestamp,
@@ -162,6 +196,9 @@ class FitResult:
             'x_fit': x_list,
             'y_fit': y_list,
             'metadata': self.metadata,
+            'uncertainty_source': self.uncertainty_source,
+            'replica_fits': replica_fits_serial,
+            'parameter_samples': parameter_samples_serial,
         }
 
     @classmethod
@@ -203,6 +240,19 @@ class FitResult:
         x_fit = Q_(np.asarray(d['x_fit']), 'M')
         y_fit = Q_(np.asarray(d['y_fit']), 'au')
 
+        replica_fits_data = d.get('replica_fits')
+        replica_fits: Optional[List['FitResult']] = None
+        if replica_fits_data is not None:
+            replica_fits = [cls.from_dict(rf) for rf in replica_fits_data]
+
+        parameter_samples_data = d.get('parameter_samples')
+        parameter_samples: Optional[Dict[str, np.ndarray]] = None
+        if parameter_samples_data is not None:
+            parameter_samples = {
+                k: np.asarray(v, dtype=float)
+                for k, v in parameter_samples_data.items()
+            }
+
         return cls(
             parameters=parameters,
             uncertainties=uncertainties,
@@ -221,6 +271,9 @@ class FitResult:
             id=d.get('id', uuid.uuid4().hex),
             timestamp=d.get('timestamp', datetime.now(timezone.utc).isoformat()),
             metadata=d.get('metadata', {}),
+            uncertainty_source=d.get('uncertainty_source', 'optimizer'),
+            replica_fits=replica_fits,
+            parameter_samples=parameter_samples,
         )
 
 
@@ -234,6 +287,7 @@ class FitConfig:
     log_scale_params: Optional[List[str]] = None
     custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
     rescale_parameters: bool = True
+    per_replicate: bool = False
 
 
 def _model_name_for_assay(assay: BaseAssay) -> str:
@@ -257,6 +311,7 @@ def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
         'log_scale_params': config.log_scale_params,
         'custom_bounds': custom_bounds,
         'rescale_parameters': config.rescale_parameters,
+        'per_replicate': config.per_replicate,
     }
 
 
@@ -371,12 +426,23 @@ def fit_assay(
         scaler=scaler,
     )
 
-    # Aggregate results
-    median_params, mad, n_passing = aggregate_fits(
+    # Keep the filtered pool around so parameter_samples can be populated —
+    # this is the full distribution of passing trials, not just their median.
+    passing_attempts = filter_fits(
         all_attempts,
         rmse_threshold_factor=config.rmse_threshold_factor,
         min_r_squared=config.min_r_squared,
     )
+
+    if passing_attempts:
+        param_matrix = np.array([a.params for a in passing_attempts], dtype=float)
+        median_params = np.median(param_matrix, axis=0)
+        mad = np.median(np.abs(param_matrix - median_params), axis=0)
+        n_passing = len(passing_attempts)
+    else:
+        median_params = None
+        mad = None
+        n_passing = 0
 
     # Handle case where no fits pass
     if median_params is None:
@@ -431,6 +497,11 @@ def fit_assay(
     unc_q = _wrap_params_as_quantities(mad, assay)
     y_fit = assay.forward_model(median_params)
 
+    parameter_samples = {
+        k: param_matrix[:, i].copy()
+        for i, k in enumerate(assay.parameter_keys)
+    }
+
     return FitResult(
         parameters=params_q,
         uncertainties=unc_q,
@@ -446,6 +517,7 @@ def fit_assay(
         fit_config=_config_to_dict(config),
         measurement_set_id=measurement_set_id,
         source_file=source_file,
+        parameter_samples=parameter_samples,
     )
 
 
@@ -549,6 +621,11 @@ def fit_measurement_set(
 ) -> FitResult:
     """Convenience: build an assay from a MeasurementSet and fit it.
 
+    When ``config.per_replicate`` is ``True`` and neither ``use_average=False``
+    nor an explicit ``replica_id`` is provided, dispatches to
+    :func:`fit_measurement_set_per_replicate`, which fits each active replica
+    independently and aggregates parameters across replicates.
+
     Parameters
     ----------
     ms : MeasurementSet
@@ -568,6 +645,9 @@ def fit_measurement_set(
     -------
     FitResult
     """
+    if config is not None and config.per_replicate and replica_id is None and use_average:
+        return fit_measurement_set_per_replicate(ms, assay_cls, conditions, config)
+
     assay = ms.to_assay(
         assay_cls,
         conditions=conditions,
@@ -587,4 +667,196 @@ def fit_measurement_set(
         config=config,
         measurement_set_id=ms.id,
         source_file=ms.metadata.get('source_file'),
+    )
+
+
+class PerReplicateFitError(RuntimeError):
+    """Raised when per-replicate fitting cannot produce any surviving fit.
+
+    Carries a ``failures`` mapping of ``replica_id -> reason`` so the GUI
+    layer can surface a no-silent-fallbacks warning listing every failed
+    replicate.
+    """
+
+    def __init__(self, message: str, failures: Dict[str, str]):
+        super().__init__(message)
+        self.failures = dict(failures)
+
+
+def fit_measurement_set_per_replicate(
+    ms: MeasurementSet,
+    assay_cls: Type[BaseAssay],
+    conditions: Dict[str, Any],
+    config: Optional[FitConfig] = None,
+) -> FitResult:
+    """Fit every active replica independently and pool passing trials.
+
+    Each active replica is fit with its own multistart run (the same
+    ``config`` — including ``rescale_parameters`` — is forwarded unchanged
+    to every per-replica call).  Because the parameter rescaler is an
+    exact affine bijection [core/optimizer/scaling.py:20-23], every
+    per-replica ``FitResult`` emerges in physical units regardless of
+    its per-replica scaler, so parameter values from every replicate
+    live in the same raw-unit space.
+
+    **Aggregation semantics (approach (b), pooled):** every replicate's
+    passing trials — not its pre-collapsed median — are concatenated
+    into a single flat pool (per parameter key) stored on the returned
+    ``FitResult.parameter_samples``.  The reported ``parameters`` are
+    the **median of that pool** and ``uncertainties`` are the MAD of
+    that pool.  A replicate with more passing trials therefore
+    contributes proportionally more samples to the pool; this matches
+    the user-requested design (every acceptable fit counts equally).
+
+    This is strictly richer than the earlier median-of-medians approach:
+    with N replicas × ~80 passing trials each, the pool has ~80N
+    samples; the previous aggregator collapsed the same data to N
+    points before computing MAD.
+
+    The reported ``x_fit``/``y_fit`` is the forward model evaluated at
+    the pooled median parameters on the shared concentration grid — this
+    is the "Median Fit" curve drawn in the plot.  RMSE and R² on the
+    aggregate are computed against the averaged active-replica signal.
+
+    Failure handling: a replica that raises (degenerate scaler input,
+    convergence failure, …) is skipped and recorded in the returned
+    FitResult's metadata.  If no replica survives, a
+    :class:`PerReplicateFitError` is raised with the full failure map so
+    the GUI can report every bad replica.
+
+    Parameters
+    ----------
+    ms : MeasurementSet
+        Source data with one or more active replicas.
+    assay_cls : Type[BaseAssay]
+        Concrete assay class.
+    conditions : dict
+        Assay-specific conditions as Quantity values.
+    config : FitConfig, optional
+        Fitting configuration.  ``per_replicate`` is ignored (this function
+        *is* the per-replicate path) but every other field — including
+        ``rescale_parameters`` — is forwarded to each per-replica fit.
+
+    Returns
+    -------
+    FitResult
+        Aggregate result whose ``parameters`` and ``uncertainties`` are
+        the pooled median and MAD across every passing trial from every
+        successful replica, ``uncertainty_source == "replicate"``,
+        ``parameter_samples`` holds the pool, and ``replica_fits`` holds
+        the per-replica successful fits for diagnostic inspection.
+    """
+    if config is None:
+        config = FitConfig()
+
+    active_ids = ms.active_replica_ids
+    if not active_ids:
+        raise ValueError('No active replicas to fit.')
+
+    per_call_config = replace(config, per_replicate=False)
+
+    replica_fits: List[FitResult] = []
+    succeeded_ids: List[str] = []
+    failures: Dict[str, str] = {}
+    for rid in active_ids:
+        try:
+            rr = fit_measurement_set(
+                ms,
+                assay_cls,
+                conditions,
+                per_call_config,
+                use_average=False,
+                replica_id=rid,
+            )
+        except Exception as exc:
+            failures[rid] = f'{type(exc).__name__}: {exc}'
+            logger.warning('Per-replicate fit failed for replica %s: %s', rid, exc)
+            continue
+
+        if not rr.success:
+            failures[rid] = 'No trials passed the quality filter.'
+            continue
+
+        if rr.parameter_samples is None:
+            failures[rid] = 'Per-replica fit returned no parameter_samples pool to aggregate.'
+            continue
+
+        rr.metadata.setdefault('replica_id', rid)
+        replica_fits.append(rr)
+        succeeded_ids.append(rid)
+
+    if not replica_fits:
+        raise PerReplicateFitError(
+            f'Per-replicate fitting failed on all {len(active_ids)} active replica(s).',
+            failures,
+        )
+
+    # Pool: concatenate every replica's passing-trial samples per parameter.
+    param_keys = tuple(replica_fits[0].parameter_samples.keys())
+    for rr in replica_fits[1:]:
+        if tuple(rr.parameter_samples.keys()) != param_keys:
+            raise ValueError(
+                f'Replicate parameter keys differ: {param_keys} vs {tuple(rr.parameter_samples.keys())}.'
+            )
+    pool: Dict[str, np.ndarray] = {
+        k: np.concatenate([rr.parameter_samples[k] for rr in replica_fits])
+        for k in param_keys
+    }
+    pool_size = len(next(iter(pool.values())))
+
+    any_fit = replica_fits[0]
+    param_units = {k: v.units for k, v in any_fit.parameters.items()}
+    params_q: Dict[str, Any] = {}
+    unc_q: Dict[str, Any] = {}
+    for k in param_keys:
+        samples = pool[k]
+        median = float(np.median(samples))
+        mad = float(np.median(np.abs(samples - median)))
+        params_q[k] = Q_(median, param_units[k])
+        unc_q[k] = Q_(mad, param_units[k])
+
+    template_assay = ms.to_assay(
+        assay_cls,
+        conditions=conditions,
+        use_average=True,
+    )
+    median_vec = np.array(
+        [float(params_q[k].magnitude) for k in template_assay.parameter_keys],
+        dtype=float,
+    )
+    y_avg = template_assay.y_data.magnitude
+    y_pred = template_assay.forward_model(median_vec)
+    rmse, r_squared = calculate_fit_metrics(y_avg, y_pred.magnitude)
+
+    n_total_pool = sum(rr.n_total for rr in replica_fits)
+
+    metadata: Dict[str, Any] = {
+        'n_replicas_total': len(active_ids),
+        'n_replicas_fit': len(replica_fits),
+        'replica_ids_fit': list(succeeded_ids),
+        'pool_size': pool_size,
+        'per_replica_n_passing': {rid: rf.n_passing for rid, rf in zip(succeeded_ids, replica_fits)},
+    }
+    if failures:
+        metadata['replica_failures'] = failures
+
+    return FitResult(
+        parameters=params_q,
+        uncertainties=unc_q,
+        rmse=rmse,
+        r_squared=r_squared,
+        n_passing=pool_size,
+        n_total=n_total_pool,
+        x_fit=template_assay.x_data,
+        y_fit=y_pred,
+        assay_type=template_assay.assay_type.name,
+        model_name=_model_name_for_assay(template_assay),
+        conditions=template_assay.get_conditions(),
+        fit_config=_config_to_dict(config),
+        measurement_set_id=ms.id,
+        source_file=ms.metadata.get('source_file'),
+        metadata=metadata,
+        uncertainty_source='replicate',
+        replica_fits=replica_fits,
+        parameter_samples=pool,
     )
