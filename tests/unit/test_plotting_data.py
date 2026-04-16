@@ -76,7 +76,7 @@ class TestPrepPlotDataFits:
         data = prepare_plot_data(ms, fit_results=[fr])
 
         assert len(data['fits']) == 1
-        assert data['fits'][0]['label'] == 'Best Fit'
+        assert data['fits'][0]['label'] == 'Median Fit'
         np.testing.assert_array_equal(data['fits'][0]['x'], fr.x_fit.magnitude)
         assert data['fits'][0]['id'] == fr.id
 

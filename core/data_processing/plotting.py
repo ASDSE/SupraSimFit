@@ -65,7 +65,7 @@ def prepare_plot_data(
     fits: list[Dict[str, Any]] = []
     if fit_results:
         for fr in fit_results:
-            label = 'Best Fit'
+            label = 'Median Fit'
             x = fr.x_fit.magnitude
             y = fr.y_fit.magnitude
             fits.append(
