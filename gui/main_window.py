@@ -82,14 +82,16 @@ QGroupBox {
     border: 1px solid rgba(0, 0, 0, 0.2);
     border-radius: 5px;
     padding: 14px 6px 6px 6px;
+    background-color: palette(window);
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
     left: 10px;
-    padding: 2px 8px;
+    top: 13px;
+    padding: 2px 28px 2px 8px;
     color: rgba(20, 40, 90, 0.9);
-    background: transparent;
+    background-color: palette(window);
 }
 """
 
