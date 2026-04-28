@@ -13,7 +13,7 @@ sub-groups, identical to the CSV long-format.
 **Single-sheet wide-format**: concentration in the first column,
 remaining columns are replicas (like CSV wide-format).
 
-Dependencies: ``openpyxl`` (already required by ``FittingApp.spec``).
+Dependencies: ``openpyxl`` (already required by ``SupraSimFit.spec``).
 """
 
 from pathlib import Path

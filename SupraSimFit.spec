@@ -6,37 +6,25 @@ from PyInstaller.utils.hooks import collect_data_files
 sys.setrecursionlimit(sys.getrecursionlimit() * 5)
 
 # ---------------------------------------------------------------------------
-# Windows icon: generate assets/MyIcon.ico from assets/AppIcon.png if missing.
-# Pillow is a runtime dependency (pyproject.toml), so this is safe.
-# ---------------------------------------------------------------------------
-if sys.platform == 'win32' and not os.path.exists('assets/MyIcon.ico'):
-    try:
-        from PIL import Image
-        Image.open('assets/AppIcon.png').save(
-            'assets/MyIcon.ico',
-            format='ICO',
-            sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-        )
-    except Exception as exc:
-        print(f"[FittingApp.spec] Could not generate MyIcon.ico: {exc}")
-
-# ---------------------------------------------------------------------------
 # Per-platform icon resolution
 # ---------------------------------------------------------------------------
 icon_file = None
 if sys.platform == 'darwin' and os.path.exists('assets/MyIcon.icns'):
     icon_file = 'assets/MyIcon.icns'
-elif sys.platform == 'win32' and os.path.exists('assets/MyIcon.ico'):
-    icon_file = 'assets/MyIcon.ico'
+elif sys.platform == 'win32' and os.path.exists('assets/AppIcon.ico'):
+    icon_file = 'assets/AppIcon.ico'
 
 # ---------------------------------------------------------------------------
-# Bundled data files: demo/example datasets + package data for pint & pyqtgraph
+# Bundled data files: demo/example datasets, runtime icon assets, and
+# package data for pint & pyqtgraph.
 # ---------------------------------------------------------------------------
 datas = [
     ('data/IDA_system.txt', 'data'),
     ('data/DBA_system_host_to_dye.txt', 'data'),
     ('data/GDA_system.txt', 'data'),
     ('data/Dye_alone.txt', 'data'),
+    ('assets/AppIcon.ico', 'assets'),
+    ('assets/AppIcon.png', 'assets'),
 ]
 datas += collect_data_files('pint')
 datas += collect_data_files('pyqtgraph')
@@ -62,7 +50,7 @@ excludes = [
     'tkinter', '_tkinter',
     'matplotlib',
     'PyQt5', 'PySide2', 'PySide6',
-    'PIL.ImageTk',
+    'PIL', 'PIL.ImageTk',
 ]
 
 a = Analysis(
@@ -85,7 +73,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='FittingApp',
+    name='SupraSimFit',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -102,15 +90,15 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='FittingApp',
+    name='SupraSimFit',
 )
 
 if sys.platform == 'darwin':
     app = BUNDLE(
         coll,
-        name='FittingApp.app',
+        name='SupraSimFit.app',
         icon=icon_file,
-        bundle_identifier='com.suprasense.fittingapp',
+        bundle_identifier='com.suprasense.suprasimfit',
         info_plist={
             'NSHighResolutionCapable': True,
             'LSMinimumSystemVersion': '11.0',

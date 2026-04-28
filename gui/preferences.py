@@ -16,7 +16,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QCoreApplication, QSettings
 
 ORG_NAME = 'SupraSimFit'
-APP_NAME = 'fitting_app'
+APP_NAME = 'SupraSimFit'
 
 
 def _settings() -> QSettings:

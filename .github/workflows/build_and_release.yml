@@ -28,28 +28,28 @@ jobs:
         run: uv sync --frozen
 
       - name: Build with PyInstaller
-        run: uv run --with pyinstaller pyinstaller --clean -y --distpath ./dist --workpath ./build FittingApp.spec
+        run: uv run --with pyinstaller pyinstaller --clean -y --distpath ./dist --workpath ./build SupraSimFit.spec
 
       - name: Package artifact (macOS)
         if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent dist/FittingApp.app FittingApp-${{ github.ref_name }}-macos.zip
+        run: ditto -c -k --sequesterRsrc --keepParent dist/SupraSimFit.app SupraSimFit-${{ github.ref_name }}-macos.zip
 
       - name: Package artifact (Linux)
         if: runner.os == 'Linux'
         run: |
           cd dist
-          zip -r ../FittingApp-${{ github.ref_name }}-linux.zip ./FittingApp
+          zip -r ../SupraSimFit-${{ github.ref_name }}-linux.zip ./SupraSimFit
 
       - name: Package artifact (Windows)
         if: runner.os == 'Windows'
-        run: Compress-Archive -Path 'dist\FittingApp\*' -DestinationPath "FittingApp-${{ github.ref_name }}-windows.zip"
+        run: Compress-Archive -Path 'dist\SupraSimFit\*' -DestinationPath "SupraSimFit-${{ github.ref_name }}-windows.zip"
         shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FittingApp-${{ matrix.os }}
-          path: ./FittingApp-${{ github.ref_name }}-*.zip
+          name: SupraSimFit-${{ matrix.os }}
+          path: ./SupraSimFit-${{ github.ref_name }}-*.zip
           if-no-files-found: error
 
   publish_release:

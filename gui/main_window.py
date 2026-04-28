@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QCoreApplication, QEvent, QLocale, QObject, Qt
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QIcon, QKeySequence
 from PyQt6.QtWidgets import QAbstractSpinBox, QApplication, QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QTabWidget, QToolBar, QToolButton
 
 from gui.fitting_session import FittingSession
@@ -105,7 +105,7 @@ class FittingMainWindow(QMainWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Fitting App')
+        self.setWindowTitle('SupraSimFit')
         self.resize(1280, 820)
         self._setup_tabs()
         self._setup_toolbar()
@@ -377,6 +377,19 @@ class FittingMainWindow(QMainWindow):
             session.load_style_template()
 
 
+def _app_icon_path() -> str | None:
+    """Locate the bundled app icon for both source runs and PyInstaller bundles."""
+    import os
+    import sys
+
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("AppIcon.ico", "AppIcon.png"):
+        p = os.path.join(base, "assets", name)
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def launch() -> None:
     """Entry point — create the QApplication and launch the main window."""
     import sys
@@ -389,8 +402,21 @@ def launch() -> None:
     QCoreApplication.setOrganizationName(ORG_NAME)
     QCoreApplication.setApplicationName(APP_NAME)
 
+    # Windows: pin an explicit AppUserModelID so the taskbar groups under us, not python.exe.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"{ORG_NAME}.{APP_NAME}")
+        except Exception:
+            pass
+
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyleSheet(_APP_QSS)
+
+    icon_path = _app_icon_path()
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
 
     # Block non-focused spinboxes from stealing wheel events while the
     # user scrolls the sidebar. Kept alive on the app so Qt doesn't GC it.

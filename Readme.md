@@ -17,9 +17,9 @@ The app ships a PyQt6 GUI with interactive plots, per-replica outlier removal, a
 
 Packaged builds for each OS are published on the [Releases page](https://github.com/ASDSE/SupraSimFit/releases/latest):
 
-- macOS — `FittingApp-<version>-macos.zip`
-- Windows — `FittingApp-<version>-windows.zip`
-- Linux — `FittingApp-<version>-linux.zip`
+- macOS — `SupraSimFit-<version>-macos.zip`
+- Windows — `SupraSimFit-<version>-windows.zip`
+- Linux — `SupraSimFit-<version>-linux.zip`
 
 Unzip and launch the executable or `.app` bundle. No Python installation required.
 
@@ -178,7 +178,7 @@ Build a standalone executable with PyInstaller:
 
 ```bash
 uv run --with pyinstaller pyinstaller --clean -y \
-    --distpath ./dist --workpath ./build FittingApp.spec
+    --distpath ./dist --workpath ./build SupraSimFit.spec
 ```
 
 ## Dependencies
