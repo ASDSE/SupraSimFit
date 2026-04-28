@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from core.io import load_measurements, save_results
+from core.io.formats.csv_reader import CsvReader
 from core.io.formats.txt import TxtReader, TxtWriter
 from core.io.registry import get_reader, get_writer
 
@@ -91,6 +92,96 @@ class TestTxtReader:
         assert len(df) == 2
 
 
+class TestCsvReader:
+    """CsvReader handles varied CSV dialects and headers."""
+
+    def test_standard_comma_dot(self, tmp_path):
+        """Comma-separated, dot-decimal CSV with canonical headers."""
+        data = 'concentration,signal\n0.0,100.0\n1e-6,200.0\n2e-6,300.0\n'
+        p = tmp_path / 'std.csv'
+        p.write_text(data)
+
+        df = CsvReader().read(p)
+        assert len(df) == 3
+        assert df['concentration'].iloc[1] == pytest.approx(1e-6)
+        assert df['signal'].iloc[-1] == pytest.approx(300.0)
+        assert (df['replica'] == 0).all()
+
+    def test_european_semicolon_comma(self, tmp_path):
+        """Semicolon-delimited, comma-decimal CSV (Patrick-style)."""
+        data = 'conc CB;Int (455 nm) cut 513\n0;29,29\n10,61;234,95\n20,97;416,78\n'
+        p = tmp_path / 'euro.csv'
+        p.write_text(data)
+
+        df = CsvReader().read(p)
+        assert len(df) == 3
+        assert df['concentration'].iloc[1] == pytest.approx(10.61)
+        assert df['signal'].iloc[2] == pytest.approx(416.78)
+
+    def test_fuzzy_headers_via_name_match(self, tmp_path):
+        """'conc CB' and 'Int (...)' are detected via token-startswith."""
+        data = 'conc CB,Int (455 nm) cut 513\n0.0,29.29\n1.0,234.95\n2.0,416.78\n'
+        p = tmp_path / 'fuzzy.csv'
+        p.write_text(data)
+
+        df = CsvReader().read(p)
+        assert len(df) == 3
+        assert df['signal'].iloc[0] == pytest.approx(29.29)
+
+    def test_headerless_inferred_by_monotonicity(self, tmp_path):
+        """CSV without a header row: concentration inferred as monotonic column."""
+        data = '0.0,100.0\n1.0,250.0\n2.0,380.0\n3.0,470.0\n4.0,540.0\n'
+        p = tmp_path / 'headerless.csv'
+        p.write_text(data)
+
+        df = CsvReader().read(p)
+        assert len(df) == 5
+        assert df['concentration'].iloc[0] == pytest.approx(0.0)
+        assert df['signal'].iloc[-1] == pytest.approx(540.0)
+
+    def test_foreign_headers_fall_through_to_content(self, tmp_path):
+        """Unrecognized header names still parse via content inference."""
+        data = 'menge;messwert\n0;29,29\n1;234,95\n2;416,78\n3;540,12\n'
+        p = tmp_path / 'foreign.csv'
+        p.write_text(data)
+
+        df = CsvReader().read(p)
+        assert len(df) == 4
+        assert df['concentration'].iloc[2] == pytest.approx(2.0)
+
+    def test_wide_format_replicates(self, tmp_path):
+        """Wide format: one conc column + multiple signal columns → replicas."""
+        data = 'concentration,rep0,rep1,rep2\n0.0,100.0,105.0,98.0\n1e-6,200.0,210.0,195.0\n'
+        p = tmp_path / 'wide.csv'
+        p.write_text(data)
+
+        df = CsvReader().read(p)
+        assert set(df['replica'].unique()) == {0, 1, 2}
+        assert len(df) == 6
+
+    def test_unparseable_raises(self, tmp_path):
+        """Non-numeric content raises ValueError."""
+        data = 'name,color\nalice,red\nbob,blue\n'
+        p = tmp_path / 'bad.csv'
+        p.write_text(data)
+
+        with pytest.raises(ValueError, match='Cannot'):
+            CsvReader().read(p)
+
+    def test_loads_patrick_file(self):
+        """Real-world European CSV from data/patrick_data_origin_exp/ loads."""
+        path = Path('data/patrick_data_origin_exp/CB7 azo 1 I 455 nm cut 513.csv')
+        if not path.exists():
+            pytest.skip(f'{path} not found')
+
+        df = CsvReader().read(path)
+        assert len(df) == 15
+        assert df['concentration'].is_monotonic_increasing
+        assert df['concentration'].iloc[0] == pytest.approx(0.0)
+        assert df['concentration'].iloc[-1] == pytest.approx(128.08511)
+        assert df['signal'].iloc[-1] == pytest.approx(1291.17225)
+
+
 class TestTxtWriter:
     """TxtWriter correctly serializes fit results."""
 
@@ -130,6 +221,10 @@ class TestRegistryDispatch:
     def test_txt_reader_dispatch(self):
         reader = get_reader(Path('test.txt'))
         assert isinstance(reader, TxtReader)
+
+    def test_csv_reader_dispatch(self):
+        reader = get_reader(Path('test.csv'))
+        assert isinstance(reader, CsvReader)
 
     def test_txt_writer_dispatch(self):
         writer = get_writer(Path('test.txt'))

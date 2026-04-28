@@ -19,24 +19,36 @@ Supported formats
        2e-7,612.3,610.0,614.5
        ...
 
-3. **Repeated-header** (like the TXT format): multiple blocks separated
-   by repeated header rows — handled by falling back to the TXT-style
-   block parser.
+3. **European style**: ``;`` delimiter and ``,`` decimal separator are
+   auto-detected.
 
-Column detection is case-insensitive; accepted names for concentration:
-``concentration``, ``conc``, ``x``, ``[conc]``, ``titrant``.
-Accepted names for signal: ``signal``, ``y``, ``fluorescence``,
-``intensity``, ``emission``.
+4. **Arbitrary or missing headers**: if no recognized column names are
+   found, the concentration column is inferred as the (leftmost)
+   monotonic numeric column; remaining numeric columns are treated as
+   signal (single → long-format, multiple → wide-format replicates).
+
+Name-based fast path tokens: ``concentration``, ``conc``, ``titrant``,
+``x`` (concentration); ``signal``, ``intensity``, ``int``,
+``fluorescence``, ``emission``, ``y`` (signal). Match is token
+start-with on alphanumeric word tokens.
 """
 
+import re
 from pathlib import Path
 
 import pandas as pd
 
 from core.io.registry import register_reader
 
-_CONC_NAMES = {"concentration", "conc", "x", "[conc]", "titrant"}
-_SIGNAL_NAMES = {"signal", "y", "fluorescence", "intensity", "emission"}
+_CONC_TOKENS = ("conc", "titrant", "x")
+_SIGNAL_TOKENS = ("signal", "int", "fluorescence", "emission", "y")
+
+_PARSE_OPTIONS = (
+    {},
+    {"sep": ";", "decimal": ","},
+    {"sep": ";"},
+    {"sep": "\t"},
+)
 
 
 class CsvReader:
@@ -61,62 +73,143 @@ class CsvReader:
         Raises
         ------
         ValueError
-            If the file cannot be parsed or required columns are missing.
+            If the file cannot be parsed or columns cannot be identified.
         """
-        df = pd.read_csv(path)
-        cols_lower = {c.lower(): c for c in df.columns}
+        df, kwargs = self._parse(path)
 
-        conc_col = self._find_col(cols_lower, _CONC_NAMES)
-        signal_col = self._find_col(cols_lower, _SIGNAL_NAMES)
+        if self._header_is_numeric(df):
+            df = pd.read_csv(path, header=None, **kwargs)
 
-        if conc_col and signal_col:
-            # Long-format (with optional replica column)
-            replica_col = cols_lower.get("replica")
-            result = pd.DataFrame(
-                {
-                    "concentration": pd.to_numeric(df[conc_col], errors="coerce"),
-                    "signal": pd.to_numeric(df[signal_col], errors="coerce"),
-                    "replica": (
-                        df[replica_col].astype(int)
-                        if replica_col
-                        else 0
-                    ),
-                }
+        conc_col, signal_cols, replica_col = self._identify_columns(df)
+
+        if conc_col is None or not signal_cols:
+            raise ValueError(
+                f"Cannot identify concentration/signal columns in {path}. "
+                f"Found columns: {list(df.columns)}"
             )
-            return result.dropna(subset=["concentration", "signal"]).reset_index(drop=True)
 
-        if conc_col and len(df.columns) >= 2:
-            # Wide-format: first detected col = concentration, rest = replicas
-            return self._parse_wide(df, conc_col)
-
-        raise ValueError(
-            f"Cannot identify concentration/signal columns in {path}. "
-            f"Found columns: {list(df.columns)}"
-        )
+        if len(signal_cols) == 1:
+            return self._long_format(df, conc_col, signal_cols[0], replica_col)
+        return self._wide_format(df, conc_col, signal_cols)
 
     # ------------------------------------------------------------------
-    def _find_col(self, cols_lower: dict, names: set) -> str | None:
-        for name in names:
-            if name in cols_lower:
-                return cols_lower[name]
+    # Parsing: try delimiter/decimal combos, pick first that yields
+    # ≥ 2 numeric-convertible columns.
+    # ------------------------------------------------------------------
+    def _parse(self, path: Path) -> tuple[pd.DataFrame, dict]:
+        last_df, last_kwargs = None, {}
+        for kwargs in _PARSE_OPTIONS:
+            try:
+                df = pd.read_csv(path, **kwargs)
+            except Exception:
+                continue
+            if len(self._numeric_columns(df)) >= 2:
+                return df, kwargs
+            last_df, last_kwargs = df, kwargs
+        if last_df is None:
+            raise ValueError(f"Cannot parse {path}: all delimiter/decimal combos failed")
+        return last_df, last_kwargs
+
+    @staticmethod
+    def _numeric_columns(df: pd.DataFrame) -> list:
+        return [
+            c for c in df.columns
+            if pd.to_numeric(df[c], errors="coerce").notna().mean() >= 0.8
+        ]
+
+    @staticmethod
+    def _header_is_numeric(df: pd.DataFrame) -> bool:
+        """True if every column name parses as a number (suggesting no header row)."""
+        for c in df.columns:
+            s = str(c).replace(",", ".").strip()
+            try:
+                float(s)
+            except ValueError:
+                return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Column identification: name-based fast path, then content-based
+    # fallback (monotonic = concentration).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _tokenize(name) -> list[str]:
+        return re.findall(r"[a-z]+", str(name).lower())
+
+    def _find_named(self, columns, tokens) -> str | None:
+        for c in columns:
+            for col_tok in self._tokenize(c):
+                for tok in tokens:
+                    if col_tok.startswith(tok):
+                        return c
         return None
 
-    def _parse_wide(self, df: pd.DataFrame, conc_col: str) -> pd.DataFrame:
-        """Convert wide-format (one column per replica) to long-format."""
-        replica_cols = [c for c in df.columns if c != conc_col]
+    @staticmethod
+    def _is_monotonic(series: pd.Series) -> bool:
+        s = pd.to_numeric(series, errors="coerce").dropna()
+        if len(s) < 3:
+            return False
+        diffs = s.diff().dropna()
+        return bool((diffs >= 0).all() or (diffs <= 0).all())
+
+    def _identify_columns(self, df: pd.DataFrame):
+        cols = list(df.columns)
+        numeric = self._numeric_columns(df)
+
+        replica_col = None
+        for c in cols:
+            if "replica" in self._tokenize(c):
+                replica_col = c
+                break
+
+        signal_candidates = [c for c in numeric if c != replica_col]
+        conc_col = self._find_named(signal_candidates, _CONC_TOKENS)
+        signal_col = self._find_named(
+            [c for c in signal_candidates if c != conc_col], _SIGNAL_TOKENS
+        )
+
+        if conc_col and signal_col:
+            other_signals = [c for c in signal_candidates if c != conc_col]
+            return conc_col, other_signals, replica_col
+
+        if conc_col is None:
+            monotonic = [c for c in signal_candidates if self._is_monotonic(df[c])]
+            if not monotonic:
+                return None, [], replica_col
+            conc_col = monotonic[0]
+
+        remaining = [c for c in signal_candidates if c != conc_col]
+        return conc_col, remaining, replica_col
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _long_format(df, conc_col, signal_col, replica_col) -> pd.DataFrame:
+        result = pd.DataFrame(
+            {
+                "concentration": pd.to_numeric(df[conc_col], errors="coerce"),
+                "signal": pd.to_numeric(df[signal_col], errors="coerce"),
+                "replica": (
+                    df[replica_col].astype(int) if replica_col is not None else 0
+                ),
+            }
+        )
+        return result.dropna(subset=["concentration", "signal"]).reset_index(drop=True)
+
+    @staticmethod
+    def _wide_format(df, conc_col, signal_cols) -> pd.DataFrame:
         frames = []
-        for i, col in enumerate(replica_cols):
-            frame = pd.DataFrame(
-                {
-                    "concentration": pd.to_numeric(df[conc_col], errors="coerce"),
-                    "signal": pd.to_numeric(df[col], errors="coerce"),
-                    "replica": i,
-                }
+        for i, col in enumerate(signal_cols):
+            frames.append(
+                pd.DataFrame(
+                    {
+                        "concentration": pd.to_numeric(df[conc_col], errors="coerce"),
+                        "signal": pd.to_numeric(df[col], errors="coerce"),
+                        "replica": i,
+                    }
+                )
             )
-            frames.append(frame)
         result = pd.concat(frames, ignore_index=True)
         return result.dropna(subset=["concentration", "signal"]).reset_index(drop=True)
 
 
-# Register on import
 register_reader(CsvReader)
