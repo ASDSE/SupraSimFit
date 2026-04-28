@@ -7,7 +7,23 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QFileDialog, QGroupBox, QHBoxLayout, QMessageBox, QScrollArea, QSplitter, QStackedWidget, QTabBar, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QStackedWidget,
+    QTabBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
@@ -187,12 +203,29 @@ class FittingSession(QWidget):
         # 4. Run fit
         self.run_fit()
 
+    def _default_save_name(self, suffix: str, tag: str = '') -> str:
+        """Build a default save filename based on the loaded dataset's stem.
+
+        Falls back to the ``source_file`` on the most recent fit result when
+        no dataset is currently loaded (e.g. after importing results whose
+        source file is missing on disk).
+        """
+        src = self._state.source_file
+        if not src and self._state.fit_results:
+            src = self._state.fit_results[-1].source_file
+        if not src:
+            return f"{tag or 'output'}{suffix}"
+        stem = Path(src).stem
+        return f"{stem}{('_' + tag) if tag else ''}{suffix}"
+
     def export_results(self) -> None:
         """Export current fit results to JSON."""
         if not self._state.fit_results:
             QMessageBox.information(self, 'No Results', 'Run a fit first.')
             return
-        path, _ = QFileDialog.getSaveFileName(self, 'Export Fit Results', 'results.json', 'JSON (*.json)')
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export Fit Results', self._default_save_name('.json', 'results'), 'JSON (*.json)'
+        )
         if not path:
             return
         from gui.session import export_results
@@ -205,7 +238,9 @@ class FittingSession(QWidget):
         if not self._state.fit_results:
             QMessageBox.information(self, 'No Results', 'Run a fit first.')
             return
-        path, _ = QFileDialog.getSaveFileName(self, 'Export Results (TXT)', 'results.txt', 'Text files (*.txt)')
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export Results (TXT)', self._default_save_name('.txt', 'results'), 'Text files (*.txt)'
+        )
         if not path:
             return
         from gui.session import export_results_txt
@@ -226,7 +261,7 @@ class FittingSession(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Export Raw Data',
-            'measurements.txt',
+            self._default_save_name('.txt'),
             'Text file (*.txt);;CSV file (*.csv)',
         )
         if not path:
@@ -304,7 +339,7 @@ class FittingSession(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Save Plot',
-            'plot.png',
+            self._default_save_name('.png'),
             'PNG image (*.png);;SVG vector (*.svg)',
         )
         if not path:
@@ -312,6 +347,33 @@ class FittingSession(QWidget):
         try:
             self._plot_widget.export_image(path)
             self.status_message.emit(f'Plot saved to {path}')
+        except Exception as exc:
+            QMessageBox.warning(self, 'Export Error', str(exc))
+
+    def export_distributions(self) -> None:
+        """Export selected distribution subplots as a composite PNG."""
+        keys = self._distribution_widget.param_keys()
+        if not keys:
+            QMessageBox.warning(
+                self, 'Export Error',
+                'No distributions to export. Run a fit first.',
+            )
+            return
+        dlg = ExportDistributionsDialog(keys, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = dlg.selected_keys()
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            'Export Distributions',
+            self._default_save_name('.png', 'distributions'),
+            'PNG image (*.png)',
+        )
+        if not path:
+            return
+        try:
+            self._distribution_widget.export_subplots(selected, path, dpi=300)
+            self.status_message.emit(f'Distributions exported to {path}')
         except Exception as exc:
             QMessageBox.warning(self, 'Export Error', str(exc))
 
@@ -598,6 +660,54 @@ class FittingSession(QWidget):
 
     def _update_axis_labels(self, x: str, y: str) -> None:
         self._plot_widget.set_axis_labels(x, y)
+
+
+class ExportDistributionsDialog(QDialog):
+    """Dialog letting the user pick which distribution subplots to export."""
+
+    def __init__(self, param_keys: list[str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle('Export Distributions')
+        from gui.plotting.labels import fmt_param
+
+        self._keys = list(param_keys)
+        self._checkboxes: list[QCheckBox] = []
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel('Select subplots to include in the exported PNG:'))
+
+        for key in self._keys:
+            cb = QCheckBox()
+            cb.setText(fmt_param(key))
+            cb.setChecked(True)
+            cb.toggled.connect(self._update_ok_enabled)
+            layout.addWidget(cb)
+            self._checkboxes.append(cb)
+
+        btn_row = QHBoxLayout()
+        all_btn = QPushButton('Select all')
+        none_btn = QPushButton('Select none')
+        all_btn.clicked.connect(lambda: [cb.setChecked(True) for cb in self._checkboxes])
+        none_btn.clicked.connect(lambda: [cb.setChecked(False) for cb in self._checkboxes])
+        btn_row.addWidget(all_btn)
+        btn_row.addWidget(none_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        self._buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self._buttons.accepted.connect(self.accept)
+        self._buttons.rejected.connect(self.reject)
+        layout.addWidget(self._buttons)
+        self._update_ok_enabled()
+
+    def _update_ok_enabled(self) -> None:
+        any_checked = any(cb.isChecked() for cb in self._checkboxes)
+        self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(any_checked)
+
+    def selected_keys(self) -> list[str]:
+        return [k for k, cb in zip(self._keys, self._checkboxes) if cb.isChecked()]
 
 
 class _GroupedPlain(QGroupBox):

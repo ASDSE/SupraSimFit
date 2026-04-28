@@ -57,6 +57,7 @@ class DistributionWidget(QWidget):
         self._plots: list[pg.PlotWidget] = []
         self._result: FitResult | None = None
         self._y_base_labels: dict[int, str] = {}
+        self._param_keys: list[str] = []
 
         self._stack = QStackedLayout(self)
 
@@ -90,6 +91,7 @@ class DistributionWidget(QWidget):
             units = dict(meta.units)
 
         param_keys = list(result.parameter_samples.keys())
+        self._param_keys = list(param_keys)
         replica_samples = self._extract_replica_samples(result)
         n_replicas = len(replica_samples) if replica_samples else 0
 
@@ -182,9 +184,71 @@ class DistributionWidget(QWidget):
     def clear(self) -> None:
         """Reset to empty placeholder."""
         self._result = None
+        self._param_keys = []
         for pw in self._plots:
             self._clear_subplot(pw)
         self._stack.setCurrentWidget(self._placeholder)
+
+    def param_keys(self) -> list[str]:
+        """Parameter keys of the currently displayed subplots, in order."""
+        return list(self._param_keys)
+
+    def export_subplots(self, keys: list[str], path: str, dpi: int = 300) -> None:
+        """Render selected subplots to a single composite PNG.
+
+        Layout: 1→1×1, 2→1×2, 3→1×3, 4→2×2, otherwise ⌈n/2⌉×2.
+        """
+        import math
+
+        import pyqtgraph.exporters
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QImage, QPainter
+
+        if not self._param_keys:
+            raise ValueError('No distributions to export. Run a fit first.')
+
+        indices = [self._param_keys.index(k) for k in keys if k in self._param_keys]
+        if not indices:
+            raise ValueError('No matching distributions selected.')
+
+        panel_px = dpi * 4  # 4-inch panel → 1200 px at 300 dpi
+        images: list[QImage] = []
+        for idx in indices:
+            exporter = pg.exporters.ImageExporter(self._plots[idx].getPlotItem())
+            exporter.parameters()['width'] = panel_px
+            img = exporter.export(toBytes=True)
+            if not isinstance(img, QImage):
+                raise RuntimeError('ImageExporter did not return a QImage.')
+            images.append(img)
+
+        n = len(images)
+        if n == 1:
+            rows, cols = 1, 1
+        elif n == 2:
+            rows, cols = 1, 2
+        elif n == 3:
+            rows, cols = 1, 3
+        elif n == 4:
+            rows, cols = 2, 2
+        else:
+            cols = 2
+            rows = math.ceil(n / cols)
+
+        cell_w = max(img.width() for img in images)
+        cell_h = max(img.height() for img in images)
+        combined = QImage(cell_w * cols, cell_h * rows, QImage.Format.Format_ARGB32)
+        combined.fill(Qt.GlobalColor.white)
+        painter = QPainter(combined)
+        try:
+            for i, img in enumerate(images):
+                r, c = divmod(i, cols)
+                x = c * cell_w + (cell_w - img.width()) // 2
+                y = r * cell_h + (cell_h - img.height()) // 2
+                painter.drawImage(x, y, img)
+        finally:
+            painter.end()
+        if not combined.save(path, 'PNG'):
+            raise RuntimeError(f'Failed to save composite image to {path}')
 
     @staticmethod
     def _clear_subplot(pw: pg.PlotWidget) -> None:
