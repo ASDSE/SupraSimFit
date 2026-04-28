@@ -198,8 +198,14 @@ Temporary Items
 *.npy
 *.npz
 
+# Dev
+AGENTS.md
+.github/agents/*
+.github/prompts/*
+.github/instructions/*
+.github/*instructions.md
 .vscode/*
 scratch/*
 app/*
-/data
-.github/copilot-instructions.md
+data/results/*
+*.xlsx
