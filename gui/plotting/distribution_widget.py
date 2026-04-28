@@ -95,6 +95,8 @@ class DistributionWidget(QWidget):
 
         self._rebuild_subplots(len(param_keys))
 
+        ka_scale = self._style.get('distribution', {}).get('ka_scale', 'log\u2081\u2080')
+
         palette_name = self._style['data_points'].get('palette', 'Default (Tab10)')
         palette = PALETTES.get(palette_name, REPLICA_PALETTE)
 
@@ -114,7 +116,7 @@ class DistributionWidget(QWidget):
             self._clear_subplot(pw)
 
             pool = result.parameter_samples[key]
-            use_log = key in log_keys
+            use_log = (key in log_keys) and ka_scale == 'log\u2081\u2080'
             values = np.log10(pool) if use_log else pool
 
             pool_stats = _box_stats(values)
@@ -138,7 +140,7 @@ class DistributionWidget(QWidget):
             if replica_samples:
                 self._draw_replica_medians(pw, replica_samples, key, palette, use_log, x_positions)
 
-            # Y-axis label
+            # Y-axis label (base — ScientificAxisItem appends ×10ⁿ if needed)
             unit_str = units.get(key, '')
             label = fmt_param(key)
             if use_log:
@@ -146,6 +148,9 @@ class DistributionWidget(QWidget):
             else:
                 base_label = f'{label} [{fmt_unit_html(unit_str)}]' if unit_str else label
             self._y_base_labels[i] = base_label
+            # Reset cached exponent on reused axes so the next tickStrings()
+            # call always fires on_exponent_changed and re-applies ×10ⁿ.
+            pw.getPlotItem().getAxis('left').exponent = None
             pw.setLabel('left', base_label)
 
             # X-axis ticks and label
@@ -153,7 +158,10 @@ class DistributionWidget(QWidget):
             bottom_ax.setTicks([[(pos, lbl) for pos, lbl in zip(x_positions, x_tick_labels)]])
             pw.setLabel('bottom', x_axis_label)
 
-            pw.setTitle(label)
+            # Subplot title: mirror the log-wrap so title + axis stay consistent
+            title_size = self._style.get('distribution', {}).get('title_font_size', 16)
+            title_text = f'log\u2081\u2080({label})' if use_log else label
+            pw.setTitle(title_text, size=f'{title_size}pt', bold=True)
             self._apply_axis_style(pw)
 
             x_pad = 0.8
@@ -240,14 +248,18 @@ class DistributionWidget(QWidget):
         q1, q3 = stats['q1'], stats['q3']
         wlo, whi = stats['whisker_lo'], stats['whisker_hi']
 
+        dist = self._style.get('distribution', {})
+        box_w = dist.get('box_border_width', 1.5)
+        wh_w = dist.get('whisker_width', 1.2)
+
         if color is not None:
-            box_pen = pg.mkPen(rgba(color, 200), width=1.5)
+            box_pen = pg.mkPen(rgba(color, 200), width=box_w)
             box_brush = pg.mkBrush(rgba(color, 40))
-            line_pen = pg.mkPen(rgba(color, 180), width=1.2)
+            line_pen = pg.mkPen(rgba(color, 180), width=wh_w)
         else:
-            box_pen = pg.mkPen(FOREGROUND_COLOR, width=1.5)
+            box_pen = pg.mkPen(FOREGROUND_COLOR, width=box_w)
             box_brush = pg.mkBrush(200, 200, 200, 80)
-            line_pen = pg.mkPen(FOREGROUND_COLOR, width=1.2)
+            line_pen = pg.mkPen(FOREGROUND_COLOR, width=wh_w)
 
         box = pg.BarGraphItem(
             x0=[x_center - _BOX_HALF], y0=[q1],
@@ -308,12 +320,15 @@ class DistributionWidget(QWidget):
             pw.addItem(scatter)
 
     def _draw_median_line(self, pw: pg.PlotWidget, median: float, x_positions: list[int]) -> None:
-        """Solid horizontal red line at the pool median, spanning all positions."""
+        """Solid horizontal line at the pool median, spanning all positions."""
         x_lo = min(x_positions) - 0.5
         x_hi = max(x_positions) + 0.5
+        dist = self._style.get('distribution', {})
+        width = dist.get('median_line_width', 2.5)
+        color = dist.get('median_line_color', (220, 0, 0, 255))
         line = pg.PlotCurveItem(
             x=[x_lo, x_hi], y=[median, median],
-            pen=pg.mkPen('r', width=2.5),
+            pen=pg.mkPen(color, width=width),
         )
         pw.addItem(line)
 
@@ -327,6 +342,7 @@ class DistributionWidget(QWidget):
         x_positions: list[int],
     ) -> None:
         """Diamond markers at each replica's median value, at that replica's x."""
+        marker_size = self._style.get('distribution', {}).get('replicate_median_size', 10)
         for r_idx, r_samp in enumerate(replica_samples):
             r_vals = r_samp.get(key)
             if r_vals is None or len(r_vals) == 0:
@@ -336,7 +352,7 @@ class DistributionWidget(QWidget):
             color = palette[r_idx % len(palette)]
             marker = pg.ScatterPlotItem(
                 x=[float(x_pos)], y=[med],
-                symbol='d', size=10,
+                symbol='d', size=marker_size,
                 pen=pg.mkPen(FOREGROUND_COLOR, width=1),
                 brush=pg.mkBrush(rgba(color, 220)),
             )
@@ -344,24 +360,31 @@ class DistributionWidget(QWidget):
 
     def _add_legend(self, pw: pg.PlotWidget, has_replicas: bool) -> None:
         """Add a legend to the first subplot explaining visual elements."""
-        legend = pw.addLegend(offset=(10, 10))
-        legend.setLabelTextSize('10pt')
+        dist = self._style.get('distribution', {})
+        label_size = dist.get('label_font_size', 14)
+        median_w = dist.get('median_line_width', 2.5)
+        median_c = dist.get('median_line_color', (220, 0, 0, 255))
+        marker_size = dist.get('replicate_median_size', 10)
 
-        median_item = pg.PlotCurveItem(pen=pg.mkPen('r', width=2.5))
+        legend = pw.addLegend(offset=(10, 10))
+        legend.setLabelTextSize(f'{label_size}pt')
+
+        median_item = pg.PlotCurveItem(pen=pg.mkPen(median_c, width=median_w))
         legend.addItem(median_item, 'Pool median')
 
         if has_replicas:
             diamond_item = pg.ScatterPlotItem(
-                symbol='d', size=10,
+                symbol='d', size=marker_size,
                 pen=pg.mkPen(FOREGROUND_COLOR, width=1),
                 brush=pg.mkBrush(150, 150, 150, 220),
             )
             legend.addItem(diamond_item, 'Replica median')
 
     def _apply_axis_style(self, pw: pg.PlotWidget) -> None:
-        """Match fonts and axis styling to the main curve plot."""
-        label_size = self._style['axes'].get('label_font_size', 18)
-        tick_size = self._style['axes'].get('tick_font_size', 16)
+        """Apply distribution fonts to axes. Title is handled at setTitle()."""
+        dist = self._style.get('distribution', {})
+        label_size = dist.get('label_font_size', 14)
+        tick_size = dist.get('tick_font_size', 12)
 
         label_font = QFont()
         label_font.setPointSize(label_size)
@@ -374,11 +397,6 @@ class DistributionWidget(QWidget):
             axis.setTickFont(tick_font)
             axis.setPen(pg.mkPen(FOREGROUND_COLOR, width=1))
             axis.setTextPen(pg.mkPen(FOREGROUND_COLOR))
-
-        title_font = QFont()
-        title_font.setPointSize(label_size)
-        title_font.setBold(True)
-        pw.getPlotItem().titleLabel.item.setFont(title_font)
 
     def _extract_replica_samples(
         self, result: FitResult,

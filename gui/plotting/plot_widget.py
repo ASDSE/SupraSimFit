@@ -798,7 +798,7 @@ class PlotWidget(QWidget):
             self._pg_widget.removeItem(self._annotation_item)
             self._annotation_item = None
 
-        if not self._style['annotations']['show_fit_results']:
+        if not self._style['visibility']['show_fit_results']:
             return
         if not self._fit_results:
             return
