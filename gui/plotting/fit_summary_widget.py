@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QFormLayout, QGroupBox, QHBoxLayout, QLabel, QTableWidget, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QTableWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.pipeline.fit_pipeline import FitResult
@@ -98,7 +107,9 @@ class FitSummaryWidget(QWidget):
         self._table.setHorizontalHeaderLabels(
             ['Parameter', 'Value', self._uncertainty_header_default, 'Units']
         )
-        self._table.horizontalHeader().setStretchLastSection(True)
+        header = self._table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         params_layout = QVBoxLayout(self._params_group)
         params_layout.addWidget(self._table)
@@ -184,6 +195,29 @@ class FitSummaryWidget(QWidget):
         self._rmse_label.setText(rmse_html)
         self._r2_label.setText(f'{result.r_squared:.4f}')
         self._passing_label.setText(f'{result.n_passing} / {result.n_total}')
+        self._autosize_columns()
+
+    def _autosize_columns(self) -> None:
+        # resizeColumnsToContents() ignores widgets set via setCellWidget(),
+        # so we measure each QLabel's sizeHint() directly, then spread any
+        # leftover viewport width evenly across columns.
+        n_cols = self._table.columnCount()
+        n_rows = self._table.rowCount()
+        fm = self._table.horizontalHeader().fontMetrics()
+        widths = []
+        for col in range(n_cols):
+            item = self._table.horizontalHeaderItem(col)
+            header_text = item.text() if item is not None else ''
+            w = fm.horizontalAdvance(header_text) + 24
+            for row in range(n_rows):
+                widget = self._table.cellWidget(row, col)
+                if widget is not None:
+                    w = max(w, widget.sizeHint().width() + 16)
+            widths.append(w)
+
+        extra = max(0, (self._table.viewport().width() - sum(widths)) // n_cols)
+        for col, w in enumerate(widths):
+            self._table.setColumnWidth(col, w + extra)
 
     def clear(self) -> None:
         """Reset all fields to their empty state."""
