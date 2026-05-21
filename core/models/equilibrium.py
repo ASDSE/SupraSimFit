@@ -51,13 +51,15 @@ def dba_signal(
     I_dye_bound: float,
     x_titrant: np.ndarray,
     y_fixed: float,
+    *,
+    mode: str,
 ) -> np.ndarray:
     """Compute DBA signal for host-dye equilibrium.
 
-    Works for both Host→Dye and Dye→Host titrations depending on which
-    concentration is varied (x_titrant) vs fixed (y_fixed).
-
-    The equilibrium is: H + D ⇌ HD with Ka_dye = [HD] / ([H][D])
+    Works for both Host→Dye and Dye→Host titrations.  The equilibrium
+    is H + D ⇌ HD with Ka_dye = [HD] / ([H][D]).  Mass balance is
+    solved analytically as a quadratic; the signal model uses the
+    free *dye* concentration regardless of titration direction.
 
     Parameters
     ----------
@@ -70,9 +72,16 @@ def dba_signal(
     I_dye_bound : float
         Signal coefficient for host-dye complex.
     x_titrant : np.ndarray
-        Titrant concentrations (M).
+        Titrant concentrations (M) — host for ``HtoD``, dye for ``DtoH``.
     y_fixed : float
-        Fixed component concentration (M).
+        Fixed component concentration (M) — dye for ``HtoD``,
+        host for ``DtoH``.
+    mode : str
+        Titration mode (keyword-only).  Must be ``"HtoD"`` (host
+        titrated into dye, dye fixed) or ``"DtoH"`` (dye titrated
+        into host, host fixed).  Determines which of the (free
+        titrant, free fixed-species) concentrations is the free dye
+        used in the signal model.
 
     Returns
     -------
@@ -81,13 +90,21 @@ def dba_signal(
 
     Notes
     -----
-    The quadratic solution comes from mass balance:
-        x_total = x_free + [HD]
-        y_total = y_free + [HD]
-    Combined with Ka_dye = [HD] / (x_free * y_free), we get:
-        [HD] = Ka_dye * x_free * y_free
-    Substituting gives a quadratic in y_free.
+    The quadratic in the free concentration of the *fixed* species is
+    derived from the two mass balances combined with
+    ``[HD] = Ka_dye * [H_free] * [D_free]``::
+
+        Ka_dye * y_free^2 + (Ka_dye * (x - y_fixed) + 1) * y_free - y_fixed = 0
+
+    where ``y_free`` is the free conc. of the fixed species.  The
+    physically meaningful (non-negative) root is selected.  Then
+    ``[HD] = y_fixed - y_free`` and the free dye concentration is
+    selected from ``mode``: ``y_free`` in ``HtoD``, or
+    ``x_free = y_free + (x - y_fixed)`` in ``DtoH``.
     """
+    if mode not in ('HtoD', 'DtoH'):
+        raise ValueError(f"mode must be 'HtoD' or 'DtoH', got {mode!r}")
+
     signal_values = np.empty_like(x_titrant)
 
     for i, x in enumerate(x_titrant):
@@ -119,8 +136,13 @@ def dba_signal(
         x_free = y_free + delta
         hd_complex = Ka_dye * y_free * x_free
 
+        # Free DYE concentration depends on which species is the titrant.
+        # HtoD: dye is fixed -> y_free is [D_free]
+        # DtoH: dye is titrant -> x_free is [D_free]
+        d_free = y_free if mode == 'HtoD' else x_free
+
         # Signal = I0 + I_dye_free * [D_free] + I_dye_bound * [HD]
-        signal_values[i] = I0 + I_dye_free * y_free + I_dye_bound * hd_complex
+        signal_values[i] = I0 + I_dye_free * d_free + I_dye_bound * hd_complex
 
     return signal_values
 

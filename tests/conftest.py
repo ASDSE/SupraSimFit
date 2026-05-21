@@ -114,8 +114,13 @@ def _seed_rng():
 # ---------------------------------------------------------------------------
 
 
-def _make_dba_data(true: dict, n_points: int = 30, noise_frac: float = 0.0, rng: np.random.Generator | None = None):
-    """Generate synthetic DBA data (Dye→Host titration)."""
+def _make_dba_data(true: dict, n_points: int = 30, noise_frac: float = 0.0, rng: np.random.Generator | None = None, mode: str = 'DtoH'):
+    """Generate synthetic DBA data.
+
+    Default mode is ``'DtoH'`` (dye titrated, host fixed); pass
+    ``mode='HtoD'`` for the host-titrated variant.  ``true['fixed_conc']``
+    is interpreted as host total in DtoH and dye total in HtoD.
+    """
     x = np.linspace(1e-7, 50e-6, n_points)
     y_clean = dba_signal(
         I0=true['I0'],
@@ -124,6 +129,7 @@ def _make_dba_data(true: dict, n_points: int = 30, noise_frac: float = 0.0, rng:
         I_dye_bound=true['I_dye_bound'],
         x_titrant=x,
         y_fixed=true['fixed_conc'],
+        mode=mode,
     )
     if noise_frac > 0:
         if rng is None:

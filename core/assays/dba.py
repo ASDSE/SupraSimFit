@@ -94,6 +94,7 @@ class DBAAssay(BaseAssay):
             I_dye_bound=I_dye_bound,
             x_titrant=self.x_data.magnitude,
             y_fixed=self.fixed_conc.magnitude,
+            mode=self.mode,
         )
         return Q_(result, 'au')
 
