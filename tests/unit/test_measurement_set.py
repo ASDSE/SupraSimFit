@@ -288,3 +288,67 @@ class TestToAssay:
         with pytest.raises(ValueError, match='use_average'):
             ms.to_assay(GDAAssay, conditions={'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'g0': Q_(20e-6, 'M')}, use_average=False)
 
+
+class TestSetConcentrations:
+    """``set_concentrations`` mutates the grid in place via a Pint Quantity."""
+
+    def test_micromolar_quantity_stored_as_molar(self):
+        ms = _sample_measurement_set(n_replicas=2, n_points=3)
+        ms.set_concentrations(Q_(np.array([1.0, 2.0, 3.0]), 'µM'))
+        np.testing.assert_allclose(ms.concentrations, [1e-6, 2e-6, 3e-6])
+
+    def test_preserves_signals_and_replica_ids(self):
+        ms = _sample_measurement_set(n_replicas=3, n_points=5)
+        original_signals = ms.signals.copy()
+        original_ids = ms.replica_ids
+        ms.set_concentrations(Q_(np.linspace(1, 5, 5), 'mM'))
+        np.testing.assert_array_equal(ms.signals, original_signals)
+        assert ms.replica_ids == original_ids
+
+    def test_preserves_active_mask(self):
+        ms = _sample_measurement_set(n_replicas=3, n_points=4)
+        ms.set_active(ms.replica_ids[0], False)
+        active_before = list(ms.active_replica_ids)
+        dropped_before = list(ms.dropped_replica_ids)
+        ms.set_concentrations(Q_(np.array([1, 2, 3, 4]), 'µM'))
+        assert ms.active_replica_ids == active_before
+        assert ms.dropped_replica_ids == dropped_before
+
+    def test_drop_metadata_keys(self):
+        ms = _sample_measurement_set(n_replicas=2, n_points=3)
+        ms.metadata['bmg_placeholder'] = True
+        ms.metadata['source_file'] = 'plate.xlsx'
+        ms.set_concentrations(
+            Q_(np.array([1, 2, 3]), 'µM'),
+            drop_metadata_keys=('bmg_placeholder',),
+        )
+        assert 'bmg_placeholder' not in ms.metadata
+        assert ms.metadata['source_file'] == 'plate.xlsx'
+
+    def test_rejects_non_quantity(self):
+        ms = _sample_measurement_set(n_points=3)
+        with pytest.raises(TypeError, match='Quantity'):
+            ms.set_concentrations(np.array([1.0, 2.0, 3.0]))
+
+    def test_rejects_wrong_dimensionality(self):
+        ms = _sample_measurement_set(n_points=3)
+        with pytest.raises(ValueError, match='dimensionality'):
+            ms.set_concentrations(Q_(np.array([1.0, 2.0, 3.0]), 'm'))
+
+    def test_rejects_length_mismatch(self):
+        ms = _sample_measurement_set(n_points=5)
+        with pytest.raises(ValueError, match='n_points'):
+            ms.set_concentrations(Q_(np.array([1.0, 2.0]), 'µM'))
+
+    def test_id_is_stable(self):
+        ms = _sample_measurement_set(n_points=3)
+        id_before = ms.id
+        ms.set_concentrations(Q_(np.array([1, 2, 3]), 'µM'))
+        assert ms.id == id_before
+
+    def test_array_remains_read_only_after_set(self):
+        ms = _sample_measurement_set(n_points=3)
+        ms.set_concentrations(Q_(np.array([1, 2, 3]), 'µM'))
+        with pytest.raises(ValueError, match='read-only'):
+            ms.concentrations[0] = 0.0
+

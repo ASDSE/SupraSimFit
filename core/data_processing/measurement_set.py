@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from core.assays.base import BaseAssay
-from core.units import Q_
+from core.units import Q_, Quantity
 
 logger = logging.getLogger(__name__)
 
@@ -325,3 +325,57 @@ class MeasurementSet:
             name=self.metadata.get('source_file', ''),
             **conditions,
         )
+
+    # ------------------------------------------------------------------
+    # In-place mutation
+    # ------------------------------------------------------------------
+
+    def set_concentrations(
+        self,
+        new_conc: Quantity,
+        *,
+        drop_metadata_keys: Tuple[str, ...] = (),
+    ) -> None:
+        """Replace this MeasurementSet's concentration grid in place.
+
+        The blessed mutation path for the concentration vector. The
+        read-only lock on ``concentrations`` is lifted transiently so the
+        existing buffer can be overwritten; the lock is restored before
+        returning, so external code still cannot mutate the array.
+
+        Parameters
+        ----------
+        new_conc : pint.Quantity
+            New concentration vector. Must have concentration
+            dimensionality and length equal to ``self.n_points``.
+            Converted to molar via Pint; the unit declaration done at
+            the call site is the single source of truth for the
+            conversion.
+        drop_metadata_keys : tuple of str, optional
+            Metadata keys to drop after the update (e.g. the BMG
+            placeholder flag once real concentrations are supplied).
+        """
+        if not isinstance(new_conc, Quantity):
+            raise TypeError(
+                f'new_conc must be a pint Quantity, got {type(new_conc).__name__}'
+            )
+        if new_conc.dimensionality != Q_(1.0, 'M').dimensionality:
+            raise ValueError(
+                f'new_conc must have concentration dimensionality, '
+                f'got {new_conc.dimensionality}'
+            )
+        molar_values = np.asarray(new_conc.to('M').magnitude, dtype=np.float64)
+        if molar_values.shape != (self.n_points,):
+            raise ValueError(
+                f'new_conc length {molar_values.shape} does not match '
+                f'n_points ({self.n_points},)'
+            )
+
+        self.concentrations.flags.writeable = True
+        try:
+            self.concentrations[:] = molar_values
+        finally:
+            self.concentrations.flags.writeable = False
+
+        for key in drop_metadata_keys:
+            self.metadata.pop(key, None)
