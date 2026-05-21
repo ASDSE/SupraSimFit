@@ -111,7 +111,6 @@ _PARAMS_SPEC = [
         'children': [
             {'name': 'Label font size', 'type': 'int', 'value': 18, 'limits': (6, 24)},
             {'name': 'Tick font size', 'type': 'int', 'value': 16, 'limits': (6, 24)},
-            {'name': 'x-axis unit', 'type': 'list', 'value': 'µM', 'limits': ['nM', 'µM', 'mM', 'M']},
         ],
     },
     {
@@ -266,11 +265,28 @@ class PlotStyleWidget(QWidget):
         self._tree.setParameters(self._params, showTop=False)
         self._params.sigTreeStateChanged.connect(self._on_change)
 
+        # X-axis display unit is owned by the Data panel (no ParameterTree
+        # node here), but still round-trips through saved style JSONs via
+        # ``axes.x_unit``. Externally settable via ``set_x_unit``.
+        self._x_unit: str = DEFAULT_STYLE['axes']['x_unit']
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._tree)
 
     def _on_change(self, *_):
+        self.style_changed.emit(self.current_style())
+
+    def set_x_unit(self, unit: str) -> None:
+        """Set the x-axis display unit and emit ``style_changed``.
+
+        The x-axis unit no longer lives in the ParameterTree — it is
+        owned by the Data panel and pushed in here so that saved style
+        dicts still carry it via ``axes.x_unit``.
+        """
+        if unit == self._x_unit:
+            return
+        self._x_unit = unit
         self.style_changed.emit(self.current_style())
 
     def current_style(self) -> dict:
@@ -280,7 +296,7 @@ class PlotStyleWidget(QWidget):
             'axes': {
                 'label_font_size': p['Axes', 'Label font size'],
                 'tick_font_size': p['Axes', 'Tick font size'],
-                'x_unit': p['Axes', 'x-axis unit'],
+                'x_unit': self._x_unit,
             },
             'data_points': {
                 'symbol': p['Replicas', 'Marker'],
@@ -356,7 +372,6 @@ class PlotStyleWidget(QWidget):
         _map = {
             ('Axes', 'Label font size'): ('axes', 'label_font_size'),
             ('Axes', 'Tick font size'): ('axes', 'tick_font_size'),
-            ('Axes', 'x-axis unit'): ('axes', 'x_unit'),
             ('Replicas', 'Marker'): ('data_points', 'symbol'),
             ('Replicas', 'Size'): ('data_points', 'size'),
             ('Replicas', 'Opacity'): ('data_points', 'alpha'),
@@ -410,6 +425,9 @@ class PlotStyleWidget(QWidget):
 
                         val = QColor(*val)
                     p[group, name] = val
+            # x_unit lives outside the ParameterTree.
+            if 'axes' in style and 'x_unit' in style['axes']:
+                self._x_unit = style['axes']['x_unit']
         finally:
             self._params.blockSignals(False)
         # Emit one change after restoring all values

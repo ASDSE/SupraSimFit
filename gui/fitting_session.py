@@ -133,10 +133,10 @@ class FittingSession(QWidget):
                 self,
                 'Concentrations Required',
                 'BMG import: placeholder concentrations are still in '
-                'place. Enter the real concentration vector before '
-                'running the fit.',
+                'place. Enter the real concentration vector in the Data '
+                'panel and click Apply before running the fit.',
             )
-            self._data_panel.open_concentration_dialog()
+            self._data_panel.focus_concentration_table()
             return
 
         assay_cls = self._assay_panel.get_assay_class()
@@ -147,24 +147,10 @@ class FittingSession(QWidget):
             config = replace(config, custom_bounds=custom_bounds)
 
         if config.per_replicate and ms.n_active < 3:
-            proceed = QMessageBox.warning(
-                self,
-                'Few replicates for per-replicate fitting',
-                (
-                    f'You have {ms.n_active} active replicate(s). Per-replicate '
-                    f'fitting will still run, but the reported uncertainty is '
-                    f'based on very few measurements and may not be statistically '
-                    f'meaningful.\n\n'
-                    f'For a reliable experimental uncertainty estimate, use at '
-                    f'least 3 — ideally 4 or more — active replicates.\n\n'
-                    f'Proceed anyway?'
-                ),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
+            self.status_message.emit(
+                f'Per-replicate fit on {ms.n_active} replicate(s) — '
+                'uncertainty estimate may not be meaningful (<3 active).'
             )
-            if proceed != QMessageBox.StandardButton.Yes:
-                self.status_message.emit('Fit cancelled — too few replicates for per-replicate mode.')
-                return
 
         self._fit_worker = FitWorker(
             ms,
@@ -408,6 +394,12 @@ class FittingSession(QWidget):
 
             style = load_style_json(path)
             self._style_widget.widget.load_style(style)
+            # Reflect the loaded x_unit in the Data panel's Display Unit
+            # combo so the two stay in sync after a style import.
+            loaded_unit = style.get('axes', {}).get('x_unit')
+            if loaded_unit:
+                self._state.display_unit = loaded_unit
+                self._data_panel.set_display_unit(loaded_unit)
             self.status_message.emit(f'Style template loaded from {path}')
         except Exception as exc:
             QMessageBox.warning(self, 'Load Error', str(exc))
@@ -435,7 +427,7 @@ class FittingSession(QWidget):
         left_layout.setSpacing(6)
         left_layout.setContentsMargins(6, 6, 6, 6)
 
-        self._data_panel = DataPanel()
+        self._data_panel = DataPanel(initial_display_unit=self._state.display_unit)
         self._preprocess_panel = PreprocessingPanel()
         self._replica_panel = ReplicaPanel()
         self._assay_panel = AssayConfigPanel()
@@ -501,6 +493,10 @@ class FittingSession(QWidget):
         # Initialise BoundsPanel for default assay type
         self._bounds_panel.set_assay_type(self._state.assay_type)
 
+        # Push the initial display unit into PlotStyleWidget so the style
+        # dict reflects the DataPanel's combo from the first emission.
+        self._style_widget.widget.set_x_unit(self._state.display_unit)
+
     # ------------------------------------------------------------------
     # Signal wiring
     # ------------------------------------------------------------------
@@ -508,6 +504,7 @@ class FittingSession(QWidget):
     def _connect_signals(self) -> None:
         self._data_panel.data_loaded.connect(self._on_data_loaded)
         self._data_panel.data_cleared.connect(self._on_data_cleared)
+        self._data_panel.display_unit_changed.connect(self._on_display_unit_changed)
 
         self._preprocess_panel.preprocessing_applied.connect(self._on_preprocessing_applied)
         self._preprocess_panel.preprocessing_reset.connect(self._on_preprocessing_reset)
@@ -563,7 +560,7 @@ class FittingSession(QWidget):
             parent=self,
         )
         if dlg.exec() == dlg.DialogCode.Accepted:
-            self._data_panel.open_concentration_dialog()
+            self._data_panel.focus_concentration_table()
 
     def _on_data_cleared(self) -> None:
         self._state.measurement_set = None
@@ -603,6 +600,11 @@ class FittingSession(QWidget):
 
     def _on_bounds_changed(self) -> None:
         self._state.custom_bounds = self._bounds_panel.current_bounds()
+
+    def _on_display_unit_changed(self, unit: str) -> None:
+        """DataPanel announces a new plot-display unit — propagate to plot."""
+        self._state.display_unit = unit
+        self._style_widget.widget.set_x_unit(unit)
 
     def _on_fit_complete(self, result: FitResult) -> None:
         self._state.fit_results = [result]

@@ -38,6 +38,11 @@ class SessionState:
     fit_results: list[FitResult] = field(default_factory=list)
     dye_alone_result: Optional[FitResult] = None
 
+    # Plot display unit (concentration unit used for the x-axis). Lives in
+    # session state so it survives style-widget reconstructions and is the
+    # source of truth for the value that ends up in style['axes']['x_unit'].
+    display_unit: str = 'µM'
+
     def has_data(self) -> bool:
         return self.measurement_set is not None
 
