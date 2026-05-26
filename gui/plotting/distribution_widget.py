@@ -193,50 +193,70 @@ class DistributionWidget(QWidget):
         """Parameter keys of the currently displayed subplots, in order."""
         return list(self._param_keys)
 
-    def export_subplots(self, keys: list[str], path: str, dpi: int = 300) -> None:
-        """Render selected subplots to a single composite PNG.
+    def render_composite(
+        self,
+        keys: list[str],
+        rows: int,
+        cols: int,
+        width_in: float,
+        height_in: float,
+        dpi: int,
+    ):
+        """Render selected subplots into a single composite QImage.
 
-        Layout: 1→1×1, 2→1×2, 3→1×3, 4→2×2, otherwise ⌈n/2⌉×2.
+        Output is exactly ``round(width_in * dpi)`` × ``round(height_in * dpi)``
+        pixels.  Each cell is ``canvas_w // cols`` × ``canvas_h // rows`` px;
+        subplots are centred within their cell so the composite matches the
+        requested dimensions exactly even when the per-panel aspect ratio
+        differs.
+
+        Screen-space items (legends, annotation text) are temporarily
+        flipped into scene-space via :func:`gui.plotting.plot_widget._scale_with_painter`
+        so they participate in the painter scale set up by
+        ``ImageExporter`` and stay proportional in the rendered cell.
+
+        Raises
+        ------
+        ValueError
+            If no distributions are loaded, no keys match, or rows*cols is
+            smaller than the number of selected keys.
         """
-        import math
-
-        import pyqtgraph.exporters
+        import pyqtgraph.exporters  # noqa: F401  (registers exporters)
         from PyQt6.QtCore import Qt
         from PyQt6.QtGui import QImage, QPainter
 
         if not self._param_keys:
-            raise ValueError('No distributions to export. Run a fit first.')
+            raise ValueError('No distributions to render. Run a fit first.')
 
         indices = [self._param_keys.index(k) for k in keys if k in self._param_keys]
         if not indices:
             raise ValueError('No matching distributions selected.')
+        if rows * cols < len(indices):
+            raise ValueError(
+                f'Layout {rows}x{cols} cannot fit {len(indices)} subplots.'
+            )
 
-        panel_px = dpi * 4  # 4-inch panel → 1200 px at 300 dpi
+        canvas_w = max(1, round(width_in * dpi))
+        canvas_h = max(1, round(height_in * dpi))
+        cell_w = canvas_w // cols
+        cell_h = canvas_h // rows
+
+        from gui.plotting.plot_widget import _scale_with_painter
+
         images: list[QImage] = []
         for idx in indices:
+            scene = self._plots[idx].scene()
             exporter = pg.exporters.ImageExporter(self._plots[idx].getPlotItem())
-            exporter.parameters()['width'] = panel_px
-            img = exporter.export(toBytes=True)
+            exporter.parameters()['width'] = cell_w
+            with _scale_with_painter(scene):
+                img = exporter.export(toBytes=True)
             if not isinstance(img, QImage):
                 raise RuntimeError('ImageExporter did not return a QImage.')
+            if img.height() > cell_h:
+                img = img.scaledToHeight(cell_h, Qt.TransformationMode.SmoothTransformation)
             images.append(img)
 
-        n = len(images)
-        if n == 1:
-            rows, cols = 1, 1
-        elif n == 2:
-            rows, cols = 1, 2
-        elif n == 3:
-            rows, cols = 1, 3
-        elif n == 4:
-            rows, cols = 2, 2
-        else:
-            cols = 2
-            rows = math.ceil(n / cols)
-
-        cell_w = max(img.width() for img in images)
-        cell_h = max(img.height() for img in images)
-        combined = QImage(cell_w * cols, cell_h * rows, QImage.Format.Format_ARGB32)
+        combined = QImage(canvas_w, canvas_h, QImage.Format.Format_ARGB32)
         combined.fill(Qt.GlobalColor.white)
         painter = QPainter(combined)
         try:
@@ -247,8 +267,38 @@ class DistributionWidget(QWidget):
                 painter.drawImage(x, y, img)
         finally:
             painter.end()
+        return combined
+
+    def save_plot(
+        self,
+        keys: list[str],
+        rows: int,
+        cols: int,
+        width_in: float,
+        height_in: float,
+        dpi: int,
+        path: str,
+    ) -> None:
+        """Render the composite and write it to ``path`` as PNG."""
+        combined = self.render_composite(keys, rows, cols, width_in, height_in, dpi)
         if not combined.save(path, 'PNG'):
             raise RuntimeError(f'Failed to save composite image to {path}')
+
+    @staticmethod
+    def auto_layout(n: int) -> tuple[int, int]:
+        """Default rows×cols for *n* subplots (matches legacy Auto behaviour)."""
+        import math
+
+        if n <= 1:
+            return 1, max(1, n)
+        if n == 2:
+            return 1, 2
+        if n == 3:
+            return 1, 3
+        if n == 4:
+            return 2, 2
+        cols = 2
+        return math.ceil(n / cols), cols
 
     @staticmethod
     def _clear_subplot(pw: pg.PlotWidget) -> None:

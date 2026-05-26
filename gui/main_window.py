@@ -210,9 +210,11 @@ class FittingMainWindow(QMainWindow):
         self._act_save_plot.setToolTip('Export the current plot as PNG or SVG')
         self._act_save_plot.triggered.connect(self._on_save_plot)
 
-        self._act_export_dists = QAction('Export Distributions\u2026', self)
-        self._act_export_dists.setToolTip('Export selected distribution subplots as a high-resolution PNG')
-        self._act_export_dists.triggered.connect(self._on_export_distributions)
+        self._act_export_dists = QAction('Save Distributions Plot\u2026', self)
+        self._act_export_dists.setToolTip(
+            'Save the distributions plot (with layout + size options) as PNG'
+        )
+        self._act_export_dists.triggered.connect(self._on_save_distributions_plot)
 
         self._act_save_style = QAction('Save Style Template', self)
         self._act_save_style.setToolTip('Save current plot style settings to a JSON file')
@@ -361,10 +363,10 @@ class FittingMainWindow(QMainWindow):
         if session:
             session.export_plot()
 
-    def _on_export_distributions(self) -> None:
+    def _on_save_distributions_plot(self) -> None:
         session = self.active_session()
         if session:
-            session.export_distributions()
+            session.save_distributions_plot()
 
     def _on_save_style(self) -> None:
         session = self.active_session()

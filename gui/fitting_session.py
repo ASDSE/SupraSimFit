@@ -341,32 +341,42 @@ class FittingSession(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, 'Export Error', str(exc))
 
-    def export_distributions(self) -> None:
-        """Export selected distribution subplots as a composite PNG."""
+    def save_distributions_plot(self) -> None:
+        """Save the distributions plot as a composite PNG with a layout picker."""
         keys = self._distribution_widget.param_keys()
         if not keys:
             QMessageBox.warning(
-                self, 'Export Error',
-                'No distributions to export. Run a fit first.',
+                self, 'Save Error',
+                'No distributions to save. Run a fit first.',
             )
             return
-        dlg = ExportDistributionsDialog(keys, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        from gui.dialogs.save_distributions_dialog import SaveDistributionsPlotDialog
+
+        dlg = SaveDistributionsPlotDialog(self._distribution_widget, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or dlg.config is None:
             return
-        selected = dlg.selected_keys()
+        cfg = dlg.config
         path, _ = QFileDialog.getSaveFileName(
             self,
-            'Export Distributions',
+            'Save Distributions Plot',
             self._default_save_name('.png', 'distributions'),
             'PNG image (*.png)',
         )
         if not path:
             return
         try:
-            self._distribution_widget.export_subplots(selected, path, dpi=300)
-            self.status_message.emit(f'Distributions exported to {path}')
+            self._distribution_widget.save_plot(
+                keys=cfg.keys,
+                rows=cfg.rows,
+                cols=cfg.cols,
+                width_in=cfg.width_in,
+                height_in=cfg.height_in,
+                dpi=cfg.dpi,
+                path=path,
+            )
+            self.status_message.emit(f'Distributions plot saved to {path}')
         except Exception as exc:
-            QMessageBox.warning(self, 'Export Error', str(exc))
+            QMessageBox.warning(self, 'Save Error', str(exc))
 
     def save_style_template(self) -> None:
         """Save current plot style settings to a JSON file."""
@@ -668,54 +678,6 @@ class FittingSession(QWidget):
 
     def _update_axis_labels(self, x: str, y: str, y_unit: str) -> None:
         self._plot_widget.set_axis_labels(x, y, y_unit)
-
-
-class ExportDistributionsDialog(QDialog):
-    """Dialog letting the user pick which distribution subplots to export."""
-
-    def __init__(self, param_keys: list[str], parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle('Export Distributions')
-        from gui.plotting.labels import fmt_param
-
-        self._keys = list(param_keys)
-        self._checkboxes: list[QCheckBox] = []
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel('Select subplots to include in the exported PNG:'))
-
-        for key in self._keys:
-            cb = QCheckBox()
-            cb.setText(fmt_param(key))
-            cb.setChecked(True)
-            cb.toggled.connect(self._update_ok_enabled)
-            layout.addWidget(cb)
-            self._checkboxes.append(cb)
-
-        btn_row = QHBoxLayout()
-        all_btn = QPushButton('Select all')
-        none_btn = QPushButton('Select none')
-        all_btn.clicked.connect(lambda: [cb.setChecked(True) for cb in self._checkboxes])
-        none_btn.clicked.connect(lambda: [cb.setChecked(False) for cb in self._checkboxes])
-        btn_row.addWidget(all_btn)
-        btn_row.addWidget(none_btn)
-        btn_row.addStretch(1)
-        layout.addLayout(btn_row)
-
-        self._buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        self._buttons.accepted.connect(self.accept)
-        self._buttons.rejected.connect(self.reject)
-        layout.addWidget(self._buttons)
-        self._update_ok_enabled()
-
-    def _update_ok_enabled(self) -> None:
-        any_checked = any(cb.isChecked() for cb in self._checkboxes)
-        self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(any_checked)
-
-    def selected_keys(self) -> list[str]:
-        return [k for k, cb in zip(self._keys, self._checkboxes) if cb.isChecked()]
 
 
 class _GroupedPlain(QGroupBox):
