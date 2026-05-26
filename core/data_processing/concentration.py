@@ -80,6 +80,42 @@ def load_concentration_vector(path: str | Path) -> tuple[np.ndarray, str, str]:
     return concentrations, unit, label
 
 
+def read_raw_concentrations(path: str | Path) -> tuple[np.ndarray, str | None]:
+    """Read a concentration vector as face-value numbers plus a declared unit.
+
+    Dispatches by file extension:
+
+    - ``.json`` — reads via :func:`load_concentration_vector`-style schema and
+      returns ``(raw_values, declared_unit)``. **Unlike**
+      :func:`load_concentration_vector`, the values are *not* converted to
+      molar; the caller is responsible for the conversion via Pint.
+    - Anything else — delegates to :func:`extract_concentrations_from_file`
+      and returns ``(values, None)`` (no unit declaration is available in
+      raw measurement files).
+
+    Parameters
+    ----------
+    path : str or Path
+        File path.
+
+    Returns
+    -------
+    tuple[np.ndarray, str | None]
+        ``(face_values, declared_unit)``. ``declared_unit`` is ``None`` when
+        the source file format does not carry unit metadata.
+    """
+    path = Path(path)
+    if path.suffix.lower() == '.json':
+        data = json.loads(path.read_text())
+        if 'concentrations' not in data:
+            raise ValueError(f"'concentrations' key missing from {path}")
+        raw = data['concentrations']
+        if not isinstance(raw, list) or len(raw) == 0:
+            raise ValueError(f"'concentrations' must be a non-empty list in {path}")
+        return np.asarray(raw, dtype=float), data.get('unit')
+    return extract_concentrations_from_file(path), None
+
+
 def extract_concentrations_from_file(path: str | Path) -> np.ndarray:
     """Load a data file via the I/O registry and extract its concentration column.
 

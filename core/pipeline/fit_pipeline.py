@@ -77,11 +77,13 @@ class FitResult:
         ``"optimizer"`` (default): uncertainties are the spread of the
         multistart passing-trial pool on a single signal.  ``"replicate"``:
         uncertainties are the spread of the pooled passing trials across
-        every active replicate (populated by
-        :func:`fit_measurement_set_per_replicate`).
+        every active replica (populated by
+        :func:`fit_measurement_set_per_replica`). The string literal
+        ``"replicate"`` is kept as the magic value for backward
+        compatibility with previously exported fit-result JSON files.
     replica_fits : list[FitResult] | None
-        Per-replicate fit results when this is an aggregate from
-        :func:`fit_measurement_set_per_replicate`; ``None`` for single-signal
+        Per-replica fit results when this is an aggregate from
+        :func:`fit_measurement_set_per_replica`; ``None`` for single-signal
         fits.  Retained for diagnostic inspection only — the reported
         ``parameters`` and ``uncertainties`` are computed directly from
         the pooled ``parameter_samples``, not from these.
@@ -89,8 +91,8 @@ class FitResult:
         One flat array per parameter key holding every passing trial's
         parameter value (length == ``n_passing``).  In average mode this
         is the multistart pool on the single averaged signal; in
-        per-replicate mode it is the concatenation of passing trials
-        across every active replicate (the pool downstream box-and-whisker
+        per-replica mode it is the concatenation of passing trials
+        across every active replica (the pool downstream box-and-whisker
         plots consume).  Both ``parameters`` (median) and
         ``uncertainties`` (MAD) are computed directly from this pool.
     """
@@ -287,7 +289,7 @@ class FitConfig:
     log_scale_params: Optional[List[str]] = None
     custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
     rescale_parameters: bool = True
-    per_replicate: bool = False
+    per_replica: bool = True
 
 
 def _model_name_for_assay(assay: BaseAssay) -> str:
@@ -311,7 +313,9 @@ def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
         'log_scale_params': config.log_scale_params,
         'custom_bounds': custom_bounds,
         'rescale_parameters': config.rescale_parameters,
-        'per_replicate': config.per_replicate,
+        # JSON key kept as 'per_replicate' for backward compat with
+        # previously exported fit-result files.
+        'per_replicate': config.per_replica,
     }
 
 
@@ -621,10 +625,10 @@ def fit_measurement_set(
 ) -> FitResult:
     """Convenience: build an assay from a MeasurementSet and fit it.
 
-    When ``config.per_replicate`` is ``True`` and neither ``use_average=False``
+    When ``config.per_replica`` is ``True`` and neither ``use_average=False``
     nor an explicit ``replica_id`` is provided, dispatches to
-    :func:`fit_measurement_set_per_replicate`, which fits each active replica
-    independently and aggregates parameters across replicates.
+    :func:`fit_measurement_set_per_replica`, which fits each active replica
+    independently and aggregates parameters across replicas.
 
     Parameters
     ----------
@@ -645,8 +649,8 @@ def fit_measurement_set(
     -------
     FitResult
     """
-    if config is not None and config.per_replicate and replica_id is None and use_average:
-        return fit_measurement_set_per_replicate(ms, assay_cls, conditions, config)
+    if config is not None and config.per_replica and replica_id is None and use_average:
+        return fit_measurement_set_per_replica(ms, assay_cls, conditions, config)
 
     assay = ms.to_assay(
         assay_cls,
@@ -670,12 +674,12 @@ def fit_measurement_set(
     )
 
 
-class PerReplicateFitError(RuntimeError):
-    """Raised when per-replicate fitting cannot produce any surviving fit.
+class PerReplicaFitError(RuntimeError):
+    """Raised when per-replica fitting cannot produce any surviving fit.
 
     Carries a ``failures`` mapping of ``replica_id -> reason`` so the GUI
     layer can surface a no-silent-fallbacks warning listing every failed
-    replicate.
+    replica.
     """
 
     def __init__(self, message: str, failures: Dict[str, str]):
@@ -683,7 +687,7 @@ class PerReplicateFitError(RuntimeError):
         self.failures = dict(failures)
 
 
-def fit_measurement_set_per_replicate(
+def fit_measurement_set_per_replica(
     ms: MeasurementSet,
     assay_cls: Type[BaseAssay],
     conditions: Dict[str, Any],
@@ -696,15 +700,15 @@ def fit_measurement_set_per_replicate(
     to every per-replica call).  Because the parameter rescaler is an
     exact affine bijection [core/optimizer/scaling.py:20-23], every
     per-replica ``FitResult`` emerges in physical units regardless of
-    its per-replica scaler, so parameter values from every replicate
+    its per-replica scaler, so parameter values from every replica
     live in the same raw-unit space.
 
-    **Aggregation semantics (approach (b), pooled):** every replicate's
+    **Aggregation semantics (approach (b), pooled):** every replica's
     passing trials — not its pre-collapsed median — are concatenated
     into a single flat pool (per parameter key) stored on the returned
     ``FitResult.parameter_samples``.  The reported ``parameters`` are
     the **median of that pool** and ``uncertainties`` are the MAD of
-    that pool.  A replicate with more passing trials therefore
+    that pool.  A replica with more passing trials therefore
     contributes proportionally more samples to the pool; this matches
     the user-requested design (every acceptable fit counts equally).
 
@@ -721,7 +725,7 @@ def fit_measurement_set_per_replicate(
     Failure handling: a replica that raises (degenerate scaler input,
     convergence failure, …) is skipped and recorded in the returned
     FitResult's metadata.  If no replica survives, a
-    :class:`PerReplicateFitError` is raised with the full failure map so
+    :class:`PerReplicaFitError` is raised with the full failure map so
     the GUI can report every bad replica.
 
     Parameters
@@ -733,8 +737,8 @@ def fit_measurement_set_per_replicate(
     conditions : dict
         Assay-specific conditions as Quantity values.
     config : FitConfig, optional
-        Fitting configuration.  ``per_replicate`` is ignored (this function
-        *is* the per-replicate path) but every other field — including
+        Fitting configuration.  ``per_replica`` is ignored (this function
+        *is* the per-replica path) but every other field — including
         ``rescale_parameters`` — is forwarded to each per-replica fit.
 
     Returns
@@ -742,7 +746,8 @@ def fit_measurement_set_per_replicate(
     FitResult
         Aggregate result whose ``parameters`` and ``uncertainties`` are
         the pooled median and MAD across every passing trial from every
-        successful replica, ``uncertainty_source == "replicate"``,
+        successful replica, ``uncertainty_source == "replicate"`` (string
+        kept for backward compat with previously exported JSONs),
         ``parameter_samples`` holds the pool, and ``replica_fits`` holds
         the per-replica successful fits for diagnostic inspection.
     """
@@ -753,7 +758,7 @@ def fit_measurement_set_per_replicate(
     if not active_ids:
         raise ValueError('No active replicas to fit.')
 
-    per_call_config = replace(config, per_replicate=False)
+    per_call_config = replace(config, per_replica=False)
 
     replica_fits: List[FitResult] = []
     succeeded_ids: List[str] = []
@@ -770,7 +775,7 @@ def fit_measurement_set_per_replicate(
             )
         except Exception as exc:
             failures[rid] = f'{type(exc).__name__}: {exc}'
-            logger.warning('Per-replicate fit failed for replica %s: %s', rid, exc)
+            logger.warning('Per-replica fit failed for replica %s: %s', rid, exc)
             continue
 
         if not rr.success:
@@ -786,8 +791,8 @@ def fit_measurement_set_per_replicate(
         succeeded_ids.append(rid)
 
     if not replica_fits:
-        raise PerReplicateFitError(
-            f'Per-replicate fitting failed on all {len(active_ids)} active replica(s).',
+        raise PerReplicaFitError(
+            f'Per-replica fitting failed on all {len(active_ids)} active replica(s).',
             failures,
         )
 

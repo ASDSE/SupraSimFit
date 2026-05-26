@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QCoreApplication, QEvent, QLocale, QObject, Qt
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QIcon, QKeySequence
 from PyQt6.QtWidgets import QAbstractSpinBox, QApplication, QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QTabWidget, QToolBar, QToolButton
 
 from gui.fitting_session import FittingSession
@@ -105,7 +105,7 @@ class FittingMainWindow(QMainWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Fitting App')
+        self.setWindowTitle('SupraSimFit')
         self.resize(1280, 820)
         self._setup_tabs()
         self._setup_toolbar()
@@ -210,16 +210,33 @@ class FittingMainWindow(QMainWindow):
         self._act_save_plot.setToolTip('Export the current plot as PNG or SVG')
         self._act_save_plot.triggered.connect(self._on_save_plot)
 
+        self._act_export_dists = QAction('Save Distributions Plot\u2026', self)
+        self._act_export_dists.setToolTip(
+            'Save the distributions plot (with layout + size options) as PNG'
+        )
+        self._act_export_dists.triggered.connect(self._on_save_distributions_plot)
+
         self._act_save_style = QAction('Save Style Template', self)
         self._act_save_style.setToolTip('Save current plot style settings to a JSON file')
         self._act_save_style.triggered.connect(self._on_save_style)
 
+        self._act_export_all = QAction('Export All…', self)
+        self._act_export_all.setShortcut(QKeySequence('Ctrl+Shift+E'))
+        self._act_export_all.setToolTip(
+            'Export selected artefacts (raw data, results, plots, style) '
+            'into one folder'
+        )
+        self._act_export_all.triggered.connect(self._on_export_all)
+
         export_menu = QMenu(self)
+        export_menu.addAction(self._act_export_all)
+        export_menu.addSeparator()
         export_menu.addAction(self._act_export)
         export_menu.addAction(self._act_export_txt)
         export_menu.addAction(self._act_export_raw)
         export_menu.addSeparator()
         export_menu.addAction(self._act_save_plot)
+        export_menu.addAction(self._act_export_dists)
         export_menu.addSeparator()
         export_menu.addAction(self._act_save_style)
 
@@ -259,11 +276,14 @@ class FittingMainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._act_fit)
         file_menu.addSeparator()
+        file_menu.addAction(self._act_export_all)
+        file_menu.addSeparator()
         file_menu.addAction(self._act_export)
         file_menu.addAction(self._act_export_txt)
         file_menu.addAction(self._act_export_raw)
         file_menu.addAction(self._act_import)
         file_menu.addAction(self._act_save_plot)
+        file_menu.addAction(self._act_export_dists)
         file_menu.addSeparator()
         file_menu.addAction(self._act_save_style)
         file_menu.addAction(self._act_load_style)
@@ -355,6 +375,16 @@ class FittingMainWindow(QMainWindow):
         if session:
             session.export_plot()
 
+    def _on_save_distributions_plot(self) -> None:
+        session = self.active_session()
+        if session:
+            session.save_distributions_plot()
+
+    def _on_export_all(self) -> None:
+        session = self.active_session()
+        if session:
+            session.open_export_multiple_dialog(select_all_default=True)
+
     def _on_save_style(self) -> None:
         session = self.active_session()
         if session:
@@ -364,6 +394,19 @@ class FittingMainWindow(QMainWindow):
         session = self.active_session()
         if session:
             session.load_style_template()
+
+
+def _app_icon_path() -> str | None:
+    """Locate the bundled app icon for both source runs and PyInstaller bundles."""
+    import os
+    import sys
+
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("AppIcon.ico", "AppIcon.png"):
+        p = os.path.join(base, "assets", name)
+        if os.path.exists(p):
+            return p
+    return None
 
 
 def launch() -> None:
@@ -378,8 +421,21 @@ def launch() -> None:
     QCoreApplication.setOrganizationName(ORG_NAME)
     QCoreApplication.setApplicationName(APP_NAME)
 
+    # Windows: pin an explicit AppUserModelID so the taskbar groups under us, not python.exe.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"{ORG_NAME}.{APP_NAME}")
+        except Exception:
+            pass
+
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyleSheet(_APP_QSS)
+
+    icon_path = _app_icon_path()
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
 
     # Block non-focused spinboxes from stealing wheel events while the
     # user scrolls the sidebar. Kept alive on the app so Qt doesn't GC it.

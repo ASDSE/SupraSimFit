@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QLocale, pyqtSignal
-from PyQt6.QtWidgets import QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFormLayout, QHBoxLayout, QMessageBox, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.preprocessing import apply_preprocessing
@@ -72,7 +72,7 @@ new value.</p>
 
 _SECTION_HELP_HTML = """
 <h3>Outlier Removal</h3>
-<p>Automatically flag replicate traces that deviate strongly from the
+<p>Automatically flag replica traces that deviate strongly from the
 others, so they are excluded from the fit. Click <b>Apply</b> to run
 the filter; click <b>Reset</b> to re-activate all replicas.</p>
 <p>See the <i>i</i> next to the Z-score threshold for details on the
@@ -111,7 +111,6 @@ class PreprocessingPanel(InfoGroupBox):
     def set_measurement_set(self, ms: MeasurementSet) -> None:
         self._ms = ms
         self.setEnabled(True)
-        self._status_label.setText('')
 
     def current_steps(self) -> list[dict]:
         """Return preprocessing step configuration list for :func:`apply_preprocessing`."""
@@ -147,17 +146,8 @@ class PreprocessingPanel(InfoGroupBox):
         apply_preprocessing(self._ms, self.current_steps())
 
         log = self._ms.processing_log
-        if log:
-            entry = log[-1]
-            status = entry.get('status')
-            if status == 'applied':
-                dropped = entry.get('dropped', [])
-                if dropped:
-                    self._status_label.setText(f'Dropped: {", ".join(dropped)}')
-                else:
-                    self._status_label.setText('No replicas dropped.')
-            else:
-                return False
+        if log and log[-1].get('status') != 'applied':
+            return False
         self.preprocessing_applied.emit()
         return True
 
@@ -213,11 +203,6 @@ class PreprocessingPanel(InfoGroupBox):
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
-        # Status line
-        self._status_label = QLabel('')
-        self._status_label.setWordWrap(True)
-        layout.addWidget(self._status_label)
-
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
@@ -244,14 +229,7 @@ class PreprocessingPanel(InfoGroupBox):
         log = self._ms.processing_log
         if log:
             entry = log[-1]
-            status = entry.get('status')
-            if status == 'applied':
-                dropped = entry.get('dropped', [])
-                if dropped:
-                    self._status_label.setText(f'Dropped: {", ".join(dropped)}')
-                else:
-                    self._status_label.setText('No replicas dropped.')
-            else:
+            if entry.get('status') != 'applied':
                 # Unexpected state — surface it to the user
                 reason = entry.get('reason', 'unknown reason')
                 QMessageBox.warning(
@@ -266,5 +244,4 @@ class PreprocessingPanel(InfoGroupBox):
         if self._ms is None:
             return
         self._ms.reset_active()
-        self._status_label.setText('All replicas activated.')
         self.preprocessing_reset.emit()

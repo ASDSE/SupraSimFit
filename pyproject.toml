@@ -9,7 +9,6 @@ dependencies = [
     "numpy>=2.4.2",
     "openpyxl>=3.1.5",
     "pandas>=3.0.0",
-    "pillow>=12.1.0",
     "pint>=0.25.2",
     "pyqt6>=6.10.2",
     "pyqtgraph>=0.14.0",
@@ -18,7 +17,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "graphifyy>=0.4.0",
     "pytest>=9.0.2",
     "ruff>=0.15.1",
     "sphinx>=9.1.0",

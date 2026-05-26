@@ -164,7 +164,7 @@ main_splitter = QSplitter(Qt.Orientation.Horizontal)
 main_splitter.addWidget(pw)
 main_splitter.addWidget(right_splitter)
 main_splitter.setSizes([700, 300])
-main_splitter.setWindowTitle("Fitting App — Plotting Demo")
+main_splitter.setWindowTitle("SupraSimFit — Plotting Demo")
 main_splitter.resize(1000, 600)
 main_splitter.show()
 

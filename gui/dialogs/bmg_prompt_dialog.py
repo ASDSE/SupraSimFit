@@ -4,11 +4,11 @@ BMG XLSX files do not carry concentration values — the reader assigns
 placeholder positions ``1..N`` and flags the MeasurementSet. This dialog
 surfaces that fact and offers two choices:
 
-* **Enter concentrations now** — opens
-  :class:`~gui.dialogs.concentration_dialog.ConcentrationDialog` immediately.
-* **Later** — closes; the user can open the concentration dialog later
-  via the Data panel, and :meth:`FittingSession.run_fit` will gate the
-  fit with an error if they forget.
+* **Enter concentrations now** — the caller focuses the inline
+  concentration table in the Data panel.
+* **Later** — closes; the user can edit the inline table at any time,
+  and :meth:`FittingSession.run_fit` will gate the fit with an error
+  if they forget.
 
 The dialog is shown on every BMG import; there is no opt-out. The
 notification is important enough (and the corresponding fit-time block
@@ -35,7 +35,7 @@ class BMGConcentrationPromptDialog(QDialog):
     ------------
     :class:`QDialog.DialogCode.Accepted`
         The user chose **Enter concentrations now** — the caller should
-        open :class:`~gui.dialogs.concentration_dialog.ConcentrationDialog`.
+        focus the inline concentration table in the Data panel.
     :class:`QDialog.DialogCode.Rejected`
         The user chose **Later** (or dismissed the dialog).
     """
@@ -64,9 +64,9 @@ class BMGConcentrationPromptDialog(QDialog):
             f'<b>1 through {n_points}</b> so each column is distinguishable.</p>'
             f'<p>You must enter the real concentration vector before a '
             f'fit can run — <b>fits are blocked</b> while placeholders '
-            f'are in place. Click <i>Enter concentrations…</i> to open '
-            f'the editor now, or dismiss this dialog and use '
-            f'<i>Data → Concentration Vector</i> later.</p>'
+            f'are in place. Click <i>Enter concentrations…</i> to jump '
+            f'to the table in the Data panel, or edit it yourself '
+            f'whenever you like.</p>'
         )
         intro.setTextFormat(Qt.TextFormat.RichText)
         intro.setWordWrap(True)

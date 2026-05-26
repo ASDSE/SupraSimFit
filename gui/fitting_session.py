@@ -7,7 +7,23 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QFileDialog, QGroupBox, QHBoxLayout, QMessageBox, QScrollArea, QSplitter, QStackedWidget, QTabBar, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QStackedWidget,
+    QTabBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
@@ -117,10 +133,10 @@ class FittingSession(QWidget):
                 self,
                 'Concentrations Required',
                 'BMG import: placeholder concentrations are still in '
-                'place. Enter the real concentration vector before '
-                'running the fit.',
+                'place. Enter the real concentration vector in the Data '
+                'panel and click Apply before running the fit.',
             )
-            self._data_panel.open_concentration_dialog()
+            self._data_panel.focus_concentration_table()
             return
 
         assay_cls = self._assay_panel.get_assay_class()
@@ -130,25 +146,11 @@ class FittingSession(QWidget):
         if custom_bounds:
             config = replace(config, custom_bounds=custom_bounds)
 
-        if config.per_replicate and ms.n_active < 3:
-            proceed = QMessageBox.warning(
-                self,
-                'Few replicates for per-replicate fitting',
-                (
-                    f'You have {ms.n_active} active replicate(s). Per-replicate '
-                    f'fitting will still run, but the reported uncertainty is '
-                    f'based on very few measurements and may not be statistically '
-                    f'meaningful.\n\n'
-                    f'For a reliable experimental uncertainty estimate, use at '
-                    f'least 3 — ideally 4 or more — active replicates.\n\n'
-                    f'Proceed anyway?'
-                ),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
+        if config.per_replica and ms.n_active < 3:
+            self.status_message.emit(
+                f'Per-replica fit on {ms.n_active} replica(s) — '
+                'uncertainty estimate may not be meaningful (<3 active).'
             )
-            if proceed != QMessageBox.StandardButton.Yes:
-                self.status_message.emit('Fit cancelled — too few replicates for per-replicate mode.')
-                return
 
         self._fit_worker = FitWorker(
             ms,
@@ -176,7 +178,7 @@ class FittingSession(QWidget):
         # 1. Reset all panels to IDA defaults
         self._assay_panel.set_assay_type(AssayType.IDA)
         self._bounds_panel.reset_to_defaults()
-        self._fit_panel.set_config(FitConfig())
+        self._fit_panel.set_config(FitConfig(per_replica=False))
 
         # 2. Load data (triggers _on_data_loaded → resets replicas, clears results)
         self._data_panel.load_file(str(_DEMO_IDA_PATH))
@@ -187,12 +189,97 @@ class FittingSession(QWidget):
         # 4. Run fit
         self.run_fit()
 
+    def _default_save_name(self, suffix: str, tag: str = '') -> str:
+        """Build a default save filename based on the loaded dataset's stem.
+
+        Falls back to the ``source_file`` on the most recent fit result when
+        no dataset is currently loaded (e.g. after importing results whose
+        source file is missing on disk).
+        """
+        src = self._state.source_file
+        if not src and self._state.fit_results:
+            src = self._state.fit_results[-1].source_file
+        if not src:
+            return f"{tag or 'output'}{suffix}"
+        stem = Path(src).stem
+        return f"{stem}{('_' + tag) if tag else ''}{suffix}"
+
+    def _default_filename_base(self) -> str:
+        """Stem-only version of :meth:`_default_save_name` (no tag, no suffix)."""
+        src = self._state.source_file
+        if not src and self._state.fit_results:
+            src = self._state.fit_results[-1].source_file
+        return Path(src).stem if src else 'output'
+
+    def _distributions_export_config(self):
+        """Build a DistributionsExportConfig from persisted QSettings.
+
+        Used by the multi-artefact export when there's no opportunity to
+        show the layout picker inline. Defaults match the standalone
+        dialog: Auto layout, per-panel dimensions, 300 DPI, all subplots
+        selected.
+        """
+        from gui.dialogs.save_distributions_dialog import (
+            DistributionsExportConfig,
+            SaveDistributionsPlotDialog,
+            _PER_PANEL_IN,
+        )
+        from gui.plotting.distribution_widget import DistributionWidget
+        from gui.preferences import _settings
+
+        keys = self._distribution_widget.param_keys()
+        s = _settings()
+        s.beginGroup(SaveDistributionsPlotDialog.SETTINGS_GROUP)
+        try:
+            mode = s.value('layout_mode', 'auto', type=str)
+            custom_rows = int(s.value('custom_rows', 2))
+            custom_cols = int(s.value('custom_cols', 2))
+            saved_w = float(s.value('width_in', 0.0))
+            saved_h = float(s.value('height_in', 0.0))
+            dpi = int(s.value('dpi', 300))
+            sel = s.value('selected_keys', None)
+        finally:
+            s.endGroup()
+
+        selected = (
+            [k for k in keys if k in set(sel)] if isinstance(sel, list) and sel else list(keys)
+        )
+        n = max(1, len(selected))
+        if mode == 'row':
+            rows, cols = 1, n
+        elif mode == 'col':
+            rows, cols = n, 1
+        elif mode == 'grid':
+            rows, cols = (2, 2) if n <= 4 else DistributionWidget.auto_layout(n)
+        elif mode == 'custom':
+            rows, cols = custom_rows, custom_cols
+            if rows * cols < n:
+                rows, cols = DistributionWidget.auto_layout(n)
+        else:
+            rows, cols = DistributionWidget.auto_layout(n)
+
+        if saved_w > 0 and saved_h > 0:
+            width_in, height_in = saved_w, saved_h
+        else:
+            width_in, height_in = cols * _PER_PANEL_IN, rows * _PER_PANEL_IN
+
+        return DistributionsExportConfig(
+            keys=selected,
+            rows=rows,
+            cols=cols,
+            width_in=width_in,
+            height_in=height_in,
+            dpi=dpi,
+        )
+
     def export_results(self) -> None:
         """Export current fit results to JSON."""
         if not self._state.fit_results:
             QMessageBox.information(self, 'No Results', 'Run a fit first.')
             return
-        path, _ = QFileDialog.getSaveFileName(self, 'Export Fit Results', 'results.json', 'JSON (*.json)')
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export Fit Results', self._default_save_name('.json', 'results'), 'JSON (*.json)'
+        )
         if not path:
             return
         from gui.session import export_results
@@ -205,7 +292,9 @@ class FittingSession(QWidget):
         if not self._state.fit_results:
             QMessageBox.information(self, 'No Results', 'Run a fit first.')
             return
-        path, _ = QFileDialog.getSaveFileName(self, 'Export Results (TXT)', 'results.txt', 'Text files (*.txt)')
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export Results (TXT)', self._default_save_name('.txt', 'results'), 'Text files (*.txt)'
+        )
         if not path:
             return
         from gui.session import export_results_txt
@@ -226,7 +315,7 @@ class FittingSession(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Export Raw Data',
-            'measurements.txt',
+            self._default_save_name('.txt'),
             'Text file (*.txt);;CSV file (*.csv)',
         )
         if not path:
@@ -291,7 +380,12 @@ class FittingSession(QWidget):
                             for r in results
                         ],
                     }
-                    self._plot_widget.update_plot(plot_data, x_label=meta.x_label, y_label=meta.y_label)
+                    self._plot_widget.update_plot(
+                        plot_data,
+                        x_label=meta.x_label,
+                        y_label=meta.y_label,
+                        y_unit=meta.y_unit,
+                    )
                     self._plot_widget.set_fit_results(results)
             if results:
                 self._summary_widget.update_result(results[-1])
@@ -304,7 +398,7 @@ class FittingSession(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Save Plot',
-            'plot.png',
+            self._default_save_name('.png'),
             'PNG image (*.png);;SVG vector (*.svg)',
         )
         if not path:
@@ -314,6 +408,61 @@ class FittingSession(QWidget):
             self.status_message.emit(f'Plot saved to {path}')
         except Exception as exc:
             QMessageBox.warning(self, 'Export Error', str(exc))
+
+    def open_export_multiple_dialog(self, *, select_all_default: bool) -> None:
+        """Show the consolidated multi-artefact export dialog."""
+        from gui.dialogs.export_multiple_dialog import ExportMultipleDialog
+
+        dlg = ExportMultipleDialog(self, select_all_default=select_all_default, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            outcomes = dlg.outcomes
+            successes = sum(1 for _l, _p, e in outcomes if e is None)
+            if successes:
+                folder = outcomes[0][1].parent
+                self.status_message.emit(
+                    f'Exported {successes}/{len(outcomes)} artefact(s) to {folder}'
+                )
+
+    def save_distributions_plot(self) -> None:
+        """Save the distributions plot as a composite PNG with a layout picker."""
+        keys = self._distribution_widget.param_keys()
+        if not keys:
+            QMessageBox.warning(
+                self, 'Save Error',
+                'No distributions to save. Run a fit first.',
+            )
+            return
+        from gui.dialogs.save_distributions_dialog import SaveDistributionsPlotDialog
+
+        dlg = SaveDistributionsPlotDialog(self._distribution_widget, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or dlg.config is None:
+            return
+        cfg = dlg.config
+        ext = f'.{cfg.format}'
+        filter_str = (
+            'PNG image (*.png)' if cfg.format == 'png' else 'SVG vector (*.svg)'
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            'Save Distributions Plot',
+            self._default_save_name(ext, 'distributions'),
+            filter_str,
+        )
+        if not path:
+            return
+        try:
+            self._distribution_widget.save_plot(
+                keys=cfg.keys,
+                rows=cfg.rows,
+                cols=cfg.cols,
+                width_in=cfg.width_in,
+                dpi=cfg.dpi,
+                path=path,
+                format=cfg.format,
+            )
+            self.status_message.emit(f'Distributions plot saved to {path}')
+        except Exception as exc:
+            QMessageBox.warning(self, 'Save Error', str(exc))
 
     def save_style_template(self) -> None:
         """Save current plot style settings to a JSON file."""
@@ -346,6 +495,12 @@ class FittingSession(QWidget):
 
             style = load_style_json(path)
             self._style_widget.widget.load_style(style)
+            # Reflect the loaded x_unit in the Data panel's Display Unit
+            # combo so the two stay in sync after a style import.
+            loaded_unit = style.get('axes', {}).get('x_unit')
+            if loaded_unit:
+                self._state.display_unit = loaded_unit
+                self._data_panel.set_display_unit(loaded_unit)
             self.status_message.emit(f'Style template loaded from {path}')
         except Exception as exc:
             QMessageBox.warning(self, 'Load Error', str(exc))
@@ -373,7 +528,7 @@ class FittingSession(QWidget):
         left_layout.setSpacing(6)
         left_layout.setContentsMargins(6, 6, 6, 6)
 
-        self._data_panel = DataPanel()
+        self._data_panel = DataPanel(initial_display_unit=self._state.display_unit)
         self._preprocess_panel = PreprocessingPanel()
         self._replica_panel = ReplicaPanel()
         self._assay_panel = AssayConfigPanel()
@@ -439,6 +594,10 @@ class FittingSession(QWidget):
         # Initialise BoundsPanel for default assay type
         self._bounds_panel.set_assay_type(self._state.assay_type)
 
+        # Push the initial display unit into PlotStyleWidget so the style
+        # dict reflects the DataPanel's combo from the first emission.
+        self._style_widget.widget.set_x_unit(self._state.display_unit)
+
     # ------------------------------------------------------------------
     # Signal wiring
     # ------------------------------------------------------------------
@@ -446,6 +605,7 @@ class FittingSession(QWidget):
     def _connect_signals(self) -> None:
         self._data_panel.data_loaded.connect(self._on_data_loaded)
         self._data_panel.data_cleared.connect(self._on_data_cleared)
+        self._data_panel.display_unit_changed.connect(self._on_display_unit_changed)
 
         self._preprocess_panel.preprocessing_applied.connect(self._on_preprocessing_applied)
         self._preprocess_panel.preprocessing_reset.connect(self._on_preprocessing_reset)
@@ -501,7 +661,7 @@ class FittingSession(QWidget):
             parent=self,
         )
         if dlg.exec() == dlg.DialogCode.Accepted:
-            self._data_panel.open_concentration_dialog()
+            self._data_panel.focus_concentration_table()
 
     def _on_data_cleared(self) -> None:
         self._state.measurement_set = None
@@ -530,7 +690,7 @@ class FittingSession(QWidget):
         self._state.assay_type = assay_type
         self._bounds_panel.set_assay_type(assay_type)
         meta = ASSAY_REGISTRY[assay_type]
-        self._update_axis_labels(meta.x_label, meta.y_label)
+        self._update_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
         self.title_changed.emit(meta.display_name)
 
     def _on_conditions_changed(self) -> None:
@@ -542,6 +702,11 @@ class FittingSession(QWidget):
     def _on_bounds_changed(self) -> None:
         self._state.custom_bounds = self._bounds_panel.current_bounds()
 
+    def _on_display_unit_changed(self, unit: str) -> None:
+        """DataPanel announces a new plot-display unit — propagate to plot."""
+        self._state.display_unit = unit
+        self._style_widget.widget.set_x_unit(unit)
+
     def _on_fit_complete(self, result: FitResult) -> None:
         self._state.fit_results = [result]
         self._refresh_plot()
@@ -549,24 +714,24 @@ class FittingSession(QWidget):
         self._plot_widget.set_fit_results(self._state.fit_results)
         self._distribution_widget.update_result(result)
 
-        if result.uncertainty_source == 'replicate':
+        if result.uncertainty_source == 'replicate':  # JSON-compat magic value
             n_fit = result.metadata.get('n_replicas_fit', result.n_passing)
             n_total = result.metadata.get('n_replicas_total', result.n_total)
             self.status_message.emit(
-                f'Per-replicate fit complete — R²={result.r_squared:.4f}, '
-                f'RMSE={result.rmse:.4e}, {n_fit}/{n_total} replicates fit'
+                f'Per-replica fit complete — R²={result.r_squared:.4f}, '
+                f'RMSE={result.rmse:.4e}, {n_fit}/{n_total} replicas fit'
             )
             failures = result.metadata.get('replica_failures') or {}
             if failures:
                 details = '\n'.join(f'  • {rid}: {reason}' for rid, reason in failures.items())
                 QMessageBox.warning(
                     self,
-                    'Some replicates were skipped',
+                    'Some replicas were skipped',
                     (
-                        f'{len(failures)} of {n_total} replicates could not be fit '
+                        f'{len(failures)} of {n_total} replicas could not be fit '
                         f'and were excluded from the aggregate.\n\n'
-                        f'Skipped replicates:\n{details}\n\n'
-                        f'The aggregate below is based on the {n_fit} successful replicate(s).'
+                        f'Skipped replicas:\n{details}\n\n'
+                        f'The aggregate below is based on the {n_fit} successful replica(s).'
                     ),
                 )
         else:
@@ -593,11 +758,12 @@ class FittingSession(QWidget):
             plot_data,
             x_label=meta.x_label,
             y_label=meta.y_label,
+            y_unit=meta.y_unit,
         )
         self._plot_widget.set_fit_results(self._state.fit_results)
 
-    def _update_axis_labels(self, x: str, y: str) -> None:
-        self._plot_widget.set_axis_labels(x, y)
+    def _update_axis_labels(self, x: str, y: str, y_unit: str) -> None:
+        self._plot_widget.set_axis_labels(x, y, y_unit)
 
 
 class _GroupedPlain(QGroupBox):

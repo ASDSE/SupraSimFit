@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pyqtgraph as pg
@@ -22,6 +22,14 @@ _BOX_HALF = 0.3
 _CAP_HALF = 0.2
 _JITTER_HALF = 0.25
 
+# Fallback per-cell logical pixel size when the live widget hasn't
+# been shown yet (e.g. headless tests, dialog opened before the
+# distributions tab was visible). The export then renders at this
+# default; the user can resize the live widget and re-export to get
+# different proportions.
+_FALLBACK_CELL_W = 320
+_FALLBACK_CELL_H = 380
+
 
 def _box_stats(data: np.ndarray) -> Dict[str, float]:
     """Compute box-whisker statistics for a 1-D array."""
@@ -36,6 +44,35 @@ def _box_stats(data: np.ndarray) -> Dict[str, float]:
         'whisker_lo': float(whisker_lo),
         'whisker_hi': float(whisker_hi),
     }
+
+
+def _refresh_axis_label_with_exponent(plot_item: pg.PlotItem, exp: int | None) -> None:
+    """Re-apply the y-axis label, appending ×10ⁿ when an exponent is set.
+
+    The base label (without the exponent suffix) is stored on the
+    PlotItem as ``_y_base_label`` by :meth:`DistributionWidget._populate_subplot`.
+    ``ScientificAxisItem`` fires its ``on_exponent_changed`` callback on
+    every tickStrings() pass; that callback funnels through this
+    helper, so live and export PlotItems share one reactive update
+    path.
+    """
+    base = getattr(plot_item, '_y_base_label', None)
+    if not base:
+        return
+    if exp is not None:
+        exp_str = _format_exponent_unicode(exp)
+        plot_item.setLabel('left', f'{base}  (×10{exp_str})')
+    else:
+        plot_item.setLabel('left', base)
+
+
+def _wire_exponent_callback(plot_item: pg.PlotItem, axis: ScientificAxisItem) -> None:
+    """Wire *axis* to update *plot_item*'s y-label when its exponent changes."""
+
+    def _on_exp(exp: int | None) -> None:
+        _refresh_axis_label_with_exponent(plot_item, exp)
+
+    axis.on_exponent_changed = _on_exp
 
 
 class DistributionWidget(QWidget):
@@ -56,7 +93,7 @@ class DistributionWidget(QWidget):
         self._style: dict = dict(DEFAULT_STYLE)
         self._plots: list[pg.PlotWidget] = []
         self._result: FitResult | None = None
-        self._y_base_labels: dict[int, str] = {}
+        self._param_keys: list[str] = []
 
         self._stack = QStackedLayout(self)
 
@@ -73,6 +110,10 @@ class DistributionWidget(QWidget):
 
         self._stack.setCurrentWidget(self._placeholder)
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def update_result(self, result: FitResult) -> None:
         """Redraw all subplots from a FitResult's parameter_samples."""
         self._result = result
@@ -81,87 +122,17 @@ class DistributionWidget(QWidget):
             self._stack.setCurrentWidget(self._placeholder)
             return
 
-        assay_type = self._lookup_assay_type(result.assay_type)
-        log_keys: set[str] = set()
-        units: dict[str, str] = {}
-        if assay_type is not None:
-            meta = ASSAY_REGISTRY[assay_type]
-            log_keys = set(meta.log_scale_keys)
-            units = dict(meta.units)
-
         param_keys = list(result.parameter_samples.keys())
-        replica_samples = self._extract_replica_samples(result)
-        n_replicas = len(replica_samples) if replica_samples else 0
+        self._param_keys = list(param_keys)
 
         self._rebuild_subplots(len(param_keys))
 
-        palette_name = self._style['data_points'].get('palette', 'Default (Tab10)')
-        palette = PALETTES.get(palette_name, REPLICA_PALETTE)
-
-        # X-axis layout
-        if n_replicas > 0:
-            x_positions = list(range(n_replicas))
-            x_tick_labels = [_display_label(i) for i in range(n_replicas)]
-            x_axis_label = 'Replica'
-        else:
-            x_positions = [0]
-            x_tick_labels = []
-            x_axis_label = 'Pool of Fits'
-
-        self._y_base_labels.clear()
         for i, key in enumerate(param_keys):
-            pw = self._plots[i]
-            self._clear_subplot(pw)
-
-            pool = result.parameter_samples[key]
-            use_log = key in log_keys
-            values = np.log10(pool) if use_log else pool
-
-            pool_stats = _box_stats(values)
-
-            # Boxes: one per replica in per-replica mode, one pooled in average mode
-            if replica_samples:
-                for r_idx, r_samp in enumerate(replica_samples):
-                    r_vals = r_samp.get(key)
-                    if r_vals is None:
-                        continue
-                    r_display = np.log10(r_vals) if use_log else r_vals
-                    r_stats = _box_stats(r_display)
-                    color = palette[r_idx % len(palette)]
-                    self._draw_box(pw, r_stats, float(x_positions[r_idx]), color)
-            else:
-                self._draw_box(pw, pool_stats, 0.0)
-
-            self._draw_strip(pw, values, replica_samples, key, i, palette, use_log, x_positions)
-            self._draw_median_line(pw, pool_stats['median'], x_positions)
-
-            if replica_samples:
-                self._draw_replica_medians(pw, replica_samples, key, palette, use_log, x_positions)
-
-            # Y-axis label
-            unit_str = units.get(key, '')
-            label = fmt_param(key)
-            if use_log:
-                base_label = f'log\u2081\u2080({label})'
-            else:
-                base_label = f'{label} [{fmt_unit_html(unit_str)}]' if unit_str else label
-            self._y_base_labels[i] = base_label
-            pw.setLabel('left', base_label)
-
-            # X-axis ticks and label
-            bottom_ax = pw.getPlotItem().getAxis('bottom')
-            bottom_ax.setTicks([[(pos, lbl) for pos, lbl in zip(x_positions, x_tick_labels)]])
-            pw.setLabel('bottom', x_axis_label)
-
-            pw.setTitle(label)
-            self._apply_axis_style(pw)
-
-            x_pad = 0.8
-            pw.setXRange(min(x_positions) - x_pad, max(x_positions) + x_pad, padding=0)
-            pw.enableAutoRange(axis='y')
-
-        if self._plots:
-            self._add_legend(self._plots[0], replica_samples is not None)
+            plot_item = self._plots[i].getPlotItem()
+            self._clear_subplot(plot_item)
+            self._populate_subplot(
+                plot_item, key=key, param_idx=i, add_legend=(i == 0)
+            )
 
         self._stack.setCurrentWidget(self._plot_container)
 
@@ -174,19 +145,177 @@ class DistributionWidget(QWidget):
     def clear(self) -> None:
         """Reset to empty placeholder."""
         self._result = None
+        self._param_keys = []
         for pw in self._plots:
-            self._clear_subplot(pw)
+            self._clear_subplot(pw.getPlotItem())
         self._stack.setCurrentWidget(self._placeholder)
 
+    def param_keys(self) -> list[str]:
+        """Parameter keys of the currently displayed subplots, in order."""
+        return list(self._param_keys)
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def live_per_cell_size(self) -> tuple[int, int]:
+        """Pixel size of a single live distribution subplot.
+
+        This is the source of truth for export rendering: the transient
+        export layout uses cells of exactly this size so the
+        font:cell, line-width:cell, and marker:cell ratios all match
+        the GUI by construction. Falls back to a sensible default when
+        the live widget hasn't been laid out yet (headless tests,
+        hidden tab).
+        """
+        if self._plots:
+            w = self._plots[0].width()
+            h = self._plots[0].height()
+            if w >= 50 and h >= 50:
+                return w, h
+        return _FALLBACK_CELL_W, _FALLBACK_CELL_H
+
+    def derive_height_in(self, *, width_in: float, rows: int, cols: int) -> float:
+        """Height in inches that preserves live cell aspect for the chosen layout.
+
+        With the export figure rendered at ``cell_w × cols`` wide and
+        ``cell_h × rows`` tall (where ``cell_*`` come from
+        :meth:`live_per_cell_size`), the figure aspect is fixed. Given
+        a user-chosen ``width_in``, the matching ``height_in`` is the
+        only choice that keeps each export cell at the same aspect as
+        the live GUI cell.
+        """
+        cw, ch = self.live_per_cell_size()
+        return width_in * (rows * ch) / max(cols * cw, 1)
+
+    def build_composite_layout(
+        self,
+        keys: list[str],
+        rows: int,
+        cols: int,
+    ) -> pg.GraphicsLayoutWidget:
+        """Build a transient ``GraphicsLayoutWidget`` whose cells match the live GUI.
+
+        Each cell is sized to the live distribution subplot's pixel
+        dimensions, so when the caller hands the resulting scene to
+        :func:`gui.plotting.export.export_scene` the painter scales
+        every element uniformly. Font:cell, line:cell, and marker:cell
+        ratios are preserved by construction — no per-element scaling.
+
+        Raises
+        ------
+        ValueError
+            If no distributions are loaded, no keys match, or
+            ``rows * cols`` is less than the number of selected keys.
+        """
+        if not self._param_keys:
+            raise ValueError('No distributions to render. Run a fit first.')
+
+        indices = [self._param_keys.index(k) for k in keys if k in self._param_keys]
+        if not indices:
+            raise ValueError('No matching distributions selected.')
+        if rows * cols < len(indices):
+            raise ValueError(
+                f'Layout {rows}x{cols} cannot fit {len(indices)} subplots.'
+            )
+
+        glw = pg.GraphicsLayoutWidget()
+        glw.setBackground(BACKGROUND_COLOR)
+
+        for i, key_idx in enumerate(indices):
+            r, c = divmod(i, cols)
+            left_axis = ScientificAxisItem(orientation='left')
+            left_axis.enableAutoSIPrefix(False)
+            plot_item = glw.addPlot(
+                row=r, col=c, axisItems={'left': left_axis}
+            )
+            _wire_exponent_callback(plot_item, left_axis)
+            plot_item.getViewBox().setDefaultPadding(0.05)
+            plot_item.getAxis('bottom').enableAutoSIPrefix(False)
+
+            key = self._param_keys[key_idx]
+            self._populate_subplot(
+                plot_item, key=key, param_idx=key_idx, add_legend=(i == 0)
+            )
+
+        return glw
+
+    def save_plot(
+        self,
+        *,
+        keys: list[str],
+        rows: int,
+        cols: int,
+        width_in: float,
+        dpi: int,
+        path: str,
+        format: str = 'png',
+    ) -> None:
+        """Save the distributions composite as PNG or SVG.
+
+        The export figure's aspect is fixed by ``rows × cols`` of live
+        cells, so the user picks only ``width_in``; the output height
+        in pixels is the painter-scaled live cell height × rows.
+
+        PyQtGraph's ``ImageExporter`` / ``SVGExporter`` render the
+        transient scene at this fixed aspect into the requested output
+        width — font:cell ratios match the GUI exactly.
+        """
+        from gui.plotting.export import (
+            export_scene,
+            prepare_widget_for_offscreen_render,
+        )
+
+        fmt = format.lower()
+        if fmt not in ('png', 'svg'):
+            raise ValueError(
+                f"Unsupported format: '{format}'. Use 'png' or 'svg'."
+            )
+
+        cell_w, cell_h = self.live_per_cell_size()
+        glw = self.build_composite_layout(keys, rows, cols)
+        try:
+            logical_w = cell_w * cols
+            logical_h = cell_h * rows
+            prepare_widget_for_offscreen_render(glw, logical_w, logical_h)
+            if fmt == 'png':
+                target_w = round(width_in * dpi)
+                export_scene(glw.scene(), path, width_px=target_w)
+            else:
+                # SVG is vector; native scene size suffices.
+                export_scene(glw.scene(), path)
+        finally:
+            glw.deleteLater()
+
     @staticmethod
-    def _clear_subplot(pw: pg.PlotWidget) -> None:
-        """Remove all data items AND the legend from a subplot."""
-        pw.clear()
-        legend = pw.getPlotItem().legend
+    def auto_layout(n: int) -> tuple[int, int]:
+        """Default rows×cols for *n* subplots (matches legacy Auto behaviour)."""
+        import math
+
+        if n <= 1:
+            return 1, max(1, n)
+        if n == 2:
+            return 1, 2
+        if n == 3:
+            return 1, 3
+        if n == 4:
+            return 2, 2
+        cols = 2
+        return math.ceil(n / cols), cols
+
+    # ------------------------------------------------------------------
+    # Subplot construction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _clear_subplot(plot_item: pg.PlotItem) -> None:
+        """Remove all data items AND the legend from a PlotItem."""
+        plot_item.clear()
+        legend = plot_item.legend
         if legend is not None:
             if legend.scene() is not None:
                 legend.scene().removeItem(legend)
-            pw.getPlotItem().legend = None
+            plot_item.legend = None
 
     def _rebuild_subplots(self, n: int) -> None:
         """Ensure we have exactly *n* PlotWidget instances with ScientificAxisItem."""
@@ -195,7 +324,6 @@ class DistributionWidget(QWidget):
             self._plot_layout.removeWidget(pw)
             pw.deleteLater()
         while len(self._plots) < n:
-            idx = len(self._plots)
             left_axis = ScientificAxisItem(orientation='left')
             left_axis.enableAutoSIPrefix(False)
 
@@ -203,35 +331,126 @@ class DistributionWidget(QWidget):
                 background=BACKGROUND_COLOR,
                 axisItems={'left': left_axis},
             )
-            pw.getPlotItem().getViewBox().setDefaultPadding(0.05)
-            pw.getPlotItem().getAxis('bottom').enableAutoSIPrefix(False)
+            plot_item = pw.getPlotItem()
+            plot_item.getViewBox().setDefaultPadding(0.05)
+            plot_item.getAxis('bottom').enableAutoSIPrefix(False)
 
-            def _make_callback(plot_idx: int):
-                def _on_exp(exp: int | None):
-                    self._on_y_exponent_changed(plot_idx, exp)
-                return _on_exp
-
-            left_axis.on_exponent_changed = _make_callback(idx)
+            _wire_exponent_callback(plot_item, left_axis)
 
             self._plots.append(pw)
             self._plot_layout.addWidget(pw)
 
-    def _on_y_exponent_changed(self, plot_idx: int, exp: int | None) -> None:
-        """Update y-axis label with ×10ⁿ suffix when exponent changes."""
-        base = self._y_base_labels.get(plot_idx, '')
-        if not base:
+    def _populate_subplot(
+        self,
+        plot_item: pg.PlotItem,
+        *,
+        key: str,
+        param_idx: int,
+        add_legend: bool = False,
+    ) -> None:
+        """Populate one PlotItem with the box-whisker distribution for *key*.
+
+        Single source of truth for distribution subplot rendering: used
+        both by :meth:`update_result` on the live widget and by
+        :meth:`build_composite_layout` on the export-time transient
+        ``GraphicsLayoutWidget``. The PlotItem's y-axis base label is
+        stored on the item itself (``_y_base_label``) so
+        :func:`_refresh_axis_label_with_exponent` can reactively
+        re-apply it when ``ScientificAxisItem`` factors out an
+        exponent.
+        """
+        result = self._result
+        if result is None or result.parameter_samples is None or not result.parameters:
             return
-        if exp is not None:
-            exp_str = _format_exponent_unicode(exp)
-            label = f'{base}  (\u00d710{exp_str})'
+
+        assay_type = self._lookup_assay_type(result.assay_type)
+        log_keys: set[str] = set()
+        units: dict[str, str] = {}
+        if assay_type is not None:
+            meta = ASSAY_REGISTRY[assay_type]
+            log_keys = set(meta.log_scale_keys)
+            units = dict(meta.units)
+
+        ka_scale = self._style.get('distribution', {}).get('ka_scale', 'log₁₀')
+        palette_name = self._style['data_points'].get('palette', 'Default (Tab10)')
+        palette = PALETTES.get(palette_name, REPLICA_PALETTE)
+
+        replica_samples = self._extract_replica_samples(result)
+        n_replicas = len(replica_samples) if replica_samples else 0
+
+        if n_replicas > 0:
+            x_positions = list(range(n_replicas))
+            x_tick_labels = [_display_label(i) for i in range(n_replicas)]
+            x_axis_label = 'Replica'
         else:
-            label = base
-        if plot_idx < len(self._plots):
-            self._plots[plot_idx].setLabel('left', label)
+            x_positions = [0]
+            x_tick_labels = []
+            x_axis_label = 'Pool of Fits'
+
+        pool = result.parameter_samples[key]
+        use_log = (key in log_keys) and ka_scale == 'log₁₀'
+        values = np.log10(pool) if use_log else pool
+        pool_stats = _box_stats(values)
+
+        # Boxes: one per replica in per-replica mode, one pooled in average mode
+        if replica_samples:
+            for r_idx, r_samp in enumerate(replica_samples):
+                r_vals = r_samp.get(key)
+                if r_vals is None:
+                    continue
+                r_display = np.log10(r_vals) if use_log else r_vals
+                r_stats = _box_stats(r_display)
+                color = palette[r_idx % len(palette)]
+                self._draw_box(plot_item, r_stats, float(x_positions[r_idx]), color)
+        else:
+            self._draw_box(plot_item, pool_stats, 0.0)
+
+        self._draw_strip(plot_item, values, replica_samples, key, param_idx, palette, use_log, x_positions)
+        self._draw_median_line(plot_item, pool_stats['median'], x_positions)
+
+        if replica_samples:
+            self._draw_replica_medians(plot_item, replica_samples, key, palette, use_log, x_positions)
+
+        # Y-axis label — base form; ScientificAxisItem appends ×10ⁿ via callback.
+        unit_str = units.get(key, '')
+        label = fmt_param(key)
+        if use_log:
+            base_label = f'log₁₀({label})'
+        else:
+            base_label = f'{label} [{fmt_unit_html(unit_str)}]' if unit_str else label
+        plot_item._y_base_label = base_label
+        # Reset cached exponent so the next tickStrings() pass re-fires the callback.
+        left_axis = plot_item.getAxis('left')
+        if hasattr(left_axis, 'exponent'):
+            left_axis.exponent = None
+        plot_item.setLabel('left', base_label)
+
+        # X-axis ticks and label
+        bottom_ax = plot_item.getAxis('bottom')
+        bottom_ax.setTicks([[(pos, lbl) for pos, lbl in zip(x_positions, x_tick_labels)]])
+        plot_item.setLabel('bottom', x_axis_label)
+
+        # Title — mirror the log-wrap so title + axis stay consistent
+        title_size = self._style.get('distribution', {}).get('title_font_size', 16)
+        title_text = f'log₁₀({label})' if use_log else label
+        plot_item.setTitle(title_text, size=f'{title_size}pt', bold=True)
+
+        self._apply_axis_style(plot_item)
+
+        x_pad = 0.8
+        plot_item.setXRange(min(x_positions) - x_pad, max(x_positions) + x_pad, padding=0)
+        plot_item.enableAutoRange(axis='y')
+
+        if add_legend:
+            self._add_legend(plot_item, replica_samples is not None)
+
+    # ------------------------------------------------------------------
+    # Drawing primitives (PlotItem-based)
+    # ------------------------------------------------------------------
 
     def _draw_box(
         self,
-        pw: pg.PlotWidget,
+        plot_item: pg.PlotItem,
         stats: Dict[str, float],
         x_center: float,
         color: Tuple[int, int, int] | None = None,
@@ -240,37 +459,41 @@ class DistributionWidget(QWidget):
         q1, q3 = stats['q1'], stats['q3']
         wlo, whi = stats['whisker_lo'], stats['whisker_hi']
 
+        dist = self._style.get('distribution', {})
+        box_w = dist.get('box_border_width', 1.5)
+        wh_w = dist.get('whisker_width', 1.2)
+
         if color is not None:
-            box_pen = pg.mkPen(rgba(color, 200), width=1.5)
+            box_pen = pg.mkPen(rgba(color, 200), width=box_w)
             box_brush = pg.mkBrush(rgba(color, 40))
-            line_pen = pg.mkPen(rgba(color, 180), width=1.2)
+            line_pen = pg.mkPen(rgba(color, 180), width=wh_w)
         else:
-            box_pen = pg.mkPen(FOREGROUND_COLOR, width=1.5)
+            box_pen = pg.mkPen(FOREGROUND_COLOR, width=box_w)
             box_brush = pg.mkBrush(200, 200, 200, 80)
-            line_pen = pg.mkPen(FOREGROUND_COLOR, width=1.2)
+            line_pen = pg.mkPen(FOREGROUND_COLOR, width=wh_w)
 
         box = pg.BarGraphItem(
             x0=[x_center - _BOX_HALF], y0=[q1],
             x1=[x_center + _BOX_HALF], y1=[q3],
             pen=box_pen, brush=box_brush,
         )
-        pw.addItem(box)
+        plot_item.addItem(box)
 
         for wy in (wlo, whi):
             whisker = pg.PlotCurveItem(
                 x=[x_center, x_center], y=[q1 if wy == wlo else q3, wy],
                 pen=line_pen,
             )
-            pw.addItem(whisker)
+            plot_item.addItem(whisker)
             cap = pg.PlotCurveItem(
                 x=[x_center - _CAP_HALF, x_center + _CAP_HALF], y=[wy, wy],
                 pen=line_pen,
             )
-            pw.addItem(cap)
+            plot_item.addItem(cap)
 
     def _draw_strip(
         self,
-        pw: pg.PlotWidget,
+        plot_item: pg.PlotItem,
         values: np.ndarray,
         replica_samples: Optional[List[Dict[str, np.ndarray]]],
         key: str,
@@ -297,7 +520,7 @@ class DistributionWidget(QWidget):
                     size=5, pen=pg.mkPen(None),
                     brush=pg.mkBrush(rgba(color, 120)),
                 )
-                pw.addItem(scatter)
+                plot_item.addItem(scatter)
         else:
             jitter = rng.uniform(-_JITTER_HALF, _JITTER_HALF, size=len(values))
             scatter = pg.ScatterPlotItem(
@@ -305,21 +528,24 @@ class DistributionWidget(QWidget):
                 size=5, pen=pg.mkPen(None),
                 brush=pg.mkBrush(100, 100, 100, 100),
             )
-            pw.addItem(scatter)
+            plot_item.addItem(scatter)
 
-    def _draw_median_line(self, pw: pg.PlotWidget, median: float, x_positions: list[int]) -> None:
-        """Solid horizontal red line at the pool median, spanning all positions."""
+    def _draw_median_line(self, plot_item: pg.PlotItem, median: float, x_positions: list[int]) -> None:
+        """Solid horizontal line at the pool median, spanning all positions."""
         x_lo = min(x_positions) - 0.5
         x_hi = max(x_positions) + 0.5
+        dist = self._style.get('distribution', {})
+        width = dist.get('median_line_width', 2.5)
+        color = dist.get('median_line_color', (220, 0, 0, 255))
         line = pg.PlotCurveItem(
             x=[x_lo, x_hi], y=[median, median],
-            pen=pg.mkPen('r', width=2.5),
+            pen=pg.mkPen(color, width=width),
         )
-        pw.addItem(line)
+        plot_item.addItem(line)
 
     def _draw_replica_medians(
         self,
-        pw: pg.PlotWidget,
+        plot_item: pg.PlotItem,
         replica_samples: List[Dict[str, np.ndarray]],
         key: str,
         palette: list,
@@ -327,6 +553,7 @@ class DistributionWidget(QWidget):
         x_positions: list[int],
     ) -> None:
         """Diamond markers at each replica's median value, at that replica's x."""
+        marker_size = self._style.get('distribution', {}).get('replica_median_size', 10)
         for r_idx, r_samp in enumerate(replica_samples):
             r_vals = r_samp.get(key)
             if r_vals is None or len(r_vals) == 0:
@@ -336,32 +563,39 @@ class DistributionWidget(QWidget):
             color = palette[r_idx % len(palette)]
             marker = pg.ScatterPlotItem(
                 x=[float(x_pos)], y=[med],
-                symbol='d', size=10,
+                symbol='d', size=marker_size,
                 pen=pg.mkPen(FOREGROUND_COLOR, width=1),
                 brush=pg.mkBrush(rgba(color, 220)),
             )
-            pw.addItem(marker)
+            plot_item.addItem(marker)
 
-    def _add_legend(self, pw: pg.PlotWidget, has_replicas: bool) -> None:
-        """Add a legend to the first subplot explaining visual elements."""
-        legend = pw.addLegend(offset=(10, 10))
-        legend.setLabelTextSize('10pt')
+    def _add_legend(self, plot_item: pg.PlotItem, has_replicas: bool) -> None:
+        """Add a legend to *plot_item* explaining visual elements."""
+        dist = self._style.get('distribution', {})
+        label_size = dist.get('label_font_size', 14)
+        median_w = dist.get('median_line_width', 2.5)
+        median_c = dist.get('median_line_color', (220, 0, 0, 255))
+        marker_size = dist.get('replica_median_size', 10)
 
-        median_item = pg.PlotCurveItem(pen=pg.mkPen('r', width=2.5))
+        legend = plot_item.addLegend(offset=(10, 10))
+        legend.setLabelTextSize(f'{label_size}pt')
+
+        median_item = pg.PlotCurveItem(pen=pg.mkPen(median_c, width=median_w))
         legend.addItem(median_item, 'Pool median')
 
         if has_replicas:
             diamond_item = pg.ScatterPlotItem(
-                symbol='d', size=10,
+                symbol='d', size=marker_size,
                 pen=pg.mkPen(FOREGROUND_COLOR, width=1),
                 brush=pg.mkBrush(150, 150, 150, 220),
             )
             legend.addItem(diamond_item, 'Replica median')
 
-    def _apply_axis_style(self, pw: pg.PlotWidget) -> None:
-        """Match fonts and axis styling to the main curve plot."""
-        label_size = self._style['axes'].get('label_font_size', 18)
-        tick_size = self._style['axes'].get('tick_font_size', 16)
+    def _apply_axis_style(self, plot_item: pg.PlotItem) -> None:
+        """Apply distribution fonts to axes. Title is handled at setTitle()."""
+        dist = self._style.get('distribution', {})
+        label_size = dist.get('label_font_size', 14)
+        tick_size = dist.get('tick_font_size', 12)
 
         label_font = QFont()
         label_font.setPointSize(label_size)
@@ -369,16 +603,11 @@ class DistributionWidget(QWidget):
         tick_font.setPointSize(tick_size)
 
         for axis_name in ('left', 'bottom'):
-            axis = pw.getPlotItem().getAxis(axis_name)
+            axis = plot_item.getAxis(axis_name)
             axis.label.setFont(label_font)
             axis.setTickFont(tick_font)
             axis.setPen(pg.mkPen(FOREGROUND_COLOR, width=1))
             axis.setTextPen(pg.mkPen(FOREGROUND_COLOR))
-
-        title_font = QFont()
-        title_font.setPointSize(label_size)
-        title_font.setBold(True)
-        pw.getPlotItem().titleLabel.item.setFont(title_font)
 
     def _extract_replica_samples(
         self, result: FitResult,

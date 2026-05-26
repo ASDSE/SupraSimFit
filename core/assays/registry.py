@@ -61,9 +61,15 @@ class AssayMetadata:
         parameters in this order; ``params_to_dict`` / ``params_from_dict``
         on :class:`BaseAssay` use this ordering.
     x_label : str
-        Label for x-axis in plots.
+        Default name portion of the x-axis label (e.g. ``"Guest"``).
+        The unit suffix is appended at render time by ``PlotWidget`` from
+        ``style['axes']['x_unit']``.
     y_label : str
-        Label for y-axis in plots.
+        Default name portion of the y-axis label (e.g. ``"Signal"``).
+        The unit suffix is appended at render time by ``PlotWidget`` from
+        ``y_unit``.
+    y_unit : str
+        Unit string appended to the y-axis label (e.g. ``"a.u."``).
     default_bounds : Dict[str, Tuple[float, float]]
         Default ``(lower, upper)`` bounds keyed by parameter name.
         :meth:`BaseAssay.get_default_bounds` returns a copy of this dict.
@@ -85,6 +91,7 @@ class AssayMetadata:
     y_label: str
     default_bounds: Dict[str, Tuple[Quantity, Quantity]] = field(default_factory=dict)
     log_scale_keys: Tuple[str, ...] = ()
+    y_unit: str = 'a.u.'
 
     @property
     def units(self) -> Dict[str, str]:
@@ -98,7 +105,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         display_name='GDA (Guest Displacement Assay)',
         parameter_keys=('Ka_guest', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='Dye',
-        y_label='Signal [a.u.]',
+        y_label='Signal',
         default_bounds={
             'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
             'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
@@ -111,7 +118,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         display_name='IDA (Indicator Displacement Assay)',
         parameter_keys=('Ka_guest', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='Guest',
-        y_label='Signal [a.u.]',
+        y_label='Signal',
         default_bounds={
             'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
             'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
@@ -124,7 +131,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         display_name='DBA Host→Dye (Direct Binding Assay)',
         parameter_keys=('Ka_dye', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='Host',
-        y_label='Signal [a.u.]',
+        y_label='Signal',
         default_bounds={
             'Ka_dye': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
             'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
@@ -136,8 +143,8 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
     AssayType.DBA_DtoH: AssayMetadata(
         display_name='DBA Dye→Host (Direct Binding Assay)',
         parameter_keys=('Ka_dye', 'I0', 'I_dye_free', 'I_dye_bound'),
-        x_label='[Dye]',
-        y_label='Signal / a.u.',
+        x_label='Dye',
+        y_label='Signal',
         default_bounds={
             'Ka_dye': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
             'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
@@ -150,7 +157,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         display_name='Dye Alone (Linear Calibration)',
         parameter_keys=('slope', 'intercept'),
         x_label='Dye',
-        y_label='Signal [a.u.]',
+        y_label='Signal',
         default_bounds={
             'slope': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
             'intercept': (Q_(-1e6, 'au'), Q_(1e6, 'au')),

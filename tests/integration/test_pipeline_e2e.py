@@ -389,6 +389,7 @@ class TestDBAHtoD:
             I_dye_bound=DBA_TRUE['I_dye_bound'],
             x_titrant=x,
             y_fixed=DBA_TRUE['fixed_conc'],
+            mode='HtoD',
         )
         assay = DBAAssay(
             x_data=Q_(x, 'M'), y_data=Q_(y, 'au'),

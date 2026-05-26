@@ -17,6 +17,8 @@ DEFAULT_STYLE: dict = {
         'label_font_size': 18,
         'tick_font_size': 16,
         'x_unit': 'µM',
+        'x_name_override': '',
+        'y_name_override': '',
     },
     'data_points': {
         'symbol': 'o',
@@ -39,6 +41,17 @@ DEFAULT_STYLE: dict = {
         'style': 'dash',
         'color': (23, 190, 207, 255),
     },
+    'distribution': {
+        'title_font_size': 16,
+        'label_font_size': 14,
+        'tick_font_size': 12,
+        'box_border_width': 1.5,
+        'whisker_width': 1.2,
+        'median_line_width': 2.5,
+        'median_line_color': (220, 0, 0, 255),
+        'replica_median_size': 10,
+        'ka_scale': 'log\u2081\u2080',
+    },
     'error_bars': {
         'visible': True,
         'width': 2,
@@ -51,6 +64,7 @@ DEFAULT_STYLE: dict = {
         'show_average': False,
         'show_fit': True,
         'show_error_bars': True,
+        'show_fit_results': True,
     },
     'legend': {
         'font_size': 14,
@@ -62,7 +76,6 @@ DEFAULT_STYLE: dict = {
         'background_color': (255, 255, 255, 200),
     },
     'annotations': {
-        'show_fit_results': False,
         'font_size': 14,
         'background_color': (255, 255, 255, 200),
     },
@@ -90,6 +103,7 @@ _PARAMS_SPEC = [
             {'name': 'Show average', 'type': 'bool', 'value': False},
             {'name': 'Show error bars', 'type': 'bool', 'value': True},
             {'name': 'Show fit', 'type': 'bool', 'value': True},
+            {'name': 'Show fit results', 'type': 'bool', 'value': True},
         ],
     },
     {
@@ -99,7 +113,18 @@ _PARAMS_SPEC = [
         'children': [
             {'name': 'Label font size', 'type': 'int', 'value': 18, 'limits': (6, 24)},
             {'name': 'Tick font size', 'type': 'int', 'value': 16, 'limits': (6, 24)},
-            {'name': 'x-axis unit', 'type': 'list', 'value': 'µM', 'limits': ['nM', 'µM', 'mM', 'M']},
+            {
+                'name': 'X-axis name',
+                'type': 'str',
+                'value': '',
+                'tip': 'Override the x-axis name (the unit suffix stays auto-managed). Leave empty to use the assay default. HTML is supported (e.g. [Host]<sub>0</sub>).',
+            },
+            {
+                'name': 'Y-axis name',
+                'type': 'str',
+                'value': '',
+                'tip': 'Override the y-axis name (the unit suffix stays auto-managed). Leave empty to use the assay default. HTML is supported.',
+            },
         ],
     },
     {
@@ -144,6 +169,22 @@ _PARAMS_SPEC = [
         ],
     },
     {
+        'name': 'Distribution',
+        'type': 'group',
+        'expanded': False,
+        'children': [
+            {'name': 'Ka scale', 'type': 'list', 'value': 'log\u2081\u2080', 'limits': ['log\u2081\u2080', 'linear']},
+            {'name': 'Title font size', 'type': 'int', 'value': 16, 'limits': (6, 24)},
+            {'name': 'Label font size', 'type': 'int', 'value': 14, 'limits': (6, 24)},
+            {'name': 'Tick font size', 'type': 'int', 'value': 12, 'limits': (6, 24)},
+            {'name': 'Box border width', 'type': 'float', 'value': 1.5, 'limits': (0.5, 6.0), 'step': 0.5},
+            {'name': 'Whisker width', 'type': 'float', 'value': 1.2, 'limits': (0.5, 6.0), 'step': 0.5},
+            {'name': 'Median line width', 'type': 'float', 'value': 2.5, 'limits': (0.5, 8.0), 'step': 0.5},
+            {'name': 'Median line color', 'type': 'color', 'value': (220, 0, 0, 255)},
+            {'name': 'Replica median size', 'type': 'int', 'value': 10, 'limits': (2, 20)},
+        ],
+    },
+    {
         'name': 'Error bars',
         'type': 'group',
         'expanded': False,
@@ -172,7 +213,6 @@ _PARAMS_SPEC = [
         'type': 'group',
         'expanded': False,
         'children': [
-            {'name': 'Show fit results', 'type': 'bool', 'value': False},
             {'name': 'Font size', 'type': 'int', 'value': 14, 'limits': (7, 24)},
             {'name': 'Background', 'type': 'color', 'value': (255, 255, 255, 200)},
         ],
@@ -239,11 +279,28 @@ class PlotStyleWidget(QWidget):
         self._tree.setParameters(self._params, showTop=False)
         self._params.sigTreeStateChanged.connect(self._on_change)
 
+        # X-axis display unit is owned by the Data panel (no ParameterTree
+        # node here), but still round-trips through saved style JSONs via
+        # ``axes.x_unit``. Externally settable via ``set_x_unit``.
+        self._x_unit: str = DEFAULT_STYLE['axes']['x_unit']
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._tree)
 
     def _on_change(self, *_):
+        self.style_changed.emit(self.current_style())
+
+    def set_x_unit(self, unit: str) -> None:
+        """Set the x-axis display unit and emit ``style_changed``.
+
+        The x-axis unit no longer lives in the ParameterTree — it is
+        owned by the Data panel and pushed in here so that saved style
+        dicts still carry it via ``axes.x_unit``.
+        """
+        if unit == self._x_unit:
+            return
+        self._x_unit = unit
         self.style_changed.emit(self.current_style())
 
     def current_style(self) -> dict:
@@ -253,7 +310,9 @@ class PlotStyleWidget(QWidget):
             'axes': {
                 'label_font_size': p['Axes', 'Label font size'],
                 'tick_font_size': p['Axes', 'Tick font size'],
-                'x_unit': p['Axes', 'x-axis unit'],
+                'x_unit': self._x_unit,
+                'x_name_override': p['Axes', 'X-axis name'],
+                'y_name_override': p['Axes', 'Y-axis name'],
             },
             'data_points': {
                 'symbol': p['Replicas', 'Marker'],
@@ -276,6 +335,17 @@ class PlotStyleWidget(QWidget):
                 'style': p['Fit curves', 'Style'],
                 'color': _qcolor_to_tuple(p['Fit curves', 'Color']),
             },
+            'distribution': {
+                'title_font_size': p['Distribution', 'Title font size'],
+                'label_font_size': p['Distribution', 'Label font size'],
+                'tick_font_size': p['Distribution', 'Tick font size'],
+                'box_border_width': p['Distribution', 'Box border width'],
+                'whisker_width': p['Distribution', 'Whisker width'],
+                'median_line_width': p['Distribution', 'Median line width'],
+                'median_line_color': _qcolor_to_tuple(p['Distribution', 'Median line color']),
+                'replica_median_size': p['Distribution', 'Replica median size'],
+                'ka_scale': p['Distribution', 'Ka scale'],
+            },
             'error_bars': {
                 'visible': p['Visibility', 'Show error bars'],
                 'width': p['Error bars', 'Width'],
@@ -288,6 +358,7 @@ class PlotStyleWidget(QWidget):
                 'show_average': p['Visibility', 'Show average'],
                 'show_fit': p['Visibility', 'Show fit'],
                 'show_error_bars': p['Visibility', 'Show error bars'],
+                'show_fit_results': p['Visibility', 'Show fit results'],
             },
             'legend': {
                 'font_size': p['Legend', 'Font size'],
@@ -299,7 +370,6 @@ class PlotStyleWidget(QWidget):
                 'show_fit': p['Legend', 'Show fit'],
             },
             'annotations': {
-                'show_fit_results': p['Annotations', 'Show fit results'],
                 'font_size': p['Annotations', 'Font size'],
                 'background_color': _qcolor_to_tuple(p['Annotations', 'Background']),
             },
@@ -318,7 +388,8 @@ class PlotStyleWidget(QWidget):
         _map = {
             ('Axes', 'Label font size'): ('axes', 'label_font_size'),
             ('Axes', 'Tick font size'): ('axes', 'tick_font_size'),
-            ('Axes', 'x-axis unit'): ('axes', 'x_unit'),
+            ('Axes', 'X-axis name'): ('axes', 'x_name_override'),
+            ('Axes', 'Y-axis name'): ('axes', 'y_name_override'),
             ('Replicas', 'Marker'): ('data_points', 'symbol'),
             ('Replicas', 'Size'): ('data_points', 'size'),
             ('Replicas', 'Opacity'): ('data_points', 'alpha'),
@@ -332,6 +403,15 @@ class PlotStyleWidget(QWidget):
             ('Fit curves', 'Width'): ('fit_curves', 'width'),
             ('Fit curves', 'Style'): ('fit_curves', 'style'),
             ('Fit curves', 'Color'): ('fit_curves', 'color'),
+            ('Distribution', 'Title font size'): ('distribution', 'title_font_size'),
+            ('Distribution', 'Label font size'): ('distribution', 'label_font_size'),
+            ('Distribution', 'Tick font size'): ('distribution', 'tick_font_size'),
+            ('Distribution', 'Box border width'): ('distribution', 'box_border_width'),
+            ('Distribution', 'Whisker width'): ('distribution', 'whisker_width'),
+            ('Distribution', 'Median line width'): ('distribution', 'median_line_width'),
+            ('Distribution', 'Median line color'): ('distribution', 'median_line_color'),
+            ('Distribution', 'Replica median size'): ('distribution', 'replica_median_size'),
+            ('Distribution', 'Ka scale'): ('distribution', 'ka_scale'),
             ('Error bars', 'Width'): ('error_bars', 'width'),
             ('Error bars', 'Color'): ('error_bars', 'color'),
             ('Error bars', 'Cap size'): ('error_bars', 'cap_size'),
@@ -340,6 +420,7 @@ class PlotStyleWidget(QWidget):
             ('Visibility', 'Show average'): ('visibility', 'show_average'),
             ('Visibility', 'Show fit'): ('visibility', 'show_fit'),
             ('Visibility', 'Show error bars'): ('visibility', 'show_error_bars'),
+            ('Visibility', 'Show fit results'): ('visibility', 'show_fit_results'),
             ('Legend', 'Font size'): ('legend', 'font_size'),
             ('Legend', 'Background'): ('legend', 'background_color'),
             ('Legend', 'Show replicas'): ('legend', 'show_replicas'),
@@ -347,7 +428,6 @@ class PlotStyleWidget(QWidget):
             ('Legend', 'Show average'): ('legend', 'show_average'),
             ('Legend', 'Show error bars'): ('legend', 'show_error_bars'),
             ('Legend', 'Show fit'): ('legend', 'show_fit'),
-            ('Annotations', 'Show fit results'): ('annotations', 'show_fit_results'),
             ('Annotations', 'Font size'): ('annotations', 'font_size'),
             ('Annotations', 'Background'): ('annotations', 'background_color'),
         }
@@ -363,6 +443,9 @@ class PlotStyleWidget(QWidget):
 
                         val = QColor(*val)
                     p[group, name] = val
+            # x_unit lives outside the ParameterTree.
+            if 'axes' in style and 'x_unit' in style['axes']:
+                self._x_unit = style['axes']['x_unit']
         finally:
             self._params.blockSignals(False)
         # Emit one change after restoring all values
