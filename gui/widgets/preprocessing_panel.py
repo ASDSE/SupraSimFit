@@ -72,7 +72,7 @@ new value.</p>
 
 _SECTION_HELP_HTML = """
 <h3>Outlier Removal</h3>
-<p>Automatically flag replicate traces that deviate strongly from the
+<p>Automatically flag replica traces that deviate strongly from the
 others, so they are excluded from the fit. Click <b>Apply</b> to run
 the filter; click <b>Reset</b> to re-activate all replicas.</p>
 <p>See the <i>i</i> next to the Z-score threshold for details on the

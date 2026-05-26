@@ -25,7 +25,7 @@ Supported formats
 4. **Arbitrary or missing headers**: if no recognized column names are
    found, the concentration column is inferred as the (leftmost)
    monotonic numeric column; remaining numeric columns are treated as
-   signal (single → long-format, multiple → wide-format replicates).
+   signal (single → long-format, multiple → wide-format replicas).
 
 Name-based fast path tokens: ``concentration``, ``conc``, ``titrant``,
 ``x`` (concentration); ``signal``, ``intensity``, ``int``,

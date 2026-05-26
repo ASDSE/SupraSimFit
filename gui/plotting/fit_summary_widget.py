@@ -35,16 +35,16 @@ deviation</i> &mdash; a robust measure of spread that is not thrown off
 by a few outliers.</p>
 
 <h4>Average mode</h4>
-<p>Your replicates are averaged into one curve, which is then fit many
+<p>Your replicas are averaged into one curve, which is then fit many
 times from different starting points. The &plusmn; reflects how
 precisely the fitter can pin down the parameter on that averaged curve.
 This is a measure of <b>numerical precision</b> &mdash; it does not
-capture replicate-to-replicate variation.</p>
+capture replica-to-replica variation.</p>
 
-<h4>Per-replicate mode</h4>
-<p>Each replicate is fit independently, and every acceptable fit from
-every replicate is collected together. The &plusmn; now reflects the
-full spread &mdash; including differences between replicates. This is a
+<h4>Per-replica mode</h4>
+<p>Each replica is fit independently, and every acceptable fit from
+every replica is collected together. The &plusmn; now reflects the
+full spread &mdash; including differences between replicas. This is a
 measure of <b>experimental reproducibility</b>, which is typically the
 number you would report in a publication.</p>
 
@@ -57,9 +57,9 @@ attempt.</p>
 <h4>Which mode am I using?</h4>
 <p>The column header tells you: <i>&plusmn;&nbsp;Uncertainty
 (optimiser)</i> in average mode, or <i>&plusmn;&nbsp;Uncertainty
-(pool&nbsp;N=&hellip;, &hellip;&nbsp;replicas)</i> in per-replicate
+(pool&nbsp;N=&hellip;, &hellip;&nbsp;replicas)</i> in per-replica
 mode. Switch between modes in Fit Configuration &rarr; &ldquo;Fit per
-replicate&rdquo;.</p>
+replica&rdquo;.</p>
 """
 
 
@@ -141,7 +141,7 @@ class FitSummaryWidget(QWidget):
         if assay_type is not None:
             units = ASSAY_REGISTRY[assay_type].units
 
-        if result.uncertainty_source == 'replicate':
+        if result.uncertainty_source == 'replicate':  # JSON-compat magic value
             pool_size = result.metadata.get('pool_size', result.n_passing)
             n_reps = result.metadata.get('n_replicas_fit', '?')
             header = f'\u00b1 Uncertainty (pool N={pool_size}, {n_reps} replicas)'

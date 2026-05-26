@@ -146,9 +146,9 @@ class FittingSession(QWidget):
         if custom_bounds:
             config = replace(config, custom_bounds=custom_bounds)
 
-        if config.per_replicate and ms.n_active < 3:
+        if config.per_replica and ms.n_active < 3:
             self.status_message.emit(
-                f'Per-replicate fit on {ms.n_active} replicate(s) — '
+                f'Per-replica fit on {ms.n_active} replica(s) — '
                 'uncertainty estimate may not be meaningful (<3 active).'
             )
 
@@ -613,24 +613,24 @@ class FittingSession(QWidget):
         self._plot_widget.set_fit_results(self._state.fit_results)
         self._distribution_widget.update_result(result)
 
-        if result.uncertainty_source == 'replicate':
+        if result.uncertainty_source == 'replicate':  # JSON-compat magic value
             n_fit = result.metadata.get('n_replicas_fit', result.n_passing)
             n_total = result.metadata.get('n_replicas_total', result.n_total)
             self.status_message.emit(
-                f'Per-replicate fit complete — R²={result.r_squared:.4f}, '
-                f'RMSE={result.rmse:.4e}, {n_fit}/{n_total} replicates fit'
+                f'Per-replica fit complete — R²={result.r_squared:.4f}, '
+                f'RMSE={result.rmse:.4e}, {n_fit}/{n_total} replicas fit'
             )
             failures = result.metadata.get('replica_failures') or {}
             if failures:
                 details = '\n'.join(f'  • {rid}: {reason}' for rid, reason in failures.items())
                 QMessageBox.warning(
                     self,
-                    'Some replicates were skipped',
+                    'Some replicas were skipped',
                     (
-                        f'{len(failures)} of {n_total} replicates could not be fit '
+                        f'{len(failures)} of {n_total} replicas could not be fit '
                         f'and were excluded from the aggregate.\n\n'
-                        f'Skipped replicates:\n{details}\n\n'
-                        f'The aggregate below is based on the {n_fit} successful replicate(s).'
+                        f'Skipped replicas:\n{details}\n\n'
+                        f'The aggregate below is based on the {n_fit} successful replica(s).'
                     ),
                 )
         else:

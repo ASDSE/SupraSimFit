@@ -406,7 +406,7 @@ class DistributionWidget(QWidget):
         x_positions: list[int],
     ) -> None:
         """Diamond markers at each replica's median value, at that replica's x."""
-        marker_size = self._style.get('distribution', {}).get('replicate_median_size', 10)
+        marker_size = self._style.get('distribution', {}).get('replica_median_size', 10)
         for r_idx, r_samp in enumerate(replica_samples):
             r_vals = r_samp.get(key)
             if r_vals is None or len(r_vals) == 0:
@@ -428,7 +428,7 @@ class DistributionWidget(QWidget):
         label_size = dist.get('label_font_size', 14)
         median_w = dist.get('median_line_width', 2.5)
         median_c = dist.get('median_line_color', (220, 0, 0, 255))
-        marker_size = dist.get('replicate_median_size', 10)
+        marker_size = dist.get('replica_median_size', 10)
 
         legend = pw.addLegend(offset=(10, 10))
         legend.setLabelTextSize(f'{label_size}pt')

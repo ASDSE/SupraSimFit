@@ -23,8 +23,8 @@ def _display_label(index: int) -> str:
 
 
 _SECTION_HELP_HTML = """
-<h3>Replicates</h3>
-<p>Each checkbox represents one replicate trace. Unchecked replicates
+<h3>Replicas</h3>
+<p>Each checkbox represents one replica trace. Unchecked replicas
 are excluded from averaging and fitting. Replicas marked
 <i>(z-score)</i> were deactivated automatically by the outlier removal
 step &mdash; you can re-activate them manually here.</p>

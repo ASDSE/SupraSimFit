@@ -47,7 +47,7 @@ DEFAULT_STYLE: dict = {
         'whisker_width': 1.2,
         'median_line_width': 2.5,
         'median_line_color': (220, 0, 0, 255),
-        'replicate_median_size': 10,
+        'replica_median_size': 10,
         'ka_scale': 'log\u2081\u2080',
     },
     'error_bars': {
@@ -167,7 +167,7 @@ _PARAMS_SPEC = [
             {'name': 'Whisker width', 'type': 'float', 'value': 1.2, 'limits': (0.5, 6.0), 'step': 0.5},
             {'name': 'Median line width', 'type': 'float', 'value': 2.5, 'limits': (0.5, 8.0), 'step': 0.5},
             {'name': 'Median line color', 'type': 'color', 'value': (220, 0, 0, 255)},
-            {'name': 'Replicate median size', 'type': 'int', 'value': 10, 'limits': (2, 20)},
+            {'name': 'Replica median size', 'type': 'int', 'value': 10, 'limits': (2, 20)},
         ],
     },
     {
@@ -327,7 +327,7 @@ class PlotStyleWidget(QWidget):
                 'whisker_width': p['Distribution', 'Whisker width'],
                 'median_line_width': p['Distribution', 'Median line width'],
                 'median_line_color': _qcolor_to_tuple(p['Distribution', 'Median line color']),
-                'replicate_median_size': p['Distribution', 'Replicate median size'],
+                'replica_median_size': p['Distribution', 'Replica median size'],
                 'ka_scale': p['Distribution', 'Ka scale'],
             },
             'error_bars': {
@@ -392,7 +392,7 @@ class PlotStyleWidget(QWidget):
             ('Distribution', 'Whisker width'): ('distribution', 'whisker_width'),
             ('Distribution', 'Median line width'): ('distribution', 'median_line_width'),
             ('Distribution', 'Median line color'): ('distribution', 'median_line_color'),
-            ('Distribution', 'Replicate median size'): ('distribution', 'replicate_median_size'),
+            ('Distribution', 'Replica median size'): ('distribution', 'replica_median_size'),
             ('Distribution', 'Ka scale'): ('distribution', 'ka_scale'),
             ('Error bars', 'Width'): ('error_bars', 'width'),
             ('Error bars', 'Color'): ('error_bars', 'color'),

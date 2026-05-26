@@ -8,7 +8,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.assays.base import BaseAssay
 from core.data_processing.measurement_set import MeasurementSet
-from core.pipeline.fit_pipeline import FitConfig, FitResult, PerReplicateFitError, fit_measurement_set
+from core.pipeline.fit_pipeline import FitConfig, FitResult, PerReplicaFitError, fit_measurement_set
 
 
 class FitWorker(QThread):
@@ -65,7 +65,7 @@ class FitWorker(QThread):
                 self._config,
             )
             self.finished.emit(result)
-        except PerReplicateFitError as exc:
+        except PerReplicaFitError as exc:
             details = '\n'.join(f'  - {rid}: {reason}' for rid, reason in exc.failures.items())
             self.error.emit(f'{exc}\n\nFailures per replica:\n{details}')
         except Exception as exc:

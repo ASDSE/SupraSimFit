@@ -149,7 +149,7 @@ class TestCsvReader:
         assert len(df) == 4
         assert df['concentration'].iloc[2] == pytest.approx(2.0)
 
-    def test_wide_format_replicates(self, tmp_path):
+    def test_wide_format_replicas(self, tmp_path):
         """Wide format: one conc column + multiple signal columns → replicas."""
         data = 'concentration,rep0,rep1,rep2\n0.0,100.0,105.0,98.0\n1e-6,200.0,210.0,195.0\n'
         p = tmp_path / 'wide.csv'
