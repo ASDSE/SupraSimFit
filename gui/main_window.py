@@ -220,7 +220,7 @@ class FittingMainWindow(QMainWindow):
         self._act_save_style.setToolTip('Save current plot style settings to a JSON file')
         self._act_save_style.triggered.connect(self._on_save_style)
 
-        self._act_export_all = QAction('Export…', self)
+        self._act_export_all = QAction('Export All…', self)
         self._act_export_all.setShortcut(QKeySequence('Ctrl+Shift+E'))
         self._act_export_all.setToolTip(
             'Export selected artefacts (raw data, results, plots, style) '

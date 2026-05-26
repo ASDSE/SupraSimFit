@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QPointF, QRectF
-from PyQt6.QtGui import QFont, QTransform
-from PyQt6.QtWidgets import QGraphicsItem, QVBoxLayout, QWidget
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
 from core.units import Q_, Quantity, ureg
 from gui.plotting.colors import AVERAGE_LINE_COLOR, BACKGROUND_COLOR, DROPPED_REPLICA_COLOR, ERROR_BAR_COLOR, FIT_PALETTE, FOREGROUND_COLOR, PALETTES, REPLICA_PALETTE, rgba
@@ -28,96 +27,6 @@ _SUPERSCRIPT_DIGITS = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹�
 def _format_exponent_unicode(exp: int) -> str:
     """Convert an integer exponent to Unicode superscript, e.g. 5 → '⁵', -3 → '⁻³'."""
     return str(exp).translate(_SUPERSCRIPT_DIGITS)
-
-
-# --- Export-time scaling for screen-space items --------------------------
-#
-# Some pyqtgraph items keep themselves at a fixed *screen* size regardless
-# of the surrounding view's zoom level: ``LegendItem`` sets
-# ``ItemIgnoresTransformations``, and ``TextItem.updateTransform()`` cancels
-# its parent's scene transform manually.  This is correct for interactive
-# zoom but breaks high-resolution image export, because pyqtgraph's
-# ``ImageExporter`` works by calling ``scene.render(painter, target, source)``
-# — the painter transform maps the on-screen rect onto the larger output
-# rect, scaling every scene item, but those screen-space items bypass the
-# painter transform too and end up tiny relative to the canvas.
-#
-# The native fix is to suspend the screen-space anchoring only during the
-# export render and restore it on the way out. Everything else (pen widths,
-# axis labels, scatter markers …) already scales correctly via the painter
-# transform.
-
-_TEXTITEM_PATCHED = False
-
-
-def _install_textitem_export_patch() -> None:
-    """Patch ``pg.TextItem.updateTransform`` to honour a per-instance freeze.
-
-    Called lazily once. When an item carries the sentinel
-    ``_suspend_export_transform = True``, ``updateTransform`` becomes a
-    no-op so the inverted-parent-transform reset cannot fight whatever
-    we set on the item during export.
-    """
-    global _TEXTITEM_PATCHED
-    if _TEXTITEM_PATCHED:
-        return
-    _orig_update_transform = pg.TextItem.updateTransform
-
-    def _patched_update_transform(self, force: bool = False) -> None:  # type: ignore[override]
-        if getattr(self, '_suspend_export_transform', False):
-            return
-        _orig_update_transform(self, force)
-
-    pg.TextItem.updateTransform = _patched_update_transform  # type: ignore[assignment]
-    _TEXTITEM_PATCHED = True
-
-
-@contextmanager
-def _scale_with_painter(scene):
-    """Force every scene item to honour the export painter transform.
-
-    On entry:
-      * Items with ``ItemIgnoresTransformations`` have the flag cleared so
-        the painter transform reaches them during ``scene.render``.
-      * ``pg.TextItem`` instances have their auto-inverting transform
-        frozen via the patch installed above, and their current transform
-        reset to identity so the painter scale applies cleanly.
-
-    On exit: every change is undone exactly so interactive behaviour is
-    preserved.
-    """
-    _install_textitem_export_patch()
-
-    flagged: list[QGraphicsItem] = []
-    text_items: list[pg.TextItem] = []
-    for item in scene.items():
-        if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations:
-            item.setFlag(
-                QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,
-                False,
-            )
-            flagged.append(item)
-        if isinstance(item, pg.TextItem):
-            item._export_saved_transform = item.transform()
-            item._export_saved_last = getattr(item, '_lastTransform', None)
-            item.setTransform(QTransform())
-            item._suspend_export_transform = True
-            text_items.append(item)
-    try:
-        yield
-    finally:
-        for item in flagged:
-            item.setFlag(
-                QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,
-                True,
-            )
-        for item in text_items:
-            item._suspend_export_transform = False
-            item.setTransform(item._export_saved_transform)
-            item._lastTransform = item._export_saved_last
-            del item._export_saved_transform
-            del item._export_saved_last
-            item.updateTransform(force=True)
 
 
 class _ErrorBarSample(pg.ItemSample):
@@ -640,43 +549,21 @@ class PlotWidget(QWidget):
         Parameters
         ----------
         path : str
-            Output file path.  Extension determines format:
-            ``.png`` → rasterized PNG, ``.svg`` → vector SVG.
+            Output file path. Extension determines format: ``.png`` →
+            rasterised PNG, ``.svg`` → vector SVG.
         width_px : int
-            Output width in pixels for PNG (default 2100, ~7 in @ 300 DPI).
-            Height is derived from the current plot aspect ratio. Ignored
-            for SVG output.
-
-        Notes
-        -----
-        ``scene.render()`` (driven by pyqtgraph's ``ImageExporter``)
-        scales the painter transform to map the on-screen rect onto the
-        output canvas. The legend and the fit-annotation are intentionally
-        screen-space items for interactive zoom, so they normally bypass
-        that transform. :func:`_scale_with_painter` temporarily restores
-        them to scene-space for the duration of the render so they scale
-        with the rest of the figure, then reverts the change.
+            Output width in pixels for PNG (default 2100, ~7 in @ 300
+            DPI). Height is derived from the plot's aspect ratio.
+            Ignored for SVG output.
 
         Raises
         ------
         ValueError
             If the file extension is not ``.png`` or ``.svg``.
         """
-        from pathlib import Path as _Path
+        from gui.plotting.export import export_plot_item
 
-        import pyqtgraph.exporters
-
-        ext = _Path(path).suffix.lower()
-        if ext == '.png':
-            exporter = pg.exporters.ImageExporter(self._pg_widget.getPlotItem())
-            exporter.parameters()['width'] = int(width_px)
-            with _scale_with_painter(self._pg_widget.scene()):
-                exporter.export(path)
-        elif ext == '.svg':
-            exporter = pg.exporters.SVGExporter(self._pg_widget.getPlotItem())
-            exporter.export(path)
-        else:
-            raise ValueError(f"Unsupported export format: '{ext}'. Use .png or .svg")
+        export_plot_item(self._pg_widget.getPlotItem(), path, width_px=width_px)
 
     def _set_axis_label(self, axis: str, base_label: str, exp: int | None) -> None:
         """Set an axis label, appending ×10ⁿ if *exp* is not None."""

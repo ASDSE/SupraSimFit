@@ -438,11 +438,15 @@ class FittingSession(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted or dlg.config is None:
             return
         cfg = dlg.config
+        ext = f'.{cfg.format}'
+        filter_str = (
+            'PNG image (*.png)' if cfg.format == 'png' else 'SVG vector (*.svg)'
+        )
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Save Distributions Plot',
-            self._default_save_name('.png', 'distributions'),
-            'PNG image (*.png)',
+            self._default_save_name(ext, 'distributions'),
+            filter_str,
         )
         if not path:
             return
@@ -452,9 +456,9 @@ class FittingSession(QWidget):
                 rows=cfg.rows,
                 cols=cfg.cols,
                 width_in=cfg.width_in,
-                height_in=cfg.height_in,
                 dpi=cfg.dpi,
                 path=path,
+                format=cfg.format,
             )
             self.status_message.emit(f'Distributions plot saved to {path}')
         except Exception as exc:

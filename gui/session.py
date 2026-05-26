@@ -225,7 +225,6 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
             rows=cfg.rows,
             cols=cfg.cols,
             width_in=cfg.width_in,
-            height_in=cfg.height_in,
             dpi=cfg.dpi,
             path=str(path),
         )

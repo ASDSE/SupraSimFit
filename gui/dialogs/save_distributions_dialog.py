@@ -1,9 +1,9 @@
-"""Dialog for saving the distributions plot as a composite PNG.
+"""Dialog for saving the distributions plot as a composite PNG or SVG.
 
-Replaces the older ``ExportDistributionsDialog`` (checkbox-only) with a
-fully ergonomic layout + dimension picker plus a live preview pane.
-
-Persisted under ``QSettings`` group ``distributions_export/*``.
+The dialog uses :meth:`DistributionWidget.build_composite_layout` for
+both the live preview and the eventual saved file, so the preview
+cannot drift from the output. Persisted under ``QSettings`` group
+``distributions_export/*``.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPainter, QPixmap
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -31,6 +31,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui.plotting.export import (
+    prepare_widget_for_offscreen_render,
+    render_scene_to_qimage,
+)
 from gui.plotting.labels import fmt_param
 from gui.preferences import _settings
 
@@ -40,39 +44,53 @@ if TYPE_CHECKING:
 
 _LAYOUT_MODES = ('auto', 'row', 'col', 'grid', 'custom')
 
+# Width presets. Height is always derived from the live cell aspect ×
+# the chosen layout (rows × cols) — picking a width fully determines
+# the output figure since each cell's pixel size is locked to the
+# live distribution widget's per-cell size.
 _DIM_PRESETS = (
-    ('per_panel', 'Per-panel (4 in each)'),
-    ('wide', 'Wide (16 × 9 in)'),
-    ('square', 'Square (8 × 8 in)'),
-    ('single_col', 'Single-column figure (3.5 in wide)'),
-    ('double_col', 'Double-column figure (7 in wide)'),
+    ('per_panel', 'Per-panel (4 in / col)'),
+    ('wide', 'Wide (16 in)'),
+    ('single_col', 'Single-column (3.5 in)'),
+    ('double_col', 'Double-column (7 in)'),
     ('custom', 'Custom'),
 )
 
 _PER_PANEL_IN = 4.0
 _PREVIEW_W = 360
 _PREVIEW_H = 280
+# Cap preview render resolution to keep refresh snappy. For DPI ≤ ~375
+# the preview renders at the user's chosen scale exactly (= save scale);
+# above that, the cap reduces fidelity but keeps proportions close.
+_PREVIEW_MAX_DIM = 1500
 
 
 @dataclass
 class DistributionsExportConfig:
-    """Return value when the dialog is accepted."""
+    """Return value when the dialog is accepted.
+
+    ``height_in`` is derived from ``width_in`` × layout × live cell
+    aspect (see :meth:`DistributionWidget.derive_height_in`). It is
+    included for callers that need to display it but never used as an
+    input to the save.
+    """
 
     keys: list[str]
     rows: int
     cols: int
     width_in: float
-    height_in: float
+    height_in: float  # derived; informational only
     dpi: int
+    format: str = 'png'
 
 
 class SaveDistributionsPlotDialog(QDialog):
-    """Pick subplots, layout, and dimensions for the distributions PNG.
+    """Pick subplots, layout, dimensions, and format for the distributions image.
 
     Notes
     -----
-    The dialog never writes to disk itself. On Accepted, the caller reads
-    :pyattr:`config` and runs the save via
+    The dialog never writes to disk itself. On Accepted, the caller
+    reads :pyattr:`config` and runs the save via
     :meth:`DistributionWidget.save_plot`.
     """
 
@@ -89,14 +107,14 @@ class SaveDistributionsPlotDialog(QDialog):
 
         self._dist_widget = dist_widget
         self._keys: list[str] = list(dist_widget.param_keys())
-        self._thumb_cache: list[QImage] = []
         self.config: DistributionsExportConfig | None = None
+        self._suppress_dim_signal = False
 
         self._build_ui()
         self._load_settings()
-        self._build_thumbnails()
         self._update_layout_state()
         self._update_dimension_state()
+        self._update_format_state()
         self._refresh_preview()
 
     # ------------------------------------------------------------------
@@ -175,6 +193,22 @@ class SaveDistributionsPlotDialog(QDialog):
         layout_lay.addWidget(self._layout_warning)
         controls.addWidget(layout_box)
 
+        # --- format ------------------------------------------------------
+        format_box = QGroupBox('Format')
+        format_lay = QHBoxLayout(format_box)
+        self._format_group = QButtonGroup(self)
+        self._format_png = QRadioButton('PNG (raster)')
+        self._format_svg = QRadioButton('SVG (vector)')
+        self._format_png.setChecked(True)
+        self._format_group.addButton(self._format_png)
+        self._format_group.addButton(self._format_svg)
+        self._format_png.toggled.connect(self._on_format_changed)
+        self._format_svg.toggled.connect(self._on_format_changed)
+        format_lay.addWidget(self._format_png)
+        format_lay.addWidget(self._format_svg)
+        format_lay.addStretch(1)
+        controls.addWidget(format_box)
+
         # --- dimensions --------------------------------------------------
         dim_box = QGroupBox('Dimensions')
         dim_form = QFormLayout(dim_box)
@@ -188,21 +222,21 @@ class SaveDistributionsPlotDialog(QDialog):
         self._width_spin.setRange(1.0, 40.0)
         self._width_spin.setSingleStep(0.5)
         self._width_spin.setSuffix(' in')
-        self._height_spin = QDoubleSpinBox()
-        self._height_spin.setRange(1.0, 40.0)
-        self._height_spin.setSingleStep(0.5)
-        self._height_spin.setSuffix(' in')
         self._dpi_spin = QSpinBox()
         self._dpi_spin.setRange(72, 600)
         self._dpi_spin.setSingleStep(50)
         self._dpi_spin.setSuffix(' DPI')
 
         self._width_spin.valueChanged.connect(self._on_dim_edited)
-        self._height_spin.valueChanged.connect(self._on_dim_edited)
         self._dpi_spin.valueChanged.connect(self._refresh_preview)
 
+        # Height label is derived from width × layout × live cell aspect.
+        # Showing it informs the user without exposing a fudge-able input.
+        self._height_label = QLabel('—')
+        self._height_label.setStyleSheet('color: #555;')
+
         dim_form.addRow('Width', self._width_spin)
-        dim_form.addRow('Height', self._height_spin)
+        dim_form.addRow('Height', self._height_label)
         dim_form.addRow('Resolution', self._dpi_spin)
         controls.addWidget(dim_box)
 
@@ -269,6 +303,9 @@ class SaveDistributionsPlotDialog(QDialog):
     def _current_preset(self) -> str:
         return self._dim_preset.currentData()
 
+    def _current_format(self) -> str:
+        return 'svg' if self._format_svg.isChecked() else 'png'
+
     def _resolved_layout(self) -> tuple[int, int]:
         from gui.plotting.distribution_widget import DistributionWidget
 
@@ -284,24 +321,28 @@ class SaveDistributionsPlotDialog(QDialog):
             if n <= 4:
                 return 2, 2
             return DistributionWidget.auto_layout(n)
-        # custom
         return self._custom_rows.value(), self._custom_cols.value()
 
-    def _dimensions_for_preset(
-        self, preset: str, rows: int, cols: int
-    ) -> tuple[float, float] | None:
-        """Return (width_in, height_in) for a preset, or None for 'custom'."""
+    def _width_for_preset(self, preset: str, cols: int) -> float | None:
+        """Return ``width_in`` for a preset, or ``None`` for 'custom'.
+
+        Height is no longer a preset input — it is derived from the
+        live cell aspect × layout via :meth:`_derived_height_in`.
+        """
         if preset == 'per_panel':
-            return cols * _PER_PANEL_IN, rows * _PER_PANEL_IN
+            return cols * _PER_PANEL_IN
         if preset == 'wide':
-            return 16.0, 9.0
-        if preset == 'square':
-            return 8.0, 8.0
+            return 16.0
         if preset == 'single_col':
-            return 3.5, 3.5 * rows / max(1, cols)
+            return 3.5
         if preset == 'double_col':
-            return 7.0, 7.0 * rows / max(1, cols)
+            return 7.0
         return None
+
+    def _derived_height_in(self, *, width_in: float, rows: int, cols: int) -> float:
+        return self._dist_widget.derive_height_in(
+            width_in=width_in, rows=rows, cols=cols,
+        )
 
     # ------------------------------------------------------------------
     # Signal handlers
@@ -328,12 +369,16 @@ class SaveDistributionsPlotDialog(QDialog):
         self._refresh_preview()
 
     def _on_dim_edited(self) -> None:
-        # If the user drives width/height directly, the preset is no longer
-        # a defining input — flip silently to "Custom".
+        # If the user drives width directly, the preset is no longer a
+        # defining input — flip silently to "Custom".
         if self._suppress_dim_signal:
             return
         if self._current_preset() != 'custom':
             self._set_preset_silently('custom')
+        self._refresh_preview()
+
+    def _on_format_changed(self) -> None:
+        self._update_format_state()
         self._refresh_preview()
 
     # ------------------------------------------------------------------
@@ -362,20 +407,30 @@ class SaveDistributionsPlotDialog(QDialog):
                 ok.setEnabled(True)
         self._layout_warning.setText(msg)
 
-    _suppress_dim_signal = False
-
     def _update_dimension_state(self) -> None:
         preset = self._current_preset()
-        rows, cols = self._resolved_layout()
-        dims = self._dimensions_for_preset(preset, rows, cols)
-        if dims is not None:
-            w, h = dims
+        _rows, cols = self._resolved_layout()
+        width = self._width_for_preset(preset, cols)
+        if width is not None:
             self._suppress_dim_signal = True
             try:
-                self._width_spin.setValue(w)
-                self._height_spin.setValue(h)
+                self._width_spin.setValue(width)
             finally:
                 self._suppress_dim_signal = False
+        self._refresh_height_label()
+
+    def _refresh_height_label(self) -> None:
+        rows, cols = self._resolved_layout()
+        h_in = self._derived_height_in(
+            width_in=self._width_spin.value(),
+            rows=rows,
+            cols=cols,
+        )
+        self._height_label.setText(f'{h_in:.2f} in (auto, matches GUI aspect)')
+
+    def _update_format_state(self) -> None:
+        """DPI input is meaningless for vector SVG; grey it out."""
+        self._dpi_spin.setEnabled(self._current_format() == 'png')
 
     def _set_preset_silently(self, key: str) -> None:
         idx = next(
@@ -386,34 +441,10 @@ class SaveDistributionsPlotDialog(QDialog):
         self._dim_preset.blockSignals(False)
 
     # ------------------------------------------------------------------
-    # Preview rendering
+    # Preview rendering — uses the same code path as the final save.
     # ------------------------------------------------------------------
 
-    def _build_thumbnails(self) -> None:
-        """Render a moderate-res thumbnail per subplot once.
-
-        Sized large enough to avoid upscaling in any practical preview
-        layout (preview pane is rendered at up to ~720 px wide before
-        being scaled down for display).
-        """
-        import pyqtgraph as pg
-        import pyqtgraph.exporters  # noqa: F401
-
-        thumb_w = 600
-        for idx, _key in enumerate(self._keys):
-            if idx >= len(self._dist_widget._plots):
-                break
-            exporter = pg.exporters.ImageExporter(
-                self._dist_widget._plots[idx].getPlotItem()
-            )
-            exporter.parameters()['width'] = thumb_w
-            img = exporter.export(toBytes=True)
-            if isinstance(img, QImage):
-                self._thumb_cache.append(img)
-
     def _refresh_preview(self) -> None:
-        if not self._thumb_cache:
-            return
         n = self._selected_count()
         if n == 0:
             self._preview_label.clear()
@@ -427,53 +458,46 @@ class SaveDistributionsPlotDialog(QDialog):
             return
 
         w_in = self._width_spin.value()
-        h_in = self._height_spin.value()
+        h_in = self._derived_height_in(width_in=w_in, rows=rows, cols=cols)
         dpi = self._dpi_spin.value()
-        px_w = round(w_in * dpi)
-        px_h = round(h_in * dpi)
-        self._size_label.setText(
-            f'Output: {px_w} × {px_h} px  ({w_in:.2f} × {h_in:.2f} in @ {dpi} DPI)'
-        )
+        fmt = self._current_format()
+        self._refresh_height_label()
 
-        # Render the composite into an oversized canvas that matches the
-        # real aspect ratio, then scale-to-fit the fixed preview area.
-        # Oversizing relative to ``_PREVIEW_W`` lets the final smooth
-        # downscale produce a crisp anti-aliased preview.
-        target_long = 2 * max(_PREVIEW_W, _PREVIEW_H)  # ~720 px
-        if w_in >= h_in:
-            aspect_w = target_long
-            aspect_h = max(1, round(target_long * h_in / max(w_in, 1e-6)))
+        if fmt == 'png':
+            px_w = round(w_in * dpi)
+            px_h = round(h_in * dpi)
+            self._size_label.setText(
+                f'Output: {px_w} × {px_h} px  '
+                f'({w_in:.2f} × {h_in:.2f} in @ {dpi} DPI, PNG)'
+            )
         else:
-            aspect_h = target_long
-            aspect_w = max(1, round(target_long * w_in / max(h_in, 1e-6)))
-        cell_w = aspect_w // cols
-        cell_h = aspect_h // rows
-        canvas = QImage(aspect_w, aspect_h, QImage.Format.Format_ARGB32)
-        canvas.fill(Qt.GlobalColor.white)
-        painter = QPainter(canvas)
-        try:
-            i = 0
-            for key_idx, key in enumerate(self._keys):
-                if not self._checkboxes[key_idx].isChecked():
-                    continue
-                if key_idx >= len(self._thumb_cache):
-                    continue
-                thumb = self._thumb_cache[key_idx]
-                scaled = thumb.scaled(
-                    cell_w,
-                    cell_h,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                r, c = divmod(i, cols)
-                x = c * cell_w + (cell_w - scaled.width()) // 2
-                y = r * cell_h + (cell_h - scaled.height()) // 2
-                painter.drawImage(x, y, scaled)
-                i += 1
-        finally:
-            painter.end()
+            self._size_label.setText(
+                f'Output: {w_in:.2f} × {h_in:.2f} in (SVG vector)'
+            )
 
-        pix = QPixmap.fromImage(canvas).scaled(
+        # Build the same composite the save will build. Each cell is
+        # sized at the live distribution subplot's pixel dimensions, so
+        # font:cell, line:cell, marker:cell ratios are identical to
+        # the GUI by construction. ImageExporter scales the whole
+        # scene uniformly to the requested output width.
+        keys = self._selected_keys()
+        cell_w, cell_h = self._dist_widget.live_per_cell_size()
+        logical_w = max(1, cell_w * cols)
+        logical_h = max(1, cell_h * rows)
+        if fmt == 'png':
+            preview_target_w = min(round(w_in * dpi), _PREVIEW_MAX_DIM)
+        else:
+            preview_target_w = min(round(w_in * 200), _PREVIEW_MAX_DIM)
+        preview_target_w = max(preview_target_w, _PREVIEW_W)
+
+        glw = self._dist_widget.build_composite_layout(keys, rows, cols)
+        try:
+            prepare_widget_for_offscreen_render(glw, logical_w, logical_h)
+            img = render_scene_to_qimage(glw.scene(), preview_target_w)
+        finally:
+            glw.deleteLater()
+
+        pix = QPixmap.fromImage(img).scaled(
             _PREVIEW_W,
             _PREVIEW_H,
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -496,16 +520,20 @@ class SaveDistributionsPlotDialog(QDialog):
             preset = s.value('dimension_preset', 'per_panel', type=str)
             self._set_preset_silently(preset)
             w = float(s.value('width_in', 0.0))
-            h = float(s.value('height_in', 0.0))
-            if w > 0 and h > 0:
+            if w > 0:
                 self._suppress_dim_signal = True
                 try:
                     self._width_spin.setValue(w)
-                    self._height_spin.setValue(h)
                 finally:
                     self._suppress_dim_signal = False
             dpi = int(s.value('dpi', 300))
             self._dpi_spin.setValue(dpi)
+
+            fmt = s.value('format', 'png', type=str)
+            if fmt == 'svg':
+                self._format_svg.setChecked(True)
+            else:
+                self._format_png.setChecked(True)
 
             sel = s.value('selected_keys', None)
             if isinstance(sel, list) and sel:
@@ -524,8 +552,8 @@ class SaveDistributionsPlotDialog(QDialog):
             s.setValue('custom_cols', self._custom_cols.value())
             s.setValue('dimension_preset', self._current_preset())
             s.setValue('width_in', float(self._width_spin.value()))
-            s.setValue('height_in', float(self._height_spin.value()))
             s.setValue('dpi', self._dpi_spin.value())
+            s.setValue('format', self._current_format())
             s.setValue('selected_keys', self._selected_keys())
         finally:
             s.endGroup()
@@ -539,13 +567,16 @@ class SaveDistributionsPlotDialog(QDialog):
         if not keys:
             return
         rows, cols = self._resolved_layout()
+        w_in = float(self._width_spin.value())
+        h_in = self._derived_height_in(width_in=w_in, rows=rows, cols=cols)
         self.config = DistributionsExportConfig(
             keys=keys,
             rows=rows,
             cols=cols,
-            width_in=float(self._width_spin.value()),
-            height_in=float(self._height_spin.value()),
+            width_in=w_in,
+            height_in=h_in,
             dpi=self._dpi_spin.value(),
+            format=self._current_format(),
         )
         self._save_settings()
         self.accept()
