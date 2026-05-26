@@ -220,7 +220,17 @@ class FittingMainWindow(QMainWindow):
         self._act_save_style.setToolTip('Save current plot style settings to a JSON file')
         self._act_save_style.triggered.connect(self._on_save_style)
 
+        self._act_export_all = QAction('Export…', self)
+        self._act_export_all.setShortcut(QKeySequence('Ctrl+Shift+E'))
+        self._act_export_all.setToolTip(
+            'Export selected artefacts (raw data, results, plots, style) '
+            'into one folder'
+        )
+        self._act_export_all.triggered.connect(self._on_export_all)
+
         export_menu = QMenu(self)
+        export_menu.addAction(self._act_export_all)
+        export_menu.addSeparator()
         export_menu.addAction(self._act_export)
         export_menu.addAction(self._act_export_txt)
         export_menu.addAction(self._act_export_raw)
@@ -265,6 +275,8 @@ class FittingMainWindow(QMainWindow):
         file_menu.addAction(self._act_load)
         file_menu.addSeparator()
         file_menu.addAction(self._act_fit)
+        file_menu.addSeparator()
+        file_menu.addAction(self._act_export_all)
         file_menu.addSeparator()
         file_menu.addAction(self._act_export)
         file_menu.addAction(self._act_export_txt)
@@ -367,6 +379,11 @@ class FittingMainWindow(QMainWindow):
         session = self.active_session()
         if session:
             session.save_distributions_plot()
+
+    def _on_export_all(self) -> None:
+        session = self.active_session()
+        if session:
+            session.open_export_multiple_dialog(select_all_default=True)
 
     def _on_save_style(self) -> None:
         session = self.active_session()

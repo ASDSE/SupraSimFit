@@ -204,6 +204,74 @@ class FittingSession(QWidget):
         stem = Path(src).stem
         return f"{stem}{('_' + tag) if tag else ''}{suffix}"
 
+    def _default_filename_base(self) -> str:
+        """Stem-only version of :meth:`_default_save_name` (no tag, no suffix)."""
+        src = self._state.source_file
+        if not src and self._state.fit_results:
+            src = self._state.fit_results[-1].source_file
+        return Path(src).stem if src else 'output'
+
+    def _distributions_export_config(self):
+        """Build a DistributionsExportConfig from persisted QSettings.
+
+        Used by the multi-artefact export when there's no opportunity to
+        show the layout picker inline. Defaults match the standalone
+        dialog: Auto layout, per-panel dimensions, 300 DPI, all subplots
+        selected.
+        """
+        from gui.dialogs.save_distributions_dialog import (
+            DistributionsExportConfig,
+            SaveDistributionsPlotDialog,
+            _PER_PANEL_IN,
+        )
+        from gui.plotting.distribution_widget import DistributionWidget
+        from gui.preferences import _settings
+
+        keys = self._distribution_widget.param_keys()
+        s = _settings()
+        s.beginGroup(SaveDistributionsPlotDialog.SETTINGS_GROUP)
+        try:
+            mode = s.value('layout_mode', 'auto', type=str)
+            custom_rows = int(s.value('custom_rows', 2))
+            custom_cols = int(s.value('custom_cols', 2))
+            saved_w = float(s.value('width_in', 0.0))
+            saved_h = float(s.value('height_in', 0.0))
+            dpi = int(s.value('dpi', 300))
+            sel = s.value('selected_keys', None)
+        finally:
+            s.endGroup()
+
+        selected = (
+            [k for k in keys if k in set(sel)] if isinstance(sel, list) and sel else list(keys)
+        )
+        n = max(1, len(selected))
+        if mode == 'row':
+            rows, cols = 1, n
+        elif mode == 'col':
+            rows, cols = n, 1
+        elif mode == 'grid':
+            rows, cols = (2, 2) if n <= 4 else DistributionWidget.auto_layout(n)
+        elif mode == 'custom':
+            rows, cols = custom_rows, custom_cols
+            if rows * cols < n:
+                rows, cols = DistributionWidget.auto_layout(n)
+        else:
+            rows, cols = DistributionWidget.auto_layout(n)
+
+        if saved_w > 0 and saved_h > 0:
+            width_in, height_in = saved_w, saved_h
+        else:
+            width_in, height_in = cols * _PER_PANEL_IN, rows * _PER_PANEL_IN
+
+        return DistributionsExportConfig(
+            keys=selected,
+            rows=rows,
+            cols=cols,
+            width_in=width_in,
+            height_in=height_in,
+            dpi=dpi,
+        )
+
     def export_results(self) -> None:
         """Export current fit results to JSON."""
         if not self._state.fit_results:
@@ -340,6 +408,20 @@ class FittingSession(QWidget):
             self.status_message.emit(f'Plot saved to {path}')
         except Exception as exc:
             QMessageBox.warning(self, 'Export Error', str(exc))
+
+    def open_export_multiple_dialog(self, *, select_all_default: bool) -> None:
+        """Show the consolidated multi-artefact export dialog."""
+        from gui.dialogs.export_multiple_dialog import ExportMultipleDialog
+
+        dlg = ExportMultipleDialog(self, select_all_default=select_all_default, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            outcomes = dlg.outcomes
+            successes = sum(1 for _l, _p, e in outcomes if e is None)
+            if successes:
+                folder = outcomes[0][1].parent
+                self.status_message.emit(
+                    f'Exported {successes}/{len(outcomes)} artefact(s) to {folder}'
+                )
 
     def save_distributions_plot(self) -> None:
         """Save the distributions plot as a composite PNG with a layout picker."""
