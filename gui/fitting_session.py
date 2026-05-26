@@ -312,7 +312,12 @@ class FittingSession(QWidget):
                             for r in results
                         ],
                     }
-                    self._plot_widget.update_plot(plot_data, x_label=meta.x_label, y_label=meta.y_label)
+                    self._plot_widget.update_plot(
+                        plot_data,
+                        x_label=meta.x_label,
+                        y_label=meta.y_label,
+                        y_unit=meta.y_unit,
+                    )
                     self._plot_widget.set_fit_results(results)
             if results:
                 self._summary_widget.update_result(results[-1])
@@ -589,7 +594,7 @@ class FittingSession(QWidget):
         self._state.assay_type = assay_type
         self._bounds_panel.set_assay_type(assay_type)
         meta = ASSAY_REGISTRY[assay_type]
-        self._update_axis_labels(meta.x_label, meta.y_label)
+        self._update_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
         self.title_changed.emit(meta.display_name)
 
     def _on_conditions_changed(self) -> None:
@@ -657,11 +662,12 @@ class FittingSession(QWidget):
             plot_data,
             x_label=meta.x_label,
             y_label=meta.y_label,
+            y_unit=meta.y_unit,
         )
         self._plot_widget.set_fit_results(self._state.fit_results)
 
-    def _update_axis_labels(self, x: str, y: str) -> None:
-        self._plot_widget.set_axis_labels(x, y)
+    def _update_axis_labels(self, x: str, y: str, y_unit: str) -> None:
+        self._plot_widget.set_axis_labels(x, y, y_unit)
 
 
 class ExportDistributionsDialog(QDialog):

@@ -309,6 +309,7 @@ class PlotWidget(QWidget):
         self._last_error_bar_data: tuple | None = None
         self._last_x_label_base: str | None = None
         self._last_y_label: str | None = None
+        self._last_y_unit: str = 'a.u.'
 
     def update_plot(
         self,
@@ -316,6 +317,7 @@ class PlotWidget(QWidget):
         *,
         x_label: str | None = None,
         y_label: str | None = None,
+        y_unit: str | None = None,
         preserve_positions: bool = False,
     ) -> None:
         """Clear and redraw from a ``prepare_plot_data()`` dict.
@@ -325,9 +327,14 @@ class PlotWidget(QWidget):
         plot_data : dict
             As returned by ``core.data_processing.plotting.prepare_plot_data()``.
         x_label : str, optional
-            Override x-axis label.
+            Default x-axis name (registry value). Composed with the unit
+            from ``style['axes']['x_unit']`` and, if set, the user override
+            in ``style['axes']['x_name_override']``.
         y_label : str, optional
-            Override y-axis label.
+            Default y-axis name (registry value).
+        y_unit : str, optional
+            Y-axis unit suffix (e.g. ``"a.u."``). Auto-managed; not editable
+            in the GUI.
         preserve_positions : bool
             If False (the default), reset the remembered legend corner
             and annotation position so overlays are re-placed on the
@@ -349,10 +356,8 @@ class PlotWidget(QWidget):
             self._last_x_label_base = x_label
         if y_label is not None:
             self._last_y_label = y_label
-        if self._last_x_label_base is not None:
-            self._pg_widget.setLabel('bottom', f'{self._last_x_label_base} [{x_unit}]')
-        if self._last_y_label is not None:
-            self._pg_widget.setLabel('left', self._last_y_label)
+        if y_unit is not None:
+            self._last_y_unit = y_unit
 
         x = np.asarray(plot_data.get('concentrations', [])) * x_scale
 
@@ -594,19 +599,26 @@ class PlotWidget(QWidget):
         self._rebuild_annotation()
         self._update_axis_labels_with_exponents()
 
-    def set_axis_labels(self, x_label: str, y_label: str) -> None:
-        """Update axis labels.
+    def set_axis_labels(self, x_label: str, y_label: str, y_unit: str | None = None) -> None:
+        """Update default axis names (and optionally the y-unit).
+
+        The current overrides in ``style['axes']`` still take precedence;
+        defaults are only used when an override is empty.
 
         Parameters
         ----------
         x_label : str
+            Default x-axis name.
         y_label : str
+            Default y-axis name.
+        y_unit : str, optional
+            Y-axis unit suffix. If ``None``, the previous value is kept.
         """
         self._last_x_label_base = x_label
         self._last_y_label = y_label
-        x_unit = self._style['axes'].get('x_unit', 'µM')
-        self._pg_widget.setLabel('bottom', f'{x_label} [{x_unit}]')
-        self._pg_widget.setLabel('left', y_label)
+        if y_unit is not None:
+            self._last_y_unit = y_unit
+        self._update_axis_labels_with_exponents()
 
     def set_fit_results(self, results: list[Any]) -> None:
         """Store FitResult objects used to populate the annotation.
@@ -674,14 +686,39 @@ class PlotWidget(QWidget):
         else:
             self._pg_widget.setLabel(axis, base_label)
 
+    def _compose_axis_label(self, default_name: str, override: str, unit: str) -> str:
+        """Compose ``"<name> [<unit>]"`` using *override* if non-empty.
+
+        The override is stripped before testing for emptiness so whitespace-
+        only values revert to the default.
+        """
+        name = override.strip() if override else ''
+        if not name:
+            name = default_name
+        if unit:
+            return f'{name} [{unit}]'
+        return name
+
     def _on_y_exponent_changed(self, exp: int | None) -> None:
         """Update y-axis label reactively when the exponent changes during paint."""
-        self._set_axis_label('left', self._last_y_label or '', exp)
+        override = self._style['axes'].get('y_name_override', '') or ''
+        label = self._compose_axis_label(
+            self._last_y_label or '',
+            override,
+            self._last_y_unit,
+        )
+        self._set_axis_label('left', label, exp)
 
     def _on_x_exponent_changed(self, exp: int | None) -> None:
         """Update x-axis label reactively when the exponent changes during paint."""
         x_unit = self._style['axes'].get('x_unit', 'µM')
-        self._set_axis_label('bottom', f'{self._last_x_label_base or ""} [{x_unit}]', exp)
+        override = self._style['axes'].get('x_name_override', '') or ''
+        label = self._compose_axis_label(
+            self._last_x_label_base or '',
+            override,
+            x_unit,
+        )
+        self._set_axis_label('bottom', label, exp)
 
     def _update_axis_labels_with_exponents(self) -> None:
         """Set axis labels with exponent suffix if known.

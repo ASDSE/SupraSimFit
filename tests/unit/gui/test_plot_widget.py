@@ -142,3 +142,113 @@ def test_scientific_axis_factors_large_exponent(qapp):
     assert strings[2] == '3'
 
 
+# ---------------------------------------------------------------------------
+# Axis name overrides (user-editable name, auto-managed unit)
+# ---------------------------------------------------------------------------
+
+
+def _bottom_label(pw):
+    return pw._pg_widget.getAxis('bottom').labelString()
+
+
+def _left_label(pw):
+    return pw._pg_widget.getAxis('left').labelString()
+
+
+def test_default_x_label_uses_registry_name_and_x_unit(qapp, minimal_plot_data):
+    from gui.plotting.plot_widget import PlotWidget
+
+    pw = PlotWidget()
+    pw.update_plot(minimal_plot_data, x_label='Guest', y_label='Signal', y_unit='a.u.')
+
+    assert 'Guest' in _bottom_label(pw)
+    assert '[µM]' in _bottom_label(pw)
+
+
+def test_default_y_label_uses_registry_name_and_y_unit(qapp, minimal_plot_data):
+    from gui.plotting.plot_widget import PlotWidget
+
+    pw = PlotWidget()
+    pw.update_plot(minimal_plot_data, x_label='Guest', y_label='Signal', y_unit='a.u.')
+
+    assert 'Signal' in _left_label(pw)
+    assert '[a.u.]' in _left_label(pw)
+
+
+def test_x_name_override_replaces_name_but_keeps_unit(qapp, minimal_plot_data):
+    from gui.plotting.plot_style import PlotStyleWidget
+    from gui.plotting.plot_widget import PlotWidget
+
+    pw = PlotWidget()
+    pw.update_plot(minimal_plot_data, x_label='Guest', y_label='Signal', y_unit='a.u.')
+
+    sw = PlotStyleWidget()
+    sw.style_changed.connect(pw.apply_style)
+    sw._params['Axes', 'X-axis name'] = 'Tryptamine'
+
+    label = _bottom_label(pw)
+    assert 'Tryptamine' in label
+    assert 'Guest' not in label
+    assert '[µM]' in label
+
+
+def test_y_name_override_replaces_name_but_keeps_unit(qapp, minimal_plot_data):
+    from gui.plotting.plot_style import PlotStyleWidget
+    from gui.plotting.plot_widget import PlotWidget
+
+    pw = PlotWidget()
+    pw.update_plot(minimal_plot_data, x_label='Guest', y_label='Signal', y_unit='a.u.')
+
+    sw = PlotStyleWidget()
+    sw.style_changed.connect(pw.apply_style)
+    sw._params['Axes', 'Y-axis name'] = 'Fluorescence'
+
+    label = _left_label(pw)
+    assert 'Fluorescence' in label
+    assert '[a.u.]' in label
+
+
+def test_x_unit_change_preserves_custom_name(qapp, minimal_plot_data):
+    from gui.plotting.plot_style import PlotStyleWidget
+    from gui.plotting.plot_widget import PlotWidget
+
+    pw = PlotWidget()
+    pw.update_plot(minimal_plot_data, x_label='Guest', y_label='Signal', y_unit='a.u.')
+
+    sw = PlotStyleWidget()
+    sw.style_changed.connect(pw.apply_style)
+    sw._params['Axes', 'X-axis name'] = 'Tryptamine'
+    sw.set_x_unit('nM')
+
+    label = _bottom_label(pw)
+    assert 'Tryptamine' in label
+    assert '[nM]' in label
+    assert '[µM]' not in label
+
+
+def test_clearing_override_restores_default_name(qapp, minimal_plot_data):
+    from gui.plotting.plot_style import PlotStyleWidget
+    from gui.plotting.plot_widget import PlotWidget
+
+    pw = PlotWidget()
+    pw.update_plot(minimal_plot_data, x_label='Guest', y_label='Signal', y_unit='a.u.')
+
+    sw = PlotStyleWidget()
+    sw.style_changed.connect(pw.apply_style)
+    sw._params['Axes', 'X-axis name'] = 'Tryptamine'
+    sw._params['Axes', 'X-axis name'] = ''
+
+    label = _bottom_label(pw)
+    assert 'Guest' in label
+    assert 'Tryptamine' not in label
+
+
+def test_whitespace_only_override_falls_back_to_default(qapp):
+    from gui.plotting.plot_widget import PlotWidget
+
+    pw = PlotWidget()
+    assert pw._compose_axis_label('Guest', '   ', 'µM') == 'Guest [µM]'
+    assert pw._compose_axis_label('Guest', '', 'µM') == 'Guest [µM]'
+    assert pw._compose_axis_label('Guest', 'Tryptamine', 'µM') == 'Tryptamine [µM]'
+
+

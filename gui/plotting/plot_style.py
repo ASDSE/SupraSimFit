@@ -17,6 +17,8 @@ DEFAULT_STYLE: dict = {
         'label_font_size': 18,
         'tick_font_size': 16,
         'x_unit': 'µM',
+        'x_name_override': '',
+        'y_name_override': '',
     },
     'data_points': {
         'symbol': 'o',
@@ -111,6 +113,18 @@ _PARAMS_SPEC = [
         'children': [
             {'name': 'Label font size', 'type': 'int', 'value': 18, 'limits': (6, 24)},
             {'name': 'Tick font size', 'type': 'int', 'value': 16, 'limits': (6, 24)},
+            {
+                'name': 'X-axis name',
+                'type': 'str',
+                'value': '',
+                'tip': 'Override the x-axis name (the unit suffix stays auto-managed). Leave empty to use the assay default. HTML is supported (e.g. [Host]<sub>0</sub>).',
+            },
+            {
+                'name': 'Y-axis name',
+                'type': 'str',
+                'value': '',
+                'tip': 'Override the y-axis name (the unit suffix stays auto-managed). Leave empty to use the assay default. HTML is supported.',
+            },
         ],
     },
     {
@@ -297,6 +311,8 @@ class PlotStyleWidget(QWidget):
                 'label_font_size': p['Axes', 'Label font size'],
                 'tick_font_size': p['Axes', 'Tick font size'],
                 'x_unit': self._x_unit,
+                'x_name_override': p['Axes', 'X-axis name'],
+                'y_name_override': p['Axes', 'Y-axis name'],
             },
             'data_points': {
                 'symbol': p['Replicas', 'Marker'],
@@ -372,6 +388,8 @@ class PlotStyleWidget(QWidget):
         _map = {
             ('Axes', 'Label font size'): ('axes', 'label_font_size'),
             ('Axes', 'Tick font size'): ('axes', 'tick_font_size'),
+            ('Axes', 'X-axis name'): ('axes', 'x_name_override'),
+            ('Axes', 'Y-axis name'): ('axes', 'y_name_override'),
             ('Replicas', 'Marker'): ('data_points', 'symbol'),
             ('Replicas', 'Size'): ('data_points', 'size'),
             ('Replicas', 'Opacity'): ('data_points', 'alpha'),
