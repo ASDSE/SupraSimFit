@@ -289,7 +289,7 @@ class FitConfig:
     log_scale_params: Optional[List[str]] = None
     custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
     rescale_parameters: bool = True
-    per_replica: bool = False
+    per_replica: bool = True
 
 
 def _model_name_for_assay(assay: BaseAssay) -> str:

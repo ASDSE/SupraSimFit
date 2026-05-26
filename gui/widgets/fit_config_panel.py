@@ -84,7 +84,7 @@ tighten the factor to weed out partial-convergence runs.</p>
 _PER_REPLICA_HELP_HTML = """
 <h3>Fit per replica &mdash; pooled passing trials</h3>
 
-<p><b>Average mode (default, off)</b></p>
+<p><b>Average mode (off)</b></p>
 <p>All active replicas are averaged into a single curve, then the
 fitter runs one multi-start optimisation on that average. Every
 starting point that produces an acceptable fit (low RMSE, high
@@ -93,7 +93,7 @@ those acceptable fits and the &plusmn; value is their spread (MAD).
 This tells you how tight the optimiser landscape is &mdash; <b>not</b>
 how reproducible your experiment is.</p>
 
-<p><b>Per-replica mode (on)</b></p>
+<p><b>Per-replica mode (default, on)</b></p>
 <p>Every active replica is fit on its own with a full multi-start
 run. From each replica, every trial that passes the acceptance
 filter (R<sup>2</sup>, RMSE) is retained. All those passing trials from

@@ -178,7 +178,7 @@ class FittingSession(QWidget):
         # 1. Reset all panels to IDA defaults
         self._assay_panel.set_assay_type(AssayType.IDA)
         self._bounds_panel.reset_to_defaults()
-        self._fit_panel.set_config(FitConfig())
+        self._fit_panel.set_config(FitConfig(per_replica=False))
 
         # 2. Load data (triggers _on_data_loaded → resets replicas, clears results)
         self._data_panel.load_file(str(_DEMO_IDA_PATH))
