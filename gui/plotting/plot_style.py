@@ -64,7 +64,7 @@ DEFAULT_STYLE: dict = {
         'show_average': False,
         'show_fit': True,
         'show_error_bars': True,
-        'show_fit_results': False,
+        'show_fit_results': True,
     },
     'legend': {
         'font_size': 14,
@@ -103,7 +103,7 @@ _PARAMS_SPEC = [
             {'name': 'Show average', 'type': 'bool', 'value': False},
             {'name': 'Show error bars', 'type': 'bool', 'value': True},
             {'name': 'Show fit', 'type': 'bool', 'value': True},
-            {'name': 'Show fit results', 'type': 'bool', 'value': False},
+            {'name': 'Show fit results', 'type': 'bool', 'value': True},
         ],
     },
     {
