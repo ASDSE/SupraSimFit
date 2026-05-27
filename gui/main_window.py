@@ -6,8 +6,11 @@ from PyQt6.QtCore import QCoreApplication, QEvent, QLocale, QObject, Qt
 from PyQt6.QtGui import QAction, QIcon, QKeySequence
 from PyQt6.QtWidgets import QAbstractSpinBox, QApplication, QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QTabWidget, QToolBar, QToolButton
 
+from _version import __version__
 from gui.fitting_session import FittingSession
 from gui.preferences import APP_NAME, ORG_NAME
+from gui.update_check import UpdateCheckWorker, is_newer
+from gui.update_dialog import UpdateAvailableDialog
 
 
 class _SpinBoxWheelRedirect(QObject):
@@ -105,7 +108,8 @@ class FittingMainWindow(QMainWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('SupraSimFit')
+        self._update_worker: UpdateCheckWorker | None = None
+        self._set_title()
         self.resize(1280, 820)
         self._setup_tabs()
         self._setup_toolbar()
@@ -113,6 +117,19 @@ class FittingMainWindow(QMainWindow):
         self._setup_statusbar()
         # Open one empty session on startup
         self._new_session()
+        # Silent background check for newer releases on GitHub.
+        # Failures (offline, rate-limited, etc.) are intentionally swallowed.
+        self._run_update_check(silent=True)
+
+    def _set_title(self, suffix: str = '') -> None:
+        """Set the window title to ``SupraSimFit <version> [suffix]``.
+
+        Called once at construction with no suffix, and again with
+        ``"(updates available)"`` when the background check finds a newer
+        release.
+        """
+        base = f'SupraSimFit {__version__}'
+        self.setWindowTitle(f'{base} {suffix}'.rstrip())
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -300,6 +317,13 @@ class FittingMainWindow(QMainWindow):
         close_tab_act.triggered.connect(lambda: self._close_tab(self._tabs.currentIndex()))
         view_menu.addAction(close_tab_act)
 
+        # Help menu
+        help_menu = mb.addMenu('&Help')
+        self._act_check_updates = QAction('Check for updates…', self)
+        self._act_check_updates.setToolTip('Query GitHub for a newer release of SupraSimFit')
+        self._act_check_updates.triggered.connect(lambda: self._run_update_check(silent=False))
+        help_menu.addAction(self._act_check_updates)
+
     def _setup_statusbar(self) -> None:
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
@@ -394,6 +418,59 @@ class FittingMainWindow(QMainWindow):
         session = self.active_session()
         if session:
             session.load_style_template()
+
+    # ------------------------------------------------------------------
+    # Update check
+    # ------------------------------------------------------------------
+
+    def _run_update_check(self, *, silent: bool) -> None:
+        """Spawn an :class:`UpdateCheckWorker`.
+
+        Parameters
+        ----------
+        silent : bool
+            ``True`` for the background startup check — errors are swallowed,
+            and the dialog is not opened (only the title-bar hint appears).
+            ``False`` for the user-triggered menu action — errors raise a
+            :class:`QMessageBox.warning` and the dialog opens when a newer
+            release is found.
+        """
+        # Refuse to start a second check while one is in flight.
+        if self._update_worker is not None and self._update_worker.isRunning():
+            return
+        if not silent:
+            self._act_check_updates.setEnabled(False)
+            self._statusbar.showMessage('Checking for updates…')
+
+        worker = UpdateCheckWorker(self)
+        self._update_worker = worker
+        worker.finished.connect(lambda info: self._on_update_check_done(info, silent=silent))
+        worker.error.connect(lambda msg: self._on_update_check_error(msg, silent=silent))
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_update_check_done(self, info: dict, *, silent: bool) -> None:
+        if not silent:
+            self._act_check_updates.setEnabled(True)
+            self._statusbar.showMessage('Ready')
+        if is_newer(info['latest_version'], __version__):
+            self._set_title('(updates available)')
+            if not silent:
+                UpdateAvailableDialog(info, self).exec()
+        elif not silent:
+            QMessageBox.information(
+                self,
+                'Up to date',
+                f"You're on the latest version ({__version__}).",
+            )
+
+    def _on_update_check_error(self, msg: str, *, silent: bool) -> None:
+        if silent:
+            return  # Offline / rate-limited / etc. — stay quiet.
+        self._act_check_updates.setEnabled(True)
+        self._statusbar.showMessage('Ready')
+        QMessageBox.warning(self, 'Could not check for updates', msg)
 
 
 def _app_icon_path() -> str | None:
