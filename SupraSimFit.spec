@@ -3,6 +3,10 @@ import os
 import sys
 from PyInstaller.utils.hooks import collect_data_files
 
+# Single source of truth for the app version (also read by the GUI and
+# the auto-tag workflow). Lives at the repo root.
+from _version import __version__
+
 sys.setrecursionlimit(sys.getrecursionlimit() * 5)
 
 # ---------------------------------------------------------------------------
@@ -102,6 +106,7 @@ if sys.platform == 'darwin':
         info_plist={
             'NSHighResolutionCapable': True,
             'LSMinimumSystemVersion': '11.0',
-            'CFBundleShortVersionString': '0.1.0',
+            'CFBundleShortVersionString': __version__,
+            'CFBundleVersion': __version__,
         },
     )
