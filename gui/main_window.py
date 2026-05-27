@@ -436,6 +436,8 @@ class FittingMainWindow(QMainWindow):
             release is found.
         """
         # Refuse to start a second check while one is in flight.
+        # Note: completion slots null this out *before* the worker is
+        # deleteLater'd, so isRunning() is never called on a deleted QObject.
         if self._update_worker is not None and self._update_worker.isRunning():
             return
         if not silent:
@@ -446,11 +448,10 @@ class FittingMainWindow(QMainWindow):
         self._update_worker = worker
         worker.finished.connect(lambda info: self._on_update_check_done(info, silent=silent))
         worker.error.connect(lambda msg: self._on_update_check_error(msg, silent=silent))
-        worker.finished.connect(worker.deleteLater)
-        worker.error.connect(worker.deleteLater)
         worker.start()
 
     def _on_update_check_done(self, info: dict, *, silent: bool) -> None:
+        self._discard_update_worker()
         if not silent:
             self._act_check_updates.setEnabled(True)
             self._statusbar.showMessage('Ready')
@@ -466,11 +467,24 @@ class FittingMainWindow(QMainWindow):
             )
 
     def _on_update_check_error(self, msg: str, *, silent: bool) -> None:
+        self._discard_update_worker()
         if silent:
             return  # Offline / rate-limited / etc. — stay quiet.
         self._act_check_updates.setEnabled(True)
         self._statusbar.showMessage('Ready')
         QMessageBox.warning(self, 'Could not check for updates', msg)
+
+    def _discard_update_worker(self) -> None:
+        """Clear the worker reference and schedule the QObject for deletion.
+
+        Must run before ``deleteLater()`` so a later call to
+        :meth:`_run_update_check` doesn't try to invoke ``isRunning()`` on
+        an already-deleted C++ object.
+        """
+        worker = self._update_worker
+        self._update_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
 
 def _app_icon_path() -> str | None:
