@@ -1,0 +1,35 @@
+name: Auto-tag on version bump
+
+# When _version.py changes on main, create and push the matching vX.Y.Z tag.
+# That tag in turn triggers .github/workflows/build_and_release.yml.
+# If the tag already exists (e.g. _version.py was touched without bumping),
+# this is a no-op.
+
+on:
+  push:
+    branches: [main]
+    paths: ['_version.py']
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create tag if version is new
+        run: |
+          V=$(python -c "from _version import __version__; print(__version__)")
+          TAG="v$V"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; nothing to do."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Created and pushed $TAG."
