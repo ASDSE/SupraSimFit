@@ -1,9 +1,9 @@
 """Tests for the PerkinElmer EnSight CSV plate-reader.
 
-Real fixtures come from Panos's europium-zeolite assay (the same files
-that produced the legacy ``Normal tryptamine 424.txt`` after Panos's
-colleague's pre-treatment script). Golden assertions cross-check the
-reader output against that hand-flattened file row-for-row.
+Real fixtures are europium-zeolite titration plates that were
+previously hand-flattened to ``Normal tryptamine 424.txt`` by an
+external pre-treatment script; that flattened file is the golden
+row-for-row baseline.
 """
 
 from pathlib import Path
@@ -173,6 +173,32 @@ class TestParsing:
         assert fl_details.get("Excitation Wavelength [nm]") == "371"
         assert fl_details.get("Emission Wavelength [nm]") == "424"
         assert meta["protocol"]["Protocol Name"] == "Euzeolite@MDAP endpoint"
+
+    def test_trailing_section_does_not_bleed_into_details(self, tmp_path):
+        """`Post Processing Sequence` rows must not parse into the last
+        `Details of Measurement Sequence` Operation block."""
+        base = _minimal_ensight(n_channels=1, n_rows=3, n_cols=4)
+        # Append a Post Processing Sequence with key/value rows that, if the
+        # section parser ran past the heading, would land on the Operation.
+        leaked = base + dedent(
+            """
+            Post Processing Sequence
+
+            EXPORT
+            Export Format,,,CSV_PLATE
+            Format Options,,,Standard
+            """
+        )
+        p = tmp_path / "with_trailing.csv"
+        p.write_text(leaked)
+        df = EnsightReader().read(p)
+        ch_meta = df.attrs[ENSIGHT_METADATA_KEY]["channels"]["Channel 1"]
+        # Real channel keys survive.
+        assert ch_meta.get("Excitation Wavelength [nm]") == "371"
+        assert ch_meta.get("Emission Wavelength [nm]") == "424"
+        # And nothing from the trailing section leaked into the channel.
+        assert "Export Format" not in ch_meta
+        assert "Format Options" not in ch_meta
 
     def test_minimal_single_channel(self, tmp_path):
         p = tmp_path / "min.csv"

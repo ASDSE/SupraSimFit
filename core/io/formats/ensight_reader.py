@@ -253,10 +253,11 @@ class EnsightReader:
             ...
 
         Values are in column 3 (extra empty cells from CSV padding). The
-        section ends at the next blank line *followed by* a non-key line,
-        or at end-of-file. ``Details of Measurement Sequence`` uses the
-        same shape but its keys repeat (one per Operation), so callers
-        post-process via :meth:`_block_details`.
+        section ends at the next heading line — a non-empty line with no
+        commas (e.g. ``Post Processing Sequence`` follows ``Details of
+        Measurement Sequence``). ``Details of Measurement Sequence`` uses
+        the same shape but its keys repeat (one per Operation), so
+        callers post-process via :meth:`_block_details`.
         """
         out: Dict[str, str] = {}
         try:
@@ -266,13 +267,12 @@ class EnsightReader:
 
         for j in range(start + 1, len(lines)):
             line = lines[j]
-            if "," not in line:
-                continue
             stripped = line.strip()
             if not stripped:
                 continue
-            # A new top-level section is a non-comma-separated heading. Stop.
-            if "," not in stripped and stripped != heading:
+            # A non-empty line with no commas is the next section heading;
+            # stop here so we don't bleed its rows into this section.
+            if "," not in stripped:
                 break
             key, _, rest = line.partition(",")
             key = key.strip()
