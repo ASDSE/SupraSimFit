@@ -134,9 +134,17 @@ class JascoReader:
         return header, data_lines, extended
 
     @staticmethod
-    def _parse_extended(lines: List[str]) -> Dict[str, Dict[str, str]]:
-        """Parse the bracketed-INI extended-info block into nested dicts."""
-        sections: Dict[str, Dict[str, str]] = {}
+    def _parse_extended(
+        lines: List[str],
+    ) -> Dict[str, Dict[str, str | List[str]]]:
+        """Parse the bracketed-INI extended-info block into nested dicts.
+
+        Real JASCO exports may repeat a key within a section (e.g. two
+        ``Accessory`` lines for two stacked accessories). Single
+        occurrences are stored as plain strings; the second and later
+        occurrences promote the value to a list so no data is lost.
+        """
+        sections: Dict[str, Dict[str, str | List[str]]] = {}
         current: str | None = None
         for ln in lines:
             stripped = ln.strip()
@@ -151,8 +159,18 @@ class JascoReader:
                 continue
             key, _, value = ln.partition(",")
             key = key.strip()
-            if key:
-                sections[current][key] = value.strip()
+            if not key:
+                continue
+            value = value.strip()
+            bucket = sections[current]
+            if key in bucket:
+                existing = bucket[key]
+                if isinstance(existing, list):
+                    existing.append(value)
+                else:
+                    bucket[key] = [existing, value]
+            else:
+                bucket[key] = value
         return sections
 
     @staticmethod

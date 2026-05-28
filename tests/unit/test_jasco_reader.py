@@ -3,8 +3,8 @@
 Covers the parts of the format that vary file-to-file (NPOINTS, x-axis
 unit, presence/absence of extended-info sections) and the structural
 anchors the reader leans on (``XYDATA`` marker, blank-line data
-terminator). Includes a golden-file check against the real
-``cb7in30umbc_1-1.csv`` titration Florian provided.
+terminator). Includes a golden-file check against the bundled
+``cb7in30umbc_1-1.csv`` titration fixture.
 """
 
 from pathlib import Path
@@ -66,7 +66,7 @@ class TestSniffing:
 
 class TestParsing:
     def test_real_file_golden(self):
-        """Florian's real titration — known counts and titrant stock."""
+        """Real titration fixture — known counts and titrant stock."""
         if not REAL_FIXTURE.exists():
             pytest.skip("Real JASCO fixture missing")
         df = JascoReader().read(REAL_FIXTURE)
@@ -136,6 +136,37 @@ class TestParsing:
         p.write_text(_minimal_jasco(x_unit="floops"))
         with pytest.raises(ValueError, match="floops"):
             JascoReader().read(p)
+
+    def test_repeated_keys_preserved_as_list(self):
+        """Real JASCO exports stack accessories — both must survive."""
+        if not REAL_FIXTURE.exists():
+            pytest.skip("Real JASCO fixture missing")
+        df = JascoReader().read(REAL_FIXTURE)
+        meas = df.attrs["jasco_metadata"]["sections"]["Measurement Information"]
+        accessory = meas["Accessory"]
+        accessory_sn = meas["Accessory S/N"]
+        assert isinstance(accessory, list)
+        assert isinstance(accessory_sn, list)
+        # The bundled file lists STR-812 + ATS-827; both must be retained.
+        assert "STR-812" in accessory
+        assert "ATS-827" in accessory
+        # And serial numbers should be paired, not collapsed.
+        assert len(accessory) == len(accessory_sn) == 2
+
+    def test_single_key_still_returns_string(self, tmp_path):
+        """Non-duplicate keys keep the plain-string value type."""
+        p = tmp_path / "single.csv"
+        extra = dedent(
+            """
+            [Measurement Information]
+            Instrument name,FP-8300
+            """
+        )
+        p.write_text(_minimal_jasco(extra_extended=extra))
+        df = JascoReader().read(p)
+        section = df.attrs["jasco_metadata"]["sections"]["Measurement Information"]
+        assert section["Instrument name"] == "FP-8300"
+        assert isinstance(section["Instrument name"], str)
 
     def test_extended_info_parsed(self, tmp_path):
         extra = dedent(
