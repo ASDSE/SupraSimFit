@@ -145,7 +145,7 @@ Post Processing Sequence
 EXPORT
 Export Format,,,CSV_PLATE
 Format Options,,,Standard
-Export Path,,,C:\Users\MMD-User\Documents\Panos
+Export Path,,,C:\Users\MMD-User\Documents\Researcher
 File Name,,,MDAPYFAU[ProtocolName] [MeasurementDate]
 
 Comments:
