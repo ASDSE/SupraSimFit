@@ -18,6 +18,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+# Importing the package (not just registry) triggers the side-effect
+# registration of the built-in readers (TxtReader, CsvReader, XlsxReader)
+# via core.io.__init__. Without this, running this module in isolation
+# (e.g. pytest tests/unit/test_io_registry.py::TestRegistry::test_existing_extensions_still_dispatch)
+# would find an empty registry and become order-dependent.
+import core.io  # noqa: F401
 from core.io.registry import READERS, get_reader, register_reader
 
 
