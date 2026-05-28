@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -28,6 +29,11 @@ from core.data_processing.concentration import (
 from core.data_processing.measurement_set import MeasurementSet
 from core.io import load_measurements
 from core.io.formats.bmg_reader import BMG_METADATA_KEY, BMG_PLACEHOLDER_KEY
+from core.io.formats.ensight_reader import (
+    ENSIGHT_CHANNEL_COLUMN,
+    ENSIGHT_METADATA_KEY,
+    format_channel_label,
+)
 from core.io.registry import READERS
 from core.units import Q_
 from gui.widgets.info_button import InfoGroupBox
@@ -255,9 +261,12 @@ class DataPanel(InfoGroupBox):
             return
         try:
             df = load_measurements(path)
+            df = self._select_ensight_channel(df)
+            if df is None:
+                return
             extra_metadata: dict = {
                 k: df.attrs[k]
-                for k in (BMG_PLACEHOLDER_KEY, BMG_METADATA_KEY)
+                for k in (BMG_PLACEHOLDER_KEY, BMG_METADATA_KEY, ENSIGHT_METADATA_KEY)
                 if k in df.attrs
             }
             ms = MeasurementSet.from_dataframe(
@@ -276,6 +285,44 @@ class DataPanel(InfoGroupBox):
         self._imported_unit = DEFAULT_IMPORTED_UNIT
         self._refresh_after_load()
         self.data_loaded.emit(ms)
+
+    def _select_ensight_channel(self, df):
+        """Filter a multi-channel EnSight frame down to one user-picked channel.
+
+        Returns the channel-filtered DataFrame, or ``None`` if the user
+        cancelled the picker. Single-channel files just drop the column.
+        Non-EnSight frames pass through unchanged.
+        """
+        if ENSIGHT_CHANNEL_COLUMN not in df.columns:
+            return df
+        channels = list(df[ENSIGHT_CHANNEL_COLUMN].unique())
+        if len(channels) == 1:
+            return df.drop(columns=ENSIGHT_CHANNEL_COLUMN)
+        meta = df.attrs.get(ENSIGHT_METADATA_KEY, {})
+        labels = [format_channel_label(c, meta) for c in channels]
+        label, ok = QInputDialog.getItem(
+            self,
+            "Select EnSight channel",
+            "This file contains multiple optical channels. Pick one to load:",
+            labels,
+            0,
+            False,
+        )
+        if not ok:
+            return None
+        picked = channels[labels.index(label)]
+        out = df[df[ENSIGHT_CHANNEL_COLUMN] == picked].drop(
+            columns=ENSIGHT_CHANNEL_COLUMN
+        )
+        # Preserve df.attrs through the filter
+        out.attrs.update(df.attrs)
+        out.attrs.setdefault(ENSIGHT_METADATA_KEY, {})
+        if isinstance(out.attrs.get(ENSIGHT_METADATA_KEY), dict):
+            out.attrs[ENSIGHT_METADATA_KEY] = {
+                **out.attrs[ENSIGHT_METADATA_KEY],
+                "selected_channel": picked,
+            }
+        return out
 
     def clear(self) -> None:
         self._ms = None
