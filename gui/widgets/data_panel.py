@@ -13,7 +13,6 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -135,6 +134,19 @@ Repeated-header CSVs (the same shape as TXT) are also accepted.</p>
 """
 
 
+def _placeholder_source_name(metadata: dict) -> str:
+    """Name the import format for the concentration cue, from metadata.
+
+    Source-agnostic: returns the real format when known, a neutral fallback
+    otherwise. Never hardcodes a single instrument.
+    """
+    if ENSIGHT_METADATA_KEY in metadata:
+        return "This EnSight export"
+    if BMG_METADATA_KEY in metadata:
+        return "This BMG export"
+    return "This plate-reader export"
+
+
 def _fmt_cell(value: float) -> str:
     """Format a float for the concentration table — short, scientific when needed."""
     if value == 0.0:
@@ -175,6 +187,11 @@ class DataPanel(InfoGroupBox):
         self._face_values: np.ndarray = np.array([], dtype=np.float64)
         self._imported_unit: str = DEFAULT_IMPORTED_UNIT
         self._suppress_cell_signal: bool = False
+        # Multi-channel support: readers that emit a `channel` column (e.g.
+        # EnSight) keep ALL channels in memory here so the user can switch
+        # between them without re-importing the file.
+        self._multi_channel_df = None
+        self._channels: list[str] = []
         self._setup_ui(initial_display_unit)
 
     # ------------------------------------------------------------------
@@ -209,7 +226,30 @@ class DataPanel(InfoGroupBox):
         self._display_unit_combo.currentTextChanged.connect(self.display_unit_changed.emit)
         units_grid.addWidget(self._display_unit_combo, 1, 1)
 
+        # Channel selector — enabled only when the loaded file carries more
+        # than one channel (keyed off the presence of a `channel` column, not
+        # any single format). Switching rebuilds the MeasurementSet in-memory.
+        units_grid.addWidget(QLabel("Channel:"), 2, 0)
+        self._channel_combo = QComboBox()
+        self._channel_combo.setEnabled(False)
+        self._channel_combo.setToolTip(
+            "Optical channel. Enabled when the imported file has multiple channels."
+        )
+        self._channel_combo.currentIndexChanged.connect(self._on_channel_changed)
+        units_grid.addWidget(self._channel_combo, 2, 1)
+
         layout.addLayout(units_grid)
+
+        # Inline cue shown when imported data has no real concentrations
+        # (plate-reader exports). Source-agnostic; auto-hidden otherwise.
+        self._placeholder_banner = QLabel("")
+        self._placeholder_banner.setWordWrap(True)
+        self._placeholder_banner.setStyleSheet(
+            "QLabel { background: #fff3cd; color: #664d03; "
+            "border: 1px solid #ffe69c; border-radius: 4px; padding: 6px; }"
+        )
+        self._placeholder_banner.setVisible(False)
+        layout.addWidget(self._placeholder_banner)
 
         # Concentration table — single editable column of face values.
         # Every successful cell commit rebuilds the MeasurementSet immediately;
@@ -252,7 +292,14 @@ class DataPanel(InfoGroupBox):
     # ------------------------------------------------------------------
 
     def load_file(self, path: str | None = None) -> None:
-        """Load a measurement file, optionally bypassing the dialog."""
+        """Load a measurement file, optionally bypassing the dialog.
+
+        The import path is identical for every format: parse → build the
+        MeasurementSet → emit. No modal dialog runs mid-load. When the
+        parsed frame carries multiple channels, the full frame is kept in
+        memory and the first channel is shown; the Channel combo lets the
+        user switch without re-reading the file.
+        """
         if path is None:
             path, _ = QFileDialog.getOpenFileName(
                 self, "Load Measurement File", "", _build_file_filter()
@@ -261,21 +308,22 @@ class DataPanel(InfoGroupBox):
             return
         try:
             df = load_measurements(path)
-            df = self._select_ensight_channel(df)
-            if df is None:
-                return
-            extra_metadata: dict = {
-                k: df.attrs[k]
-                for k in (BMG_PLACEHOLDER_KEY, BMG_METADATA_KEY, ENSIGHT_METADATA_KEY)
-                if k in df.attrs
-            }
-            ms = MeasurementSet.from_dataframe(
-                df, source_file=str(path), **extra_metadata
-            )
         except Exception as exc:
             QMessageBox.warning(self, "Load Error", f"Could not load file:\n{exc}")
             return
 
+        has_channels = ENSIGHT_CHANNEL_COLUMN in df.columns
+        channels = list(df[ENSIGHT_CHANNEL_COLUMN].unique()) if has_channels else []
+        try:
+            df_used = self._slice_channel(df, channels[0]) if channels else df
+            ms = self._make_ms(df_used, str(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Load Error", f"Could not load file:\n{exc}")
+            return
+
+        # Commit state only after a successful parse + build.
+        self._multi_channel_df = df if has_channels else None
+        self._channels = channels
         self._ms = ms
         self._source_path = path
         # Numbers in the file are taken as face values (no implicit unit
@@ -283,51 +331,101 @@ class DataPanel(InfoGroupBox):
         # historical loader behavior and preserves fits on existing files.
         self._face_values = np.asarray(ms.concentrations, dtype=np.float64).copy()
         self._imported_unit = DEFAULT_IMPORTED_UNIT
+        self._populate_channel_combo(df)
         self._refresh_after_load()
+        self._update_placeholder_cue(ms)
         self.data_loaded.emit(ms)
 
-    def _select_ensight_channel(self, df):
-        """Filter a multi-channel EnSight frame down to one user-picked channel.
+    @staticmethod
+    def _make_ms(df, source_file: str) -> MeasurementSet:
+        """Build a MeasurementSet from a single-channel frame, forwarding the
+        placeholder/metadata flags that downstream code keys off."""
+        extra_metadata = {
+            k: df.attrs[k]
+            for k in (BMG_PLACEHOLDER_KEY, BMG_METADATA_KEY, ENSIGHT_METADATA_KEY)
+            if k in df.attrs
+        }
+        return MeasurementSet.from_dataframe(
+            df, source_file=source_file, **extra_metadata
+        )
 
-        Returns the channel-filtered DataFrame, or ``None`` if the user
-        cancelled the picker. Single-channel files just drop the column.
-        Non-EnSight frames pass through unchanged.
-        """
-        if ENSIGHT_CHANNEL_COLUMN not in df.columns:
-            return df
-        channels = list(df[ENSIGHT_CHANNEL_COLUMN].unique())
-        if len(channels) == 1:
-            return df.drop(columns=ENSIGHT_CHANNEL_COLUMN)
-        meta = df.attrs.get(ENSIGHT_METADATA_KEY, {})
-        labels = [format_channel_label(c, meta) for c in channels]
-        label, ok = QInputDialog.getItem(
-            self,
-            "Select EnSight channel",
-            "This file contains multiple optical channels. Pick one to load:",
-            labels,
-            0,
-            False,
+    @staticmethod
+    def _slice_channel(df, channel: str):
+        """Return the single-channel sub-frame for *channel*, attrs preserved."""
+        out = (
+            df[df[ENSIGHT_CHANNEL_COLUMN] == channel]
+            .drop(columns=ENSIGHT_CHANNEL_COLUMN)
+            .reset_index(drop=True)
         )
-        if not ok:
-            return None
-        picked = channels[labels.index(label)]
-        out = df[df[ENSIGHT_CHANNEL_COLUMN] == picked].drop(
-            columns=ENSIGHT_CHANNEL_COLUMN
-        )
-        # Preserve df.attrs through the filter
         out.attrs.update(df.attrs)
-        out.attrs.setdefault(ENSIGHT_METADATA_KEY, {})
         if isinstance(out.attrs.get(ENSIGHT_METADATA_KEY), dict):
             out.attrs[ENSIGHT_METADATA_KEY] = {
                 **out.attrs[ENSIGHT_METADATA_KEY],
-                "selected_channel": picked,
+                "selected_channel": channel,
             }
         return out
+
+    def _populate_channel_combo(self, df) -> None:
+        """Fill the channel combo from the loaded frame; disable if ≤1 channel."""
+        meta = df.attrs.get(ENSIGHT_METADATA_KEY, {}) if self._channels else {}
+        self._channel_combo.blockSignals(True)
+        self._channel_combo.clear()
+        for ch in self._channels:
+            self._channel_combo.addItem(format_channel_label(ch, meta), ch)
+        self._channel_combo.setCurrentIndex(0 if self._channels else -1)
+        self._channel_combo.blockSignals(False)
+        self._channel_combo.setEnabled(len(self._channels) > 1)
+
+    def _on_channel_changed(self, _index: int) -> None:
+        """Rebuild the MeasurementSet for the newly selected channel in-memory.
+
+        The concentration vector is physically identical across channels
+        (same plate columns), so a vector the user has already entered is
+        carried over; everything channel-specific (signals, fit, outliers)
+        resets via the downstream ``data_loaded`` handler.
+        """
+        if self._multi_channel_df is None or not self._channels:
+            return
+        channel = self._channel_combo.currentData()
+        if channel is None:
+            return
+        # Has the user supplied real concentrations yet? Any edit drops the
+        # placeholder flag, so its absence means "real values are in place".
+        keep_entered = not (
+            self._ms is not None and self._ms.metadata.get(BMG_PLACEHOLDER_KEY)
+        )
+        try:
+            ms = self._make_ms(
+                self._slice_channel(self._multi_channel_df, channel),
+                self._source_path or "",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Channel Error", f"Could not switch channel:\n{exc}")
+            return
+
+        reuse = keep_entered and self._face_values.size == ms.n_points
+        self._ms = ms
+        if not reuse:
+            self._face_values = np.asarray(ms.concentrations, dtype=np.float64).copy()
+        self._refresh_after_load()
+        if reuse:
+            # Re-apply the entered vector to the new channel (emits data_loaded).
+            self._push_buffer_to_ms()
+        else:
+            self._update_placeholder_cue(ms)
+            self.data_loaded.emit(ms)
 
     def clear(self) -> None:
         self._ms = None
         self._source_path = None
         self._face_values = np.array([], dtype=np.float64)
+        self._multi_channel_df = None
+        self._channels = []
+        self._channel_combo.blockSignals(True)
+        self._channel_combo.clear()
+        self._channel_combo.blockSignals(False)
+        self._channel_combo.setEnabled(False)
+        self._placeholder_banner.setVisible(False)
         self._file_label.setText("No file loaded")
         self._info_label.setText("")
         self._populate_table()
@@ -352,8 +450,8 @@ class DataPanel(InfoGroupBox):
     def focus_concentration_table(self) -> None:
         """Bring keyboard focus to the inline table.
 
-        Public hook for callers (e.g. BMG import prompt) that previously
-        opened the modal dialog.
+        Public hook for callers (e.g. the fit-time placeholder guard) and
+        for the post-import concentration cue.
         """
         if self._ms is None:
             return
@@ -361,6 +459,25 @@ class DataPanel(InfoGroupBox):
         if self._conc_table.rowCount() > 0:
             self._conc_table.setCurrentCell(0, 0)
             self._conc_table.editItem(self._conc_table.item(0, 0))
+
+    def _update_placeholder_cue(self, ms: MeasurementSet | None) -> None:
+        """Show/hide the inline 'enter concentrations' banner.
+
+        Source-agnostic: the message names the actual import format derived
+        from metadata, never hardcodes one. Shown only while placeholder
+        concentrations are in place; hidden once real values are entered.
+        """
+        if ms is not None and ms.metadata.get(BMG_PLACEHOLDER_KEY):
+            source = _placeholder_source_name(ms.metadata)
+            self._placeholder_banner.setText(
+                f"{source} has no concentration values — enter the real "
+                f"concentrations below before fitting."
+            )
+            self._placeholder_banner.setVisible(True)
+            self.focus_concentration_table()
+        else:
+            self._placeholder_banner.clear()
+            self._placeholder_banner.setVisible(False)
 
     # ------------------------------------------------------------------
     # Slots
@@ -413,6 +530,9 @@ class DataPanel(InfoGroupBox):
             QMessageBox.warning(self, "Error", f"Failed to apply concentrations:\n{exc}")
             return
         self._update_info()
+        # Applying real concentrations drops the placeholder flag, so the
+        # inline cue must re-evaluate (and hide) here too.
+        self._update_placeholder_cue(self._ms)
         self.data_loaded.emit(self._ms)
 
     def _on_load_concentrations(self) -> None:
