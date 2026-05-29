@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
 pytest.importorskip("PyQt6")
+
+ENSIGHT_FIXTURE = (
+    Path(__file__).parent.parent.parent / "data" / "ensight" / "tryptamine.csv"
+)
 
 
 @pytest.fixture(scope="module")
@@ -114,3 +120,167 @@ class TestDisplayUnitSignal:
         # Display unit is plot-only state — concentrations are untouched,
         # so no data_loaded cascade should fire.
         assert emissions == []
+
+
+def _multi_channel_frame():
+    """Two-channel placeholder frame: chA signals 0.., chB signals 1000..."""
+    rows = []
+    for ch, base in [("chA", 0.0), ("chB", 1000.0)]:
+        for r in range(2):
+            for i in range(3):
+                rows.append(
+                    {
+                        "concentration": float(i + 1),  # placeholders 1..3
+                        "signal": base + r * 10 + i,
+                        "replica": r,
+                        "channel": ch,
+                    }
+                )
+    df = pd.DataFrame(rows)
+    df.attrs["bmg_placeholder_concentrations"] = True
+    df.attrs["ensight_metadata"] = {"channels": {"chA": {}, "chB": {}}}
+    return df
+
+
+@pytest.fixture
+def multi_channel_panel(qapp):
+    """A DataPanel set up as ``load_file`` would leave it for a 2-channel file."""
+    from gui.widgets.data_panel import DataPanel
+
+    panel = DataPanel()
+    df = _multi_channel_frame()
+    panel._multi_channel_df = df
+    panel._channels = ["chA", "chB"]
+    panel._source_path = "fake_ensight.csv"
+    ms0 = panel._make_ms(panel._slice_channel(df, "chA"), "fake_ensight.csv")
+    panel._ms = ms0
+    panel._face_values = np.asarray(ms0.concentrations, dtype=np.float64).copy()
+    panel._imported_unit = "M"
+    panel._populate_channel_combo(df)
+    panel._refresh_after_load()
+    panel._update_placeholder_cue(ms0)
+    return panel
+
+
+class TestChannelCombo:
+    """The Channel combo is enabled only for multi-channel data."""
+
+    def test_single_channel_combo_disabled(self, loaded_panel):
+        # loaded_panel comes from a plain (no `channel` column) frame.
+        assert not loaded_panel._channel_combo.isEnabled()
+        assert loaded_panel._channels == []
+
+    def test_multi_channel_combo_enabled_and_lists_channels(self, multi_channel_panel):
+        combo = multi_channel_panel._channel_combo
+        assert combo.isEnabled()
+        assert combo.count() == 2
+        assert [combo.itemData(i) for i in range(combo.count())] == ["chA", "chB"]
+
+    def test_switch_channel_adopts_new_signals(self, multi_channel_panel):
+        emissions = []
+        multi_channel_panel.data_loaded.connect(lambda ms: emissions.append(ms))
+
+        before = multi_channel_panel.measurement_set().signals.copy()
+        multi_channel_panel._channel_combo.setCurrentIndex(1)  # → chB
+
+        after = multi_channel_panel.measurement_set().signals
+        assert emissions, "switching channel must emit data_loaded"
+        assert not np.array_equal(before, after)
+        # chB signals are offset by 1000 from chA.
+        np.testing.assert_allclose(after, before + 1000.0)
+
+    def test_switch_preserves_entered_concentrations(self, multi_channel_panel):
+        # Enter real concentrations on chA (drops the placeholder flag).
+        real = np.array([1e-6, 2e-6, 3e-6])
+        multi_channel_panel._face_values = real.copy()
+        multi_channel_panel._imported_unit = "M"
+        multi_channel_panel._push_buffer_to_ms()
+        assert not multi_channel_panel.measurement_set().metadata.get(
+            "bmg_placeholder_concentrations"
+        )
+
+        # Switch to chB — concentrations must carry over, signals must change.
+        multi_channel_panel._channel_combo.setCurrentIndex(1)
+        ms = multi_channel_panel.measurement_set()
+        np.testing.assert_allclose(ms.concentrations, real)
+        np.testing.assert_allclose(ms.signals, [[1000, 1001, 1002], [1010, 1011, 1012]])
+
+    def test_switch_while_placeholder_adopts_new_placeholders(self, multi_channel_panel):
+        # No real concentrations entered → placeholders persist across switch.
+        multi_channel_panel._channel_combo.setCurrentIndex(1)
+        ms = multi_channel_panel.measurement_set()
+        assert ms.metadata.get("bmg_placeholder_concentrations")
+        np.testing.assert_allclose(ms.concentrations, [1.0, 2.0, 3.0])
+
+
+class TestPlaceholderBanner:
+    """The inline concentration cue is source-agnostic and auto-clears."""
+
+    def test_banner_shown_for_placeholder_data(self, multi_channel_panel):
+        banner = multi_channel_panel._placeholder_banner
+        assert not banner.isHidden()
+        assert "EnSight" in banner.text()
+        assert "concentration" in banner.text().lower()
+
+    def test_banner_hidden_after_entering_concentrations(self, multi_channel_panel):
+        multi_channel_panel._face_values = np.array([1e-6, 2e-6, 3e-6])
+        multi_channel_panel._push_buffer_to_ms()
+        assert multi_channel_panel._placeholder_banner.isHidden()
+
+    def test_banner_hidden_for_non_placeholder_data(self, loaded_panel):
+        # loaded_panel has real concentrations and no placeholder flag.
+        loaded_panel._update_placeholder_cue(loaded_panel.measurement_set())
+        assert loaded_panel._placeholder_banner.isHidden()
+
+    def test_banner_names_bmg_source(self, qapp):
+        from gui.widgets.data_panel import _placeholder_source_name
+
+        assert "BMG" in _placeholder_source_name(
+            {"bmg_metadata": {}, "bmg_placeholder_concentrations": True}
+        )
+        assert "EnSight" in _placeholder_source_name({"ensight_metadata": {}})
+        assert _placeholder_source_name({}) == "This plate-reader export"
+
+
+class TestEnsightLoadIntegration:
+    """End-to-end load of the real EnSight fixture through ``load_file``."""
+
+    def test_load_real_ensight_no_modal_multichannel(self, qapp, qtbot=None):
+        if not ENSIGHT_FIXTURE.exists():
+            pytest.skip("EnSight fixture missing")
+        from gui.widgets.data_panel import DataPanel
+
+        panel = DataPanel()
+        emissions = []
+        panel.data_loaded.connect(lambda ms: emissions.append(ms))
+
+        # load_file must return without any modal interaction.
+        panel.load_file(str(ENSIGHT_FIXTURE))
+
+        assert panel.measurement_set() is not None
+        assert len(emissions) == 1
+        # tryptamine.csv has three optical channels.
+        assert panel._channel_combo.isEnabled()
+        assert panel._channel_combo.count() == 3
+        # Placeholder data → banner shown, names EnSight.
+        assert not panel._placeholder_banner.isHidden()
+        assert "EnSight" in panel._placeholder_banner.text()
+        # 8 replicas × 12 points per channel.
+        ms = panel.measurement_set()
+        assert ms.n_replicas == 8
+        assert ms.n_points == 12
+
+    def test_switch_channel_resets_via_emit(self, qapp):
+        if not ENSIGHT_FIXTURE.exists():
+            pytest.skip("EnSight fixture missing")
+        from gui.widgets.data_panel import DataPanel
+
+        panel = DataPanel()
+        panel.load_file(str(ENSIGHT_FIXTURE))
+        emissions = []
+        panel.data_loaded.connect(lambda ms: emissions.append(ms))
+
+        first = panel.measurement_set().signals.copy()
+        panel._channel_combo.setCurrentIndex(2)  # Fluorescence intensity 1
+        assert emissions, "channel switch must re-emit data_loaded"
+        assert not np.array_equal(first, panel.measurement_set().signals)

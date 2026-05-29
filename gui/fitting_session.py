@@ -126,15 +126,16 @@ class FittingSession(QWidget):
             QMessageBox.warning(self, 'No Data', 'Load a measurement file first.')
             return
 
-        # BMG placeholder guard — fitting with column indices 1..N as
+        # Placeholder guard — fitting with column indices 1..N as
         # concentrations would silently produce meaningless Ka values.
+        # Source-agnostic: any plate-reader import that lacks concentrations
+        # sets this flag, regardless of instrument.
         if ms.metadata.get(BMG_PLACEHOLDER_KEY):
             QMessageBox.warning(
                 self,
                 'Concentrations Required',
-                'BMG import: placeholder concentrations are still in '
-                'place. Enter the real concentration vector in the Data '
-                'panel and click Apply before running the fit.',
+                'This dataset has placeholder concentrations. Enter the real '
+                'concentration vector in the Data panel before running the fit.',
             )
             self._data_panel.focus_concentration_table()
             return
@@ -638,30 +639,12 @@ class FittingSession(QWidget):
         self._refresh_plot()
         active = ms.n_active
         total = ms.n_replicas
-        self.status_message.emit(f'Loaded: {ms.n_points} pts × {total} replicas — {active}/{total} active')
-
+        msg = f'Loaded: {ms.n_points} pts × {total} replicas — {active}/{total} active'
         if ms.metadata.get(BMG_PLACEHOLDER_KEY):
-            self._maybe_show_bmg_prompt(ms)
-
-    def _maybe_show_bmg_prompt(self, ms: MeasurementSet) -> None:
-        """Surface the BMG placeholder warning on every BMG import.
-
-        No opt-out: the fit-time guard blocks fitting until real
-        concentrations are supplied, so a one-shot notification here is
-        the lowest-friction path to making that contract visible.
-        """
-        from gui.dialogs.bmg_prompt_dialog import BMGConcentrationPromptDialog
-
-        source = ms.metadata.get('source_file', '')
-        filename = Path(source).name if source else '(unknown)'
-        dlg = BMGConcentrationPromptDialog(
-            filename=filename,
-            n_replicas=ms.n_replicas,
-            n_points=ms.n_points,
-            parent=self,
-        )
-        if dlg.exec() == dlg.DialogCode.Accepted:
-            self._data_panel.focus_concentration_table()
+            # The Data panel shows an inline cue; mirror it transiently in the
+            # status bar. No modal — import is never interrupted.
+            msg += ' — enter concentrations before fitting'
+        self.status_message.emit(msg)
 
     def _on_data_cleared(self) -> None:
         self._state.measurement_set = None

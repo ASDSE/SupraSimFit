@@ -20,6 +20,7 @@ import pandas as pd
 # *before* the generic csv_reader fallback so they get first claim on dispatch.
 from core.io.formats import txt  # noqa: F401
 from core.io.formats import jasco_reader  # noqa: F401
+from core.io.formats import ensight_reader  # noqa: F401
 from core.io.formats import csv_reader  # noqa: F401
 from core.io.formats import xlsx_reader  # noqa: F401
 from core.io.registry import get_reader, get_writer
