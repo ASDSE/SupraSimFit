@@ -1,6 +1,13 @@
+[tool.uv]
+package = false
+
 [project]
 name = "fitting-app"
-version = "0.1.0"
+# This value is a stub required by PEP 621 / uv and is NOT the app version.
+# SupraSimFit ships as a PyInstaller binary, not a pip-installable package,
+# so this field is never consumed. The real, single source of truth is
+# `__version__` in `_version.py` at the repo root.
+version = "0.0.0"
 description = "GUI and CLI tools for analysing and fitting biochemical assay data with model-based parameter estimation"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -8,6 +15,7 @@ dependencies = [
     "matplotlib>=3.10.8",
     "numpy>=2.4.2",
     "openpyxl>=3.1.5",
+    "packaging>=26.0",
     "pandas>=3.0.0",
     "pint>=0.25.2",
     "pyqt6>=6.10.2",
