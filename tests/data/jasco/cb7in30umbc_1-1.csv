@@ -1,0 +1,98 @@
+TITLE,cb7in30umbc_1
+DATA TYPE,FLUORESCENCE SPECTRUM
+ORIGIN,JASCO
+OWNER,
+DATE,26/04/30
+TIME,12:55:09
+SPECTROMETER/DATA SYSTEM,
+LOCALE,1031
+XUNITS,Concentration [umol/L]
+YUNITS,INTENSITY
+FIRSTX,    0.0000
+LASTX,   46.1739
+NPOINTS,      31
+XYDATA
+0.0000,11.4842
+1.7612,107.393
+3.5050,200.677
+5.2315,291.555
+6.9412,381.821
+8.6341,470.941
+10.3107,550.802
+11.9710,647.104
+13.6154,731.743
+15.2440,797.887
+16.8571,893.573
+18.4550,967.232
+20.0377,1030.79
+21.6056,1109.14
+23.1589,1173.78
+24.6977,1237.8
+26.2222,1284.98
+27.7327,1335.68
+29.2294,1386
+30.7123,1413.39
+32.1818,1443.03
+33.6380,1477.48
+35.0811,1505.83
+36.5112,1528.19
+37.9286,1532.96
+39.3333,1544.71
+40.7257,1556.37
+42.1057,1564.34
+43.4737,1588.18
+44.8297,1577.96
+46.1739,1594.92
+
+##### Extended Information
+[Comments]
+Sample name,cb7in30umbc_1
+Comment
+User
+Division
+Company,KIT
+
+[Detailed Information]
+Creation date,30.04.2026 11:55
+
+Data array type,Non-linear data array
+Horizontal axis,Concentration [umol/L]
+Vertical axis,Int.
+Start,0 umol/L
+End,46.1739 umol/L
+Data points,31      
+
+[Measurement Information]
+Instrument name,FP8300-titrator
+Model name,FP-8300
+Serial No.,C048861450
+
+Accessory,STR-812
+Accessory S/N,C048861450
+
+Accessory,ATS-827
+Accessory S/N,A001061572
+
+Photometric mode,Em intensity
+Ex bandwidth,1 nm
+Em bandwidth,2.5 nm
+Response,1 sec
+Sensitivity,High
+Ex wavelength,415.0 nm
+Em wavelength,555.0 nm
+No. of cycles,1
+Shutter control,Open only for measurement
+Light source,Xe lamp
+Filter,Use
+
+Titration mode,Titration times
+Stage(1),Target times 30 times, S1 0.01 mL, S2 0.002 mL
+
+Sample conc.,Cell: 30 umol/L, S1: 0 umol/L, S2: 0 umol/L
+Titrant conc.,Cell: 0 umol/L, S1: 354 umol/L, S2: 0 umol/L
+
+Initial sample cell,2 mL
+Sample cell range,1.5 - 3 mL
+Syringe#1 range,0 - 1 mL
+Syringe#2 range,0 - 1 mL
+Syringe valve dir.,S1: Valve B, S2: Valve B
