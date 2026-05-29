@@ -486,6 +486,20 @@ class FittingMainWindow(QMainWindow):
         if worker is not None:
             worker.deleteLater()
 
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        """Block until any in-flight update check finishes before closing.
+
+        The startup check can still be running when the window closes (e.g.
+        the GitHub request is waiting on its 5 s socket timeout). Destroying
+        a running ``QThread`` aborts the app with
+        ``QThread: Destroyed while thread is still running``. ``wait()`` is
+        bounded by the worker's own 5 s timeout, so this is a short pause.
+        """
+        worker = self._update_worker
+        if worker is not None and worker.isRunning():
+            worker.wait()
+        super().closeEvent(event)
+
 
 def _app_icon_path() -> str | None:
     """Locate the bundled app icon for both source runs and PyInstaller bundles."""

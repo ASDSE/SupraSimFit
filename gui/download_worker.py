@@ -37,6 +37,17 @@ class DownloadWorker(QThread):
         super().__init__(parent)
         self._url = url
         self._dest = Path(dest)
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Request cooperative cancellation.
+
+        Safe to call from the GUI thread. The chunk loop in :meth:`run`
+        checks this flag between 64 KB reads, so cancellation takes effect
+        within one chunk. Lets the dialog stop an in-flight download before
+        the worker is destroyed instead of aborting on a running QThread.
+        """
+        self._cancelled = True
 
     def run(self) -> None:
         try:
@@ -50,12 +61,19 @@ class DownloadWorker(QThread):
                 done = 0
                 with open(self._dest, "wb") as f:
                     while True:
+                        if self._cancelled:
+                            break
                         chunk = resp.read(self._CHUNK)
                         if not chunk:
                             break
                         f.write(chunk)
                         done += len(chunk)
                         self.progress.emit(done, total)
+            if self._cancelled:
+                # Remove the partial file; stay silent (no signal) — the
+                # caller initiated the cancel and isn't waiting on a result.
+                self._dest.unlink(missing_ok=True)
+                return
             self.finished.emit(str(self._dest))
         except urllib.error.HTTPError as exc:
             self.error.emit(f"HTTP {exc.code}: {exc.reason}")

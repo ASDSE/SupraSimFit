@@ -175,3 +175,17 @@ class UpdateAvailableDialog(QDialog):
         self._download_btn.setEnabled(True)
         self._download_btn.setText(f"Download for {_os_label()}")
         QMessageBox.warning(self, "Download failed", msg)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        """Cancel and join an in-flight download before the dialog closes.
+
+        Closing via Close/Esc/window-close while the ``DownloadWorker`` is
+        running would otherwise destroy a live ``QThread`` and abort the
+        app. ``cancel()`` flips a flag the worker checks between 64 KB
+        chunks, so ``wait()`` returns almost immediately.
+        """
+        worker = self._download_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            worker.wait()
+        super().closeEvent(event)
