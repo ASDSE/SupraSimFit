@@ -16,6 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify tag matches __version__
+        run: |
+          APP_VER=$(python -c "from _version import __version__; print(__version__)")
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          if [ "$APP_VER" != "$TAG_VER" ]; then
+            echo "::error::_version.py says $APP_VER but tag is v$TAG_VER. Update _version.py and re-tag."
+            exit 1
+          fi
+          echo "Version $APP_VER matches tag v$TAG_VER."
+        shell: bash
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
