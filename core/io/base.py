@@ -18,6 +18,11 @@ class MeasurementReader(Protocol):
     Implementations must define:
     - extensions: tuple of supported file extensions (e.g., ('.txt',))
     - read(path) -> pd.DataFrame
+
+    Implementations may optionally define ``can_read(path) -> bool`` as a
+    classmethod for content-based dispatch when several readers share an
+    extension (e.g., generic CSV vs. JASCO CSV vs. EnSight CSV). Readers
+    that don't implement it are treated as always-accepting fallbacks.
     """
 
     extensions: tuple[str, ...]

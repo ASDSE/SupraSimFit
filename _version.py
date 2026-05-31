@@ -15,5 +15,5 @@ The pushed ``v*`` tag triggers build_and_release.yml, whose first step
 verifies the tag matches this value before building.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __github_repo__ = "ASDSE/SupraSimFit"

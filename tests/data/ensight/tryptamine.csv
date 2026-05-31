@@ -1,0 +1,161 @@
+EnSight Results from
+Protocol Name,Euzeolite@MDAP endpoint
+Measurement Date,2026-04-09 15:15:05
+
+
+Result for Time-resolved Fluorescence 1
+Barcode,Repeat,Loop no,Well scan x,Well scan y,Exc wl / filter,Ems wl,TRF Window,Analysis Parameter,Label-free Parameter,
+V-2026-04-09 15:15:05,1,,,,,,1,,,
+
+,1,2,3,4,5,6,7,8,9,10,11,12,
+A,15675,12020,10685,13235,8975,8825,10460,12355,9020,11855,10070,9940,
+B,11175,9865,10680,8535,8465,9030,9370,7590,9220,9015,10965,9540,
+C,11165,11110,11495,10505,11770,14670,11415,9010,10055,10450,10605,9590,
+D,10925,10065,9595,9475,9235,9105,9890,9885,10995,12770,9195,8815,
+E,11115,11345,10205,10030,11075,11010,9080,9610,11250,9380,8670,8745,
+F,8330,7940,8260,8115,8045,8075,7255,7385,8370,8845,9200,9900,
+G,10050,11230,8355,7650,9460,9725,8610,8640,6805,8495,7765,8520,
+H,8005,7435,7195,8945,7340,7395,7000,6900,7495,7995,7965,6940,
+
+
+Result for Time-resolved Fluorescence 2
+Barcode,Repeat,Loop no,Well scan x,Well scan y,Exc wl / filter,Ems wl,TRF Window,Analysis Parameter,Label-free Parameter,
+V-2026-04-09 15:15:05,1,,,,,,1,,,
+
+,1,2,3,4,5,6,7,8,9,10,11,12,
+A,11850,11920,9965,9290,10020,8595,8125,7510,7415,8695,8100,7435,
+B,9440,8600,7820,6955,6895,7115,7495,6755,7115,7655,8755,6120,
+C,9410,8855,8680,8130,9175,8945,8690,7115,8820,7450,8850,7765,
+D,9800,7925,8135,7235,7070,8020,7890,7525,7815,7840,8090,7115,
+E,9065,9340,8840,9935,10170,10030,9505,9190,10145,7385,9350,10280,
+F,8585,7330,7985,7265,8925,6790,7630,6955,7900,8080,7585,8420,
+G,8950,9810,8935,8660,10260,10080,10050,9535,7950,8600,8650,9015,
+H,8075,8115,6890,7510,7860,7120,7515,6580,7520,9300,7505,6815,
+
+
+Result for Fluorescence intensity 1
+Barcode,Repeat,Loop no,Well scan x,Well scan y,Exc wl / filter,Ems wl,TRF Window,Analysis Parameter,Label-free Parameter,
+V-2026-04-09 15:15:05,1,,,,,,,,,
+
+,1,2,3,4,5,6,7,8,9,10,11,12,
+A,1567370,646784,386465,200346,128972,89977,81310,70907,186126,60124,54004,47394,
+B,1547376,686700,409391,227452,131613,103010,86907,75057,67338,61631,57887,50193,
+C,1599759,763595,453300,248225,128987,91967,87833,80988,67386,61591,55758,49972,
+D,1555551,758853,416279,224160,142855,100082,88722,75335,67348,61316,68908,48474,
+E,1641242,696177,416421,216696,127001,107017,85728,77022,69837,59644,54725,45895,
+F,1530185,701560,396256,217670,122874,105068,91433,72102,70871,57020,65847,33094,
+G,1397583,722496,419572,206410,131888,100082,81453,69956,61941,55501,53691,46163,
+H,1415646,609364,336980,184333,109097,94515,84791,72615,64355,55812,67073,49447,
+
+
+Measurement Information
+Measurement Started,,2026-04-09 15:15:05
+Measurement Finished,,2026-04-09 15:17:44
+Measurement Signature,,a2c2ef40-a498-4b33-a06c-4400b2bbf7bd
+Barcode,,V-2026-04-09 15:15:05
+
+Instrument Information
+Instrument Serial Number,,2009121
+Software Version,,Kaleido 3.0.3067.117
+
+Protocol Information
+Protocol Name,,Euzeolite@MDAP endpoint
+Protocol Signature,,e59cf463-531e-4bc5-b1c5-02c894cbcbfa
+Protocol Owner,,Editor
+Sequence Executed By,,Plate
+
+Plate Type Information
+Plate Type Name,,96 OptiPlate
+Plate Type Owner,,PKI
+Plate Type Date,,9/1/2014 12:00:00 AM
+Plate Type Signature,,49ee272f-30bc-49d2-a8bd-2ca8d677851c
+Number of Rows,,12
+Number of Columns,,8
+Plate Height [mm],,14.6
+Bottom Height [mm],,0
+Bottom Thickness [mm],,0
+Well Diameter (Bottom) [mm],,7.13
+Well Shape (Bottom),,Round
+Well Volume [µl],,400
+Optical Index,,1.58
+Plate Type Coordinates [mm]
+,,X,Y
+,Upper Left,14.38,11.24
+,Upper Right,113.32,11.24
+,Lower Left,14.38,74.23
+,Lower Right,113.32,74.23
+
+Platemap
+,1,2,3,4,5,6,7,8,9,10,11,12,
+A,-,-,-,-,-,-,-,-,-,-,-,-,
+B,-,-,-,-,-,-,-,-,-,-,-,-,
+C,-,-,-,-,-,-,-,-,-,-,-,-,
+D,-,-,-,-,-,-,-,-,-,-,-,-,
+E,-,-,-,-,-,-,-,-,-,-,-,-,
+F,-,-,-,-,-,-,-,-,-,-,-,-,
+G,-,-,-,-,-,-,-,-,-,-,-,-,
+H,-,-,-,-,-,-,-,-,-,-,-,-,
+
+
+Measurement Sequence
+Time-resolved Fluorescence 1
+Time-resolved Fluorescence 2
+Fluorescence intensity 1
+
+Details of Measurement Sequence
+
+Operation,,,Time-resolved Fluorescence 1
+Measurement Mode,,,Single
+Windows Parameter:,,,
+Delay,,,100
+Window Time [µs],,,1000
+No. of Windows,,,1
+Total Time [µs],,,1100
+Excitation / Emission,,,TOP
+Excitation Filter [nm]/(Barcode),,,360/(141)
+Emission Wavelength [nm],,,615
+Measurement Height [mm],,,6
+Number of Flashes,,,100
+
+Operation,,,Time-resolved Fluorescence 2
+Measurement Mode,,,Single
+Windows Parameter:,,,
+Delay,,,100
+Window Time [µs],,,1000
+No. of Windows,,,1
+Total Time [µs],,,1100
+Excitation / Emission,,,TOP
+Excitation Filter [nm]/(Barcode),,,360/(141)
+Emission Wavelength [nm],,,595
+Measurement Height [mm],,,6
+Number of Flashes,,,100
+
+Operation,,,Fluorescence intensity 1
+Measurement Mode,,,Single
+Excitation / Emission,,,TOP
+Excitation Wavelength [nm],,,371
+Emission Wavelength [nm],,,424
+Measurement Height [mm],,,6
+Number of Flashes,,,100
+Number of Flashes integrated,,,1
+Flash Power,,,100
+
+Post Processing Sequence
+
+EXPORT
+Export Format,,,CSV_PLATE
+Format Options,,,Standard
+Export Path,,,C:\Users\MMD-User\Documents\Researcher
+File Name,,,MDAPYFAU[ProtocolName] [MeasurementDate]
+
+Comments:
+Time,Author,Analysis Result,Message
+2026 - 04 - 09 15: 15:05,Editor,,Barcode reading failed, a virtual barcode "V-2026-04-09 15:15:05" was assigned to the measurement.
+2026 - 04 - 09 15: 15:05,Editor,,Measurement started.
+2026 - 04 - 09 15: 15:05,Editor,,Temperature control activated by settings. Target: 25 °C
+Condensation prevention for sealed plates is deactivated.
+2026 - 04 - 09 15: 15:05,Editor,,Status of temperature control: Ready 
+
+Exported with Kaleido 3.0.3067.117
+
+
