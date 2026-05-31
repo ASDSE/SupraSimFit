@@ -53,84 +53,42 @@ def _build_data_help_html() -> str:
     """Build the Data panel help dialog HTML, listing supported formats dynamically."""
     exts = sorted(READERS.keys())
     ext_list = ", ".join(f"<code>{e}</code>" for e in exts) or "(none registered)"
-    tab = "&#9;"
     return f"""
 <h3>Loading Measurement Data</h3>
 
-<p><b>What This Section Is For</b></p>
-<p>Where the fitting session gets its raw numbers. Everything below
-(outlier removal, replica selection, bounds, fit configuration, plot
-style) operates on the measurements you load here.</p>
+<p>Raw data for the fitting session &mdash; everything below operates on
+what you load here.</p>
 
-<p><b>Supported File Formats</b></p>
-<p>Reader selection is automatic from the file extension. Currently
-registered: {ext_list}.</p>
+<p><b>Load:</b> <i>Import &rarr; Import Data&hellip;</i> (<code>Ctrl+O</code>),
+or <b>Demo IDA</b> for a bundled example. The format is detected from the
+file. Supported: {ext_list} &mdash; including JASCO and PerkinElmer EnSight
+CSVs and BMG plate exports.</p>
 
-<p><b>Concentration Units</b></p>
-<p>The <b>Imported Unit</b> dropdown tells the app what unit the loaded
-numbers are in &mdash; nothing is converted on load. Switching it
-<i>reinterprets</i> the same numbers as that unit (e.g. switching from
-M to &micro;M means the table values are now read as &micro;M, so the
-underlying molar concentrations change accordingly). The <b>Display
-Unit</b> dropdown only affects how the plot's x-axis is rendered; it
-never touches the stored data.</p>
+<p><b>Your own data &mdash; quickest path:</b> a plain CSV with a header row,
+concentration in the first column and signal in the second:</p>
+<pre style="background:#f3f3f3; padding:6px;">concentration,signal
+0,1024
+1e-6,2890
+2e-6,4210</pre>
+<p>For replicates, add one signal column per replica
+(<code>concentration,rep1,rep2,rep3</code>). A tab-separated <code>.txt</code>
+with the same layout works too. Headers are matched loosely
+(<code>conc</code>/<code>x</code>/<code>titrant</code>,
+<code>signal</code>/<code>intensity</code>/<code>fluorescence</code>) and
+European <code>;</code>/<code>,</code> files are read automatically.</p>
 
-<p><b>TXT &mdash; Tab-Separated, Multi-Replica</b></p>
-<p>The default format. One header row followed by tab-separated rows of
-<i>concentration</i> and <i>signal</i>. The parser detects a header row
-whenever its first cell is non-numeric &mdash; typical values are
-<code>var</code>, <code>concentration</code>, <code>conc</code>, or
-<code>x</code>. Additional replicas are appended as new blocks, each
-starting with another header row:</p>
-<pre style="background:#f3f3f3; padding:6px;">
-var{tab}signal
-0.0{tab}506.246
-2.985e-05{tab}1064.85
-&hellip;
-var{tab}signal
-0.0{tab}503.103
-2.985e-05{tab}1058.21
-&hellip;
-</pre>
-<p>Blank lines and lines starting with <code>#</code> are ignored.</p>
+<p><b>Units:</b> <b>Imported Unit</b> declares what unit the loaded numbers
+are in (it reinterprets them, it does not convert). <b>Display Unit</b> only
+changes the plot's x-axis and never touches the stored data.</p>
 
-<p><b>CSV &mdash; Long or Wide</b></p>
-<p>CSV files work in two shapes. <i>Long</i> format uses three named
-columns (<code>concentration</code>, <code>signal</code>, and
-optionally <code>replica</code>). <i>Wide</i> format puts concentration
-in the first column and one replica per remaining column. Column names
-are matched case-insensitively and several aliases are accepted:
-<code>concentration</code> / <code>conc</code> / <code>x</code> /
-<code>[conc]</code> / <code>titrant</code> for the x column, and
-<code>signal</code> / <code>y</code> / <code>fluorescence</code> /
-<code>intensity</code> / <code>emission</code> for the y column.
-Repeated-header CSVs (the same shape as TXT) are also accepted.</p>
+<p><b>Concentrations:</b> titration files carry their own values. Plate-reader
+and EnSight imports do not &mdash; the table shows placeholders
+<b>1&hellip;N</b>; enter the real concentrations before fitting (a fit is
+blocked until you do).</p>
 
-<p><b>Excel &mdash; <code>.xlsx</code> / <code>.xls</code></b></p>
-<p>Two shapes are auto-detected:</p>
-<ul>
-  <li><b>Structured workbooks</b> follow the same long / wide rules as
-      CSV (multi-sheet = one sheet per replica).</li>
-  <li><b>BMG plate-reader exports</b> are recognised from the
-      <i>Microplate End point</i> sheet and the 8&times;12 (or
-      16&times;24) plate grid. Each plate <b>row</b> becomes one
-      replica, each plate <b>column</b> becomes one concentration
-      point. BMG files do not carry concentration values &mdash; the
-      reader assigns placeholder positions <b>1&hellip;N</b> and you
-      must enter the real vector in the table below before
-      fitting.</li>
-</ul>
-
-<p><b>How to Feed In Data</b></p>
-<ul>
-  <li><b>Import &rarr; Import Data&hellip;</b> (<code>Ctrl+O</code>)
-      &mdash; pick any supported file.</li>
-  <li><b>Demo IDA</b> toolbar button &mdash; loads a bundled example so
-      you can try the fitter without your own data.</li>
-  <li><b>Import &rarr; Import Fit Results&hellip;</b> &mdash; reload a
-      previously exported <code>.json</code> fit, optionally without
-      the raw data.</li>
-</ul>
+<p><b>Channel:</b> enabled when a file holds multiple channels (e.g. EnSight
+optical channels). Switch to plot and fit each one without re-importing; your
+concentration vector carries over.</p>
 """
 
 
