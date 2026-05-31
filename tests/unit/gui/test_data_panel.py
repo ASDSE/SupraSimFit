@@ -158,7 +158,6 @@ def multi_channel_panel(qapp):
     panel._imported_unit = "M"
     panel._populate_channel_combo(df)
     panel._refresh_after_load()
-    panel._update_placeholder_cue(ms0)
     return panel
 
 
@@ -212,34 +211,13 @@ class TestChannelCombo:
         assert ms.metadata.get("bmg_placeholder_concentrations")
         np.testing.assert_allclose(ms.concentrations, [1.0, 2.0, 3.0])
 
-
-class TestPlaceholderBanner:
-    """The inline concentration cue is source-agnostic and auto-clears."""
-
-    def test_banner_shown_for_placeholder_data(self, multi_channel_panel):
-        banner = multi_channel_panel._placeholder_banner
-        assert not banner.isHidden()
-        assert "EnSight" in banner.text()
-        assert "concentration" in banner.text().lower()
-
-    def test_banner_hidden_after_entering_concentrations(self, multi_channel_panel):
-        multi_channel_panel._face_values = np.array([1e-6, 2e-6, 3e-6])
-        multi_channel_panel._push_buffer_to_ms()
-        assert multi_channel_panel._placeholder_banner.isHidden()
-
-    def test_banner_hidden_for_non_placeholder_data(self, loaded_panel):
-        # loaded_panel has real concentrations and no placeholder flag.
-        loaded_panel._update_placeholder_cue(loaded_panel.measurement_set())
-        assert loaded_panel._placeholder_banner.isHidden()
-
-    def test_banner_names_bmg_source(self, qapp):
-        from gui.widgets.data_panel import _placeholder_source_name
-
-        assert "BMG" in _placeholder_source_name(
-            {"bmg_metadata": {}, "bmg_placeholder_concentrations": True}
-        )
-        assert "EnSight" in _placeholder_source_name({"ensight_metadata": {}})
-        assert _placeholder_source_name({}) == "This plate-reader export"
+    def test_combo_tooltip_tracks_selected_channel(self, multi_channel_panel):
+        # The full channel label is mirrored into the tooltip so it stays
+        # readable when the combo elides at narrow sidebar widths.
+        combo = multi_channel_panel._channel_combo
+        assert combo.toolTip() == combo.currentText()
+        combo.setCurrentIndex(1)
+        assert combo.toolTip() == combo.currentText()
 
 
 class TestEnsightLoadIntegration:
@@ -262,9 +240,6 @@ class TestEnsightLoadIntegration:
         # tryptamine.csv has three optical channels.
         assert panel._channel_combo.isEnabled()
         assert panel._channel_combo.count() == 3
-        # Placeholder data → banner shown, names EnSight.
-        assert not panel._placeholder_banner.isHidden()
-        assert "EnSight" in panel._placeholder_banner.text()
         # 8 replicas × 12 points per channel.
         ms = panel.measurement_set()
         assert ms.n_replicas == 8

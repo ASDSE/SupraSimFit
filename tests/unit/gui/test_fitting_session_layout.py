@@ -54,3 +54,21 @@ def test_plot_stays_embedded_through_ensight_load_and_switch(qapp):
     session._data_panel._channel_combo.setCurrentIndex(2)
     qapp.processEvents()
     _assert_embedded(session)
+
+
+def test_sidebar_has_no_hard_maxwidth_cap(qapp):
+    """The sidebar must be freely widenable — no finite max-width cap.
+
+    A previous `setMaximumWidth(380)` clamped the sidebar to 300–380px, so
+    after import long filenames/channel labels cropped with no way to widen.
+    """
+    from PyQt6.QtWidgets import QWIDGETSIZE_MAX
+
+    from gui.fitting_session import FittingSession
+
+    session = FittingSession()
+    scroll = session._sidebar_scroll
+    # No finite upper bound: maximumWidth stays at Qt's sentinel max.
+    assert scroll.maximumWidth() == QWIDGETSIZE_MAX
+    # A sane floor remains so the panel can't collapse to an unusable sliver.
+    assert 0 < scroll.minimumWidth() <= 320

@@ -134,19 +134,6 @@ Repeated-header CSVs (the same shape as TXT) are also accepted.</p>
 """
 
 
-def _placeholder_source_name(metadata: dict) -> str:
-    """Name the import format for the concentration cue, from metadata.
-
-    Source-agnostic: returns the real format when known, a neutral fallback
-    otherwise. Never hardcodes a single instrument.
-    """
-    if ENSIGHT_METADATA_KEY in metadata:
-        return "This EnSight export"
-    if BMG_METADATA_KEY in metadata:
-        return "This BMG export"
-    return "This plate-reader export"
-
-
 def _fmt_cell(value: float) -> str:
     """Format a float for the concentration table — short, scientific when needed."""
     if value == 0.0:
@@ -240,17 +227,6 @@ class DataPanel(InfoGroupBox):
 
         layout.addLayout(units_grid)
 
-        # Inline cue shown when imported data has no real concentrations
-        # (plate-reader exports). Source-agnostic; auto-hidden otherwise.
-        self._placeholder_banner = QLabel("")
-        self._placeholder_banner.setWordWrap(True)
-        self._placeholder_banner.setStyleSheet(
-            "QLabel { background: #fff3cd; color: #664d03; "
-            "border: 1px solid #ffe69c; border-radius: 4px; padding: 6px; }"
-        )
-        self._placeholder_banner.setVisible(False)
-        layout.addWidget(self._placeholder_banner)
-
         # Concentration table — single editable column of face values.
         # Every successful cell commit rebuilds the MeasurementSet immediately;
         # there is no batched-apply state, so no widget can ever be staler
@@ -333,7 +309,6 @@ class DataPanel(InfoGroupBox):
         self._imported_unit = DEFAULT_IMPORTED_UNIT
         self._populate_channel_combo(df)
         self._refresh_after_load()
-        self._update_placeholder_cue(ms)
         self.data_loaded.emit(ms)
 
     @staticmethod
@@ -375,6 +350,13 @@ class DataPanel(InfoGroupBox):
         self._channel_combo.setCurrentIndex(0 if self._channels else -1)
         self._channel_combo.blockSignals(False)
         self._channel_combo.setEnabled(len(self._channels) > 1)
+        # Full label as tooltip so the channel name stays readable when the
+        # combo elides it at narrow sidebar widths.
+        self._channel_combo.setToolTip(
+            self._channel_combo.currentText()
+            if self._channels
+            else "Optical channel. Enabled when the imported file has multiple channels."
+        )
 
     def _on_channel_changed(self, _index: int) -> None:
         """Rebuild the MeasurementSet for the newly selected channel in-memory.
@@ -407,12 +389,12 @@ class DataPanel(InfoGroupBox):
         self._ms = ms
         if not reuse:
             self._face_values = np.asarray(ms.concentrations, dtype=np.float64).copy()
+        self._channel_combo.setToolTip(self._channel_combo.currentText())
         self._refresh_after_load()
         if reuse:
             # Re-apply the entered vector to the new channel (emits data_loaded).
             self._push_buffer_to_ms()
         else:
-            self._update_placeholder_cue(ms)
             self.data_loaded.emit(ms)
 
     def clear(self) -> None:
@@ -425,7 +407,9 @@ class DataPanel(InfoGroupBox):
         self._channel_combo.clear()
         self._channel_combo.blockSignals(False)
         self._channel_combo.setEnabled(False)
-        self._placeholder_banner.setVisible(False)
+        self._channel_combo.setToolTip(
+            "Optical channel. Enabled when the imported file has multiple channels."
+        )
         self._file_label.setText("No file loaded")
         self._info_label.setText("")
         self._populate_table()
@@ -450,8 +434,8 @@ class DataPanel(InfoGroupBox):
     def focus_concentration_table(self) -> None:
         """Bring keyboard focus to the inline table.
 
-        Public hook for callers (e.g. the fit-time placeholder guard) and
-        for the post-import concentration cue.
+        Public hook for the fit-time placeholder guard, which jumps the
+        user to the table when a fit is blocked on placeholder data.
         """
         if self._ms is None:
             return
@@ -459,25 +443,6 @@ class DataPanel(InfoGroupBox):
         if self._conc_table.rowCount() > 0:
             self._conc_table.setCurrentCell(0, 0)
             self._conc_table.editItem(self._conc_table.item(0, 0))
-
-    def _update_placeholder_cue(self, ms: MeasurementSet | None) -> None:
-        """Show/hide the inline 'enter concentrations' banner.
-
-        Source-agnostic: the message names the actual import format derived
-        from metadata, never hardcodes one. Shown only while placeholder
-        concentrations are in place; hidden once real values are entered.
-        """
-        if ms is not None and ms.metadata.get(BMG_PLACEHOLDER_KEY):
-            source = _placeholder_source_name(ms.metadata)
-            self._placeholder_banner.setText(
-                f"{source} has no concentration values — enter the real "
-                f"concentrations below before fitting."
-            )
-            self._placeholder_banner.setVisible(True)
-            self.focus_concentration_table()
-        else:
-            self._placeholder_banner.clear()
-            self._placeholder_banner.setVisible(False)
 
     # ------------------------------------------------------------------
     # Slots
@@ -530,9 +495,6 @@ class DataPanel(InfoGroupBox):
             QMessageBox.warning(self, "Error", f"Failed to apply concentrations:\n{exc}")
             return
         self._update_info()
-        # Applying real concentrations drops the placeholder flag, so the
-        # inline cue must re-evaluate (and hide) here too.
-        self._update_placeholder_cue(self._ms)
         self.data_loaded.emit(self._ms)
 
     def _on_load_concentrations(self) -> None:

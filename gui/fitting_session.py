@@ -519,10 +519,19 @@ class FittingSession(QWidget):
         outer.addWidget(splitter)
 
         # ---- Left panel (scrollable) --------------------------------
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setMinimumWidth(300)
-        left_scroll.setMaximumWidth(380)
+        # The sidebar is freely resizable via the splitter — no maximum-width
+        # cap (a cap would crop wide content like long filenames/channel
+        # labels and prevent the user from widening). A minimum floor keeps it
+        # usable; childrenCollapsible(False) prevents collapse to zero. It
+        # scrolls vertically only — never horizontally — so content fits the
+        # current width and elides rather than overflowing sideways.
+        self._sidebar_scroll = QScrollArea()
+        self._sidebar_scroll.setWidgetResizable(True)
+        self._sidebar_scroll.setMinimumWidth(300)
+        self._sidebar_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        left_scroll = self._sidebar_scroll
 
         left_container = QWidget()
         left_layout = QVBoxLayout(left_container)
@@ -591,6 +600,9 @@ class FittingSession(QWidget):
 
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        # Initial split only — the user can drag freely afterwards. The
+        # sidebar opens at a comfortable width; the plot takes the rest.
+        splitter.setSizes([340, 940])
 
         # Initialise BoundsPanel for default assay type
         self._bounds_panel.set_assay_type(self._state.assay_type)
@@ -639,12 +651,9 @@ class FittingSession(QWidget):
         self._refresh_plot()
         active = ms.n_active
         total = ms.n_replicas
-        msg = f'Loaded: {ms.n_points} pts × {total} replicas — {active}/{total} active'
-        if ms.metadata.get(BMG_PLACEHOLDER_KEY):
-            # The Data panel shows an inline cue; mirror it transiently in the
-            # status bar. No modal — import is never interrupted.
-            msg += ' — enter concentrations before fitting'
-        self.status_message.emit(msg)
+        self.status_message.emit(
+            f'Loaded: {ms.n_points} pts × {total} replicas — {active}/{total} active'
+        )
 
     def _on_data_cleared(self) -> None:
         self._state.measurement_set = None
