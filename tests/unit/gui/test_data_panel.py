@@ -13,6 +13,9 @@ pytest.importorskip("PyQt6")
 ENSIGHT_FIXTURE = (
     Path(__file__).parent.parent.parent / "data" / "ensight" / "tryptamine.csv"
 )
+JASCO_FIXTURE = (
+    Path(__file__).parent.parent.parent / "data" / "jasco" / "cb7in30umbc_1-1.csv"
+)
 
 
 @pytest.fixture(scope="module")
@@ -259,3 +262,22 @@ class TestEnsightLoadIntegration:
         panel._channel_combo.setCurrentIndex(2)  # Fluorescence intensity 1
         assert emissions, "channel switch must re-emit data_loaded"
         assert not np.array_equal(first, panel.measurement_set().signals)
+
+
+class TestJascoLoadIntegration:
+    """JASCO reader metadata must survive the load into MeasurementSet."""
+
+    def test_jasco_metadata_forwarded_to_measurement_set(self, qapp):
+        if not JASCO_FIXTURE.exists():
+            pytest.skip("JASCO fixture missing")
+        from gui.widgets.data_panel import DataPanel
+
+        panel = DataPanel()
+        panel.load_file(str(JASCO_FIXTURE))
+        ms = panel.measurement_set()
+        assert ms is not None
+        # The reader attaches jasco_metadata to df.attrs; load_file must
+        # forward it into ms.metadata (instrument / Ex-Em / titrant info).
+        assert "jasco_metadata" in ms.metadata
+        sections = ms.metadata["jasco_metadata"]["sections"]
+        assert sections["Measurement Information"]["Ex wavelength"] == "415.0 nm"

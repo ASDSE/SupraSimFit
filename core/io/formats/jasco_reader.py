@@ -39,6 +39,10 @@ import pint
 from core.io.registry import register_reader
 from core.units import Q_
 
+#: Key under which parsed JASCO header + extended-info dicts are attached to
+#: ``df.attrs`` and forwarded to ``MeasurementSet.metadata`` by the GUI loader.
+JASCO_METADATA_KEY = "jasco_metadata"
+
 _SIGNATURE_PROBE_LINES = 30
 _XYDATA_MARKER = "XYDATA"
 _UNIT_BRACKET_RE = re.compile(r"\[([^\]]+)\]")
@@ -95,7 +99,7 @@ class JascoReader:
                 "replica": 0,
             }
         )
-        df.attrs["jasco_metadata"] = {"header": header, "sections": extended}
+        df.attrs[JASCO_METADATA_KEY] = {"header": header, "sections": extended}
         return df
 
     # ------------------------------------------------------------------

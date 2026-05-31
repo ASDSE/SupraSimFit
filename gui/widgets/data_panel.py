@@ -33,6 +33,7 @@ from core.io.formats.ensight_reader import (
     ENSIGHT_METADATA_KEY,
     format_channel_label,
 )
+from core.io.formats.jasco_reader import JASCO_METADATA_KEY
 from core.io.registry import READERS
 from core.units import Q_
 from gui.widgets.info_button import InfoGroupBox
@@ -70,9 +71,10 @@ concentration in the first column and signal in the second:</p>
 0,1024
 1e-6,2890
 2e-6,4210</pre>
-<p>For replicates, add one signal column per replica
+<p>For replicates in a CSV, add one signal column per replica
 (<code>concentration,rep1,rep2,rep3</code>). A tab-separated <code>.txt</code>
-with the same layout works too. Headers are matched loosely
+takes the same two columns and appends each extra replica as a repeated
+header+data block. Headers are matched loosely
 (<code>conc</code>/<code>x</code>/<code>titrant</code>,
 <code>signal</code>/<code>intensity</code>/<code>fluorescence</code>) and
 European <code>;</code>/<code>,</code> files are read automatically.</p>
@@ -275,7 +277,12 @@ class DataPanel(InfoGroupBox):
         placeholder/metadata flags that downstream code keys off."""
         extra_metadata = {
             k: df.attrs[k]
-            for k in (BMG_PLACEHOLDER_KEY, BMG_METADATA_KEY, ENSIGHT_METADATA_KEY)
+            for k in (
+                BMG_PLACEHOLDER_KEY,
+                BMG_METADATA_KEY,
+                ENSIGHT_METADATA_KEY,
+                JASCO_METADATA_KEY,
+            )
             if k in df.attrs
         }
         return MeasurementSet.from_dataframe(
