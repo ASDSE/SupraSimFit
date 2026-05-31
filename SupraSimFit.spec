@@ -4,7 +4,10 @@ import sys
 from PyInstaller.utils.hooks import collect_data_files
 
 # Single source of truth for the app version (also read by the GUI and
-# the auto-tag workflow). Lives at the repo root.
+# the auto-tag workflow). Lives at the repo root. PyInstaller execs this
+# spec without the repo root on sys.path, so add it (SPECPATH is the spec's
+# directory, injected by PyInstaller) before importing.
+sys.path.insert(0, SPECPATH)
 from _version import __version__
 
 sys.setrecursionlimit(sys.getrecursionlimit() * 5)
