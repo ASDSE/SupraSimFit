@@ -78,8 +78,15 @@ def dba_clean_result():
         x_data=Q_(x, 'M'), y_data=Q_(y, 'au'),
         fixed_conc=Q_(DBA_TRUE['fixed_conc'], 'M'), mode='DtoH',
     )
-    np.random.seed(42)  # module fixture runs before the autouse function-scoped seeder
-    result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=DBA_RECOVERY_BOUNDS))
+    # Module fixtures run before the autouse function-scoped seeder, so seed
+    # explicitly — and restore the global RNG state to avoid leaking into
+    # other module-scoped fixtures.
+    state = np.random.get_state()
+    np.random.seed(42)
+    try:
+        result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=DBA_RECOVERY_BOUNDS))
+    finally:
+        np.random.set_state(state)
     return result, Q_(y, 'au')
 
 

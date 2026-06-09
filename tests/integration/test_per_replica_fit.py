@@ -89,20 +89,29 @@ def _per_replica_config() -> FitConfig:
 # ---------------------------------------------------------------------------
 
 
+def _seeded_per_replica_fit(noise_frac: float, seed: int) -> FitResult:
+    """Run a per-replica fit under a deterministic global RNG seed, restoring
+    the prior RNG state afterwards (module fixtures run before the autouse
+    per-test seeder, so leaked state could affect other module fixtures)."""
+    ms = _ida_ms(noise_frac=noise_frac, seed=seed)
+    state = np.random.get_state()
+    np.random.seed(42)
+    try:
+        return fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+    finally:
+        np.random.set_state(state)
+
+
 @pytest.fixture(scope='module')
 def clean_pr_result() -> FitResult:
     """Per-replica fit of 5 noise-free replicas."""
-    np.random.seed(42)
-    ms = _ida_ms(noise_frac=0.0, seed=1)
-    return fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+    return _seeded_per_replica_fit(noise_frac=0.0, seed=1)
 
 
 @pytest.fixture(scope='module')
 def noisy_pr_result() -> FitResult:
     """Per-replica fit of 5 replicas with 5% Gaussian noise."""
-    np.random.seed(42)
-    ms = _ida_ms(noise_frac=0.05, seed=7)
-    return fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+    return _seeded_per_replica_fit(noise_frac=0.05, seed=7)
 
 
 # ---------------------------------------------------------------------------
