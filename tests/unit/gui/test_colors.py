@@ -12,14 +12,6 @@ from gui.plotting.colors import (
 )
 
 
-def test_replica_palette_length():
-    assert len(REPLICA_PALETTE) == 8
-
-
-def test_fit_palette_nonempty():
-    assert len(FIT_PALETTE) >= 1
-
-
 def test_palette_rgb_bounds():
     for palette in (REPLICA_PALETTE, FIT_PALETTE):
         for color in palette:

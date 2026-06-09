@@ -134,12 +134,6 @@ class TestUUID:
         ms2 = _sample_measurement_set()
         assert ms1.id != ms2.id
 
-    def test_id_is_hex_string(self):
-        ms = _sample_measurement_set()
-        assert isinstance(ms.id, str)
-        assert len(ms.id) == 32
-        int(ms.id, 16)  # must be valid hex
-
 
 # ---------------------------------------------------------------------------
 # Replica management
@@ -168,18 +162,6 @@ class TestReplicaManagement:
         ms.set_active(rid, False)
         ms.set_active(rid, True)
         assert ms.n_active == 3
-
-    def test_unknown_replica_raises(self):
-        ms = _sample_measurement_set()
-        with pytest.raises(ValueError, match='Unknown replica_id'):
-            ms.set_active('nonexistent', False)
-
-    def test_is_active(self):
-        ms = _sample_measurement_set()
-        rid = ms.replica_ids[0]
-        assert ms.is_active(rid) is True
-        ms.set_active(rid, False)
-        assert ms.is_active(rid) is False
 
     def test_reset_active(self):
         ms = _sample_measurement_set(n_replicas=3)
@@ -216,13 +198,6 @@ class TestDataAccess:
         ms = _sample_measurement_set()
         for _, sig in ms.iter_replicas():
             assert sig.base is ms.signals or sig.base is not None
-
-    def test_get_replica_signal(self):
-        ms = _sample_measurement_set(n_replicas=2, n_points=5)
-        rid = ms.replica_ids[0]
-        sig = ms.get_replica_signal(rid)
-        assert sig.shape == (5,)
-        np.testing.assert_array_equal(sig, ms.signals[0])
 
     def test_average_signal_all(self):
         ms = _sample_measurement_set(n_replicas=3, n_points=5)

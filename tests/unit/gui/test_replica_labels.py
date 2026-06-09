@@ -14,3 +14,6 @@ class TestDisplayLabel:
         assert _display_label(27) == 'AB'
         assert _display_label(51) == 'AZ'
         assert _display_label(52) == 'BA'
+        # Spreadsheet-standard base-26: index 100 → 'CW'
+        # (100 // 26 - 1 = 2 → 'C'; 100 % 26 = 22 → 'W').
+        assert _display_label(100) == 'CW'

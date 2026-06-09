@@ -1,30 +1,9 @@
 """Style roundtrip test: PlotStyleWidget → PlotWidget.apply_style."""
 
-import numpy as np
 import pytest
 
 pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
-
-
-@pytest.fixture(scope="module")
-def qapp():
-    from PyQt6.QtWidgets import QApplication
-    import sys
-    app = QApplication.instance() or QApplication(sys.argv)
-    return app
-
-
-@pytest.fixture
-def minimal_plot_data():
-    x = np.linspace(0, 1e-4, 20)
-    return {
-        "concentrations": x,
-        "active_replicas": [("r1", x * 1.1 + 0.01), ("r2", x * 0.9 + 0.02)],
-        "dropped_replicas": [],
-        "average": x * 1.0 + 0.015,
-        "fits": [{"x": x, "y": x * 1.05 + 0.012, "label": "GDA fit", "id": "abc123"}],
-    }
 
 
 def test_style_signal_updates_plot_style(qapp, minimal_plot_data):

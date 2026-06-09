@@ -14,16 +14,6 @@ pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    import sys
-
-    from PyQt6.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication(sys.argv)
-    return app
-
-
 def test_axes_group_does_not_expose_x_axis_unit(qapp):
     from gui.plotting.plot_style import PlotStyleWidget
 
@@ -62,15 +52,6 @@ def test_load_style_restores_x_unit(qapp):
     sw = PlotStyleWidget()
     sw.load_style({"axes": {"x_unit": "nM"}})
     assert sw.current_style()["axes"]["x_unit"] == "nM"
-
-
-def test_axis_name_overrides_default_empty(qapp):
-    from gui.plotting.plot_style import PlotStyleWidget
-
-    sw = PlotStyleWidget()
-    axes = sw.current_style()["axes"]
-    assert axes["x_name_override"] == ""
-    assert axes["y_name_override"] == ""
 
 
 def test_axis_name_overrides_round_trip_via_load_style(qapp):

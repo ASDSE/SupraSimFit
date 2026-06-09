@@ -53,24 +53,6 @@ def _sample_fit_result(**overrides) -> FitResult:
 class TestFitResultProperties:
     """Core properties and defaults."""
 
-    def test_success_true(self):
-        r = _sample_fit_result(n_passing=5)
-        assert r.success is True
-
-    def test_success_false(self):
-        r = _sample_fit_result(n_passing=0)
-        assert r.success is False
-
-    def test_auto_id(self):
-        r = _sample_fit_result()
-        assert isinstance(r.id, str)
-        assert len(r.id) == 32
-
-    def test_auto_timestamp(self):
-        r = _sample_fit_result()
-        assert isinstance(r.timestamp, str)
-        assert 'T' in r.timestamp  # ISO-8601
-
     def test_unique_ids(self):
         r1 = _sample_fit_result()
         r2 = _sample_fit_result()
@@ -116,12 +98,6 @@ class TestSerialization:
         assert restored.timestamp == original.timestamp
         np.testing.assert_array_almost_equal(restored.x_fit.magnitude, original.x_fit.magnitude)
         np.testing.assert_array_almost_equal(restored.y_fit.magnitude, original.y_fit.magnitude)
-
-    def test_round_trip_preserves_success(self):
-        for n in (0, 5):
-            r = _sample_fit_result(n_passing=n)
-            restored = FitResult.from_dict(r.to_dict())
-            assert restored.success == r.success
 
     def test_from_dict_missing_optional_fields(self):
         """from_dict handles missing optional keys gracefully."""

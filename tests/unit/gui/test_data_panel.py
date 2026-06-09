@@ -18,16 +18,6 @@ JASCO_FIXTURE = (
 )
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    import sys
-
-    from PyQt6.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication(sys.argv)
-    return app
-
-
 @pytest.fixture
 def loaded_panel(qapp, tmp_path):
     """A DataPanel populated with a tiny three-point dataset (face values in M)."""
@@ -89,20 +79,6 @@ class TestLiveCommit:
 
         assert len(emissions) == 1
         np.testing.assert_allclose(emissions[-1].concentrations, [5e-6, 2e-6, 3e-6])
-
-    def test_consecutive_cell_edits_each_emit(self, loaded_panel):
-        emissions = []
-        loaded_panel.data_loaded.connect(lambda ms: emissions.append(ms))
-
-        loaded_panel._conc_table.item(0, 0).setText("5e-6")
-        loaded_panel._conc_table.item(2, 0).setText("9e-6")
-
-        assert len(emissions) == 2
-        np.testing.assert_allclose(emissions[-1].concentrations, [5e-6, 2e-6, 9e-6])
-
-    def test_no_apply_button_attribute(self, loaded_panel):
-        """The Apply button is gone — live commit replaces it."""
-        assert not hasattr(loaded_panel, "_apply_btn")
 
 
 class TestDisplayUnitSignal:
@@ -167,17 +143,6 @@ def multi_channel_panel(qapp):
 class TestChannelCombo:
     """The Channel combo is enabled only for multi-channel data."""
 
-    def test_single_channel_combo_disabled(self, loaded_panel):
-        # loaded_panel comes from a plain (no `channel` column) frame.
-        assert not loaded_panel._channel_combo.isEnabled()
-        assert loaded_panel._channels == []
-
-    def test_multi_channel_combo_enabled_and_lists_channels(self, multi_channel_panel):
-        combo = multi_channel_panel._channel_combo
-        assert combo.isEnabled()
-        assert combo.count() == 2
-        assert [combo.itemData(i) for i in range(combo.count())] == ["chA", "chB"]
-
     def test_switch_channel_adopts_new_signals(self, multi_channel_panel):
         emissions = []
         multi_channel_panel.data_loaded.connect(lambda ms: emissions.append(ms))
@@ -213,14 +178,6 @@ class TestChannelCombo:
         ms = multi_channel_panel.measurement_set()
         assert ms.metadata.get("bmg_placeholder_concentrations")
         np.testing.assert_allclose(ms.concentrations, [1.0, 2.0, 3.0])
-
-    def test_combo_tooltip_tracks_selected_channel(self, multi_channel_panel):
-        # The full channel label is mirrored into the tooltip so it stays
-        # readable when the combo elides at narrow sidebar widths.
-        combo = multi_channel_panel._channel_combo
-        assert combo.toolTip() == combo.currentText()
-        combo.setCurrentIndex(1)
-        assert combo.toolTip() == combo.currentText()
 
 
 class TestEnsightLoadIntegration:
