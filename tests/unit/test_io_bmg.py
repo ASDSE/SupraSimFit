@@ -48,15 +48,6 @@ def _write_structured_xlsx(path: Path) -> None:
 
 
 class TestBMGDetection:
-    def test_detects_bundled_bmg_export(self):
-        if not _BUNDLED_BMG.exists():
-            pytest.skip('bundled BMG fixture not available')
-        wb = load_workbook(_BUNDLED_BMG, data_only=True, read_only=True)
-        try:
-            assert is_bmg_workbook(wb) is True
-        finally:
-            wb.close()
-
     def test_structured_xlsx_is_not_bmg(self, tmp_path):
         path = tmp_path / 'structured.xlsx'
         _write_structured_xlsx(path)
@@ -88,17 +79,7 @@ class TestBMGParse:
         # Test name should be captured from the Microplate sheet metadata
         joined = ' '.join(str(v) for v in meta.values()).lower()
         assert 'zeolite' in joined or 'test_name' in {k.lower() for k in meta}
-
-    def test_first_row_signal_values(self):
-        if not _BUNDLED_BMG.exists():
-            pytest.skip('bundled BMG fixture not available')
-        wb = load_workbook(_BUNDLED_BMG, data_only=True, read_only=True)
-        try:
-            df, _meta = parse_bmg_workbook(wb)
-        finally:
-            wb.close()
-
-        # Plate row A, columns 1–3: 208319, 163967, 127277 per the sheet
+        # Golden values — plate row A, columns 1–3: 208319, 163967, 127277
         rep0 = df[df['replica'] == 0].sort_values('concentration')
         assert rep0['signal'].iloc[0] == pytest.approx(208319.0)
         assert rep0['signal'].iloc[1] == pytest.approx(163967.0)
@@ -113,13 +94,6 @@ class TestXlsxDispatcher:
         df = load_measurements(path)
         assert set(df['replica'].unique()) == {0, 1}
         assert df.attrs.get('bmg_placeholder_concentrations') is not True
-
-    def test_bmg_xlsx_routes_to_bmg_parser(self):
-        if not _BUNDLED_BMG.exists():
-            pytest.skip('bundled BMG fixture not available')
-        df = load_measurements(_BUNDLED_BMG)
-        assert df.attrs.get('bmg_placeholder_concentrations') is True
-        assert len(df['replica'].unique()) == 8
 
 
 class TestMeasurementWriters:

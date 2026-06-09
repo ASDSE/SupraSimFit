@@ -23,16 +23,8 @@ class TestFmtUnitHtml:
         assert 'M' in result
         assert '<sup>−1</sup>' in result
 
-    def test_plain(self):
-        result = fmt_unit_html('M')
-        assert '<sup>' not in result
-
     def test_empty(self):
         assert fmt_unit_html('') == ''
-
-    def test_au(self):
-        result = fmt_unit_html('au')
-        assert len(result) > 0
 
 
 class TestFmtUnitPretty:

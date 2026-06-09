@@ -11,7 +11,6 @@ from core.assays.dba import DBAAssay
 from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
-from core.assays.registry import AssayType
 from core.units import Q_
 
 
@@ -142,17 +141,6 @@ class TestDBAFailFast:
         with pytest.raises(ValueError, match='mode must be'):
             DBAAssay(**kw)
 
-    def test_htod_mode_sets_correct_assay_type(self):
-        kw = self._valid_kwargs()
-        kw['mode'] = 'HtoD'
-        assay = DBAAssay(**kw)
-        assert assay.assay_type == AssayType.DBA_HtoD
-
-    def test_dtoh_mode_sets_correct_assay_type(self):
-        kw = self._valid_kwargs()
-        assay = DBAAssay(**kw)
-        assert assay.assay_type == AssayType.DBA_DtoH
-
 
 class TestDyeAloneFailFast:
     """DyeAlone constructor rejects invalid inputs."""
@@ -163,15 +151,6 @@ class TestDyeAloneFailFast:
                 x_data=Q_(np.array([1, 2, 3]), 'M'),
                 y_data=Q_(np.array([1, 2]), 'au'),
             )
-
-    def test_valid_construction(self):
-        assay = DyeAloneAssay(
-            x_data=Q_(np.array([0, 1e-6, 2e-6]), 'M'),
-            y_data=Q_(np.array([100, 200, 300]), 'au'),
-        )
-        assert assay.assay_type == AssayType.DYE_ALONE
-        assert assay.n_points == 3
-        assert assay.n_params == 2
 
 
 class TestBaseAssayContracts:
@@ -207,23 +186,24 @@ class TestBaseAssayContracts:
         }
 
     def test_residuals_correct(self):
-        """Residuals = observed - predicted."""
+        """Residuals = observed - predicted, hand-computed for a linear model.
+
+        slope=1e8, intercept=100 → predictions [100, 200, 300];
+        observed [100, 210, 290] → residuals [0, 10, -10].
+        """
         assay = DyeAloneAssay(
             x_data=Q_(np.array([0, 1e-6, 2e-6]), 'M'),
-            y_data=Q_(np.array([100.0, 200.0, 300.0]), 'au'),
+            y_data=Q_(np.array([100.0, 210.0, 290.0]), 'au'),
         )
         params = np.array([1e8, 100.0])  # slope, intercept
         resid = assay.residuals(params)
-        expected = assay.y_data - assay.forward_model(params)
-        np.testing.assert_array_equal(resid.magnitude, expected.magnitude)
+        np.testing.assert_allclose(resid.magnitude, [0.0, 10.0, -10.0], atol=1e-9)
 
     def test_sum_squared_residuals(self):
-        """SSR is sum of squared residuals."""
+        """SSR hand-computed: 0² + 10² + (-10)² = 200."""
         assay = DyeAloneAssay(
             x_data=Q_(np.array([0, 1e-6, 2e-6]), 'M'),
-            y_data=Q_(np.array([100.0, 200.0, 300.0]), 'au'),
+            y_data=Q_(np.array([100.0, 210.0, 290.0]), 'au'),
         )
         params = np.array([1e8, 100.0])
-        ssr = assay.sum_squared_residuals(params)
-        expected = float(np.sum(assay.residuals(params).magnitude ** 2))
-        assert ssr == pytest.approx(expected)
+        assert assay.sum_squared_residuals(params) == pytest.approx(200.0)

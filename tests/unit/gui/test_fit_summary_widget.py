@@ -6,14 +6,6 @@ import pytest
 pytest.importorskip("PyQt6")
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    from PyQt6.QtWidgets import QApplication
-    import sys
-    app = QApplication.instance() or QApplication(sys.argv)
-    return app
-
-
 @pytest.fixture
 def minimal_fit_result():
     from core.pipeline.fit_pipeline import FitResult
@@ -31,15 +23,6 @@ def minimal_fit_result():
         assay_type="GDA",
         model_name="equilibrium_4param",
     )
-
-
-def test_update_result_row_count(qapp, minimal_fit_result):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(minimal_fit_result)
-
-    assert widget._table.rowCount() == len(minimal_fit_result.parameters)
 
 
 def test_update_result_metric_labels_nonempty(qapp, minimal_fit_result):

@@ -20,15 +20,6 @@ ENSIGHT_FIXTURE = (
 )
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    import sys
-
-    from PyQt6.QtWidgets import QApplication
-
-    return QApplication.instance() or QApplication(sys.argv)
-
-
 def _assert_embedded(session):
     pw = session._plot_widget
     stack = session._plot_stack

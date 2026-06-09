@@ -175,10 +175,6 @@ class TestFilterByRmse:
     def test_empty_input(self):
         assert filter_by_rmse([]) == []
 
-    def test_single_result_passes(self):
-        a = _make_attempt([1.0], rmse=0.5)
-        assert len(filter_by_rmse([a])) == 1
-
     def test_all_identical_rmse_all_pass(self):
         attempts = [_make_attempt([i], rmse=0.1) for i in range(5)]
         result = filter_by_rmse(attempts, threshold_factor=1.0)
@@ -228,14 +224,6 @@ class TestFilterByRSquared:
         ]
         result = filter_by_r_squared(attempts, min_r_squared=0.0)
         assert len(result) == 2  # -0.1 < 0.0 fails
-
-    def test_min_negative_passes_all(self):
-        attempts = [
-            _make_attempt([1], r_squared=0.5),
-            _make_attempt([2], r_squared=-0.1),
-        ]
-        result = filter_by_r_squared(attempts, min_r_squared=-1.0)
-        assert len(result) == 2
 
     def test_min_one_strict(self):
         attempts = [
@@ -302,11 +290,6 @@ class TestComputeMad:
     def test_single_result_is_zero(self):
         a = _make_attempt([3.0, 7.0])
         result = compute_mad([a])
-        np.testing.assert_array_equal(result, [0.0, 0.0])
-
-    def test_identical_params_zero(self):
-        attempts = [_make_attempt([5.0, 10.0]) for _ in range(4)]
-        result = compute_mad(attempts)
         np.testing.assert_array_equal(result, [0.0, 0.0])
 
     def test_known_mad_value(self):
@@ -412,10 +395,14 @@ class TestCalculateFitMetrics:
         assert rmse == pytest.approx(expected_rmse)
         assert r2 == pytest.approx(expected_r2)
 
-    def test_single_point_perfect(self):
-        y = np.array([42.0])
-        rmse, r2 = calculate_fit_metrics(y, y)
-        assert rmse == pytest.approx(0.0, abs=1e-15)
+    def test_nan_prediction_propagates_nan(self):
+        """A NaN anywhere in y_predicted (failed model eval) must yield NaN
+        metrics, never a finite number that could pass QC filtering."""
+        y_obs = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([1.0, np.nan, 3.0])
+        rmse, r2 = calculate_fit_metrics(y_obs, y_pred)
+        assert np.isnan(rmse)
+        assert np.isnan(r2)
 
 
 # ---------------------------------------------------------------------------

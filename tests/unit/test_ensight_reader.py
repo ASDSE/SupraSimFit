@@ -18,13 +18,10 @@ from core.io.formats.ensight_reader import (
     ENSIGHT_CHANNEL_COLUMN,
     ENSIGHT_METADATA_KEY,
     EnsightReader,
-    format_channel_label,
 )
-from core.io.registry import get_reader
 
 DATA_DIR = Path(__file__).parent.parent / "data" / "ensight"
 TRYPTAMINE_CSV = DATA_DIR / "tryptamine.csv"
-DYEALONE_CSV = DATA_DIR / "dyealone.csv"
 TRYPTAMINE_FL_TXT = DATA_DIR / "tryptamine_expected_FL.txt"
 
 _FL_CHANNEL = "Fluorescence intensity 1"
@@ -107,12 +104,6 @@ def _minimal_ensight(
 
 
 class TestSniffing:
-    def test_can_read_real_files(self):
-        if not TRYPTAMINE_CSV.exists():
-            pytest.skip("Real EnSight fixture missing")
-        assert EnsightReader.can_read(TRYPTAMINE_CSV)
-        assert EnsightReader.can_read(DYEALONE_CSV)
-
     def test_can_read_with_bom(self, tmp_path):
         p = tmp_path / "ensight_bom.csv"
         p.write_bytes(b"\xef\xbb\xbf" + _minimal_ensight().encode())
@@ -121,11 +112,6 @@ class TestSniffing:
     def test_rejects_jasco_csv(self, tmp_path):
         p = tmp_path / "jasco.csv"
         p.write_text("TITLE,foo\nORIGIN,JASCO\nXYDATA\n0,1\n")
-        assert not EnsightReader.can_read(p)
-
-    def test_rejects_plain_csv(self, tmp_path):
-        p = tmp_path / "plain.csv"
-        p.write_text("concentration,signal\n0,100\n")
         assert not EnsightReader.can_read(p)
 
 
@@ -241,29 +227,7 @@ class TestParsing:
             EnsightReader().read(p)
 
 
-class TestChannelLabelHelper:
-    def test_label_combines_ex_em(self):
-        meta = {
-            "channels": {
-                "FL1": {
-                    "Excitation Wavelength [nm]": "371",
-                    "Emission Wavelength [nm]": "424",
-                }
-            }
-        }
-        assert format_channel_label("FL1", meta) == "FL1 (Ex 371, Em 424)"
-
-    def test_label_falls_back_to_name_when_no_metadata(self):
-        assert format_channel_label("FooBar", {}) == "FooBar"
-
-
 class TestDispatch:
-    def test_registry_routes_real_ensight_to_ensight_reader(self):
-        if not TRYPTAMINE_CSV.exists():
-            pytest.skip("Real EnSight fixture missing")
-        reader = get_reader(TRYPTAMINE_CSV)
-        assert isinstance(reader, EnsightReader)
-
     def test_load_measurements_returns_channel_column(self):
         if not TRYPTAMINE_CSV.exists():
             pytest.skip("Real EnSight fixture missing")

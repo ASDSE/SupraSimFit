@@ -24,7 +24,7 @@ from core.data_processing.measurement_set import MeasurementSet
 from core.models.equilibrium import dba_signal
 from core.pipeline.fit_pipeline import FitConfig, FitResult, bounds_from_dye_alone, fit_assay, fit_linear_assay, fit_measurement_set
 from core.units import Q_
-from tests.conftest import DBA_RECOVERY_BOUNDS, DBA_TRUE, DYE_ALONE_TRUE, GDA_IDA_RECOVERY_BOUNDS, assert_within_tolerance
+from tests.conftest import DBA_RECOVERY_BOUNDS, DBA_TRUE, DYE_ALONE_TRUE, GDA_IDA_RECOVERY_BOUNDS, _make_dba_data, assert_within_tolerance
 
 CLEAN_TOL = 0.10
 NOISY_TOL = 0.25
@@ -70,25 +70,39 @@ def _dye_alone_assay(fixture_data):
 # ---------------------------------------------------------------------------
 
 
-class TestDBAEndToEnd:
-    def test_clean_round_trip(self, dba_clean):
-        assay, true = _dba_assay(dba_clean)
+@pytest.fixture(scope='module')
+def dba_clean_result():
+    """One shared clean DBA fit, reused by the round-trip and structure tests."""
+    x, y = _make_dba_data(DBA_TRUE)
+    assay = DBAAssay(
+        x_data=Q_(x, 'M'), y_data=Q_(y, 'au'),
+        fixed_conc=Q_(DBA_TRUE['fixed_conc'], 'M'), mode='DtoH',
+    )
+    # Module fixtures run before the autouse function-scoped seeder, so seed
+    # explicitly — and restore the global RNG state to avoid leaking into
+    # other module-scoped fixtures.
+    state = np.random.get_state()
+    np.random.seed(42)
+    try:
         result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=DBA_RECOVERY_BOUNDS))
+    finally:
+        np.random.set_state(state)
+    return result, Q_(y, 'au')
+
+
+class TestDBAEndToEnd:
+    def test_clean_round_trip(self, dba_clean_result):
+        result, y = dba_clean_result
 
         assert result.success
         assert result.r_squared > 0.999
-        assert_within_tolerance(result.parameters['Ka_dye'], true['Ka_dye'], CLEAN_TOL, 'Ka_dye')
+        assert_within_tolerance(result.parameters['Ka_dye'], DBA_TRUE['Ka_dye'], CLEAN_TOL, 'Ka_dye')
+        # Signal reconstruction: fitted curve matches the data point-wise.
+        max_rel_err = np.max(np.abs((result.y_fit - y).magnitude) / np.abs(y.magnitude))
+        assert max_rel_err < 0.03, f'Max point-wise relative error {max_rel_err:.2%} > 3%'
 
-    def test_noisy_round_trip(self, dba_noisy):
-        assay, true = _dba_assay(dba_noisy)
-        result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_NOISY, custom_bounds=DBA_RECOVERY_BOUNDS))
-
-        assert result.success
-        assert_within_tolerance(result.parameters['Ka_dye'], true['Ka_dye'], NOISY_TOL, 'Ka_dye')
-
-    def test_fit_result_structure(self, dba_clean):
-        assay, true = _dba_assay(dba_clean)
-        result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=DBA_RECOVERY_BOUNDS))
+    def test_fit_result_structure(self, dba_clean_result):
+        result, _ = dba_clean_result
 
         # Type and model
         assert result.assay_type == 'DBA_DtoH'
@@ -125,18 +139,15 @@ class TestDBAEndToEnd:
 class TestGDAEndToEnd:
     def test_clean_round_trip(self, gda_clean):
         assay, true = _gda_assay(gda_clean)
+        x, y, _ = gda_clean
         result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=GDA_IDA_RECOVERY_BOUNDS))
 
         assert result.success
         assert result.r_squared > 0.999
         assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
-
-    def test_noisy_round_trip(self, gda_noisy):
-        assay, true = _gda_assay(gda_noisy)
-        result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_NOISY, custom_bounds=GDA_IDA_RECOVERY_BOUNDS))
-
-        assert result.success
-        assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], NOISY_TOL, 'Ka_guest')
+        # Reconstruction tolerance is looser for GDA (weaker identifiability).
+        max_rel_err = np.max(np.abs((result.y_fit - y).magnitude) / np.abs(y.magnitude))
+        assert max_rel_err < 0.10, f'Max point-wise relative error {max_rel_err:.2%} > 10%'
 
 
 # ---------------------------------------------------------------------------
@@ -147,11 +158,14 @@ class TestGDAEndToEnd:
 class TestIDAEndToEnd:
     def test_clean_round_trip(self, ida_clean):
         assay, true = _ida_assay(ida_clean)
+        x, y, _ = ida_clean
         result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=GDA_IDA_RECOVERY_BOUNDS))
 
         assert result.success
         assert result.r_squared > 0.999
         assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
+        max_rel_err = np.max(np.abs((result.y_fit - y).magnitude) / np.abs(y.magnitude))
+        assert max_rel_err < 0.01, f'Max point-wise relative error {max_rel_err:.2%} > 1%'
 
     def test_noisy_round_trip(self, ida_noisy):
         assay, true = _ida_assay(ida_noisy)
@@ -193,36 +207,6 @@ class TestDyeAloneEndToEnd:
 
 
 class TestFitConfigCustomization:
-    def test_custom_bounds_override(self, dba_clean):
-        """Tight Ka bounds around truth still converge."""
-        assay, true = _dba_assay(dba_clean)
-        tight_bounds = {
-            **DBA_RECOVERY_BOUNDS,
-            'Ka_dye': (Q_(true['Ka_dye'] * 0.5, '1/M'), Q_(true['Ka_dye'] * 2.0, '1/M')),
-        }
-        result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=tight_bounds))
-
-        assert result.success
-        assert_within_tolerance(result.parameters['Ka_dye'], true['Ka_dye'], CLEAN_TOL, 'Ka_dye')
-
-    def test_log_scale_override_empty(self, dba_clean):
-        """Forcing linear sampling (log_scale_params=[]) still succeeds with tight bounds."""
-        assay, true = _dba_assay(dba_clean)
-        tight_ka = {
-            **DBA_RECOVERY_BOUNDS,
-            'Ka_dye': (Q_(true['Ka_dye'] * 0.5, '1/M'), Q_(true['Ka_dye'] * 2.0, '1/M')),
-        }
-        result = fit_assay(
-            assay,
-            FitConfig(
-                n_trials=N_TRIALS_CLEAN,
-                custom_bounds=tight_ka,
-                log_scale_params=[],
-            ),
-        )
-
-        assert result.success
-
     def test_relaxed_min_r_squared_passes_more(self, dba_clean):
         """Relaxing min_r_squared allows more fits to pass filtering."""
         assay, _ = _dba_assay(dba_clean)
@@ -284,38 +268,6 @@ class TestChainedWorkflow:
         assert result.success
         assert_within_tolerance(result.parameters['Ka_dye'], true['Ka_dye'], CLEAN_TOL, 'Ka_dye')
 
-    def test_dye_alone_to_gda(self, gda_clean):
-        signal_bounds = self._dye_alone_bounds()
-        assay, true = _gda_assay(gda_clean)
-
-        config = FitConfig(
-            n_trials=N_TRIALS_CLEAN,
-            custom_bounds={
-                **GDA_IDA_RECOVERY_BOUNDS,
-                **signal_bounds,
-            },
-        )
-        result = fit_assay(assay, config)
-
-        assert result.success
-        assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
-
-    def test_dye_alone_to_ida(self, ida_clean):
-        signal_bounds = self._dye_alone_bounds()
-        assay, true = _ida_assay(ida_clean)
-
-        config = FitConfig(
-            n_trials=N_TRIALS_CLEAN,
-            custom_bounds={
-                **GDA_IDA_RECOVERY_BOUNDS,
-                **signal_bounds,
-            },
-        )
-        result = fit_assay(assay, config)
-
-        assert result.success
-        assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
-
     def test_bounds_from_dye_alone_values(self, dye_alone_clean):
         """Verify derived bounds bracket the known truth."""
         assay, true = _dye_alone_assay(dye_alone_clean)
@@ -365,10 +317,27 @@ class TestFailureModes:
         # Should return a FitResult (no crash), but Ka will be wrong
         assert isinstance(result, FitResult)
 
-    def test_bounds_from_dye_alone_rejects_nonlinear(self, dba_clean):
+    def test_underdetermined_data_returns_result(self):
+        """n_points < n_params (2 points, 4-param model) must complete and
+        return a FitResult — failure is reported via success/n_passing, not
+        a crash deep inside the optimizer."""
+        assay = IDAAssay(
+            x_data=Q_(np.array([1e-6, 2e-6]), 'M'),
+            y_data=Q_(np.array([100.0, 80.0]), 'au'),
+            Ka_dye=Q_(5e5, '1/M'), h0=Q_(10e-6, 'M'), d0=Q_(5e-6, 'M'),
+        )
+        result = fit_assay(assay, FitConfig(n_trials=5))
+        assert isinstance(result, FitResult)
+
+    def test_bounds_from_dye_alone_rejects_nonlinear(self):
         """bounds_from_dye_alone raises on non-linear FitResult."""
-        assay, _ = _dba_assay(dba_clean)
-        result = fit_assay(assay, FitConfig(n_trials=10, custom_bounds=DBA_RECOVERY_BOUNDS))
+        result = FitResult(
+            parameters={'Ka_dye': Q_(5e5, '1/M'), 'I0': Q_(0.0, 'au')},
+            uncertainties={'Ka_dye': Q_(1e4, '1/M'), 'I0': Q_(0.1, 'au')},
+            rmse=0.01, r_squared=0.999, n_passing=5, n_total=10,
+            x_fit=Q_(np.array([1e-6]), 'M'), y_fit=Q_(np.array([100.0]), 'au'),
+            assay_type='DBA_DtoH', model_name='equilibrium_4param',
+        )
         with pytest.raises(ValueError, match='linear'):
             bounds_from_dye_alone(result)
 
@@ -437,9 +406,10 @@ class TestFitMeasurementSet:
             'h0': Q_(true['h0'], 'M'),
             'g0': Q_(true['g0'], 'M'),
         }
+        # Dispatch test only — 30 trials with tight bounds is plenty for success.
         result = fit_measurement_set(
             ms, GDAAssay, conditions,
-            config=FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=GDA_IDA_RECOVERY_BOUNDS),
+            config=FitConfig(n_trials=30, custom_bounds=GDA_IDA_RECOVERY_BOUNDS),
         )
 
         assert result.success

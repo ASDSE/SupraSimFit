@@ -18,14 +18,6 @@ pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    import sys
-    from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
-    return app
-
-
 @pytest.fixture
 def simple_plot_widget(qapp):
     from gui.plotting.plot_widget import PlotWidget
@@ -205,21 +197,6 @@ def test_derive_height_in_matches_live_cell_aspect(fitted_dist_widget):
 # ----------------------------------------------------------------------
 # Composite layout building
 # ----------------------------------------------------------------------
-
-
-def test_build_composite_layout_one_plotitem_per_key(fitted_dist_widget):
-    import pyqtgraph as pg
-
-    glw = fitted_dist_widget.build_composite_layout(
-        keys=['Ka_guest', 'I0', 'I_dye_free'],
-        rows=2,
-        cols=2,
-    )
-    try:
-        n_plots = sum(1 for it in glw.scene().items() if isinstance(it, pg.PlotItem))
-        assert n_plots == 3
-    finally:
-        glw.deleteLater()
 
 
 def test_build_composite_layout_rejects_oversubscribed_grid(fitted_dist_widget):

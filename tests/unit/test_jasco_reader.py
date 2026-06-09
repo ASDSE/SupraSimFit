@@ -43,11 +43,6 @@ def _minimal_jasco(
 
 
 class TestSniffing:
-    def test_can_read_real_file(self):
-        if not REAL_FIXTURE.exists():
-            pytest.skip("Real JASCO fixture missing")
-        assert JascoReader.can_read(REAL_FIXTURE)
-
     def test_can_read_minimal(self, tmp_path):
         p = tmp_path / "jasco.csv"
         p.write_text(_minimal_jasco())
@@ -66,10 +61,12 @@ class TestSniffing:
 
 class TestParsing:
     def test_real_file_golden(self):
-        """Real titration fixture — known counts and titrant stock."""
+        """Real titration fixture via the public API — exercises sniffer +
+        registry dispatch end-to-end, with known counts and golden values."""
         if not REAL_FIXTURE.exists():
             pytest.skip("Real JASCO fixture missing")
-        df = JascoReader().read(REAL_FIXTURE)
+        df = load_measurements(REAL_FIXTURE)
+        assert "jasco_metadata" in df.attrs
         assert list(df.columns) == ["concentration", "signal", "replica"]
         assert len(df) == 31
         assert (df["replica"] == 0).all()
@@ -189,21 +186,8 @@ class TestParsing:
 
 
 class TestDispatch:
-    def test_registry_routes_real_jasco_to_jasco_reader(self):
-        if not REAL_FIXTURE.exists():
-            pytest.skip("Real JASCO fixture missing")
-        reader = get_reader(REAL_FIXTURE)
-        assert isinstance(reader, JascoReader)
-
     def test_plain_csv_still_uses_generic_reader(self, tmp_path):
         p = tmp_path / "plain.csv"
         p.write_text("concentration,signal\n0,100\n1e-6,200\n")
         reader = get_reader(p)
         assert type(reader).__name__ == "CsvReader"
-
-    def test_load_measurements_public_api(self):
-        if not REAL_FIXTURE.exists():
-            pytest.skip("Real JASCO fixture missing")
-        df = load_measurements(REAL_FIXTURE)
-        assert len(df) == 31
-        assert "jasco_metadata" in df.attrs

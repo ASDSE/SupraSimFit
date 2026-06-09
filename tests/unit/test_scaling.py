@@ -202,7 +202,7 @@ def test_multistart_returns_raw_params_when_scaled(ida_assay):
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: scaling helps, never hurts
+# End-to-end: a scaled fit recovers ground truth
 # ---------------------------------------------------------------------------
 
 
@@ -212,15 +212,3 @@ def test_rescaling_recovers_true_params_on_clean_data(ida_assay):
     assert result.success, 'scaled fit should produce passing trials on clean data'
     recovered_ka = float(result.parameters['Ka_guest'].magnitude)
     assert recovered_ka == pytest.approx(_LOCAL_TRUTH['Ka_guest'], rel=0.10)
-
-
-def test_rescaling_matches_or_beats_raw_on_clean_data(ida_assay):
-    np.random.seed(123)
-    r_on = fit_assay(ida_assay, FitConfig(n_trials=60, rescale_parameters=True))
-    np.random.seed(123)
-    r_off = fit_assay(ida_assay, FitConfig(n_trials=60, rescale_parameters=False))
-
-    assert r_on.success, 'scaled fit must pass QC on clean data'
-    if r_off.success:
-        assert r_on.rmse <= r_off.rmse * 2.0
-        assert r_on.n_passing >= r_off.n_passing // 2

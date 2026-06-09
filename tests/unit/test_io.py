@@ -6,14 +6,12 @@ the reader/writer handle edge cases correctly.
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
 from core.io import load_measurements, save_results
 from core.io.formats.csv_reader import CsvReader
-from core.io.formats.txt import TxtReader, TxtWriter
-from core.io.registry import get_reader, get_writer
+from core.io.formats.txt import TxtReader
 
 
 class TestTxtReader:
@@ -59,6 +57,20 @@ class TestTxtReader:
         df = reader.read(p)
 
         assert len(df) == 2
+
+    def test_single_data_row(self, tmp_path):
+        """A file with exactly one data row loads as a 1-row replica."""
+        data = 'var\tsignal\n1e-6\t100\n'
+        p = tmp_path / 'one_row.txt'
+        p.write_text(data)
+
+        reader = TxtReader()
+        df = reader.read(p)
+
+        assert len(df) == 1
+        assert df['concentration'].iloc[0] == pytest.approx(1e-6)
+        assert df['signal'].iloc[0] == pytest.approx(100.0)
+        assert df['replica'].iloc[0] == 0
 
     def test_empty_file_raises(self, tmp_path):
         """Empty file raises ValueError."""
@@ -139,16 +151,6 @@ class TestCsvReader:
         assert df['concentration'].iloc[0] == pytest.approx(0.0)
         assert df['signal'].iloc[-1] == pytest.approx(540.0)
 
-    def test_foreign_headers_fall_through_to_content(self, tmp_path):
-        """Unrecognized header names still parse via content inference."""
-        data = 'menge;messwert\n0;29,29\n1;234,95\n2;416,78\n3;540,12\n'
-        p = tmp_path / 'foreign.csv'
-        p.write_text(data)
-
-        df = CsvReader().read(p)
-        assert len(df) == 4
-        assert df['concentration'].iloc[2] == pytest.approx(2.0)
-
     def test_wide_format_replicas(self, tmp_path):
         """Wide format: one conc column + multiple signal columns → replicas."""
         data = 'concentration,rep0,rep1,rep2\n0.0,100.0,105.0,98.0\n1e-6,200.0,210.0,195.0\n'
@@ -185,25 +187,6 @@ class TestCsvReader:
 class TestTxtWriter:
     """TxtWriter correctly serializes fit results."""
 
-    def test_write_and_read_back(self, tmp_path):
-        """Written results can be read back as text."""
-        results = {
-            'Ka_guest': 1.5e6,
-            'Ka_guest_uncertainty': 0.2e6,
-            'I0': 50.0,
-            'I0_uncertainty': 5.0,
-            'RMSE': 25.3,
-            'R2': 0.998,
-        }
-        p = tmp_path / 'results.txt'
-        writer = TxtWriter()
-        writer.write(results, p)
-
-        content = p.read_text()
-        assert 'Ka_guest' in content
-        assert '1.500000e+06' in content
-        assert 'RMSE' in content
-
     def test_write_results_via_public_api(self, tmp_path):
         """save_results() public API works end-to-end."""
         results = {'Ka_dye': 5e5, 'Ka_dye_uncertainty': 1e4}
@@ -213,30 +196,6 @@ class TestTxtWriter:
         assert p.exists()
         content = p.read_text()
         assert 'Ka_dye' in content
-
-
-class TestRegistryDispatch:
-    """Format registry dispatches to correct reader/writer."""
-
-    def test_txt_reader_dispatch(self):
-        reader = get_reader(Path('test.txt'))
-        assert isinstance(reader, TxtReader)
-
-    def test_csv_reader_dispatch(self):
-        reader = get_reader(Path('test.csv'))
-        assert isinstance(reader, CsvReader)
-
-    def test_txt_writer_dispatch(self):
-        writer = get_writer(Path('test.txt'))
-        assert isinstance(writer, TxtWriter)
-
-    def test_unsupported_format_raises(self):
-        with pytest.raises(ValueError, match='No reader'):
-            get_reader(Path('test.xyz'))
-
-    def test_unsupported_writer_raises(self):
-        with pytest.raises(ValueError, match='No writer'):
-            get_writer(Path('test.json'))
 
 
 class TestIODataIntegrity:

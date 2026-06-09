@@ -7,7 +7,13 @@ Verifies:
   rescale_parameters flag, since the scaler is an exact bijection);
 - degenerate-replica handling (flat signal → ParamScaler.from_assay raises
   ValueError; that replica is skipped with a failure record, others survive);
-- all-failure propagation via PerReplicaFitError.
+- all-failure propagation via PerReplicaFitError;
+- pool aggregation semantics (median/MAD over the flat pool of passing trials).
+
+Per-replica fits are expensive (5 replicas × 60 trials), so the clean and
+noisy reference fits are module-scoped fixtures shared by every test that
+only *reads* the result.  Tests that need a different MeasurementSet
+(outliers, degenerate replicas, rescale comparison) run their own fits.
 """
 
 from __future__ import annotations
@@ -79,14 +85,43 @@ def _per_replica_config() -> FitConfig:
 
 
 # ---------------------------------------------------------------------------
+# Shared reference fits (module-scoped: each runs exactly once)
+# ---------------------------------------------------------------------------
+
+
+def _seeded_per_replica_fit(noise_frac: float, seed: int) -> FitResult:
+    """Run a per-replica fit under a deterministic global RNG seed, restoring
+    the prior RNG state afterwards (module fixtures run before the autouse
+    per-test seeder, so leaked state could affect other module fixtures)."""
+    ms = _ida_ms(noise_frac=noise_frac, seed=seed)
+    state = np.random.get_state()
+    np.random.seed(42)
+    try:
+        return fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+    finally:
+        np.random.set_state(state)
+
+
+@pytest.fixture(scope='module')
+def clean_pr_result() -> FitResult:
+    """Per-replica fit of 5 noise-free replicas."""
+    return _seeded_per_replica_fit(noise_frac=0.0, seed=1)
+
+
+@pytest.fixture(scope='module')
+def noisy_pr_result() -> FitResult:
+    """Per-replica fit of 5 replicas with 5% Gaussian noise."""
+    return _seeded_per_replica_fit(noise_frac=0.05, seed=7)
+
+
+# ---------------------------------------------------------------------------
 # Recovery
 # ---------------------------------------------------------------------------
 
 
 class TestPerReplicateRecovery:
-    def test_ka_recovered_from_clean_replicas(self):
-        ms = _ida_ms(noise_frac=0.0, seed=1)
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+    def test_ka_recovered_from_clean_replicas(self, clean_pr_result):
+        result = clean_pr_result
 
         assert result.success
         assert result.uncertainty_source == 'replicate'
@@ -96,18 +131,16 @@ class TestPerReplicateRecovery:
         assert result.metadata['n_replicas_total'] == N_REPLICAS
         assert_within_tolerance(result.parameters['Ka_guest'], IDA_TRUE['Ka_guest'], CLEAN_TOL, 'Ka_guest')
 
-    def test_ka_recovered_from_noisy_replicas(self):
-        ms = _ida_ms(noise_frac=0.05, seed=7)
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+    def test_ka_recovered_from_noisy_replicas(self, noisy_pr_result):
+        result = noisy_pr_result
 
         assert result.success
         assert len(result.replica_fits) == N_REPLICAS
         assert_within_tolerance(result.parameters['Ka_guest'], IDA_TRUE['Ka_guest'], NOISY_TOL, 'Ka_guest')
 
-    def test_replica_mad_is_nonzero_on_noisy_data(self):
+    def test_replica_mad_is_nonzero_on_noisy_data(self, noisy_pr_result):
         """Cross-replica MAD should capture real noise — not collapse to ~0."""
-        ms = _ida_ms(noise_frac=0.05, seed=11)
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+        result = noisy_pr_result
 
         ka_mag = float(result.parameters['Ka_guest'].magnitude)
         ka_mad = float(result.uncertainties['Ka_guest'].magnitude)
@@ -116,19 +149,18 @@ class TestPerReplicateRecovery:
         # vastly larger indicates aggregation broke.
         assert ka_mad / ka_mag < 2.0
 
-    def test_per_replica_fits_are_in_physical_units(self):
+    def test_per_replica_fits_are_in_physical_units(self, clean_pr_result):
         """Each replica fit must already be in physical units (M^-1 etc)."""
-        ms = _ida_ms(noise_frac=0.0, seed=2)
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
-
-        for rr in result.replica_fits:
+        for rr in clean_pr_result.replica_fits:
             assert str(rr.parameters['Ka_guest'].units) == '1 / molar'
             assert rr.uncertainty_source == 'optimizer'  # each replica is a single-signal fit
 
     def test_dispatch_via_fit_measurement_set(self):
         """fit_measurement_set honors config.per_replica and dispatches."""
         ms = _ida_ms(noise_frac=0.0, seed=3)
-        result = fit_measurement_set(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+        # Dispatch-only check: 20 trials is plenty to produce a result.
+        config = FitConfig(n_trials=20, custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True)
+        result = fit_measurement_set(ms, IDAAssay, _ida_conditions(), config)
 
         assert result.uncertainty_source == 'replicate'
         assert result.replica_fits is not None
@@ -270,9 +302,8 @@ class TestPoolAggregation:
     reported parameters/uncertainties must be the pool's median/MAD —
     NOT median-of-per-replica-medians."""
 
-    def test_aggregate_has_parameter_samples_pool(self):
-        ms = _ida_ms(noise_frac=0.02, seed=201)
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+    def test_aggregate_has_parameter_samples_pool(self, noisy_pr_result):
+        result = noisy_pr_result
 
         assert result.parameter_samples is not None
         # One entry per parameter key, same length across keys.
@@ -285,20 +316,17 @@ class TestPoolAggregation:
         # And equals n_passing on the aggregate, and metadata pool_size
         assert result.n_passing == pool_size
         assert result.metadata['pool_size'] == pool_size
+        # Pool is strictly larger than the number of replicas (many trials each)
+        assert pool_size > len(result.replica_fits)
 
-    def test_per_replica_fits_carry_parameter_samples(self):
-        ms = _ida_ms(noise_frac=0.02, seed=202)
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
-
-        for rf in result.replica_fits:
+    def test_per_replica_fits_carry_parameter_samples(self, noisy_pr_result):
+        for rf in noisy_pr_result.replica_fits:
             assert rf.parameter_samples is not None
-            for k in rf.parameter_keys if hasattr(rf, 'parameter_keys') else rf.parameters.keys():
+            for k in rf.parameters.keys():
                 assert len(rf.parameter_samples[k]) == rf.n_passing
 
-    def test_pool_median_matches_reported_parameter(self):
-        ms = _ida_ms(noise_frac=0.02, seed=203)
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
-
+    def test_pool_median_matches_reported_parameter(self, noisy_pr_result):
+        result = noisy_pr_result
         for k, q in result.parameters.items():
             pool = result.parameter_samples[k]
             expected_median = float(np.median(pool))
@@ -306,42 +334,8 @@ class TestPoolAggregation:
             assert float(q.magnitude) == pytest.approx(expected_median, rel=1e-12)
             assert float(result.uncertainties[k].magnitude) == pytest.approx(expected_mad, rel=1e-12)
 
-    def test_pool_median_differs_from_median_of_medians_with_imbalanced_passing(self):
-        """Construct a scenario where one replica's passing trials are
-        biased high relative to the other replicas. The pool median must
-        lean toward that replica (proportional to its n_passing), while
-        the old median-of-medians would treat all replicas equally.
-        This demonstrates the semantic change is real, not cosmetic."""
-        ms = _ida_ms(n_replicas=3, noise_frac=0.02, seed=204)
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
-
-        # Compute median-of-per-replica-medians as a reference
-        per_replica_medians = np.array(
-            [float(rf.parameters['Ka_guest'].magnitude) for rf in result.replica_fits]
-        )
-        mom = float(np.median(per_replica_medians))
-        pool_median = float(result.parameters['Ka_guest'].magnitude)
-        pool_size = result.n_passing
-
-        # Both should be in the same order of magnitude (the replicas
-        # roughly agree); but with imbalanced n_passing across replicas
-        # they are generally not bit-identical. The essential guarantee
-        # is that pool_median is the np.median of the pool, which we
-        # verify directly — `mom` is informational.
-        np.testing.assert_allclose(
-            pool_median,
-            float(np.median(result.parameter_samples['Ka_guest'])),
-            rtol=1e-12,
-        )
-        # Pool size is strictly larger than number of replicas (many trials per replica)
-        assert pool_size > len(result.replica_fits)
-
-    def test_serialization_round_trip_of_parameter_samples(self):
-        ms = _ida_ms(n_replicas=3, noise_frac=0.02, seed=205)
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
-
-        from core.pipeline.fit_pipeline import FitResult
-
+    def test_serialization_round_trip_of_parameter_samples(self, noisy_pr_result):
+        result = noisy_pr_result
         d = result.to_dict()
         restored = FitResult.from_dict(d)
 
