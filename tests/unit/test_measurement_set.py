@@ -254,14 +254,22 @@ class TestToAssay:
         rid = ms.replica_ids[0]
         ms.set_active(rid, False)
         with pytest.raises(ValueError, match='inactive'):
-            ms.to_assay(GDAAssay, conditions={'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'g0': Q_(20e-6, 'M')}, replica_id=rid)
+            ms.to_assay(
+                GDAAssay,
+                conditions={'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'g0': Q_(20e-6, 'M')},
+                replica_id=rid,
+            )
 
     def test_to_assay_no_average_no_replica_raises(self):
         from core.assays.gda import GDAAssay
 
         ms = _sample_measurement_set()
         with pytest.raises(ValueError, match='use_average'):
-            ms.to_assay(GDAAssay, conditions={'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'g0': Q_(20e-6, 'M')}, use_average=False)
+            ms.to_assay(
+                GDAAssay,
+                conditions={'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'g0': Q_(20e-6, 'M')},
+                use_average=False,
+            )
 
 
 class TestSetConcentrations:
@@ -326,4 +334,3 @@ class TestSetConcentrations:
         ms.set_concentrations(Q_(np.array([1, 2, 3]), 'µM'))
         with pytest.raises(ValueError, match='read-only'):
             ms.concentrations[0] = 0.0
-

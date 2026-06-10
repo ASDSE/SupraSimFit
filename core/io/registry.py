@@ -60,15 +60,12 @@ def get_reader(path: Path) -> MeasurementReader:
         raise ValueError(f"No reader for '{ext}'. Supported: {sorted(READERS)}")
 
     for cls in candidates:
-        sniffer = getattr(cls, "can_read", None)
+        sniffer = getattr(cls, 'can_read', None)
         if sniffer is None or sniffer(path):
             return cls()
 
     names = [cls.__name__ for cls in candidates]
-    raise ValueError(
-        f"No registered reader accepted '{path.name}'. "
-        f"Tried (in order): {names}."
-    )
+    raise ValueError(f"No registered reader accepted '{path.name}'. Tried (in order): {names}.")
 
 
 def get_writer(path: Path) -> ResultWriter:

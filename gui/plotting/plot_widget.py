@@ -11,8 +11,18 @@ from PyQt6.QtCore import QPointF, QRectF
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
-from core.units import Q_, Quantity, ureg
-from gui.plotting.colors import AVERAGE_LINE_COLOR, BACKGROUND_COLOR, DROPPED_REPLICA_COLOR, ERROR_BAR_COLOR, FIT_PALETTE, FOREGROUND_COLOR, PALETTES, REPLICA_PALETTE, rgba
+from core.units import Q_, Quantity
+from gui.plotting.colors import (
+    AVERAGE_LINE_COLOR,
+    BACKGROUND_COLOR,
+    DROPPED_REPLICA_COLOR,
+    ERROR_BAR_COLOR,
+    FIT_PALETTE,
+    FOREGROUND_COLOR,
+    PALETTES,
+    REPLICA_PALETTE,
+    rgba,
+)
 from gui.plotting.labels import fmt_param, fmt_unit_html
 from gui.plotting.plot_style import DEFAULT_STYLE, line_style_to_qt
 from gui.widgets.replica_panel import _display_label

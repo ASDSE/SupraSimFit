@@ -167,7 +167,9 @@ def _seed_rng():
 # ---------------------------------------------------------------------------
 
 
-def _make_dba_data(true: dict, n_points: int = 30, noise_frac: float = 0.0, rng: np.random.Generator | None = None, mode: str = 'DtoH'):
+def _make_dba_data(
+    true: dict, n_points: int = 30, noise_frac: float = 0.0, rng: np.random.Generator | None = None, mode: str = 'DtoH'
+):
     """Generate synthetic DBA data.
 
     Default mode is ``'DtoH'`` (dye titrated, host fixed); pass
@@ -283,7 +285,9 @@ def _make_h2g_data(true: dict, n_points: int = 30, noise_frac: float = 0.0, rng:
     return g0_values, y
 
 
-def _make_dye_alone_data(true: dict, n_points: int = 15, noise_frac: float = 0.0, rng: np.random.Generator | None = None):
+def _make_dye_alone_data(
+    true: dict, n_points: int = 15, noise_frac: float = 0.0, rng: np.random.Generator | None = None
+):
     """Generate synthetic dye-alone data."""
     x = np.linspace(0, 20e-6, n_points)
     y_clean = linear_signal(true['slope'], true['intercept'], x)
@@ -391,7 +395,9 @@ def assert_within_tolerance(fitted, true, tolerance, param_name='parameter'):
     fitted_val = float(fitted.magnitude) if isinstance(fitted, Quantity) else float(fitted)
     true_val = float(true)
     rel_error = abs(fitted_val - true_val) / abs(true_val)
-    assert rel_error <= tolerance, f'{param_name}: fitted={fitted_val:.4e}, true={true_val:.4e}, rel_error={rel_error:.1%} > tolerance={tolerance:.0%}'
+    assert rel_error <= tolerance, (
+        f'{param_name}: fitted={fitted_val:.4e}, true={true_val:.4e}, rel_error={rel_error:.1%} > tolerance={tolerance:.0%}'
+    )
 
 
 @pytest.fixture

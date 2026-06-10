@@ -10,12 +10,12 @@ by the optimizer module.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, Optional, Tuple
+from typing import Any, ClassVar, Dict, Tuple
 
 import numpy as np
 
 from core.assays.registry import AssayMetadata, AssayType, get_metadata
-from core.units import Q_, Quantity
+from core.units import Quantity
 
 
 @dataclass

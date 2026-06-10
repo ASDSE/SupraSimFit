@@ -247,9 +247,7 @@ class SaveDistributionsPlotDialog(QDialog):
         preview_col.addWidget(QLabel('Preview'))
         self._preview_label = QLabel()
         self._preview_label.setFixedSize(_PREVIEW_W, _PREVIEW_H)
-        self._preview_label.setStyleSheet(
-            'border: 1px solid #888; background: white;'
-        )
+        self._preview_label.setStyleSheet('border: 1px solid #888; background: white;')
         self._preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview_col.addWidget(self._preview_label)
         self._size_label = QLabel('Output: —')
@@ -259,10 +257,7 @@ class SaveDistributionsPlotDialog(QDialog):
         outer.addLayout(preview_col, stretch=1)
 
         # --- buttons -----------------------------------------------------
-        self._buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
+        self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self._buttons.button(QDialogButtonBox.StandardButton.Ok).setText('Save…')
         self._buttons.accepted.connect(self._on_accept)
         self._buttons.rejected.connect(self.reject)
@@ -341,7 +336,9 @@ class SaveDistributionsPlotDialog(QDialog):
 
     def _derived_height_in(self, *, width_in: float, rows: int, cols: int) -> float:
         return self._dist_widget.derive_height_in(
-            width_in=width_in, rows=rows, cols=cols,
+            width_in=width_in,
+            rows=rows,
+            cols=cols,
         )
 
     # ------------------------------------------------------------------
@@ -433,9 +430,7 @@ class SaveDistributionsPlotDialog(QDialog):
         self._dpi_spin.setEnabled(self._current_format() == 'png')
 
     def _set_preset_silently(self, key: str) -> None:
-        idx = next(
-            (i for i, (k, _) in enumerate(_DIM_PRESETS) if k == key), 0
-        )
+        idx = next((i for i, (k, _) in enumerate(_DIM_PRESETS) if k == key), 0)
         self._dim_preset.blockSignals(True)
         self._dim_preset.setCurrentIndex(idx)
         self._dim_preset.blockSignals(False)
@@ -466,14 +461,9 @@ class SaveDistributionsPlotDialog(QDialog):
         if fmt == 'png':
             px_w = round(w_in * dpi)
             px_h = round(h_in * dpi)
-            self._size_label.setText(
-                f'Output: {px_w} × {px_h} px  '
-                f'({w_in:.2f} × {h_in:.2f} in @ {dpi} DPI, PNG)'
-            )
+            self._size_label.setText(f'Output: {px_w} × {px_h} px  ({w_in:.2f} × {h_in:.2f} in @ {dpi} DPI, PNG)')
         else:
-            self._size_label.setText(
-                f'Output: {w_in:.2f} × {h_in:.2f} in (SVG vector)'
-            )
+            self._size_label.setText(f'Output: {w_in:.2f} × {h_in:.2f} in (SVG vector)')
 
         # Build the same composite the save will build. Each cell is
         # sized at the live distribution subplot's pixel dimensions, so

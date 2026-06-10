@@ -1,7 +1,5 @@
 """Tests for gui.plotting.colors — no QApplication required."""
 
-import pytest
-
 from gui.plotting.colors import (
     AVERAGE_LINE_COLOR,
     DROPPED_REPLICA_COLOR,
@@ -17,7 +15,7 @@ def test_palette_rgb_bounds():
         for color in palette:
             assert len(color) == 3
             for channel in color:
-                assert 0 <= channel <= 255, f"channel out of range: {channel}"
+                assert 0 <= channel <= 255, f'channel out of range: {channel}'
 
 
 def test_scalar_colors_rgb_bounds():
@@ -43,5 +41,3 @@ def test_rgba_zero_alpha():
     rgb = (0, 255, 0)
     result = rgba(rgb, alpha=0)
     assert result == (0, 255, 0, 0)
-
-

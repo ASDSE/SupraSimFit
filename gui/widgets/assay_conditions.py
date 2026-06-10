@@ -7,8 +7,7 @@ the usual core registry changes — zero widget code changes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 from core.assays import AssayType, DBAAssay, DyeAloneAssay, GDAAssay, H2GAssay, HG2Assay, IDAAssay
 from core.assays.base import BaseAssay

@@ -12,7 +12,13 @@ from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
 
 # Import preprocessing to auto-register built-in steps (e.g. zscore)
-from core.data_processing.preprocessing import PREPROCESSING_STEPS, PreprocessingStep, apply_preprocessing, get_step, register_step  # noqa: F401
+from core.data_processing.preprocessing import (  # noqa: F401
+    PREPROCESSING_STEPS,
+    PreprocessingStep,
+    apply_preprocessing,
+    get_step,
+    register_step,
+)
 
 __all__ = [
     'MeasurementSet',

@@ -7,7 +7,6 @@ and linear models independently of the optimizer.
 
 import numpy as np
 import pytest
-
 from scipy.optimize import brentq, fsolve
 
 from core.models.equilibrium import competitive_signal_point, dba_signal, gda_signal, ida_signal
@@ -91,13 +90,23 @@ class TestDBAModel:
 
         # HtoD: titrant = host = h0, fixed = dye = d0
         signal_htod = dba_signal(
-            I0=I0, Ka_dye=Ka_dye, I_dye_free=I_dye_free, I_dye_bound=I_dye_bound,
-            x_titrant=np.array([h0]), y_fixed=d0, mode='HtoD',
+            I0=I0,
+            Ka_dye=Ka_dye,
+            I_dye_free=I_dye_free,
+            I_dye_bound=I_dye_bound,
+            x_titrant=np.array([h0]),
+            y_fixed=d0,
+            mode='HtoD',
         )
         # DtoH: titrant = dye = d0, fixed = host = h0
         signal_dtoh = dba_signal(
-            I0=I0, Ka_dye=Ka_dye, I_dye_free=I_dye_free, I_dye_bound=I_dye_bound,
-            x_titrant=np.array([d0]), y_fixed=h0, mode='DtoH',
+            I0=I0,
+            Ka_dye=Ka_dye,
+            I_dye_free=I_dye_free,
+            I_dye_bound=I_dye_bound,
+            x_titrant=np.array([d0]),
+            y_fixed=h0,
+            mode='DtoH',
         )
         np.testing.assert_allclose(signal_htod, signal_dtoh, rtol=1e-10)
 
@@ -167,8 +176,13 @@ class TestModelVsIndependentEquilibrium:
         d0_values = np.array([1e-6, 10e-6, 50e-6])
 
         actual = dba_signal(
-            I0=I0, Ka_dye=Ka, I_dye_free=I_dye_free, I_dye_bound=I_dye_bound,
-            x_titrant=d0_values, y_fixed=h0, mode='DtoH',
+            I0=I0,
+            Ka_dye=Ka,
+            I_dye_free=I_dye_free,
+            I_dye_bound=I_dye_bound,
+            x_titrant=d0_values,
+            y_fixed=h0,
+            mode='DtoH',
         )
 
         for i, d0 in enumerate(d0_values):
@@ -176,7 +190,10 @@ class TestModelVsIndependentEquilibrium:
             #   d + Ka*d*h0/(1 + Ka*d) - d0 = 0
             d_free = brentq(
                 lambda d: d * (1 + Ka * h0 / (1 + Ka * d)) - d0,
-                0.0, d0, xtol=1e-22, rtol=1e-15,
+                0.0,
+                d0,
+                xtol=1e-22,
+                rtol=1e-15,
             )
             hd = d0 - d_free
             expected = I0 + I_dye_free * d_free + I_dye_bound * hd
@@ -199,17 +216,21 @@ class TestModelVsIndependentEquilibrium:
             hg = kg * h * g
             return [h + hd + hg - h0u, d + hd - d0u, g + hg - g0u]
 
-        sol, _, ier, msg = fsolve(
-            equations, [h0u / 2, d0u / 2, g0u / 2], full_output=True, xtol=1e-13
-        )
+        sol, _, ier, msg = fsolve(equations, [h0u / 2, d0u / 2, g0u / 2], full_output=True, xtol=1e-13)
         assert ier == 1, f'independent solver failed: {msg}'
         h_u, d_u, _ = sol
         hd_u = kd * h_u * d_u
         expected = I0 + I_dye_free * d_u * 1e-6 + I_dye_bound * hd_u * 1e-6
 
         actual = competitive_signal_point(
-            I0=I0, Ka_guest=Ka_guest, I_dye_free=I_dye_free, I_dye_bound=I_dye_bound,
-            Ka_dye=Ka_dye, h0=h0, d0=d0, g0=g0,
+            I0=I0,
+            Ka_guest=Ka_guest,
+            I_dye_free=I_dye_free,
+            I_dye_bound=I_dye_bound,
+            Ka_dye=Ka_dye,
+            h0=h0,
+            d0=d0,
+            g0=g0,
         )
         assert actual == pytest.approx(expected, rel=1e-8)
 
@@ -230,14 +251,25 @@ class TestCompetitiveBoundaries:
         d0_values = np.linspace(1e-7, 30e-6, 10)
 
         gda_result = gda_signal(
-            I0, Ka_guest=1e6, I_dye_free=I_dye_free, I_dye_bound=I_dye_bound,
-            Ka_dye=Ka_dye, h0=h0, d0_values=d0_values, g0=0.0,
+            I0,
+            Ka_guest=1e6,
+            I_dye_free=I_dye_free,
+            I_dye_bound=I_dye_bound,
+            Ka_dye=Ka_dye,
+            h0=h0,
+            d0_values=d0_values,
+            g0=0.0,
         )
         # GDA fixes h0 and titrates d0 -> the equivalent DBA framing is
         # mode='DtoH' (dye titrated, host fixed).
         dba_result = dba_signal(
-            I0, Ka_dye=Ka_dye, I_dye_free=I_dye_free, I_dye_bound=I_dye_bound,
-            x_titrant=d0_values, y_fixed=h0, mode='DtoH',
+            I0,
+            Ka_dye=Ka_dye,
+            I_dye_free=I_dye_free,
+            I_dye_bound=I_dye_bound,
+            x_titrant=d0_values,
+            y_fixed=h0,
+            mode='DtoH',
         )
         # Different solvers (Brent vs quadratic) -> tolerance set tight
         # enough to catch a regression in the signal model itself.
@@ -251,12 +283,23 @@ class TestCompetitiveBoundaries:
         I0, I_dye_free, I_dye_bound = 50.0, 1000.0, 5000.0
 
         ida_result = ida_signal(
-            I0=I0, Ka_guest=1e6, I_dye_free=I_dye_free, I_dye_bound=I_dye_bound,
-            Ka_dye=Ka_dye, h0=h0, d0=d0, g0_values=np.array([0.0]),
+            I0=I0,
+            Ka_guest=1e6,
+            I_dye_free=I_dye_free,
+            I_dye_bound=I_dye_bound,
+            Ka_dye=Ka_dye,
+            h0=h0,
+            d0=d0,
+            g0_values=np.array([0.0]),
         )
         dba_result = dba_signal(
-            I0=I0, Ka_dye=Ka_dye, I_dye_free=I_dye_free, I_dye_bound=I_dye_bound,
-            x_titrant=np.array([d0]), y_fixed=h0, mode='DtoH',
+            I0=I0,
+            Ka_dye=Ka_dye,
+            I_dye_free=I_dye_free,
+            I_dye_bound=I_dye_bound,
+            x_titrant=np.array([d0]),
+            y_fixed=h0,
+            mode='DtoH',
         )
         np.testing.assert_allclose(ida_result, dba_result, rtol=1e-6)
 
@@ -264,8 +307,14 @@ class TestCompetitiveBoundaries:
         """Non-binding guest (Ka→0) produces constant signal."""
         g0_values = np.linspace(0, 50e-6, 10)
         result = ida_signal(
-            I0=50.0, Ka_guest=1e-20, I_dye_free=1000.0, I_dye_bound=5000.0,
-            Ka_dye=5e5, h0=10e-6, d0=5e-6, g0_values=g0_values,
+            I0=50.0,
+            Ka_guest=1e-20,
+            I_dye_free=1000.0,
+            I_dye_bound=5000.0,
+            Ka_dye=5e5,
+            h0=10e-6,
+            d0=5e-6,
+            g0_values=g0_values,
         )
         assert not np.any(np.isnan(result))
         # Signal should be essentially constant (no displacement)
@@ -278,8 +327,14 @@ class TestCompetitiveBoundaries:
         I0, I_dye_free, I_dye_bound = 50.0, 1000.0, 5000.0
 
         result = ida_signal(
-            I0, Ka_guest=1e15, I_dye_free=I_dye_free, I_dye_bound=I_dye_bound,
-            Ka_dye=5e5, h0=10e-6, d0=d0, g0_values=g0_values,
+            I0,
+            Ka_guest=1e15,
+            I_dye_free=I_dye_free,
+            I_dye_bound=I_dye_bound,
+            Ka_dye=5e5,
+            h0=10e-6,
+            d0=d0,
+            g0_values=g0_values,
         )
         # All dye free → signal ≈ I0 + I_dye_free * d0
         expected = I0 + I_dye_free * d0
@@ -288,8 +343,14 @@ class TestCompetitiveBoundaries:
     def test_competitive_d0_zero_gives_I0(self):
         """No dye → signal equals I0 (no dye contribution)."""
         result = competitive_signal_point(
-            I0=50.0, Ka_guest=1e6, I_dye_free=1000.0, I_dye_bound=5000.0,
-            Ka_dye=5e5, h0=10e-6, d0=0.0, g0=5e-6,
+            I0=50.0,
+            Ka_guest=1e6,
+            I_dye_free=1000.0,
+            I_dye_bound=5000.0,
+            Ka_dye=5e5,
+            h0=10e-6,
+            d0=0.0,
+            g0=5e-6,
         )
         assert result == pytest.approx(50.0, abs=1e-10)
 
@@ -307,8 +368,14 @@ class TestSolverFailure:
         # h0 near-zero with huge binding constants → Brent bracket may fail
         d0_values = np.array([1e-6, 10e-6])
         result = gda_signal(
-            I0=0, Ka_guest=1e50, I_dye_free=1, I_dye_bound=1,
-            Ka_dye=1e50, h0=1e-30, d0_values=d0_values, g0=1.0,
+            I0=0,
+            Ka_guest=1e50,
+            I_dye_free=1,
+            I_dye_bound=1,
+            Ka_dye=1e50,
+            h0=1e-30,
+            d0_values=d0_values,
+            g0=1.0,
         )
         assert len(result) == 2  # no crash, correct length
 
@@ -357,8 +424,7 @@ class TestBrentBracketRobustness:
         # Just guard that it is finite and physical.
         assert np.isfinite(result), f'NaN / Inf at Ka_dye={Ka_dye:g}, Ka_guest={Ka_guest:g}'
         assert 0.0 <= result <= d0 + 1e-12, (
-            f'Signal {result:g} out of physical range [0, {d0:g}] at '
-            f'Ka_dye={Ka_dye:g}, Ka_guest={Ka_guest:g}'
+            f'Signal {result:g} out of physical range [0, {d0:g}] at Ka_dye={Ka_dye:g}, Ka_guest={Ka_guest:g}'
         )
 
     @pytest.mark.parametrize('Ka_dye', [1.0, 1e10])
@@ -367,8 +433,13 @@ class TestBrentBracketRobustness:
         h0, d0 = 10e-6, 5e-6
         # DtoH framing: titrant=dye, fixed=host
         signal = dba_signal(
-            I0=0.0, Ka_dye=Ka_dye, I_dye_free=1.0, I_dye_bound=1.0,
-            x_titrant=np.array([d0]), y_fixed=h0, mode='DtoH',
+            I0=0.0,
+            Ka_dye=Ka_dye,
+            I_dye_free=1.0,
+            I_dye_bound=1.0,
+            x_titrant=np.array([d0]),
+            y_fixed=h0,
+            mode='DtoH',
         )
         assert np.isfinite(signal[0]), f'NaN / Inf at Ka_dye={Ka_dye:g}'
         # Signal at this point ∈ [0, max(d0, [HD]≤min(h0,d0))]

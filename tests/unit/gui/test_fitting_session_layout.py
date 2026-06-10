@@ -13,11 +13,9 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PyQt6")
+pytest.importorskip('PyQt6')
 
-ENSIGHT_FIXTURE = (
-    Path(__file__).parent.parent.parent / "data" / "ensight" / "tryptamine.csv"
-)
+ENSIGHT_FIXTURE = Path(__file__).parent.parent.parent / 'data' / 'ensight' / 'tryptamine.csv'
 
 
 def _assert_embedded(session):
@@ -30,7 +28,7 @@ def _assert_embedded(session):
 
 def test_plot_stays_embedded_through_ensight_load_and_switch(qapp):
     if not ENSIGHT_FIXTURE.exists():
-        pytest.skip("EnSight fixture missing")
+        pytest.skip('EnSight fixture missing')
     from gui.fitting_session import FittingSession
 
     session = FittingSession()

@@ -18,11 +18,16 @@ import pandas as pd
 
 # Auto-register built-in formats. Register instrument-specific .csv sniffers
 # *before* the generic csv_reader fallback so they get first claim on dispatch.
+# Order is load-bearing — get_reader() walks readers in registration order — so
+# isort must not alphabetise this block:
+# isort: off
 from core.io.formats import txt  # noqa: F401
 from core.io.formats import jasco_reader  # noqa: F401
 from core.io.formats import ensight_reader  # noqa: F401
 from core.io.formats import csv_reader  # noqa: F401
 from core.io.formats import xlsx_reader  # noqa: F401
+
+# isort: on
 from core.io.registry import get_reader, get_writer
 
 

@@ -10,26 +10,26 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("PyQt6")
-pytest.importorskip("pyqtgraph")
+pytest.importorskip('PyQt6')
+pytest.importorskip('pyqtgraph')
 
 
 def test_axes_group_does_not_expose_x_axis_unit(qapp):
     from gui.plotting.plot_style import PlotStyleWidget
 
     sw = PlotStyleWidget()
-    axes_children = [child.name() for child in sw._params.child("Axes").children()]
-    assert "x-axis unit" not in axes_children
+    axes_children = [child.name() for child in sw._params.child('Axes').children()]
+    assert 'x-axis unit' not in axes_children
 
 
 def test_set_x_unit_updates_style_dict(qapp):
     from gui.plotting.plot_style import PlotStyleWidget
 
     sw = PlotStyleWidget()
-    assert sw.current_style()["axes"]["x_unit"] == "µM"
+    assert sw.current_style()['axes']['x_unit'] == 'µM'
 
-    sw.set_x_unit("nM")
-    assert sw.current_style()["axes"]["x_unit"] == "nM"
+    sw.set_x_unit('nM')
+    assert sw.current_style()['axes']['x_unit'] == 'nM'
 
 
 def test_set_x_unit_emits_once(qapp):
@@ -39,28 +39,26 @@ def test_set_x_unit_emits_once(qapp):
     received: list[dict] = []
     sw.style_changed.connect(received.append)
 
-    sw.set_x_unit("mM")
-    sw.set_x_unit("mM")  # no-op when unchanged
+    sw.set_x_unit('mM')
+    sw.set_x_unit('mM')  # no-op when unchanged
 
     assert len(received) == 1
-    assert received[0]["axes"]["x_unit"] == "mM"
+    assert received[0]['axes']['x_unit'] == 'mM'
 
 
 def test_load_style_restores_x_unit(qapp):
     from gui.plotting.plot_style import PlotStyleWidget
 
     sw = PlotStyleWidget()
-    sw.load_style({"axes": {"x_unit": "nM"}})
-    assert sw.current_style()["axes"]["x_unit"] == "nM"
+    sw.load_style({'axes': {'x_unit': 'nM'}})
+    assert sw.current_style()['axes']['x_unit'] == 'nM'
 
 
 def test_axis_name_overrides_round_trip_via_load_style(qapp):
     from gui.plotting.plot_style import PlotStyleWidget
 
     sw = PlotStyleWidget()
-    sw.load_style(
-        {"axes": {"x_name_override": "Tryptamine", "y_name_override": "Fluorescence"}}
-    )
-    axes = sw.current_style()["axes"]
-    assert axes["x_name_override"] == "Tryptamine"
-    assert axes["y_name_override"] == "Fluorescence"
+    sw.load_style({'axes': {'x_name_override': 'Tryptamine', 'y_name_override': 'Fluorescence'}})
+    axes = sw.current_style()['axes']
+    assert axes['x_name_override'] == 'Tryptamine'
+    assert axes['y_name_override'] == 'Fluorescence'

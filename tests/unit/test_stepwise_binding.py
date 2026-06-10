@@ -125,10 +125,24 @@ class TestReducesToDBA:
         g0 = np.linspace(1e-7, 5e-5, 20)
 
         hg2 = hg2_signal(
-            I0=COEFFS['I0'], Ka_HG=Ka, Ka_HG2=0.0, I_G=COEFFS['I_G'], I_H=0.0, I_HG=COEFFS['I_HG'], I_HG2=1.0e9, h0=h0, g0_values=g0
+            I0=COEFFS['I0'],
+            Ka_HG=Ka,
+            Ka_HG2=0.0,
+            I_G=COEFFS['I_G'],
+            I_H=0.0,
+            I_HG=COEFFS['I_HG'],
+            I_HG2=1.0e9,
+            h0=h0,
+            g0_values=g0,
         )
         dba = dba_signal(
-            I0=COEFFS['I0'], Ka_dye=Ka, I_dye_free=COEFFS['I_G'], I_dye_bound=COEFFS['I_HG'], x_titrant=g0, y_fixed=h0, mode='DtoH'
+            I0=COEFFS['I0'],
+            Ka_dye=Ka,
+            I_dye_free=COEFFS['I_G'],
+            I_dye_bound=COEFFS['I_HG'],
+            x_titrant=g0,
+            y_fixed=h0,
+            mode='DtoH',
         )
         np.testing.assert_allclose(hg2, dba, rtol=1e-6)
 
@@ -137,10 +151,24 @@ class TestReducesToDBA:
         g0 = np.linspace(1e-7, 5e-5, 20)
 
         h2g = h2g_signal(
-            I0=COEFFS['I0'], Ka_HG=Ka, Ka_H2G=0.0, I_G=COEFFS['I_G'], I_H=0.0, I_HG=COEFFS['I_HG'], I_H2G=1.0e9, h0=h0, g0_values=g0
+            I0=COEFFS['I0'],
+            Ka_HG=Ka,
+            Ka_H2G=0.0,
+            I_G=COEFFS['I_G'],
+            I_H=0.0,
+            I_HG=COEFFS['I_HG'],
+            I_H2G=1.0e9,
+            h0=h0,
+            g0_values=g0,
         )
         dba = dba_signal(
-            I0=COEFFS['I0'], Ka_dye=Ka, I_dye_free=COEFFS['I_G'], I_dye_bound=COEFFS['I_HG'], x_titrant=g0, y_fixed=h0, mode='DtoH'
+            I0=COEFFS['I0'],
+            Ka_dye=Ka,
+            I_dye_free=COEFFS['I_G'],
+            I_dye_bound=COEFFS['I_HG'],
+            x_titrant=g0,
+            y_fixed=h0,
+            mode='DtoH',
         )
         np.testing.assert_allclose(h2g, dba, rtol=1e-6)
 
@@ -151,12 +179,16 @@ class TestZeroGuestBaseline:
 
     def test_hg2_zero_guest(self):
         h0 = 2.0e-4
-        sig = hg2_signal(I0=25.0, Ka_HG=1e6, Ka_HG2=2e5, I_G=1e6, I_H=3.0e5, I_HG=1e7, I_HG2=5e6, h0=h0, g0_values=np.array([0.0]))
+        sig = hg2_signal(
+            I0=25.0, Ka_HG=1e6, Ka_HG2=2e5, I_G=1e6, I_H=3.0e5, I_HG=1e7, I_HG2=5e6, h0=h0, g0_values=np.array([0.0])
+        )
         assert sig[0] == pytest.approx(25.0 + 3.0e5 * h0, rel=1e-12)
 
     def test_h2g_zero_guest(self):
         h0 = 2.0e-4
-        sig = h2g_signal(I0=25.0, Ka_HG=1e6, Ka_H2G=2e5, I_G=1e6, I_H=3.0e5, I_HG=1e7, I_H2G=5e6, h0=h0, g0_values=np.array([0.0]))
+        sig = h2g_signal(
+            I0=25.0, Ka_HG=1e6, Ka_H2G=2e5, I_G=1e6, I_H=3.0e5, I_HG=1e7, I_H2G=5e6, h0=h0, g0_values=np.array([0.0])
+        )
         assert sig[0] == pytest.approx(25.0 + 3.0e5 * h0, rel=1e-12)
 
 

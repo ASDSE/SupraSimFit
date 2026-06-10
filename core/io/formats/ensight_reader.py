@@ -41,32 +41,32 @@ import pandas as pd
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.io.registry import register_reader
 
-ENSIGHT_METADATA_KEY = "ensight_metadata"
-ENSIGHT_CHANNEL_COLUMN = "channel"
+ENSIGHT_METADATA_KEY = 'ensight_metadata'
+ENSIGHT_CHANNEL_COLUMN = 'channel'
 
-_SIGNATURE = "EnSight Results from"
-_RESULT_RE = re.compile(r"^Result for (.+?),*\s*$")
-_GRID_HEADER_RE = re.compile(r"^,(?:\d+,)+\s*$")
-_GRID_ROW_RE = re.compile(r"^([A-P]),")
-_DETAILS_SECTION = "Details of Measurement Sequence"
-_PLATE_INFO_SECTION = "Plate Type Information"
+_SIGNATURE = 'EnSight Results from'
+_RESULT_RE = re.compile(r'^Result for (.+?),*\s*$')
+_GRID_HEADER_RE = re.compile(r'^,(?:\d+,)+\s*$')
+_GRID_ROW_RE = re.compile(r'^([A-P]),')
+_DETAILS_SECTION = 'Details of Measurement Sequence'
+_PLATE_INFO_SECTION = 'Plate Type Information'
 
 
 class EnsightReader:
     """Reader for PerkinElmer EnSight CSV_PLATE exports."""
 
-    extensions = (".csv",)
+    extensions = ('.csv',)
 
     @classmethod
     def can_read(cls, path: Path) -> bool:
         """Return True if the first non-empty line is the EnSight signature."""
         try:
-            with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            with open(path, 'r', encoding='utf-8-sig', errors='replace') as f:
                 for _ in range(5):
                     line = f.readline()
                     if not line:
                         return False
-                    stripped = line.strip().rstrip(",")
+                    stripped = line.strip().rstrip(',')
                     if stripped == _SIGNATURE:
                         return True
                     if stripped:
@@ -84,15 +84,14 @@ class EnsightReader:
         ``ENSIGHT_METADATA_KEY`` with protocol, plate, and per-channel
         instrument parameters.
         """
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-            lines = [line.rstrip("\r\n") for line in f]
+        with open(path, 'r', encoding='utf-8-sig', errors='replace') as f:
+            lines = [line.rstrip('\r\n') for line in f]
 
         protocol = self._parse_top_header(lines)
         blocks = self._find_result_blocks(lines)
         if not blocks:
             raise ValueError(
-                f"{path.name}: no 'Result for ...' blocks found — "
-                "file does not look like an EnSight CSV export."
+                f"{path.name}: no 'Result for ...' blocks found — file does not look like an EnSight CSV export."
             )
 
         details = self._parse_key_value_section(lines, _DETAILS_SECTION)
@@ -107,19 +106,19 @@ class EnsightReader:
                 for c in range(n_cols):
                     rows.append(
                         {
-                            "concentration": float(c + 1),
-                            "signal": float(grid[r, c]),
-                            "replica": r,
+                            'concentration': float(c + 1),
+                            'signal': float(grid[r, c]),
+                            'replica': r,
                             ENSIGHT_CHANNEL_COLUMN: name,
                         }
                     )
 
-        df = pd.DataFrame(rows).dropna(subset=["signal"]).reset_index(drop=True)
+        df = pd.DataFrame(rows).dropna(subset=['signal']).reset_index(drop=True)
         df.attrs[BMG_PLACEHOLDER_KEY] = True
         df.attrs[ENSIGHT_METADATA_KEY] = {
-            "protocol": protocol,
-            "channels": {name: self._block_details(name, details) for name, _ in blocks},
-            "plate": plate_info,
+            'protocol': protocol,
+            'channels': {name: self._block_details(name, details) for name, _ in blocks},
+            'plate': plate_info,
         }
         return df
 
@@ -132,14 +131,14 @@ class EnsightReader:
         info: Dict[str, str] = {}
         for line in lines:
             stripped = line.strip()
-            if not stripped or stripped.rstrip(",") == _SIGNATURE:
+            if not stripped or stripped.rstrip(',') == _SIGNATURE:
                 continue
             if _RESULT_RE.match(stripped):
                 break
-            if "," in line:
-                key, _, value = line.partition(",")
+            if ',' in line:
+                key, _, value = line.partition(',')
                 key = key.strip()
-                value = value.strip().rstrip(",").strip()
+                value = value.strip().rstrip(',').strip()
                 if key:
                     info[key] = value
         return info
@@ -173,25 +172,18 @@ class EnsightReader:
                 break
         if header_idx is None:
             raise ValueError(
-                f"{path.name}: block 'Result for {name}' has no plate grid "
-                "(expected a ',1,2,…,N,' header line)."
+                f"{path.name}: block 'Result for {name}' has no plate grid (expected a ',1,2,…,N,' header line)."
             )
 
-        col_tokens = [
-            tok for tok in lines[header_idx].split(",") if tok.strip() != ""
-        ]
+        col_tokens = [tok for tok in lines[header_idx].split(',') if tok.strip() != '']
         try:
             col_numbers = [int(tok) for tok in col_tokens]
         except ValueError as exc:
             raise ValueError(
-                f"{path.name}: block '{name}' grid header has non-integer "
-                f"column labels: {col_tokens!r}"
+                f"{path.name}: block '{name}' grid header has non-integer column labels: {col_tokens!r}"
             ) from exc
         if col_numbers != list(range(1, len(col_numbers) + 1)):
-            raise ValueError(
-                f"{path.name}: block '{name}' grid header is not sequential "
-                f"1..N: {col_numbers}"
-            )
+            raise ValueError(f"{path.name}: block '{name}' grid header is not sequential 1..N: {col_numbers}")
         n_cols = len(col_numbers)
 
         grid: List[List[float]] = []
@@ -205,22 +197,19 @@ class EnsightReader:
             expected = expected_letters[len(grid)]
             if letter != expected:
                 raise ValueError(
-                    f"{path.name}: block '{name}' row letter {letter!r} out of "
-                    f"sequence (expected {expected!r})."
+                    f"{path.name}: block '{name}' row letter {letter!r} out of sequence (expected {expected!r})."
                 )
-            parts = line.split(",")[1 : 1 + n_cols]
+            parts = line.split(',')[1 : 1 + n_cols]
             row_vals: List[float] = []
             for p in parts:
                 stripped = p.strip()
-                row_vals.append(float(stripped) if stripped else float("nan"))
+                row_vals.append(float(stripped) if stripped else float('nan'))
             while len(row_vals) < n_cols:
-                row_vals.append(float("nan"))
+                row_vals.append(float('nan'))
             grid.append(row_vals)
 
         if not grid:
-            raise ValueError(
-                f"{path.name}: block '{name}' grid header had no following data rows."
-            )
+            raise ValueError(f"{path.name}: block '{name}' grid header had no following data rows.")
 
         n_rows_expected, n_cols_expected = expected_dims
         # Plate info reports rows ↔ cols flipped vs the well grid in the file:
@@ -232,16 +221,14 @@ class EnsightReader:
             if actual != expected:
                 raise ValueError(
                     f"{path.name}: block '{name}' parsed grid is "
-                    f"{len(grid)}×{n_cols} but Plate Type Information reports "
-                    f"{n_rows_expected}×{n_cols_expected}."
+                    f'{len(grid)}×{n_cols} but Plate Type Information reports '
+                    f'{n_rows_expected}×{n_cols_expected}.'
                 )
 
         return np.asarray(grid, dtype=float)
 
     @staticmethod
-    def _parse_key_value_section(
-        lines: List[str], heading: str
-    ) -> Dict[str, str]:
+    def _parse_key_value_section(lines: List[str], heading: str) -> Dict[str, str]:
         """Extract a flat key/value dict from one of the trailing sections.
 
         Sections in EnSight CSVs look like::
@@ -272,32 +259,30 @@ class EnsightReader:
                 continue
             # A non-empty line with no commas is the next section heading;
             # stop here so we don't bleed its rows into this section.
-            if "," not in stripped:
+            if ',' not in stripped:
                 break
-            key, _, rest = line.partition(",")
+            key, _, rest = line.partition(',')
             key = key.strip()
             if not key:
                 continue
             # value is the first non-empty cell after the key
             value = next(
-                (cell.strip() for cell in rest.split(",") if cell.strip()),
-                "",
+                (cell.strip() for cell in rest.split(',') if cell.strip()),
+                '',
             )
             # For Details of Measurement Sequence, preserve all 'Operation' rows
             # by suffixing duplicates with an index. Other sections just overwrite.
             if key in out and heading == _DETAILS_SECTION:
                 k = 2
-                while f"{key}#{k}" in out:
+                while f'{key}#{k}' in out:
                     k += 1
-                out[f"{key}#{k}"] = value
+                out[f'{key}#{k}'] = value
             else:
                 out[key] = value
         return out
 
     @staticmethod
-    def _block_details(
-        block_name: str, details: Dict[str, str]
-    ) -> Dict[str, str]:
+    def _block_details(block_name: str, details: Dict[str, str]) -> Dict[str, str]:
         """Return the subset of details belonging to one Operation block.
 
         Walks ``details`` in insertion order, grouping each ``Operation``
@@ -307,8 +292,8 @@ class EnsightReader:
         current_name: str | None = None
         current_kvs: Dict[str, str] = {}
         for key, value in details.items():
-            base = key.split("#", 1)[0]
-            if base == "Operation":
+            base = key.split('#', 1)[0]
+            if base == 'Operation':
                 if current_name is not None:
                     groups.append((current_name, current_kvs))
                 current_name = value
@@ -337,29 +322,25 @@ class EnsightReader:
             except (TypeError, ValueError):
                 return None
 
-        return _as_int(plate_info.get("Number of Rows")), _as_int(
-            plate_info.get("Number of Columns")
-        )
+        return _as_int(plate_info.get('Number of Rows')), _as_int(plate_info.get('Number of Columns'))
 
 
-def format_channel_label(
-    channel: str, ensight_metadata: Dict[str, Any]
-) -> str:
+def format_channel_label(channel: str, ensight_metadata: Dict[str, Any]) -> str:
     """Build a human label for an EnSight channel: name + Ex/Em hints.
 
     Used by the GUI channel picker. Pure function so it's easy to unit
     test in isolation.
     """
-    info = ensight_metadata.get("channels", {}).get(channel, {}) if ensight_metadata else {}
-    em = info.get("Emission Wavelength [nm]") or info.get("Em wavelength")
-    ex = info.get("Excitation Wavelength [nm]") or info.get("Ex wavelength")
+    info = ensight_metadata.get('channels', {}).get(channel, {}) if ensight_metadata else {}
+    em = info.get('Emission Wavelength [nm]') or info.get('Em wavelength')
+    ex = info.get('Excitation Wavelength [nm]') or info.get('Ex wavelength')
     bits: List[str] = []
     if ex:
-        bits.append(f"Ex {ex}")
+        bits.append(f'Ex {ex}')
     if em:
-        bits.append(f"Em {em}")
+        bits.append(f'Em {em}')
     if bits:
-        return f"{channel} ({', '.join(bits)})"
+        return f'{channel} ({", ".join(bits)})'
     return channel
 
 

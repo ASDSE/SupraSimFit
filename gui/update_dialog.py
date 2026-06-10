@@ -29,12 +29,11 @@ from PyQt6.QtWidgets import (
 from _version import __version__
 from gui.download_worker import DownloadWorker
 
-
 # sys.platform → (asset-name substring, human label)
 _OS_ASSET_MAP: dict[str, tuple[str, str]] = {
-    "darwin": ("macos", "macOS"),
-    "win32": ("windows", "Windows"),
-    "linux": ("linux", "Linux"),
+    'darwin': ('macos', 'macOS'),
+    'win32': ('windows', 'Windows'),
+    'linux': ('linux', 'Linux'),
 }
 
 
@@ -45,13 +44,13 @@ def _pick_asset(assets: list[dict[str, Any]]) -> dict[str, Any] | None:
         return None
     substring = entry[0]
     for a in assets:
-        if substring in a["name"].lower():
+        if substring in a['name'].lower():
             return a
     return None
 
 
 def _os_label() -> str:
-    return _OS_ASSET_MAP.get(sys.platform, ("", sys.platform))[1]
+    return _OS_ASSET_MAP.get(sys.platform, ('', sys.platform))[1]
 
 
 class UpdateAvailableDialog(QDialog):
@@ -59,25 +58,22 @@ class UpdateAvailableDialog(QDialog):
 
     def __init__(self, info: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Update available")
+        self.setWindowTitle('Update available')
         self.resize(640, 520)
 
         self._info = info
-        self._asset = _pick_asset(info.get("assets", []))
+        self._asset = _pick_asset(info.get('assets', []))
         self._download_worker: DownloadWorker | None = None
 
         layout = QVBoxLayout(self)
 
-        header = QLabel(
-            f"<b>SupraSimFit {info['latest_version']} is available.</b><br>"
-            f"You're running {__version__}."
-        )
+        header = QLabel(f"<b>SupraSimFit {info['latest_version']} is available.</b><br>You're running {__version__}.")
         header.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(header)
 
         notes = QTextBrowser()
         notes.setOpenExternalLinks(True)
-        notes.setMarkdown(info.get("body") or "_(no release notes)_")
+        notes.setMarkdown(info.get('body') or '_(no release notes)_')
         layout.addWidget(notes, 1)
 
         # ------------------------------------------------------------------
@@ -86,26 +82,24 @@ class UpdateAvailableDialog(QDialog):
         action_row = QHBoxLayout()
 
         if self._asset:
-            self._download_btn = QPushButton(f"Download for {_os_label()}")
+            self._download_btn = QPushButton(f'Download for {_os_label()}')
             self._download_btn.clicked.connect(self._start_download)
         else:
-            self._download_btn = QPushButton("No download for this OS")
+            self._download_btn = QPushButton('No download for this OS')
             self._download_btn.setEnabled(False)
             self._download_btn.setToolTip(
-                "This release does not include an asset for your platform. "
-                "Use the GitHub link to see what is available."
+                'This release does not include an asset for your platform. '
+                'Use the GitHub link to see what is available.'
             )
         action_row.addWidget(self._download_btn)
 
-        view_btn = QPushButton("View on GitHub")
-        view_btn.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl(info["release_url"]))
-        )
+        view_btn = QPushButton('View on GitHub')
+        view_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(info['release_url'])))
         action_row.addWidget(view_btn)
 
         action_row.addStretch(1)
 
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton('Close')
         close_btn.clicked.connect(self.reject)
         action_row.addWidget(close_btn)
 
@@ -117,7 +111,7 @@ class UpdateAvailableDialog(QDialog):
         self._progress.setVisible(False)
         layout.addWidget(self._progress)
 
-        self._status = QLabel("")
+        self._status = QLabel('')
         self._status.setVisible(False)
         layout.addWidget(self._status)
 
@@ -128,15 +122,15 @@ class UpdateAvailableDialog(QDialog):
     def _start_download(self) -> None:
         if not self._asset:
             return
-        url = self._asset["browser_download_url"]
-        name = self._asset["name"]
-        dest = Path.home() / "Downloads" / name
+        url = self._asset['browser_download_url']
+        name = self._asset['name']
+        dest = Path.home() / 'Downloads' / name
 
         self._download_btn.setEnabled(False)
-        self._download_btn.setText("Downloading…")
+        self._download_btn.setText('Downloading…')
         self._progress.setVisible(True)
         self._status.setVisible(True)
-        self._status.setText(f"Saving to {dest}")
+        self._status.setText(f'Saving to {dest}')
 
         self._download_worker = DownloadWorker(url, dest)
         self._download_worker.progress.connect(self._on_progress)
@@ -148,33 +142,29 @@ class UpdateAvailableDialog(QDialog):
         mb_done = done / 1_048_576
         if total > 0:
             self._progress.setValue(int(100 * done / total))
-            self._status.setText(
-                f"Downloaded {mb_done:.1f} MB of {total / 1_048_576:.1f} MB"
-            )
+            self._status.setText(f'Downloaded {mb_done:.1f} MB of {total / 1_048_576:.1f} MB')
         else:
-            self._status.setText(f"Downloaded {mb_done:.1f} MB")
+            self._status.setText(f'Downloaded {mb_done:.1f} MB')
 
     def _on_download_finished(self, path: str) -> None:
         self._progress.setValue(100)
-        self._status.setText(f"Saved to {path}")
+        self._status.setText(f'Saved to {path}')
         # Repurpose the primary button as a "Reveal in file manager" action.
-        self._download_btn.setText("Show in file manager")
+        self._download_btn.setText('Show in file manager')
         self._download_btn.setEnabled(True)
         try:
             self._download_btn.clicked.disconnect()
         except TypeError:
             pass  # already disconnected
         folder = str(Path(path).parent)
-        self._download_btn.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
-        )
+        self._download_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(folder)))
 
     def _on_download_error(self, msg: str) -> None:
         self._progress.setVisible(False)
         self._status.setVisible(False)
         self._download_btn.setEnabled(True)
-        self._download_btn.setText(f"Download for {_os_label()}")
-        QMessageBox.warning(self, "Download failed", msg)
+        self._download_btn.setText(f'Download for {_os_label()}')
+        QMessageBox.warning(self, 'Download failed', msg)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         """Cancel and join an in-flight download before the dialog closes.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from PyQt6.QtCore import QLocale, Qt, pyqtSignal
-from PyQt6.QtWidgets import QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
@@ -48,7 +48,11 @@ class _UnitWidget(QWidget):
         entry = _UNIT_TYPE_CHOICES.get(field.unit_type)
         choices = entry[0] if entry else ()
         default_lbl = entry[1] if entry else ''
-        self._units: list[tuple[str, float]] = [(label, float(Q_(1, label).to(self._base_unit).magnitude)) for label in choices] if choices and self._base_unit else []
+        self._units: list[tuple[str, float]] = (
+            [(label, float(Q_(1, label).to(self._base_unit).magnitude)) for label in choices]
+            if choices and self._base_unit
+            else []
+        )
         self._current_scale: float = 1.0
 
         layout = QHBoxLayout(self)

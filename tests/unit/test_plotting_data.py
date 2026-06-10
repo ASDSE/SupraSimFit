@@ -1,7 +1,6 @@
 """Tests for prepare_plot_data() — the MeasurementSet → plot dict bridge."""
 
 import numpy as np
-import pytest
 
 from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data

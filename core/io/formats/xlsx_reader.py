@@ -24,8 +24,8 @@ from openpyxl import load_workbook
 from core.io.formats.bmg_reader import is_bmg_workbook, parse_bmg_workbook
 from core.io.registry import register_reader
 
-_CONC_NAMES = {"concentration", "conc", "x", "[conc]", "titrant"}
-_SIGNAL_NAMES = {"signal", "y", "fluorescence", "intensity", "emission"}
+_CONC_NAMES = {'concentration', 'conc', 'x', '[conc]', 'titrant'}
+_SIGNAL_NAMES = {'signal', 'y', 'fluorescence', 'intensity', 'emission'}
 
 
 class XlsxReader:
@@ -36,7 +36,7 @@ class XlsxReader:
     else falls through to the structured long/wide-format path.
     """
 
-    extensions = (".xlsx", ".xls")
+    extensions = ('.xlsx', '.xls')
 
     def read(self, path: Path) -> pd.DataFrame:
         """Read an Excel measurement file.
@@ -72,7 +72,7 @@ class XlsxReader:
 
     def _read_structured(self, wb, path: Path) -> pd.DataFrame:
         """Pandas-based long / wide / multi-sheet fallback."""
-        xl = pd.ExcelFile(wb, engine="openpyxl")
+        xl = pd.ExcelFile(wb, engine='openpyxl')
         sheet_names = xl.sheet_names
 
         if len(sheet_names) > 1:
@@ -94,14 +94,14 @@ class XlsxReader:
                 continue
             frame = pd.DataFrame(
                 {
-                    "concentration": pd.to_numeric(df[conc_col], errors="coerce"),
-                    "signal": pd.to_numeric(df[signal_col], errors="coerce"),
-                    "replica": i,
+                    'concentration': pd.to_numeric(df[conc_col], errors='coerce'),
+                    'signal': pd.to_numeric(df[signal_col], errors='coerce'),
+                    'replica': i,
                 }
             )
-            frames.append(frame.dropna(subset=["concentration", "signal"]))
+            frames.append(frame.dropna(subset=['concentration', 'signal']))
         if not frames:
-            raise ValueError("No readable replica sheets found in Excel file.")
+            raise ValueError('No readable replica sheets found in Excel file.')
         return pd.concat(frames, ignore_index=True)
 
     def _parse_single_sheet(self, df: pd.DataFrame, path: Path) -> pd.DataFrame:
@@ -110,23 +110,20 @@ class XlsxReader:
         signal_col = self._find_col(cols_lower, _SIGNAL_NAMES)
 
         if conc_col and signal_col:
-            replica_col = cols_lower.get("replica")
+            replica_col = cols_lower.get('replica')
             result = pd.DataFrame(
                 {
-                    "concentration": pd.to_numeric(df[conc_col], errors="coerce"),
-                    "signal": pd.to_numeric(df[signal_col], errors="coerce"),
-                    "replica": df[replica_col].astype(int) if replica_col else 0,
+                    'concentration': pd.to_numeric(df[conc_col], errors='coerce'),
+                    'signal': pd.to_numeric(df[signal_col], errors='coerce'),
+                    'replica': df[replica_col].astype(int) if replica_col else 0,
                 }
             )
-            return result.dropna(subset=["concentration", "signal"]).reset_index(drop=True)
+            return result.dropna(subset=['concentration', 'signal']).reset_index(drop=True)
 
         if conc_col and len(df.columns) >= 2:
             return self._parse_wide(df, conc_col)
 
-        raise ValueError(
-            f"Cannot identify concentration/signal columns in {path}. "
-            f"Found: {list(df.columns)}"
-        )
+        raise ValueError(f'Cannot identify concentration/signal columns in {path}. Found: {list(df.columns)}')
 
     def _parse_wide(self, df: pd.DataFrame, conc_col: str) -> pd.DataFrame:
         replica_cols = [c for c in df.columns if c != conc_col]
@@ -134,14 +131,14 @@ class XlsxReader:
         for i, col in enumerate(replica_cols):
             frame = pd.DataFrame(
                 {
-                    "concentration": pd.to_numeric(df[conc_col], errors="coerce"),
-                    "signal": pd.to_numeric(df[col], errors="coerce"),
-                    "replica": i,
+                    'concentration': pd.to_numeric(df[conc_col], errors='coerce'),
+                    'signal': pd.to_numeric(df[col], errors='coerce'),
+                    'replica': i,
                 }
             )
             frames.append(frame)
         result = pd.concat(frames, ignore_index=True)
-        return result.dropna(subset=["concentration", "signal"]).reset_index(drop=True)
+        return result.dropna(subset=['concentration', 'signal']).reset_index(drop=True)
 
     def _find_col(self, cols_lower: dict, names: set) -> str | None:
         for name in names:

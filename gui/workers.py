@@ -8,7 +8,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.assays.base import BaseAssay
 from core.data_processing.measurement_set import MeasurementSet
-from core.pipeline.fit_pipeline import FitConfig, FitResult, PerReplicaFitError, fit_measurement_set
+from core.pipeline.fit_pipeline import FitConfig, PerReplicaFitError, fit_measurement_set
 
 
 class FitWorker(QThread):
@@ -37,7 +37,7 @@ class FitWorker(QThread):
         Emitted if an exception is raised.
     """
 
-    finished = pyqtSignal(object)   # FitResult
+    finished = pyqtSignal(object)  # FitResult
     error = pyqtSignal(str)
 
     def __init__(

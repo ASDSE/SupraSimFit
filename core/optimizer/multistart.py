@@ -158,5 +158,3 @@ def multistart_minimize(
     # Sort by cost (best first)
     results.sort(key=lambda x: x.cost)
     return results
-
-

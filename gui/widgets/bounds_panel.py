@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QCheckBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.units import Q_, Quantity
 from gui.parameter_descriptions import PARAMETER_DESCRIPTIONS
 from gui.plotting.labels import fmt_param
 from gui.widgets.info_button import InfoButton, InfoGroupBox
-
 
 _DYE_ALONE_PRIOR_HTML = """
 <h3>Use Dye-Alone Priors for Signal Bounds</h3>
@@ -263,7 +274,9 @@ class BoundsPanel(InfoGroupBox):
         from core.io.registry import READERS
 
         exts = ' '.join(f'*{e}' for e in sorted(READERS.keys()))
-        path, _ = QFileDialog.getOpenFileName(self, 'Load Dye-Alone Data', '', f'Measurement files ({exts});;All files (*)')
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Load Dye-Alone Data', '', f'Measurement files ({exts});;All files (*)'
+        )
         if not path:
             return
         try:
