@@ -210,5 +210,6 @@ app/*
 data/results/*
 *.xlsx
 
-/graphify-out
-.graphify*
+graphify-out/cost.json
+graphify-out/cache/
+.graphify_python 

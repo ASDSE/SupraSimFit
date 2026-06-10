@@ -2,15 +2,6 @@
 
 Guidance for Claude Code when working in this repository.
 
-## graphify
-
-This project has a knowledge graph at `graphify-out/`.
-
-- For codebase questions, run `graphify query "<question>"` first (returns a scoped subgraph, usually far smaller than `GRAPH_REPORT.md` or raw grep). Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts.
-- Use `graphify-out/wiki/index.md` for broad navigation instead of browsing raw source.
-- Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review, or when query/path/explain don't surface enough.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-
 ## Project Overview
 
 SupraSimFit — a desktop toolkit that fits equilibrium binding models to fluorescence titration data using multi-start L-BFGS-B optimization, extracting association constants (Ka) via rigorous forward-modelling rather than linearised transforms. Assay types: `GDA`, `IDA`, `DBA_HtoD`, `DBA_DtoH`, `DYE_ALONE`.

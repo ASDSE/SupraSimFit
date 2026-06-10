@@ -1,0 +1,672 @@
+{
+  "/Users/ahmadomira/git/fitting_app/_version.py": {
+    "mtime": 1780325967.3249373,
+    "ast_hash": "4426b2f9434362c5e474c54cbec1dcc5",
+    "semantic_hash": "4426b2f9434362c5e474c54cbec1dcc5"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/__init__.py": {
+    "mtime": 1773761126.7741027,
+    "ast_hash": "0f8b3c5d6b870b057811c6855d8f13bb",
+    "semantic_hash": "0f8b3c5d6b870b057811c6855d8f13bb"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/assays/__init__.py": {
+    "mtime": 1773761126.7742567,
+    "ast_hash": "d86192918f3bb48a799a4760e0b15ad8",
+    "semantic_hash": "d86192918f3bb48a799a4760e0b15ad8"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/assays/base.py": {
+    "mtime": 1776072633.814063,
+    "ast_hash": "59206c53eb0c5bf49d3f97c75391da3c",
+    "semantic_hash": "59206c53eb0c5bf49d3f97c75391da3c"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/assays/dba.py": {
+    "mtime": 1779815162.0675883,
+    "ast_hash": "e2bb64a6ee5c2cfa9c3fe6f6ed7074c6",
+    "semantic_hash": "e2bb64a6ee5c2cfa9c3fe6f6ed7074c6"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/assays/dye_alone.py": {
+    "mtime": 1776072633.818389,
+    "ast_hash": "61298fbf47dcefefe9f5c09fae406e90",
+    "semantic_hash": "61298fbf47dcefefe9f5c09fae406e90"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/assays/gda.py": {
+    "mtime": 1776072633.8186412,
+    "ast_hash": "91e21a09eb0304312b4b49da102d2f4b",
+    "semantic_hash": "91e21a09eb0304312b4b49da102d2f4b"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/assays/ida.py": {
+    "mtime": 1776072633.818829,
+    "ast_hash": "c933b119acbae2f6515b9aff3a888f55",
+    "semantic_hash": "c933b119acbae2f6515b9aff3a888f55"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/assays/registry.py": {
+    "mtime": 1779815162.0678291,
+    "ast_hash": "d1243129afb3b7d8fe6a6f405bfcd080",
+    "semantic_hash": "d1243129afb3b7d8fe6a6f405bfcd080"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/data_processing/__init__.py": {
+    "mtime": 1773761126.7756143,
+    "ast_hash": "a0a541da89d4d1572b7407cd7405d02c",
+    "semantic_hash": "a0a541da89d4d1572b7407cd7405d02c"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/data_processing/concentration.py": {
+    "mtime": 1779815162.0681,
+    "ast_hash": "12585678b6954f63e288f5cb5bd64a9b",
+    "semantic_hash": "12585678b6954f63e288f5cb5bd64a9b"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/data_processing/measurement_set.py": {
+    "mtime": 1779815162.068305,
+    "ast_hash": "194637e140cd7d06ea23b8de7b77b62c",
+    "semantic_hash": "194637e140cd7d06ea23b8de7b77b62c"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/data_processing/plotting.py": {
+    "mtime": 1777366372.033558,
+    "ast_hash": "633dccbe4c9068342343e6e7b9b91959",
+    "semantic_hash": "633dccbe4c9068342343e6e7b9b91959"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/data_processing/preprocessing.py": {
+    "mtime": 1773761126.776289,
+    "ast_hash": "07403a56a75c9fbefa3f52f57c0f2a2c",
+    "semantic_hash": "07403a56a75c9fbefa3f52f57c0f2a2c"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/__init__.py": {
+    "mtime": 1780325967.3252337,
+    "ast_hash": "84b3ad47efaa96cb44e765aad7d15d18",
+    "semantic_hash": "84b3ad47efaa96cb44e765aad7d15d18"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/base.py": {
+    "mtime": 1780325967.3255506,
+    "ast_hash": "745447d69f0e7a78a82c55ba8fa200b9",
+    "semantic_hash": "745447d69f0e7a78a82c55ba8fa200b9"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/formats/__init__.py": {
+    "mtime": 1773761126.7769227,
+    "ast_hash": "bf04b37939d76ed712b59ee42b9a6ce6",
+    "semantic_hash": "bf04b37939d76ed712b59ee42b9a6ce6"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/formats/bmg_reader.py": {
+    "mtime": 1776083900.0287964,
+    "ast_hash": "8870b59b57658ae77a32c7c7e3c4578a",
+    "semantic_hash": "8870b59b57658ae77a32c7c7e3c4578a"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/formats/csv_reader.py": {
+    "mtime": 1779815162.0685768,
+    "ast_hash": "1bacddb96ff85028073ae0dd2222e512",
+    "semantic_hash": "1bacddb96ff85028073ae0dd2222e512"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/formats/ensight_reader.py": {
+    "mtime": 1780325967.3260176,
+    "ast_hash": "69fa44ebf7cb8f0074f6de03dbaa6c66",
+    "semantic_hash": "69fa44ebf7cb8f0074f6de03dbaa6c66"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/formats/jasco_reader.py": {
+    "mtime": 1780325967.326219,
+    "ast_hash": "522a5dda97646da41c7142791d6d59fc",
+    "semantic_hash": "522a5dda97646da41c7142791d6d59fc"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/formats/measurement_writer.py": {
+    "mtime": 1776084171.4049804,
+    "ast_hash": "1642a56e8e19fc521d4b340fdcf7cdd6",
+    "semantic_hash": "1642a56e8e19fc521d4b340fdcf7cdd6"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/formats/txt.py": {
+    "mtime": 1773761126.7772458,
+    "ast_hash": "5006bb36b9b27ea1152a6370b94b8ffc",
+    "semantic_hash": "5006bb36b9b27ea1152a6370b94b8ffc"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/formats/xlsx_reader.py": {
+    "mtime": 1779815162.0688045,
+    "ast_hash": "7619c4eeb9d3ab9b0d7c9902aac91fcd",
+    "semantic_hash": "7619c4eeb9d3ab9b0d7c9902aac91fcd"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/io/registry.py": {
+    "mtime": 1780325967.3265047,
+    "ast_hash": "0e4569087abf893ac2819f5b04eac22d",
+    "semantic_hash": "0e4569087abf893ac2819f5b04eac22d"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/models/__init__.py": {
+    "mtime": 1773761126.777706,
+    "ast_hash": "5f9fd033afa4ddf813c7235075409327",
+    "semantic_hash": "5f9fd033afa4ddf813c7235075409327"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/models/equilibrium.py": {
+    "mtime": 1779815162.0690942,
+    "ast_hash": "16d010a446889afe3c87451cba6a2a41",
+    "semantic_hash": "16d010a446889afe3c87451cba6a2a41"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/models/linear.py": {
+    "mtime": 1775238956.5300756,
+    "ast_hash": "0db8b0ea68b9bb1941295573c911dadd",
+    "semantic_hash": "0db8b0ea68b9bb1941295573c911dadd"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/optimizer/__init__.py": {
+    "mtime": 1776248308.4000063,
+    "ast_hash": "6390cb2421a525ef238ad79a931933c1",
+    "semantic_hash": "6390cb2421a525ef238ad79a931933c1"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/optimizer/filters.py": {
+    "mtime": 1776262604.313548,
+    "ast_hash": "7643fff9a0172013a53c12088bc89f2a",
+    "semantic_hash": "7643fff9a0172013a53c12088bc89f2a"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/optimizer/linear_fit.py": {
+    "mtime": 1775238956.540479,
+    "ast_hash": "c88967462a5537cca9fb669fc2fdfbb6",
+    "semantic_hash": "c88967462a5537cca9fb669fc2fdfbb6"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/optimizer/multistart.py": {
+    "mtime": 1776248308.400232,
+    "ast_hash": "ec3fa85edc5968259431e1cc707bc672",
+    "semantic_hash": "ec3fa85edc5968259431e1cc707bc672"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/optimizer/scaling.py": {
+    "mtime": 1776248308.4004111,
+    "ast_hash": "c2519bef2d2551535bfc9b2a7a28af28",
+    "semantic_hash": "c2519bef2d2551535bfc9b2a7a28af28"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/pipeline/__init__.py": {
+    "mtime": 1773761126.7788405,
+    "ast_hash": "6a78441528b035750bafe0a9f56cdfff",
+    "semantic_hash": "6a78441528b035750bafe0a9f56cdfff"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/pipeline/fit_pipeline.py": {
+    "mtime": 1779815162.069327,
+    "ast_hash": "9a3eb0acd2d81cfa449ca2599e2d0e1e",
+    "semantic_hash": "9a3eb0acd2d81cfa449ca2599e2d0e1e"
+  },
+  "/Users/ahmadomira/git/fitting_app/core/units.py": {
+    "mtime": 1776072633.8205419,
+    "ast_hash": "6b3a3ead50632d7cf173bd5fd23befa8",
+    "semantic_hash": "6b3a3ead50632d7cf173bd5fd23befa8"
+  },
+  "/Users/ahmadomira/git/fitting_app/examples/plotting_demo.py": {
+    "mtime": 1779815162.069588,
+    "ast_hash": "b04d9c31f10629c513df783b4859d78c",
+    "semantic_hash": "b04d9c31f10629c513df783b4859d78c"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/__init__.py": {
+    "mtime": 1748013038.076356,
+    "ast_hash": "9ddc50769c00066a61bd5cd81912a58f",
+    "semantic_hash": "9ddc50769c00066a61bd5cd81912a58f"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/app_state.py": {
+    "mtime": 1779815162.0697644,
+    "ast_hash": "934a9f21a391c0901637c1e95e15d34c",
+    "semantic_hash": "934a9f21a391c0901637c1e95e15d34c"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/assay_descriptions.py": {
+    "mtime": 1776072633.8214095,
+    "ast_hash": "19b6fde790984bab14f709cab12c374c",
+    "semantic_hash": "19b6fde790984bab14f709cab12c374c"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/dialogs/__init__.py": {
+    "mtime": 1748013038.0764976,
+    "ast_hash": "bf282f7badf5a8048de1605cef9acb77",
+    "semantic_hash": "bf282f7badf5a8048de1605cef9acb77"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/dialogs/export_multiple_dialog.py": {
+    "mtime": 1779815162.0701933,
+    "ast_hash": "ea9724e046be3d0a19ffa3d8863e9a8a",
+    "semantic_hash": "ea9724e046be3d0a19ffa3d8863e9a8a"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/dialogs/save_distributions_dialog.py": {
+    "mtime": 1779815162.0703638,
+    "ast_hash": "f642146036c8838023b9f4360338fc70",
+    "semantic_hash": "f642146036c8838023b9f4360338fc70"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/download_worker.py": {
+    "mtime": 1780046691.1407688,
+    "ast_hash": "19cfdf496ad04f319827e8477fda51c5",
+    "semantic_hash": "19cfdf496ad04f319827e8477fda51c5"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/fitting_session.py": {
+    "mtime": 1780325967.3270013,
+    "ast_hash": "152fbb97cf20bbaf031babb90396a2a1",
+    "semantic_hash": "152fbb97cf20bbaf031babb90396a2a1"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/main_window.py": {
+    "mtime": 1780046677.3805315,
+    "ast_hash": "d7d7f8d5e21a5220c43a8a3271daa058",
+    "semantic_hash": "d7d7f8d5e21a5220c43a8a3271daa058"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/parameter_descriptions.py": {
+    "mtime": 1776072633.8225617,
+    "ast_hash": "1f54f8e55152bc74663688580db5e05b",
+    "semantic_hash": "1f54f8e55152bc74663688580db5e05b"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/plotting/__init__.py": {
+    "mtime": 1773761210.2042232,
+    "ast_hash": "fdf9766061170b497fc2bbb3d71c4af0",
+    "semantic_hash": "fdf9766061170b497fc2bbb3d71c4af0"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/plotting/colors.py": {
+    "mtime": 1776072633.8227446,
+    "ast_hash": "e596a3248e431e551c04c01d385a9f42",
+    "semantic_hash": "e596a3248e431e551c04c01d385a9f42"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/plotting/distribution_widget.py": {
+    "mtime": 1779815162.071108,
+    "ast_hash": "5c58a1796e4666295bef73bf49690ab4",
+    "semantic_hash": "5c58a1796e4666295bef73bf49690ab4"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/plotting/export.py": {
+    "mtime": 1779815162.0713422,
+    "ast_hash": "cc2d41de6ed89e8c0bbd56eac9a077be",
+    "semantic_hash": "cc2d41de6ed89e8c0bbd56eac9a077be"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/plotting/fit_summary_widget.py": {
+    "mtime": 1779815162.0716038,
+    "ast_hash": "6ce44365185d946bb71c2027073a1440",
+    "semantic_hash": "6ce44365185d946bb71c2027073a1440"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/plotting/labels.py": {
+    "mtime": 1776072633.8231423,
+    "ast_hash": "38acd2ef97ebab9b6c3defdb66728504",
+    "semantic_hash": "38acd2ef97ebab9b6c3defdb66728504"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/plotting/plot_style.py": {
+    "mtime": 1779815162.071814,
+    "ast_hash": "58a8fe6fd32c26e2ec03841ffb72c8b1",
+    "semantic_hash": "58a8fe6fd32c26e2ec03841ffb72c8b1"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/plotting/plot_widget.py": {
+    "mtime": 1779815162.0720806,
+    "ast_hash": "d8a10024ff4b87d4c2f4ce179c6efe2c",
+    "semantic_hash": "d8a10024ff4b87d4c2f4ce179c6efe2c"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/preferences.py": {
+    "mtime": 1779815162.0723085,
+    "ast_hash": "ec982eb701e5145aca978cb2d152a6ad",
+    "semantic_hash": "ec982eb701e5145aca978cb2d152a6ad"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/session.py": {
+    "mtime": 1779815162.0725715,
+    "ast_hash": "f9051b4a2371790398fe7863b9268d79",
+    "semantic_hash": "f9051b4a2371790398fe7863b9268d79"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/update_check.py": {
+    "mtime": 1779886800.7511387,
+    "ast_hash": "2206f9aca8c00401b1a4ce9f3594e986",
+    "semantic_hash": "2206f9aca8c00401b1a4ce9f3594e986"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/update_dialog.py": {
+    "mtime": 1780046698.8842475,
+    "ast_hash": "d6edbcab17e4747a6b8fdf7b56a9f16b",
+    "semantic_hash": "d6edbcab17e4747a6b8fdf7b56a9f16b"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/widgets/__init__.py": {
+    "mtime": 1748013038.0778732,
+    "ast_hash": "da5a67c2203d487a92a3b8990449b908",
+    "semantic_hash": "da5a67c2203d487a92a3b8990449b908"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/widgets/assay_conditions.py": {
+    "mtime": 1776072633.8239677,
+    "ast_hash": "14d7c6041ee3795b2003217c028601b2",
+    "semantic_hash": "14d7c6041ee3795b2003217c028601b2"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/widgets/assay_config_panel.py": {
+    "mtime": 1777366372.035255,
+    "ast_hash": "f554c8c75c4dc94d9e2caaa0d6dc23a9",
+    "semantic_hash": "f554c8c75c4dc94d9e2caaa0d6dc23a9"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/widgets/bounds_panel.py": {
+    "mtime": 1777366372.0356832,
+    "ast_hash": "1f536f1118c549e2cc8fef5f60b266e4",
+    "semantic_hash": "1f536f1118c549e2cc8fef5f60b266e4"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/widgets/data_panel.py": {
+    "mtime": 1780325967.3273787,
+    "ast_hash": "bb11fb99054930473199799f63bb3c20",
+    "semantic_hash": "bb11fb99054930473199799f63bb3c20"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/widgets/fit_config_panel.py": {
+    "mtime": 1779815162.0729651,
+    "ast_hash": "70beef60468bd4f5c4228dde78c69d42",
+    "semantic_hash": "70beef60468bd4f5c4228dde78c69d42"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/widgets/info_button.py": {
+    "mtime": 1777366372.036382,
+    "ast_hash": "923b0f12374e7740197552fe9085421a",
+    "semantic_hash": "923b0f12374e7740197552fe9085421a"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/widgets/numeric_inputs.py": {
+    "mtime": 1779815162.0731297,
+    "ast_hash": "4a080fa2d069611bb089d41509541f1d",
+    "semantic_hash": "4a080fa2d069611bb089d41509541f1d"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/widgets/preprocessing_panel.py": {
+    "mtime": 1779815162.0734007,
+    "ast_hash": "fd9ac76c6612070c17eea5119f75bf26",
+    "semantic_hash": "fd9ac76c6612070c17eea5119f75bf26"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/widgets/replica_panel.py": {
+    "mtime": 1779815162.0736403,
+    "ast_hash": "d57ece010f53f8cd17b4bfafd0d1bd37",
+    "semantic_hash": "d57ece010f53f8cd17b4bfafd0d1bd37"
+  },
+  "/Users/ahmadomira/git/fitting_app/gui/workers.py": {
+    "mtime": 1779815162.0738194,
+    "ast_hash": "2a0408ae97499910e1601eb1822ac375",
+    "semantic_hash": "2a0408ae97499910e1601eb1822ac375"
+  },
+  "/Users/ahmadomira/git/fitting_app/run_app.py": {
+    "mtime": 1776089259.7443368,
+    "ast_hash": "97dc7611e6a04d3f05645db8e94160d3",
+    "semantic_hash": "97dc7611e6a04d3f05645db8e94160d3"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/__init__.py": {
+    "mtime": 1748013038.0780606,
+    "ast_hash": "f766a4bf61b2937cc665f4393c1944c4",
+    "semantic_hash": "f766a4bf61b2937cc665f4393c1944c4"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/conftest.py": {
+    "mtime": 1779815162.0742319,
+    "ast_hash": "1dee656a1f6f9f7f353778c8b9c1f235",
+    "semantic_hash": "1dee656a1f6f9f7f353778c8b9c1f235"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/integration/__init__.py": {
+    "mtime": 1773761126.7884574,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/integration/test_per_replica_fit.py": {
+    "mtime": 1781040967.1768253,
+    "ast_hash": "adfbc65a114ba456a95d587edcd8c529",
+    "semantic_hash": "adfbc65a114ba456a95d587edcd8c529"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/integration/test_pipeline_e2e.py": {
+    "mtime": 1781040967.1773376,
+    "ast_hash": "d47e6398652f390d5d71229447cf5e34",
+    "semantic_hash": "d47e6398652f390d5d71229447cf5e34"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/__init__.py": {
+    "mtime": 1773761126.7886796,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/__init__.py": {
+    "mtime": 1773761210.2074804,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/conftest.py": {
+    "mtime": 1781040967.1776004,
+    "ast_hash": "a4b7cdfd4bb0e984e2bc22ab1671af34",
+    "semantic_hash": "a4b7cdfd4bb0e984e2bc22ab1671af34"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_colors.py": {
+    "mtime": 1781040967.17784,
+    "ast_hash": "b4dca93a740da133d34113e4ea6f9ad4",
+    "semantic_hash": "b4dca93a740da133d34113e4ea6f9ad4"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_data_panel.py": {
+    "mtime": 1781040967.178134,
+    "ast_hash": "10ab734d010ee1b132cb98cd42a2080d",
+    "semantic_hash": "10ab734d010ee1b132cb98cd42a2080d"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_export.py": {
+    "mtime": 1781040967.1784356,
+    "ast_hash": "0a051386d34f935b95891ad3c4bacbc3",
+    "semantic_hash": "0a051386d34f935b95891ad3c4bacbc3"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_fit_summary_widget.py": {
+    "mtime": 1781040967.178721,
+    "ast_hash": "02a1a3005a2624ae9ff91ea8329a2feb",
+    "semantic_hash": "02a1a3005a2624ae9ff91ea8329a2feb"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_fitting_session_layout.py": {
+    "mtime": 1781040967.1789865,
+    "ast_hash": "bd2c9d1f6027a7a34565b76ada85ca9b",
+    "semantic_hash": "bd2c9d1f6027a7a34565b76ada85ca9b"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_labels.py": {
+    "mtime": 1781040967.1816695,
+    "ast_hash": "72c65ba5bb99f90a10a7456d20bc4e00",
+    "semantic_hash": "72c65ba5bb99f90a10a7456d20bc4e00"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_plot_style.py": {
+    "mtime": 1781040967.1820312,
+    "ast_hash": "e6f39fcba2765422e7038d618b30cf9a",
+    "semantic_hash": "e6f39fcba2765422e7038d618b30cf9a"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_plot_widget.py": {
+    "mtime": 1781040967.1824224,
+    "ast_hash": "3326daaec48cf301bcb93fa463a3a67b",
+    "semantic_hash": "3326daaec48cf301bcb93fa463a3a67b"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_preferences.py": {
+    "mtime": 1776092266.3690667,
+    "ast_hash": "1c25c58fa8d943578cb3546c6dea696b",
+    "semantic_hash": "1c25c58fa8d943578cb3546c6dea696b"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_replica_labels.py": {
+    "mtime": 1781040967.182658,
+    "ast_hash": "ce7ef6c41a1cb8ee021f7c80ac846859",
+    "semantic_hash": "ce7ef6c41a1cb8ee021f7c80ac846859"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/gui/test_style_roundtrip.py": {
+    "mtime": 1781040967.1828778,
+    "ast_hash": "b624c35c0a46395abd5d3c660a79c971",
+    "semantic_hash": "b624c35c0a46395abd5d3c660a79c971"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_assay_quantity.py": {
+    "mtime": 1776072633.8268824,
+    "ast_hash": "6a638a7191ed36d0c7f7944c1aa29272",
+    "semantic_hash": "6a638a7191ed36d0c7f7944c1aa29272"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_concentration.py": {
+    "mtime": 1781040967.1831002,
+    "ast_hash": "63e064b76cadb92ec5fa4701727bf8d6",
+    "semantic_hash": "63e064b76cadb92ec5fa4701727bf8d6"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_ensight_reader.py": {
+    "mtime": 1781040967.1833646,
+    "ast_hash": "a2e69557342813ef2a212ba1b7abb503",
+    "semantic_hash": "a2e69557342813ef2a212ba1b7abb503"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_export_multiple.py": {
+    "mtime": 1781040967.1837618,
+    "ast_hash": "e3b1174c45311283eacbb36792c86c0e",
+    "semantic_hash": "e3b1174c45311283eacbb36792c86c0e"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_fail_fast.py": {
+    "mtime": 1781040967.1841116,
+    "ast_hash": "0c967021fcb651dbf87ae9e092726df7",
+    "semantic_hash": "0c967021fcb651dbf87ae9e092726df7"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_fit_results.py": {
+    "mtime": 1781040967.1843333,
+    "ast_hash": "a8fd5641b0e01a2861fde446f3199bca",
+    "semantic_hash": "a8fd5641b0e01a2861fde446f3199bca"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_io.py": {
+    "mtime": 1781040967.184726,
+    "ast_hash": "43f6f7789f505f6b807b2cc172a241e5",
+    "semantic_hash": "43f6f7789f505f6b807b2cc172a241e5"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_io_bmg.py": {
+    "mtime": 1781040967.185075,
+    "ast_hash": "60f6aeeb484ce0c2d61d17e879080442",
+    "semantic_hash": "60f6aeeb484ce0c2d61d17e879080442"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_io_registry.py": {
+    "mtime": 1780325967.329964,
+    "ast_hash": "b83ec26ed54294b2b442271c15fd87e6",
+    "semantic_hash": "b83ec26ed54294b2b442271c15fd87e6"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_jasco_reader.py": {
+    "mtime": 1781040967.1853395,
+    "ast_hash": "34935385537fd209c47b7c53d7cdc0cf",
+    "semantic_hash": "34935385537fd209c47b7c53d7cdc0cf"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_measurement_set.py": {
+    "mtime": 1781040967.1856847,
+    "ast_hash": "165fbe90710de55d1ac9376c687596be",
+    "semantic_hash": "165fbe90710de55d1ac9376c687596be"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_models.py": {
+    "mtime": 1781040967.1861064,
+    "ast_hash": "c171178649a5d0a7fc8d3b0b13c148e9",
+    "semantic_hash": "c171178649a5d0a7fc8d3b0b13c148e9"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_nonzero_i0_recovery.py": {
+    "mtime": 1781040967.1863196,
+    "ast_hash": "d7e349da7718acba6b877fd991dfc5b1",
+    "semantic_hash": "d7e349da7718acba6b877fd991dfc5b1"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_optimizer.py": {
+    "mtime": 1781040967.1865695,
+    "ast_hash": "0fb6cc77b49b472ad09c56e235e34be9",
+    "semantic_hash": "0fb6cc77b49b472ad09c56e235e34be9"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_pipeline_helpers.py": {
+    "mtime": 1776072633.828396,
+    "ast_hash": "8b97e13b6e741984f19e4fb34fe38900",
+    "semantic_hash": "8b97e13b6e741984f19e4fb34fe38900"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_plotting_data.py": {
+    "mtime": 1777366372.038039,
+    "ast_hash": "51ffeded605ab02917bf62178a6e500e",
+    "semantic_hash": "51ffeded605ab02917bf62178a6e500e"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_preprocessing.py": {
+    "mtime": 1776072633.828713,
+    "ast_hash": "9798b4e509dbd86e52e82c032c6a58c5",
+    "semantic_hash": "9798b4e509dbd86e52e82c032c6a58c5"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_scaling.py": {
+    "mtime": 1781040967.1869729,
+    "ast_hash": "6ed7a95a35ae2836aa9dd536a09fc989",
+    "semantic_hash": "6ed7a95a35ae2836aa9dd536a09fc989"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/unit/test_update_check.py": {
+    "mtime": 1781040967.187417,
+    "ast_hash": "7a73a5dd086e747eb63ccdbd8fd77a69",
+    "semantic_hash": "7a73a5dd086e747eb63ccdbd8fd77a69"
+  },
+  "/Users/ahmadomira/git/fitting_app/utils/__init__.py": {
+    "mtime": 1748013038.078251,
+    "ast_hash": "bcf71641195fbc500a4b56c99955409d",
+    "semantic_hash": "bcf71641195fbc500a4b56c99955409d"
+  },
+  "/Users/ahmadomira/git/fitting_app/.github/agents/git.agent.md": {
+    "mtime": 1777365794.802922,
+    "ast_hash": "b4038b0c75b35d48f30dacd026c3a916",
+    "semantic_hash": "b4038b0c75b35d48f30dacd026c3a916"
+  },
+  "/Users/ahmadomira/git/fitting_app/.github/instructions/commit_messages.md": {
+    "mtime": 1770663880.0656028,
+    "ast_hash": "e053f6ab89384758870f956dbebf6ca0",
+    "semantic_hash": "e053f6ab89384758870f956dbebf6ca0"
+  },
+  "/Users/ahmadomira/git/fitting_app/.github/instructions/readme_guidlines.instructions.md": {
+    "mtime": 1770309894.4967673,
+    "ast_hash": "d5fa118c4683da8dcdafeff29224bc4b",
+    "semantic_hash": "d5fa118c4683da8dcdafeff29224bc4b"
+  },
+  "/Users/ahmadomira/git/fitting_app/.github/workflows/build_and_release.yml": {
+    "mtime": 1780045953.4185977,
+    "ast_hash": "1bb96f1cc876abf52b93209dc0cc629e",
+    "semantic_hash": "1bb96f1cc876abf52b93209dc0cc629e"
+  },
+  "/Users/ahmadomira/git/fitting_app/CLAUDE.md": {
+    "mtime": 1781105291.7967713,
+    "ast_hash": "c6ee7b9138defa2cf116438b3fd0b87b",
+    "semantic_hash": "c6ee7b9138defa2cf116438b3fd0b87b"
+  },
+  "/Users/ahmadomira/git/fitting_app/Readme.md": {
+    "mtime": 1779815162.0664473,
+    "ast_hash": "49c4c2abe92ca31df4ba4ce57b84f7a3",
+    "semantic_hash": "49c4c2abe92ca31df4ba4ce57b84f7a3"
+  },
+  "/Users/ahmadomira/git/fitting_app/data/DBA_HtoD_tryptamine_424.txt": {
+    "mtime": 1776245038.4011428,
+    "ast_hash": "066ef072a747374e6d526b181913ea29",
+    "semantic_hash": "066ef072a747374e6d526b181913ea29"
+  },
+  "/Users/ahmadomira/git/fitting_app/data/DBA_system_host_to_dye.txt": {
+    "mtime": 1730144306.686551,
+    "ast_hash": "d719f6b20e1e1d0abf50101dffb3430a",
+    "semantic_hash": "d719f6b20e1e1d0abf50101dffb3430a"
+  },
+  "/Users/ahmadomira/git/fitting_app/data/Dye_alone.txt": {
+    "mtime": 1772630327.8179338,
+    "ast_hash": "6c9b409b095d430caaff98dc4027f62b",
+    "semantic_hash": "6c9b409b095d430caaff98dc4027f62b"
+  },
+  "/Users/ahmadomira/git/fitting_app/data/GDA_system.txt": {
+    "mtime": 1730144025.4967906,
+    "ast_hash": "9e7e92406e17efe321915129ccefb7c8",
+    "semantic_hash": "9e7e92406e17efe321915129ccefb7c8"
+  },
+  "/Users/ahmadomira/git/fitting_app/data/IDA_system.txt": {
+    "mtime": 1776072633.8207412,
+    "ast_hash": "c0f7705123cab4ee178480d4fdb4c127",
+    "semantic_hash": "c0f7705123cab4ee178480d4fdb4c127"
+  },
+  "/Users/ahmadomira/git/fitting_app/data/Readme.md": {
+    "mtime": 1773761126.7798057,
+    "ast_hash": "49be7318266a76460eba5d42397e7dd3",
+    "semantic_hash": "49be7318266a76460eba5d42397e7dd3"
+  },
+  "/Users/ahmadomira/git/fitting_app/data/dye_alone_linear_fit_results.txt": {
+    "mtime": 1776157387.278634,
+    "ast_hash": "beb2d2f7dcb3f8ba2468d9108cf576e3",
+    "semantic_hash": "beb2d2f7dcb3f8ba2468d9108cf576e3"
+  },
+  "/Users/ahmadomira/git/fitting_app/data/results/dye_alone_linear_fit_results.txt": {
+    "mtime": 1730137948.2328029,
+    "ast_hash": "beb2d2f7dcb3f8ba2468d9108cf576e3",
+    "semantic_hash": "beb2d2f7dcb3f8ba2468d9108cf576e3"
+  },
+  "/Users/ahmadomira/git/fitting_app/data/results/test_dye_alone_summary.txt": {
+    "mtime": 1769868953.8108435,
+    "ast_hash": "c1d32c3c6d325efe8e8aeb57e1a8e7eb",
+    "semantic_hash": "c1d32c3c6d325efe8e8aeb57e1a8e7eb"
+  },
+  "/Users/ahmadomira/git/fitting_app/data/results/test_gda_summary.txt": {
+    "mtime": 1769869030.2485461,
+    "ast_hash": "878ef9702bf6e168f5d91dfa05c5ce29",
+    "semantic_hash": "878ef9702bf6e168f5d91dfa05c5ce29"
+  },
+  "/Users/ahmadomira/git/fitting_app/docs/notes/dba-dtoh-signal-bug.md": {
+    "mtime": 1777473759.5231676,
+    "ast_hash": "9036d4e772a34c65789275bc568f418f",
+    "semantic_hash": "9036d4e772a34c65789275bc568f418f"
+  },
+  "/Users/ahmadomira/git/fitting_app/docs/notes/global-fitting-design.md": {
+    "mtime": 1777473843.7814262,
+    "ast_hash": "34a6ad9fb52ba8bded29559a7feafe5f",
+    "semantic_hash": "34a6ad9fb52ba8bded29559a7feafe5f"
+  },
+  "/Users/ahmadomira/git/fitting_app/docs/notes/observable-scope.md": {
+    "mtime": 1777473801.8309934,
+    "ast_hash": "3c6bdca4ae51b33855bf275673db9b8e",
+    "semantic_hash": "3c6bdca4ae51b33855bf275673db9b8e"
+  },
+  "/Users/ahmadomira/git/fitting_app/docs/pint-findings.md": {
+    "mtime": 1774626744.447205,
+    "ast_hash": "237730af38311ae3f8eede1fde4f98ab",
+    "semantic_hash": "237730af38311ae3f8eede1fde4f98ab"
+  },
+  "/Users/ahmadomira/git/fitting_app/docs/scientific-summary.md": {
+    "mtime": 1773761126.782248,
+    "ast_hash": "a650a13025c8308fbcda2bcaa53f6897",
+    "semantic_hash": "a650a13025c8308fbcda2bcaa53f6897"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/CLAUDE.md": {
+    "mtime": 1781086204.1721442,
+    "ast_hash": "637af0300dc333185e0fd0caed286ac8",
+    "semantic_hash": "637af0300dc333185e0fd0caed286ac8"
+  },
+  "/Users/ahmadomira/git/fitting_app/tests/data/ensight/tryptamine_expected_FL.txt": {
+    "mtime": 1780325967.328514,
+    "ast_hash": "066ef072a747374e6d526b181913ea29",
+    "semantic_hash": "066ef072a747374e6d526b181913ea29"
+  },
+  "/Users/ahmadomira/git/fitting_app/docs/fitting_workflow.jpg": {
+    "mtime": 1773761126.7817256,
+    "ast_hash": "449081a20e115a0d320fa29e240b801d",
+    "semantic_hash": "449081a20e115a0d320fa29e240b801d"
+  }
+}

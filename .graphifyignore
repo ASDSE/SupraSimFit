@@ -1,0 +1,17 @@
+.venv/
+venv/
+node_modules/
+__pycache__/
+.pytest_cache/
+*.pyc
+.git/
+dist/
+build/
+assets/
+.env
+uv.lock
+memory-bank/
+.claude/
+LICENSE
+.vscode/
+plans/
