@@ -21,10 +21,14 @@ Models
 - DBA (Direct Binding Assay): Host-Dye equilibrium, fits Ka_dye
 - GDA (Guest Displacement Assay): Dye titrated, guest fixed, fits Ka_guest
 - IDA (Indicator Displacement Assay): Guest titrated, dye fixed, fits Ka_guest
+- HG2 (stepwise 1:2 host:guest): host binds two guests, fits Ka_HG, Ka_HG2
+- H2G (stepwise 2:1 host:guest): two hosts bind one guest, fits Ka_HG, Ka_H2G
 
 Signal Model
 ------------
-Signal = I0 + I_dye_free * [D_free] + I_dye_bound * [HD]
+1:1 assays:  Signal = I0 + I_dye_free * [D_free] + I_dye_bound * [HD]
+HG2 / H2G:   Signal = I0 + I_G * [G] + I_H * [H] + (per-complex terms)
+             where the free-host coefficient I_H defaults to zero.
 
 Where:
 - I0: background signal
@@ -321,3 +325,274 @@ def ida_signal(
     for i, g0 in enumerate(g0_values):
         signal_values[i] = competitive_signal_point(I0, Ka_guest, I_dye_free, I_dye_bound, Ka_dye, h0, d0, g0)
     return signal_values
+
+
+# =============================================================================
+# Stepwise 1:2 / 2:1 Binding Models (HG2 / H2G)
+# =============================================================================
+#
+# These describe a host that forms two successive complexes with a guest.
+# The guest is the optically active (titrated) species; host is fixed.  Both
+# share one root-finder: the speciation of a 'core' species that binds two
+# 'ligand' molecules in two steps reduces to the same monotonic mass balance.
+#
+#   HG2 (1:2 host:guest):  core = host,  ligand = guest
+#   H2G (2:1 host:guest):  core = guest, ligand = host
+#
+# Stepwise association constants (never dissociation):
+#   Ka1 = [CL] / ([C][L])      Ka2 = [CL2] / ([CL][L])
+#
+# The combined system is a cubic in the free-ligand concentration; rather than
+# select a cubic root by hand we solve the (strictly monotonic) mass balance
+# with Brent's method, matching the GDA/IDA solver style above.
+
+
+def _solve_free_ligand_12(K1: float, K2: float, core_total: float, ligand_total: float) -> float:
+    """Solve for free-ligand concentration in a stepwise 1:2 (core·ligand₂) system.
+
+    A single *core* species C binds up to two *ligand* molecules L in two
+    steps with stepwise association constants ``K1`` (C + L ⇌ CL) and
+    ``K2`` (CL + L ⇌ CL₂)::
+
+        [CL]  = K1 · [C] · l
+        [CL2] = K1 · K2 · [C] · l²
+        [C]   = core_total / (1 + K1·l + K1·K2·l²)
+
+    where ``l`` is the free-ligand concentration.  Substituting these into
+    the ligand mass balance ``ligand_total = l + [CL] + 2·[CL2]`` (the factor
+    of two because CL₂ holds two ligands) gives a function of ``l`` whose
+    derivative ``1 + core_total·(K1 + 4·K1·K2·l + K1²·K2·l²)/D²`` is strictly
+    positive for non-negative parameters.  The balance is therefore strictly
+    increasing, so it has a unique non-negative root and is bracketed by
+    ``[0, ligand_total]`` (it equals ``-ligand_total ≤ 0`` at ``l = 0`` and is
+    ``≥ 0`` at ``l = ligand_total``).  Brent's method finds it.
+
+    Parameters
+    ----------
+    K1, K2 : float
+        Stepwise association constants (M⁻¹) for the first and second step.
+    core_total : float
+        Total concentration (M) of the species that binds two ligands.
+    ligand_total : float
+        Total concentration (M) of the ligand being balanced.
+
+    Returns
+    -------
+    float
+        Free-ligand concentration (M).  ``0.0`` when ``ligand_total <= 0``;
+        ``nan`` if the bracket is degenerate (non-physical parameters), so
+        callers propagate NaN rather than raising — matching the other
+        equilibrium solvers in this module.
+    """
+    if ligand_total <= 0.0:
+        return 0.0
+
+    def balance(free_ligand: float) -> float:
+        denom = 1.0 + K1 * free_ligand + K1 * K2 * free_ligand * free_ligand
+        bound = core_total * (K1 * free_ligand + 2.0 * K1 * K2 * free_ligand * free_ligand) / denom
+        return free_ligand + bound - ligand_total
+
+    try:
+        return brentq(balance, 0.0, ligand_total, xtol=1e-15, maxiter=1000)
+    except (ValueError, RuntimeError):
+        return np.nan
+
+
+def hg2_species(
+    Ka_HG: float,
+    Ka_HG2: float,
+    h0: float,
+    g0_values: np.ndarray,
+) -> dict:
+    """Equilibrium speciation for stepwise 1:2 host–guest binding.
+
+    Two successive complexes form as guest is titrated into fixed host::
+
+        H + G  ⇌ HG    (Ka_HG)
+        HG + G ⇌ HG2   (Ka_HG2)
+
+    Host is fixed at ``h0``; the guest total ``g0`` is the titrant.  Free
+    guest is found per point from the guest mass balance
+    ``g0 = [G] + [HG] + 2·[HG2]`` (two guests per HG2) via
+    :func:`_solve_free_ligand_12`, then the remaining species follow from
+    ``[H] = h0 / (1 + Ka_HG·g + Ka_HG·Ka_HG2·g²)``.
+
+    Returning the full speciation (not just the signal) keeps this routine
+    reusable for both fitting and species-level inspection.
+
+    Parameters
+    ----------
+    Ka_HG, Ka_HG2 : float
+        Stepwise association constants (M⁻¹).
+    h0 : float
+        Total (fixed) host concentration (M).
+    g0_values : np.ndarray
+        Total guest concentrations (M) — the titrant.
+
+    Returns
+    -------
+    dict
+        ``{'H', 'G', 'HG', 'HG2'}`` → arrays of concentrations (M), same
+        shape as ``g0_values``.  Entries are NaN where the solve fails.
+    """
+    g0 = np.asarray(g0_values, dtype=float)
+    H = np.empty_like(g0)
+    G = np.empty_like(g0)
+    HG = np.empty_like(g0)
+    HG2 = np.empty_like(g0)
+
+    for i, g0_i in enumerate(g0):
+        g = _solve_free_ligand_12(Ka_HG, Ka_HG2, h0, g0_i)
+        if not np.isfinite(g):
+            H[i] = G[i] = HG[i] = HG2[i] = np.nan
+            continue
+        denom = 1.0 + Ka_HG * g + Ka_HG * Ka_HG2 * g * g
+        h = h0 / denom
+        H[i] = h
+        G[i] = g
+        HG[i] = Ka_HG * h * g
+        HG2[i] = Ka_HG * Ka_HG2 * h * g * g
+
+    return {'H': H, 'G': G, 'HG': HG, 'HG2': HG2}
+
+
+def hg2_signal(
+    I0: float,
+    Ka_HG: float,
+    Ka_HG2: float,
+    I_G: float,
+    I_H: float,
+    I_HG: float,
+    I_HG2: float,
+    h0: float,
+    g0_values: np.ndarray,
+) -> np.ndarray:
+    """Compute the signal for stepwise 1:2 host–guest binding (HG, HG₂).
+
+    Guest is titrated into fixed host; the observed signal sums per-species
+    contributions::
+
+        Signal = I0 + I_G·[G] + I_H·[H] + I_HG·[HG] + I_HG2·[HG2]
+
+    ``I_H`` (free-host coefficient) is typically zero.  See
+    :func:`hg2_species` for the equilibrium solve.
+
+    Parameters
+    ----------
+    I0 : float
+        Baseline signal.
+    Ka_HG, Ka_HG2 : float
+        Stepwise association constants (M⁻¹).
+    I_G, I_H, I_HG, I_HG2 : float
+        Signal coefficients for free guest, free host, HG and HG₂.
+    h0 : float
+        Total (fixed) host concentration (M).
+    g0_values : np.ndarray
+        Total guest concentrations (M) — the titrant.
+
+    Returns
+    -------
+    np.ndarray
+        Predicted signal values, same shape as ``g0_values``.
+    """
+    sp = hg2_species(Ka_HG, Ka_HG2, h0, g0_values)
+    return I0 + I_G * sp['G'] + I_H * sp['H'] + I_HG * sp['HG'] + I_HG2 * sp['HG2']
+
+
+def h2g_species(
+    Ka_HG: float,
+    Ka_H2G: float,
+    h0: float,
+    g0_values: np.ndarray,
+) -> dict:
+    """Equilibrium speciation for stepwise 2:1 host–guest binding.
+
+    Two hosts bind one guest in two successive steps as guest is titrated
+    into fixed host::
+
+        H + G  ⇌ HG    (Ka_HG)
+        HG + H ⇌ H2G   (Ka_H2G)
+
+    Here the *guest* is the species that binds two partners, so free host is
+    found per point from the host mass balance
+    ``h0 = [H] + [HG] + 2·[H2G]`` (two hosts per H2G) via
+    :func:`_solve_free_ligand_12` (core = guest, ligand = host), then
+    ``[G] = g0 / (1 + Ka_HG·h + Ka_HG·Ka_H2G·h²)``.
+
+    Parameters
+    ----------
+    Ka_HG, Ka_H2G : float
+        Stepwise association constants (M⁻¹).
+    h0 : float
+        Total (fixed) host concentration (M).
+    g0_values : np.ndarray
+        Total guest concentrations (M) — the titrant.
+
+    Returns
+    -------
+    dict
+        ``{'H', 'G', 'HG', 'H2G'}`` → arrays of concentrations (M), same
+        shape as ``g0_values``.  Entries are NaN where the solve fails.
+    """
+    g0 = np.asarray(g0_values, dtype=float)
+    H = np.empty_like(g0)
+    G = np.empty_like(g0)
+    HG = np.empty_like(g0)
+    H2G = np.empty_like(g0)
+
+    for i, g0_i in enumerate(g0):
+        h = _solve_free_ligand_12(Ka_HG, Ka_H2G, g0_i, h0)
+        if not np.isfinite(h):
+            H[i] = G[i] = HG[i] = H2G[i] = np.nan
+            continue
+        denom = 1.0 + Ka_HG * h + Ka_HG * Ka_H2G * h * h
+        g = g0_i / denom
+        H[i] = h
+        G[i] = g
+        HG[i] = Ka_HG * h * g
+        H2G[i] = Ka_HG * Ka_H2G * h * h * g
+
+    return {'H': H, 'G': G, 'HG': HG, 'H2G': H2G}
+
+
+def h2g_signal(
+    I0: float,
+    Ka_HG: float,
+    Ka_H2G: float,
+    I_G: float,
+    I_H: float,
+    I_HG: float,
+    I_H2G: float,
+    h0: float,
+    g0_values: np.ndarray,
+) -> np.ndarray:
+    """Compute the signal for stepwise 2:1 host–guest binding (HG, H₂G).
+
+    Guest is titrated into fixed host; the observed signal sums per-species
+    contributions::
+
+        Signal = I0 + I_G·[G] + I_H·[H] + I_HG·[HG] + I_H2G·[H2G]
+
+    ``I_H`` (free-host coefficient) is typically zero.  See
+    :func:`h2g_species` for the equilibrium solve.
+
+    Parameters
+    ----------
+    I0 : float
+        Baseline signal.
+    Ka_HG, Ka_H2G : float
+        Stepwise association constants (M⁻¹).
+    I_G, I_H, I_HG, I_H2G : float
+        Signal coefficients for free guest, free host, HG and H₂G.
+    h0 : float
+        Total (fixed) host concentration (M).
+    g0_values : np.ndarray
+        Total guest concentrations (M) — the titrant.
+
+    Returns
+    -------
+    np.ndarray
+        Predicted signal values, same shape as ``g0_values``.
+    """
+    sp = h2g_species(Ka_HG, Ka_H2G, h0, g0_values)
+    return I0 + I_G * sp['G'] + I_H * sp['H'] + I_HG * sp['HG'] + I_H2G * sp['H2G']
