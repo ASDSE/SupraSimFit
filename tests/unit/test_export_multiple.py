@@ -10,27 +10,38 @@ from gui.session import ExportableArtefact, export_batch
 def _write_text(content: str):
     def writer(p: Path) -> None:
         p.write_text(content)
+
     return writer
 
 
 def _raise(message: str):
     def writer(_p: Path) -> None:
         raise RuntimeError(message)
+
     return writer
 
 
 def test_export_batch_collects_exceptions_and_continues(tmp_path: Path) -> None:
     arts = [
         ExportableArtefact(
-            key='ok1', label='OK1', suffix='.txt', available=True,
+            key='ok1',
+            label='OK1',
+            suffix='.txt',
+            available=True,
             writer=_write_text('1'),
         ),
         ExportableArtefact(
-            key='bad', label='Bad', suffix='.txt', available=True,
+            key='bad',
+            label='Bad',
+            suffix='.txt',
+            available=True,
             writer=_raise('boom'),
         ),
         ExportableArtefact(
-            key='ok2', label='OK2', suffix='.json', available=True,
+            key='ok2',
+            label='OK2',
+            suffix='.json',
+            available=True,
             writer=_write_text('2'),
         ),
     ]

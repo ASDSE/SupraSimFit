@@ -5,7 +5,6 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -16,10 +15,9 @@ from PyQt6.QtWidgets import (
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.pipeline.fit_pipeline import FitResult
-from core.units import Q_, Quantity, ureg
+from core.units import Q_, Quantity
 from gui.plotting.labels import fmt_param, fmt_unit_html
 from gui.widgets.info_button import InfoGroupBox
-
 
 _UNCERTAINTY_HELP_HTML = """
 <h3>Uncertainty &mdash; what the &plusmn; value means</h3>
@@ -104,9 +102,7 @@ class FitSummaryWidget(QWidget):
         )
         self._table = QTableWidget(0, 4)
         self._uncertainty_header_default = '\u00b1 Uncertainty (optimiser)'
-        self._table.setHorizontalHeaderLabels(
-            ['Parameter', 'Value', self._uncertainty_header_default, 'Units']
-        )
+        self._table.setHorizontalHeaderLabels(['Parameter', 'Value', self._uncertainty_header_default, 'Units'])
         header = self._table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -222,9 +218,7 @@ class FitSummaryWidget(QWidget):
     def clear(self) -> None:
         """Reset all fields to their empty state."""
         self._table.setRowCount(0)
-        self._table.setHorizontalHeaderLabels(
-            ['Parameter', 'Value', self._uncertainty_header_default, 'Units']
-        )
+        self._table.setHorizontalHeaderLabels(['Parameter', 'Value', self._uncertainty_header_default, 'Units'])
         self._rmse_label.setText('\u2014')
         self._r2_label.setText('\u2014')
         self._passing_label.setText('\u2014')

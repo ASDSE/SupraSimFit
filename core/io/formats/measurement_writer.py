@@ -70,8 +70,5 @@ def write_measurements_csv(ms: 'MeasurementSet', path: str | Path) -> None:
     """
     path = Path(path)
     lines: list[str] = ['concentration,signal,replica']
-    lines.extend(
-        f'{conc:.6e},{value:.6e},{replica_idx}'
-        for replica_idx, conc, value in _iter_points(ms)
-    )
+    lines.extend(f'{conc:.6e},{value:.6e},{replica_idx}' for replica_idx, conc, value in _iter_points(ms))
     path.write_text('\n'.join(lines) + '\n')

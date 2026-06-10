@@ -2,8 +2,8 @@
 
 import pytest
 
-pytest.importorskip("PyQt6")
-pytest.importorskip("pyqtgraph")
+pytest.importorskip('PyQt6')
+pytest.importorskip('pyqtgraph')
 
 
 def test_update_plot_clears_on_second_call(qapp, minimal_plot_data):
@@ -200,5 +200,3 @@ def test_whitespace_only_override_falls_back_to_default(qapp):
     assert pw._compose_axis_label('Guest', '   ', 'µM') == 'Guest [µM]'
     assert pw._compose_axis_label('Guest', '', 'µM') == 'Guest [µM]'
     assert pw._compose_axis_label('Guest', 'Tryptamine', 'µM') == 'Tryptamine [µM]'
-
-

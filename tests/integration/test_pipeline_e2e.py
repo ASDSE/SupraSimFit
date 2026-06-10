@@ -22,9 +22,23 @@ from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.models.equilibrium import dba_signal
-from core.pipeline.fit_pipeline import FitConfig, FitResult, bounds_from_dye_alone, fit_assay, fit_linear_assay, fit_measurement_set
+from core.pipeline.fit_pipeline import (
+    FitConfig,
+    FitResult,
+    bounds_from_dye_alone,
+    fit_assay,
+    fit_linear_assay,
+    fit_measurement_set,
+)
 from core.units import Q_
-from tests.conftest import DBA_RECOVERY_BOUNDS, DBA_TRUE, DYE_ALONE_TRUE, GDA_IDA_RECOVERY_BOUNDS, _make_dba_data, assert_within_tolerance
+from tests.conftest import (
+    DBA_RECOVERY_BOUNDS,
+    DBA_TRUE,
+    DYE_ALONE_TRUE,
+    GDA_IDA_RECOVERY_BOUNDS,
+    _make_dba_data,
+    assert_within_tolerance,
+)
 
 CLEAN_TOL = 0.10
 NOISY_TOL = 0.25
@@ -52,12 +66,16 @@ def _dba_assay(fixture_data):
 
 def _gda_assay(fixture_data):
     x, y, true = fixture_data
-    return GDAAssay(x_data=x, y_data=y, Ka_dye=Q_(true['Ka_dye'], '1/M'), h0=Q_(true['h0'], 'M'), g0=Q_(true['g0'], 'M')), true
+    return GDAAssay(
+        x_data=x, y_data=y, Ka_dye=Q_(true['Ka_dye'], '1/M'), h0=Q_(true['h0'], 'M'), g0=Q_(true['g0'], 'M')
+    ), true
 
 
 def _ida_assay(fixture_data):
     x, y, true = fixture_data
-    return IDAAssay(x_data=x, y_data=y, Ka_dye=Q_(true['Ka_dye'], '1/M'), h0=Q_(true['h0'], 'M'), d0=Q_(true['d0'], 'M')), true
+    return IDAAssay(
+        x_data=x, y_data=y, Ka_dye=Q_(true['Ka_dye'], '1/M'), h0=Q_(true['h0'], 'M'), d0=Q_(true['d0'], 'M')
+    ), true
 
 
 def _dye_alone_assay(fixture_data):
@@ -70,13 +88,26 @@ def _dye_alone_assay(fixture_data):
 # ---------------------------------------------------------------------------
 
 
+def _max_rel_err(assay, result, y):
+    """Max point-wise relative error of the fitted model at the data points.
+
+    Recomputes the model on the data grid, since ``x_fit``/``y_fit`` are now a
+    denser display curve no longer aligned 1:1 with the measured points.
+    """
+    params = np.array([result.parameters[k].magnitude for k in assay.parameter_keys])
+    y_at_data = assay.forward_model(params)
+    return np.max(np.abs((y_at_data - y).magnitude) / np.abs(y.magnitude))
+
+
 @pytest.fixture(scope='module')
 def dba_clean_result():
     """One shared clean DBA fit, reused by the round-trip and structure tests."""
     x, y = _make_dba_data(DBA_TRUE)
     assay = DBAAssay(
-        x_data=Q_(x, 'M'), y_data=Q_(y, 'au'),
-        fixed_conc=Q_(DBA_TRUE['fixed_conc'], 'M'), mode='DtoH',
+        x_data=Q_(x, 'M'),
+        y_data=Q_(y, 'au'),
+        fixed_conc=Q_(DBA_TRUE['fixed_conc'], 'M'),
+        mode='DtoH',
     )
     # Module fixtures run before the autouse function-scoped seeder, so seed
     # explicitly — and restore the global RNG state to avoid leaking into
@@ -87,22 +118,22 @@ def dba_clean_result():
         result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=DBA_RECOVERY_BOUNDS))
     finally:
         np.random.set_state(state)
-    return result, Q_(y, 'au')
+    return result, Q_(y, 'au'), assay
 
 
 class TestDBAEndToEnd:
     def test_clean_round_trip(self, dba_clean_result):
-        result, y = dba_clean_result
+        result, y, assay = dba_clean_result
 
         assert result.success
         assert result.r_squared > 0.999
         assert_within_tolerance(result.parameters['Ka_dye'], DBA_TRUE['Ka_dye'], CLEAN_TOL, 'Ka_dye')
-        # Signal reconstruction: fitted curve matches the data point-wise.
-        max_rel_err = np.max(np.abs((result.y_fit - y).magnitude) / np.abs(y.magnitude))
+        # Signal reconstruction: fitted model matches the data point-wise.
+        max_rel_err = _max_rel_err(assay, result, y)
         assert max_rel_err < 0.03, f'Max point-wise relative error {max_rel_err:.2%} > 3%'
 
     def test_fit_result_structure(self, dba_clean_result):
-        result, _ = dba_clean_result
+        result, _, assay = dba_clean_result
 
         # Type and model
         assert result.assay_type == 'DBA_DtoH'
@@ -113,8 +144,13 @@ class TestDBAEndToEnd:
             assert key in result.parameters
             assert key in result.uncertainties
 
-        # Arrays match shape
+        # Fit curve is a dense, sorted grid spanning the data range (smooth display curve)
         assert result.x_fit.shape == result.y_fit.shape
+        assert len(result.x_fit) > len(assay.x_data)
+        x_mag = result.x_fit.magnitude
+        assert np.all(np.diff(x_mag) > 0)
+        assert x_mag[0] == pytest.approx(assay.x_data.magnitude.min())
+        assert x_mag[-1] == pytest.approx(assay.x_data.magnitude.max())
 
         # Counts
         assert result.n_passing > 0
@@ -146,7 +182,7 @@ class TestGDAEndToEnd:
         assert result.r_squared > 0.999
         assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
         # Reconstruction tolerance is looser for GDA (weaker identifiability).
-        max_rel_err = np.max(np.abs((result.y_fit - y).magnitude) / np.abs(y.magnitude))
+        max_rel_err = _max_rel_err(assay, result, y)
         assert max_rel_err < 0.10, f'Max point-wise relative error {max_rel_err:.2%} > 10%'
 
 
@@ -164,7 +200,7 @@ class TestIDAEndToEnd:
         assert result.success
         assert result.r_squared > 0.999
         assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
-        max_rel_err = np.max(np.abs((result.y_fit - y).magnitude) / np.abs(y.magnitude))
+        max_rel_err = _max_rel_err(assay, result, y)
         assert max_rel_err < 0.01, f'Max point-wise relative error {max_rel_err:.2%} > 1%'
 
     def test_noisy_round_trip(self, ida_noisy):
@@ -324,7 +360,9 @@ class TestFailureModes:
         assay = IDAAssay(
             x_data=Q_(np.array([1e-6, 2e-6]), 'M'),
             y_data=Q_(np.array([100.0, 80.0]), 'au'),
-            Ka_dye=Q_(5e5, '1/M'), h0=Q_(10e-6, 'M'), d0=Q_(5e-6, 'M'),
+            Ka_dye=Q_(5e5, '1/M'),
+            h0=Q_(10e-6, 'M'),
+            d0=Q_(5e-6, 'M'),
         )
         result = fit_assay(assay, FitConfig(n_trials=5))
         assert isinstance(result, FitResult)
@@ -334,9 +372,14 @@ class TestFailureModes:
         result = FitResult(
             parameters={'Ka_dye': Q_(5e5, '1/M'), 'I0': Q_(0.0, 'au')},
             uncertainties={'Ka_dye': Q_(1e4, '1/M'), 'I0': Q_(0.1, 'au')},
-            rmse=0.01, r_squared=0.999, n_passing=5, n_total=10,
-            x_fit=Q_(np.array([1e-6]), 'M'), y_fit=Q_(np.array([100.0]), 'au'),
-            assay_type='DBA_DtoH', model_name='equilibrium_4param',
+            rmse=0.01,
+            r_squared=0.999,
+            n_passing=5,
+            n_total=10,
+            x_fit=Q_(np.array([1e-6]), 'M'),
+            y_fit=Q_(np.array([100.0]), 'au'),
+            assay_type='DBA_DtoH',
+            model_name='equilibrium_4param',
         )
         with pytest.raises(ValueError, match='linear'):
             bounds_from_dye_alone(result)
@@ -361,8 +404,10 @@ class TestDBAHtoD:
             mode='HtoD',
         )
         assay = DBAAssay(
-            x_data=Q_(x, 'M'), y_data=Q_(y, 'au'),
-            fixed_conc=Q_(DBA_TRUE['fixed_conc'], 'M'), mode='HtoD',
+            x_data=Q_(x, 'M'),
+            y_data=Q_(y, 'au'),
+            fixed_conc=Q_(DBA_TRUE['fixed_conc'], 'M'),
+            mode='HtoD',
         )
         result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=DBA_RECOVERY_BOUNDS))
 
@@ -408,7 +453,9 @@ class TestFitMeasurementSet:
         }
         # Dispatch test only — 30 trials with tight bounds is plenty for success.
         result = fit_measurement_set(
-            ms, GDAAssay, conditions,
+            ms,
+            GDAAssay,
+            conditions,
             config=FitConfig(n_trials=30, custom_bounds=GDA_IDA_RECOVERY_BOUNDS),
         )
 
@@ -452,9 +499,14 @@ class TestBoundsMarginEdgeCases:
         r = FitResult(
             parameters={'slope': Q_(1.0, 'au/M'), 'intercept': Q_(0.0, 'au')},
             uncertainties={'slope': Q_(0.1, 'au/M'), 'intercept': Q_(0.1, 'au')},
-            rmse=np.inf, r_squared=0.0, n_passing=0, n_total=10,
-            x_fit=Q_(np.array([]), 'M'), y_fit=Q_(np.array([]), 'au'),
-            assay_type='DYE_ALONE', model_name='linear',
+            rmse=np.inf,
+            r_squared=0.0,
+            n_passing=0,
+            n_total=10,
+            x_fit=Q_(np.array([]), 'M'),
+            y_fit=Q_(np.array([]), 'au'),
+            assay_type='DYE_ALONE',
+            model_name='linear',
         )
         with pytest.raises(ValueError, match='failed'):
             bounds_from_dye_alone(r)

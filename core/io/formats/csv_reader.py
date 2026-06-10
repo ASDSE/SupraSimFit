@@ -40,21 +40,21 @@ import pandas as pd
 
 from core.io.registry import register_reader
 
-_CONC_TOKENS = ("conc", "titrant", "x")
-_SIGNAL_TOKENS = ("signal", "int", "fluorescence", "emission", "y")
+_CONC_TOKENS = ('conc', 'titrant', 'x')
+_SIGNAL_TOKENS = ('signal', 'int', 'fluorescence', 'emission', 'y')
 
 _PARSE_OPTIONS = (
     {},
-    {"sep": ";", "decimal": ","},
-    {"sep": ";"},
-    {"sep": "\t"},
+    {'sep': ';', 'decimal': ','},
+    {'sep': ';'},
+    {'sep': '\t'},
 )
 
 
 class CsvReader:
     """Reader for CSV measurement files."""
 
-    extensions = (".csv",)
+    extensions = ('.csv',)
 
     def read(self, path: Path) -> pd.DataFrame:
         """Read a CSV measurement file.
@@ -84,8 +84,7 @@ class CsvReader:
 
         if conc_col is None or not signal_cols:
             raise ValueError(
-                f"Cannot identify concentration/signal columns in {path}. "
-                f"Found columns: {list(df.columns)}"
+                f'Cannot identify concentration/signal columns in {path}. Found columns: {list(df.columns)}'
             )
 
         if len(signal_cols) == 1:
@@ -107,21 +106,18 @@ class CsvReader:
                 return df, kwargs
             last_df, last_kwargs = df, kwargs
         if last_df is None:
-            raise ValueError(f"Cannot parse {path}: all delimiter/decimal combos failed")
+            raise ValueError(f'Cannot parse {path}: all delimiter/decimal combos failed')
         return last_df, last_kwargs
 
     @staticmethod
     def _numeric_columns(df: pd.DataFrame) -> list:
-        return [
-            c for c in df.columns
-            if pd.to_numeric(df[c], errors="coerce").notna().mean() >= 0.8
-        ]
+        return [c for c in df.columns if pd.to_numeric(df[c], errors='coerce').notna().mean() >= 0.8]
 
     @staticmethod
     def _header_is_numeric(df: pd.DataFrame) -> bool:
         """True if every column name parses as a number (suggesting no header row)."""
         for c in df.columns:
-            s = str(c).replace(",", ".").strip()
+            s = str(c).replace(',', '.').strip()
             try:
                 float(s)
             except ValueError:
@@ -134,7 +130,7 @@ class CsvReader:
     # ------------------------------------------------------------------
     @staticmethod
     def _tokenize(name) -> list[str]:
-        return re.findall(r"[a-z]+", str(name).lower())
+        return re.findall(r'[a-z]+', str(name).lower())
 
     def _find_named(self, columns, tokens) -> str | None:
         for c in columns:
@@ -146,7 +142,7 @@ class CsvReader:
 
     @staticmethod
     def _is_monotonic(series: pd.Series) -> bool:
-        s = pd.to_numeric(series, errors="coerce").dropna()
+        s = pd.to_numeric(series, errors='coerce').dropna()
         if len(s) < 3:
             return False
         diffs = s.diff().dropna()
@@ -158,15 +154,13 @@ class CsvReader:
 
         replica_col = None
         for c in cols:
-            if "replica" in self._tokenize(c):
+            if 'replica' in self._tokenize(c):
                 replica_col = c
                 break
 
         signal_candidates = [c for c in numeric if c != replica_col]
         conc_col = self._find_named(signal_candidates, _CONC_TOKENS)
-        signal_col = self._find_named(
-            [c for c in signal_candidates if c != conc_col], _SIGNAL_TOKENS
-        )
+        signal_col = self._find_named([c for c in signal_candidates if c != conc_col], _SIGNAL_TOKENS)
 
         if conc_col and signal_col:
             other_signals = [c for c in signal_candidates if c != conc_col]
@@ -186,14 +180,12 @@ class CsvReader:
     def _long_format(df, conc_col, signal_col, replica_col) -> pd.DataFrame:
         result = pd.DataFrame(
             {
-                "concentration": pd.to_numeric(df[conc_col], errors="coerce"),
-                "signal": pd.to_numeric(df[signal_col], errors="coerce"),
-                "replica": (
-                    df[replica_col].astype(int) if replica_col is not None else 0
-                ),
+                'concentration': pd.to_numeric(df[conc_col], errors='coerce'),
+                'signal': pd.to_numeric(df[signal_col], errors='coerce'),
+                'replica': (df[replica_col].astype(int) if replica_col is not None else 0),
             }
         )
-        return result.dropna(subset=["concentration", "signal"]).reset_index(drop=True)
+        return result.dropna(subset=['concentration', 'signal']).reset_index(drop=True)
 
     @staticmethod
     def _wide_format(df, conc_col, signal_cols) -> pd.DataFrame:
@@ -202,14 +194,14 @@ class CsvReader:
             frames.append(
                 pd.DataFrame(
                     {
-                        "concentration": pd.to_numeric(df[conc_col], errors="coerce"),
-                        "signal": pd.to_numeric(df[col], errors="coerce"),
-                        "replica": i,
+                        'concentration': pd.to_numeric(df[conc_col], errors='coerce'),
+                        'signal': pd.to_numeric(df[col], errors='coerce'),
+                        'replica': i,
                     }
                 )
             )
         result = pd.concat(frames, ignore_index=True)
-        return result.dropna(subset=["concentration", "signal"]).reset_index(drop=True)
+        return result.dropna(subset=['concentration', 'signal']).reset_index(drop=True)
 
 
 register_reader(CsvReader)

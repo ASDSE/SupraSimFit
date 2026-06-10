@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QCoreApplication, QEvent, QLocale, QObject, Qt
 from PyQt6.QtGui import QAction, QIcon, QKeySequence
-from PyQt6.QtWidgets import QAbstractSpinBox, QApplication, QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QTabWidget, QToolBar, QToolButton
+from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QStatusBar,
+    QTabWidget,
+    QToolBar,
+    QToolButton,
+)
 
 from _version import __version__
 from gui.fitting_session import FittingSession
@@ -32,6 +43,7 @@ class _SpinBoxWheelRedirect(QObject):
             if not obj.hasFocus():
                 return True
         return False
+
 
 _APP_QSS = """
 QToolBar {
@@ -218,9 +230,7 @@ class FittingMainWindow(QMainWindow):
         self._act_export_txt.triggered.connect(self._on_export_txt)
 
         self._act_export_raw = QAction('Export Raw Data\u2026', self)
-        self._act_export_raw.setToolTip(
-            'Export the currently loaded replicas and concentrations to TXT or CSV'
-        )
+        self._act_export_raw.setToolTip('Export the currently loaded replicas and concentrations to TXT or CSV')
         self._act_export_raw.triggered.connect(self._on_export_raw)
 
         self._act_save_plot = QAction('Save Plot', self)
@@ -228,9 +238,7 @@ class FittingMainWindow(QMainWindow):
         self._act_save_plot.triggered.connect(self._on_save_plot)
 
         self._act_export_dists = QAction('Save Distributions Plot\u2026', self)
-        self._act_export_dists.setToolTip(
-            'Save the distributions plot (with layout + size options) as PNG'
-        )
+        self._act_export_dists.setToolTip('Save the distributions plot (with layout + size options) as PNG')
         self._act_export_dists.triggered.connect(self._on_save_distributions_plot)
 
         self._act_save_style = QAction('Save Style Template', self)
@@ -239,10 +247,7 @@ class FittingMainWindow(QMainWindow):
 
         self._act_export_all = QAction('Export All…', self)
         self._act_export_all.setShortcut(QKeySequence('Ctrl+Shift+E'))
-        self._act_export_all.setToolTip(
-            'Export selected artefacts (raw data, results, plots, style) '
-            'into one folder'
-        )
+        self._act_export_all.setToolTip('Export selected artefacts (raw data, results, plots, style) into one folder')
         self._act_export_all.triggered.connect(self._on_export_all)
 
         export_menu = QMenu(self)
@@ -506,9 +511,9 @@ def _app_icon_path() -> str | None:
     import os
     import sys
 
-    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for name in ("AppIcon.ico", "AppIcon.png"):
-        p = os.path.join(base, "assets", name)
+    base = getattr(sys, '_MEIPASS', None) or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ('AppIcon.ico', 'AppIcon.png'):
+        p = os.path.join(base, 'assets', name)
         if os.path.exists(p):
             return p
     return None
@@ -527,11 +532,11 @@ def launch() -> None:
     QCoreApplication.setApplicationName(APP_NAME)
 
     # Windows: pin an explicit AppUserModelID so the taskbar groups under us, not python.exe.
-    if sys.platform == "win32":
+    if sys.platform == 'win32':
         try:
             import ctypes
 
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"{ORG_NAME}.{APP_NAME}")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f'{ORG_NAME}.{APP_NAME}')
         except Exception:
             pass
 

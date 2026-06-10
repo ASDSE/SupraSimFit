@@ -76,7 +76,7 @@ class IDAAssay(BaseAssay):
         if self.d0.magnitude <= 0:
             raise ValueError('d0 must be positive')
 
-    def forward_model(self, params: np.ndarray) -> Quantity:
+    def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
         Parameters
@@ -91,6 +91,7 @@ class IDAAssay(BaseAssay):
             Predicted signal values in au.
         """
         Ka_guest, I0, I_dye_free, I_dye_bound = params
+        xx = self.x_data.magnitude if x is None else np.asarray(x, dtype=float)
 
         result = ida_signal(
             I0=I0,
@@ -100,7 +101,7 @@ class IDAAssay(BaseAssay):
             Ka_dye=self.Ka_dye.magnitude,
             h0=self.h0.magnitude,
             d0=self.d0.magnitude,
-            g0_values=self.x_data.magnitude,
+            g0_values=xx,
         )
         return Q_(result, 'au')
 

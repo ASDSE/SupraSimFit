@@ -4,6 +4,8 @@ from core.assays.base import BaseAssay
 from core.assays.dba import DBAAssay, create_dba_dye_to_host, create_dba_host_to_dye
 from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
+from core.assays.h2g import H2GAssay
+from core.assays.hg2 import HG2Assay
 from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayMetadata, AssayType, get_metadata, list_assay_types
 
@@ -21,6 +23,8 @@ __all__ = [
     'IDAAssay',
     'DBAAssay',
     'DyeAloneAssay',
+    'HG2Assay',
+    'H2GAssay',
     # Factory functions
     'create_dba_host_to_dye',
     'create_dba_dye_to_host',

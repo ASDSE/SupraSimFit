@@ -13,8 +13,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from PyQt6.QtCore import QThread, pyqtSignal
 from packaging.version import InvalidVersion, Version
+from PyQt6.QtCore import QThread, pyqtSignal
 
 from _version import __github_repo__
 
@@ -30,7 +30,7 @@ def is_newer(remote_tag: str, local: str) -> bool:
     rather than raising, so a malformed remote tag never disrupts startup.
     """
     try:
-        return Version(remote_tag.lstrip("v")) > Version(local.lstrip("v"))
+        return Version(remote_tag.lstrip('v')) > Version(local.lstrip('v'))
     except InvalidVersion:
         return False
 
@@ -55,7 +55,7 @@ class UpdateCheckWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
 
-    _URL = f"https://api.github.com/repos/{__github_repo__}/releases/latest"
+    _URL = f'https://api.github.com/repos/{__github_repo__}/releases/latest'
     _TIMEOUT_S = 5.0
 
     def run(self) -> None:
@@ -63,35 +63,35 @@ class UpdateCheckWorker(QThread):
             req = urllib.request.Request(
                 self._URL,
                 headers={
-                    "Accept": "application/vnd.github+json",
-                    "User-Agent": "SupraSimFit-updater",
+                    'Accept': 'application/vnd.github+json',
+                    'User-Agent': 'SupraSimFit-updater',
                 },
             )
             with urllib.request.urlopen(req, timeout=self._TIMEOUT_S) as resp:
                 data: dict[str, Any] = json.load(resp)
         except urllib.error.HTTPError as exc:
-            self.error.emit(f"GitHub API returned HTTP {exc.code}: {exc.reason}")
+            self.error.emit(f'GitHub API returned HTTP {exc.code}: {exc.reason}')
             return
         except Exception as exc:  # noqa: BLE001 — surface any network/parse error
-            self.error.emit(f"{type(exc).__name__}: {exc}")
+            self.error.emit(f'{type(exc).__name__}: {exc}')
             return
 
         try:
             info = {
-                "latest_version": data["tag_name"],
-                "release_url": data["html_url"],
-                "body": data.get("body") or "",
-                "assets": [
+                'latest_version': data['tag_name'],
+                'release_url': data['html_url'],
+                'body': data.get('body') or '',
+                'assets': [
                     {
-                        "name": a["name"],
-                        "browser_download_url": a["browser_download_url"],
-                        "size": a.get("size", 0),
+                        'name': a['name'],
+                        'browser_download_url': a['browser_download_url'],
+                        'size': a.get('size', 0),
                     }
-                    for a in data.get("assets", [])
+                    for a in data.get('assets', [])
                 ],
             }
         except KeyError as exc:
-            self.error.emit(f"Unexpected GitHub response (missing key {exc})")
+            self.error.emit(f'Unexpected GitHub response (missing key {exc})')
             return
 
         self.finished.emit(info)

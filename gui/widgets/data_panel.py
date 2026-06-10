@@ -45,15 +45,15 @@ DEFAULT_DISPLAY_UNIT = 'µM'
 
 def _build_file_filter() -> str:
     """Build QFileDialog filter string from registered I/O readers."""
-    parts = [f"*{ext}" for ext, _ in sorted(READERS.items())]
-    all_exts = " ".join(parts)
-    return f"Measurement files ({all_exts});;All files (*)"
+    parts = [f'*{ext}' for ext, _ in sorted(READERS.items())]
+    all_exts = ' '.join(parts)
+    return f'Measurement files ({all_exts});;All files (*)'
 
 
 def _build_data_help_html() -> str:
     """Build the Data panel help dialog HTML, listing supported formats dynamically."""
     exts = sorted(READERS.keys())
-    ext_list = ", ".join(f"<code>{e}</code>" for e in exts) or "(none registered)"
+    ext_list = ', '.join(f'<code>{e}</code>' for e in exts) or '(none registered)'
     return f"""
 <h3>Loading Measurement Data</h3>
 
@@ -118,14 +118,14 @@ class DataPanel(InfoGroupBox):
         Display Unit combo. Carries the new unit string (one of ``UNITS``).
     """
 
-    data_loaded = pyqtSignal(object)        # MeasurementSet
+    data_loaded = pyqtSignal(object)  # MeasurementSet
     data_cleared = pyqtSignal()
     display_unit_changed = pyqtSignal(str)
 
     def __init__(self, parent=None, *, initial_display_unit: str = DEFAULT_DISPLAY_UNIT):
         super().__init__(
-            "Data",
-            info_title="Loading measurement data",
+            'Data',
+            info_title='Loading measurement data',
             info_html=_build_data_help_html(),
             parent=parent,
         )
@@ -148,9 +148,9 @@ class DataPanel(InfoGroupBox):
     def _setup_ui(self, initial_display_unit: str) -> None:
         layout = QVBoxLayout(self)
 
-        self._file_label = QLabel("No file loaded")
+        self._file_label = QLabel('No file loaded')
         self._file_label.setWordWrap(True)
-        self._info_label = QLabel("")
+        self._info_label = QLabel('')
         layout.addWidget(self._file_label)
         layout.addWidget(self._info_label)
 
@@ -159,14 +159,14 @@ class DataPanel(InfoGroupBox):
         units_grid.setContentsMargins(0, 4, 0, 4)
         units_grid.setColumnStretch(1, 1)
 
-        units_grid.addWidget(QLabel("Imported Unit:"), 0, 0)
+        units_grid.addWidget(QLabel('Imported Unit:'), 0, 0)
         self._imported_unit_combo = QComboBox()
         self._imported_unit_combo.addItems(UNITS)
         self._imported_unit_combo.setCurrentText(DEFAULT_IMPORTED_UNIT)
         self._imported_unit_combo.currentTextChanged.connect(self._on_imported_unit_changed)
         units_grid.addWidget(self._imported_unit_combo, 0, 1)
 
-        units_grid.addWidget(QLabel("Display Unit:"), 1, 0)
+        units_grid.addWidget(QLabel('Display Unit:'), 1, 0)
         self._display_unit_combo = QComboBox()
         self._display_unit_combo.addItems(UNITS)
         self._display_unit_combo.setCurrentText(initial_display_unit)
@@ -176,12 +176,10 @@ class DataPanel(InfoGroupBox):
         # Channel selector — enabled only when the loaded file carries more
         # than one channel (keyed off the presence of a `channel` column, not
         # any single format). Switching rebuilds the MeasurementSet in-memory.
-        units_grid.addWidget(QLabel("Channel:"), 2, 0)
+        units_grid.addWidget(QLabel('Channel:'), 2, 0)
         self._channel_combo = QComboBox()
         self._channel_combo.setEnabled(False)
-        self._channel_combo.setToolTip(
-            "Optical channel. Enabled when the imported file has multiple channels."
-        )
+        self._channel_combo.setToolTip('Optical channel. Enabled when the imported file has multiple channels.')
         self._channel_combo.currentIndexChanged.connect(self._on_channel_changed)
         units_grid.addWidget(self._channel_combo, 2, 1)
 
@@ -192,7 +190,7 @@ class DataPanel(InfoGroupBox):
         # there is no batched-apply state, so no widget can ever be staler
         # than what the user last typed.
         self._conc_table = QTableWidget(0, 1, self)
-        self._conc_table.setHorizontalHeaderLabels(["Concentration"])
+        self._conc_table.setHorizontalHeaderLabels(['Concentration'])
         self._conc_table.verticalHeader().setVisible(True)
         self._conc_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._conc_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
@@ -207,13 +205,13 @@ class DataPanel(InfoGroupBox):
 
         # Load / Save buttons.
         btn_row = QHBoxLayout()
-        self._load_btn = QPushButton("Load…")
-        self._load_btn.setToolTip("Load a saved concentration vector (.json)")
+        self._load_btn = QPushButton('Load…')
+        self._load_btn.setToolTip('Load a saved concentration vector (.json)')
         self._load_btn.clicked.connect(self._on_load_concentrations)
         btn_row.addWidget(self._load_btn)
 
-        self._save_btn = QPushButton("Save…")
-        self._save_btn.setToolTip("Save the current concentration vector to a .json file")
+        self._save_btn = QPushButton('Save…')
+        self._save_btn.setToolTip('Save the current concentration vector to a .json file')
         self._save_btn.clicked.connect(self._on_save_concentrations)
         btn_row.addWidget(self._save_btn)
 
@@ -237,15 +235,13 @@ class DataPanel(InfoGroupBox):
         user switch without re-reading the file.
         """
         if path is None:
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Load Measurement File", "", _build_file_filter()
-            )
+            path, _ = QFileDialog.getOpenFileName(self, 'Load Measurement File', '', _build_file_filter())
         if not path:
             return
         try:
             df = load_measurements(path)
         except Exception as exc:
-            QMessageBox.warning(self, "Load Error", f"Could not load file:\n{exc}")
+            QMessageBox.warning(self, 'Load Error', f'Could not load file:\n{exc}')
             return
 
         has_channels = ENSIGHT_CHANNEL_COLUMN in df.columns
@@ -254,7 +250,7 @@ class DataPanel(InfoGroupBox):
             df_used = self._slice_channel(df, channels[0]) if channels else df
             ms = self._make_ms(df_used, str(path))
         except Exception as exc:
-            QMessageBox.warning(self, "Load Error", f"Could not load file:\n{exc}")
+            QMessageBox.warning(self, 'Load Error', f'Could not load file:\n{exc}')
             return
 
         # Commit state only after a successful parse + build.
@@ -285,23 +281,17 @@ class DataPanel(InfoGroupBox):
             )
             if k in df.attrs
         }
-        return MeasurementSet.from_dataframe(
-            df, source_file=source_file, **extra_metadata
-        )
+        return MeasurementSet.from_dataframe(df, source_file=source_file, **extra_metadata)
 
     @staticmethod
     def _slice_channel(df, channel: str):
         """Return the single-channel sub-frame for *channel*, attrs preserved."""
-        out = (
-            df[df[ENSIGHT_CHANNEL_COLUMN] == channel]
-            .drop(columns=ENSIGHT_CHANNEL_COLUMN)
-            .reset_index(drop=True)
-        )
+        out = df[df[ENSIGHT_CHANNEL_COLUMN] == channel].drop(columns=ENSIGHT_CHANNEL_COLUMN).reset_index(drop=True)
         out.attrs.update(df.attrs)
         if isinstance(out.attrs.get(ENSIGHT_METADATA_KEY), dict):
             out.attrs[ENSIGHT_METADATA_KEY] = {
                 **out.attrs[ENSIGHT_METADATA_KEY],
-                "selected_channel": channel,
+                'selected_channel': channel,
             }
         return out
 
@@ -320,7 +310,7 @@ class DataPanel(InfoGroupBox):
         self._channel_combo.setToolTip(
             self._channel_combo.currentText()
             if self._channels
-            else "Optical channel. Enabled when the imported file has multiple channels."
+            else 'Optical channel. Enabled when the imported file has multiple channels.'
         )
 
     def _on_channel_changed(self, _index: int) -> None:
@@ -338,16 +328,14 @@ class DataPanel(InfoGroupBox):
             return
         # Has the user supplied real concentrations yet? Any edit drops the
         # placeholder flag, so its absence means "real values are in place".
-        keep_entered = not (
-            self._ms is not None and self._ms.metadata.get(BMG_PLACEHOLDER_KEY)
-        )
+        keep_entered = not (self._ms is not None and self._ms.metadata.get(BMG_PLACEHOLDER_KEY))
         try:
             ms = self._make_ms(
                 self._slice_channel(self._multi_channel_df, channel),
-                self._source_path or "",
+                self._source_path or '',
             )
         except Exception as exc:
-            QMessageBox.warning(self, "Channel Error", f"Could not switch channel:\n{exc}")
+            QMessageBox.warning(self, 'Channel Error', f'Could not switch channel:\n{exc}')
             return
 
         reuse = keep_entered and self._face_values.size == ms.n_points
@@ -372,11 +360,9 @@ class DataPanel(InfoGroupBox):
         self._channel_combo.clear()
         self._channel_combo.blockSignals(False)
         self._channel_combo.setEnabled(False)
-        self._channel_combo.setToolTip(
-            "Optical channel. Enabled when the imported file has multiple channels."
-        )
-        self._file_label.setText("No file loaded")
-        self._info_label.setText("")
+        self._channel_combo.setToolTip('Optical channel. Enabled when the imported file has multiple channels.')
+        self._file_label.setText('No file loaded')
+        self._info_label.setText('')
         self._populate_table()
         self._set_concentration_controls_enabled(False)
         self.data_cleared.emit()
@@ -438,7 +424,7 @@ class DataPanel(InfoGroupBox):
                 self._suppress_cell_signal = False
             QMessageBox.warning(
                 self,
-                "Invalid Number",
+                'Invalid Number',
                 f"'{text}' is not a valid number. Reverted to previous value.",
             )
             return
@@ -453,11 +439,9 @@ class DataPanel(InfoGroupBox):
             return
         try:
             quantity = Q_(self._face_values.copy(), self._imported_unit)
-            self._ms.set_concentrations(
-                quantity, drop_metadata_keys=(BMG_PLACEHOLDER_KEY,)
-            )
+            self._ms.set_concentrations(quantity, drop_metadata_keys=(BMG_PLACEHOLDER_KEY,))
         except Exception as exc:
-            QMessageBox.warning(self, "Error", f"Failed to apply concentrations:\n{exc}")
+            QMessageBox.warning(self, 'Error', f'Failed to apply concentrations:\n{exc}')
             return
         self._update_info()
         self.data_loaded.emit(self._ms)
@@ -467,23 +451,22 @@ class DataPanel(InfoGroupBox):
             return
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Load Concentration Vector",
-            "",
-            "Concentration JSON (*.json);;All files (*)",
+            'Load Concentration Vector',
+            '',
+            'Concentration JSON (*.json);;All files (*)',
         )
         if not path:
             return
         try:
             values, declared_unit = read_raw_concentrations(path)
         except Exception as exc:
-            QMessageBox.warning(self, "Load Error", f"Could not load:\n{exc}")
+            QMessageBox.warning(self, 'Load Error', f'Could not load:\n{exc}')
             return
         if values.size != self._ms.n_points:
             QMessageBox.warning(
                 self,
-                "Mismatch",
-                f"Loaded vector has {values.size} points but the dataset has "
-                f"{self._ms.n_points}. They must match.",
+                'Mismatch',
+                f'Loaded vector has {values.size} points but the dataset has {self._ms.n_points}. They must match.',
             )
             return
         self._face_values = np.asarray(values, dtype=np.float64)
@@ -495,34 +478,30 @@ class DataPanel(InfoGroupBox):
         self._populate_table()
         self._push_buffer_to_ms()
         self._info_label.setText(
-            f"{self._ms.n_points} points × {self._ms.n_replicas} replicas — "
-            f"loaded from {Path(path).name}"
+            f'{self._ms.n_points} points × {self._ms.n_replicas} replicas — loaded from {Path(path).name}'
         )
 
     def _on_save_concentrations(self) -> None:
         if self._ms is None or self._face_values.size == 0:
             return
-        suggested = ""
+        suggested = ''
         if self._source_path:
-            suggested = f"{Path(self._source_path).stem}_concentrations.json"
+            suggested = f'{Path(self._source_path).stem}_concentrations.json'
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Concentration Vector",
+            'Save Concentration Vector',
             suggested,
-            "Concentration JSON (*.json)",
+            'Concentration JSON (*.json)',
         )
         if not path:
             return
         try:
-            save_concentration_vector(
-                self._face_values, path, unit=self._imported_unit
-            )
+            save_concentration_vector(self._face_values, path, unit=self._imported_unit)
         except Exception as exc:
-            QMessageBox.warning(self, "Save Error", f"Could not save:\n{exc}")
+            QMessageBox.warning(self, 'Save Error', f'Could not save:\n{exc}')
             return
         self._info_label.setText(
-            f"{self._ms.n_points} points × {self._ms.n_replicas} replicas — "
-            f"saved to {Path(path).name}"
+            f'{self._ms.n_points} points × {self._ms.n_replicas} replicas — saved to {Path(path).name}'
         )
 
     # ------------------------------------------------------------------
@@ -550,11 +529,9 @@ class DataPanel(InfoGroupBox):
     def _update_info(self) -> None:
         if self._ms is None:
             return
-        name = Path(self._source_path).name if self._source_path else "?"
+        name = Path(self._source_path).name if self._source_path else '?'
         self._file_label.setText(name)
-        self._info_label.setText(
-            f"{self._ms.n_points} points × {self._ms.n_replicas} replicas"
-        )
+        self._info_label.setText(f'{self._ms.n_points} points × {self._ms.n_replicas} replicas')
 
     def _set_concentration_controls_enabled(self, enabled: bool) -> None:
         self._imported_unit_combo.setEnabled(enabled)

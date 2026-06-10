@@ -76,7 +76,7 @@ class GDAAssay(BaseAssay):
         if self.g0.magnitude < 0:
             raise ValueError('g0 must be positive (or zero)')
 
-    def forward_model(self, params: np.ndarray) -> Quantity:
+    def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
         Parameters
@@ -91,6 +91,7 @@ class GDAAssay(BaseAssay):
             Predicted signal values in au.
         """
         Ka_guest, I0, I_dye_free, I_dye_bound = params
+        xx = self.x_data.magnitude if x is None else np.asarray(x, dtype=float)
 
         result = gda_signal(
             I0=I0,
@@ -99,7 +100,7 @@ class GDAAssay(BaseAssay):
             I_dye_bound=I_dye_bound,
             Ka_dye=self.Ka_dye.magnitude,
             h0=self.h0.magnitude,
-            d0_values=self.x_data.magnitude,
+            d0_values=xx,
             g0=self.g0.magnitude,
         )
         return Q_(result, 'au')

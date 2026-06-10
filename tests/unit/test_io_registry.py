@@ -37,53 +37,53 @@ def isolated_registry(monkeypatch):
 
 
 class _Accepter:
-    extensions = (".dummy",)
+    extensions = ('.dummy',)
 
     @classmethod
     def can_read(cls, path: Path) -> bool:
         return True
 
     def read(self, path: Path) -> pd.DataFrame:
-        return pd.DataFrame({"concentration": [0.0], "signal": [1.0], "replica": [0]})
+        return pd.DataFrame({'concentration': [0.0], 'signal': [1.0], 'replica': [0]})
 
 
 class _Rejecter:
-    extensions = (".dummy",)
+    extensions = ('.dummy',)
 
     @classmethod
     def can_read(cls, path: Path) -> bool:
         return False
 
     def read(self, path: Path) -> pd.DataFrame:
-        raise AssertionError("Rejecter.read should never be called")
+        raise AssertionError('Rejecter.read should never be called')
 
 
 class _Fallback:
     """No can_read → always-accepting fallback."""
 
-    extensions = (".dummy",)
+    extensions = ('.dummy',)
 
     def read(self, path: Path) -> pd.DataFrame:
-        return pd.DataFrame({"concentration": [0.0], "signal": [2.0], "replica": [0]})
+        return pd.DataFrame({'concentration': [0.0], 'signal': [2.0], 'replica': [0]})
 
 
 class TestRegistry:
     def test_existing_extensions_still_dispatch(self, tmp_path):
         """Default registrations (txt, csv, xlsx) survive the rewrite."""
-        p = tmp_path / "x.txt"
-        p.write_text("var\tsignal\n0.0\t100.0\n")
+        p = tmp_path / 'x.txt'
+        p.write_text('var\tsignal\n0.0\t100.0\n')
         reader = get_reader(p)
-        assert type(reader).__name__ == "TxtReader"
+        assert type(reader).__name__ == 'TxtReader'
 
     def test_unknown_extension_raises(self, tmp_path):
-        with pytest.raises(ValueError, match="No reader for"):
-            get_reader(tmp_path / "nope.unknownext")
+        with pytest.raises(ValueError, match='No reader for'):
+            get_reader(tmp_path / 'nope.unknownext')
 
     def test_first_matching_sniffer_wins(self, tmp_path, isolated_registry):
         register_reader(_Rejecter)
         register_reader(_Accepter)
         register_reader(_Fallback)
-        p = tmp_path / "x.dummy"
+        p = tmp_path / 'x.dummy'
         p.touch()
         reader = get_reader(p)
         assert isinstance(reader, _Accepter)
@@ -91,27 +91,27 @@ class TestRegistry:
     def test_no_can_read_acts_as_fallback(self, tmp_path, isolated_registry):
         register_reader(_Rejecter)
         register_reader(_Fallback)
-        p = tmp_path / "x.dummy"
+        p = tmp_path / 'x.dummy'
         p.touch()
         reader = get_reader(p)
         assert isinstance(reader, _Fallback)
 
     def test_all_sniffers_reject_raises(self, tmp_path, isolated_registry):
         register_reader(_Rejecter)
-        p = tmp_path / "x.dummy"
+        p = tmp_path / 'x.dummy'
         p.touch()
-        with pytest.raises(ValueError, match="No registered reader accepted"):
+        with pytest.raises(ValueError, match='No registered reader accepted'):
             get_reader(p)
 
     def test_register_is_idempotent(self, isolated_registry):
-        before = len(READERS.get(".dummy", []))
+        before = len(READERS.get('.dummy', []))
         register_reader(_Accepter)
         register_reader(_Accepter)
-        after = len(READERS.get(".dummy", []))
+        after = len(READERS.get('.dummy', []))
         assert after == before + 1
 
     def test_registration_order_preserved(self, isolated_registry):
         register_reader(_Accepter)
         register_reader(_Rejecter)
         register_reader(_Fallback)
-        assert READERS[".dummy"] == [_Accepter, _Rejecter, _Fallback]
+        assert READERS['.dummy'] == [_Accepter, _Rejecter, _Fallback]

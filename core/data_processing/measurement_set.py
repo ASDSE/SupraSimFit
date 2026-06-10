@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, Optional, Tuple, Type
 
 import numpy as np
@@ -78,9 +77,13 @@ class MeasurementSet:
         if self.signals.ndim != 2:
             raise ValueError(f'signals must be 2-D (n_replicas, n_points), got shape {self.signals.shape}')
         if self.signals.shape[1] != self.concentrations.shape[0]:
-            raise ValueError(f'signals columns ({self.signals.shape[1]}) must match concentrations length ({self.concentrations.shape[0]})')
+            raise ValueError(
+                f'signals columns ({self.signals.shape[1]}) must match concentrations length ({self.concentrations.shape[0]})'
+            )
         if len(self.replica_ids) != self.signals.shape[0]:
-            raise ValueError(f'replica_ids length ({len(self.replica_ids)}) must match signals rows ({self.signals.shape[0]})')
+            raise ValueError(
+                f'replica_ids length ({len(self.replica_ids)}) must match signals rows ({self.signals.shape[0]})'
+            )
 
         # Freeze raw data
         self.concentrations.flags.writeable = False
@@ -138,7 +141,9 @@ class MeasurementSet:
         for label, grp in groups.items():
             conc = grp[concentration_col].values
             if not np.allclose(conc, reference_conc, rtol=1e-12):
-                raise ValueError(f"Replica '{label}' has a different concentration grid than replica '{replica_labels[0]}'")
+                raise ValueError(
+                    f"Replica '{label}' has a different concentration grid than replica '{replica_labels[0]}'"
+                )
 
         # Build 2-D signals array
         signals = np.array([groups[label][signal_col].values for label in replica_labels])
@@ -356,20 +361,12 @@ class MeasurementSet:
             placeholder flag once real concentrations are supplied).
         """
         if not isinstance(new_conc, Quantity):
-            raise TypeError(
-                f'new_conc must be a pint Quantity, got {type(new_conc).__name__}'
-            )
+            raise TypeError(f'new_conc must be a pint Quantity, got {type(new_conc).__name__}')
         if new_conc.dimensionality != Q_(1.0, 'M').dimensionality:
-            raise ValueError(
-                f'new_conc must have concentration dimensionality, '
-                f'got {new_conc.dimensionality}'
-            )
+            raise ValueError(f'new_conc must have concentration dimensionality, got {new_conc.dimensionality}')
         molar_values = np.asarray(new_conc.to('M').magnitude, dtype=np.float64)
         if molar_values.shape != (self.n_points,):
-            raise ValueError(
-                f'new_conc length {molar_values.shape} does not match '
-                f'n_points ({self.n_points},)'
-            )
+            raise ValueError(f'new_conc length {molar_values.shape} does not match n_points ({self.n_points},)')
 
         self.concentrations.flags.writeable = True
         try:

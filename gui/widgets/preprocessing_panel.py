@@ -167,7 +167,9 @@ class PreprocessingPanel(InfoGroupBox):
         self._threshold_spin.setSingleStep(0.5)
         self._threshold_spin.setValue(3.5)
         self._threshold_spin.setDecimals(1)
-        self._threshold_spin.setToolTip('Modified z-score threshold.  Replicas where any point exceeds this threshold are deactivated.  Typical range: 2.5–4.0.')
+        self._threshold_spin.setToolTip(
+            'Modified z-score threshold.  Replicas where any point exceeds this threshold are deactivated.  Typical range: 2.5–4.0.'
+        )
 
         thr_row = QWidget()
         thr_lay = QHBoxLayout(thr_row)

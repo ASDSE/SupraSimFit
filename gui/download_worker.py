@@ -54,12 +54,12 @@ class DownloadWorker(QThread):
             self._dest.parent.mkdir(parents=True, exist_ok=True)
             req = urllib.request.Request(
                 self._url,
-                headers={"User-Agent": "SupraSimFit-updater"},
+                headers={'User-Agent': 'SupraSimFit-updater'},
             )
             with urllib.request.urlopen(req, timeout=self._TIMEOUT_S) as resp:
-                total = int(resp.headers.get("Content-Length", 0) or 0)
+                total = int(resp.headers.get('Content-Length', 0) or 0)
                 done = 0
-                with open(self._dest, "wb") as f:
+                with open(self._dest, 'wb') as f:
                     while True:
                         if self._cancelled:
                             break
@@ -76,6 +76,6 @@ class DownloadWorker(QThread):
                 return
             self.finished.emit(str(self._dest))
         except urllib.error.HTTPError as exc:
-            self.error.emit(f"HTTP {exc.code}: {exc.reason}")
+            self.error.emit(f'HTTP {exc.code}: {exc.reason}')
         except Exception as exc:  # noqa: BLE001 — surface any network/disk error
-            self.error.emit(f"{type(exc).__name__}: {exc}")
+            self.error.emit(f'{type(exc).__name__}: {exc}')

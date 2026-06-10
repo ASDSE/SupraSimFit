@@ -20,11 +20,11 @@ from core.io.formats.ensight_reader import (
     EnsightReader,
 )
 
-DATA_DIR = Path(__file__).parent.parent / "data" / "ensight"
-TRYPTAMINE_CSV = DATA_DIR / "tryptamine.csv"
-TRYPTAMINE_FL_TXT = DATA_DIR / "tryptamine_expected_FL.txt"
+DATA_DIR = Path(__file__).parent.parent / 'data' / 'ensight'
+TRYPTAMINE_CSV = DATA_DIR / 'tryptamine.csv'
+TRYPTAMINE_FL_TXT = DATA_DIR / 'tryptamine_expected_FL.txt'
 
-_FL_CHANNEL = "Fluorescence intensity 1"
+_FL_CHANNEL = 'Fluorescence intensity 1'
 
 
 def _read_legacy_var_signal(path: Path) -> np.ndarray:
@@ -32,11 +32,11 @@ def _read_legacy_var_signal(path: Path) -> np.ndarray:
     blocks: list[list[float]] = []
     current: list[float] = []
     for line in path.read_text().splitlines():
-        parts = line.strip().split("\t")
+        parts = line.strip().split('\t')
         if len(parts) < 2:
             continue
         head = parts[0].strip().lower()
-        if head in {"var", "concentration", "conc"}:
+        if head in {'var', 'concentration', 'conc'}:
             if current:
                 blocks.append(current)
                 current = []
@@ -50,9 +50,7 @@ def _read_legacy_var_signal(path: Path) -> np.ndarray:
     return np.asarray(blocks, dtype=float)
 
 
-def _minimal_ensight(
-    n_channels: int = 1, n_rows: int = 4, n_cols: int = 6
-) -> str:
+def _minimal_ensight(n_channels: int = 1, n_rows: int = 4, n_cols: int = 6) -> str:
     """Build a minimal EnSight-shaped CSV with `n_channels` Result blocks."""
     header = dedent(
         """\
@@ -64,21 +62,17 @@ def _minimal_ensight(
     )
     blocks: list[str] = []
     for ch in range(n_channels):
-        col_header = "," + ",".join(str(i + 1) for i in range(n_cols)) + ","
+        col_header = ',' + ','.join(str(i + 1) for i in range(n_cols)) + ','
         rows = []
         for r in range(n_rows):
-            letter = chr(ord("A") + r)
-            values = ",".join(str(ch * 1000 + r * 100 + c + 1) for c in range(n_cols))
-            rows.append(f"{letter},{values},")
+            letter = chr(ord('A') + r)
+            values = ','.join(str(ch * 1000 + r * 100 + c + 1) for c in range(n_cols))
+            rows.append(f'{letter},{values},')
         blocks.append(
-            f"Result for Channel {ch + 1}\n"
-            "Barcode,Repeat,Loop no,Well scan x,Well scan y,Exc wl / filter,Ems wl,TRF Window,Analysis Parameter,Label-free Parameter,\n"
-            "V-2026-01-01,1,,,,,,,,,,\n"
-            "\n"
-            + col_header
-            + "\n"
-            + "\n".join(rows)
-            + "\n"
+            f'Result for Channel {ch + 1}\n'
+            'Barcode,Repeat,Loop no,Well scan x,Well scan y,Exc wl / filter,Ems wl,TRF Window,Analysis Parameter,Label-free Parameter,\n'
+            'V-2026-01-01,1,,,,,,,,,,\n'
+            '\n' + col_header + '\n' + '\n'.join(rows) + '\n'
         )
 
     plate_info = dedent(
@@ -90,28 +84,28 @@ def _minimal_ensight(
         Number of Columns,,{n_rows}
         """
     )
-    details = ["\n", "Details of Measurement Sequence\n", "\n"]
+    details = ['\n', 'Details of Measurement Sequence\n', '\n']
     for ch in range(n_channels):
         details.extend(
             [
-                f"Operation,,,Channel {ch + 1}\n",
-                "Excitation Wavelength [nm],,,371\n",
-                "Emission Wavelength [nm],,,424\n",
-                "\n",
+                f'Operation,,,Channel {ch + 1}\n',
+                'Excitation Wavelength [nm],,,371\n',
+                'Emission Wavelength [nm],,,424\n',
+                '\n',
             ]
         )
-    return header + "\n".join(blocks) + plate_info + "".join(details)
+    return header + '\n'.join(blocks) + plate_info + ''.join(details)
 
 
 class TestSniffing:
     def test_can_read_with_bom(self, tmp_path):
-        p = tmp_path / "ensight_bom.csv"
-        p.write_bytes(b"\xef\xbb\xbf" + _minimal_ensight().encode())
+        p = tmp_path / 'ensight_bom.csv'
+        p.write_bytes(b'\xef\xbb\xbf' + _minimal_ensight().encode())
         assert EnsightReader.can_read(p)
 
     def test_rejects_jasco_csv(self, tmp_path):
-        p = tmp_path / "jasco.csv"
-        p.write_text("TITLE,foo\nORIGIN,JASCO\nXYDATA\n0,1\n")
+        p = tmp_path / 'jasco.csv'
+        p.write_text('TITLE,foo\nORIGIN,JASCO\nXYDATA\n0,1\n')
         assert not EnsightReader.can_read(p)
 
 
@@ -119,46 +113,46 @@ class TestParsing:
     def test_real_file_golden_row_match(self):
         """Row A of the FL channel must match the legacy txt row-for-row."""
         if not TRYPTAMINE_CSV.exists() or not TRYPTAMINE_FL_TXT.exists():
-            pytest.skip("Real EnSight fixture missing")
+            pytest.skip('Real EnSight fixture missing')
         df = EnsightReader().read(TRYPTAMINE_CSV)
         legacy = _read_legacy_var_signal(TRYPTAMINE_FL_TXT)
         assert legacy.shape == (8, 12)
         fl = df[df[ENSIGHT_CHANNEL_COLUMN] == _FL_CHANNEL]
         for r in range(8):
-            row_signals = fl[fl["replica"] == r].sort_values("concentration")["signal"].to_numpy()
+            row_signals = fl[fl['replica'] == r].sort_values('concentration')['signal'].to_numpy()
             np.testing.assert_allclose(row_signals, legacy[r], rtol=0, atol=0)
 
     def test_three_channels_detected(self):
         if not TRYPTAMINE_CSV.exists():
-            pytest.skip("Real EnSight fixture missing")
+            pytest.skip('Real EnSight fixture missing')
         df = EnsightReader().read(TRYPTAMINE_CSV)
         channels = list(df[ENSIGHT_CHANNEL_COLUMN].unique())
         assert channels == [
-            "Time-resolved Fluorescence 1",
-            "Time-resolved Fluorescence 2",
-            "Fluorescence intensity 1",
+            'Time-resolved Fluorescence 1',
+            'Time-resolved Fluorescence 2',
+            'Fluorescence intensity 1',
         ]
 
     def test_placeholder_concentrations_and_flag(self):
         if not TRYPTAMINE_CSV.exists():
-            pytest.skip("Real EnSight fixture missing")
+            pytest.skip('Real EnSight fixture missing')
         df = EnsightReader().read(TRYPTAMINE_CSV)
         # Concentrations are bare 1..12
         fl = df[df[ENSIGHT_CHANNEL_COLUMN] == _FL_CHANNEL]
-        unique_concs = sorted(fl["concentration"].unique().tolist())
+        unique_concs = sorted(fl['concentration'].unique().tolist())
         assert unique_concs == [float(i) for i in range(1, 13)]
         assert df.attrs[BMG_PLACEHOLDER_KEY] is True
 
     def test_metadata_carries_ex_em_per_channel(self):
         if not TRYPTAMINE_CSV.exists():
-            pytest.skip("Real EnSight fixture missing")
+            pytest.skip('Real EnSight fixture missing')
         df = EnsightReader().read(TRYPTAMINE_CSV)
         meta = df.attrs[ENSIGHT_METADATA_KEY]
-        fl_details = meta["channels"][_FL_CHANNEL]
+        fl_details = meta['channels'][_FL_CHANNEL]
         # Real file has Excitation Wavelength 371 and Emission 424 for FL1
-        assert fl_details.get("Excitation Wavelength [nm]") == "371"
-        assert fl_details.get("Emission Wavelength [nm]") == "424"
-        assert meta["protocol"]["Protocol Name"] == "Euzeolite@MDAP endpoint"
+        assert fl_details.get('Excitation Wavelength [nm]') == '371'
+        assert fl_details.get('Emission Wavelength [nm]') == '424'
+        assert meta['protocol']['Protocol Name'] == 'Euzeolite@MDAP endpoint'
 
     def test_trailing_section_does_not_bleed_into_details(self, tmp_path):
         """`Post Processing Sequence` rows must not parse into the last
@@ -175,62 +169,62 @@ class TestParsing:
             Format Options,,,Standard
             """
         )
-        p = tmp_path / "with_trailing.csv"
+        p = tmp_path / 'with_trailing.csv'
         p.write_text(leaked)
         df = EnsightReader().read(p)
-        ch_meta = df.attrs[ENSIGHT_METADATA_KEY]["channels"]["Channel 1"]
+        ch_meta = df.attrs[ENSIGHT_METADATA_KEY]['channels']['Channel 1']
         # Real channel keys survive.
-        assert ch_meta.get("Excitation Wavelength [nm]") == "371"
-        assert ch_meta.get("Emission Wavelength [nm]") == "424"
+        assert ch_meta.get('Excitation Wavelength [nm]') == '371'
+        assert ch_meta.get('Emission Wavelength [nm]') == '424'
         # And nothing from the trailing section leaked into the channel.
-        assert "Export Format" not in ch_meta
-        assert "Format Options" not in ch_meta
+        assert 'Export Format' not in ch_meta
+        assert 'Format Options' not in ch_meta
 
     def test_minimal_single_channel(self, tmp_path):
-        p = tmp_path / "min.csv"
+        p = tmp_path / 'min.csv'
         p.write_text(_minimal_ensight(n_channels=1, n_rows=3, n_cols=4))
         df = EnsightReader().read(p)
         # 1 channel × 3 rows × 4 cols = 12 rows in long format
         assert len(df) == 12
-        assert sorted(df["concentration"].unique().tolist()) == [1.0, 2.0, 3.0, 4.0]
-        assert sorted(df["replica"].unique().tolist()) == [0, 1, 2]
-        assert list(df[ENSIGHT_CHANNEL_COLUMN].unique()) == ["Channel 1"]
+        assert sorted(df['concentration'].unique().tolist()) == [1.0, 2.0, 3.0, 4.0]
+        assert sorted(df['replica'].unique().tolist()) == [0, 1, 2]
+        assert list(df[ENSIGHT_CHANNEL_COLUMN].unique()) == ['Channel 1']
 
     def test_minimal_multi_channel(self, tmp_path):
-        p = tmp_path / "multi.csv"
+        p = tmp_path / 'multi.csv'
         p.write_text(_minimal_ensight(n_channels=3, n_rows=4, n_cols=6))
         df = EnsightReader().read(p)
         assert list(df[ENSIGHT_CHANNEL_COLUMN].unique()) == [
-            "Channel 1",
-            "Channel 2",
-            "Channel 3",
+            'Channel 1',
+            'Channel 2',
+            'Channel 3',
         ]
 
     def test_no_result_blocks_raises(self, tmp_path):
-        p = tmp_path / "empty.csv"
-        p.write_text("EnSight Results from\nProtocol Name,foo\n\n")
+        p = tmp_path / 'empty.csv'
+        p.write_text('EnSight Results from\nProtocol Name,foo\n\n')
         with pytest.raises(ValueError, match="no 'Result for"):
             EnsightReader().read(p)
 
     def test_non_sequential_columns_raises(self, tmp_path):
-        broken = _minimal_ensight().replace(",1,2,3,4,5,6,", ",1,3,2,4,5,6,")
-        p = tmp_path / "broken.csv"
+        broken = _minimal_ensight().replace(',1,2,3,4,5,6,', ',1,3,2,4,5,6,')
+        p = tmp_path / 'broken.csv'
         p.write_text(broken)
-        with pytest.raises(ValueError, match="not sequential"):
+        with pytest.raises(ValueError, match='not sequential'):
             EnsightReader().read(p)
 
     def test_out_of_sequence_rows_raises(self, tmp_path):
-        broken = _minimal_ensight().replace("B,", "C,", 1)
-        p = tmp_path / "broken.csv"
+        broken = _minimal_ensight().replace('B,', 'C,', 1)
+        p = tmp_path / 'broken.csv'
         p.write_text(broken)
-        with pytest.raises(ValueError, match="out of sequence"):
+        with pytest.raises(ValueError, match='out of sequence'):
             EnsightReader().read(p)
 
 
 class TestDispatch:
     def test_load_measurements_returns_channel_column(self):
         if not TRYPTAMINE_CSV.exists():
-            pytest.skip("Real EnSight fixture missing")
+            pytest.skip('Real EnSight fixture missing')
         df = load_measurements(TRYPTAMINE_CSV)
         assert ENSIGHT_CHANNEL_COLUMN in df.columns
         assert df.attrs[BMG_PLACEHOLDER_KEY] is True

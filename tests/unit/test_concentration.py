@@ -3,7 +3,11 @@
 import numpy as np
 import pytest
 
-from core.data_processing.concentration import extract_concentrations_from_file, load_concentration_vector, save_concentration_vector
+from core.data_processing.concentration import (
+    extract_concentrations_from_file,
+    load_concentration_vector,
+    save_concentration_vector,
+)
 
 
 class TestConcentrationRoundTrip:

@@ -23,7 +23,6 @@ from core.optimizer.scaling import ParamScaler, _scale_factor
 from core.pipeline.fit_pipeline import FitConfig, fit_assay
 from core.units import Q_
 
-
 # ---------------------------------------------------------------------------
 # _scale_factor
 # ---------------------------------------------------------------------------
@@ -180,7 +179,10 @@ def test_wrap_objective_divides_by_loss_scale(ida_assay):
 
 def test_multistart_returns_raw_params_when_scaled(ida_assay):
     scaler = ParamScaler.from_assay(ida_assay)
-    bounds = [(float(lo.magnitude), float(hi.magnitude)) for lo, hi in [ida_assay.get_default_bounds()[k] for k in ida_assay.parameter_keys]]
+    bounds = [
+        (float(lo.magnitude), float(hi.magnitude))
+        for lo, hi in [ida_assay.get_default_bounds()[k] for k in ida_assay.parameter_keys]
+    ]
 
     def objective(params):
         return ida_assay.sum_squared_residuals(params)

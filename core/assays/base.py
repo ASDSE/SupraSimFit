@@ -10,12 +10,12 @@ by the optimizer module.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, ClassVar, Dict, Tuple
 
 import numpy as np
 
 from core.assays.registry import AssayMetadata, AssayType, get_metadata
-from core.units import Q_, Quantity
+from core.units import Quantity
 
 
 @dataclass
@@ -46,6 +46,10 @@ class BaseAssay(ABC):
 
     # Subclasses must define this class attribute
     assay_type: AssayType = field(init=False)
+
+    # Model identifier recorded on fit results; overridden per assay family
+    # (e.g. ``'linear'`` for dye-alone, ``'equilibrium_hg2'`` for HG2).
+    model_name: ClassVar[str] = 'equilibrium_4param'
 
     def __post_init__(self):
         """Validate data after initialization."""
@@ -82,18 +86,22 @@ class BaseAssay(ABC):
         return len(self.x_data)
 
     @abstractmethod
-    def forward_model(self, params: np.ndarray) -> np.ndarray:
+    def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> np.ndarray:
         """Compute predicted signal from parameters.
 
         Parameters
         ----------
         params : np.ndarray
             Parameter values in the order defined by parameter_keys.
+        x : np.ndarray, optional
+            Titrant concentrations (M) to evaluate at. Defaults to the assay's
+            own ``x_data`` (the measured points); pass a denser grid to render
+            a smooth curve without changing the fit.
 
         Returns
         -------
         np.ndarray
-            Predicted signal values, same shape as y_data.
+            Predicted signal values, same shape as ``x`` (or ``y_data``).
         """
         pass
 

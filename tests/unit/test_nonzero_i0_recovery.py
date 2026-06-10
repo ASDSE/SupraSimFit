@@ -62,6 +62,4 @@ class TestIDARecoveryNonzeroI0:
         result = fit_assay(assay, FitConfig(n_trials=N_TRIALS, custom_bounds=bounds))
 
         assert result.success
-        assert_within_tolerance(
-            result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest'
-        )
+        assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')

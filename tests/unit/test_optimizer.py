@@ -43,7 +43,6 @@ def _make_attempt(params, cost=1.0, rmse=0.1, r_squared=0.99, success=True):
 
 
 class TestGenerateInitialGuesses:
-
     def test_zero_trials_returns_empty(self):
         guesses = generate_initial_guesses(0, [(0, 1)])
         assert guesses == []
@@ -97,7 +96,6 @@ class TestGenerateInitialGuesses:
 
 
 class TestMultistartMinimize:
-
     def test_simple_quadratic(self):
         """Minimizes f(x) = (x-3)^2 with bounds [0, 10]."""
         results = multistart_minimize(
@@ -142,6 +140,7 @@ class TestMultistartMinimize:
 
     def test_all_attempts_fail_returns_empty(self):
         """Objective that always raises returns empty results."""
+
         def bad_objective(x):
             raise RuntimeError('always fails')
 
@@ -171,7 +170,6 @@ class TestMultistartMinimize:
 
 
 class TestFilterByRmse:
-
     def test_empty_input(self):
         assert filter_by_rmse([]) == []
 
@@ -212,7 +210,6 @@ class TestFilterByRmse:
 
 
 class TestFilterByRSquared:
-
     def test_empty_input(self):
         assert filter_by_r_squared([]) == []
 
@@ -250,7 +247,6 @@ class TestFilterByRSquared:
 
 
 class TestComputeMedianParams:
-
     def test_empty_returns_none(self):
         assert compute_median_params([]) is None
 
@@ -283,7 +279,6 @@ class TestComputeMedianParams:
 
 
 class TestComputeMad:
-
     def test_empty_returns_none(self):
         assert compute_mad([]) is None
 
@@ -320,7 +315,6 @@ class TestComputeMad:
 
 
 class TestAggregateFits:
-
     def test_empty_input(self):
         median, mad, n = aggregate_fits([])
         assert median is None
@@ -366,7 +360,6 @@ class TestAggregateFits:
 
 
 class TestCalculateFitMetrics:
-
     def test_perfect_fit(self):
         y = np.array([1.0, 2.0, 3.0, 4.0])
         rmse, r2 = calculate_fit_metrics(y, y)
@@ -386,8 +379,8 @@ class TestCalculateFitMetrics:
         y_obs = np.array([1.0, 2.0, 3.0])
         y_pred = np.array([1.1, 2.0, 2.9])
         residuals = y_obs - y_pred
-        expected_rmse = np.sqrt(np.mean(residuals ** 2))
-        ss_res = np.sum(residuals ** 2)
+        expected_rmse = np.sqrt(np.mean(residuals**2))
+        ss_res = np.sum(residuals**2)
         ss_tot = np.sum((y_obs - np.mean(y_obs)) ** 2)
         expected_r2 = 1 - ss_res / ss_tot
 

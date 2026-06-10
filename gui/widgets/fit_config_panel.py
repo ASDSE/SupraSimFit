@@ -6,7 +6,6 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QWidget,
 )
@@ -236,7 +235,7 @@ class FitConfigPanel(InfoGroupBox):
     config_changed = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__("Fit Configuration", "Fit Configuration", _SECTION_HELP_HTML, parent)
+        super().__init__('Fit Configuration', 'Fit Configuration', _SECTION_HELP_HTML, parent)
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -270,50 +269,48 @@ class FitConfigPanel(InfoGroupBox):
         self._trials_spin.setRange(10, 10_000)
         self._trials_spin.setSingleStep(10)
         self._trials_spin.setValue(100)
-        self._trials_spin.setToolTip("Number of multi-start L-BFGS-B optimization trials.")
+        self._trials_spin.setToolTip('Number of multi-start L-BFGS-B optimization trials.')
         self._trials_spin.valueChanged.connect(self.config_changed)
-        form.addRow("Trials:", self._with_info(self._trials_spin, "Trials", _TRIALS_HELP_HTML))
+        form.addRow('Trials:', self._with_info(self._trials_spin, 'Trials', _TRIALS_HELP_HTML))
 
         self._rmse_spin = NoScrollDoubleSpinBox()
         self._rmse_spin.setRange(1.0, 10.0)
         self._rmse_spin.setSingleStep(0.1)
         self._rmse_spin.setDecimals(2)
         self._rmse_spin.setValue(1.5)
-        self._rmse_spin.setToolTip(
-            "Trials with RMSE > (best_RMSE × factor) are discarded before aggregation."
-        )
+        self._rmse_spin.setToolTip('Trials with RMSE > (best_RMSE × factor) are discarded before aggregation.')
         self._rmse_spin.valueChanged.connect(self.config_changed)
-        form.addRow("RMSE factor:", self._with_info(self._rmse_spin, "RMSE factor", _RMSE_HELP_HTML))
+        form.addRow('RMSE factor:', self._with_info(self._rmse_spin, 'RMSE factor', _RMSE_HELP_HTML))
 
         self._r2_spin = NoScrollDoubleSpinBox()
         self._r2_spin.setRange(0.0, 1.0)
         self._r2_spin.setSingleStep(0.01)
         self._r2_spin.setDecimals(2)
         self._r2_spin.setValue(0.90)
-        self._r2_spin.setToolTip("Minimum R² for a trial to pass the acceptance filter.")
+        self._r2_spin.setToolTip('Minimum R² for a trial to pass the acceptance filter.')
         self._r2_spin.valueChanged.connect(self.config_changed)
-        form.addRow("Min R²:", self._with_info(self._r2_spin, "Min R²", _R2_HELP_HTML))
+        form.addRow('Min R²:', self._with_info(self._r2_spin, 'Min R²', _R2_HELP_HTML))
 
         self._rescale_check = QCheckBox()
         self._rescale_check.setChecked(FitConfig().rescale_parameters)
         self._rescale_check.setToolTip(
-            "Rescale parameters to O(1) for the optimiser; results are shown in physical units."
+            'Rescale parameters to O(1) for the optimiser; results are shown in physical units.'
         )
         self._rescale_check.toggled.connect(self.config_changed)
         form.addRow(
-            "Rescale parameters:",
-            self._with_info(self._rescale_check, "Rescale parameters for fitting", _RESCALE_HELP_HTML),
+            'Rescale parameters:',
+            self._with_info(self._rescale_check, 'Rescale parameters for fitting', _RESCALE_HELP_HTML),
         )
 
         self._per_replica_check = QCheckBox()
         self._per_replica_check.setChecked(FitConfig().per_replica)
         self._per_replica_check.setToolTip(
-            "Fit each replica independently; uncertainties reflect replica-to-replica spread."
+            'Fit each replica independently; uncertainties reflect replica-to-replica spread.'
         )
         self._per_replica_check.toggled.connect(self.config_changed)
         form.addRow(
-            "Fit per replica:",
-            self._with_info(self._per_replica_check, "Fit per replica", _PER_REPLICA_HELP_HTML),
+            'Fit per replica:',
+            self._with_info(self._per_replica_check, 'Fit per replica', _PER_REPLICA_HELP_HTML),
         )
 
     @staticmethod

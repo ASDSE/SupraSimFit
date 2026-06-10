@@ -14,8 +14,8 @@ Verifies:
 import numpy as np
 import pytest
 
-pytest.importorskip("PyQt6")
-pytest.importorskip("pyqtgraph")
+pytest.importorskip('PyQt6')
+pytest.importorskip('pyqtgraph')
 
 
 @pytest.fixture
@@ -24,13 +24,15 @@ def simple_plot_widget(qapp):
 
     x = np.linspace(0, 1e-4, 20)
     pw = PlotWidget()
-    pw.update_plot({
-        "concentrations": x,
-        "active_replicas": [("r1", x + 0.01), ("r2", x * 0.95 + 0.015)],
-        "dropped_replicas": [],
-        "average": x + 0.0125,
-        "fits": [{"x": x, "y": x + 0.02, "label": "fit", "id": "abc"}],
-    })
+    pw.update_plot(
+        {
+            'concentrations': x,
+            'active_replicas': [('r1', x + 0.01), ('r2', x * 0.95 + 0.015)],
+            'dropped_replicas': [],
+            'average': x + 0.0125,
+            'fits': [{'x': x, 'y': x + 0.02, 'label': 'fit', 'id': 'abc'}],
+        }
+    )
     return pw
 
 
@@ -122,7 +124,7 @@ def test_distribution_png_width_is_exact_height_derived(fitted_dist_widget, tmp_
 
     assert path.exists()
     img = QImage(str(path))
-    assert img.width() == 800   # 4.0 in × 200 DPI, exact
+    assert img.width() == 800  # 4.0 in × 200 DPI, exact
     # Height = output_w × (rows × cell_h) / (cols × cell_w). With the
     # headless fallback cell of 320 × 380:
     #   img.height = 800 × (1 × 380) / (2 × 320) = 475
@@ -236,24 +238,32 @@ def annotated_plot_widget(qapp):
     """
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QApplication
+
     from core.pipeline.fit_pipeline import FitResult
     from gui.plotting.plot_widget import PlotWidget
 
     x = np.linspace(0, 1e-4, 20)
     pw = PlotWidget()
-    pw.update_plot({
-        "concentrations": x,
-        "active_replicas": [("r1", x * 1.1 + 0.01)],
-        "dropped_replicas": [],
-        "average": x * 1.05 + 0.012,
-        "fits": [{"x": x, "y": x * 1.05 + 0.012, "label": "GDA fit", "id": "abc"}],
-    })
+    pw.update_plot(
+        {
+            'concentrations': x,
+            'active_replicas': [('r1', x * 1.1 + 0.01)],
+            'dropped_replicas': [],
+            'average': x * 1.05 + 0.012,
+            'fits': [{'x': x, 'y': x * 1.05 + 0.012, 'label': 'GDA fit', 'id': 'abc'}],
+        }
+    )
     result = FitResult(
-        parameters={"Ka_guest": 1e6, "I0": 100.0, "I_dye_free": 5e4, "I_dye_bound": 8e4},
-        uncertainties={"Ka_guest": 1e5, "I0": 5.0, "I_dye_free": 2e3, "I_dye_bound": 3e3},
-        rmse=0.005, r_squared=0.998, n_passing=87, n_total=100,
-        x_fit=x, y_fit=x * 1.05 + 0.012,
-        assay_type="GDA", model_name="equilibrium_4param",
+        parameters={'Ka_guest': 1e6, 'I0': 100.0, 'I_dye_free': 5e4, 'I_dye_bound': 8e4},
+        uncertainties={'Ka_guest': 1e5, 'I0': 5.0, 'I_dye_free': 2e3, 'I_dye_bound': 3e3},
+        rmse=0.005,
+        r_squared=0.998,
+        n_passing=87,
+        n_total=100,
+        x_fit=x,
+        y_fit=x * 1.05 + 0.012,
+        assay_type='GDA',
+        model_name='equilibrium_4param',
     )
     pw.set_fit_results([result])
     pw.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
@@ -268,7 +278,7 @@ def annotated_plot_widget(qapp):
 def test_annotation_state_restored_after_export(annotated_plot_widget, tmp_path):
     """The annotation TextItem's parent and position survive a round-trip export."""
     annotation = annotated_plot_widget._annotation_item
-    assert annotation is not None, "annotation should be visible"
+    assert annotation is not None, 'annotation should be visible'
 
     saved_parent = annotation.parentItem()
     saved_pos = annotation.pos()
@@ -283,6 +293,7 @@ def test_live_per_cell_size_uses_live_widget_when_shown(qapp):
     """When the live widget has been laid out, ``live_per_cell_size`` reflects it."""
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QApplication
+
     from core.pipeline.fit_pipeline import FitResult
     from gui.plotting.distribution_widget import DistributionWidget
 
@@ -295,9 +306,14 @@ def test_live_per_cell_size_uses_live_widget_when_shown(qapp):
     result = FitResult(
         parameters={k: float(np.median(v)) for k, v in samples.items()},
         uncertainties={k: 0.0 for k in samples},
-        rmse=0.005, r_squared=0.998, n_passing=50, n_total=50,
-        x_fit=x, y_fit=x,
-        assay_type='GDA', model_name='equilibrium_4param',
+        rmse=0.005,
+        r_squared=0.998,
+        n_passing=50,
+        n_total=50,
+        x_fit=x,
+        y_fit=x,
+        assay_type='GDA',
+        model_name='equilibrium_4param',
         parameter_samples=samples,
     )
     dw = DistributionWidget()
@@ -320,7 +336,7 @@ def test_live_per_cell_size_falls_back_when_widget_not_shown(qapp):
     without crashing — the saved file has predictable proportions
     even if it doesn't track a non-existent live widget.
     """
-    from gui.plotting.distribution_widget import DistributionWidget, _FALLBACK_CELL_W, _FALLBACK_CELL_H
+    from gui.plotting.distribution_widget import _FALLBACK_CELL_H, _FALLBACK_CELL_W, DistributionWidget
 
     dw = DistributionWidget()
     w, h = dw.live_per_cell_size()
@@ -362,6 +378,5 @@ def test_annotated_export_has_non_trivial_pixels_in_corner(annotated_plot_widget
     # drifted off-canvas (regression), every corner is near-blank.
     best = max(corner_counts.values())
     assert best > 80, (
-        f'no corner contains the annotation (corner_counts={corner_counts}) — '
-        'annotation likely off-canvas'
+        f'no corner contains the annotation (corner_counts={corner_counts}) — annotation likely off-canvas'
     )

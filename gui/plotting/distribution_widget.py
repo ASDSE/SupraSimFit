@@ -130,9 +130,7 @@ class DistributionWidget(QWidget):
         for i, key in enumerate(param_keys):
             plot_item = self._plots[i].getPlotItem()
             self._clear_subplot(plot_item)
-            self._populate_subplot(
-                plot_item, key=key, param_idx=i, add_legend=(i == 0)
-            )
+            self._populate_subplot(plot_item, key=key, param_idx=i, add_legend=(i == 0))
 
         self._stack.setCurrentWidget(self._plot_container)
 
@@ -215,9 +213,7 @@ class DistributionWidget(QWidget):
         if not indices:
             raise ValueError('No matching distributions selected.')
         if rows * cols < len(indices):
-            raise ValueError(
-                f'Layout {rows}x{cols} cannot fit {len(indices)} subplots.'
-            )
+            raise ValueError(f'Layout {rows}x{cols} cannot fit {len(indices)} subplots.')
 
         glw = pg.GraphicsLayoutWidget()
         glw.setBackground(BACKGROUND_COLOR)
@@ -226,17 +222,13 @@ class DistributionWidget(QWidget):
             r, c = divmod(i, cols)
             left_axis = ScientificAxisItem(orientation='left')
             left_axis.enableAutoSIPrefix(False)
-            plot_item = glw.addPlot(
-                row=r, col=c, axisItems={'left': left_axis}
-            )
+            plot_item = glw.addPlot(row=r, col=c, axisItems={'left': left_axis})
             _wire_exponent_callback(plot_item, left_axis)
             plot_item.getViewBox().setDefaultPadding(0.05)
             plot_item.getAxis('bottom').enableAutoSIPrefix(False)
 
             key = self._param_keys[key_idx]
-            self._populate_subplot(
-                plot_item, key=key, param_idx=key_idx, add_legend=(i == 0)
-            )
+            self._populate_subplot(plot_item, key=key, param_idx=key_idx, add_legend=(i == 0))
 
         return glw
 
@@ -268,9 +260,7 @@ class DistributionWidget(QWidget):
 
         fmt = format.lower()
         if fmt not in ('png', 'svg'):
-            raise ValueError(
-                f"Unsupported format: '{format}'. Use 'png' or 'svg'."
-            )
+            raise ValueError(f"Unsupported format: '{format}'. Use 'png' or 'svg'.")
 
         cell_w, cell_h = self.live_per_cell_size()
         glw = self.build_composite_layout(keys, rows, cols)
@@ -473,20 +463,25 @@ class DistributionWidget(QWidget):
             line_pen = pg.mkPen(FOREGROUND_COLOR, width=wh_w)
 
         box = pg.BarGraphItem(
-            x0=[x_center - _BOX_HALF], y0=[q1],
-            x1=[x_center + _BOX_HALF], y1=[q3],
-            pen=box_pen, brush=box_brush,
+            x0=[x_center - _BOX_HALF],
+            y0=[q1],
+            x1=[x_center + _BOX_HALF],
+            y1=[q3],
+            pen=box_pen,
+            brush=box_brush,
         )
         plot_item.addItem(box)
 
         for wy in (wlo, whi):
             whisker = pg.PlotCurveItem(
-                x=[x_center, x_center], y=[q1 if wy == wlo else q3, wy],
+                x=[x_center, x_center],
+                y=[q1 if wy == wlo else q3, wy],
                 pen=line_pen,
             )
             plot_item.addItem(whisker)
             cap = pg.PlotCurveItem(
-                x=[x_center - _CAP_HALF, x_center + _CAP_HALF], y=[wy, wy],
+                x=[x_center - _CAP_HALF, x_center + _CAP_HALF],
+                y=[wy, wy],
                 pen=line_pen,
             )
             plot_item.addItem(cap)
@@ -516,16 +511,20 @@ class DistributionWidget(QWidget):
                 jitter = rng.uniform(-_JITTER_HALF, _JITTER_HALF, size=n)
                 color = palette[r_idx % len(palette)]
                 scatter = pg.ScatterPlotItem(
-                    x=np.full(n, x_base) + jitter, y=display,
-                    size=5, pen=pg.mkPen(None),
+                    x=np.full(n, x_base) + jitter,
+                    y=display,
+                    size=5,
+                    pen=pg.mkPen(None),
                     brush=pg.mkBrush(rgba(color, 120)),
                 )
                 plot_item.addItem(scatter)
         else:
             jitter = rng.uniform(-_JITTER_HALF, _JITTER_HALF, size=len(values))
             scatter = pg.ScatterPlotItem(
-                x=np.zeros(len(values)) + jitter, y=values,
-                size=5, pen=pg.mkPen(None),
+                x=np.zeros(len(values)) + jitter,
+                y=values,
+                size=5,
+                pen=pg.mkPen(None),
                 brush=pg.mkBrush(100, 100, 100, 100),
             )
             plot_item.addItem(scatter)
@@ -538,7 +537,8 @@ class DistributionWidget(QWidget):
         width = dist.get('median_line_width', 2.5)
         color = dist.get('median_line_color', (220, 0, 0, 255))
         line = pg.PlotCurveItem(
-            x=[x_lo, x_hi], y=[median, median],
+            x=[x_lo, x_hi],
+            y=[median, median],
             pen=pg.mkPen(color, width=width),
         )
         plot_item.addItem(line)
@@ -562,8 +562,10 @@ class DistributionWidget(QWidget):
             x_pos = x_positions[r_idx] if r_idx < len(x_positions) else r_idx
             color = palette[r_idx % len(palette)]
             marker = pg.ScatterPlotItem(
-                x=[float(x_pos)], y=[med],
-                symbol='d', size=marker_size,
+                x=[float(x_pos)],
+                y=[med],
+                symbol='d',
+                size=marker_size,
                 pen=pg.mkPen(FOREGROUND_COLOR, width=1),
                 brush=pg.mkBrush(rgba(color, 220)),
             )
@@ -585,7 +587,8 @@ class DistributionWidget(QWidget):
 
         if has_replicas:
             diamond_item = pg.ScatterPlotItem(
-                symbol='d', size=marker_size,
+                symbol='d',
+                size=marker_size,
                 pen=pg.mkPen(FOREGROUND_COLOR, width=1),
                 brush=pg.mkBrush(150, 150, 150, 220),
             )
@@ -610,7 +613,8 @@ class DistributionWidget(QWidget):
             axis.setTextPen(pg.mkPen(FOREGROUND_COLOR))
 
     def _extract_replica_samples(
-        self, result: FitResult,
+        self,
+        result: FitResult,
     ) -> Optional[List[Dict[str, np.ndarray]]]:
         """Return per-replica parameter_samples if available."""
         if result.replica_fits is None:

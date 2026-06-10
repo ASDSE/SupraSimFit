@@ -1,6 +1,14 @@
 """Optimization utilities for fitting binding assay models."""
 
-from core.optimizer.filters import aggregate_fits, calculate_fit_metrics, compute_mad, compute_median_params, filter_by_r_squared, filter_by_rmse, filter_fits
+from core.optimizer.filters import (
+    aggregate_fits,
+    calculate_fit_metrics,
+    compute_mad,
+    compute_median_params,
+    filter_by_r_squared,
+    filter_by_rmse,
+    filter_fits,
+)
 from core.optimizer.linear_fit import linear_regression
 from core.optimizer.multistart import FitAttempt, generate_initial_guesses, multistart_minimize
 

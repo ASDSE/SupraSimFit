@@ -129,9 +129,7 @@ class ExportMultipleDialog(QDialog):
         root.addWidget(self._dist_summary)
 
         # --- buttons -----------------------------------------------------
-        self._buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Cancel
-        )
+        self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self._export_btn = QPushButton('Export')
         self._export_btn.setDefault(True)
         self._buttons.addButton(self._export_btn, QDialogButtonBox.ButtonRole.AcceptRole)
@@ -167,10 +165,7 @@ class ExportMultipleDialog(QDialog):
         for row in self._rows:
             row.filename_label.setText(f'→ {base}{row.art.suffix}')
         # Refresh distributions summary if that artefact is checked.
-        dist_checked = any(
-            r.checkbox.isChecked() and r.art.key == 'distributions_png'
-            for r in self._rows
-        )
+        dist_checked = any(r.checkbox.isChecked() and r.art.key == 'distributions_png' for r in self._rows)
         if dist_checked:
             cfg = self._session._distributions_export_config()
             self._dist_summary.setText(
@@ -248,7 +243,8 @@ class ExportMultipleDialog(QDialog):
         selected = self._selected_artefacts()
         if not selected:
             QMessageBox.information(
-                self, 'Nothing Selected',
+                self,
+                'Nothing Selected',
                 'Tick at least one artefact to export.',
             )
             return
@@ -266,16 +262,11 @@ class ExportMultipleDialog(QDialog):
         failures = [o for o in outcomes if o[2] is not None]
 
         if failures:
-            details = '\n'.join(
-                f'  • {label}: {exc}' for label, _path, exc in failures
-            )
+            details = '\n'.join(f'  • {label}: {exc}' for label, _path, exc in failures)
             QMessageBox.warning(
                 self,
                 'Export — some artefacts failed',
-                (
-                    f'Wrote {len(successes)}/{len(outcomes)} artefacts to:\n'
-                    f'{folder}\n\nFailures:\n{details}'
-                ),
+                (f'Wrote {len(successes)}/{len(outcomes)} artefacts to:\n{folder}\n\nFailures:\n{details}'),
             )
         # Even on partial failure we close — the user has the message.
         self.accept()

@@ -4,19 +4,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QSplitter,
     QStackedWidget,
@@ -30,8 +25,8 @@ from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.pipeline.fit_pipeline import FitConfig, FitResult
-from core.units import Quantity
 from gui.app_state import SessionState
+from gui.plotting.distribution_widget import DistributionWidget
 from gui.plotting.fit_summary_widget import FitSummaryWidget
 from gui.plotting.plot_style import PlotStyleWidget
 from gui.plotting.plot_widget import PlotWidget
@@ -39,10 +34,9 @@ from gui.widgets.assay_config_panel import AssayConfigPanel
 from gui.widgets.bounds_panel import BoundsPanel
 from gui.widgets.data_panel import DataPanel
 from gui.widgets.fit_config_panel import FitConfigPanel
-from gui.widgets.preprocessing_panel import PreprocessingPanel
 from gui.widgets.info_button import InfoGroupBox
+from gui.widgets.preprocessing_panel import PreprocessingPanel
 from gui.widgets.replica_panel import ReplicaPanel
-from gui.plotting.distribution_widget import DistributionWidget
 from gui.workers import FitWorker
 
 _PLOT_STYLE_HELP_HTML = """
@@ -149,8 +143,7 @@ class FittingSession(QWidget):
 
         if config.per_replica and ms.n_active < 3:
             self.status_message.emit(
-                f'Per-replica fit on {ms.n_active} replica(s) — '
-                'uncertainty estimate may not be meaningful (<3 active).'
+                f'Per-replica fit on {ms.n_active} replica(s) — uncertainty estimate may not be meaningful (<3 active).'
             )
 
         self._fit_worker = FitWorker(
@@ -201,9 +194,9 @@ class FittingSession(QWidget):
         if not src and self._state.fit_results:
             src = self._state.fit_results[-1].source_file
         if not src:
-            return f"{tag or 'output'}{suffix}"
+            return f'{tag or "output"}{suffix}'
         stem = Path(src).stem
-        return f"{stem}{('_' + tag) if tag else ''}{suffix}"
+        return f'{stem}{("_" + tag) if tag else ""}{suffix}'
 
     def _default_filename_base(self) -> str:
         """Stem-only version of :meth:`_default_save_name` (no tag, no suffix)."""
@@ -221,9 +214,9 @@ class FittingSession(QWidget):
         selected.
         """
         from gui.dialogs.save_distributions_dialog import (
+            _PER_PANEL_IN,
             DistributionsExportConfig,
             SaveDistributionsPlotDialog,
-            _PER_PANEL_IN,
         )
         from gui.plotting.distribution_widget import DistributionWidget
         from gui.preferences import _settings
@@ -242,9 +235,7 @@ class FittingSession(QWidget):
         finally:
             s.endGroup()
 
-        selected = (
-            [k for k in keys if k in set(sel)] if isinstance(sel, list) and sel else list(keys)
-        )
+        selected = [k for k in keys if k in set(sel)] if isinstance(sel, list) and sel else list(keys)
         n = max(1, len(selected))
         if mode == 'row':
             rows, cols = 1, n
@@ -325,10 +316,12 @@ class FittingSession(QWidget):
         try:
             if suffix == '.csv':
                 from core.io.formats.measurement_writer import write_measurements_csv
+
                 write_measurements_csv(ms, path)
             else:
                 # Default to TXT if the user typed a different extension.
                 from core.io.formats.measurement_writer import write_measurements_txt
+
                 if suffix != '.txt':
                     path = str(Path(path).with_suffix('.txt'))
                 write_measurements_txt(ms, path)
@@ -420,16 +413,15 @@ class FittingSession(QWidget):
             successes = sum(1 for _l, _p, e in outcomes if e is None)
             if successes:
                 folder = outcomes[0][1].parent
-                self.status_message.emit(
-                    f'Exported {successes}/{len(outcomes)} artefact(s) to {folder}'
-                )
+                self.status_message.emit(f'Exported {successes}/{len(outcomes)} artefact(s) to {folder}')
 
     def save_distributions_plot(self) -> None:
         """Save the distributions plot as a composite PNG with a layout picker."""
         keys = self._distribution_widget.param_keys()
         if not keys:
             QMessageBox.warning(
-                self, 'Save Error',
+                self,
+                'Save Error',
                 'No distributions to save. Run a fit first.',
             )
             return
@@ -440,9 +432,7 @@ class FittingSession(QWidget):
             return
         cfg = dlg.config
         ext = f'.{cfg.format}'
-        filter_str = (
-            'PNG image (*.png)' if cfg.format == 'png' else 'SVG vector (*.svg)'
-        )
+        filter_str = 'PNG image (*.png)' if cfg.format == 'png' else 'SVG vector (*.svg)'
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Save Distributions Plot',
@@ -528,9 +518,7 @@ class FittingSession(QWidget):
         self._sidebar_scroll = QScrollArea()
         self._sidebar_scroll.setWidgetResizable(True)
         self._sidebar_scroll.setMinimumWidth(300)
-        self._sidebar_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         left_scroll = self._sidebar_scroll
 
         left_container = QWidget()
@@ -651,9 +639,7 @@ class FittingSession(QWidget):
         self._refresh_plot()
         active = ms.n_active
         total = ms.n_replicas
-        self.status_message.emit(
-            f'Loaded: {ms.n_points} pts × {total} replicas — {active}/{total} active'
-        )
+        self.status_message.emit(f'Loaded: {ms.n_points} pts × {total} replicas — {active}/{total} active')
 
     def _on_data_cleared(self) -> None:
         self._state.measurement_set = None

@@ -20,7 +20,7 @@ Parameter Identifiability Notes:
 import numpy as np
 import pytest
 
-from core.models.equilibrium import dba_signal, gda_signal, ida_signal
+from core.models.equilibrium import dba_signal, gda_signal, h2g_signal, hg2_signal, ida_signal
 from core.models.linear import linear_signal
 from core.units import Q_, Quantity
 
@@ -72,6 +72,32 @@ DYE_ALONE_TRUE = {
     'intercept': 100.0,
 }
 
+# HG2 ground truth (stepwise 1:2 host:guest — host binds two guests)
+# Two steps an order of magnitude apart, host fixed in excess, guest swept
+# through both binding events.  I0 = 0 and I_H = 0 to focus on Ka recovery.
+HG2_TRUE = {
+    'Ka_HG': 1e6,  # M^-1, first step
+    'Ka_HG2': 2e5,  # M^-1, second step
+    'I0': 0.0,
+    'I_G': 1e6,  # a.u./M (free guest)
+    'I_H': 0.0,  # a.u./M (free host — off)
+    'I_HG': 1e7,  # a.u./M
+    'I_HG2': 5e6,  # a.u./M
+    'h0': 3e-4,  # 300 µM host (fixed)
+}
+
+# H2G ground truth (stepwise 2:1 host:guest — two hosts bind one guest)
+H2G_TRUE = {
+    'Ka_HG': 1e6,  # M^-1, first step
+    'Ka_H2G': 2e5,  # M^-1, second step
+    'I0': 0.0,
+    'I_G': 1e6,  # a.u./M (free guest)
+    'I_H': 0.0,  # a.u./M (free host — off)
+    'I_HG': 1e7,  # a.u./M
+    'I_H2G': 5e6,  # a.u./M
+    'h0': 3e-4,  # 300 µM host (fixed)
+}
+
 # Bounds for recovery tests.
 # Signal coefficient bounds are tight (±20% of truth) because individual
 # signal coefficients are NOT independently identifiable in the 4-param
@@ -97,6 +123,33 @@ GDA_IDA_RECOVERY_BOUNDS = {
     **_SIGNAL_BOUNDS,
 }
 
+# HG2 / H2G recovery bounds.  The stepwise constants stay wide and log-scaled;
+# the signal coefficients are clamped to ±20 % of truth (the realistic regime
+# where they come from a prior calibration) and the free-host coefficient is
+# pinned at zero.  Even so the two stepwise constants trade off, so the
+# recovery tests assert what is robustly identifiable, not a unique pair.
+_KA_WIDE = (Q_(1e-8, '1/M'), Q_(1e12, '1/M'))
+
+HG2_RECOVERY_BOUNDS = {
+    'Ka_HG': _KA_WIDE,
+    'Ka_HG2': _KA_WIDE,
+    'I0': (Q_(-100, 'au'), Q_(100, 'au')),
+    'I_G': (Q_(0.8e6, 'au/M'), Q_(1.2e6, 'au/M')),
+    'I_H': (Q_(0, 'au/M'), Q_(0, 'au/M')),
+    'I_HG': (Q_(0.8e7, 'au/M'), Q_(1.2e7, 'au/M')),
+    'I_HG2': (Q_(4e6, 'au/M'), Q_(6e6, 'au/M')),
+}
+
+H2G_RECOVERY_BOUNDS = {
+    'Ka_HG': _KA_WIDE,
+    'Ka_H2G': _KA_WIDE,
+    'I0': (Q_(-100, 'au'), Q_(100, 'au')),
+    'I_G': (Q_(0.8e6, 'au/M'), Q_(1.2e6, 'au/M')),
+    'I_H': (Q_(0, 'au/M'), Q_(0, 'au/M')),
+    'I_HG': (Q_(0.8e7, 'au/M'), Q_(1.2e7, 'au/M')),
+    'I_H2G': (Q_(4e6, 'au/M'), Q_(6e6, 'au/M')),
+}
+
 
 # ---------------------------------------------------------------------------
 # Reproducibility: seed the global RNG so multistart optimizer is deterministic
@@ -114,7 +167,9 @@ def _seed_rng():
 # ---------------------------------------------------------------------------
 
 
-def _make_dba_data(true: dict, n_points: int = 30, noise_frac: float = 0.0, rng: np.random.Generator | None = None, mode: str = 'DtoH'):
+def _make_dba_data(
+    true: dict, n_points: int = 30, noise_frac: float = 0.0, rng: np.random.Generator | None = None, mode: str = 'DtoH'
+):
     """Generate synthetic DBA data.
 
     Default mode is ``'DtoH'`` (dye titrated, host fixed); pass
@@ -184,7 +239,55 @@ def _make_ida_data(true: dict, n_points: int = 30, noise_frac: float = 0.0, rng:
     return g0_values, y
 
 
-def _make_dye_alone_data(true: dict, n_points: int = 15, noise_frac: float = 0.0, rng: np.random.Generator | None = None):
+def _make_hg2_data(true: dict, n_points: int = 30, noise_frac: float = 0.0, rng: np.random.Generator | None = None):
+    """Generate synthetic HG2 data (guest titrated into fixed host, 1:2)."""
+    g0_values = np.linspace(0, 1.2e-3, n_points)
+    y_clean = hg2_signal(
+        I0=true['I0'],
+        Ka_HG=true['Ka_HG'],
+        Ka_HG2=true['Ka_HG2'],
+        I_G=true['I_G'],
+        I_H=true['I_H'],
+        I_HG=true['I_HG'],
+        I_HG2=true['I_HG2'],
+        h0=true['h0'],
+        g0_values=g0_values,
+    )
+    if noise_frac > 0:
+        if rng is None:
+            rng = np.random.default_rng(42)
+        y = y_clean + rng.normal(0, noise_frac * np.abs(y_clean))
+    else:
+        y = y_clean
+    return g0_values, y
+
+
+def _make_h2g_data(true: dict, n_points: int = 30, noise_frac: float = 0.0, rng: np.random.Generator | None = None):
+    """Generate synthetic H2G data (guest titrated into fixed host, 2:1)."""
+    g0_values = np.linspace(0, 6e-4, n_points)
+    y_clean = h2g_signal(
+        I0=true['I0'],
+        Ka_HG=true['Ka_HG'],
+        Ka_H2G=true['Ka_H2G'],
+        I_G=true['I_G'],
+        I_H=true['I_H'],
+        I_HG=true['I_HG'],
+        I_H2G=true['I_H2G'],
+        h0=true['h0'],
+        g0_values=g0_values,
+    )
+    if noise_frac > 0:
+        if rng is None:
+            rng = np.random.default_rng(42)
+        y = y_clean + rng.normal(0, noise_frac * np.abs(y_clean))
+    else:
+        y = y_clean
+    return g0_values, y
+
+
+def _make_dye_alone_data(
+    true: dict, n_points: int = 15, noise_frac: float = 0.0, rng: np.random.Generator | None = None
+):
     """Generate synthetic dye-alone data."""
     x = np.linspace(0, 20e-6, n_points)
     y_clean = linear_signal(true['slope'], true['intercept'], x)
@@ -221,6 +324,20 @@ def ida_clean():
     """IDA synthetic data with no noise."""
     x, y = _make_ida_data(IDA_TRUE)
     return Q_(x, 'M'), Q_(y, 'au'), IDA_TRUE
+
+
+@pytest.fixture
+def hg2_clean():
+    """HG2 synthetic data with no noise."""
+    x, y = _make_hg2_data(HG2_TRUE)
+    return Q_(x, 'M'), Q_(y, 'au'), HG2_TRUE
+
+
+@pytest.fixture
+def h2g_clean():
+    """H2G synthetic data with no noise."""
+    x, y = _make_h2g_data(H2G_TRUE)
+    return Q_(x, 'M'), Q_(y, 'au'), H2G_TRUE
 
 
 @pytest.fixture
@@ -278,7 +395,9 @@ def assert_within_tolerance(fitted, true, tolerance, param_name='parameter'):
     fitted_val = float(fitted.magnitude) if isinstance(fitted, Quantity) else float(fitted)
     true_val = float(true)
     rel_error = abs(fitted_val - true_val) / abs(true_val)
-    assert rel_error <= tolerance, f'{param_name}: fitted={fitted_val:.4e}, true={true_val:.4e}, rel_error={rel_error:.1%} > tolerance={tolerance:.0%}'
+    assert rel_error <= tolerance, (
+        f'{param_name}: fitted={fitted_val:.4e}, true={true_val:.4e}, rel_error={rel_error:.1%} > tolerance={tolerance:.0%}'
+    )
 
 
 @pytest.fixture

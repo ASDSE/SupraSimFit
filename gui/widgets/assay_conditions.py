@@ -7,10 +7,9 @@ the usual core registry changes — zero widget code changes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
-from core.assays import AssayType, DBAAssay, DyeAloneAssay, GDAAssay, IDAAssay
+from core.assays import AssayType, DBAAssay, DyeAloneAssay, GDAAssay, H2GAssay, HG2Assay, IDAAssay
 from core.assays.base import BaseAssay
 
 
@@ -136,6 +135,32 @@ ASSAY_CONDITIONS: dict[AssayType, tuple[type[BaseAssay], tuple[ConditionField, .
     AssayType.DYE_ALONE: (
         DyeAloneAssay,
         (),  # no conditions needed
+    ),
+    AssayType.DBA_HG2: (
+        HG2Assay,
+        (
+            ConditionField(
+                'h0',
+                '[Host]<sub>0</sub>',
+                'Total host concentration in the cuvette (fixed; guest is titrated)',
+                3e-4,
+                'M',
+                'concentration',
+            ),
+        ),
+    ),
+    AssayType.DBA_H2G: (
+        H2GAssay,
+        (
+            ConditionField(
+                'h0',
+                '[Host]<sub>0</sub>',
+                'Total host concentration in the cuvette (fixed; guest is titrated)',
+                3e-4,
+                'M',
+                'concentration',
+            ),
+        ),
     ),
 }
 

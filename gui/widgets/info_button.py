@@ -90,8 +90,7 @@ class InfoButton(QToolButton):
         label.setTextFormat(Qt.TextFormat.RichText)
         label.setOpenExternalLinks(True)
         label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.LinksAccessibleByMouse
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.LinksAccessibleByMouse
         )
         label.setMargin(8)
         label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
