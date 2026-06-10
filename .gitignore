@@ -211,6 +211,4 @@ data/results/*
 *.xlsx
 
 /graphify-out
-.claude*
-CLAUDE*
 .graphify*
