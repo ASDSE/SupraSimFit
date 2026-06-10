@@ -224,10 +224,102 @@ structural degeneracy in the signal coefficients and usually improves
 K<sub>a</sub> recovery.</p>
 """
 
+_DBA_HG2_HTML = """
+<h3>Stepwise 1:2 Host&ndash;Guest Binding (HG2)</h3>
+
+<p><b>What the Experiment Does</b></p>
+<p>Guest is titrated into a fixed concentration of host that can bind
+<i>two</i> guests in succession. The observed signal changes as the HG and
+HG<sub>2</sub> complexes accumulate.</p>
+
+<p><b>The Model</b></p>
+<p align="center">
+  H + G &#x21CC; HG &nbsp;&nbsp;(K<sub>a(HG)</sub>)<br>
+  HG + G &#x21CC; HG<sub>2</sub> &nbsp;&nbsp;(K<sub>a(HG&#x2082;)</sub>)
+</p>
+<p>with conservation
+<i>[H]<sub>0</sub> = [H] + [HG] + [HG<sub>2</sub>]</i> and
+<i>[G]<sub>0</sub> = [G] + [HG] + 2[HG<sub>2</sub>]</i>
+(two guests per HG<sub>2</sub>). Free guest is solved at each point and the
+signal is a per-species sum:</p>
+<p align="center">
+  <i>S = I<sub>0</sub> + I<sub>G</sub>[G] + I<sub>H</sub>[H] +
+     I<sub>HG</sub>[HG] + I<sub>HG&#x2082;</sub>[HG<sub>2</sub>]</i>
+</p>
+
+<p><b>Fitted Parameters</b></p>
+<ul>
+  <li><b>K<sub>a(HG)</sub>, K<sub>a(HG&#x2082;)</sub></b> &mdash; the stepwise
+      association constants.</li>
+  <li><b>I<sub>0</sub>, I<sub>G</sub>, I<sub>HG</sub>,
+      I<sub>HG&#x2082;</sub></b> &mdash; baseline and per-species signal
+      coefficients.</li>
+  <li><b>I<sub>H</sub></b> &mdash; free-host signal, pinned to zero by
+      default.</li>
+</ul>
+
+<p><b>Identifiability</b></p>
+<p>The two stepwise constants are commonly <b>not independently
+determinable</b> from a single titration &mdash; many starting points
+converge to near-equivalent fits. Treat the reported &plusmn; spread (and the
+distribution view) as the real measure of confidence, not the single median
+pair.</p>
+
+<p><b>Known Conditions</b></p>
+<p>Only the fixed total host <i>[H]<sub>0</sub></i> is required.</p>
+"""
+
+_DBA_H2G_HTML = """
+<h3>Stepwise 2:1 Host&ndash;Guest Binding (H2G)</h3>
+
+<p><b>What the Experiment Does</b></p>
+<p>Guest is titrated into a fixed concentration of host where <i>two</i>
+hosts can bind a single guest in succession. The observed signal changes as
+the HG and H<sub>2</sub>G complexes accumulate. This is the 2:1 mirror of the
+1:2 (HG2) model and uses the same solver.</p>
+
+<p><b>The Model</b></p>
+<p align="center">
+  H + G &#x21CC; HG &nbsp;&nbsp;(K<sub>a(HG)</sub>)<br>
+  HG + H &#x21CC; H<sub>2</sub>G &nbsp;&nbsp;(K<sub>a(H&#x2082;G)</sub>)
+</p>
+<p>with conservation
+<i>[H]<sub>0</sub> = [H] + [HG] + 2[H<sub>2</sub>G]</i>
+(two hosts per H<sub>2</sub>G) and
+<i>[G]<sub>0</sub> = [G] + [HG] + [H<sub>2</sub>G]</i>.
+Free host is solved at each point and the signal is a per-species sum:</p>
+<p align="center">
+  <i>S = I<sub>0</sub> + I<sub>G</sub>[G] + I<sub>H</sub>[H] +
+     I<sub>HG</sub>[HG] + I<sub>H&#x2082;G</sub>[H<sub>2</sub>G]</i>
+</p>
+
+<p><b>Fitted Parameters</b></p>
+<ul>
+  <li><b>K<sub>a(HG)</sub>, K<sub>a(H&#x2082;G)</sub></b> &mdash; the stepwise
+      association constants.</li>
+  <li><b>I<sub>0</sub>, I<sub>G</sub>, I<sub>HG</sub>,
+      I<sub>H&#x2082;G</sub></b> &mdash; baseline and per-species signal
+      coefficients.</li>
+  <li><b>I<sub>H</sub></b> &mdash; free-host signal, pinned to zero by
+      default.</li>
+</ul>
+
+<p><b>Identifiability</b></p>
+<p>As with the 1:2 case, the two stepwise constants are commonly <b>not
+independently determinable</b> from a single titration. Treat the reported
+&plusmn; spread as the real measure of confidence, not the single median
+pair.</p>
+
+<p><b>Known Conditions</b></p>
+<p>Only the fixed total host <i>[H]<sub>0</sub></i> is required.</p>
+"""
+
 ASSAY_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     'GDA': ('Guest Displacement Assay (GDA)', _GDA_HTML),
     'IDA': ('Indicator Displacement Assay (IDA)', _IDA_HTML),
     'DBA_HtoD': ('Direct Binding Assay (Host \u2192 Dye)', _DBA_HtoD_HTML),
     'DBA_DtoH': ('Direct Binding Assay (Dye \u2192 Host)', _DBA_DtoH_HTML),
     'DYE_ALONE': ('Dye Alone (Linear Calibration)', _DYE_ALONE_HTML),
+    'DBA_HG2': ('Stepwise 1:2 Host\u2013Guest Binding (HG2)', _DBA_HG2_HTML),
+    'DBA_H2G': ('Stepwise 2:1 Host\u2013Guest Binding (H2G)', _DBA_H2G_HTML),
 }

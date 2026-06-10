@@ -25,6 +25,15 @@ PARAM_LABELS: dict[str, str] = {
     'I_dye_bound': '<b>I<sub>HD</sub></b>',
     'slope': '<b>slope</b>',
     'intercept': '<b>intercept</b>',
+    # Stepwise 1:2 / 2:1 host–guest parameters
+    'Ka_HG': '<b>K<sub>a(HG)</sub></b>',
+    'Ka_HG2': '<b>K<sub>a(HG₂)</sub></b>',
+    'Ka_H2G': '<b>K<sub>a(H₂G)</sub></b>',
+    'I_G': '<b>I<sub>G</sub></b>',
+    'I_H': '<b>I<sub>H</sub></b>',
+    'I_HG': '<b>I<sub>HG</sub></b>',
+    'I_HG2': '<b>I<sub>HG₂</sub></b>',
+    'I_H2G': '<b>I<sub>H₂G</sub></b>',
 }
 
 

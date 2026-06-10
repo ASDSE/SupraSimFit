@@ -215,6 +215,64 @@ I<sub>0</sub> of later IDA/DBA fits when you use dye-alone priors.</p>
 </ul>
 """)
 
+_KA_HG_HTML = _with_sci_note("""
+<h3>K<sub>a(HG)</sub> &mdash; First Stepwise Association Constant</h3>
+<p><b>What It Means</b></p>
+<p>Association constant for the first binding step <i>H + G &#x21CC; HG</i>
+(M<sup>&minus;1</sup>). Shared by the 1:2 (HG<sub>2</sub>) and 2:1
+(H<sub>2</sub>G) models as the first host&ndash;guest contact.</p>
+<p><b>Identifiability</b></p>
+<p>Sampled on a log scale over a wide range. It trades off with the
+second-step constant &mdash; judge confidence from the reported &plusmn;
+spread, not the median alone.</p>
+""")
+
+_KA_HG2_HTML = _with_sci_note("""
+<h3>K<sub>a(HG&#x2082;)</sub> &mdash; Second Stepwise Constant (1:2)</h3>
+<p>Association constant for <i>HG + G &#x21CC; HG<sub>2</sub></i>
+(M<sup>&minus;1</sup>), the binding of a second guest. The ratio
+K<sub>a(HG&#x2082;)</sub>/K<sub>a(HG)</sub> reports cooperativity relative to
+the statistical expectation. Strongly correlated with K<sub>a(HG)</sub>
+&mdash; read the pair's spread.</p>
+""")
+
+_KA_H2G_HTML = _with_sci_note("""
+<h3>K<sub>a(H&#x2082;G)</sub> &mdash; Second Stepwise Constant (2:1)</h3>
+<p>Association constant for <i>HG + H &#x21CC; H<sub>2</sub>G</i>
+(M<sup>&minus;1</sup>), the binding of a second host to the same guest.
+Strongly correlated with K<sub>a(HG)</sub> &mdash; read the reported spread
+rather than the point value.</p>
+""")
+
+_I_G_HTML = _with_sci_note("""
+<h3>I<sub>G</sub> &mdash; Free-Guest Signal Coefficient</h3>
+<p>Per-molar signal contribution of unbound guest (a.u./M). Like all the
+linear signal coefficients it is only weakly identifiable on its own;
+constrain it with a calibration if a fit looks unstable.</p>
+""")
+
+_I_H_HTML = _with_sci_note("""
+<h3>I<sub>H</sub> &mdash; Free-Host Signal Coefficient</h3>
+<p>Per-molar signal contribution of unbound host (a.u./M). <b>Pinned to zero
+by default</b> &mdash; most hosts are optically silent. Widen its bounds in
+this panel to fit it.</p>
+""")
+
+_I_HG_HTML = _with_sci_note("""
+<h3>I<sub>HG</sub> &mdash; 1:1 Complex Signal Coefficient</h3>
+<p>Per-molar signal contribution of the HG complex (a.u./M).</p>
+""")
+
+_I_HG2_HTML = _with_sci_note("""
+<h3>I<sub>HG&#x2082;</sub> &mdash; 1:2 Complex Signal Coefficient</h3>
+<p>Per-molar signal contribution of the HG<sub>2</sub> complex (a.u./M).</p>
+""")
+
+_I_H2G_HTML = _with_sci_note("""
+<h3>I<sub>H&#x2082;G</sub> &mdash; 2:1 Complex Signal Coefficient</h3>
+<p>Per-molar signal contribution of the H<sub>2</sub>G complex (a.u./M).</p>
+""")
+
 PARAMETER_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     'Ka_dye': ('K\u2090,dye \u2014 Host\u2013Dye Association Constant', _KA_DYE_HTML),
     'Ka_guest': ('K\u2090,guest \u2014 Host\u2013Guest Association Constant', _KA_GUEST_HTML),
@@ -223,4 +281,12 @@ PARAMETER_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     'I_dye_bound': ('I_dye,bound \u2014 Bound-Dye Signal Coefficient', _I_DYE_BOUND_HTML),
     'slope': ('Slope \u2014 Dye-Alone Calibration Slope', _SLOPE_HTML),
     'intercept': ('Intercept \u2014 Dye-Alone Calibration Intercept', _INTERCEPT_HTML),
+    'Ka_HG': ('Kₐ(HG) — First Stepwise Association Constant', _KA_HG_HTML),
+    'Ka_HG2': ('Kₐ(HG₂) — Second Stepwise Constant (1:2)', _KA_HG2_HTML),
+    'Ka_H2G': ('Kₐ(H₂G) — Second Stepwise Constant (2:1)', _KA_H2G_HTML),
+    'I_G': ('I_G — Free-Guest Signal Coefficient', _I_G_HTML),
+    'I_H': ('I_H — Free-Host Signal Coefficient', _I_H_HTML),
+    'I_HG': ('I_HG — 1:1 Complex Signal Coefficient', _I_HG_HTML),
+    'I_HG2': ('I_HG₂ — 1:2 Complex Signal Coefficient', _I_HG2_HTML),
+    'I_H2G': ('I_H₂G — 2:1 Complex Signal Coefficient', _I_H2G_HTML),
 }
