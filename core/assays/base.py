@@ -10,7 +10,7 @@ by the optimizer module.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, ClassVar, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -46,6 +46,10 @@ class BaseAssay(ABC):
 
     # Subclasses must define this class attribute
     assay_type: AssayType = field(init=False)
+
+    # Model identifier recorded on fit results; overridden per assay family
+    # (e.g. ``'linear'`` for dye-alone, ``'equilibrium_hg2'`` for HG2).
+    model_name: ClassVar[str] = 'equilibrium_4param'
 
     def __post_init__(self):
         """Validate data after initialization."""

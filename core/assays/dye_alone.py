@@ -8,7 +8,7 @@ Used to establish the linear response range of the dye.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, ClassVar, Dict
 
 import numpy as np
 
@@ -43,6 +43,7 @@ class DyeAloneAssay(BaseAssay):
     """
 
     assay_type: AssayType = field(init=False, default=AssayType.DYE_ALONE)
+    model_name: ClassVar[str] = 'linear'
 
     def forward_model(self, params: np.ndarray) -> Quantity:
         """Compute predicted signal from parameters.

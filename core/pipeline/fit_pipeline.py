@@ -293,10 +293,12 @@ class FitConfig:
 
 
 def _model_name_for_assay(assay: BaseAssay) -> str:
-    """Derive a model name string from an assay instance."""
-    if isinstance(assay, DyeAloneAssay):
-        return 'linear'
-    return 'equilibrium_4param'
+    """Derive a model name string from an assay instance.
+
+    Each assay family declares its own ``model_name`` class attribute; the
+    base default (``'equilibrium_4param'``) covers the 1:1 models.
+    """
+    return assay.model_name
 
 
 def _config_to_dict(config: FitConfig) -> Dict[str, Any]:

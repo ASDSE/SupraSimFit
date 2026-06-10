@@ -46,6 +46,8 @@ class AssayType(Enum):
     DBA_HtoD = auto()  # Direct Binding Assay (Host titrated into Dye)
     DBA_DtoH = auto()  # Direct Binding Assay (Dye titrated into Host)
     DYE_ALONE = auto()  # Dye-only control (linear calibration)
+    DBA_HG2 = auto()  # Stepwise 1:2 host:guest (host binds two guests)
+    DBA_H2G = auto()  # Stepwise 2:1 host:guest (two hosts bind one guest)
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,42 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'intercept': (Q_(-1e6, 'au'), Q_(1e6, 'au')),
         },
         log_scale_keys=(),
+    ),
+    AssayType.DBA_HG2: AssayMetadata(
+        display_name='DBA 1:2 (HG2, stepwise host–guest)',
+        parameter_keys=('Ka_HG', 'Ka_HG2', 'I0', 'I_G', 'I_H', 'I_HG', 'I_HG2'),
+        x_label='Guest',
+        y_label='Signal',
+        default_bounds={
+            'Ka_HG': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
+            'Ka_HG2': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
+            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
+            'I_G': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            # Free-host signal coefficient: pinned to zero by default
+            # (no signal from free host); widen these bounds to fit it.
+            'I_H': (Q_(0, 'au/M'), Q_(0, 'au/M')),
+            'I_HG': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I_HG2': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+        },
+        log_scale_keys=('Ka_HG', 'Ka_HG2'),
+    ),
+    AssayType.DBA_H2G: AssayMetadata(
+        display_name='DBA 2:1 (H2G, stepwise host–guest)',
+        parameter_keys=('Ka_HG', 'Ka_H2G', 'I0', 'I_G', 'I_H', 'I_HG', 'I_H2G'),
+        x_label='Guest',
+        y_label='Signal',
+        default_bounds={
+            'Ka_HG': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
+            'Ka_H2G': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
+            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
+            'I_G': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            # Free-host signal coefficient: pinned to zero by default
+            # (no signal from free host); widen these bounds to fit it.
+            'I_H': (Q_(0, 'au/M'), Q_(0, 'au/M')),
+            'I_HG': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I_H2G': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+        },
+        log_scale_keys=('Ka_HG', 'Ka_H2G'),
     ),
 }
 
