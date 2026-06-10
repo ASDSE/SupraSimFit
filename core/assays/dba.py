@@ -71,7 +71,7 @@ class DBAAssay(BaseAssay):
         else:
             raise ValueError(f"mode must be 'HtoD' or 'DtoH', got '{self.mode}'")
 
-    def forward_model(self, params: np.ndarray) -> Quantity:
+    def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
         Parameters
@@ -86,13 +86,14 @@ class DBAAssay(BaseAssay):
             Predicted signal values in au.
         """
         Ka_dye, I0, I_dye_free, I_dye_bound = params
+        xx = self.x_data.magnitude if x is None else np.asarray(x, dtype=float)
 
         result = dba_signal(
             I0=I0,
             Ka_dye=Ka_dye,
             I_dye_free=I_dye_free,
             I_dye_bound=I_dye_bound,
-            x_titrant=self.x_data.magnitude,
+            x_titrant=xx,
             y_fixed=self.fixed_conc.magnitude,
             mode=self.mode,
         )

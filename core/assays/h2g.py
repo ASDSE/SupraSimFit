@@ -59,7 +59,7 @@ class H2GAssay(BaseAssay):
         if self.h0.magnitude <= 0:
             raise ValueError('h0 must be positive')
 
-    def forward_model(self, params: np.ndarray) -> Quantity:
+    def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
         Parameters
@@ -74,6 +74,7 @@ class H2GAssay(BaseAssay):
             Predicted signal values in au.
         """
         Ka_HG, Ka_H2G, I0, I_G, I_H, I_HG, I_H2G = params
+        xx = self.x_data.magnitude if x is None else np.asarray(x, dtype=float)
 
         result = h2g_signal(
             I0=I0,
@@ -84,7 +85,7 @@ class H2GAssay(BaseAssay):
             I_HG=I_HG,
             I_H2G=I_H2G,
             h0=self.h0.magnitude,
-            g0_values=self.x_data.magnitude,
+            g0_values=xx,
         )
         return Q_(result, 'au')
 

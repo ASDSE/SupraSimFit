@@ -86,18 +86,22 @@ class BaseAssay(ABC):
         return len(self.x_data)
 
     @abstractmethod
-    def forward_model(self, params: np.ndarray) -> np.ndarray:
+    def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> np.ndarray:
         """Compute predicted signal from parameters.
 
         Parameters
         ----------
         params : np.ndarray
             Parameter values in the order defined by parameter_keys.
+        x : np.ndarray, optional
+            Titrant concentrations (M) to evaluate at. Defaults to the assay's
+            own ``x_data`` (the measured points); pass a denser grid to render
+            a smooth curve without changing the fit.
 
         Returns
         -------
         np.ndarray
-            Predicted signal values, same shape as y_data.
+            Predicted signal values, same shape as ``x`` (or ``y_data``).
         """
         pass
 

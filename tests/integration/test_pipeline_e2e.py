@@ -88,6 +88,17 @@ def _dye_alone_assay(fixture_data):
 # ---------------------------------------------------------------------------
 
 
+def _max_rel_err(assay, result, y):
+    """Max point-wise relative error of the fitted model at the data points.
+
+    Recomputes the model on the data grid, since ``x_fit``/``y_fit`` are now a
+    denser display curve no longer aligned 1:1 with the measured points.
+    """
+    params = np.array([result.parameters[k].magnitude for k in assay.parameter_keys])
+    y_at_data = assay.forward_model(params)
+    return np.max(np.abs((y_at_data - y).magnitude) / np.abs(y.magnitude))
+
+
 @pytest.fixture(scope='module')
 def dba_clean_result():
     """One shared clean DBA fit, reused by the round-trip and structure tests."""
@@ -107,22 +118,22 @@ def dba_clean_result():
         result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=DBA_RECOVERY_BOUNDS))
     finally:
         np.random.set_state(state)
-    return result, Q_(y, 'au')
+    return result, Q_(y, 'au'), assay
 
 
 class TestDBAEndToEnd:
     def test_clean_round_trip(self, dba_clean_result):
-        result, y = dba_clean_result
+        result, y, assay = dba_clean_result
 
         assert result.success
         assert result.r_squared > 0.999
         assert_within_tolerance(result.parameters['Ka_dye'], DBA_TRUE['Ka_dye'], CLEAN_TOL, 'Ka_dye')
-        # Signal reconstruction: fitted curve matches the data point-wise.
-        max_rel_err = np.max(np.abs((result.y_fit - y).magnitude) / np.abs(y.magnitude))
+        # Signal reconstruction: fitted model matches the data point-wise.
+        max_rel_err = _max_rel_err(assay, result, y)
         assert max_rel_err < 0.03, f'Max point-wise relative error {max_rel_err:.2%} > 3%'
 
     def test_fit_result_structure(self, dba_clean_result):
-        result, _ = dba_clean_result
+        result, _, assay = dba_clean_result
 
         # Type and model
         assert result.assay_type == 'DBA_DtoH'
@@ -133,8 +144,13 @@ class TestDBAEndToEnd:
             assert key in result.parameters
             assert key in result.uncertainties
 
-        # Arrays match shape
+        # Fit curve is a dense, sorted grid spanning the data range (smooth display curve)
         assert result.x_fit.shape == result.y_fit.shape
+        assert len(result.x_fit) > len(assay.x_data)
+        x_mag = result.x_fit.magnitude
+        assert np.all(np.diff(x_mag) > 0)
+        assert x_mag[0] == pytest.approx(assay.x_data.magnitude.min())
+        assert x_mag[-1] == pytest.approx(assay.x_data.magnitude.max())
 
         # Counts
         assert result.n_passing > 0
@@ -166,7 +182,7 @@ class TestGDAEndToEnd:
         assert result.r_squared > 0.999
         assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
         # Reconstruction tolerance is looser for GDA (weaker identifiability).
-        max_rel_err = np.max(np.abs((result.y_fit - y).magnitude) / np.abs(y.magnitude))
+        max_rel_err = _max_rel_err(assay, result, y)
         assert max_rel_err < 0.10, f'Max point-wise relative error {max_rel_err:.2%} > 10%'
 
 
@@ -184,7 +200,7 @@ class TestIDAEndToEnd:
         assert result.success
         assert result.r_squared > 0.999
         assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
-        max_rel_err = np.max(np.abs((result.y_fit - y).magnitude) / np.abs(y.magnitude))
+        max_rel_err = _max_rel_err(assay, result, y)
         assert max_rel_err < 0.01, f'Max point-wise relative error {max_rel_err:.2%} > 1%'
 
     def test_noisy_round_trip(self, ida_noisy):

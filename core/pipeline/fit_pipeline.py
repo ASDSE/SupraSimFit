@@ -29,6 +29,21 @@ from core.units import Q_, Quantity
 
 logger = logging.getLogger(__name__)
 
+# The fit uses the measured concentrations; the plotted/exported curve is
+# evaluated on this denser grid so the line is smooth between data points.
+_FIT_CURVE_POINTS = 300
+
+
+def _dense_fit_curve(assay: BaseAssay, params: np.ndarray) -> tuple[Quantity, Quantity]:
+    """Evaluate the forward model on a dense grid spanning the data range.
+
+    Same parameters and conditions as the fit — only the sampling resolution of
+    the displayed curve changes (no effect on the fit, parameters, or metrics).
+    """
+    x_mag = assay.x_data.magnitude
+    x_dense = np.linspace(float(x_mag.min()), float(x_mag.max()), _FIT_CURVE_POINTS)
+    return Q_(x_dense, 'M'), assay.forward_model(params, x=x_dense)
+
 
 @dataclass
 class FitResult:
@@ -52,9 +67,10 @@ class FitResult:
     n_total : int
         Total number of fit attempts.
     x_fit : Quantity
-        Concentration grid used for fitting (for plotting the curve).
+        Dense concentration grid spanning the data range, for plotting a
+        smooth fit curve (not the fitting grid).
     y_fit : Quantity
-        Model prediction at ``x_fit``.
+        Model prediction at ``x_fit`` (the smooth curve).
     assay_type : str
         Assay type name (e.g. ``"GDA"``, ``"IDA"``).
     model_name : str
@@ -501,7 +517,7 @@ def fit_assay(
     # Build Quantity parameter dicts
     params_q = _wrap_params_as_quantities(median_params, assay)
     unc_q = _wrap_params_as_quantities(mad, assay)
-    y_fit = assay.forward_model(median_params)
+    x_fit, y_fit = _dense_fit_curve(assay, median_params)
 
     parameter_samples = {k: param_matrix[:, i].copy() for i, k in enumerate(assay.parameter_keys)}
 
@@ -512,7 +528,7 @@ def fit_assay(
         r_squared=r_squared,
         n_passing=n_passing,
         n_total=len(all_attempts),
-        x_fit=assay.x_data,
+        x_fit=x_fit,
         y_fit=y_fit,
         assay_type=assay.assay_type.name,
         model_name=_model_name_for_assay(assay),
@@ -828,6 +844,7 @@ def fit_measurement_set_per_replica(
     y_avg = template_assay.y_data.magnitude
     y_pred = template_assay.forward_model(median_vec)
     rmse, r_squared = calculate_fit_metrics(y_avg, y_pred.magnitude)
+    x_fit, y_fit = _dense_fit_curve(template_assay, median_vec)
 
     n_total_pool = sum(rr.n_total for rr in replica_fits)
 
@@ -848,8 +865,8 @@ def fit_measurement_set_per_replica(
         r_squared=r_squared,
         n_passing=pool_size,
         n_total=n_total_pool,
-        x_fit=template_assay.x_data,
-        y_fit=y_pred,
+        x_fit=x_fit,
+        y_fit=y_fit,
         assay_type=template_assay.assay_type.name,
         model_name=_model_name_for_assay(template_assay),
         conditions=template_assay.get_conditions(),
