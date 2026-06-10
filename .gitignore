@@ -210,7 +210,7 @@ app/*
 data/results/*
 *.xlsx
 
-/graphify-out/
+/graphify-out
 .claude*
 CLAUDE*
 .graphify*
