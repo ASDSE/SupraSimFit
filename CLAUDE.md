@@ -73,7 +73,7 @@ If architecture is flawed, state is duplicated, or patterns are inconsistent —
 
 ### Enum-Keyed Registry Pattern (central design)
 
-All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY: dict[AssayType, AssayMetadata]`. The `AssayType` enum drives dispatch throughout — **no isinstance checks**. Each `AssayMetadata` defines parameter keys, default bounds, log-scale keys, units, and labels.
+All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY: dict[AssayType, AssayMetadata]`. The `AssayType` enum drives dispatch throughout — **no isinstance checks**. Each `AssayMetadata` defines parameter keys, default bounds, log-scale keys, units, labels, and the `category` + `subtype_label` strings that drive the GUI's two-level (category → subtype) assay selector.
 
 ### Module Layers
 
@@ -126,7 +126,7 @@ Tests verify **scientific correctness first** — reproduce a bug as a failing t
 
 1. Add an enum value to `AssayType` in `core/assays/registry.py`.
 2. Create a `BaseAssay` subclass with a `forward_model()` implementation.
-3. Add an `ASSAY_REGISTRY` entry with metadata (keys, bounds, log-scale, units, labels).
+3. Add an `ASSAY_REGISTRY` entry with metadata (keys, bounds, log-scale, units, labels, and `category` + `subtype_label` — the latter two slot it into the two-level assay menu; no widget code changes needed).
 4. Add the forward-model math in `core/models/`.
 5. Add tests (parameter recovery + fail-fast).
 
