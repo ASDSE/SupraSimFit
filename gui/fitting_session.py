@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -38,6 +38,42 @@ from gui.widgets.info_button import InfoGroupBox
 from gui.widgets.preprocessing_panel import PreprocessingPanel
 from gui.widgets.replica_panel import ReplicaPanel
 from gui.workers import FitWorker
+
+
+class _SidebarScrollArea(QScrollArea):
+    """Vertically-scrolling sidebar whose width follows its content.
+
+    A plain ``QScrollArea`` reports a near-zero width hint regardless of its
+    content, so a ``QSplitter`` will shrink it until the content clips. The
+    sidebar scrolls vertically only, so its width must track the content: we
+    advertise the content's *minimum* width (plus the frame and the vertical
+    scrollbar) as both our minimum and preferred width. The splitter then honors
+    it as the sidebar's floor and shrinks the *other* pane instead — content is
+    never clipped — while the sidebar opens compact (the content minimum) rather
+    than at the widest panel's much larger preferred width.
+    """
+
+    def _content_width(self) -> int:
+        # Width needed to show the content un-clipped: the content's own minimum
+        # width + the frame + the vertical scrollbar. Read from Qt at runtime so
+        # it adapts to platform/style and to the panels' current contents.
+        content = self.widget()
+        if content is None:
+            return 0
+        return content.minimumSizeHint().width() + 2 * self.frameWidth() + self.verticalScrollBar().sizeHint().width()
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        if self.widget() is not None:
+            hint.setWidth(self._content_width())
+        return hint
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        if self.widget() is not None:
+            hint.setWidth(self._content_width())
+        return hint
+
 
 _PLOT_STYLE_HELP_HTML = """
 <h3>Plot Style</h3>
@@ -509,15 +545,13 @@ class FittingSession(QWidget):
         outer.addWidget(splitter)
 
         # ---- Left panel (scrollable) --------------------------------
-        # The sidebar is freely resizable via the splitter — no maximum-width
-        # cap (a cap would crop wide content like long filenames/channel
-        # labels and prevent the user from widening). A minimum floor keeps it
-        # usable; childrenCollapsible(False) prevents collapse to zero. It
-        # scrolls vertically only — never horizontally — so content fits the
-        # current width and elides rather than overflowing sideways.
-        self._sidebar_scroll = QScrollArea()
+        # The sidebar scrolls vertically only; its width is driven by the
+        # content's own size hints (see _SidebarScrollArea). The splitter honors
+        # that as the sidebar's minimum and shrinks the plot pane instead, so the
+        # content is never clipped. No max-width cap and childrenCollapsible(False)
+        # keep it freely widenable yet never collapsible to zero.
+        self._sidebar_scroll = _SidebarScrollArea()
         self._sidebar_scroll.setWidgetResizable(True)
-        self._sidebar_scroll.setMinimumWidth(300)
         self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         left_scroll = self._sidebar_scroll
 
@@ -582,15 +616,14 @@ class FittingSession(QWidget):
 
         right_splitter.addWidget(plot_area)
         right_splitter.addWidget(self._summary_widget)
-        right_splitter.setStretchFactor(0, 3)
+        right_splitter.setStretchFactor(0, 1)
         right_splitter.setStretchFactor(1, 1)
         splitter.addWidget(right_splitter)
 
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        # Initial split only — the user can drag freely afterwards. The
-        # sidebar opens at a comfortable width; the plot takes the rest.
-        splitter.setSizes([340, 940])
+        # No explicit initial split: the sidebar opens at its content-driven
+        # sizeHint width and the plot (stretch factor 1) takes the rest.
 
         # Initialise BoundsPanel for default assay type
         self._bounds_panel.set_assay_type(self._state.assay_type)

@@ -59,5 +59,22 @@ def test_sidebar_has_no_hard_maxwidth_cap(qapp):
     scroll = session._sidebar_scroll
     # No finite upper bound: maximumWidth stays at Qt's sentinel max.
     assert scroll.maximumWidth() == QWIDGETSIZE_MAX
-    # A sane floor remains so the panel can't collapse to an unusable sliver.
-    assert 0 < scroll.minimumWidth() <= 320
+
+
+def test_sidebar_reserves_content_width_so_it_never_clips(qapp):
+    """The sidebar must advertise at least its content's width to the splitter.
+
+    A plain ``QScrollArea`` reports a near-zero width hint (≈90px) regardless of
+    its content (~336px here), so a ``QSplitter`` shrinks it until the content
+    clips at the plot boundary. ``_SidebarScrollArea`` propagates the content's
+    width (plus the vertical scrollbar) as its own minimum, so the splitter
+    honors it and the plot pane yields instead — the content is structurally
+    unclippable, whatever the panels need.
+    """
+    from gui.fitting_session import FittingSession
+
+    session = FittingSession()
+    scroll = session._sidebar_scroll
+    content = scroll.widget()
+    scrollbar = scroll.verticalScrollBar().sizeHint().width()
+    assert scroll.minimumSizeHint().width() >= content.minimumSizeHint().width() + scrollbar
