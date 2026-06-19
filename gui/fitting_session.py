@@ -14,8 +14,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QSplitter,
-    QStackedWidget,
-    QTabBar,
     QVBoxLayout,
     QWidget,
 )
@@ -34,6 +32,7 @@ from gui.widgets.assay_config_panel import AssayConfigPanel
 from gui.widgets.bounds_panel import BoundsPanel
 from gui.widgets.data_panel import DataPanel
 from gui.widgets.fit_config_panel import FitConfigPanel
+from gui.widgets.flat_tabs import FlatTabWidget
 from gui.widgets.info_button import InfoGroupBox
 from gui.widgets.preprocessing_panel import PreprocessingPanel
 from gui.widgets.replica_panel import ReplicaPanel
@@ -592,29 +591,16 @@ class FittingSession(QWidget):
         right_splitter = QSplitter(Qt.Orientation.Vertical)
         right_splitter.setChildrenCollapsible(False)
 
-        # Tabbed plot area: Fit Curve | Distributions
-        plot_area = QWidget()
-        plot_area_layout = QVBoxLayout(plot_area)
-        plot_area_layout.setContentsMargins(0, 0, 0, 0)
-        plot_area_layout.setSpacing(0)
-
-        self._plot_tab_bar = QTabBar()
-        self._plot_tab_bar.addTab('Fit Curve')
-        self._plot_tab_bar.addTab('Distributions')
-        plot_area_layout.addWidget(self._plot_tab_bar)
-
-        self._plot_stack = QStackedWidget()
+        # Tabbed plot area: Fit Curve | Distributions (flat/minimal, white pane).
         self._plot_widget = PlotWidget()
         self._distribution_widget = DistributionWidget()
-        self._plot_stack.addWidget(self._plot_widget)
-        self._plot_stack.addWidget(self._distribution_widget)
-        plot_area_layout.addWidget(self._plot_stack, stretch=1)
-
-        self._plot_tab_bar.currentChanged.connect(self._plot_stack.setCurrentIndex)
+        self._plot_tabs = FlatTabWidget(white_pane=True)
+        self._plot_tabs.addTab(self._plot_widget, 'Fit Curve')
+        self._plot_tabs.addTab(self._distribution_widget, 'Distributions')
 
         self._summary_widget = FitSummaryWidget()
 
-        right_splitter.addWidget(plot_area)
+        right_splitter.addWidget(self._plot_tabs)
         right_splitter.addWidget(self._summary_widget)
         right_splitter.setStretchFactor(0, 1)
         right_splitter.setStretchFactor(1, 1)

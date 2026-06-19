@@ -1,10 +1,11 @@
 """Regression guard: the plot widget must stay embedded after any import.
 
 A previous EnSight code path ran a modal ``QInputDialog`` mid-load, which
-detached the plot from its ``QStackedWidget`` (it overlapped the sidebar and
+detached the plot from its tab container (it overlapped the sidebar and
 floated above the Fit Curve tab). The fix removed the mid-load modal. This
-test asserts the plot widget remains embedded — index 0 of the stack, never a
-top-level window — across an EnSight import and a subsequent channel switch.
+test asserts the plot widget remains embedded — the first page of the plot
+tab widget, never a top-level window — across an EnSight import and a
+subsequent channel switch.
 """
 
 from __future__ import annotations
@@ -20,10 +21,11 @@ ENSIGHT_FIXTURE = Path(__file__).parent.parent.parent / 'data' / 'ensight' / 'tr
 
 def _assert_embedded(session):
     pw = session._plot_widget
-    stack = session._plot_stack
-    assert stack.indexOf(pw) == 0
+    tabs = session._plot_tabs
+    # The plot is the first page of the flat plot-tab widget, never detached
+    # into a top-level window.
+    assert tabs.indexOf(pw) == 0
     assert not pw.isWindow()
-    assert pw.parent() is stack
 
 
 def test_plot_stays_embedded_through_ensight_load_and_switch(qapp):
