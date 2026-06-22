@@ -15,14 +15,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QResizeEvent
-from PyQt6.QtWidgets import QStyle, QTabBar, QTabWidget, QToolButton
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QResizeEvent, QWheelEvent
+from PyQt6.QtWidgets import QAbstractButton, QLineEdit, QStyle, QTabBar, QTabWidget, QToolButton
 
 # Authoritative flat/minimal QSS. The 2px transparent bottom border lives on the
 # base ::tab rule (not only on :selected) so selecting a tab never shifts its
-# label. The QTabBar QToolButton rule neutralises the app-wide boxed QToolButton
-# style for the overflow scroll chevrons (and the inline "+").
+# label. ::scroller collapses the native overflow arrows to nothing (we scroll
+# the tab strip by mouse wheel instead — see FlatTabBar.wheelEvent).
 _FLAT_TABS_QSS = """
 QTabWidget#flatTabs::pane {
     border: none;
@@ -54,13 +54,16 @@ QTabWidget#flatTabs QTabBar QToolButton {
     border: none;
     min-width: 0;
 }
+/* No native overflow chevrons — collapse the scroller region; wheel scrolls. */
+QTabWidget#flatTabs QTabBar::scroller {
+    width: 0px;
+}
 """
 
 _WHITE_PANE_QSS = 'QTabWidget#flatTabs::pane { background: #FFFFFF; }'
 
 # Inline "+": borderless, transparent, neutral grey that darkens on hover, glyph
-# a touch larger than the labels. Its own sheet overrides the app-wide QToolButton
-# box (border / gradient / min-width) so it never renders as a boxed button.
+# a touch larger than the labels. Its own sheet overrides any inherited button box.
 _ADD_BUTTON_QSS = """
 QToolButton {
     border: none;
@@ -140,6 +143,31 @@ class FlatTabBar(QTabBar):
         super().resizeEvent(event)
         self._reposition_add_button()
 
+    def _scroll_buttons(self) -> list[QAbstractButton]:
+        # QTabBar's two internal overflow scroll buttons: every QAbstractButton
+        # child that isn't our own "+" or a tab close button. The QSS collapses
+        # them to zero width (no chevrons); we drive them from the wheel.
+        return [
+            c
+            for c in self.children()
+            if isinstance(c, QAbstractButton) and c is not self._add_button and not isinstance(c, _FlatCloseButton)
+        ]
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        # Scroll the tab strip with the wheel when it overflows. The native scroll
+        # arrows are collapsed to zero width (QSS) but still functional; pick the
+        # one by its arrow direction (robust to their collapsed geometry) —
+        # RightArrow scrolls toward later tabs, LeftArrow back.
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if delta:
+            want = Qt.ArrowType.RightArrow if delta < 0 else Qt.ArrowType.LeftArrow
+            for b in self._scroll_buttons():
+                if isinstance(b, QToolButton) and b.arrowType() == want:
+                    b.click()
+                    event.accept()
+                    return
+        super().wheelEvent(event)
+
 
 class _FlatCloseButton(QToolButton):
     """Borderless neutral "✕" close affordance for a flat tab."""
@@ -152,6 +180,35 @@ class _FlatCloseButton(QToolButton):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.setStyleSheet(_CLOSE_BUTTON_QSS)
+
+
+class _TabRenameEdit(QLineEdit):
+    """One-shot inline editor for a tab label.
+
+    Emits ``done(text, committed)`` exactly once: committed on Enter or focus-out,
+    cancelled (``committed=False``) on Escape. The ``_finished`` guard avoids the
+    Escape-then-focus-out double-fire.
+    """
+
+    done = pyqtSignal(str, bool)
+
+    def __init__(self, text: str, parent=None) -> None:
+        super().__init__(text, parent)
+        self._finished = False
+        self.setFrame(False)
+        self.editingFinished.connect(lambda: self._finish(True))
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self._finish(False)
+        else:
+            super().keyPressEvent(event)
+
+    def _finish(self, commit: bool) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self.done.emit(self.text(), commit)
 
 
 class FlatTabWidget(QTabWidget):
@@ -168,7 +225,17 @@ class FlatTabWidget(QTabWidget):
         If given, show an inline "+" after the last tab that calls this on click.
     add_tooltip : str
         Tooltip for the "+".
+    editable : bool
+        If True, double-clicking a tab opens an inline editor; committing emits
+        ``tab_renamed(index, text)`` for the caller to apply.
+
+    Signals
+    -------
+    tab_renamed(int, str)
+        Emitted when a tab is renamed inline — (index, new text).
     """
+
+    tab_renamed = pyqtSignal(int, str)
 
     def __init__(
         self,
@@ -176,6 +243,7 @@ class FlatTabWidget(QTabWidget):
         closable: bool = False,
         movable: bool = False,
         white_pane: bool = False,
+        editable: bool = False,
         add_callback: Callable[[], None] | None = None,
         add_tooltip: str = 'New tab',
         parent=None,
@@ -187,9 +255,14 @@ class FlatTabWidget(QTabWidget):
         self.setDocumentMode(True)
         self.tabBar().setExpanding(False)
         self.tabBar().setDrawBase(False)
+        # Keep full labels and scroll on overflow (native chevrons) — don't elide.
+        self.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
         self.setUsesScrollButtons(True)
         self._closable = closable
         self.setMovable(movable)
+        self._editor: _TabRenameEdit | None = None
+        if editable:
+            self.tabBarDoubleClicked.connect(self._begin_rename)
         if add_callback is not None:
             self.tabBar().set_add_callback(add_callback, add_tooltip)
 
@@ -235,3 +308,30 @@ class FlatTabWidget(QTabWidget):
             btn = bar.tabButton(i, side)
             if btn is not None:
                 btn.setVisible(not single)
+
+    # ------------------------------------------------------------------
+    # Inline rename (when editable)
+    # ------------------------------------------------------------------
+
+    def _begin_rename(self, index: int) -> None:
+        if index < 0 or self._editor is not None:
+            return
+        rect = self.tabBar().tabRect(index)
+        if rect.isNull():
+            return
+        editor = _TabRenameEdit(self.tabText(index), self.tabBar())
+        editor.setGeometry(rect)
+        editor.selectAll()
+        editor.done.connect(lambda text, ok, i=index: self._finish_rename(i, text, ok))
+        self._editor = editor
+        editor.show()
+        editor.setFocus()
+
+    def _finish_rename(self, index: int, text: str, commit: bool) -> None:
+        editor, self._editor = self._editor, None
+        if editor is not None:
+            editor.deleteLater()
+        # The consumer applies the name (the session resolves empty -> filename),
+        # so it stays the single source of truth for the title.
+        if commit and 0 <= index < self.count():
+            self.tab_renamed.emit(index, text)

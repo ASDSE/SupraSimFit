@@ -10,7 +10,8 @@ import pytest
 
 pytest.importorskip('PyQt6')
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtWidgets import QTabBar, QWidget
 
 from gui.widgets.flat_tabs import FlatTabBar, FlatTabWidget
@@ -23,6 +24,9 @@ def test_flat_config(qapp):
     assert isinstance(tabs.tabBar(), FlatTabBar)
     assert not tabs.tabBar().expanding()  # left-aligned, not stretched
     assert not tabs.tabBar().drawBase()  # no platform base line
+    # Overflow: keep full labels and wheel-scroll (don't elide); chevrons hidden.
+    assert tabs.usesScrollButtons()
+    assert tabs.tabBar().elideMode() == Qt.TextElideMode.ElideNone
 
 
 def test_inline_add_button_after_last_tab_and_calls_back(qapp):
@@ -82,3 +86,73 @@ def test_plot_style_widget_has_no_add_button_and_is_fixed(qapp):
     assert tabs.tabBar()._add_button is None
     assert not tabs.tabsClosable()
     assert not tabs.isMovable()
+
+
+def test_editable_double_click_commits_rename(qapp):
+    renamed = []
+    tabs = FlatTabWidget(editable=True)
+    tabs.tab_renamed.connect(lambda i, name: renamed.append((i, name)))
+    tabs.addTab(QWidget(), 'Untitled')
+    tabs.show()
+    qapp.processEvents()
+    try:
+        tabs.tabBarDoubleClicked.emit(0)  # double-click tab 0 → inline editor
+        editor = tabs._editor
+        assert editor is not None
+        editor.setText('Control run')
+        editor._finish(True)  # commit (Enter / focus-out)
+        assert renamed == [(0, 'Control run')]
+        assert tabs._editor is None  # editor torn down
+    finally:
+        tabs.close()
+
+
+def test_editable_rename_escape_cancels(qapp):
+    renamed = []
+    tabs = FlatTabWidget(editable=True)
+    tabs.tab_renamed.connect(lambda i, name: renamed.append((i, name)))
+    tabs.addTab(QWidget(), 'Untitled')
+    tabs.show()
+    qapp.processEvents()
+    try:
+        tabs.tabBarDoubleClicked.emit(0)
+        tabs._editor.setText('X')
+        tabs._editor._finish(False)  # Escape → cancel, no rename
+        assert renamed == []
+        assert tabs._editor is None
+    finally:
+        tabs.close()
+
+
+def test_wheel_scrolls_overflowing_tabs(qapp):
+    tabs = FlatTabWidget()
+    for i in range(20):
+        tabs.addTab(QWidget(), f'tryptamine_{i}')
+    tabs.resize(360, 60)
+    tabs.show()
+    qapp.processEvents()
+    bar = tabs.tabBar()
+
+    def wheel(d):
+        ev = QWheelEvent(
+            QPointF(150, 20),
+            QPointF(150, 20),
+            QPoint(0, d),
+            QPoint(0, d),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        qapp.sendEvent(bar, ev)
+        qapp.processEvents()
+
+    try:
+        start = bar.tabRect(0).x()
+        wheel(-120)  # wheel away → scroll toward later tabs (strip slides left)
+        scrolled = bar.tabRect(0).x()
+        assert scrolled < start
+        wheel(120)  # wheel back
+        assert bar.tabRect(0).x() > scrolled
+    finally:
+        tabs.close()

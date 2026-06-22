@@ -129,7 +129,8 @@ class FittingSession(QWidget):
     Signals
     -------
     title_changed(str)
-        Emitted when the tab title should change (e.g. after assay type switch).
+        Emitted when the tab title should change — the loaded dataset's filename,
+        a user-set custom name, or "Untitled".
     status_message(str)
         Emitted to update the main window's status bar.
     """
@@ -141,12 +142,28 @@ class FittingSession(QWidget):
         super().__init__(parent)
         self._state = SessionState()
         self._fit_worker: FitWorker | None = None
+        self._custom_tab_name: str | None = None
         self._setup_ui()
         self._connect_signals()
 
     # ------------------------------------------------------------------
     # Public API (called by FittingMainWindow)
     # ------------------------------------------------------------------
+
+    def set_custom_tab_name(self, name: str) -> None:
+        """Set a manual tab name (double-click rename); empty reverts to auto."""
+        self._custom_tab_name = name.strip() or None
+        self._emit_tab_title()
+
+    def _tab_title(self) -> str:
+        """Resolve the tab title: custom name, else dataset stem, else 'Untitled'."""
+        if self._custom_tab_name:
+            return self._custom_tab_name
+        src = self._state.source_file
+        return Path(src).stem if src else 'Untitled'
+
+    def _emit_tab_title(self) -> None:
+        self.title_changed.emit(self._tab_title())
 
     def run_fit(self) -> None:
         """Start a background fitting run."""
@@ -650,6 +667,7 @@ class FittingSession(QWidget):
     def _on_data_loaded(self, ms: MeasurementSet) -> None:
         self._state.measurement_set = ms
         self._state.source_file = self._data_panel.current_path()
+        self._emit_tab_title()
         self._state.fit_results.clear()
         self._preprocess_panel.set_measurement_set(ms)
         self._replica_panel.set_measurement_set(ms)
@@ -663,6 +681,7 @@ class FittingSession(QWidget):
     def _on_data_cleared(self) -> None:
         self._state.measurement_set = None
         self._state.source_file = None
+        self._emit_tab_title()
         self._state.fit_results.clear()
         self._replica_panel.clear()
         self._summary_widget.clear()
@@ -688,7 +707,6 @@ class FittingSession(QWidget):
         self._bounds_panel.set_assay_type(assay_type)
         meta = ASSAY_REGISTRY[assay_type]
         self._update_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
-        self.title_changed.emit(meta.display_name)
 
     def _on_conditions_changed(self) -> None:
         self._state.conditions = self._assay_panel.current_conditions()

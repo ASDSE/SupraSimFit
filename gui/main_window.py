@@ -50,7 +50,8 @@ QToolBar {
     padding: 4px 10px;
     border-bottom: 1px solid rgba(0, 0, 0, 0.15);
 }
-QToolButton {
+/* Scoped to the toolbar so it does not leak into the tab bar's scroll arrows. */
+QToolBar QToolButton {
     padding: 5px 14px;
     min-width: 70px;
     border: 1px solid rgba(0, 0, 0, 0.22);
@@ -59,12 +60,12 @@ QToolButton {
         stop:0 rgba(255,255,255,0.95), stop:1 rgba(225,225,225,0.95));
     font-size: 12px;
 }
-QToolButton:hover {
+QToolBar QToolButton:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 rgba(255,255,255,1.0), stop:1 rgba(235,235,235,1.0));
     border-color: rgba(0, 0, 0, 0.32);
 }
-QToolButton:pressed {
+QToolBar QToolButton:pressed {
     background: rgba(195, 195, 195, 0.95);
 }
 QGroupBox {
@@ -139,10 +140,12 @@ class FittingMainWindow(QMainWindow):
         self._tabs = FlatTabWidget(
             closable=True,
             movable=True,
+            editable=True,
             add_callback=self._new_session,
             add_tooltip='New session (Ctrl+T)',
         )
         self._tabs.tabCloseRequested.connect(self._close_tab)
+        self._tabs.tab_renamed.connect(self._on_tab_renamed)
         self.setCentralWidget(self._tabs)
 
     def _setup_toolbar(self) -> None:
@@ -315,7 +318,7 @@ class FittingMainWindow(QMainWindow):
         session = FittingSession()
         session.title_changed.connect(lambda title, s=session: self._rename_tab(s, title))
         session.status_message.connect(self._statusbar.showMessage)
-        idx = self._tabs.addTab(session, 'New Session')
+        idx = self._tabs.addTab(session, 'Untitled')
         self._tabs.setCurrentIndex(idx)
 
     def _close_tab(self, idx: int) -> None:
@@ -332,6 +335,11 @@ class FittingMainWindow(QMainWindow):
         idx = self._tabs.indexOf(session)
         if idx >= 0:
             self._tabs.setTabText(idx, title)
+
+    def _on_tab_renamed(self, index: int, name: str) -> None:
+        session = self._tabs.widget(index)
+        if isinstance(session, FittingSession):
+            session.set_custom_tab_name(name)
 
     # ------------------------------------------------------------------
     # Toolbar / menu slots
