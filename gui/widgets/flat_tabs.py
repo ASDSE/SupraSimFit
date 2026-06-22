@@ -104,16 +104,20 @@ class FlatTabBar(QTabBar):
         self._add_button: QToolButton | None = None
 
     def set_add_callback(self, callback: Callable[[], None], tooltip: str = 'New tab') -> None:
-        """Create the inline "+" affordance and run ``callback`` on click."""
+        """Create (or reconfigure) the inline "+" affordance; run ``callback`` on click."""
         if self._add_button is None:
             btn = QToolButton(self)
             btn.setText('+')
-            btn.setToolTip(tooltip)
             btn.setAutoRaise(True)
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn.setCursor(Qt.CursorShape.ArrowCursor)
             btn.setStyleSheet(_ADD_BUTTON_QSS)
             self._add_button = btn
+        self._add_button.setToolTip(tooltip)
+        try:
+            self._add_button.clicked.disconnect()
+        except TypeError:
+            pass  # nothing connected yet
         self._add_button.clicked.connect(callback)
         self._reposition_add_button()
 
@@ -162,7 +166,9 @@ class FlatTabBar(QTabBar):
         if delta:
             want = Qt.ArrowType.RightArrow if delta < 0 else Qt.ArrowType.LeftArrow
             for b in self._scroll_buttons():
-                if isinstance(b, QToolButton) and b.arrowType() == want:
+                # Only intercept when a matching arrow can actually scroll —
+                # otherwise let the wheel propagate (don't swallow it).
+                if isinstance(b, QToolButton) and b.arrowType() == want and b.isEnabled():
                     b.click()
                     event.accept()
                     return

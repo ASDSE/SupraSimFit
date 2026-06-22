@@ -187,13 +187,13 @@ class AssayConfigPanel(InfoGroupBox):
         ``assay_type_changed`` exactly once, like a user selection.
         """
         category = ASSAY_REGISTRY[assay_type].category
-        self._main_combo.blockSignals(True)
-        self._sub_combo.blockSignals(True)
+        main_blocked = self._main_combo.blockSignals(True)
+        sub_blocked = self._sub_combo.blockSignals(True)
         self._main_combo.setCurrentIndex(self._main_combo.findData(category))
         self._populate_sub(category)
         self._sub_combo.setCurrentIndex(self._sub_combo.findData(assay_type))
-        self._main_combo.blockSignals(False)
-        self._sub_combo.blockSignals(False)
+        self._main_combo.blockSignals(main_blocked)
+        self._sub_combo.blockSignals(sub_blocked)
         self._apply_assay(assay_type)
 
     # ------------------------------------------------------------------
