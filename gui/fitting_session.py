@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -14,8 +14,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QSplitter,
-    QStackedWidget,
-    QTabBar,
     QVBoxLayout,
     QWidget,
 )
@@ -34,10 +32,47 @@ from gui.widgets.assay_config_panel import AssayConfigPanel
 from gui.widgets.bounds_panel import BoundsPanel
 from gui.widgets.data_panel import DataPanel
 from gui.widgets.fit_config_panel import FitConfigPanel
+from gui.widgets.flat_tabs import FlatTabWidget
 from gui.widgets.info_button import InfoGroupBox
 from gui.widgets.preprocessing_panel import PreprocessingPanel
 from gui.widgets.replica_panel import ReplicaPanel
 from gui.workers import FitWorker
+
+
+class _SidebarScrollArea(QScrollArea):
+    """Vertically-scrolling sidebar whose width follows its content.
+
+    A plain ``QScrollArea`` reports a near-zero width hint regardless of its
+    content, so a ``QSplitter`` will shrink it until the content clips. The
+    sidebar scrolls vertically only, so its width must track the content: we
+    advertise the content's *minimum* width (plus the frame and the vertical
+    scrollbar) as both our minimum and preferred width. The splitter then honors
+    it as the sidebar's floor and shrinks the *other* pane instead — content is
+    never clipped — while the sidebar opens compact (the content minimum) rather
+    than at the widest panel's much larger preferred width.
+    """
+
+    def _content_width(self) -> int:
+        # Width needed to show the content un-clipped: the content's own minimum
+        # width + the frame + the vertical scrollbar. Read from Qt at runtime so
+        # it adapts to platform/style and to the panels' current contents.
+        content = self.widget()
+        if content is None:
+            return 0
+        return content.minimumSizeHint().width() + 2 * self.frameWidth() + self.verticalScrollBar().sizeHint().width()
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        if self.widget() is not None:
+            hint.setWidth(self._content_width())
+        return hint
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        if self.widget() is not None:
+            hint.setWidth(self._content_width())
+        return hint
+
 
 _PLOT_STYLE_HELP_HTML = """
 <h3>Plot Style</h3>
@@ -94,7 +129,8 @@ class FittingSession(QWidget):
     Signals
     -------
     title_changed(str)
-        Emitted when the tab title should change (e.g. after assay type switch).
+        Emitted when the tab title should change — the loaded dataset's filename,
+        a user-set custom name, or "Untitled".
     status_message(str)
         Emitted to update the main window's status bar.
     """
@@ -106,12 +142,28 @@ class FittingSession(QWidget):
         super().__init__(parent)
         self._state = SessionState()
         self._fit_worker: FitWorker | None = None
+        self._custom_tab_name: str | None = None
         self._setup_ui()
         self._connect_signals()
 
     # ------------------------------------------------------------------
     # Public API (called by FittingMainWindow)
     # ------------------------------------------------------------------
+
+    def set_custom_tab_name(self, name: str) -> None:
+        """Set a manual tab name (double-click rename); empty reverts to auto."""
+        self._custom_tab_name = name.strip() or None
+        self._emit_tab_title()
+
+    def _tab_title(self) -> str:
+        """Resolve the tab title: custom name, else dataset stem, else 'Untitled'."""
+        if self._custom_tab_name:
+            return self._custom_tab_name
+        src = self._state.source_file
+        return Path(src).stem if src else 'Untitled'
+
+    def _emit_tab_title(self) -> None:
+        self.title_changed.emit(self._tab_title())
 
     def run_fit(self) -> None:
         """Start a background fitting run."""
@@ -509,15 +561,13 @@ class FittingSession(QWidget):
         outer.addWidget(splitter)
 
         # ---- Left panel (scrollable) --------------------------------
-        # The sidebar is freely resizable via the splitter — no maximum-width
-        # cap (a cap would crop wide content like long filenames/channel
-        # labels and prevent the user from widening). A minimum floor keeps it
-        # usable; childrenCollapsible(False) prevents collapse to zero. It
-        # scrolls vertically only — never horizontally — so content fits the
-        # current width and elides rather than overflowing sideways.
-        self._sidebar_scroll = QScrollArea()
+        # The sidebar scrolls vertically only; its width is driven by the
+        # content's own size hints (see _SidebarScrollArea). The splitter honors
+        # that as the sidebar's minimum and shrinks the plot pane instead, so the
+        # content is never clipped. No max-width cap and childrenCollapsible(False)
+        # keep it freely widenable yet never collapsible to zero.
+        self._sidebar_scroll = _SidebarScrollArea()
         self._sidebar_scroll.setWidgetResizable(True)
-        self._sidebar_scroll.setMinimumWidth(300)
         self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         left_scroll = self._sidebar_scroll
 
@@ -558,39 +608,25 @@ class FittingSession(QWidget):
         right_splitter = QSplitter(Qt.Orientation.Vertical)
         right_splitter.setChildrenCollapsible(False)
 
-        # Tabbed plot area: Fit Curve | Distributions
-        plot_area = QWidget()
-        plot_area_layout = QVBoxLayout(plot_area)
-        plot_area_layout.setContentsMargins(0, 0, 0, 0)
-        plot_area_layout.setSpacing(0)
-
-        self._plot_tab_bar = QTabBar()
-        self._plot_tab_bar.addTab('Fit Curve')
-        self._plot_tab_bar.addTab('Distributions')
-        plot_area_layout.addWidget(self._plot_tab_bar)
-
-        self._plot_stack = QStackedWidget()
+        # Tabbed plot area: Fit Curve | Distributions (flat/minimal, white pane).
         self._plot_widget = PlotWidget()
         self._distribution_widget = DistributionWidget()
-        self._plot_stack.addWidget(self._plot_widget)
-        self._plot_stack.addWidget(self._distribution_widget)
-        plot_area_layout.addWidget(self._plot_stack, stretch=1)
-
-        self._plot_tab_bar.currentChanged.connect(self._plot_stack.setCurrentIndex)
+        self._plot_tabs = FlatTabWidget(white_pane=True)
+        self._plot_tabs.addTab(self._plot_widget, 'Fit Curve')
+        self._plot_tabs.addTab(self._distribution_widget, 'Distributions')
 
         self._summary_widget = FitSummaryWidget()
 
-        right_splitter.addWidget(plot_area)
+        right_splitter.addWidget(self._plot_tabs)
         right_splitter.addWidget(self._summary_widget)
-        right_splitter.setStretchFactor(0, 3)
+        right_splitter.setStretchFactor(0, 1)
         right_splitter.setStretchFactor(1, 1)
         splitter.addWidget(right_splitter)
 
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        # Initial split only — the user can drag freely afterwards. The
-        # sidebar opens at a comfortable width; the plot takes the rest.
-        splitter.setSizes([340, 940])
+        # No explicit initial split: the sidebar opens at its content-driven
+        # sizeHint width and the plot (stretch factor 1) takes the rest.
 
         # Initialise BoundsPanel for default assay type
         self._bounds_panel.set_assay_type(self._state.assay_type)
@@ -631,6 +667,7 @@ class FittingSession(QWidget):
     def _on_data_loaded(self, ms: MeasurementSet) -> None:
         self._state.measurement_set = ms
         self._state.source_file = self._data_panel.current_path()
+        self._emit_tab_title()
         self._state.fit_results.clear()
         self._preprocess_panel.set_measurement_set(ms)
         self._replica_panel.set_measurement_set(ms)
@@ -644,6 +681,7 @@ class FittingSession(QWidget):
     def _on_data_cleared(self) -> None:
         self._state.measurement_set = None
         self._state.source_file = None
+        self._emit_tab_title()
         self._state.fit_results.clear()
         self._replica_panel.clear()
         self._summary_widget.clear()
@@ -669,7 +707,6 @@ class FittingSession(QWidget):
         self._bounds_panel.set_assay_type(assay_type)
         meta = ASSAY_REGISTRY[assay_type]
         self._update_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
-        self.title_changed.emit(meta.display_name)
 
     def _on_conditions_changed(self) -> None:
         self._state.conditions = self._assay_panel.current_conditions()

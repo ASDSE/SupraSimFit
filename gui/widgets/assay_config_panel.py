@@ -11,7 +11,7 @@ from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.units import Q_, Quantity
 from gui.assay_descriptions import ASSAY_DESCRIPTIONS
-from gui.widgets.assay_conditions import ASSAY_CONDITIONS, ConditionField, assay_class, condition_fields
+from gui.widgets.assay_conditions import ConditionField, assay_class, condition_fields
 from gui.widgets.info_button import InfoButton, InfoGroupBox
 from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox
 
@@ -123,21 +123,22 @@ class _UnitWidget(QWidget):
 
 _SECTION_HELP_HTML = """
 <h3>Assay Configuration</h3>
-<p>Select the assay type (DBA, GDA, IDA, Dye Alone) and enter the
-experimental conditions (concentrations, known binding constants) used
-in the measurement. The form updates automatically when you switch
-assay type.</p>
-<p>See the <i>i</i> next to the assay selector for a description of
-each assay model.</p>
+<p>Pick the assay <b>category</b> (Competitive Displacement, Direct Binding,
+Calibration) in the first dropdown, then the specific <b>variant</b> in the
+second. The conditions form and parameter bounds update automatically when
+you switch.</p>
+<p>See the <i>i</i> next to the variant selector for a description of each
+assay model.</p>
 """
 
 
 class AssayConfigPanel(InfoGroupBox):
     """Registry-driven assay type selector and dynamic conditions form.
 
-    The combo box is populated from :data:`ASSAY_CONDITIONS`.  Switching the
-    assay type regenerates the conditions form automatically — no per-assay
-    widget code is needed.
+    A two-level selector — a *category* combo and a dependent *subtype* combo —
+    is derived from ``ASSAY_REGISTRY`` (grouped by ``AssayMetadata.category``).
+    Switching either combo regenerates the conditions form automatically — no
+    per-assay widget code is needed.
 
     Signals
     -------
@@ -154,6 +155,10 @@ class AssayConfigPanel(InfoGroupBox):
         super().__init__('Assay Configuration', 'Assay Configuration', _SECTION_HELP_HTML, parent)
         self._current_type: AssayType = AssayType.GDA
         self._field_widgets: dict[str, _UnitWidget] = {}
+        # category -> assay types (registry order); drives the two-level menu.
+        self._groups: dict[str, list[AssayType]] = {}
+        for at, meta in ASSAY_REGISTRY.items():
+            self._groups.setdefault(meta.category, []).append(at)
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -176,8 +181,20 @@ class AssayConfigPanel(InfoGroupBox):
         return assay_class(self._current_type)
 
     def set_assay_type(self, assay_type: AssayType) -> None:
-        idx = list(ASSAY_CONDITIONS.keys()).index(assay_type)
-        self._combo.setCurrentIndex(idx)
+        """Programmatically select an assay (demo loader, tests).
+
+        Selects the matching category and subtype and emits
+        ``assay_type_changed`` exactly once, like a user selection.
+        """
+        category = ASSAY_REGISTRY[assay_type].category
+        main_blocked = self._main_combo.blockSignals(True)
+        sub_blocked = self._sub_combo.blockSignals(True)
+        self._main_combo.setCurrentIndex(self._main_combo.findData(category))
+        self._populate_sub(category)
+        self._sub_combo.setCurrentIndex(self._sub_combo.findData(assay_type))
+        self._main_combo.blockSignals(main_blocked)
+        self._sub_combo.blockSignals(sub_blocked)
+        self._apply_assay(assay_type)
 
     # ------------------------------------------------------------------
     # UI
@@ -186,21 +203,32 @@ class AssayConfigPanel(InfoGroupBox):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        # Assay type selector + info button
-        self._combo = QComboBox()
-        for at in ASSAY_CONDITIONS:
-            self._combo.addItem(ASSAY_REGISTRY[at].display_name, userData=at)
-        self._combo.currentIndexChanged.connect(self._on_type_changed)
+        # Category selector (main) on its own row.
+        self._main_combo = QComboBox()
+        for category in self._groups:
+            self._main_combo.addItem(category, userData=category)
+        self._main_combo.currentIndexChanged.connect(self._on_main_changed)
+        layout.addWidget(self._main_combo)
 
+        # Subtype selector (dependent) + info button on the row below.
+        self._sub_combo = QComboBox()
         self._assay_info_btn = InfoButton('Assay type', '')
+        sub_row = QWidget()
+        sub_lay = QHBoxLayout(sub_row)
+        sub_lay.setContentsMargins(0, 0, 0, 0)
+        sub_lay.setSpacing(6)
+        sub_lay.addWidget(self._sub_combo, 1)
+        sub_lay.addWidget(self._assay_info_btn)
+        layout.addWidget(sub_row)
 
-        combo_row = QWidget()
-        combo_lay = QHBoxLayout(combo_row)
-        combo_lay.setContentsMargins(0, 0, 0, 0)
-        combo_lay.setSpacing(6)
-        combo_lay.addWidget(self._combo, 1)
-        combo_lay.addWidget(self._assay_info_btn)
-        layout.addWidget(combo_row)
+        # Initial selection: default assay, without emitting during construction.
+        default_category = ASSAY_REGISTRY[self._current_type].category
+        self._main_combo.blockSignals(True)
+        self._main_combo.setCurrentIndex(self._main_combo.findData(default_category))
+        self._main_combo.blockSignals(False)
+        self._populate_sub(default_category)
+        self._sub_combo.setCurrentIndex(self._sub_combo.findData(self._current_type))
+        self._sub_combo.currentIndexChanged.connect(self._on_sub_changed)
 
         # Dynamic conditions form
         self._form_widget = QWidget()
@@ -208,9 +236,22 @@ class AssayConfigPanel(InfoGroupBox):
         self._form_layout.setContentsMargins(0, 4, 0, 0)
         layout.addWidget(self._form_widget)
 
-        # Populate initial form + info text
+        # Populate initial form + info text (no signal emission — matches prior init).
         self._rebuild_form(self._current_type)
         self._refresh_assay_info(self._current_type)
+
+    def _populate_sub(self, category: str) -> None:
+        """Fill the subtype combo with the assays in ``category`` (index 0 selected).
+
+        Restores the combo's prior signal-blocked state so callers that have
+        pre-blocked it stay blocked.
+        """
+        was_blocked = self._sub_combo.blockSignals(True)
+        self._sub_combo.clear()
+        for at in self._groups[category]:
+            self._sub_combo.addItem(ASSAY_REGISTRY[at].subtype_label, userData=at)
+        self._sub_combo.setCurrentIndex(0)
+        self._sub_combo.blockSignals(was_blocked)
 
     def _refresh_assay_info(self, assay_type: AssayType) -> None:
         title, body = ASSAY_DESCRIPTIONS.get(
@@ -248,10 +289,23 @@ class AssayConfigPanel(InfoGroupBox):
     # Slots
     # ------------------------------------------------------------------
 
-    def _on_type_changed(self, idx: int) -> None:
-        at = self._combo.itemData(idx)
-        self._current_type = at
-        self._rebuild_form(at)
-        self._refresh_assay_info(at)
-        self.assay_type_changed.emit(at)
+    def _apply_assay(self, assay_type: AssayType) -> None:
+        """Adopt a newly selected assay: rebuild the form/info and announce it."""
+        self._current_type = assay_type
+        self._rebuild_form(assay_type)
+        self._refresh_assay_info(assay_type)
+        self.assay_type_changed.emit(assay_type)
         self.conditions_changed.emit()
+
+    def _on_main_changed(self, idx: int) -> None:
+        # Repopulate the subtype combo (signals blocked), then apply its first
+        # entry — exactly one assay_type_changed emission per category switch.
+        category = self._main_combo.itemData(idx)
+        self._populate_sub(category)
+        self._apply_assay(self._sub_combo.itemData(0))
+
+    def _on_sub_changed(self, idx: int) -> None:
+        at = self._sub_combo.itemData(idx)
+        if at is None:  # transient empty state during repopulation
+            return
+        self._apply_assay(at)

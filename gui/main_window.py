@@ -10,9 +10,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QPushButton,
     QStatusBar,
-    QTabWidget,
     QToolBar,
     QToolButton,
 )
@@ -22,6 +20,7 @@ from gui.fitting_session import FittingSession
 from gui.preferences import APP_NAME, ORG_NAME
 from gui.update_check import UpdateCheckWorker, is_newer
 from gui.update_dialog import UpdateAvailableDialog
+from gui.widgets.flat_tabs import FlatTabWidget
 
 
 class _SpinBoxWheelRedirect(QObject):
@@ -51,7 +50,8 @@ QToolBar {
     padding: 4px 10px;
     border-bottom: 1px solid rgba(0, 0, 0, 0.15);
 }
-QToolButton {
+/* Scoped to the toolbar so it does not leak into the tab bar's scroll arrows. */
+QToolBar QToolButton {
     padding: 5px 14px;
     min-width: 70px;
     border: 1px solid rgba(0, 0, 0, 0.22);
@@ -60,35 +60,13 @@ QToolButton {
         stop:0 rgba(255,255,255,0.95), stop:1 rgba(225,225,225,0.95));
     font-size: 12px;
 }
-QToolButton:hover {
+QToolBar QToolButton:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 rgba(255,255,255,1.0), stop:1 rgba(235,235,235,1.0));
     border-color: rgba(0, 0, 0, 0.32);
 }
-QToolButton:pressed {
+QToolBar QToolButton:pressed {
     background: rgba(195, 195, 195, 0.95);
-}
-QTabBar {
-    alignment: left;
-}
-QTabBar::tab {
-    min-width: 100px;
-    padding: 6px 16px;
-    font-size: 12px;
-    border: 1px solid rgba(0, 0, 0, 0.25);
-    border-bottom: none;
-    border-top-left-radius: 5px;
-    border-top-right-radius: 5px;
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba(235,235,235,0.95), stop:1 rgba(215,215,215,0.95));
-    margin-right: 2px;
-}
-QTabBar::tab:selected {
-    background: white;
-    border-color: rgba(0, 0, 0, 0.3);
-}
-QTabBar::tab:!selected:hover {
-    background: rgba(245,245,245,0.95);
 }
 QGroupBox {
     font-size: 14px;
@@ -156,20 +134,18 @@ class FittingMainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _setup_tabs(self) -> None:
-        self._tabs = QTabWidget()
-        self._tabs.setTabsClosable(True)
+        # Flat/minimal session tabs with an inline "+" glued after the last tab.
+        # Closable + movable; FlatTabWidget hides the sole tab's close control so
+        # the bar can never be emptied.
+        self._tabs = FlatTabWidget(
+            closable=True,
+            movable=True,
+            editable=True,
+            add_callback=self._new_session,
+            add_tooltip='New session (Ctrl+T)',
+        )
         self._tabs.tabCloseRequested.connect(self._close_tab)
-        self._tabs.setMovable(True)
-        # Don't stretch tabs to fill the bar — left-aligned, natural width
-        self._tabs.tabBar().setExpanding(False)
-
-        # "+" button to open new sessions, placed at the top-right corner
-        plus_btn = QPushButton('+')
-        plus_btn.setFixedSize(28, 28)
-        plus_btn.setToolTip('New Session (Ctrl+T)')
-        plus_btn.clicked.connect(self._new_session)
-        self._tabs.setCornerWidget(plus_btn, Qt.Corner.TopRightCorner)
-
+        self._tabs.tab_renamed.connect(self._on_tab_renamed)
         self.setCentralWidget(self._tabs)
 
     def _setup_toolbar(self) -> None:
@@ -342,7 +318,7 @@ class FittingMainWindow(QMainWindow):
         session = FittingSession()
         session.title_changed.connect(lambda title, s=session: self._rename_tab(s, title))
         session.status_message.connect(self._statusbar.showMessage)
-        idx = self._tabs.addTab(session, 'New Session')
+        idx = self._tabs.addTab(session, 'Untitled')
         self._tabs.setCurrentIndex(idx)
 
     def _close_tab(self, idx: int) -> None:
@@ -359,6 +335,11 @@ class FittingMainWindow(QMainWindow):
         idx = self._tabs.indexOf(session)
         if idx >= 0:
             self._tabs.setTabText(idx, title)
+
+    def _on_tab_renamed(self, index: int, name: str) -> None:
+        session = self._tabs.widget(index)
+        if isinstance(session, FittingSession):
+            session.set_custom_tab_name(name)
 
     # ------------------------------------------------------------------
     # Toolbar / menu slots

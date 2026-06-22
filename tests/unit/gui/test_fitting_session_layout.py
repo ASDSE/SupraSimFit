@@ -1,10 +1,11 @@
 """Regression guard: the plot widget must stay embedded after any import.
 
 A previous EnSight code path ran a modal ``QInputDialog`` mid-load, which
-detached the plot from its ``QStackedWidget`` (it overlapped the sidebar and
+detached the plot from its tab container (it overlapped the sidebar and
 floated above the Fit Curve tab). The fix removed the mid-load modal. This
-test asserts the plot widget remains embedded — index 0 of the stack, never a
-top-level window — across an EnSight import and a subsequent channel switch.
+test asserts the plot widget remains embedded — the first page of the plot
+tab widget, never a top-level window — across an EnSight import and a
+subsequent channel switch.
 """
 
 from __future__ import annotations
@@ -20,10 +21,11 @@ ENSIGHT_FIXTURE = Path(__file__).parent.parent.parent / 'data' / 'ensight' / 'tr
 
 def _assert_embedded(session):
     pw = session._plot_widget
-    stack = session._plot_stack
-    assert stack.indexOf(pw) == 0
+    tabs = session._plot_tabs
+    # The plot is the first page of the flat plot-tab widget, never detached
+    # into a top-level window.
+    assert tabs.indexOf(pw) == 0
     assert not pw.isWindow()
-    assert pw.parent() is stack
 
 
 def test_plot_stays_embedded_through_ensight_load_and_switch(qapp):
@@ -59,5 +61,22 @@ def test_sidebar_has_no_hard_maxwidth_cap(qapp):
     scroll = session._sidebar_scroll
     # No finite upper bound: maximumWidth stays at Qt's sentinel max.
     assert scroll.maximumWidth() == QWIDGETSIZE_MAX
-    # A sane floor remains so the panel can't collapse to an unusable sliver.
-    assert 0 < scroll.minimumWidth() <= 320
+
+
+def test_sidebar_reserves_content_width_so_it_never_clips(qapp):
+    """The sidebar must advertise at least its content's width to the splitter.
+
+    A plain ``QScrollArea`` reports a near-zero width hint (≈90px) regardless of
+    its content (~336px here), so a ``QSplitter`` shrinks it until the content
+    clips at the plot boundary. ``_SidebarScrollArea`` propagates the content's
+    width (plus the vertical scrollbar) as its own minimum, so the splitter
+    honors it and the plot pane yields instead — the content is structurally
+    unclippable, whatever the panels need.
+    """
+    from gui.fitting_session import FittingSession
+
+    session = FittingSession()
+    scroll = session._sidebar_scroll
+    content = scroll.widget()
+    scrollbar = scroll.verticalScrollBar().sizeHint().width()
+    assert scroll.minimumSizeHint().width() >= content.minimumSizeHint().width() + scrollbar
