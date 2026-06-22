@@ -212,4 +212,6 @@ data/results/*
 
 graphify-out/cost.json
 graphify-out/cache/
-.graphify_python 
+graphify-out/wiki/**
+.graphify_python
+
