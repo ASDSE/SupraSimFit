@@ -8,9 +8,12 @@ This project has a knowledge graph at graphify-out/ with god nodes, community st
 
 Rules:
 - For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review, or when query/path/explain don't surface enough. (There is no `wiki/` — it is not generated or tracked.)
+
+**The graph is a `main`-only artifact.** graph.json / GRAPH_REPORT.md / manifest.json are committed on `main` only and refreshed there by a local `post-merge` hook (`graphify update . --force`, then auto-commit). Each Claude session runs in its own worktree on a feature branch and **inherits main's committed graph**.
+- **Never stage or commit `graphify-out/` on a feature branch.** You may run `graphify update .` locally so your queries reflect in-session edits, but leave it uncommitted (or `git checkout -- graphify-out` to discard) — only `main` mutates the tracked graph.
+- **Multi-session / multi-agent reality:** sessions run concurrently in separate worktrees off the same `main` (shared `.git`, separate working copies). The committed graph reflects `main` at your branch point — not your branch's WIP, and not other sessions' WIP. Don't assume it's current for code changed in-session; refresh locally if it matters. Do **not** reintroduce a git merge driver for graph.json — graphify's `merge-driver`/`merge-graphs` are naive unions (no base) that resurrect deleted nodes; correctness comes only from re-extraction.
+- **Plausibility check after a merge.** The post-merge hook uses `--force`, which bypasses graphify's shrink-guard, so once a merged PR lands on `main` verify the refresh before trusting the graph: graph.json parses; node/edge counts are sane (not collapsed, not wildly inflated vs. the previous commit); nodes for files deleted in the PR are gone and new files are present; spot-check with a `graphify query` on a file the PR touched. If it looks wrong, rebuild from scratch instead of trusting the incremental result.
 
 ## Project Overview
 
