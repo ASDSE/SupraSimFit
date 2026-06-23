@@ -214,4 +214,5 @@ graphify-out/cost.json
 graphify-out/cache/
 graphify-out/wiki/**
 .graphify_python
+graph.html
 

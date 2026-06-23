@@ -12,6 +12,7 @@ assets/
 uv.lock
 memory-bank/
 .claude/
+CLAUDE.md
 LICENSE
 .vscode/
 plans/
