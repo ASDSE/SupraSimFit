@@ -134,6 +134,54 @@ def compute_mad(results: List[FitAttempt]) -> Optional[np.ndarray]:
     return mad
 
 
+def compute_mean_params(parameter_samples: dict[str, np.ndarray]) -> dict[str, float]:
+    """Mean of each parameter across the accepted-fit pool.
+
+    Classical (non-robust) counterpart to :func:`compute_median_params`. It
+    operates on the pooled ``FitResult.parameter_samples`` mapping (one flat
+    array of accepted-fit values per parameter key) rather than raw
+    ``FitAttempt`` objects, because that pool is what downstream consumers
+    (the fitted-parameters table, distribution plots) actually carry.
+
+    Parameters
+    ----------
+    parameter_samples : dict[str, np.ndarray]
+        One flat array of accepted-fit values per parameter key.
+
+    Returns
+    -------
+    dict[str, float]
+        Parameter key -> arithmetic mean of its accepted-fit values.
+    """
+    return {key: float(np.mean(values)) for key, values in parameter_samples.items()}
+
+
+def compute_std_params(parameter_samples: dict[str, np.ndarray]) -> dict[str, float]:
+    """Standard deviation of each parameter across the accepted-fit pool.
+
+    Classical (non-robust) counterpart to :func:`compute_mad`. Uses the sample
+    standard deviation (``ddof=1``) — the conventional unbiased estimator that
+    pairs with the arithmetic mean. A single accepted fit has no estimable
+    spread and returns ``0.0`` for that key, mirroring :func:`compute_mad`
+    returning 0 for a single sample.
+
+    Parameters
+    ----------
+    parameter_samples : dict[str, np.ndarray]
+        One flat array of accepted-fit values per parameter key.
+
+    Returns
+    -------
+    dict[str, float]
+        Parameter key -> sample standard deviation of its accepted-fit values.
+    """
+    std_params: dict[str, float] = {}
+    for key, values in parameter_samples.items():
+        arr = np.asarray(values, dtype=float)
+        std_params[key] = float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0
+    return std_params
+
+
 def aggregate_fits(
     results: List[FitAttempt],
     rmse_threshold_factor: float = 1.5,
