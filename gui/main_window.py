@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt6.QtCore import QCoreApplication, QEvent, QLocale, QObject, Qt
 from PyQt6.QtGui import QAction, QIcon, QKeySequence
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
+    QFileDialog,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -16,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from _version import __version__
+from gui.dialogs.simulator_dialog import SimulatorDialog
 from gui.fitting_session import FittingSession
 from gui.preferences import APP_NAME, ORG_NAME
 from gui.update_check import UpdateCheckWorker, is_newer
@@ -171,9 +175,15 @@ class FittingMainWindow(QMainWindow):
         self._act_load_style.setToolTip('Load plot style settings from a JSON file')
         self._act_load_style.triggered.connect(self._on_load_style)
 
+        self._act_save_template = QAction('Save Data Template\u2026', self)
+        self._act_save_template.setToolTip('Save an example input file showing the data format the readers accept')
+        self._act_save_template.triggered.connect(self._on_save_template)
+
         import_menu = QMenu(self)
         import_menu.addAction(self._act_load)
         import_menu.addAction(self._act_import)
+        import_menu.addSeparator()
+        import_menu.addAction(self._act_save_template)
         import_menu.addSeparator()
         import_menu.addAction(self._act_load_style)
 
@@ -184,6 +194,11 @@ class FittingMainWindow(QMainWindow):
         self._act_demo.setToolTip('Load bundled IDA demo data and run a fit with default settings')
         self._act_demo.triggered.connect(self._on_load_demo)
         tb.addAction(self._act_demo)
+
+        self._act_simulate = QAction('DBA Simulator', self)
+        self._act_simulate.setToolTip('Open the DBA forward-simulation dialog (live titration curve)')
+        self._act_simulate.triggered.connect(self._on_simulate)
+        tb.addAction(self._act_simulate)
 
         tb.addSeparator()
 
@@ -271,6 +286,7 @@ class FittingMainWindow(QMainWindow):
         file_menu.addAction(self._act_new)
 
         file_menu.addAction(self._act_load)
+        file_menu.addAction(self._act_save_template)
         file_menu.addSeparator()
         file_menu.addAction(self._act_fit)
         file_menu.addSeparator()
@@ -290,6 +306,10 @@ class FittingMainWindow(QMainWindow):
         quit_act.setShortcut(QKeySequence.StandardKey.Quit)
         quit_act.triggered.connect(self.close)
         file_menu.addAction(quit_act)
+
+        # Tools menu
+        tools_menu = mb.addMenu('&Tools')
+        tools_menu.addAction(self._act_simulate)
 
         # View menu
         view_menu = mb.addMenu('&View')
@@ -354,6 +374,39 @@ class FittingMainWindow(QMainWindow):
         session = self.active_session()
         if session:
             session.load_demo_ida()
+
+    def _on_simulate(self) -> None:
+        """Open (or re-raise) the modeless DBA forward-simulation dialog.
+
+        A single instance is kept on the window so it survives the slot
+        returning and can be re-focused instead of stacking duplicates.
+        """
+        dlg = getattr(self, '_simulator_dialog', None)
+        if dlg is None:
+            dlg = SimulatorDialog(self)
+            self._simulator_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _on_save_template(self) -> None:
+        """Write an example input file so users can see the expected format."""
+        from core.io.template import write_data_template
+
+        path, _filter = QFileDialog.getSaveFileName(
+            self,
+            'Save Data Template',
+            str(Path.home() / 'data_template.txt'),
+            'Text data (*.txt);;CSV data (*.csv)',
+        )
+        if not path:
+            return
+        try:
+            written = write_data_template(path)
+        except Exception as exc:  # surface any write failure — no silent fallback
+            QMessageBox.warning(self, 'Could not save template', f'Failed to write the template file:\n{exc}')
+            return
+        self._statusbar.showMessage(f'Saved data template → {written}')
 
     def _on_run_fit(self) -> None:
         session = self.active_session()
