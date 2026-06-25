@@ -22,7 +22,7 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
-from core.pipeline.fit_pipeline import FitConfig, FitResult
+from core.pipeline.fit_pipeline import FitConfig, FitResult, resolve_fit_curve
 from gui.app_state import SessionState
 from gui.plotting.distribution_widget import DistributionWidget
 from gui.plotting.fit_summary_widget import FitSummaryWidget
@@ -407,23 +407,24 @@ class FittingSession(QWidget):
                     self._state.fit_results = results
                     self._refresh_plot()
                 else:
-                    # Source file not available — show fit curves only
+                    # Source file not available — show fit curves only. Re-derive
+                    # the dense curve so it matches the original (see prepare_plot_data).
                     self._state.fit_results = results
                     meta = ASSAY_REGISTRY[self._state.assay_type]
-                    last = results[-1]
+                    curves = [resolve_fit_curve(r) for r in results]
                     plot_data = {
-                        'concentrations': last.x_fit.magnitude,
+                        'concentrations': curves[-1][0].magnitude,
                         'active_replicas': [],
                         'dropped_replicas': [],
                         'average': None,
                         'fits': [
                             {
-                                'x': r.x_fit.magnitude,
-                                'y': r.y_fit.magnitude,
+                                'x': x_fit.magnitude,
+                                'y': y_fit.magnitude,
                                 'label': 'Median Fit',
                                 'id': r.id,
                             }
-                            for r in results
+                            for r, (x_fit, y_fit) in zip(results, curves)
                         ],
                     }
                     self._plot_widget.update_plot(

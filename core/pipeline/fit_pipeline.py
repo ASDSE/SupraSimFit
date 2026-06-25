@@ -20,7 +20,13 @@ from typing import Any, Dict, List, Optional, Tuple, Type
 import numpy as np
 
 from core.assays.base import BaseAssay
+from core.assays.dba import DBAAssay
 from core.assays.dye_alone import DyeAloneAssay
+from core.assays.gda import GDAAssay
+from core.assays.h2g import H2GAssay
+from core.assays.hg2 import HG2Assay
+from core.assays.ida import IDAAssay
+from core.assays.registry import AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.optimizer.filters import calculate_fit_metrics, filter_fits
 from core.optimizer.multistart import multistart_minimize
@@ -43,6 +49,88 @@ def _dense_fit_curve(assay: BaseAssay, params: np.ndarray) -> tuple[Quantity, Qu
     x_mag = assay.x_data.magnitude
     x_dense = np.linspace(float(x_mag.min()), float(x_mag.max()), _FIT_CURVE_POINTS)
     return Q_(x_dense, 'M'), assay.forward_model(params, x=x_dense)
+
+
+# Concrete assay classes keyed by serialized AssayType, used to rebuild a
+# minimal assay when re-deriving the smooth display curve from a stored fit.
+# DYE_ALONE is intentionally absent: its curve is a straight line (sparse and
+# dense are visually identical) and its forward model takes regression
+# coefficients rather than equilibrium conditions.
+_RECONSTRUCTABLE_ASSAYS: Dict[AssayType, Type[BaseAssay]] = {
+    AssayType.GDA: GDAAssay,
+    AssayType.IDA: IDAAssay,
+    AssayType.DBA_HtoD: DBAAssay,
+    AssayType.DBA_DtoH: DBAAssay,
+    AssayType.DBA_HG2: HG2Assay,
+    AssayType.DBA_H2G: H2GAssay,
+}
+
+
+def _conditions_as_quantities(conditions: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-wrap serialized condition magnitudes as Quantities.
+
+    Fit-result JSON stores conditions as bare magnitudes in base units (M for
+    concentrations, 1/M for association constants); fresh fits already carry
+    them as Quantities.  Non-numeric values (e.g. the DBA ``mode`` string) pass
+    through untouched.
+    """
+    out: Dict[str, Any] = {}
+    for key, value in conditions.items():
+        if isinstance(value, Quantity) or isinstance(value, bool):
+            out[key] = value
+        elif isinstance(value, (int, float)):
+            out[key] = Q_(float(value), '1/M' if key.startswith('Ka') else 'M')
+        else:
+            out[key] = value
+    return out
+
+
+def resolve_fit_curve(result: 'FitResult') -> Tuple[Quantity, Quantity]:
+    """Return the dense Median Fit curve to draw for *result*.
+
+    The smooth line is fully determined by the fitted parameters, the assay
+    conditions, the assay type, and the data x-range — so it is re-derived here
+    on demand rather than trusted from the serialized ``x_fit``/``y_fit``.  This
+    keeps a reloaded fit visually identical to the original even when the
+    serialized curve was sampled only at the measured concentrations (older
+    exports, the linear/failed-fit paths).
+
+    Falls back to the stored ``result.x_fit``/``result.y_fit`` when the curve
+    cannot be reconstructed (unknown or linear assay type, no fitted
+    parameters, or missing/invalid conditions).
+    """
+    stored = (result.x_fit, result.y_fit)
+    if not result.parameters:
+        return stored
+    try:
+        assay_type = AssayType[result.assay_type]
+    except KeyError:
+        return stored
+    assay_cls = _RECONSTRUCTABLE_ASSAYS.get(assay_type)
+    if assay_cls is None:
+        return stored
+
+    conditions = _conditions_as_quantities(result.conditions)
+    # The assay type is authoritative for the DBA titration mode.
+    if assay_type is AssayType.DBA_HtoD:
+        conditions['mode'] = 'HtoD'
+    elif assay_type is AssayType.DBA_DtoH:
+        conditions['mode'] = 'DtoH'
+
+    try:
+        x_ref = result.x_fit.to('M')
+        assay = assay_cls(
+            x_data=x_ref,
+            y_data=Q_(np.zeros_like(x_ref.magnitude), 'au'),
+            **conditions,
+        )
+        params = np.array(
+            [float(result.parameters[k].magnitude) for k in assay.parameter_keys],
+            dtype=float,
+        )
+        return _dense_fit_curve(assay, params)
+    except (KeyError, ValueError, TypeError):
+        return stored
 
 
 @dataclass

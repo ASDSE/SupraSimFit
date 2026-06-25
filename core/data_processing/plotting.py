@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from core.data_processing.measurement_set import MeasurementSet
-from core.pipeline.fit_pipeline import FitResult
+from core.pipeline.fit_pipeline import FitResult, resolve_fit_curve
 
 
 def prepare_plot_data(
@@ -65,14 +65,15 @@ def prepare_plot_data(
     fits: list[Dict[str, Any]] = []
     if fit_results:
         for fr in fit_results:
-            label = 'Median Fit'
-            x = fr.x_fit.magnitude
-            y = fr.y_fit.magnitude
+            # Re-derive the dense curve from the fitted parameters so a reloaded
+            # fit renders the same smooth line as the original fit, regardless of
+            # the resolution serialized in x_fit/y_fit.
+            x_fit, y_fit = resolve_fit_curve(fr)
             fits.append(
                 {
-                    'x': x,
-                    'y': y,
-                    'label': label,
+                    'x': x_fit.magnitude,
+                    'y': y_fit.magnitude,
+                    'label': 'Median Fit',
                     'id': fr.id,
                 }
             )
