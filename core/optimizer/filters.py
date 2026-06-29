@@ -1,7 +1,8 @@
-"""Filtering and aggregation utilities for fit results.
+"""Filtering utilities for fit results.
 
-This module provides functions to filter fit attempts by quality metrics
-(RMSE, R²) and aggregate passing fits using robust statistics (median, MAD).
+Filter multi-start fit attempts down to the *valid pool* by quality
+metrics (R², RMSE). Collapsing that pool to a reported result lives in
+:mod:`core.optimizer.ensemble`, not here.
 """
 
 from typing import List, Optional, Tuple
@@ -63,107 +64,42 @@ def filter_by_r_squared(
     return [r for r in results if r.r_squared >= min_r_squared]
 
 
-def filter_fits(
+def select_valid_fits(
     results: List[FitAttempt],
-    rmse_threshold_factor: float = 1.5,
     min_r_squared: float = 0.9,
+    rmse_threshold_factor: Optional[float] = None,
 ) -> List[FitAttempt]:
-    """Filter fit attempts by both RMSE and R² criteria.
+    """Select the valid-fit pool kept for aggregation.
 
-    Parameters
-    ----------
-    results : List[FitAttempt]
-        Fit attempts to filter.
-    rmse_threshold_factor : float
-        Multiplier for best RMSE to set threshold.
-    min_r_squared : float
-        Minimum acceptable R² value.
+    The absolute R² floor is the primary quality gate — it is an absolute
+    RMSE gate too, since R² and RMSE are monotonically related on a fixed
+    dataset. The relative RMSE trim is an *optional* extra tightening
+    (off by default): when ``rmse_threshold_factor`` is given, fits with
+    ``RMSE > best_valid_RMSE * factor`` are also dropped.
 
-    Returns
-    -------
-    List[FitAttempt]
-        Fit attempts passing both criteria.
-    """
-    filtered = filter_by_rmse(results, rmse_threshold_factor)
-    filtered = filter_by_r_squared(filtered, min_r_squared)
-    return filtered
-
-
-def compute_median_params(results: List[FitAttempt]) -> Optional[np.ndarray]:
-    """Compute median parameters from filtered fit attempts.
-
-    Parameters
-    ----------
-    results : List[FitAttempt]
-        Fit attempts to aggregate.
-
-    Returns
-    -------
-    np.ndarray or None
-        Median parameter values, or None if no results.
-    """
-    if not results:
-        return None
-
-    param_matrix = np.array([r.params for r in results])
-    return np.median(param_matrix, axis=0)
-
-
-def compute_mad(results: List[FitAttempt]) -> Optional[np.ndarray]:
-    """Compute median absolute deviation of parameters.
-
-    MAD is a robust measure of spread, less sensitive to outliers than
-    standard deviation.
-
-    Parameters
-    ----------
-    results : List[FitAttempt]
-        Fit attempts to analyze.
-
-    Returns
-    -------
-    np.ndarray or None
-        MAD for each parameter, or None if no results.
-    """
-    if not results:
-        return None
-
-    param_matrix = np.array([r.params for r in results])
-    median_params = np.median(param_matrix, axis=0)
-    mad = np.median(np.abs(param_matrix - median_params), axis=0)
-    return mad
-
-
-def aggregate_fits(
-    results: List[FitAttempt],
-    rmse_threshold_factor: float = 1.5,
-    min_r_squared: float = 0.9,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], int]:
-    """Filter and aggregate fit results to median parameters.
+    No convergence (``success``) gate: an attempt reaching ``R² >= floor``
+    is a good fit regardless of the optimizer's status flag, and gating on
+    ``success`` would risk discarding good fits.
 
     Parameters
     ----------
     results : List[FitAttempt]
         All fit attempts.
-    rmse_threshold_factor : float
-        Multiplier for best RMSE to set threshold.
     min_r_squared : float
-        Minimum acceptable R² value.
+        Minimum acceptable R² value (primary gate).
+    rmse_threshold_factor : float, optional
+        If set, additionally keep only fits with RMSE within this multiple
+        of the best valid fit's RMSE. ``None`` disables the trim.
 
     Returns
     -------
-    Tuple[np.ndarray, np.ndarray, int]
-        (median_params, mad, n_passing). All are None/0 if no fits pass.
+    List[FitAttempt]
+        Fit attempts forming the valid pool.
     """
-    filtered = filter_fits(results, rmse_threshold_factor, min_r_squared)
-
-    if not filtered:
-        return None, None, 0
-
-    median_params = compute_median_params(filtered)
-    mad = compute_mad(filtered)
-
-    return median_params, mad, len(filtered)
+    valid = filter_by_r_squared(results, min_r_squared)
+    if rmse_threshold_factor is not None:
+        valid = filter_by_rmse(valid, rmse_threshold_factor)
+    return valid
 
 
 def calculate_fit_metrics(

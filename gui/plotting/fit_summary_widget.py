@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+import numpy as np
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QComboBox,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
@@ -14,50 +16,32 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
+from core.optimizer.ensemble import ENSEMBLE_STATISTICS, summarize
 from core.pipeline.fit_pipeline import FitResult
 from core.units import Q_, Quantity
 from gui.plotting.labels import fmt_param, fmt_unit_html
 from gui.widgets.info_button import InfoGroupBox
 
-_UNCERTAINTY_HELP_HTML = """
-<h3>Uncertainty &mdash; what the &plusmn; value means</h3>
+_PARAMS_HELP_HTML = """
+<h3>Fitted Parameters &mdash; columns</h3>
 
-<p>The &plusmn; value next to each fitted parameter tells you <b>how
-much that parameter varies</b> across all the acceptable fits the
-fitter found. A small &plusmn; means the fitter consistently lands on
-the same value; a large one means there is real spread.</p>
+<p><b>Value</b> &mdash; the single best real fit (highest R&sup2;). This is
+the fit drawn on the plot and the trustworthy number to report; it always
+corresponds to an actual fit, never a synthetic average.</p>
 
-<p>Technically, the reported value is the <i>median</i> of the
-acceptable fits, and the &plusmn; is their <i>median absolute
-deviation</i> &mdash; a robust measure of spread that is not thrown off
-by a few outliers.</p>
+<p><b>Median / MAD</b> and <b>Mean / STDEV</b> &mdash; the centre and spread
+of each parameter across <i>all</i> valid fits.
+Median&nbsp;&plusmn;&nbsp;MAD is robust to outlier fits;
+Mean&nbsp;&plusmn;&nbsp;STDEV is the ordinary average. The
+<b>Statistics</b> selector picks which pair is reported as the &plusmn; in
+the plot annotation and the export &mdash; it does not change the Value or
+the curve.</p>
 
-<h4>Average mode</h4>
-<p>Your replicas are averaged into one curve, which is then fit many
-times from different starting points. The &plusmn; reflects how
-precisely the fitter can pin down the parameter on that averaged curve.
-This is a measure of <b>numerical precision</b> &mdash; it does not
-capture replica-to-replica variation.</p>
-
-<h4>Per-replica mode</h4>
-<p>Each replica is fit independently, and every acceptable fit from
-every replica is collected together. The &plusmn; now reflects the
-full spread &mdash; including differences between replicas. This is a
-measure of <b>experimental reproducibility</b>, which is typically the
-number you would report in a publication.</p>
-
-<h4>The Median Fit curve</h4>
-<p>The curve drawn on the plot uses the median parameter values from all
-acceptable fits. It is labelled <i>Median Fit</i> because it
-represents the middle of the distribution, not the single &ldquo;best&rdquo;
-attempt.</p>
-
-<h4>Which mode am I using?</h4>
-<p>The column header tells you: <i>&plusmn;&nbsp;Uncertainty
-(optimiser)</i> in average mode, or <i>&plusmn;&nbsp;Uncertainty
-(pool&nbsp;N=&hellip;, &hellip;&nbsp;replicas)</i> in per-replica
-mode. Switch between modes in Fit Configuration &rarr; &ldquo;Fit per
-replica&rdquo;.</p>
+<p><b>Large spread on signal coefficients is expected.</b> Only
+K<sub>a</sub> is uniquely determined; I<sub>0</sub>, I<sub>D</sub>,
+I<sub>HD</sub> trade off along a degenerate manifold, so their Median/Mean
+differ from the best-fit Value and their spread is wide. That is
+informative, not an error.</p>
 """
 
 
@@ -74,12 +58,22 @@ data variance explained by the fit, from 0 to 1. Values above 0.99 are
 typical for clean fluorescence titrations; below 0.90 suggests the model
 does not capture the data shape well.</p>
 
-<p><b>Fits passing</b> &mdash; how many of the multi-start trials produced
-acceptable results (passing both the RMSE factor and minimum R&sup2;
-thresholds). A low ratio (e.g. 5/100) means most starting points led the
-optimiser to poor solutions &mdash; consider widening bounds or increasing
-the trial budget.</p>
+<p><b>Fits passing</b> &mdash; how many of the multi-start trials cleared
+the minimum&nbsp;R&sup2; floor (plus the optional RMSE trim, if enabled) and
+form the valid pool. A low ratio (e.g. 5/100) means most starting points led
+the optimiser to poor solutions &mdash; consider widening bounds or
+increasing the trial budget.</p>
 """
+
+
+# Stat columns: (header, key in ensemble.summarize() output). The active
+# (central, spread) pair is bold-emphasised per the selected statistics mode.
+_STAT_COLUMNS = (('Median', 'median'), ('MAD', 'mad'), ('Mean', 'mean'), ('STDEV', 'std'))
+_COLUMN_HEADERS = ('Parameter', 'Value') + tuple(h for h, _ in _STAT_COLUMNS) + ('Units',)
+# Header-column indices bolded for each mode's (central, spread) pair.
+_ACTIVE_COLUMNS = {'median': (2, 3), 'mean': (4, 5)}
+# Cap the Representative selector list (pools can hold hundreds of fits).
+_MAX_REP_CHOICES = 15
 
 
 class FitSummaryWidget(QWidget):
@@ -87,27 +81,67 @@ class FitSummaryWidget(QWidget):
 
     Layout
     ------
-    - ``QGroupBox("Fitted Parameters")`` with columns:
-      Parameter | Value | +/- Uncertainty | Units
+    - ``QGroupBox("Fitted Parameters")`` with a Statistics selector and
+      columns: Parameter | Value | Median | MAD | Mean | STDEV | Units.
+      ``Value`` is the representative (best) fit; Median/MAD/Mean/STDEV are
+      the spread across all valid fits. The selector chooses which
+      central+spread pair is the reported \u00b1 (annotation + export).
     - ``QGroupBox("Fit Quality")`` with RMSE, R-squared, Fits passing.
+
+    Signals
+    -------
+    statistics_mode_changed(str)
+        Emitted when the user picks a different aggregation (``"median"`` /
+        ``"mean"``). The owner recomputes the reported \u00b1 and refreshes the
+        annotation; the value, curve, and RMSE/R\u00b2 never change.
     """
+
+    statistics_mode_changed = pyqtSignal(str)
+    representative_selected = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
         self._params_group = InfoGroupBox(
             'Fitted Parameters',
-            'Uncertainty: what the \u00b1 value means',
-            _UNCERTAINTY_HELP_HTML,
+            'Fitted Parameters \u2014 columns',
+            _PARAMS_HELP_HTML,
         )
-        self._table = QTableWidget(0, 4)
-        self._uncertainty_header_default = '\u00b1 Uncertainty (optimiser)'
-        self._table.setHorizontalHeaderLabels(['Parameter', 'Value', self._uncertainty_header_default, 'Units'])
+
+        # Statistics selector: which (central \u00b1 spread) is the reported \u00b1.
+        self._stats_combo = QComboBox()
+        for key, stat in ENSEMBLE_STATISTICS.items():
+            self._stats_combo.addItem(stat.label, key)
+        self._stats_combo.setToolTip(
+            'Reported \u00b1 across the valid fits: \u00b1 MAD (robust) or \u00b1 STDEV. '
+            'Changes the annotation and export only \u2014 not the value or curve.'
+        )
+        self._stats_combo.currentIndexChanged.connect(self._on_stats_combo_changed)
+
+        # Representative selector: which actual fit is reported (drives the curve).
+        self._rep_combo = QComboBox()
+        self._rep_combo.setToolTip(
+            'Which valid fit is reported and drawn. Defaults to the best (highest R\u00b2); '
+            'pick another, or click a point in the Distributions tab.'
+        )
+        self._rep_combo.currentIndexChanged.connect(self._on_rep_combo_changed)
+
+        stats_row = QHBoxLayout()
+        stats_row.addWidget(QLabel('Statistics:'))
+        stats_row.addWidget(self._stats_combo)
+        stats_row.addSpacing(16)
+        stats_row.addWidget(QLabel('Representative:'))
+        stats_row.addWidget(self._rep_combo)
+        stats_row.addStretch(1)
+
+        self._table = QTableWidget(0, len(_COLUMN_HEADERS))
+        self._table.setHorizontalHeaderLabels(list(_COLUMN_HEADERS))
         header = self._table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         params_layout = QVBoxLayout(self._params_group)
+        params_layout.addLayout(stats_row)
         params_layout.addWidget(self._table)
 
         self._quality_group = InfoGroupBox('Fit Quality', 'Fit Quality', _FIT_QUALITY_HELP_HTML)
@@ -126,72 +160,131 @@ class FitSummaryWidget(QWidget):
     def update_result(self, result: FitResult) -> None:
         """Populate the widget from a ``FitResult``.
 
-        Resolves units from ``ASSAY_REGISTRY`` using ``result.assay_type``.
-
-        Parameters
-        ----------
-        result : FitResult
+        ``Value`` is the representative (best) fit; Median/MAD/Mean/STDEV are
+        computed from the valid-fit pool via
+        :func:`core.optimizer.ensemble.summarize`. Units are resolved from
+        ``ASSAY_REGISTRY`` using ``result.assay_type``.
         """
         assay_type = _lookup_assay_type(result.assay_type)
         units: dict[str, str] = {}
         if assay_type is not None:
             units = ASSAY_REGISTRY[assay_type].units
 
-        if result.uncertainty_source == 'replicate':  # JSON-compat magic value
-            pool_size = result.metadata.get('pool_size', result.n_passing)
-            n_reps = result.metadata.get('n_replicas_fit', '?')
-            header = f'\u00b1 Uncertainty (pool N={pool_size}, {n_reps} replicas)'
-        else:
-            header = self._uncertainty_header_default
-        self._table.setHorizontalHeaderLabels(['Parameter', 'Value', header, 'Units'])
+        self._set_combo_mode(result.statistics_mode)
+        self._populate_rep_combo(result)
 
         params = result.parameters
-        uncertainties = result.uncertainties
+        samples = result.parameter_samples
+        stats = summarize(samples) if samples else {}
+        pool_missing = not samples
 
         self._table.setRowCount(len(params))
         for row, (key, value) in enumerate(params.items()):
-            unc = uncertainties.get(key, float('nan'))
             unit_str = units.get(key, '')
-
-            lbl_name = QLabel(fmt_param(key))
-            lbl_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setCellWidget(row, 0, lbl_name)
+            self._set_cell(row, 0, fmt_param(key))
 
             val_mag = float(value.magnitude) if isinstance(value, Quantity) else float(value)
-            unc_mag = float(unc.magnitude) if isinstance(unc, Quantity) else float(unc)
+            self._set_cell(row, 1, self._fmt(val_mag, unit_str))
 
-            # Use Pint HTML formatter for proper superscript notation
-            if unit_str:
-                val_html = f'{Q_(val_mag, unit_str):.3g~H}'
-                unc_html = f'{Q_(unc_mag, unit_str):.3g~H}'
-            else:
-                val_html = f'{val_mag:.3g}'
-                unc_html = f'{unc_mag:.3g}'
-            # Strip unit from the HTML — units shown in separate column
-            val_display = val_html.rsplit(' ', 1)[0] if unit_str else val_html
-            unc_display = unc_html.rsplit(' ', 1)[0] if unit_str else unc_html
+            s = stats.get(key)
+            for col, skey in ((2, 'median'), (3, 'mad'), (4, 'mean'), (5, 'std')):
+                if s is None:
+                    self._set_cell(
+                        row,
+                        col,
+                        '—',
+                        tooltip='No fit pool stored for this result (e.g. a legacy import).',
+                    )
+                else:
+                    self._set_cell(row, col, self._fmt(s[skey], unit_str))
 
-            lbl_val = QLabel(val_display)
-            lbl_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl_val.setTextFormat(Qt.TextFormat.RichText)
-            self._table.setCellWidget(row, 1, lbl_val)
+            self._set_cell(row, 6, fmt_unit_html(unit_str))
 
-            lbl_unc = QLabel(unc_display)
-            lbl_unc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl_unc.setTextFormat(Qt.TextFormat.RichText)
-            self._table.setCellWidget(row, 2, lbl_unc)
-
-            unit_html = fmt_unit_html(unit_str)
-            lbl_unit = QLabel(unit_html)
-            lbl_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setCellWidget(row, 3, lbl_unit)
+        self._emphasize_active_pair(result.statistics_mode)
 
         rmse_html = f'{Q_(result.rmse, "au"):.3g~H}'
         self._rmse_label.setTextFormat(Qt.TextFormat.RichText)
         self._rmse_label.setText(rmse_html)
         self._r2_label.setText(f'{result.r_squared:.4f}')
-        self._passing_label.setText(f'{result.n_passing} / {result.n_total}')
+        passing = f'{result.n_passing} / {result.n_total}'
+        if pool_missing:
+            passing += '  (pool unavailable)'
+        self._passing_label.setText(passing)
         self._autosize_columns()
+
+    # ------------------------------------------------------------------
+    # Cell / selector helpers
+    # ------------------------------------------------------------------
+
+    def _fmt(self, magnitude: float, unit_str: str) -> str:
+        """Pint HTML value with the trailing unit stripped (units have a column)."""
+        if unit_str:
+            return f'{Q_(magnitude, unit_str):.3g~H}'.rsplit(' ', 1)[0]
+        return f'{magnitude:.3g}'
+
+    def _set_cell(self, row: int, col: int, html: str, *, tooltip: str | None = None) -> None:
+        lbl = QLabel(html)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setTextFormat(Qt.TextFormat.RichText)
+        if tooltip:
+            lbl.setToolTip(tooltip)
+        self._table.setCellWidget(row, col, lbl)
+
+    def _set_combo_mode(self, mode: str) -> None:
+        """Reflect *mode* in the selector without re-emitting the change."""
+        idx = self._stats_combo.findData(mode)
+        if idx < 0:
+            return
+        self._stats_combo.blockSignals(True)
+        self._stats_combo.setCurrentIndex(idx)
+        self._stats_combo.blockSignals(False)
+
+    def _on_stats_combo_changed(self, _index: int) -> None:
+        mode = self._stats_combo.currentData()
+        if mode is not None:
+            self.statistics_mode_changed.emit(mode)
+
+    def _populate_rep_combo(self, result: FitResult) -> None:
+        """List valid fits (best first by R²) so the user can pick which is reported."""
+        self._rep_combo.blockSignals(True)
+        self._rep_combo.clear()
+        quality = result.quality_samples
+        if quality and 'r_squared' in quality and 'rmse' in quality:
+            r2 = np.asarray(quality['r_squared'], dtype=float)
+            rmse = np.asarray(quality['rmse'], dtype=float)
+            order = [int(i) for i in np.argsort(rmse)]  # best (lowest RMSE = highest R²) first
+            shown = order[:_MAX_REP_CHOICES]
+            cur = result.representative_index
+            if cur is not None and cur not in shown:
+                shown.append(int(cur))
+            for rank, idx in enumerate(shown):
+                prefix = 'Best · ' if rank == 0 else ''
+                self._rep_combo.addItem(f'{prefix}R²={r2[idx]:.4f} · RMSE={rmse[idx]:.3g}', idx)
+            if cur is not None:
+                pos = self._rep_combo.findData(int(cur))
+                if pos >= 0:
+                    self._rep_combo.setCurrentIndex(pos)
+            self._rep_combo.setEnabled(True)
+        else:
+            self._rep_combo.addItem('—', -1)
+            self._rep_combo.setEnabled(False)
+        self._rep_combo.blockSignals(False)
+
+    def _on_rep_combo_changed(self, _index: int) -> None:
+        idx = self._rep_combo.currentData()
+        if idx is not None and idx >= 0:
+            self.representative_selected.emit(int(idx))
+
+    def _emphasize_active_pair(self, mode: str) -> None:
+        """Bold the header of the active (central, spread) pair."""
+        active = _ACTIVE_COLUMNS.get(mode, ())
+        for col in range(self._table.columnCount()):
+            item = self._table.horizontalHeaderItem(col)
+            if item is None:
+                continue
+            font = item.font()
+            font.setBold(col in active)
+            item.setFont(font)
 
     def _autosize_columns(self) -> None:
         # resizeColumnsToContents() ignores widgets set via setCellWidget(),
@@ -218,7 +311,7 @@ class FitSummaryWidget(QWidget):
     def clear(self) -> None:
         """Reset all fields to their empty state."""
         self._table.setRowCount(0)
-        self._table.setHorizontalHeaderLabels(['Parameter', 'Value', self._uncertainty_header_default, 'Units'])
+        self._table.setHorizontalHeaderLabels(list(_COLUMN_HEADERS))
         self._rmse_label.setText('\u2014')
         self._r2_label.setText('\u2014')
         self._passing_label.setText('\u2014')

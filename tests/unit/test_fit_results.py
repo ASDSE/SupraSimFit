@@ -40,6 +40,18 @@ def _sample_fit_result(**overrides) -> FitResult:
         fit_config={'n_trials': 100, 'rmse_threshold_factor': 1.5},
         measurement_set_id='abc123',
         source_file='data/GDA_system.txt',
+        parameter_samples={
+            'Ka_guest': np.array([1.4e6, 1.5e6, 1.6e6]),
+            'I0': np.array([-1.0, 0.0, 1.0]),
+            'I_dye_free': np.array([4.9e7, 5.0e7, 5.1e7]),
+            'I_dye_bound': np.array([2.9e8, 3.0e8, 3.1e8]),
+        },
+        quality_samples={
+            'rmse': np.array([45.0, 42.0, 48.0]),
+            'r_squared': np.array([0.997, 0.998, 0.996]),
+        },
+        representative_index=1,
+        statistics_mode='median',
     )
     defaults.update(overrides)
     return FitResult(**defaults)
@@ -97,6 +109,13 @@ class TestSerialization:
         assert restored.timestamp == original.timestamp
         np.testing.assert_array_almost_equal(restored.x_fit.magnitude, original.x_fit.magnitude)
         np.testing.assert_array_almost_equal(restored.y_fit.magnitude, original.y_fit.magnitude)
+        # Ensemble fields round-trip too
+        for k in original.parameter_samples:
+            np.testing.assert_array_almost_equal(restored.parameter_samples[k], original.parameter_samples[k])
+        for k in original.quality_samples:
+            np.testing.assert_array_almost_equal(restored.quality_samples[k], original.quality_samples[k])
+        assert restored.representative_index == original.representative_index
+        assert restored.statistics_mode == original.statistics_mode
 
     def test_from_dict_missing_optional_fields(self):
         """from_dict handles missing optional keys gracefully."""

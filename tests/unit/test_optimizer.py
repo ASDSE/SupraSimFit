@@ -7,8 +7,7 @@ Covers:
 - generate_initial_guesses: empty bounds, single/zero trials, log-scale
 - multistart_minimize: convergence, sorting, failure handling
 - filter_by_rmse / filter_by_r_squared: empty input, thresholds
-- compute_median_params / compute_mad: empty, single, known values
-- aggregate_fits: empty after filtering, single/multiple passing
+- select_valid_fits: R² floor gate, optional RMSE trim, #31 regression
 - calculate_fit_metrics: perfect fit, constant y, known values
 """
 
@@ -16,12 +15,10 @@ import numpy as np
 import pytest
 
 from core.optimizer.filters import (
-    aggregate_fits,
     calculate_fit_metrics,
-    compute_mad,
-    compute_median_params,
     filter_by_r_squared,
     filter_by_rmse,
+    select_valid_fits,
 )
 from core.optimizer.multistart import FitAttempt, generate_initial_guesses, multistart_minimize
 
@@ -242,116 +239,47 @@ class TestFilterByRSquared:
 
 
 # ---------------------------------------------------------------------------
-# compute_median_params
+# select_valid_fits
 # ---------------------------------------------------------------------------
 
 
-class TestComputeMedianParams:
-    def test_empty_returns_none(self):
-        assert compute_median_params([]) is None
-
-    def test_single_result(self):
-        a = _make_attempt([3.0, 7.0])
-        result = compute_median_params([a])
-        np.testing.assert_array_equal(result, [3.0, 7.0])
-
-    def test_odd_count(self):
-        attempts = [
-            _make_attempt([1.0]),
-            _make_attempt([3.0]),
-            _make_attempt([5.0]),
-        ]
-        result = compute_median_params(attempts)
-        assert result[0] == pytest.approx(3.0)
-
-    def test_even_count(self):
-        attempts = [
-            _make_attempt([2.0]),
-            _make_attempt([4.0]),
-        ]
-        result = compute_median_params(attempts)
-        assert result[0] == pytest.approx(3.0)
-
-
-# ---------------------------------------------------------------------------
-# compute_mad
-# ---------------------------------------------------------------------------
-
-
-class TestComputeMad:
-    def test_empty_returns_none(self):
-        assert compute_mad([]) is None
-
-    def test_single_result_is_zero(self):
-        a = _make_attempt([3.0, 7.0])
-        result = compute_mad([a])
-        np.testing.assert_array_equal(result, [0.0, 0.0])
-
-    def test_known_mad_value(self):
-        """MAD of [1, 2, 3]: median=2, |deviations|=[1, 0, 1], MAD=1."""
-        attempts = [
-            _make_attempt([1.0]),
-            _make_attempt([2.0]),
-            _make_attempt([3.0]),
-        ]
-        result = compute_mad(attempts)
-        assert result[0] == pytest.approx(1.0)
-
-    def test_asymmetric_data(self):
-        """MAD of [1, 2, 3, 100]: median=2.5, |dev|=[1.5, 0.5, 0.5, 97.5], MAD=1.0."""
-        attempts = [
-            _make_attempt([1.0]),
-            _make_attempt([2.0]),
-            _make_attempt([3.0]),
-            _make_attempt([100.0]),
-        ]
-        result = compute_mad(attempts)
-        assert result[0] == pytest.approx(1.0)
-
-
-# ---------------------------------------------------------------------------
-# aggregate_fits
-# ---------------------------------------------------------------------------
-
-
-class TestAggregateFits:
+class TestSelectValidFits:
     def test_empty_input(self):
-        median, mad, n = aggregate_fits([])
-        assert median is None
-        assert mad is None
-        assert n == 0
+        assert select_valid_fits([], min_r_squared=0.9) == []
 
-    def test_all_filtered_out(self):
-        """All results have low R² → none pass filtering."""
+    def test_r_squared_floor_is_the_gate(self):
+        """The absolute R² floor decides membership; below-floor fits drop."""
         attempts = [
-            _make_attempt([1.0], rmse=0.1, r_squared=0.5),
-            _make_attempt([2.0], rmse=0.2, r_squared=0.3),
+            _make_attempt([1.0], rmse=0.01, r_squared=0.99),
+            _make_attempt([2.0], rmse=0.02, r_squared=0.5),
         ]
-        median, mad, n = aggregate_fits(attempts, min_r_squared=0.9)
-        assert median is None
-        assert mad is None
-        assert n == 0
+        valid = select_valid_fits(attempts, min_r_squared=0.9)
+        assert len(valid) == 1
+        assert valid[0].r_squared == 0.99
 
-    def test_single_passing_fit(self):
+    def test_keeps_good_fit_the_old_relative_rmse_trim_discarded(self):
+        """Regression for #31: a genuinely good fit just outside 1.5×best RMSE
+        must NOT be discarded. The absolute R² floor keeps it; the old
+        relative-RMSE filter (default on) would have cut it."""
         attempts = [
-            _make_attempt([5.0], rmse=0.01, r_squared=0.99),
-            _make_attempt([10.0], rmse=0.5, r_squared=0.5),
+            _make_attempt([1.0], rmse=0.01, r_squared=0.999),  # best
+            _make_attempt([1.1], rmse=0.02, r_squared=0.995),  # good, but > 1.5×0.01
         ]
-        median, mad, n = aggregate_fits(attempts, min_r_squared=0.9)
-        assert n == 1
-        assert median[0] == pytest.approx(5.0)
-        np.testing.assert_array_equal(mad, [0.0])
+        valid = select_valid_fits(attempts, min_r_squared=0.99)
+        assert len(valid) == 2  # both survive on the absolute floor
+        # The old relative-RMSE trim (1.5×min) would have dropped the second.
+        assert len(filter_by_rmse(attempts, 1.5)) == 1
 
-    def test_multiple_passing(self):
+    def test_optional_rmse_trim_applies_when_set(self):
+        """When rmse_threshold_factor is given it further trims the R²-passing
+        pool relative to the best valid fit."""
         attempts = [
-            _make_attempt([4.0], rmse=0.01, r_squared=0.99),
-            _make_attempt([5.0], rmse=0.01, r_squared=0.99),
-            _make_attempt([6.0], rmse=0.01, r_squared=0.99),
+            _make_attempt([1.0], rmse=0.01, r_squared=0.999),
+            _make_attempt([1.1], rmse=0.02, r_squared=0.995),
         ]
-        median, mad, n = aggregate_fits(attempts, min_r_squared=0.9)
-        assert n == 3
-        assert median[0] == pytest.approx(5.0)
-        assert mad[0] == pytest.approx(1.0)
+        valid = select_valid_fits(attempts, min_r_squared=0.99, rmse_threshold_factor=1.5)
+        assert len(valid) == 1
+        assert valid[0].rmse == 0.01
 
 
 # ---------------------------------------------------------------------------
