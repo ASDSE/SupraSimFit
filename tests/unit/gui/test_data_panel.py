@@ -222,3 +222,52 @@ class TestJascoLoadIntegration:
         assert 'jasco_metadata' in ms.metadata
         sections = ms.metadata['jasco_metadata']['sections']
         assert sections['Measurement Information']['Ex wavelength'] == '415.0 nm'
+
+
+class TestMultiFileReplicaLoad:
+    """Selecting several files in the import dialog stacks them as replicas."""
+
+    def test_multi_select_loads_files_as_replicas(self, qapp, tmp_path, monkeypatch):
+        if not JASCO_FIXTURE.exists():
+            pytest.skip('JASCO fixture missing')
+        from gui.widgets import data_panel
+        from gui.widgets.data_panel import DataPanel
+
+        # Three copies of the same titration → three replicas sharing one grid.
+        text = JASCO_FIXTURE.read_text()
+        paths = []
+        for stem in ('rep_a', 'rep_b', 'rep_c'):
+            p = tmp_path / f'{stem}.csv'
+            p.write_text(text)
+            paths.append(str(p))
+        monkeypatch.setattr(data_panel.QFileDialog, 'getOpenFileNames', lambda *a, **k: (paths, ''))
+
+        panel = DataPanel()
+        emissions = []
+        panel.data_loaded.connect(lambda ms: emissions.append(ms))
+        panel.load_file()  # no path → dialog (monkeypatched to return 3 files)
+
+        ms = panel.measurement_set()
+        assert ms is not None
+        assert len(emissions) == 1
+        assert ms.n_replicas == 3
+        assert set(ms.replica_ids) == {'rep_a', 'rep_b', 'rep_c'}
+        assert len(ms.metadata.get('source_files', [])) == 3
+        # DataPanel shows the multi-file summary rather than a single filename.
+        assert '3 files' in panel._file_label.text()
+
+    def test_single_select_still_one_replica(self, qapp, tmp_path, monkeypatch):
+        if not JASCO_FIXTURE.exists():
+            pytest.skip('JASCO fixture missing')
+        from gui.widgets import data_panel
+        from gui.widgets.data_panel import DataPanel
+
+        p = tmp_path / 'solo.csv'
+        p.write_text(JASCO_FIXTURE.read_text())
+        monkeypatch.setattr(data_panel.QFileDialog, 'getOpenFileNames', lambda *a, **k: ([str(p)], ''))
+
+        panel = DataPanel()
+        panel.load_file()  # one file selected → original single-file path
+        ms = panel.measurement_set()
+        assert ms.n_replicas == 1
+        assert panel._file_label.text() == 'solo.csv'
