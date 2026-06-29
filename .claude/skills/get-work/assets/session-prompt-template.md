@@ -1,44 +1,26 @@
 # Session prompt template
 
-Fill one of these per work package in Phase 6 and emit it in its own fenced block so the user can copy it straight into a fresh Claude Code session. Replace every `<…>`. Drop the "Do not start until…" line for independent packages. Keep it self-contained — the target session has none of this planning context.
+Fill one of these per work package in Phase 6 and emit it in its own fenced block so the maintainer can paste it straight into a fresh Claude Code session. Replace every `<…>`.
 
-```
-You are implementing one isolated work package for the SupraSimFit project. Work in your own worktree on a feature branch and open a single PR that closes the referenced issue(s). Stay strictly within the file boundaries below so this PR merges cleanly alongside sibling packages running in parallel.
+Write the **"What I need"** section in the voice of a clear, capable user describing a need — *not* a spec. Do **not** list files, steps, or a design; the agent plans that. Keep the prompt about the need and how we'll work together, nothing more.
 
-## Issue(s)
-- #<NN> — <title> — <url>
-Read the full issue text on GitHub before starting; the issue is the source of truth.
+```text
+I'm working on SupraSimFit (the fitting-app) and need help with the following. Please **start in plan mode**: look into it, then come back with a proposed approach so we can refine it together over a few rounds. Don't write code until I've approved a plan.
 
-## Scope
-<concise statement of exactly what to build or fix — the refined definition of done agreed during planning>
+## What I need
+<The need / bug / pain point in plain user language: what's happening or what I want, and why it matters. No prescribed solution, no files, no steps.>
 
-## In-scope files / boundaries (edit ONLY these)
-- <path>
-- <path>
-New files expected under: <dir(s)>
+## Reference
+- #<NN> — <title> — <url>   (full context on the GitHub issue)
+<Sequenced packages only:> Please wait until #<dependency> has merged, then branch from the updated main before you start.
 
-## Do not touch
-- <shared hotspot files owned by other packages, e.g. "core/assays/registry.py — owned by Package A">
-<Sequenced packages only:> Do not start until PR #<N> (Package <X>) has merged; branch from the updated main so the shared files already reflect that change.
-
-## Acceptance criteria
-- [ ] <criterion from the issue>
-- [ ] <criterion from the issue>
-- [ ] Tests added/updated in NEW package-specific test files (not shared modules); `uv run pytest -k "<subset>"` passes
-- [ ] `uv run ruff check` and `uv run ruff format` are clean
-
-## Conventions
-Before starting, read CLAUDE.md and follow its worktree, graphify, commit-message, and testing conventions. In particular: do not stage or commit graphify-out/ on your feature branch.
-
-## Deliverable
-Open a PR titled "<type>: <subject>" with body containing "Closes #<NN>". Keep the entire diff within the in-scope files above. If you discover you need to edit a file outside your boundary, stop and report it rather than editing it — that file likely belongs to a parallel package.
+Once we've agreed on a plan, implement it and open a single PR that closes the referenced issue(s).
 ```
 
 ## Emission format
 
 Group the filled prompts in the Phase 6 output:
+1. **Launch now (independent):** one fenced block per package.
+2. **Sequenced (after a dependency merges):** one block per package, each with its "wait until #N has merged" line, in dependency order.
 
-1. **Launch now (independent):** one fenced block per package, no dependencies.
-2. **Sequenced (launch after a dependency merges):** one fenced block per package, each with its "Do not start until PR #N" line, listed in dependency order.
-
-Add a one-line index above the blocks (e.g. "Package A → #12; Package B → #13; Package C → #14, #15 (after A)") so the user can see the whole fan-out at a glance.
+Add a one-line index above the blocks (e.g. "Package A → #21; Package B → #22 (after A)") so the maintainer sees the whole fan-out at a glance.

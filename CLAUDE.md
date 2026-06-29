@@ -151,3 +151,13 @@ Tests verify **scientific correctness first** — reproduce a bug as a failing t
 ## Commit Messages
 
 Format: `<type>: <subject>` — types: `feat`, `fix`, `refactor`, `chore`, `docs`, `style`, `test`, `perf`, `ci`. Imperative mood, < 72 chars. Body only if not self-explanatory; focus on **why**, not what — no implementation play-by-play or historical narrative. Optional `scope:` footer. **No `Co-Authored-By` trailers.**
+
+## Pull Request Descriptions
+
+Write PR descriptions for a human reviewer, not as a changelog of the diff. Briefly cover:
+- **Why** — the need, bug, or pain point this addresses (link the issue with `Closes #N`).
+- **What changed** — the gist at a high level, not a file-by-file account; the diff already shows the code.
+- **How to verify** — what a reviewer can do to confirm it works (a command, a UI action, a test to run).
+- **Anything to flag** — a tradeoff, a follow-up, a risk, or a screenshot for UI changes.
+
+These are guidelines, not a rigid template — a few clear sentences beat an exhaustive checklist; omit what doesn't apply.
