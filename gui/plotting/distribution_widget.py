@@ -22,8 +22,10 @@ _BOX_HALF = 0.3
 _CAP_HALF = 0.2
 _JITTER_HALF = 0.25
 
-# Fit-quality metrics shown as extra distribution subplots: key -> (title, unit).
-_QUALITY_LABELS = {'rmse': ('RMSE', 'au'), 'r_squared': ('R²', '')}
+# Fit-quality metrics shown as extra distribution subplots.
+# key -> (title, uses_signal_unit): RMSE carries the assay's signal (y) unit,
+# sourced from the registry at render time; R² is dimensionless.
+_QUALITY_METRICS = {'rmse': ('RMSE', True), 'r_squared': ('R²', False)}
 
 # Fallback per-cell logical pixel size when the live widget hasn't
 # been shown yet (e.g. headless tests, dialog opened before the
@@ -500,8 +502,16 @@ class DistributionWidget(QWidget):
             )
             plot_item.addItem(marker)
 
-        title, unit = _QUALITY_LABELS.get(metric_key, (metric_key, ''))
-        base_label = f'{title} [{fmt_unit_html(unit)}]' if unit else title
+        # RMSE label unit = the assay's signal unit from the registry (the same
+        # 'a.u.' string the main plot uses). Pass it plainly — Pint's HTML
+        # formatter mis-parses the dotted 'a.u.' alias (renders 'u a').
+        title, uses_signal_unit = _QUALITY_METRICS.get(metric_key, (metric_key, False))
+        unit = ''
+        if uses_signal_unit:
+            assay_type = self._lookup_assay_type(result.assay_type)
+            if assay_type is not None:
+                unit = ASSAY_REGISTRY[assay_type].y_unit
+        base_label = f'{title} [{unit}]' if unit else title
         plot_item._y_base_label = base_label
         left_axis = plot_item.getAxis('left')
         if hasattr(left_axis, 'exponent'):
