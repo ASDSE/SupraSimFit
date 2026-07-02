@@ -7,9 +7,14 @@ condition vs a parameter (that differs across assays: ``Ka_dye`` is a condition
 for GDA/IDA but a parameter for DBA).  The categorical DBA ``mode`` is not a knob;
 it is derived from the assay subtype where the spec is assembled.
 
-A knob's *kind* drives its control: ``binding`` (association constant → log slider,
-``M⁻¹``), ``concentration`` (→ linear slider, ``M``, with a nM/µM/mM/M selector),
-or ``signal`` (signal coefficient → linear slider, ``au`` / ``au·M⁻¹``).
+Each knob carries its **canonical Pint unit** (from the registry), so display,
+dimensionality, and unit conversions all go through Pint / ``core.units`` — never a
+hand-rolled token or hardcoded factor.  From the unit we derive whether the knob is
+a concentration (→ nM/µM/mM/M selector) and whether it may be negative.  Whether it
+is *log*-scaled is a modelling fact read from the registry: because ``au`` is
+dimensionless, a signal coefficient ``au/M`` is dimensionally identical to a binding
+constant ``1/M``, so dimensionality cannot tell them apart — ``log_scale_keys`` /
+``unit_type`` can.
 """
 
 from __future__ import annotations
@@ -17,7 +22,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
+from core.units import Q_, Unit
 from gui.widgets.assay_conditions import condition_fields
+
+# Dimensionality shared by every concentration unit (M, µM, nM, …).
+_MOLAR_DIM = Q_(1, 'M').dimensionality
 
 
 @dataclass(frozen=True)
@@ -27,17 +36,23 @@ class SimKnob:
     key: str
     label: str  # HTML, e.g. 'K<sub>a,guest</sub>'
     tooltip: str
-    kind: str  # 'binding' | 'concentration' | 'signal'
-    unit: str  # base-unit token: 'M⁻¹' | 'M' | 'au' | 'au/M'
-    default: float  # in base unit
+    unit: Unit  # canonical Pint unit from the registry
+    log: bool  # association constant → log slider (registry-declared)
+    default: float  # magnitude in `unit`
     vmin: float
     vmax: float
     is_condition: bool
 
     @property
-    def log(self) -> bool:
-        """Association constants get a log slider; everything else is linear."""
-        return self.kind == 'binding'
+    def is_concentration(self) -> bool:
+        """Molar-dimensioned knobs get a nM/µM/mM/M selector (Pint dimensionality)."""
+        return self.unit.dimensionality == _MOLAR_DIM
+
+    @property
+    def allows_negative(self) -> bool:
+        """Concentrations and association constants are strictly positive; signal
+        coefficients (au, au·M⁻¹ — e.g. a calibration intercept) may be negative."""
+        return not (self.log or self.is_concentration)
 
 
 @dataclass(frozen=True)
@@ -87,27 +102,20 @@ TITRANT_RANGE: dict[AssayType, tuple[float, float]] = {
 }
 
 
-def slider_bounds(default: float, kind: str) -> tuple[float, float]:
+def slider_bounds(default: float, log: bool) -> tuple[float, float]:
     """Default slider range for a *condition* knob, derived from its default.
 
-    Concentration: ``0 .. 5×default``.  Binding (Ka): three decades either side.
-    Never derived from the registry fit search bounds.  Signal knobs are all
-    parameters and carry explicit ranges in :data:`SIM_PARAM_DEFAULTS` instead
-    (a signal coefficient has no natural scale derivable from a single default —
-    e.g. ``I_H`` defaults to 0).
+    Association constant (``log``): three decades either side.  Concentration:
+    ``0 .. 5×default``.  Never derived from the registry fit search bounds.  Signal
+    knobs are all parameters and carry explicit ranges in :data:`SIM_PARAM_DEFAULTS`
+    instead (a signal coefficient has no natural scale derivable from a single
+    default — e.g. ``I_H`` defaults to 0).
     """
-    if kind == 'binding':
+    if log:
         d = default if default > 0 else 1e6
         return (d / 1e3, d * 1e3)
-    if kind == 'concentration':
-        d = default if default > 0 else 1e-5
-        return (0.0, d * 5)
-    raise ValueError(f"slider_bounds expects 'binding'/'concentration', got {kind!r}")
-
-
-def _signal_unit(pint_units: str) -> str:
-    """Map a registry unit string to a short token: 'au / molar' → 'au/M'."""
-    return 'au/M' if 'molar' in pint_units else 'au'
+    d = default if default > 0 else 1e-5
+    return (0.0, d * 5)
 
 
 def knobs_for(assay_type: AssayType) -> list[SimKnob]:
@@ -116,20 +124,20 @@ def knobs_for(assay_type: AssayType) -> list[SimKnob]:
     knobs: list[SimKnob] = []
 
     for f in condition_fields(assay_type):
-        kind = 'binding' if f.unit_type == 'binding_constant' else 'concentration'
-        unit = 'M⁻¹' if kind == 'binding' else 'M'
-        vmin, vmax = slider_bounds(f.default, kind)
-        knobs.append(SimKnob(f.key, f.label, f.tooltip, kind, unit, f.default, vmin, vmax, is_condition=True))
+        log = f.unit_type == 'binding_constant'
+        unit = Q_(1, f.unit).units
+        vmin, vmax = slider_bounds(f.default, log)
+        knobs.append(SimKnob(f.key, f.label, f.tooltip, unit, log, f.default, vmin, vmax, is_condition=True))
 
     units = meta.units
     for key in meta.parameter_keys:
         if key not in SIM_PARAM_DEFAULTS:
             raise KeyError(f'No simulation default for parameter {key!r}; add it to SIM_PARAM_DEFAULTS.')
         spec = SIM_PARAM_DEFAULTS[key]
-        kind = 'binding' if key in meta.log_scale_keys else 'signal'
-        unit = 'M⁻¹' if kind == 'binding' else _signal_unit(units.get(key, 'au'))
+        log = key in meta.log_scale_keys
+        unit = Q_(1, units[key]).units
         knobs.append(
-            SimKnob(key, spec.label, spec.tooltip, kind, unit, spec.default, spec.vmin, spec.vmax, is_condition=False)
+            SimKnob(key, spec.label, spec.tooltip, unit, log, spec.default, spec.vmin, spec.vmax, is_condition=False)
         )
 
     return knobs

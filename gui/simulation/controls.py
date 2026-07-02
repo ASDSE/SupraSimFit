@@ -37,13 +37,10 @@ from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, NoScrollSpinBox
 
 _SLIDER_STEPS = 1000
 
-# nM/µM/mM/M selector for concentration knobs/inputs (label → factor to Molar).
-_CONC_UNITS: list[tuple[str, float]] = [
-    ('nM', 1e-9),
-    ('µM', 1e-6),
-    ('mM', 1e-3),
-    ('M', 1.0),
-]
+# nM/µM/mM/M selector for concentration knobs/inputs.  The label set is a UI
+# choice; the conversion factors are always derived from Pint (_display_factor),
+# never hardcoded.
+_CONC_LABELS: tuple[str, ...] = ('nM', 'µM', 'mM', 'M')
 _CONC_DEFAULT = 'µM'
 
 
@@ -73,7 +70,7 @@ class ParameterControl(QWidget):
         self._value = float(knob.default)
         self._vmin = float(knob.vmin)
         self._vmax = float(knob.vmax)
-        self._scale = _unit_factor(_CONC_DEFAULT) if knob.kind == 'concentration' else 1.0
+        self._scale = _display_factor(_CONC_DEFAULT, knob.unit) if knob.is_concentration else 1.0
 
         grid = QGridLayout(self)
         grid.setContentsMargins(0, 2, 0, 6)
@@ -88,20 +85,21 @@ class ParameterControl(QWidget):
         self._value_spin.setToolTip(knob.tooltip)
         grid.addWidget(name, 0, 0)
         grid.addWidget(self._value_spin, 0, 1)
-        if knob.kind == 'concentration':
+        if knob.is_concentration:
             self._unit_combo: QComboBox | None = QComboBox()
-            for label, _ in _CONC_UNITS:
-                self._unit_combo.addItem(label)
+            self._unit_combo.addItems(list(_CONC_LABELS))
             self._unit_combo.setCurrentText(_CONC_DEFAULT)
             self._unit_combo.currentTextChanged.connect(self._on_unit_changed)
             grid.addWidget(self._unit_combo, 0, 2)
         else:
             self._unit_combo = None
-            grid.addWidget(QLabel(knob.unit), 0, 2)
+            grid.addWidget(QLabel(f'{knob.unit:~P}'), 0, 2)
 
-        # Row 1: min, slider, max.
-        self._min_spin = _new_spin(vmin=(0.0 if knob.kind != 'signal' else -1e15))
-        self._max_spin = _new_spin(vmin=(0.0 if knob.kind != 'signal' else -1e15))
+        # Row 1: min, slider, max.  Concentrations/association constants stay ≥ 0;
+        # signal coefficients (incl. a calibration intercept) may go negative.
+        floor = -1e15 if knob.allows_negative else 0.0
+        self._min_spin = _new_spin(vmin=floor)
+        self._max_spin = _new_spin(vmin=floor)
         self._slider = QSlider(Qt.Orientation.Horizontal)
         self._slider.setRange(0, _SLIDER_STEPS)
         grid.addWidget(self._min_spin, 1, 0)
@@ -203,7 +201,7 @@ class ParameterControl(QWidget):
         self.changed.emit()
 
     def _on_unit_changed(self, label: str) -> None:
-        self._scale = _unit_factor(label)
+        self._scale = _display_factor(label, self._knob.unit)
         self._sync_value_spin()
         self._sync_bounds_spins()
 
@@ -226,7 +224,8 @@ class ConcentrationInput(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._scale = _unit_factor(_CONC_DEFAULT)
+        # The titrant vector is always Molar; the selector only rescales the display.
+        self._scale = _display_factor(_CONC_DEFAULT, 'M')
 
         form = QFormLayout(self)
         form.setContentsMargins(0, 0, 0, 0)
@@ -237,8 +236,7 @@ class ConcentrationInput(QWidget):
         self._mode.currentIndexChanged.connect(self._on_mode_changed)
 
         self._unit = QComboBox()
-        for label, _ in _CONC_UNITS:
-            self._unit.addItem(label)
+        self._unit.addItems(list(_CONC_LABELS))
         self._unit.setCurrentText(_CONC_DEFAULT)
         self._unit.currentTextChanged.connect(self._on_unit_changed)
         mode_row = QWidget()
@@ -345,7 +343,7 @@ class ConcentrationInput(QWidget):
         self.changed.emit()
 
     def _on_unit_changed(self) -> None:
-        self._scale = _unit_factor(self._unit.currentText())
+        self._scale = _display_factor(self._unit.currentText(), 'M')
         self.changed.emit()
 
     def _apply_mode_visibility(self, mode: str) -> None:
@@ -434,8 +432,13 @@ class NoiseControl(QWidget):
 # ---------------------------------------------------------------------------
 
 
-def _unit_factor(label: str) -> float:
-    return next((f for lbl, f in _CONC_UNITS if lbl == label), 1.0)
+def _display_factor(label: str, base) -> float:
+    """Pint-derived scale: magnitude of ``1 <label>`` expressed in ``base`` units.
+
+    ``base`` is a pint ``Unit`` (a knob's canonical unit) or a unit string. The
+    shared registry (``core.units``) is the single source of every factor.
+    """
+    return float(Q_(1, label).to(base).magnitude)
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:

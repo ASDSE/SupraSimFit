@@ -13,10 +13,16 @@ import pytest
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.simulation import build_concentration_vector, simulate_signal
-from gui.simulation.controls import ConcentrationInput, ParameterControl
-from gui.simulation.sim_knob import SimKnob, knobs_for
+from core.units import Q_
+from gui.simulation.controls import ConcentrationInput, ParameterControl, _display_factor
+from gui.simulation.sim_knob import knobs_for
 from gui.simulation.simulation_panel import SimulationPanel
 from gui.widgets.assay_conditions import condition_fields
+
+
+def _knob(assay_type, key):
+    """Fetch a real registry-sourced knob (carries its canonical Pint unit)."""
+    return next(k for k in knobs_for(assay_type) if k.key == key)
 
 
 def test_knob_set_is_registry_union_without_mode(qapp):
@@ -41,29 +47,44 @@ def test_dba_treats_ka_dye_as_parameter(qapp):
 
 
 def test_log_slider_maps_geometrically(qapp):
-    knob = SimKnob('Ka', 'Ka', '', 'binding', 'M⁻¹', 1e6, 1e3, 1e9, is_condition=False)
+    knob = _knob(AssayType.GDA, 'Ka_guest')  # association constant → log slider, [1e3, 1e9]
     c = ParameterControl(knob)
     c._slider.setValue(0)
-    assert c.value() == pytest.approx(1e3, rel=1e-3)
+    assert c.value() == pytest.approx(knob.vmin, rel=1e-3)
     c._slider.setValue(1000)
-    assert c.value() == pytest.approx(1e9, rel=1e-3)
+    assert c.value() == pytest.approx(knob.vmax, rel=1e-3)
     c._slider.setValue(500)  # midpoint of a log slider is the geometric mean
-    assert c.value() == pytest.approx(math.sqrt(1e3 * 1e9), rel=1e-2)
+    assert c.value() == pytest.approx(math.sqrt(knob.vmin * knob.vmax), rel=1e-2)
 
 
 def test_linear_slider_maps_arithmetically(qapp):
-    knob = SimKnob('I', 'I', '', 'signal', 'au/M', 5e7, 0.0, 1e8, is_condition=False)
+    knob = _knob(AssayType.GDA, 'I_dye_free')  # signal coefficient → linear slider
     c = ParameterControl(knob)
     c._slider.setValue(500)
-    assert c.value() == pytest.approx(5e7, rel=1e-2)
+    assert c.value() == pytest.approx((knob.vmin + knob.vmax) / 2, rel=1e-2)
 
 
 def test_signal_coefficient_allows_negative(qapp):
     """A calibration intercept must be settable below zero (registry widget cannot)."""
-    knob = next(k for k in knobs_for(AssayType.DYE_ALONE) if k.key == 'intercept')
+    knob = _knob(AssayType.DYE_ALONE, 'intercept')
     c = ParameterControl(knob)
     c.load_state({'value': -250.0, 'min': -1e4, 'max': 1e4})
     assert c.value() == pytest.approx(-250.0)
+
+
+def test_concentration_unit_switch_preserves_physical_quantity(qapp):
+    """Switching a concentration knob's display unit must not change the physical value."""
+    c = ParameterControl(_knob(AssayType.GDA, 'h0'))  # concentration → has a nM/µM/mM/M selector
+    base = c.quantity().to('M').magnitude
+    for unit in ('nM', 'mM', 'M', 'µM'):
+        c._unit_combo.setCurrentText(unit)
+        assert c.quantity().to('M').magnitude == pytest.approx(base, rel=1e-9)
+
+
+def test_display_factor_is_pint_derived(qapp):
+    """Concentration scale factors come from Pint (core.units), not hardcoded literals."""
+    assert _display_factor('nM', 'M') == Q_(1, 'nM').to('M').magnitude
+    assert _display_factor('mM', 'M') == Q_(1, 'mM').to('M').magnitude
 
 
 def test_concentration_log_mode_round_trips_to_geometric_vector(qapp):
