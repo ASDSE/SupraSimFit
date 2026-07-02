@@ -65,9 +65,10 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
     Each file is read with :func:`load_measurements` and contributes its
     replica(s) to a combined long-format frame. Replica labels are made
     globally unique from the file stem, so the source of each replicate stays
-    visible downstream. The combined frame is ready for
-    :meth:`MeasurementSet.from_dataframe`, which enforces the shared
-    concentration grid across replicas (a genuine mismatch raises there).
+    visible downstream. Files must share one concentration grid: a differing
+    number of titration points is rejected here with a plain-language,
+    file-named message, and any remaining value mismatch is caught by
+    :meth:`MeasurementSet.from_dataframe`.
 
     Parameters
     ----------
@@ -86,14 +87,16 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
     Raises
     ------
     ValueError
-        If *paths* is empty, or a file carries a ``channel`` column or
-        placeholder concentrations.
+        If *paths* is empty; a file carries a ``channel`` column or placeholder
+        concentrations; or the files do not all have the same number of
+        titration points.
     """
     if not paths:
         raise ValueError('No files provided')
 
     frames: list[pd.DataFrame] = []
     stem_counts: dict[str, int] = {}
+    point_counts: list[tuple[str, int]] = []
     for raw in paths:
         path = Path(raw)
         df = load_measurements(path)
@@ -108,6 +111,7 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
                 'column); batch replica import expects files that carry their own '
                 'concentrations. Import it individually and enter concentrations.'
             )
+        point_counts.append((path.name, len(df) // max(int(df['replica'].nunique()), 1)))
 
         # Provenance-carrying, globally unique replica label per file.
         seen = stem_counts.get(path.stem, 0)
@@ -121,6 +125,19 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
         else:
             out['replica'] = label
         frames.append(out)
+
+    # Replicate files must describe the same titration — i.e. share one
+    # concentration grid. Catch a differing number of titration points here,
+    # with a plain-language, file-named message, rather than letting the raw
+    # array-shape mismatch surface from downstream numpy code.
+    if len({n for _, n in point_counts}) > 1:
+        listing = '\n'.join(f'• {name} — {n} points' for name, n in point_counts)
+        raise ValueError(
+            'These files have different numbers of titration points, so they '
+            f'cannot be loaded as replicates of one measurement:\n\n{listing}\n\n'
+            'Replicates must share the same titration points. Select files from '
+            'the same measurement, or files with matching point counts.'
+        )
 
     return pd.concat(frames, ignore_index=True)
 

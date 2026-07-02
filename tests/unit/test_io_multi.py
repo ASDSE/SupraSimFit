@@ -66,6 +66,20 @@ def test_mismatched_grid_rejected(tmp_path):
         MeasurementSet.from_dataframe(combined)
 
 
+def test_mismatched_point_counts_rejected(tmp_path):
+    """Different numbers of titration points are rejected with a plain-language,
+    file-named message — not a raw numpy broadcast error (issue: batch import)."""
+    a = _write(tmp_path / 'run_a.csv', [0.0, 1.0, 2.0], [10.0, 20.0, 30.0])  # 3 points
+    b = _write(tmp_path / 'run_b.csv', [0.0, 1.0, 2.0, 3.0], [10.0, 20.0, 30.0, 40.0])  # 4 points
+    with pytest.raises(ValueError) as excinfo:
+        load_measurements_multi([a, b])
+    msg = str(excinfo.value)
+    assert 'titration points' in msg
+    assert 'run_a.csv' in msg and 'run_b.csv' in msg
+    assert '3' in msg and '4' in msg
+    assert 'broadcast' not in msg  # the cryptic numpy error must not leak through
+
+
 def test_duplicate_stems_disambiguated(tmp_path):
     """Same file name in different folders → distinct replica IDs, no collision."""
     (tmp_path / 'one').mkdir()

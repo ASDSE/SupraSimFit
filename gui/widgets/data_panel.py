@@ -303,7 +303,7 @@ class DataPanel(InfoGroupBox):
                 source_files=[str(p) for p in paths],
             )
         except Exception as exc:
-            QMessageBox.warning(self, 'Load Error', f'Could not load files:\n{exc}')
+            QMessageBox.warning(self, 'Load Error', str(exc))
             return
 
         self._multi_channel_df = None
