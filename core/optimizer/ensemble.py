@@ -122,15 +122,21 @@ def select_representative_index(quality: dict[str, np.ndarray]) -> int:
     Parameters
     ----------
     quality : dict[str, np.ndarray]
-        Must contain ``'r_squared'`` (and conventionally ``'rmse'``),
-        one value per valid trial.
+        Must contain ``'r_squared'`` and ``'rmse'``, one value per valid
+        trial (RMSE breaks R² ties).
 
     Returns
     -------
     int
         Index of the representative trial.
     """
-    return int(np.argmax(quality['r_squared']))
+    # Highest R², ties broken by lowest RMSE. On a fixed dataset R² and RMSE
+    # are monotone (argmax R² == argmin RMSE); the tiebreak only matters when
+    # R² collapses (e.g. constant y → ss_tot == 0 → every R² == 0), where RMSE
+    # still identifies the genuinely best fit.
+    r2 = np.asarray(quality['r_squared'], dtype=float)
+    rmse = np.asarray(quality['rmse'], dtype=float)
+    return int(np.lexsort((rmse, -r2))[0])
 
 
 def collapse(

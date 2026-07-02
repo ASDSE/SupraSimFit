@@ -156,3 +156,25 @@ class TestSerialization:
         d = r.to_dict()
         restored = FitResult.from_dict(d)
         assert np.isnan(restored.uncertainties['Ka_guest'].magnitude)
+
+
+class TestEnsembleMutators:
+    """Fail-fast contracts on the public pipeline mutation helpers."""
+
+    def test_apply_statistics_mode_rejects_unknown_mode(self):
+        from core.pipeline.fit_pipeline import apply_statistics_mode
+
+        r = _sample_fit_result()
+        before = dict(r.uncertainties)
+        with pytest.raises(ValueError, match='Unknown statistics mode'):
+            apply_statistics_mode(r, 'bogus')
+        # Rejected up front — no partial mutation.
+        assert r.statistics_mode == 'median'
+        assert r.uncertainties == before
+
+    def test_select_representative_rejects_out_of_range_index(self):
+        from core.pipeline.fit_pipeline import select_representative
+
+        r = _sample_fit_result()  # pool size 3
+        with pytest.raises(ValueError, match='out of range'):
+            select_representative(r, None, 99)  # index validated before the assay is used

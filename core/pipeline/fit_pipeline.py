@@ -23,7 +23,7 @@ import numpy as np
 from core.assays.base import BaseAssay
 from core.assays.dye_alone import DyeAloneAssay
 from core.data_processing.measurement_set import MeasurementSet
-from core.optimizer.ensemble import DEFAULT_STATISTICS_MODE, central_spread, collapse
+from core.optimizer.ensemble import DEFAULT_STATISTICS_MODE, ENSEMBLE_STATISTICS, central_spread, collapse
 from core.optimizer.filters import calculate_fit_metrics, select_valid_fits
 from core.optimizer.multistart import multistart_minimize
 from core.optimizer.scaling import ParamScaler
@@ -463,17 +463,21 @@ def apply_statistics_mode(result: FitResult, mode: str) -> None:
 
     if result.parameter_samples is None:
         raise ValueError('Cannot set statistics mode: result has no parameter_samples pool.')
+    if mode not in ENSEMBLE_STATISTICS:
+        raise ValueError(f"Unknown statistics mode '{mode}'. Valid modes: {sorted(ENSEMBLE_STATISTICS)}.")
 
     try:
         units = dict(ASSAY_REGISTRY[AssayType[result.assay_type]].units)
     except KeyError:
         units = {}
 
-    result.statistics_mode = mode
-    result.uncertainties = {
+    # Compute before mutating so a failure can't leave the result half-updated.
+    uncertainties = {
         key: Q_(central_spread(samples, mode)[1], units.get(key, 'dimensionless'))
         for key, samples in result.parameter_samples.items()
     }
+    result.statistics_mode = mode
+    result.uncertainties = uncertainties
 
 
 def select_representative(result: FitResult, assay: BaseAssay, index: int) -> None:
@@ -497,6 +501,10 @@ def select_representative(result: FitResult, assay: BaseAssay, index: int) -> No
     """
     if result.parameter_samples is None:
         raise ValueError('Cannot select a representative: result has no parameter_samples pool.')
+
+    pool_size = len(next(iter(result.parameter_samples.values())))
+    if not 0 <= index < pool_size:
+        raise ValueError(f'Representative index {index} out of range for pool of size {pool_size}.')
 
     rep_params = np.array([result.parameter_samples[k][index] for k in assay.parameter_keys], dtype=float)
     rmse, r_squared, x_fit, y_fit = representative_view(assay, rep_params)
@@ -592,15 +600,18 @@ def fit_assay(
                 best.rmse,
                 best.r_squared,
             )
+            hint = (
+                'All fit attempts were rejected by the quality filter. Try: (1) lowering min_r_squared, '
+                '(2) increasing n_trials, or (3) reviewing parameter bounds.'
+            )
+            if config.rmse_threshold_factor is not None:
+                hint += ' The optional RMSE-factor trim is also active — disabling it may help.'
             diag = {
                 'error': 'No fits passed filtering criteria',
                 'best_attempt_rmse': best.rmse,
                 'best_attempt_r_squared': best.r_squared,
                 'best_attempt_params': assay.params_to_dict(best.params),
-                'hint': (
-                    'All fit attempts were rejected by the quality filter. Try: (1) lowering min_r_squared, '
-                    '(2) increasing n_trials, (3) reviewing parameter bounds, or (4) disabling the RMSE-factor trim.'
-                ),
+                'hint': hint,
             }
         else:
             logger.warning(

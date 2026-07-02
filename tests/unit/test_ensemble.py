@@ -56,6 +56,11 @@ class TestSelectRepresentativeIndex:
         idx = ensemble.select_representative_index(quality)
         assert idx == int(np.argmin(quality['rmse']))
 
+    def test_r_squared_ties_broken_by_lowest_rmse(self):
+        """When R² ties (e.g. all 0 for constant y, ss_tot==0), pick lowest RMSE."""
+        quality = {'rmse': np.array([0.9, 0.4, 0.7]), 'r_squared': np.array([0.0, 0.0, 0.0])}
+        assert ensemble.select_representative_index(quality) == 1
+
 
 # ---------------------------------------------------------------------------
 # collapse
