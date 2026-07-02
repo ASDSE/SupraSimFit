@@ -26,7 +26,7 @@ from core.data_processing.concentration import (
     save_concentration_vector,
 )
 from core.data_processing.measurement_set import MeasurementSet
-from core.io import load_measurements
+from core.io import load_measurements, load_measurements_multi
 from core.io.formats.bmg_reader import BMG_METADATA_KEY, BMG_PLACEHOLDER_KEY
 from core.io.formats.ensight_reader import (
     ENSIGHT_CHANNEL_COLUMN,
@@ -64,6 +64,11 @@ what you load here.</p>
 or <b>Demo IDA</b> for a bundled example. The format is detected from the
 file. Supported: {ext_list} &mdash; including JASCO and PerkinElmer EnSight
 CSVs and BMG plate exports.</p>
+
+<p><b>Multiple replicates:</b> select several files in the import dialog to load
+them as replicas in one session (e.g. repeated JASCO titrations). They must
+share the same concentration grid; a file whose grid differs is rejected with
+an explanation.</p>
 
 <p><b>Your own data &mdash; quickest path:</b> a plain CSV with a header row,
 concentration in the first column and signal in the second:</p>
@@ -131,6 +136,7 @@ class DataPanel(InfoGroupBox):
         )
         self._ms: MeasurementSet | None = None
         self._source_path: str | None = None
+        self._source_paths: list[str] = []
         self._face_values: np.ndarray = np.array([], dtype=np.float64)
         self._imported_unit: str = DEFAULT_IMPORTED_UNIT
         self._suppress_cell_signal: bool = False
@@ -226,18 +232,31 @@ class DataPanel(InfoGroupBox):
     # ------------------------------------------------------------------
 
     def load_file(self, path: str | None = None) -> None:
-        """Load a measurement file, optionally bypassing the dialog.
+        """Load one or more measurement files.
 
-        The import path is identical for every format: parse → build the
-        MeasurementSet → emit. No modal dialog runs mid-load. When the
-        parsed frame carries multiple channels, the full frame is kept in
-        memory and the first channel is shown; the Channel combo lets the
-        user switch without re-reading the file.
+        From the dialog the user may select several files; each is stacked as a
+        replica in a single MeasurementSet (they must share one concentration
+        grid). A single file — or a programmatic ``path`` — keeps the original
+        per-format behaviour, including multi-channel handling.
         """
-        if path is None:
-            path, _ = QFileDialog.getOpenFileName(self, 'Load Measurement File', '', _build_file_filter())
-        if not path:
+        if path is not None:
+            self._load_single(path)
             return
+        paths, _ = QFileDialog.getOpenFileNames(self, 'Import Data', '', _build_file_filter())
+        if not paths:
+            return
+        if len(paths) == 1:
+            self._load_single(paths[0])
+        else:
+            self._load_multiple(paths)
+
+    def _load_single(self, path: str) -> None:
+        """Load a single file: parse → build the MeasurementSet → emit.
+
+        No modal dialog runs mid-load. When the parsed frame carries multiple
+        channels, the full frame is kept in memory and the first channel is
+        shown; the Channel combo lets the user switch without re-reading.
+        """
         try:
             df = load_measurements(path)
         except Exception as exc:
@@ -258,12 +277,43 @@ class DataPanel(InfoGroupBox):
         self._channels = channels
         self._ms = ms
         self._source_path = path
+        self._source_paths = [path]
         # Numbers in the file are taken as face values (no implicit unit
         # conversion). Default the Imported Unit to M, which matches the
         # historical loader behavior and preserves fits on existing files.
         self._face_values = np.asarray(ms.concentrations, dtype=np.float64).copy()
         self._imported_unit = DEFAULT_IMPORTED_UNIT
         self._populate_channel_combo(df)
+        self._refresh_after_load()
+        self.data_loaded.emit(ms)
+
+    def _load_multiple(self, paths: list[str]) -> None:
+        """Stack several files as replicas in one MeasurementSet.
+
+        Replica labels come from the file stems (provenance). All files must
+        share one concentration grid — a genuine mismatch is rejected by
+        ``MeasurementSet.from_dataframe`` and surfaced as a warning. Batch
+        import is single-curve only; multi-channel files are refused upstream.
+        """
+        try:
+            combined = load_measurements_multi(paths)
+            ms = MeasurementSet.from_dataframe(
+                combined,
+                source_file=str(paths[0]),
+                source_files=[str(p) for p in paths],
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, 'Load Error', str(exc))
+            return
+
+        self._multi_channel_df = None
+        self._channels = []
+        self._ms = ms
+        self._source_path = str(paths[0])
+        self._source_paths = [str(p) for p in paths]
+        self._face_values = np.asarray(ms.concentrations, dtype=np.float64).copy()
+        self._imported_unit = DEFAULT_IMPORTED_UNIT
+        self._populate_channel_combo(combined)
         self._refresh_after_load()
         self.data_loaded.emit(ms)
 
@@ -353,6 +403,7 @@ class DataPanel(InfoGroupBox):
     def clear(self) -> None:
         self._ms = None
         self._source_path = None
+        self._source_paths = []
         self._face_values = np.array([], dtype=np.float64)
         self._multi_channel_df = None
         self._channels = []
@@ -529,8 +580,13 @@ class DataPanel(InfoGroupBox):
     def _update_info(self) -> None:
         if self._ms is None:
             return
-        name = Path(self._source_path).name if self._source_path else '?'
-        self._file_label.setText(name)
+        if len(self._source_paths) > 1:
+            names = [Path(p).name for p in self._source_paths]
+            self._file_label.setText(f'{len(names)} files → {self._ms.n_replicas} replicas')
+            self._file_label.setToolTip('\n'.join(names))
+        else:
+            self._file_label.setText(Path(self._source_path).name if self._source_path else '?')
+            self._file_label.setToolTip('')
         self._info_label.setText(f'{self._ms.n_points} points × {self._ms.n_replicas} replicas')
 
     def _set_concentration_controls_enabled(self, enabled: bool) -> None:
