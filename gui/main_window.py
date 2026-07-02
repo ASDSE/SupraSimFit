@@ -99,6 +99,7 @@ class FittingMainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._update_worker: UpdateCheckWorker | None = None
+        self._sim_window: QMainWindow | None = None
         self._set_title()
         self.resize(1280, 820)
         self._setup_tabs()
@@ -184,6 +185,11 @@ class FittingMainWindow(QMainWindow):
         self._act_demo.setToolTip('Load bundled IDA demo data and run a fit with default settings')
         self._act_demo.triggered.connect(self._on_load_demo)
         tb.addAction(self._act_demo)
+
+        self._act_simulate = QAction('Simulate…', self)
+        self._act_simulate.setToolTip('Open the forward-simulation applet for experiment design (no data needed)')
+        self._act_simulate.triggered.connect(self._on_simulate)
+        tb.addAction(self._act_simulate)
 
         tb.addSeparator()
 
@@ -273,6 +279,7 @@ class FittingMainWindow(QMainWindow):
         file_menu.addAction(self._act_load)
         file_menu.addSeparator()
         file_menu.addAction(self._act_fit)
+        file_menu.addAction(self._act_simulate)
         file_menu.addSeparator()
         file_menu.addAction(self._act_export_all)
         file_menu.addSeparator()
@@ -354,6 +361,16 @@ class FittingMainWindow(QMainWindow):
         session = self.active_session()
         if session:
             session.load_demo_ida()
+
+    def _on_simulate(self) -> None:
+        """Open (or re-raise) the non-modal forward-simulation applet."""
+        if self._sim_window is None:
+            from gui.simulation.simulation_window import SimulationWindow
+
+            self._sim_window = SimulationWindow(self)
+        self._sim_window.show()
+        self._sim_window.raise_()
+        self._sim_window.activateWindow()
 
     def _on_run_fit(self) -> None:
         session = self.active_session()

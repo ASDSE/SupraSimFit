@@ -22,6 +22,7 @@ import pint
 ureg = pint.UnitRegistry()
 Q_ = ureg.Quantity
 Quantity = pint.Quantity
+Unit = pint.Unit
 
 # Custom unit definitions
 ureg.define('micromolar = 1e-6 * molar = uM = µM')
