@@ -297,10 +297,10 @@ class TestFailureHandling:
 
 
 class TestPoolAggregation:
-    """The per-replica aggregate must carry the flat pool of every
-    passing trial from every replica in `parameter_samples`, and the
-    reported parameters/uncertainties must be the pool's median/MAD —
-    NOT median-of-per-replica-medians."""
+    """The per-replica aggregate must carry the flat pool of every valid
+    trial from every replica in `parameter_samples`. The reported value is
+    the representative real trial (a row of the pool, not a per-parameter
+    aggregate), and the default-mode uncertainty is the pool's MAD."""
 
     def test_aggregate_has_parameter_samples_pool(self, noisy_pr_result):
         result = noisy_pr_result
@@ -325,13 +325,18 @@ class TestPoolAggregation:
             for k in rf.parameters.keys():
                 assert len(rf.parameter_samples[k]) == rf.n_passing
 
-    def test_pool_median_matches_reported_parameter(self, noisy_pr_result):
+    def test_reported_value_is_representative_uncertainty_is_pool_mad(self, noisy_pr_result):
         result = noisy_pr_result
+        assert result.statistics_mode == 'median'
+        ridx = result.representative_index
         for k, q in result.parameters.items():
             pool = result.parameter_samples[k]
+            # Reported value = the representative real trial (a row of the pool),
+            # NOT a per-parameter median that could land off the manifold.
+            assert float(q.magnitude) == pytest.approx(float(pool[ridx]), rel=1e-12)
+            # Default (median) mode → reported ± is the pool MAD.
             expected_median = float(np.median(pool))
             expected_mad = float(np.median(np.abs(pool - expected_median)))
-            assert float(q.magnitude) == pytest.approx(expected_median, rel=1e-12)
             assert float(result.uncertainties[k].magnitude) == pytest.approx(expected_mad, rel=1e-12)
 
     def test_serialization_round_trip_of_parameter_samples(self, noisy_pr_result):
@@ -359,7 +364,7 @@ class TestPoolAggregation:
         assert result.parameter_samples is not None
         for k, arr in result.parameter_samples.items():
             assert len(arr) == result.n_passing
-        # And the reported median/MAD agree with the pool
+        # Reported value = the representative real trial, not a per-param median.
+        ridx = result.representative_index
         for k, q in result.parameters.items():
-            pool = result.parameter_samples[k]
-            assert float(q.magnitude) == pytest.approx(float(np.median(pool)), rel=1e-12)
+            assert float(q.magnitude) == pytest.approx(float(result.parameter_samples[k][ridx]), rel=1e-12)

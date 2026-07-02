@@ -22,7 +22,7 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
-from core.pipeline.fit_pipeline import FitConfig, FitResult
+from core.pipeline.fit_pipeline import FitConfig, FitResult, apply_statistics_mode, select_representative
 from gui.app_state import SessionState
 from gui.plotting.distribution_widget import DistributionWidget
 from gui.plotting.fit_summary_widget import FitSummaryWidget
@@ -420,7 +420,7 @@ class FittingSession(QWidget):
                             {
                                 'x': r.x_fit.magnitude,
                                 'y': r.y_fit.magnitude,
-                                'label': 'Median Fit',
+                                'label': 'Best Fit',
                                 'id': r.id,
                             }
                             for r in results
@@ -660,6 +660,11 @@ class FittingSession(QWidget):
         self._style_widget.widget.style_changed.connect(self._plot_widget.apply_style)
         self._style_widget.widget.style_changed.connect(self._distribution_widget.apply_style)
 
+        # Ensemble interaction: switch reported ± / pick a different representative.
+        self._summary_widget.statistics_mode_changed.connect(self._on_statistics_mode_changed)
+        self._summary_widget.representative_selected.connect(self._on_representative_selected)
+        self._distribution_widget.representative_selected.connect(self._on_representative_selected)
+
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
@@ -758,6 +763,38 @@ class FittingSession(QWidget):
     def _on_fit_error(self, msg: str) -> None:
         QMessageBox.warning(self, 'Fit Error', msg)
         self.status_message.emit(f'Fit failed: {msg}')
+
+    def _on_statistics_mode_changed(self, mode: str) -> None:
+        """Switch the reported ± between median±MAD and mean±STDEV (no re-fit)."""
+        results = self._state.fit_results
+        if not results:
+            return
+        result = results[-1]
+        if result.parameter_samples is None:
+            return
+        apply_statistics_mode(result, mode)
+        self._summary_widget.update_result(result)
+        # Refresh the plot annotation so its ± reflects the new mode.
+        self._plot_widget.set_fit_results(self._state.fit_results)
+
+    def _on_representative_selected(self, index: int) -> None:
+        """Report a different valid fit (from a distribution click or the selector)."""
+        ms = self._state.measurement_set
+        results = self._state.fit_results
+        if ms is None or not results:
+            return
+        result = results[-1]
+        if result.parameter_samples is None:
+            return
+        assay = ms.to_assay(
+            self._assay_panel.get_assay_class(),
+            conditions=self._assay_panel.current_conditions(),
+            use_average=True,
+        )
+        select_representative(result, assay, index)
+        self._refresh_plot()
+        self._summary_widget.update_result(result)
+        self._distribution_widget.update_result(result)
 
     # ------------------------------------------------------------------
     # Helpers

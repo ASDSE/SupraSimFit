@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QStackedLayout, QWidget
 
@@ -21,6 +21,11 @@ from gui.widgets.replica_panel import _display_label
 _BOX_HALF = 0.3
 _CAP_HALF = 0.2
 _JITTER_HALF = 0.25
+
+# Fit-quality metrics shown as extra distribution subplots.
+# key -> (title, uses_signal_unit): RMSE carries the assay's signal (y) unit,
+# sourced from the registry at render time; R² is dimensionless.
+_QUALITY_METRICS = {'rmse': ('RMSE', True), 'r_squared': ('R²', False)}
 
 # Fallback per-cell logical pixel size when the live widget hasn't
 # been shown yet (e.g. headless tests, dialog opened before the
@@ -86,10 +91,26 @@ class DistributionWidget(QWidget):
 
     **Average mode**: x-axis labeled "Pool of Fits" with no tick marks.
     One box-whisker at x=0 for the single optimizer pool.
+
+    Two extra subplots show the **RMSE** and **R²** distributions across the
+    valid fits; clicking a point in either selects that fit as the reported
+    representative (emits :attr:`representative_selected`).
+
+    Signals
+    -------
+    representative_selected(int)
+        Emitted with a pool index when the user clicks a fit-quality point.
     """
+
+    representative_selected = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setToolTip(
+            'Distribution of each parameter and of fit quality (RMSE, R²) across '
+            'all valid fits. Click a point in the RMSE or R² plot to report that '
+            'fit instead of the default best.'
+        )
         self._style: dict = dict(DEFAULT_STYLE)
         self._plots: list[pg.PlotWidget] = []
         self._result: FitResult | None = None
@@ -97,7 +118,7 @@ class DistributionWidget(QWidget):
 
         self._stack = QStackedLayout(self)
 
-        self._placeholder = QLabel('Run a fit to see parameter distributions.')
+        self._placeholder = QLabel('Run a fit to see parameter and fit-quality distributions.')
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder.setStyleSheet('color: rgba(0,0,0,0.35); font-size: 14px;')
         self._stack.addWidget(self._placeholder)
@@ -115,7 +136,13 @@ class DistributionWidget(QWidget):
     # ------------------------------------------------------------------
 
     def update_result(self, result: FitResult) -> None:
-        """Redraw all subplots from a FitResult's parameter_samples."""
+        """Redraw all subplots from a FitResult's parameter_samples.
+
+        One subplot per parameter, then RMSE and R² fit-quality subplots
+        (when ``quality_samples`` is present). Only the parameter subplots are
+        reported by :meth:`param_keys` / exported; the quality subplots are a
+        live, clickable diagnostic for picking a representative fit.
+        """
         self._result = result
 
         if result.parameter_samples is None or not result.parameters:
@@ -125,12 +152,21 @@ class DistributionWidget(QWidget):
         param_keys = list(result.parameter_samples.keys())
         self._param_keys = list(param_keys)
 
-        self._rebuild_subplots(len(param_keys))
+        quality_keys = []
+        if result.quality_samples:
+            quality_keys = [k for k in ('rmse', 'r_squared') if k in result.quality_samples]
+
+        self._rebuild_subplots(len(param_keys) + len(quality_keys))
 
         for i, key in enumerate(param_keys):
             plot_item = self._plots[i].getPlotItem()
             self._clear_subplot(plot_item)
             self._populate_subplot(plot_item, key=key, param_idx=i, add_legend=(i == 0))
+
+        for j, metric_key in enumerate(quality_keys):
+            plot_item = self._plots[len(param_keys) + j].getPlotItem()
+            self._clear_subplot(plot_item)
+            self._populate_quality_subplot(plot_item, metric_key=metric_key)
 
         self._stack.setCurrentWidget(self._plot_container)
 
@@ -433,6 +469,89 @@ class DistributionWidget(QWidget):
 
         if add_legend:
             self._add_legend(plot_item, replica_samples is not None)
+
+    def _populate_quality_subplot(self, plot_item: pg.PlotItem, *, metric_key: str) -> None:
+        """Populate one subplot with the RMSE or R² distribution over the pool.
+
+        The strip plot is clickable: clicking a point emits
+        :attr:`representative_selected` with that fit's pool index.
+        """
+        result = self._result
+        if result is None or result.quality_samples is None or metric_key not in result.quality_samples:
+            return
+
+        values = np.asarray(result.quality_samples[metric_key], dtype=float)
+        if values.size == 0:
+            return
+        stats = _box_stats(values)
+
+        self._draw_box(plot_item, stats, 0.0)
+        self._draw_quality_strip(plot_item, values)
+        self._draw_median_line(plot_item, stats['median'], [0])
+
+        # Star the current representative so the reported fit is visible.
+        ridx = result.representative_index
+        if ridx is not None and 0 <= ridx < values.size:
+            marker = pg.ScatterPlotItem(
+                x=[0.0],
+                y=[float(values[ridx])],
+                symbol='star',
+                size=18,
+                pen=pg.mkPen(FOREGROUND_COLOR, width=1),
+                brush=pg.mkBrush(255, 215, 0, 230),
+            )
+            plot_item.addItem(marker)
+
+        # RMSE label unit = the assay's signal unit from the registry (the same
+        # 'a.u.' string the main plot uses). Pass it plainly — Pint's HTML
+        # formatter mis-parses the dotted 'a.u.' alias (renders 'u a').
+        title, uses_signal_unit = _QUALITY_METRICS.get(metric_key, (metric_key, False))
+        unit = ''
+        if uses_signal_unit:
+            assay_type = self._lookup_assay_type(result.assay_type)
+            if assay_type is not None:
+                unit = ASSAY_REGISTRY[assay_type].y_unit
+        base_label = f'{title} [{unit}]' if unit else title
+        plot_item._y_base_label = base_label
+        left_axis = plot_item.getAxis('left')
+        if hasattr(left_axis, 'exponent'):
+            left_axis.exponent = None
+        plot_item.setLabel('left', base_label)
+
+        plot_item.getAxis('bottom').setTicks([[]])
+        plot_item.setLabel('bottom', 'Pool of Fits')
+
+        title_size = self._style.get('distribution', {}).get('title_font_size', 16)
+        plot_item.setTitle(title, size=f'{title_size}pt', bold=True)
+
+        self._apply_axis_style(plot_item)
+        plot_item.setXRange(-0.8, 0.8, padding=0)
+        plot_item.enableAutoRange(axis='y')
+
+    def _draw_quality_strip(self, plot_item: pg.PlotItem, values: np.ndarray) -> None:
+        """Jittered, clickable strip — clicking a point selects that fit."""
+        rng = np.random.default_rng(7)
+        n = values.size
+        jitter = rng.uniform(-_JITTER_HALF, _JITTER_HALF, size=n)
+        scatter = pg.ScatterPlotItem(
+            x=jitter,
+            y=values,
+            size=7,
+            pen=pg.mkPen(None),
+            brush=pg.mkBrush(100, 100, 100, 130),
+            data=list(range(n)),
+        )
+        scatter.setToolTip('Click a point to report that fit as the representative.')
+        scatter.sigClicked.connect(self._on_point_clicked)
+        plot_item.addItem(scatter)
+
+    def _on_point_clicked(self, _scatter, points, *_args) -> None:
+        """Emit representative_selected with the clicked fit's pool index."""
+        if not points:
+            return
+        idx = points[0].data()
+        if idx is not None:
+            self.representative_selected.emit(int(idx))
 
     # ------------------------------------------------------------------
     # Drawing primitives (PlotItem-based)
