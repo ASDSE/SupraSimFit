@@ -107,19 +107,38 @@ def full_fit_result():
     )
 
 
-def test_seven_columns_with_stats_populated(qapp, full_fit_result):
+def test_six_columns_merged_stats_and_range(qapp, full_fit_result):
     from gui.plotting.fit_summary_widget import _COLUMN_HEADERS, FitSummaryWidget
 
     widget = FitSummaryWidget()
     widget.update_result(full_fit_result)
 
-    assert widget._table.columnCount() == 7
-    headers = [widget._table.horizontalHeaderItem(c).text() for c in range(7)]
+    assert widget._table.columnCount() == 6
+    headers = [widget._table.horizontalHeaderItem(c).text() for c in range(6)]
     assert headers == list(_COLUMN_HEADERS)
-    # Median / MAD / Mean / STDEV cells are populated (not the '—' placeholder).
-    for col in (2, 3, 4, 5):
-        cell = widget._table.cellWidget(0, col)
-        assert cell is not None and cell.text() not in ('', '—')
+    # Merged 'central ± spread' cells (Median ± MAD, Mean ± SD) render one '±'.
+    for col in (2, 3):
+        assert '±' in widget._table.cellWidget(0, col).text()
+    # Range cell renders '[min, max]'.
+    range_text = widget._table.cellWidget(0, 4).text()
+    assert range_text.startswith('[') and range_text.endswith(']') and ',' in range_text
+
+
+def test_log10_ka_row_computed_in_log_space(qapp, full_fit_result):
+    """A log₁₀(Ka) row follows the Ka row; its Estimate is log₁₀ of the
+    representative Ka (checked independently), not derived from a Ka spread."""
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.update_result(full_fit_result)
+
+    # GDA has one log-scale key (Ka_guest) -> 4 params + 1 log row = 5 rows.
+    assert widget._table.rowCount() == 5
+    labels = [widget._table.cellWidget(r, 0).text() for r in range(5)]
+    log_rows = [i for i, t in enumerate(labels) if t.startswith('log₁₀')]
+    assert len(log_rows) == 1
+    est = widget._table.cellWidget(log_rows[0], 1).text()
+    assert abs(float(est) - np.log10(1.1e6)) < 0.05  # representative Ka = 1.1e6
 
 
 def test_statistics_mode_toggle_emits(qapp, full_fit_result):
@@ -134,6 +153,20 @@ def test_statistics_mode_toggle_emits(qapp, full_fit_result):
     assert captured == ['mean']
 
 
+def test_rep_combo_has_four_named_choices(qapp, full_fit_result):
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.update_result(full_fit_result)
+
+    labels = [widget._rep_combo.itemText(i) for i in range(widget._rep_combo.count())]
+    assert len(labels) == 4
+    assert labels[0].startswith('Best')
+    assert labels[1].startswith('Median')
+    assert labels[2].startswith('Worst')
+    assert labels[3].startswith('Selected')
+
+
 def test_representative_selector_emits_pool_index(qapp, full_fit_result):
     from gui.plotting.fit_summary_widget import FitSummaryWidget
 
@@ -142,7 +175,18 @@ def test_representative_selector_emits_pool_index(qapp, full_fit_result):
     captured = []
     widget.representative_selected.connect(captured.append)
 
-    # Items are ordered best-first by RMSE (argsort -> pool indices [1, 0, 2]);
-    # selecting the 3rd item reports pool index 2.
+    # 'Worst' = lowest R² = pool index 2 (r² = [0.997, 0.998, 0.996]).
     widget._rep_combo.setCurrentIndex(2)
     assert captured == [2]
+
+
+def test_plot_selection_reflected_in_combo(qapp, full_fit_result):
+    """A representative set via the plot keeps the menu truthful: the combo's
+    current data equals the reported representative index."""
+    from dataclasses import replace
+
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.update_result(replace(full_fit_result, representative_index=2))
+    assert widget._rep_combo.currentData() == 2

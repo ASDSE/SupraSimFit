@@ -848,13 +848,15 @@ class PlotWidget(QWidget):
         lines: list[str] = []
 
         from core.assays.registry import ASSAY_REGISTRY, AssayType
+        from core.optimizer.ensemble import ENSEMBLE_STATISTICS
 
         for idx, result in enumerate(self._fit_results):
+            spread = ENSEMBLE_STATISTICS[result.statistics_mode].label
             if len(self._fit_results) > 1:
                 label = self._fit_labels[idx] if idx < len(self._fit_labels) else f'fit {idx}'
-                lines.append(f'<b>{label}</b>')
+                lines.append(f'<b>{label}</b> — {spread}')
             else:
-                lines.append('<b>Fit Summary</b>')
+                lines.append(f'<b>Fit Summary</b> — {spread}')
 
             try:
                 meta = ASSAY_REGISTRY[AssayType[result.assay_type]]

@@ -8,12 +8,12 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QStackedLayout, QWidget
+from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QStackedLayout, QVBoxLayout, QWidget
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.pipeline.fit_pipeline import FitResult
 from gui.plotting.colors import BACKGROUND_COLOR, FOREGROUND_COLOR, PALETTES, REPLICA_PALETTE, rgba
-from gui.plotting.labels import fmt_param, fmt_unit_html
+from gui.plotting.labels import fmt_param, fmt_param_plain, fmt_unit_html
 from gui.plotting.plot_style import DEFAULT_STYLE
 from gui.plotting.plot_widget import ScientificAxisItem, _format_exponent_unicode
 from gui.widgets.replica_panel import _display_label
@@ -93,8 +93,10 @@ class DistributionWidget(QWidget):
     One box-whisker at x=0 for the single optimizer pool.
 
     Two extra subplots show the **RMSE** and **R²** distributions across the
-    valid fits; clicking a point in either selects that fit as the reported
-    representative (emits :attr:`representative_selected`).
+    valid fits. A gold ring marks the current representative in every subplot;
+    clicking any point (parameter or quality) reports that fit as the
+    representative (emits :attr:`representative_selected`). Each subplot can be
+    shown/hidden via the checkbox row beneath the plots.
 
     Signals
     -------
@@ -108,15 +110,26 @@ class DistributionWidget(QWidget):
         super().__init__(parent)
         self.setToolTip(
             'Distribution of each parameter and of fit quality (RMSE, R²) across '
-            'all valid fits. Click a point in the RMSE or R² plot to report that '
-            'fit instead of the default best.'
+            'all valid fits. Click any point to report that fit as the '
+            'representative; the gold ring marks the current one. Show or hide '
+            'each plot with the checkboxes below.'
         )
         self._style: dict = dict(DEFAULT_STYLE)
         self._plots: list[pg.PlotWidget] = []
         self._result: FitResult | None = None
         self._param_keys: list[str] = []
+        # Visibility toggles (issue 7): ordered keys = param keys then quality keys.
+        self._all_keys: list[str] = []
+        self._hidden_keys: set[str] = set()
+        self._plot_by_key: dict[str, pg.PlotWidget] = {}
+        self._checkboxes: dict[str, QCheckBox] = {}
 
-        self._stack = QStackedLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+
+        self._stack_host = QWidget()
+        self._stack = QStackedLayout(self._stack_host)
 
         self._placeholder = QLabel('Run a fit to see parameter and fit-quality distributions.')
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -129,7 +142,21 @@ class DistributionWidget(QWidget):
         self._plot_layout.setSpacing(4)
         self._stack.addWidget(self._plot_container)
 
+        self._all_hidden = QLabel('All distributions hidden — re-enable a checkbox below.')
+        self._all_hidden.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._all_hidden.setStyleSheet('color: rgba(0,0,0,0.35); font-size: 14px;')
+        self._stack.addWidget(self._all_hidden)
+
         self._stack.setCurrentWidget(self._placeholder)
+        outer.addWidget(self._stack_host, stretch=1)
+
+        # Row of show/hide checkboxes beneath the plots (issue 7).
+        self._toggle_bar_host = QWidget()
+        self._toggle_bar = QHBoxLayout(self._toggle_bar_host)
+        self._toggle_bar.setContentsMargins(4, 0, 4, 0)
+        self._toggle_bar.setSpacing(10)
+        self._toggle_bar_host.setVisible(False)
+        outer.addWidget(self._toggle_bar_host)
 
     # ------------------------------------------------------------------
     # Public API
@@ -147,6 +174,7 @@ class DistributionWidget(QWidget):
 
         if result.parameter_samples is None or not result.parameters:
             self._stack.setCurrentWidget(self._placeholder)
+            self._toggle_bar_host.setVisible(False)
             return
 
         param_keys = list(result.parameter_samples.keys())
@@ -156,19 +184,87 @@ class DistributionWidget(QWidget):
         if result.quality_samples:
             quality_keys = [k for k in ('rmse', 'r_squared') if k in result.quality_samples]
 
-        self._rebuild_subplots(len(param_keys) + len(quality_keys))
+        all_keys = param_keys + quality_keys
+        self._all_keys = all_keys
+
+        self._rebuild_subplots(len(all_keys))
+        self._plot_by_key = {}
 
         for i, key in enumerate(param_keys):
-            plot_item = self._plots[i].getPlotItem()
+            pw = self._plots[i]
+            plot_item = pw.getPlotItem()
             self._clear_subplot(plot_item)
             self._populate_subplot(plot_item, key=key, param_idx=i, add_legend=(i == 0))
+            self._plot_by_key[key] = pw
 
         for j, metric_key in enumerate(quality_keys):
-            plot_item = self._plots[len(param_keys) + j].getPlotItem()
+            pw = self._plots[len(param_keys) + j]
+            plot_item = pw.getPlotItem()
             self._clear_subplot(plot_item)
             self._populate_quality_subplot(plot_item, metric_key=metric_key)
+            self._plot_by_key[metric_key] = pw
 
-        self._stack.setCurrentWidget(self._plot_container)
+        # Drop stale hidden keys (e.g. assay switch) so a new key-set is all-visible,
+        # then apply visibility and rebuild the toggle bar.
+        self._hidden_keys &= set(all_keys)
+        for key, pw in self._plot_by_key.items():
+            pw.setVisible(key not in self._hidden_keys)
+        self._sync_toggle_bar(all_keys)
+        self._update_stack_page()
+
+    # ------------------------------------------------------------------
+    # Visibility toggles (issue 7)
+    # ------------------------------------------------------------------
+
+    def _checkbox_label(self, key: str) -> str:
+        """Plain-text label for a subplot's toggle checkbox."""
+        if key in _QUALITY_METRICS:
+            return _QUALITY_METRICS[key][0]
+        return fmt_param_plain(key)
+
+    def _sync_toggle_bar(self, keys: list[str]) -> None:
+        """Rebuild the checkbox row when the key-set changes; else reflect state."""
+        if list(self._checkboxes.keys()) != list(keys):
+            while self._toggle_bar.count():
+                item = self._toggle_bar.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+            self._checkboxes = {}
+            self._toggle_bar.addWidget(QLabel('Show:'))
+            for key in keys:
+                cb = QCheckBox(self._checkbox_label(key))
+                cb.setChecked(key not in self._hidden_keys)
+                cb.toggled.connect(lambda on, k=key: self._on_toggle(k, on))
+                self._toggle_bar.addWidget(cb)
+                self._checkboxes[key] = cb
+            self._toggle_bar.addStretch(1)
+        else:
+            for key, cb in self._checkboxes.items():
+                cb.blockSignals(True)
+                cb.setChecked(key not in self._hidden_keys)
+                cb.blockSignals(False)
+        self._toggle_bar_host.setVisible(True)
+
+    def _on_toggle(self, key: str, checked: bool) -> None:
+        """Show/hide one subplot without re-rendering (no jitter/stat recompute)."""
+        if checked:
+            self._hidden_keys.discard(key)
+        else:
+            self._hidden_keys.add(key)
+        pw = self._plot_by_key.get(key)
+        if pw is not None:
+            pw.setVisible(checked)
+        self._update_stack_page()
+
+    def _update_stack_page(self) -> None:
+        """Pick the stacked page: placeholder, all-hidden notice, or the plots."""
+        if self._result is None or not self._all_keys:
+            self._stack.setCurrentWidget(self._placeholder)
+        elif all(k in self._hidden_keys for k in self._all_keys):
+            self._stack.setCurrentWidget(self._all_hidden)
+        else:
+            self._stack.setCurrentWidget(self._plot_container)
 
     def apply_style(self, style: dict) -> None:
         """Update visual style (fonts, palette) from PlotStyleWidget."""
@@ -180,8 +276,10 @@ class DistributionWidget(QWidget):
         """Reset to empty placeholder."""
         self._result = None
         self._param_keys = []
+        self._all_keys = []
         for pw in self._plots:
             self._clear_subplot(pw.getPlotItem())
+        self._toggle_bar_host.setVisible(False)
         self._stack.setCurrentWidget(self._placeholder)
 
     def param_keys(self) -> list[str]:
@@ -264,7 +362,7 @@ class DistributionWidget(QWidget):
             plot_item.getAxis('bottom').enableAutoSIPrefix(False)
 
             key = self._param_keys[key_idx]
-            self._populate_subplot(plot_item, key=key, param_idx=key_idx, add_legend=(i == 0))
+            self._populate_subplot(plot_item, key=key, param_idx=key_idx, add_legend=(i == 0), interactive=False)
 
         return glw
 
@@ -373,6 +471,7 @@ class DistributionWidget(QWidget):
         key: str,
         param_idx: int,
         add_legend: bool = False,
+        interactive: bool = True,
     ) -> None:
         """Populate one PlotItem with the box-whisker distribution for *key*.
 
@@ -431,11 +530,15 @@ class DistributionWidget(QWidget):
         else:
             self._draw_box(plot_item, pool_stats, 0.0)
 
-        self._draw_strip(plot_item, values, replica_samples, key, param_idx, palette, use_log, x_positions)
+        coords = self._draw_strip(
+            plot_item, values, replica_samples, key, param_idx, palette, use_log, x_positions, interactive=interactive
+        )
         self._draw_median_line(plot_item, pool_stats['median'], x_positions)
 
         if replica_samples:
             self._draw_replica_medians(plot_item, replica_samples, key, palette, use_log, x_positions)
+
+        self._draw_selection_highlight(plot_item, coords)
 
         # Y-axis label — base form; ScientificAxisItem appends ×10ⁿ via callback.
         unit_str = units.get(key, '')
@@ -486,21 +589,9 @@ class DistributionWidget(QWidget):
         stats = _box_stats(values)
 
         self._draw_box(plot_item, stats, 0.0)
-        self._draw_quality_strip(plot_item, values)
+        coords = self._draw_quality_strip(plot_item, values)
         self._draw_median_line(plot_item, stats['median'], [0])
-
-        # Star the current representative so the reported fit is visible.
-        ridx = result.representative_index
-        if ridx is not None and 0 <= ridx < values.size:
-            marker = pg.ScatterPlotItem(
-                x=[0.0],
-                y=[float(values[ridx])],
-                symbol='star',
-                size=18,
-                pen=pg.mkPen(FOREGROUND_COLOR, width=1),
-                brush=pg.mkBrush(255, 215, 0, 230),
-            )
-            plot_item.addItem(marker)
+        self._draw_selection_highlight(plot_item, coords)
 
         # RMSE label unit = the assay's signal unit from the registry (the same
         # 'a.u.' string the main plot uses). Pass it plainly — Pint's HTML
@@ -528,8 +619,12 @@ class DistributionWidget(QWidget):
         plot_item.setXRange(-0.8, 0.8, padding=0)
         plot_item.enableAutoRange(axis='y')
 
-    def _draw_quality_strip(self, plot_item: pg.PlotItem, values: np.ndarray) -> None:
-        """Jittered, clickable strip — clicking a point selects that fit."""
+    def _draw_quality_strip(self, plot_item: pg.PlotItem, values: np.ndarray) -> dict[int, tuple[float, float]]:
+        """Jittered, clickable strip — clicking a point selects that fit.
+
+        Returns the pool-index → ``(x, y)`` coordinate map so the selection
+        ring is drawn on the exact dot it points to.
+        """
         rng = np.random.default_rng(7)
         n = values.size
         jitter = rng.uniform(-_JITTER_HALF, _JITTER_HALF, size=n)
@@ -544,14 +639,45 @@ class DistributionWidget(QWidget):
         scatter.setToolTip('Click a point to report that fit as the representative.')
         scatter.sigClicked.connect(self._on_point_clicked)
         plot_item.addItem(scatter)
+        return {g: (float(jitter[g]), float(values[g])) for g in range(n)}
 
     def _on_point_clicked(self, _scatter, points, *_args) -> None:
-        """Emit representative_selected with the clicked fit's pool index."""
-        if not points:
+        """Emit representative_selected with the front-most clicked fit's index.
+
+        ``sigClicked`` hands us a NumPy array of ``SpotItem`` (front-most
+        first). Use an explicit length check — ``if not points`` on an
+        ndarray raises the ambiguous-truth ``ValueError``.
+        """
+        if len(points) == 0:
             return
         idx = points[0].data()
-        if idx is not None:
-            self.representative_selected.emit(int(idx))
+        if idx is None:
+            return
+        self.representative_selected.emit(int(idx))
+
+    def _draw_selection_highlight(self, plot_item: pg.PlotItem, coords: dict[int, tuple[float, float]]) -> None:
+        """Ring the current representative fit at its exact drawn coordinate.
+
+        ``coords`` maps a pool index to the same ``(x, y)`` handed to that
+        subplot's scatter, so the ring lands on the selected dot for free —
+        correct across raw/log axes, per-replica columns, and jitter.
+        """
+        result = self._result
+        if result is None or result.representative_index is None:
+            return
+        xy = coords.get(result.representative_index)
+        if xy is None:
+            return
+        ring = pg.ScatterPlotItem(
+            x=[xy[0]],
+            y=[xy[1]],
+            symbol='o',
+            size=16,
+            pen=pg.mkPen(255, 215, 0, 255, width=2.5),
+            brush=None,
+        )
+        ring.setZValue(1000)  # above strips, boxes, and the median line
+        plot_item.addItem(ring)
 
     # ------------------------------------------------------------------
     # Drawing primitives (PlotItem-based)
@@ -615,38 +741,64 @@ class DistributionWidget(QWidget):
         palette: list,
         use_log: bool,
         x_positions: list[int],
-    ) -> None:
-        """Jittered strip plot with each replica at its own x position."""
+        *,
+        interactive: bool = True,
+    ) -> dict[int, tuple[float, float]]:
+        """Jittered strip plot with each replica at its own x position.
+
+        Returns the pool-index → ``(x, y)`` coordinate map (the exact numbers
+        handed to the scatter) so the selection ring lands on the right dot,
+        correct across raw/log axes, per-replica columns, and jitter. Points
+        carry their global pool index as ``data``; when *interactive*,
+        clicking one reports that fit as the representative.
+        """
         rng = np.random.default_rng(42 + param_idx)
+        coords: dict[int, tuple[float, float]] = {}
 
         if replica_samples:
+            offset = 0
             for r_idx, r_samp in enumerate(replica_samples):
-                r_vals = r_samp.get(key)
-                if r_vals is None:
-                    continue
+                r_vals = r_samp[key]
                 display = np.log10(r_vals) if use_log else r_vals
                 n = len(display)
                 x_base = x_positions[r_idx] if r_idx < len(x_positions) else r_idx
                 jitter = rng.uniform(-_JITTER_HALF, _JITTER_HALF, size=n)
-                color = palette[r_idx % len(palette)]
+                xs = np.full(n, x_base) + jitter
+                gidx = list(range(offset, offset + n))
+                for g, x, y in zip(gidx, xs, display):
+                    coords[g] = (float(x), float(y))
                 scatter = pg.ScatterPlotItem(
-                    x=np.full(n, x_base) + jitter,
+                    x=xs,
                     y=display,
                     size=5,
                     pen=pg.mkPen(None),
-                    brush=pg.mkBrush(rgba(color, 120)),
+                    brush=pg.mkBrush(rgba(palette[r_idx % len(palette)], 120)),
+                    data=gidx,
                 )
+                if interactive:
+                    scatter.sigClicked.connect(self._on_point_clicked)
                 plot_item.addItem(scatter)
+                offset += n
+            if offset != len(values):
+                raise ValueError(f'strip point count {offset} != pool size {len(values)} for {key!r}')
         else:
-            jitter = rng.uniform(-_JITTER_HALF, _JITTER_HALF, size=len(values))
+            n = len(values)
+            jitter = rng.uniform(-_JITTER_HALF, _JITTER_HALF, size=n)
+            xs = np.zeros(n) + jitter
+            for g in range(n):
+                coords[g] = (float(xs[g]), float(values[g]))
             scatter = pg.ScatterPlotItem(
-                x=np.zeros(len(values)) + jitter,
+                x=xs,
                 y=values,
                 size=5,
                 pen=pg.mkPen(None),
                 brush=pg.mkBrush(100, 100, 100, 100),
+                data=list(range(n)),
             )
+            if interactive:
+                scatter.sigClicked.connect(self._on_point_clicked)
             plot_item.addItem(scatter)
+        return coords
 
     def _draw_median_line(self, plot_item: pg.PlotItem, median: float, x_positions: list[int]) -> None:
         """Solid horizontal line at the pool median, spanning all positions."""

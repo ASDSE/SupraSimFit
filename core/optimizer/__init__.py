@@ -7,8 +7,9 @@ from core.optimizer.ensemble import (
     EnsembleStatistic,
     central_spread,
     collapse,
+    describe,
+    describe_log10,
     select_representative_index,
-    summarize,
 )
 from core.optimizer.filters import (
     calculate_fit_metrics,
@@ -37,7 +38,8 @@ __all__ = [
     'collapse',
     'select_representative_index',
     'central_spread',
-    'summarize',
+    'describe',
+    'describe_log10',
     # linear_fit.py
     'linear_regression',
 ]

@@ -13,7 +13,7 @@ reports. It does three things, each in one place:
    into an :class:`EnsembleResult`.
 3. **Summarise the spread** — the :data:`ENSEMBLE_STATISTICS` registry
    defines each aggregation mode (central tendency + dispersion) once;
-   :func:`central_spread` and :func:`summarize` read from it.
+   :func:`central_spread` and :func:`describe` read from it.
 
 The module is pure ``numpy`` — it operates on arrays, not assays, so both
 pipeline paths and the GUI reuse it. To experiment with a new aggregation
@@ -76,7 +76,7 @@ class EnsembleStatistic:
 #: across the pipeline, the table, the annotation, and the export.
 ENSEMBLE_STATISTICS: dict[str, EnsembleStatistic] = {
     'median': EnsembleStatistic('Median ± MAD', _median, _mad),
-    'mean': EnsembleStatistic('Mean ± STDEV', _mean, _std),
+    'mean': EnsembleStatistic('Mean ± SD', _mean, _std),
 }
 
 #: Default reported aggregation (robust).
@@ -189,22 +189,34 @@ def central_spread(samples: np.ndarray, mode: str) -> tuple[float, float]:
     return stat.central(samples), stat.spread(samples)
 
 
-def summarize(parameter_samples: dict[str, np.ndarray]) -> dict[str, dict[str, float]]:
-    """Per-parameter descriptive statistics for the Fitted Parameters table.
+def describe(samples: np.ndarray) -> dict[str, float]:
+    """Full per-parameter summary of a 1-D pool: center, spread, and range.
 
-    Returns ``{param_key: {'median', 'mad', 'mean', 'std'}}``, all drawn
-    from the :data:`ENSEMBLE_STATISTICS` primitives so the table and the
-    reported ± never diverge.
+    Returns ``{'median', 'mad', 'mean', 'std', 'min', 'max'}`` — the
+    median/MAD and mean/SD pairs from :data:`ENSEMBLE_STATISTICS` plus the
+    observed range, all computed directly from *samples*.
     """
-    median = ENSEMBLE_STATISTICS['median']
-    mean = ENSEMBLE_STATISTICS['mean']
-    out: dict[str, dict[str, float]] = {}
-    for key, raw in parameter_samples.items():
-        samples = np.asarray(raw, dtype=float)
-        out[key] = {
-            'median': median.central(samples),
-            'mad': median.spread(samples),
-            'mean': mean.central(samples),
-            'std': mean.spread(samples),
-        }
-    return out
+    s = np.asarray(samples, dtype=float)
+    return {
+        'median': _median(s),
+        'mad': _mad(s),
+        'mean': _mean(s),
+        'std': _std(s),
+        'min': float(np.min(s)),
+        'max': float(np.max(s)),
+    }
+
+
+def describe_log10(samples: np.ndarray) -> dict[str, float]:
+    """Summary of ``log10(samples)`` — transform FIRST, then aggregate.
+
+    The statistics of ``log10(Ka)`` must be computed from the per-fit log10
+    values, never by taking ``log10`` of a Ka spread statistic:
+    ``log10(MAD_Ka)`` is meaningless and ``log10(mean Ka)`` is Jensen-biased.
+    Requires strictly positive samples (Ka > 0) — raises rather than emit a
+    silent ``-inf`` / ``nan``.
+    """
+    s = np.asarray(samples, dtype=float)
+    if s.size == 0 or float(np.min(s)) <= 0.0:
+        raise ValueError('describe_log10 requires strictly positive samples (Ka > 0).')
+    return describe(np.log10(s))

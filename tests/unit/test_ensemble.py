@@ -91,15 +91,36 @@ class TestCollapse:
 
 
 # ---------------------------------------------------------------------------
-# summarize (table columns)
+# describe / describe_log10 (Ka-space vs log-space statistics)
 # ---------------------------------------------------------------------------
 
 
-class TestSummarize:
-    def test_returns_median_mad_mean_std_per_key(self):
-        samples = {'Ka': np.array([1.0, 2.0, 3.0])}
-        out = ensemble.summarize(samples)['Ka']
-        assert out['median'] == pytest.approx(2.0)
-        assert out['mad'] == pytest.approx(1.0)
-        assert out['mean'] == pytest.approx(2.0)
-        assert out['std'] == pytest.approx(1.0)  # sample std, ddof=1
+class TestDescribe:
+    def test_range_matches_numpy(self):
+        s = np.array([3.0, 1.0, 2.0, 5.0])
+        d = ensemble.describe(s)
+        assert d['min'] == np.min(s)
+        assert d['max'] == np.max(s)
+
+    def test_describe_log10_transforms_first_not_log_of_spread(self):
+        """log₁₀ stats must come from log₁₀(pool). The centre commutes (median),
+        but the spread does NOT — log of a Ka MAD/std is wrong."""
+        s = np.array([10.0, 100.0, 1000.0, 50.0, 500.0])  # odd length: exact median
+        d = ensemble.describe(s)
+        dl = ensemble.describe_log10(s)
+
+        # transform-first == summarising the log-transformed pool (independent path)
+        expected = ensemble.describe(np.log10(s))
+        for k in dl:
+            assert dl[k] == pytest.approx(expected[k])
+
+        # median commutes with log; MAD and mean do not
+        assert dl['median'] == pytest.approx(np.log10(d['median']))
+        assert dl['mad'] != pytest.approx(np.log10(d['mad']))
+        assert dl['mean'] != pytest.approx(np.log10(d['mean']))  # Jensen bias
+
+    def test_describe_log10_rejects_non_positive(self):
+        with pytest.raises(ValueError, match='positive'):
+            ensemble.describe_log10(np.array([1.0, -2.0, 3.0]))
+        with pytest.raises(ValueError):
+            ensemble.describe_log10(np.array([]))
