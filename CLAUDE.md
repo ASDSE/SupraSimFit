@@ -136,6 +136,7 @@ Tests verify **scientific correctness first** — reproduce a bug as a failing t
 ## GUI Conventions
 
 - **No silent fallbacks:** any unmet precondition must show `QMessageBox.warning()` with an explanation and fix instructions. Never silently skip or default. App behaviour must always reflect the user's configuration exactly.
+- **User-facing messages are for users, not developers:** every error, warning, and dialog must be plain language a non-technical user understands — stating what happened, why, and what to do next, and naming the specific inputs involved (e.g. offending files/values) when it helps. Keep them as short and precise as the situation allows — no lengthiness. Never surface raw exception text, tracebacks, or library/debug phrasing (e.g. a numpy broadcast error); catch low-level errors at the boundary and translate them.
 - **Unit-aware inputs:** `_UnitWidget` in `assay_config_panel.py` always returns base-unit floats (M or M⁻¹) regardless of display unit.
 - **Locale:** `QLocale.setDefault(English/US)` in `launch()` before `QApplication` — guarantees dot decimal separators in all spinboxes.
 - **HTML labels:** `ConditionField.label` is HTML; render with `lbl.setTextFormat(Qt.TextFormat.RichText)`. Use subscript/superscript consistently.

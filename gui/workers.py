@@ -69,4 +69,4 @@ class FitWorker(QThread):
             details = '\n'.join(f'  - {rid}: {reason}' for rid, reason in exc.failures.items())
             self.error.emit(f'{exc}\n\nFailures per replica:\n{details}')
         except Exception as exc:
-            self.error.emit(str(exc))
+            self.error.emit(f'The fit could not be completed:\n{exc}')
