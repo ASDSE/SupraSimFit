@@ -140,6 +140,14 @@ class MeasurementSet:
         reference_conc = groups[replica_labels[0]][concentration_col].values
         for label, grp in groups.items():
             conc = grp[concentration_col].values
+            # Check length first: np.allclose on unequal-length arrays raises a
+            # cryptic "operands could not be broadcast together" error.
+            if len(conc) != len(reference_conc):
+                raise ValueError(
+                    f"Replica '{label}' has {len(conc)} concentration points but replica "
+                    f"'{replica_labels[0]}' has {len(reference_conc)} — all replicas must share "
+                    'the same concentration grid.'
+                )
             if not np.allclose(conc, reference_conc, rtol=1e-12):
                 raise ValueError(
                     f"Replica '{label}' has a different concentration grid than replica '{replica_labels[0]}'"

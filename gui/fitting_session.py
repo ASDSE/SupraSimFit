@@ -377,8 +377,13 @@ class FittingSession(QWidget):
                 if suffix != '.txt':
                     path = str(Path(path).with_suffix('.txt'))
                 write_measurements_txt(ms, path)
-        except Exception as exc:
-            QMessageBox.warning(self, 'Export Error', f'Failed to write raw data:\n{exc}')
+        except Exception:
+            QMessageBox.warning(
+                self,
+                'Export Error',
+                'Could not save the raw data. Check that the destination folder exists and '
+                'you have permission to write there.',
+            )
             return
         self.status_message.emit(f'Raw data exported to {path}')
 
@@ -436,8 +441,12 @@ class FittingSession(QWidget):
             if results:
                 self._summary_widget.update_result(results[-1])
             self.status_message.emit(f'Imported {len(results)} result(s) from {path}')
-        except Exception as exc:
-            QMessageBox.warning(self, 'Import Error', str(exc))
+        except Exception:
+            QMessageBox.warning(
+                self,
+                'Import Error',
+                'Could not import these results. Make sure the file is a results file (.json) exported by SupraSimFit.',
+            )
 
     def export_plot(self) -> None:
         """Save the current plot as PNG or SVG."""
@@ -452,8 +461,13 @@ class FittingSession(QWidget):
         try:
             self._plot_widget.export_image(path)
             self.status_message.emit(f'Plot saved to {path}')
-        except Exception as exc:
-            QMessageBox.warning(self, 'Export Error', str(exc))
+        except Exception:
+            QMessageBox.warning(
+                self,
+                'Export Error',
+                'Could not save the plot. Check that the destination folder exists and you '
+                'have permission to write there.',
+            )
 
     def open_export_multiple_dialog(self, *, select_all_default: bool) -> None:
         """Show the consolidated multi-artefact export dialog."""
@@ -504,8 +518,13 @@ class FittingSession(QWidget):
                 format=cfg.format,
             )
             self.status_message.emit(f'Distributions plot saved to {path}')
-        except Exception as exc:
-            QMessageBox.warning(self, 'Save Error', str(exc))
+        except Exception:
+            QMessageBox.warning(
+                self,
+                'Save Error',
+                'Could not save the distributions plot. Check that the destination folder '
+                'exists and you have permission to write there.',
+            )
 
     def save_style_template(self) -> None:
         """Save current plot style settings to a JSON file."""
@@ -545,8 +564,12 @@ class FittingSession(QWidget):
                 self._state.display_unit = loaded_unit
                 self._data_panel.set_display_unit(loaded_unit)
             self.status_message.emit(f'Style template loaded from {path}')
-        except Exception as exc:
-            QMessageBox.warning(self, 'Load Error', str(exc))
+        except Exception:
+            QMessageBox.warning(
+                self,
+                'Load Error',
+                'Could not load this style template. Make sure it is a style file (.json) exported by SupraSimFit.',
+            )
 
     # ------------------------------------------------------------------
     # UI construction

@@ -76,6 +76,8 @@ class DownloadWorker(QThread):
                 return
             self.finished.emit(str(self._dest))
         except urllib.error.HTTPError as exc:
-            self.error.emit(f'HTTP {exc.code}: {exc.reason}')
-        except Exception as exc:  # noqa: BLE001 — surface any network/disk error
-            self.error.emit(f'{type(exc).__name__}: {exc}')
+            self.error.emit(f'The download server returned an error (HTTP {exc.code}). Please try again later.')
+        except Exception:  # noqa: BLE001 — any network/disk error → one clear message
+            self.error.emit(
+                'Could not download the update. Check your internet connection and free disk space, then try again.'
+            )

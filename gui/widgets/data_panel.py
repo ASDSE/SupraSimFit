@@ -384,8 +384,12 @@ class DataPanel(InfoGroupBox):
                 self._slice_channel(self._multi_channel_df, channel),
                 self._source_path or '',
             )
-        except Exception as exc:
-            QMessageBox.warning(self, 'Channel Error', f'Could not switch channel:\n{exc}')
+        except Exception:
+            QMessageBox.warning(
+                self,
+                'Channel Error',
+                'Could not switch to this channel. Its data could not be prepared.',
+            )
             return
 
         reuse = keep_entered and self._face_values.size == ms.n_points
@@ -491,8 +495,12 @@ class DataPanel(InfoGroupBox):
         try:
             quantity = Q_(self._face_values.copy(), self._imported_unit)
             self._ms.set_concentrations(quantity, drop_metadata_keys=(BMG_PLACEHOLDER_KEY,))
-        except Exception as exc:
-            QMessageBox.warning(self, 'Error', f'Failed to apply concentrations:\n{exc}')
+        except Exception:
+            QMessageBox.warning(
+                self,
+                'Concentration Error',
+                'Could not apply the concentrations. Please check the values and try again.',
+            )
             return
         self._update_info()
         self.data_loaded.emit(self._ms)
@@ -510,8 +518,13 @@ class DataPanel(InfoGroupBox):
             return
         try:
             values, declared_unit = read_raw_concentrations(path)
-        except Exception as exc:
-            QMessageBox.warning(self, 'Load Error', f'Could not load:\n{exc}')
+        except Exception:
+            QMessageBox.warning(
+                self,
+                'Load Error',
+                'Could not load the concentration vector. Make sure it is a concentration '
+                'file (.json) exported by SupraSimFit.',
+            )
             return
         if values.size != self._ms.n_points:
             QMessageBox.warning(
@@ -548,8 +561,13 @@ class DataPanel(InfoGroupBox):
             return
         try:
             save_concentration_vector(self._face_values, path, unit=self._imported_unit)
-        except Exception as exc:
-            QMessageBox.warning(self, 'Save Error', f'Could not save:\n{exc}')
+        except Exception:
+            QMessageBox.warning(
+                self,
+                'Save Error',
+                'Could not save the concentration vector. Check that the destination folder '
+                'exists and you have permission to write there.',
+            )
             return
         self._info_label.setText(
             f'{self._ms.n_points} points × {self._ms.n_replicas} replicas — saved to {Path(path).name}'
