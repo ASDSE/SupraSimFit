@@ -20,7 +20,7 @@ import numpy as np
 
 from core.assays.base import BaseAssay
 from core.assays.registry import AssayType
-from core.models.equilibrium import dba_signal
+from core.models.equilibrium import dba_signal, dba_species
 from core.units import Q_, Quantity
 
 
@@ -98,6 +98,11 @@ class DBAAssay(BaseAssay):
             mode=self.mode,
         )
         return Q_(result, 'au')
+
+    def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
+        """Free host, free dye and host-dye complex (M) across the titration."""
+        Ka_dye = params[0]
+        return dba_species(Ka_dye, self.x_data.magnitude, self.fixed_conc.magnitude, mode=self.mode)
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.

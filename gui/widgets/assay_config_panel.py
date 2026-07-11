@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from PyQt6.QtCore import QLocale, Qt, pyqtSignal
@@ -14,17 +13,13 @@ from core.units import Q_, Quantity
 from gui.assay_descriptions import ASSAY_DESCRIPTIONS
 from gui.widgets.assay_conditions import ConditionField, assay_class, condition_fields
 from gui.widgets.info_button import InfoButton, InfoGroupBox
-from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox
+from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, decimals_for_scale
 
 # Display choices derived from ConditionField.unit_type
 _UNIT_TYPE_CHOICES: dict[str, tuple[tuple[str, ...], str]] = {
     'concentration': (('nM', 'µM', 'mM', 'M'), 'µM'),
     'binding_constant': (('M⁻¹',), 'M⁻¹'),
 }
-
-# Decimals shown in the finest offered unit; coarser units widen from this so a
-# unit switch never rounds a nonzero quantity to zero (see _decimals_for_scale).
-_BASE_DECIMALS = 3
 
 _LOCALE_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
 
@@ -108,14 +103,8 @@ class _UnitWidget(QWidget):
             self._combo.setToolTip(tip)
 
     def _decimals_for_scale(self, scale: float) -> int:
-        """Decimals so a value resolvable in the finest unit survives here.
-
-        The finest offered unit is shown with ``_BASE_DECIMALS`` places; a coarser
-        unit (larger ``scale``) is widened by one decimal per decade so converting
-        a nonzero quantity into it never rounds to ``0``.
-        """
-        extra = round(math.log10(scale / self._min_scale)) if self._min_scale > 0 else 0
-        return _BASE_DECIMALS + max(0, extra)
+        """Per-unit decimals via the shared policy in ``gui.widgets.numeric_inputs``."""
+        return decimals_for_scale(scale, self._min_scale)
 
     def _apply_range_for_current_unit(self) -> None:
         self._spinbox.blockSignals(True)

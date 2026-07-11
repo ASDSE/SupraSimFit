@@ -28,6 +28,7 @@ def _canonical_unit(unit_str: str) -> str:
     """
     return 'au' if unit_str.strip() in ('a.u.', 'a.u') else unit_str
 
+
 PARAM_LABELS: dict[str, str] = {
     'Ka_guest': '<b>K<sub>a(G)</sub></b>',
     'Ka_dye': '<b>K<sub>a(D)</sub></b>',
@@ -77,6 +78,30 @@ PARAM_LABELS_PLAIN: dict[str, str] = {
 def fmt_param_plain(name: str) -> str:
     """Return a plain-text (no HTML) parameter label, fallback to raw name."""
     return PARAM_LABELS_PLAIN.get(name, name)
+
+
+# Bracketed concentration labels for equilibrium species, keyed by the species
+# names returned by ``BaseAssay.species()``.  Unicode subscripts so they render
+# in plain-text widgets (legend entries, hover readouts) as well as rich text.
+SPECIES_LABELS: dict[str, str] = {
+    'H': '[H]',
+    'D': '[D]',
+    'G': '[G]',
+    'HD': '[HD]',
+    'HG': '[HG]',
+    'HG2': '[HG₂]',
+    'H2G': '[H₂G]',
+}
+
+
+def fmt_species(key: str, *, brackets: bool = True) -> str:
+    """Return a concentration label for a species, e.g. ``HG2`` → ``[HG₂]``.
+
+    ``brackets=False`` drops them (``HG₂``) — used for the compact plot legend,
+    where the concentration-bracket notation isn't needed.
+    """
+    label = SPECIES_LABELS.get(key, f'[{key}]')
+    return label if brackets else label.strip('[]')
 
 
 def fmt_unit_html(unit_str: str) -> str:

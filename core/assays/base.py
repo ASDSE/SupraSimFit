@@ -123,6 +123,31 @@ class BaseAssay(ABC):
         pass
 
     @abstractmethod
+    def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
+        """Equilibrium speciation across ``x_data`` from the same solve as the signal.
+
+        Returns the per-species free/complex concentrations underlying the
+        forward model — e.g. ``{'H', 'D', 'HD'}`` for direct binding, or
+        ``{'H', 'D', 'G', 'HD', 'HG'}`` for competitive assays.  Insertion order
+        is the intended plotting/legend order.  Implementations MUST reuse the
+        model's own ``*_species`` solve (the one the signal is built from) so the
+        speciation and the plotted signal can never disagree.
+
+        Parameters
+        ----------
+        params : np.ndarray
+            Parameter values in ``parameter_keys`` order (as for
+            :meth:`forward_model`).
+
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            Species name → concentration array (M magnitudes), each the same
+            length as ``x_data``; NaN where the equilibrium solve fails.
+        """
+        pass
+
+    @abstractmethod
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions needed for the forward model.
 

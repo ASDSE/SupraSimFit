@@ -48,68 +48,57 @@ from scipy.optimize import brentq
 # =============================================================================
 
 
-def dba_signal(
-    I0: float,
+def dba_species(
     Ka_dye: float,
-    I_dye_free: float,
-    I_dye_bound: float,
     x_titrant: np.ndarray,
     y_fixed: float,
     *,
     mode: str,
-) -> np.ndarray:
-    """Compute DBA signal for host-dye equilibrium.
+) -> dict:
+    """Equilibrium speciation for 1:1 host–dye binding (H + D ⇌ HD).
 
-    Works for both Host→Dye and Dye→Host titrations.  The equilibrium
-    is H + D ⇌ HD with Ka_dye = [HD] / ([H][D]).  Mass balance is
-    solved analytically as a quadratic; the signal model uses the
-    free *dye* concentration regardless of titration direction.
+    Works for both Host→Dye and Dye→Host titrations with
+    ``Ka_dye = [HD] / ([H][D])``.  The free concentration of the *fixed*
+    species solves the quadratic derived from the two mass balances and
+    ``[HD] = Ka_dye·[H]·[D]``::
+
+        Ka_dye · y_free² + (Ka_dye · (x - y_fixed) + 1) · y_free - y_fixed = 0
+
+    where ``y_free`` is the free conc. of the fixed species; the
+    physically meaningful (non-negative) root is selected.  The free
+    titrant concentration is ``x_free = y_free + (x - y_fixed)`` and
+    ``[HD] = Ka_dye · y_free · x_free``.  ``mode`` only decides which of
+    the two frees is the host and which is the dye.
+
+    Returning the full speciation (not just the signal) keeps one solve
+    shared by both the signal model (:func:`dba_signal`) and species-level
+    inspection, so they can never disagree.
 
     Parameters
     ----------
-    I0 : float
-        Background signal intensity.
     Ka_dye : float
-        Association constant for host-dye binding (M^-1).
-    I_dye_free : float
-        Signal coefficient for free dye.
-    I_dye_bound : float
-        Signal coefficient for host-dye complex.
+        Association constant for host-dye binding (M⁻¹).
     x_titrant : np.ndarray
         Titrant concentrations (M) — host for ``HtoD``, dye for ``DtoH``.
     y_fixed : float
-        Fixed component concentration (M) — dye for ``HtoD``,
-        host for ``DtoH``.
+        Fixed component concentration (M) — dye for ``HtoD``, host for ``DtoH``.
     mode : str
-        Titration mode (keyword-only).  Must be ``"HtoD"`` (host
-        titrated into dye, dye fixed) or ``"DtoH"`` (dye titrated
-        into host, host fixed).  Determines which of the (free
-        titrant, free fixed-species) concentrations is the free dye
-        used in the signal model.
+        ``"HtoD"`` (host titrated into fixed dye) or ``"DtoH"`` (dye titrated
+        into fixed host), keyword-only.
 
     Returns
     -------
-    np.ndarray
-        Predicted signal values.
-
-    Notes
-    -----
-    The quadratic in the free concentration of the *fixed* species is
-    derived from the two mass balances combined with
-    ``[HD] = Ka_dye * [H_free] * [D_free]``::
-
-        Ka_dye * y_free^2 + (Ka_dye * (x - y_fixed) + 1) * y_free - y_fixed = 0
-
-    where ``y_free`` is the free conc. of the fixed species.  The
-    physically meaningful (non-negative) root is selected.  Then
-    ``[HD] = y_fixed - y_free`` and the free dye concentration is
-    selected from ``mode``: ``y_free`` in ``HtoD``, or
-    ``x_free = y_free + (x - y_fixed)`` in ``DtoH``.
+    dict
+        ``{'H', 'D', 'HD'}`` → arrays of concentrations (M), same shape as
+        ``x_titrant``.  Entries are NaN where the quadratic has no physical root.
     """
     if mode not in ('HtoD', 'DtoH'):
         raise ValueError(f"mode must be 'HtoD' or 'DtoH', got {mode!r}")
 
-    signal_values = np.empty_like(x_titrant)
+    x_titrant = np.asarray(x_titrant, dtype=float)
+    H = np.empty_like(x_titrant)
+    D = np.empty_like(x_titrant)
+    HD = np.empty_like(x_titrant)
 
     for i, x in enumerate(x_titrant):
         delta = x - y_fixed
@@ -123,7 +112,7 @@ def dba_signal(
         discriminant = b**2 - 4 * a * c
 
         if discriminant < 0:
-            signal_values[i] = np.nan
+            H[i] = D[i] = HD[i] = np.nan
             continue
 
         sqrt_disc = np.sqrt(discriminant)
@@ -134,21 +123,66 @@ def dba_signal(
         y_free = y1 if y1 >= 0 else (y2 if y2 >= 0 else np.nan)
 
         if np.isnan(y_free):
-            signal_values[i] = np.nan
+            H[i] = D[i] = HD[i] = np.nan
             continue
 
         x_free = y_free + delta
         hd_complex = Ka_dye * y_free * x_free
 
-        # Free DYE concentration depends on which species is the titrant.
-        # HtoD: dye is fixed -> y_free is [D_free]
-        # DtoH: dye is titrant -> x_free is [D_free]
-        d_free = y_free if mode == 'HtoD' else x_free
+        # Which free is host vs dye depends on the titrant.
+        # HtoD: host titrated -> x_free is [H], y_free (fixed dye) is [D].
+        # DtoH: dye titrated  -> x_free is [D], y_free (fixed host) is [H].
+        if mode == 'HtoD':
+            H[i], D[i] = x_free, y_free
+        else:
+            H[i], D[i] = y_free, x_free
+        HD[i] = hd_complex
 
-        # Signal = I0 + I_dye_free * [D_free] + I_dye_bound * [HD]
-        signal_values[i] = I0 + I_dye_free * d_free + I_dye_bound * hd_complex
+    return {'H': H, 'D': D, 'HD': HD}
 
-    return signal_values
+
+def dba_signal(
+    I0: float,
+    Ka_dye: float,
+    I_dye_free: float,
+    I_dye_bound: float,
+    x_titrant: np.ndarray,
+    y_fixed: float,
+    *,
+    mode: str,
+) -> np.ndarray:
+    """Compute DBA signal for host-dye equilibrium (H + D ⇌ HD).
+
+    Delegates the equilibrium solve to :func:`dba_species` and combines the
+    per-species concentrations into the observed signal::
+
+        Signal = I0 + I_dye_free · [D] + I_dye_bound · [HD]
+
+    so the plotted signal and the speciation come from a single solve.  The
+    signal uses the free *dye* concentration regardless of titration direction.
+
+    Parameters
+    ----------
+    I0 : float
+        Background signal intensity.
+    Ka_dye : float
+        Association constant for host-dye binding (M⁻¹).
+    I_dye_free, I_dye_bound : float
+        Signal coefficients for free dye and the host-dye complex.
+    x_titrant : np.ndarray
+        Titrant concentrations (M) — host for ``HtoD``, dye for ``DtoH``.
+    y_fixed : float
+        Fixed component concentration (M) — dye for ``HtoD``, host for ``DtoH``.
+    mode : str
+        ``"HtoD"`` or ``"DtoH"`` (keyword-only).
+
+    Returns
+    -------
+    np.ndarray
+        Predicted signal values, NaN where the equilibrium solve fails.
+    """
+    sp = dba_species(Ka_dye, x_titrant, y_fixed, mode=mode)
+    return I0 + I_dye_free * sp['D'] + I_dye_bound * sp['HD']
 
 
 # =============================================================================
@@ -157,52 +191,43 @@ def dba_signal(
 # =============================================================================
 
 
-def competitive_signal_point(
-    I0: float,
+_COMPETITIVE_SPECIES = ('H', 'D', 'G', 'HD', 'HG')
+
+
+def competitive_species_point(
     Ka_guest: float,
-    I_dye_free: float,
-    I_dye_bound: float,
     Ka_dye: float,
     h0: float,
     d0: float,
     g0: float,
-) -> float:
-    """Compute signal for a single point in competitive binding equilibrium.
+) -> dict:
+    """Equilibrium speciation for one point of the competitive H/D/G system.
 
-    This is the core calculation for both GDA and IDA. The system has two
-    competing equilibria:
-        H + D ⇌ HD  (Ka_dye = [HD]/([H][D]))
+    Core solve shared by GDA and IDA.  Two competing equilibria::
+
+        H + D ⇌ HD  (Ka_dye  = [HD]/([H][D]))
         H + G ⇌ HG  (Ka_guest = [HG]/([H][G]))
+
+    Free host ``[H]`` is found with Brent's method on the host mass balance
+    ``h0 = [H] + [HD] + [HG]``; the remaining species follow from
+    ``[D] = d0/(1+Ka_dye·[H])``, ``[G] = g0/(1+Ka_guest·[H])`` and the complex
+    definitions.  Returning the full speciation lets both
+    :func:`competitive_signal_point` and species inspection share one solve.
 
     Parameters
     ----------
-    I0 : float
-        Background signal intensity.
     Ka_guest : float
-        Association constant for guest/indicator (M^-1). This is fitted.
-    I_dye_free : float
-        Signal coefficient for free dye.
-    I_dye_bound : float
-        Signal coefficient for host-dye complex.
+        Association constant for host-guest binding (M⁻¹) — the fitted quantity.
     Ka_dye : float
-        Known association constant for host-dye (M^-1).
-    h0 : float
-        Total host concentration (M).
-    d0 : float
-        Total dye concentration (M).
-    g0 : float
-        Total guest/indicator concentration (M).
+        Known association constant for host-dye binding (M⁻¹).
+    h0, d0, g0 : float
+        Total host, dye and guest/indicator concentrations (M).
 
     Returns
     -------
-    float
-        Predicted signal value.
-
-    Notes
-    -----
-    We solve for free host [H] using Brent's method on the mass balance:
-        h0 = [H] + [HD] + [HG]
-           = [H] + Ka_dye*[H]*d0/(1 + Ka_dye*[H]) + Ka_guest*[H]*g0/(1 + Ka_guest*[H])
+    dict
+        ``{'H', 'D', 'G', 'HD', 'HG'}`` → scalar concentrations (M); all NaN
+        if the mass-balance solve fails (non-physical parameters).
     """
     try:
 
@@ -217,16 +242,96 @@ def competitive_signal_point(
         # Solve for free host concentration
         h_free = brentq(mass_balance, 1e-20, h0, xtol=1e-14, maxiter=1000)
 
-        # Calculate species concentrations
-        denom_D = 1 + Ka_dye * h_free
-        d_free = d0 / denom_D
-        hd_complex = Ka_dye * h_free * d_free
-
-        # Signal from free dye and complex
-        return I0 + I_dye_free * d_free + I_dye_bound * hd_complex
+        # Remaining species follow directly from the free-host concentration
+        d_free = d0 / (1 + Ka_dye * h_free)
+        g_free = g0 / (1 + Ka_guest * h_free)
+        return {
+            'H': h_free,
+            'D': d_free,
+            'G': g_free,
+            'HD': Ka_dye * h_free * d_free,
+            'HG': Ka_guest * h_free * g_free,
+        }
 
     except (ValueError, RuntimeError):
-        return np.nan
+        return {k: np.nan for k in _COMPETITIVE_SPECIES}
+
+
+def _competitive_species_grid(Ka_guest, Ka_dye, h0, d0_values, g0_values) -> dict:
+    """Speciation across a titration for the competitive model.
+
+    Exactly one of ``d0_values`` / ``g0_values`` is the titrant array; the other
+    is a scalar broadcast to every point.  GDA (dye titrant) and IDA (guest
+    titrant) both route through here so they share the per-point solve.
+    """
+    d0_values = np.atleast_1d(np.asarray(d0_values, dtype=float))
+    g0_values = np.atleast_1d(np.asarray(g0_values, dtype=float))
+    n = max(d0_values.size, g0_values.size)
+    d0_values = np.broadcast_to(d0_values, (n,))
+    g0_values = np.broadcast_to(g0_values, (n,))
+    out = {k: np.empty(n, dtype=float) for k in _COMPETITIVE_SPECIES}
+    for i in range(n):
+        sp = competitive_species_point(Ka_guest, Ka_dye, h0, d0_values[i], g0_values[i])
+        for k in _COMPETITIVE_SPECIES:
+            out[k][i] = sp[k]
+    return out
+
+
+def gda_species(Ka_guest, Ka_dye, h0, d0_values, g0) -> dict:
+    """Competitive speciation for GDA (dye titrated, guest fixed).
+
+    Returns ``{'H','D','G','HD','HG'}`` arrays over ``d0_values`` (M).  See
+    :func:`competitive_species_point`.
+    """
+    return _competitive_species_grid(Ka_guest, Ka_dye, h0, d0_values, g0)
+
+
+def ida_species(Ka_guest, Ka_dye, h0, d0, g0_values) -> dict:
+    """Competitive speciation for IDA (guest titrated, dye fixed).
+
+    Returns ``{'H','D','G','HD','HG'}`` arrays over ``g0_values`` (M).  See
+    :func:`competitive_species_point`.
+    """
+    return _competitive_species_grid(Ka_guest, Ka_dye, h0, d0, g0_values)
+
+
+def competitive_signal_point(
+    I0: float,
+    Ka_guest: float,
+    I_dye_free: float,
+    I_dye_bound: float,
+    Ka_dye: float,
+    h0: float,
+    d0: float,
+    g0: float,
+) -> float:
+    """Compute signal for a single point in competitive binding equilibrium.
+
+    Delegates the equilibrium solve to :func:`competitive_species_point` and
+    combines the free dye and host-dye complex into the observed signal::
+
+        Signal = I0 + I_dye_free · [D] + I_dye_bound · [HD]
+
+    Parameters
+    ----------
+    I0 : float
+        Background signal intensity.
+    Ka_guest : float
+        Association constant for guest/indicator (M⁻¹). This is fitted.
+    I_dye_free, I_dye_bound : float
+        Signal coefficients for free dye and the host-dye complex.
+    Ka_dye : float
+        Known association constant for host-dye (M⁻¹).
+    h0, d0, g0 : float
+        Total host, dye and guest/indicator concentrations (M).
+
+    Returns
+    -------
+    float
+        Predicted signal value, NaN if the solve fails.
+    """
+    sp = competitive_species_point(Ka_guest, Ka_dye, h0, d0, g0)
+    return I0 + I_dye_free * sp['D'] + I_dye_bound * sp['HD']
 
 
 def gda_signal(

@@ -18,7 +18,7 @@ import numpy as np
 
 from core.assays.base import BaseAssay
 from core.assays.registry import AssayType
-from core.models.equilibrium import gda_signal
+from core.models.equilibrium import gda_signal, gda_species
 from core.units import Q_, Quantity
 
 
@@ -104,6 +104,11 @@ class GDAAssay(BaseAssay):
             g0=self.g0.magnitude,
         )
         return Q_(result, 'au')
+
+    def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
+        """Free host, dye, guest and both complexes (M) across the dye titration."""
+        Ka_guest = params[0]
+        return gda_species(Ka_guest, self.Ka_dye.magnitude, self.h0.magnitude, self.x_data.magnitude, self.g0.magnitude)
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.

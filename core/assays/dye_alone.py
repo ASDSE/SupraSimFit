@@ -62,6 +62,15 @@ class DyeAloneAssay(BaseAssay):
         result = linear_signal(slope, intercept, self.x_data.magnitude)
         return Q_(result, 'au')
 
+    def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
+        """Free dye equals the titrant — a linear calibration has no equilibrium.
+
+        There is nothing to speciate (no host, no complex); the only species is
+        the dye itself, at its total concentration.  The simulation applet
+        recognises this and shows a note instead of a trivial identity line.
+        """
+        return {'D': np.asarray(self.x_data.magnitude, dtype=float)}
+
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.
 
