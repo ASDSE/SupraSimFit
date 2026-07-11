@@ -153,18 +153,15 @@ def test_statistics_mode_toggle_emits(qapp, full_fit_result):
     assert captured == ['mean']
 
 
-def test_rep_combo_has_four_named_choices(qapp, full_fit_result):
+def test_rep_combo_offers_named_choices_before_plot_selection(qapp, full_fit_result):
     from gui.plotting.fit_summary_widget import FitSummaryWidget
 
     widget = FitSummaryWidget()
     widget.update_result(full_fit_result)
 
-    labels = [widget._rep_combo.itemText(i) for i in range(widget._rep_combo.count())]
-    assert len(labels) == 4
-    assert labels[0].startswith('Best')
-    assert labels[1].startswith('Median')
-    assert labels[2].startswith('Worst')
-    assert labels[3].startswith('Selected')
+    # Fresh fit, no plot pick yet: Best / Median / Worst only (no 'Selected').
+    names = [widget._rep_combo.itemText(i).split(' ·')[0] for i in range(widget._rep_combo.count())]
+    assert names == ['Best', 'Median', 'Worst']
 
 
 def test_representative_selector_emits_pool_index(qapp, full_fit_result):
@@ -180,13 +177,43 @@ def test_representative_selector_emits_pool_index(qapp, full_fit_result):
     assert captured == [2]
 
 
-def test_plot_selection_reflected_in_combo(qapp, full_fit_result):
-    """A representative set via the plot keeps the menu truthful: the combo's
-    current data equals the reported representative index."""
+def test_selected_item_is_sticky_across_switches(qapp, full_fit_result):
+    """The plot-picked fit becomes a sticky 'Selected' item that survives
+    switching the representative to Best, so the user can compare and go back."""
     from dataclasses import replace
 
     from gui.plotting.fit_summary_widget import FitSummaryWidget
 
     widget = FitSummaryWidget()
+    widget.update_result(full_fit_result)
+
+    # Pick pool index 2 from the plot -> a 'Selected' item appears, and the
+    # combo reflects the reported representative.
+    widget.note_plot_selection(2)
     widget.update_result(replace(full_fit_result, representative_index=2))
+    assert any(widget._rep_combo.itemText(i).startswith('Selected') for i in range(widget._rep_combo.count()))
     assert widget._rep_combo.currentData() == 2
+
+    # Switch the representative to Best (index 1): 'Selected' (2) must remain.
+    widget.update_result(replace(full_fit_result, representative_index=1))
+    sel = [i for i in range(widget._rep_combo.count()) if widget._rep_combo.itemText(i).startswith('Selected')]
+    assert len(sel) == 1
+    assert widget._rep_combo.itemData(sel[0]) == 2  # still points at the plot pick
+
+
+def test_new_fit_clears_sticky_selection(qapp, full_fit_result):
+    """A different fit (new id) resets the sticky 'Selected' choice."""
+    from dataclasses import replace
+
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.update_result(full_fit_result)
+    widget.note_plot_selection(2)
+    widget.update_result(replace(full_fit_result, representative_index=2))
+    assert any(widget._rep_combo.itemText(i).startswith('Selected') for i in range(widget._rep_combo.count()))
+
+    fresh = replace(full_fit_result, id='different-fit-id', representative_index=1)
+    widget.update_result(fresh)
+    names = [widget._rep_combo.itemText(i).split(' ·')[0] for i in range(widget._rep_combo.count())]
+    assert 'Selected' not in names

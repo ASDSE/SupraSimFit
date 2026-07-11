@@ -109,10 +109,10 @@ class DistributionWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setToolTip(
-            'Distribution of each parameter and of fit quality (RMSE, R²) across '
-            'all valid fits. Click any point to report that fit as the '
-            'representative; the gold ring marks the current one. Show or hide '
-            'each plot with the checkboxes below.'
+            '<qt>Distribution of each parameter and of fit quality (RMSE, R²) '
+            'across all valid fits.<br>Click any point to report that fit as the '
+            'representative; the gold ring marks the current one.<br>Show or hide '
+            'each plot with the checkboxes below.</qt>'
         )
         self._style: dict = dict(DEFAULT_STYLE)
         self._plots: list[pg.PlotWidget] = []
@@ -140,6 +140,9 @@ class DistributionWidget(QWidget):
         self._plot_layout = QHBoxLayout(self._plot_container)
         self._plot_layout.setContentsMargins(0, 0, 0, 0)
         self._plot_layout.setSpacing(4)
+        # Trailing stretch absorbs leftover width so a few plots left-align at
+        # their max width instead of over-stretching across the whole pane.
+        self._plot_layout.addStretch(1)
         self._stack.addWidget(self._plot_container)
 
         self._all_hidden = QLabel('All distributions hidden — re-enable a checkbox below.')
@@ -455,6 +458,10 @@ class DistributionWidget(QWidget):
                 background=BACKGROUND_COLOR,
                 axisItems={'left': left_axis},
             )
+            # Share width equally (large stretch beats the trailing stretch when
+            # there is room to share) but cap each so few plots don't over-stretch.
+            pw.setMinimumWidth(170)
+            pw.setMaximumWidth(380)
             plot_item = pw.getPlotItem()
             plot_item.getViewBox().setDefaultPadding(0.05)
             plot_item.getAxis('bottom').enableAutoSIPrefix(False)
@@ -462,7 +469,7 @@ class DistributionWidget(QWidget):
             _wire_exponent_callback(plot_item, left_axis)
 
             self._plots.append(pw)
-            self._plot_layout.addWidget(pw)
+            self._plot_layout.insertWidget(self._plot_layout.count() - 1, pw, 1000)
 
     def _populate_subplot(
         self,

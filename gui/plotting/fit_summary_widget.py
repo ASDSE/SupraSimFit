@@ -113,6 +113,12 @@ class FitSummaryWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        # Sticky "Selected" representative: the last fit picked from a
+        # distribution-plot click, kept across Best/Median/Worst switches so the
+        # user can compare and switch back. Reset when a new fit is displayed.
+        self._plot_selected_index: int | None = None
+        self._last_result_id: str | None = None
+
         self._params_group = InfoGroupBox(
             'Fitted Parameters',
             'Fitted Parameters \u2014 columns',
@@ -124,8 +130,8 @@ class FitSummaryWidget(QWidget):
         for key, stat in ENSEMBLE_STATISTICS.items():
             self._stats_combo.addItem(stat.label, key)
         self._stats_combo.setToolTip(
-            'Reported \u00b1 across the valid fits: \u00b1 MAD (robust) or \u00b1 STDEV. '
-            'Changes the annotation and export only \u2014 not the value or curve.'
+            '<qt>Reported \u00b1 across the valid fits: \u00b1 MAD (robust) or \u00b1 STDEV.<br>'
+            'Changes the annotation and export only \u2014 not the value or curve.</qt>'
         )
         self._stats_combo.currentIndexChanged.connect(self._on_stats_combo_changed)
 
@@ -133,10 +139,11 @@ class FitSummaryWidget(QWidget):
         self._rep_combo = QComboBox()
         # Size to the widest item so no label is ever truncated.
         self._rep_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-        self._rep_combo.setMinimumContentsLength(24)
+        self._rep_combo.setMinimumContentsLength(14)
         self._rep_combo.setToolTip(
-            'Which valid fit is reported and drawn. Defaults to the best (highest R\u00b2); '
-            'pick another, or click a point in the Distributions tab.'
+            '<qt>Which valid fit is reported and drawn. Defaults to the best '
+            '(highest R\u00b2).<br>Pick another, or click a point in the Distributions '
+            'tab.</qt>'
         )
         self._rep_combo.currentIndexChanged.connect(self._on_rep_combo_changed)
 
@@ -157,12 +164,6 @@ class FitSummaryWidget(QWidget):
         params_layout = QVBoxLayout(self._params_group)
         params_layout.addLayout(stats_row)
         params_layout.addWidget(self._table)
-
-        # Caption naming the active reported spread (issue 9): Median ± MAD / Mean ± SD.
-        self._spread_caption = QLabel()
-        self._spread_caption.setTextFormat(Qt.TextFormat.RichText)
-        self._spread_caption.setStyleSheet('color: rgba(0,0,0,0.55); font-style: italic;')
-        params_layout.addWidget(self._spread_caption)
 
         self._quality_group = InfoGroupBox('Fit Quality', 'Fit Quality', _FIT_QUALITY_HELP_HTML)
         quality_layout = QFormLayout(self._quality_group)
@@ -194,6 +195,12 @@ class FitSummaryWidget(QWidget):
             meta = ASSAY_REGISTRY[assay_type]
             units = dict(meta.units)
             log_keys = set(meta.log_scale_keys)
+
+        # A new fit clears the sticky plot-selection; refreshes of the same
+        # result (mode toggle, re-selection) keep it.
+        if result.id != self._last_result_id:
+            self._plot_selected_index = None
+            self._last_result_id = result.id
 
         self._set_combo_mode(result.statistics_mode)
         self._populate_rep_combo(result)
@@ -230,7 +237,6 @@ class FitSummaryWidget(QWidget):
             self._set_cell(row, _UNITS_COL, fmt_unit_html(unit_str) if unit_str else '—')
 
         self._emphasize_active_pair(result.statistics_mode)
-        self._spread_caption.setText(f'Reported spread: {ENSEMBLE_STATISTICS[result.statistics_mode].label}')
 
         rmse_html = f'{Q_(result.rmse, "au"):.3g~H}'
         self._rmse_label.setTextFormat(Qt.TextFormat.RichText)
@@ -283,38 +289,46 @@ class FitSummaryWidget(QWidget):
             self.statistics_mode_changed.emit(mode)
 
     def _populate_rep_combo(self, result: FitResult) -> None:
-        """Offer four representative choices: Best, Median, Worst, Selected.
+        """Offer Best, Median, Worst, and the sticky Selected representative.
 
-        Best/Worst are the highest/lowest R² fits; Median is the fit nearest
-        the pool's median R²; Selected is the current ``representative_index``
-        (e.g. set by a distribution-plot click). Ranking uses R² throughout.
+        Best/Worst are the highest/lowest R² fits; Median is the fit nearest the
+        pool's median R². Selected is the last fit clicked in the distribution
+        plots — kept across Best/Median/Worst switches so the user can compare
+        and switch back to it. Ranking uses R².
         """
         self._rep_combo.blockSignals(True)
         self._rep_combo.clear()
         quality = result.quality_samples
-        if quality and 'r_squared' in quality and 'rmse' in quality:
+        if quality and 'r_squared' in quality:
             r2 = np.asarray(quality['r_squared'], dtype=float)
-            rmse = np.asarray(quality['rmse'], dtype=float)
-            cur = result.representative_index
             items = [
                 ('Best', int(np.argmax(r2))),
                 ('Median', int(np.argmin(np.abs(r2 - np.median(r2))))),
                 ('Worst', int(np.argmin(r2))),
             ]
-            if cur is not None:
-                items.append(('Selected (from plot)', int(cur)))
+            sel = self._plot_selected_index
+            if sel is not None and 0 <= sel < r2.size:
+                items.append(('Selected', int(sel)))
             for label, idx in items:
-                self._rep_combo.addItem(f'{label} · R²={r2[idx]:.4f} · RMSE={rmse[idx]:.3g}', idx)
-            # Reflect the current representative: first named item that matches
-            # it, else the explicit "Selected" item.
+                self._rep_combo.addItem(f'{label} · R²={r2[idx]:.4f}', idx)
+            # Show whichever item matches the reported representative (first match).
+            cur = result.representative_index
             if cur is not None:
-                pos = next((i for i, (_, idx) in enumerate(items) if idx == cur), len(items) - 1)
+                pos = next((i for i, (_, idx) in enumerate(items) if idx == cur), 0)
                 self._rep_combo.setCurrentIndex(pos)
             self._rep_combo.setEnabled(True)
         else:
             self._rep_combo.addItem('—', -1)
             self._rep_combo.setEnabled(False)
         self._rep_combo.blockSignals(False)
+
+    def note_plot_selection(self, index: int) -> None:
+        """Remember *index* as the sticky 'Selected' representative.
+
+        Called when the user clicks a fit in the distribution plots, so the
+        choice survives Best/Median/Worst switches until the next fit.
+        """
+        self._plot_selected_index = int(index)
 
     def _on_rep_combo_changed(self, _index: int) -> None:
         idx = self._rep_combo.currentData()
@@ -361,7 +375,6 @@ class FitSummaryWidget(QWidget):
         self._rmse_label.setText('\u2014')
         self._r2_label.setText('\u2014')
         self._passing_label.setText('\u2014')
-        self._spread_caption.setText('')
 
 
 def _lookup_assay_type(assay_type_str: str) -> AssayType | None:

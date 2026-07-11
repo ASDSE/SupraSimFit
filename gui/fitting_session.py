@@ -663,7 +663,7 @@ class FittingSession(QWidget):
         # Ensemble interaction: switch reported ± / pick a different representative.
         self._summary_widget.statistics_mode_changed.connect(self._on_statistics_mode_changed)
         self._summary_widget.representative_selected.connect(self._on_representative_selected)
-        self._distribution_widget.representative_selected.connect(self._on_representative_selected)
+        self._distribution_widget.representative_selected.connect(self._on_plot_fit_selected)
 
     # ------------------------------------------------------------------
     # Slots
@@ -777,8 +777,15 @@ class FittingSession(QWidget):
         # Refresh the plot annotation so its ± reflects the new mode.
         self._plot_widget.set_fit_results(self._state.fit_results)
 
+    def _on_plot_fit_selected(self, index: int) -> None:
+        """A fit picked by clicking a distribution point: remember it as the
+        sticky 'Selected' choice, then report it as the representative."""
+        self._summary_widget.note_plot_selection(index)
+        self._on_representative_selected(index)
+
     def _on_representative_selected(self, index: int) -> None:
-        """Report a different valid fit (from a distribution click or the selector)."""
+        """Report a different valid fit as the representative (from the
+        Representative selector or a distribution-plot click)."""
         ms = self._state.measurement_set
         results = self._state.fit_results
         if ms is None or not results:
