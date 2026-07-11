@@ -192,11 +192,14 @@ class FitResult:
         for k, v in self.uncertainties.items():
             unc_serial[k] = float(v.magnitude)
 
-        # Serialize conditions
+        # Serialize conditions, keeping each Quantity's unit token so the
+        # conditions survive a round-trip as Quantities (not bare floats).
         cond_serial = {}
+        cond_units = {}
         for k, v in self.conditions.items():
             if isinstance(v, Quantity):
                 cond_serial[k] = float(v.magnitude)
+                cond_units[k] = str(v.units)
             else:
                 cond_serial[k] = v
 
@@ -228,6 +231,7 @@ class FitResult:
             'parameters': params_serial,
             'uncertainties': unc_serial,
             'parameter_units': units,
+            'condition_units': cond_units,
             'rmse': self.rmse,
             'r_squared': self.r_squared,
             'n_passing': self.n_passing,
@@ -258,8 +262,8 @@ class FitResult:
         """
         from core.assays.registry import ASSAY_REGISTRY, AssayType
 
-        # Look up units from registry or dict
-        param_units = d.get('parameter_units', {})
+        # Look up units from the file's own tokens first, then the registry.
+        param_units = d.get('parameter_units') or {}
         if not param_units:
             try:
                 at = AssayType[d['assay_type']]
@@ -267,16 +271,23 @@ class FitResult:
             except KeyError:
                 param_units = {}
 
-        # Reconstruct Quantity parameters
-        parameters = {}
-        for k, v in d['parameters'].items():
-            unit = param_units.get(k)
-            parameters[k] = Q_(v, unit) if unit else Q_(v, 'dimensionless')
+        def _unit_for(key: str) -> str:
+            unit = param_units.get(key)
+            if unit is None:
+                # Surface rather than silently treat a real unit (e.g. 1/M) as
+                # dimensionless — that would drop the unit from the loaded result.
+                logger.warning(
+                    "FitResult.from_dict: no unit for parameter '%s' (assay_type=%r); loading as "
+                    'dimensionless. The file may predate parameter_units or use an unknown assay type.',
+                    key,
+                    d.get('assay_type'),
+                )
+                return 'dimensionless'
+            return unit
 
-        uncertainties = {}
-        for k, v in d['uncertainties'].items():
-            unit = param_units.get(k)
-            uncertainties[k] = Q_(v, unit) if unit else Q_(v, 'dimensionless')
+        # Reconstruct Quantity parameters
+        parameters = {k: Q_(v, _unit_for(k)) for k, v in d['parameters'].items()}
+        uncertainties = {k: Q_(v, _unit_for(k)) for k, v in d['uncertainties'].items()}
 
         # Reconstruct x_fit / y_fit as Quantities
         x_fit = Q_(np.asarray(d['x_fit']), 'M')
@@ -308,6 +319,14 @@ class FitResult:
             if not 0 <= representative_index < pool_size:
                 representative_index = None
 
+        # Re-wrap conditions that carried a unit back into Quantities (older
+        # files without condition_units load as bare floats, as before).
+        condition_units = d.get('condition_units', {})
+        conditions = {}
+        for k, v in d.get('conditions', {}).items():
+            unit = condition_units.get(k)
+            conditions[k] = Q_(v, unit) if unit is not None else v
+
         return cls(
             parameters=parameters,
             uncertainties=uncertainties,
@@ -319,7 +338,7 @@ class FitResult:
             y_fit=y_fit,
             assay_type=d['assay_type'],
             model_name=d['model_name'],
-            conditions=d.get('conditions', {}),
+            conditions=conditions,
             fit_config=d.get('fit_config', {}),
             measurement_set_id=d.get('measurement_set_id'),
             source_file=d.get('source_file'),
@@ -428,7 +447,12 @@ def _wrap_params_as_quantities(
     units = ASSAY_REGISTRY[assay.assay_type].units
     result = {}
     for key, value in zip(assay.parameter_keys, params):
-        unit = units.get(key, 'dimensionless')
+        unit = units.get(key)
+        if unit is None:
+            raise KeyError(
+                f"No registry unit declared for parameter '{key}' of {assay.assay_type.name}; "
+                'cannot attach units to the fit result.'
+            )
         result[key] = Q_(float(value), unit)
     return result
 
@@ -555,12 +579,23 @@ def fit_assay(
     if config is None:
         config = FitConfig()
 
+    from core.assays.registry import ASSAY_REGISTRY
+
     # Resolve bounds (Quantity dicts)
     bounds_dict = _resolve_bounds(assay, config.custom_bounds)
 
-    # Extract float bounds for scipy
+    # Extract float bounds for scipy, converting each bound to the parameter's
+    # canonical unit first. This keeps the Quantity->float boundary unit-safe: a
+    # custom bound supplied in a compatible-but-non-canonical unit (e.g. a Ka in
+    # 'MM^-1' or a concentration in 'µM') is converted correctly instead of
+    # having its face magnitude taken, and a dimensionally wrong bound fails fast.
+    canonical_units = ASSAY_REGISTRY[assay.assay_type].units
     float_bounds = [
-        (float(bounds_dict[k][0].magnitude), float(bounds_dict[k][1].magnitude)) for k in assay.parameter_keys
+        (
+            float(bounds_dict[k][0].to(canonical_units[k]).magnitude),
+            float(bounds_dict[k][1].to(canonical_units[k]).magnitude),
+        )
+        for k in assay.parameter_keys
     ]
 
     # Resolve log-scale parameters (names -> indices)

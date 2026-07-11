@@ -101,7 +101,12 @@ class TestSerialization:
         assert restored.n_total == original.n_total
         assert restored.assay_type == original.assay_type
         assert restored.model_name == original.model_name
-        # Conditions are serialized as magnitudes (not Quantity round-trip)
+        # Conditions round-trip as Quantities with their units preserved.
+        for k, v in original.conditions.items():
+            rv = restored.conditions[k]
+            assert isinstance(rv, Quantity), f'condition {k!r} lost its Quantity type'
+            assert rv.magnitude == pytest.approx(v.magnitude)
+            assert rv.units == v.units
         assert restored.fit_config == original.fit_config
         assert restored.measurement_set_id == original.measurement_set_id
         assert restored.source_file == original.source_file
