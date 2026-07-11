@@ -31,7 +31,15 @@ from typing import Callable, List, Sequence, Tuple
 import numpy as np
 import pint
 
-from core.units import Q_
+from core.units import Q_, ureg
+
+# Canonical dimensions used to classify a parameter's unit components.
+# ``au`` carries its own ``[signal]`` dimension (see core/units.py), so a
+# signal component is dimensionally distinct from a concentration component
+# and from a genuinely dimensionless number — no reliance on the historical
+# "au is dimensionless" coincidence.
+_SIGNAL_DIM = ureg.Unit('au').dimensionality
+_CONC_DIM = ureg.Unit('M').dimensionality
 
 
 @dataclass(frozen=True)
@@ -113,24 +121,31 @@ class ParamScaler:
 def _scale_factor(unit: pint.Unit, c_max: float, s_max: float) -> float:
     """Compute the affine rescaling factor for a parameter unit.
 
-    For each component of ``unit`` (walked via pint's ``_units`` map):
-    - dimensionless components contribute ``s_max ** (-exp)`` (these
-      are ``au``, our arbitrary-unit signal token);
-    - concentration components contribute ``(c_max / mag_in_M) **
-      (-exp)``, where ``mag_in_M`` is the component's size in M.
+    Each component of ``unit`` (walked via pint's ``_units`` map) is
+    classified by its **dimension**, not by ``.dimensionless``:
 
-    Raises ``ValueError`` if a unit is neither dimensionless nor a
-    concentration.
+    - ``[signal]`` components (``au``) contribute ``s_max ** (-exp)``;
+    - ``[concentration]`` components (``M``/``µM``/…) contribute
+      ``(c_max / mag_in_M) ** (-exp)``, where ``mag_in_M`` is the
+      component's size in M (1 for ``M``, 1e-6 for ``µM``);
+    - a genuinely dimensionless component (a pure number/ratio) is left
+      unscaled (contributes 1.0).
+
+    Because ``au`` has its own ``[signal]`` dimension, a signal component
+    can no longer be confused with a ``1/M`` binding constant or with a
+    dimensionless ratio. A component in any other dimension (e.g. time,
+    length) is a programming error and raises ``ValueError``.
     """
     factor = 1.0
     for name, exp in unit._units.items():
         one = Q_(1.0, name)
-        if one.dimensionless:
+        dim = one.dimensionality
+        if dim == _SIGNAL_DIM:
             factor *= s_max ** (-exp)
+        elif dim == _CONC_DIM:
+            factor *= (c_max / one.to('M').magnitude) ** (-exp)
+        elif one.dimensionless:
             continue
-        try:
-            mag_in_M = one.to('M').magnitude
-        except pint.DimensionalityError as err:
-            raise ValueError(f"Cannot rescale: unit '{name}' is neither concentration nor dimensionless.") from err
-        factor *= (c_max / mag_in_M) ** (-exp)
+        else:
+            raise ValueError(f"Cannot rescale: unit '{name}' is neither signal, concentration, nor dimensionless.")
     return factor
