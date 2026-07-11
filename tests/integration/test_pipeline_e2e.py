@@ -22,6 +22,7 @@ from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.models.equilibrium import dba_signal
+from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline.fit_pipeline import (
     FitConfig,
     FitResult,
@@ -510,3 +511,42 @@ class TestBoundsMarginEdgeCases:
         )
         with pytest.raises(ValueError, match='failed'):
             bounds_from_dye_alone(r)
+
+
+# ---------------------------------------------------------------------------
+# #31: representative fit is a real fit, never a synthetic per-parameter median
+# ---------------------------------------------------------------------------
+
+
+class TestRepresentativeFitTrustworthy:
+    """Regression for #31. On the degenerate IDA signal model every valid fit
+    sits on a different point of the offset/contrast manifold, so an
+    independent per-parameter median lands *off* the manifold and reconstructs
+    worse than every real fit. The reported result must instead be an actual
+    fit (the best by R²), so its RMSE/R² are real and self-consistent."""
+
+    def test_reported_rmse_is_the_pool_minimum(self, ida_clean):
+        assay, _true = _ida_assay(ida_clean)
+        result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=GDA_IDA_RECOVERY_BOUNDS))
+
+        assert result.success
+        rmse_pool = result.quality_samples['rmse']
+        ridx = result.representative_index
+        # Reported metrics belong to the representative trial, the pool's best.
+        assert result.rmse == pytest.approx(float(rmse_pool[ridx]))
+        assert result.rmse == pytest.approx(float(rmse_pool.min()))
+        assert result.r_squared == pytest.approx(float(result.quality_samples['r_squared'].max()))
+
+    def test_representative_is_no_worse_than_the_old_per_parameter_median(self, ida_clean):
+        """The old aggregator reported the per-parameter median; on this
+        degenerate model that median reconstructs worse than the representative
+        real fit. The reported RMSE must be ≤ that median's RMSE."""
+        assay, _true = _ida_assay(ida_clean)
+        result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_CLEAN, custom_bounds=GDA_IDA_RECOVERY_BOUNDS))
+
+        pool = np.column_stack([result.parameter_samples[k] for k in assay.parameter_keys])
+        median_vec = np.median(pool, axis=0)
+        y_median = assay.forward_model(median_vec).magnitude
+        rmse_median, _ = calculate_fit_metrics(assay.y_data.magnitude, y_median)
+
+        assert result.rmse <= rmse_median + 1e-12

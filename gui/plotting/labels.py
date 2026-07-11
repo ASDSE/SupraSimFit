@@ -42,6 +42,32 @@ def fmt_param(name: str) -> str:
     return PARAM_LABELS.get(name, name)
 
 
+# Plain-text (no HTML) labels for widgets that cannot render rich text,
+# e.g. QCheckBox toggle labels. Uses Unicode subscripts where unambiguous.
+PARAM_LABELS_PLAIN: dict[str, str] = {
+    'Ka_guest': 'Ka(G)',
+    'Ka_dye': 'Ka(D)',
+    'I0': 'I₀',
+    'I_dye_free': 'I(D)',
+    'I_dye_bound': 'I(HD)',
+    'slope': 'slope',
+    'intercept': 'intercept',
+    'Ka_HG': 'Ka(HG)',
+    'Ka_HG2': 'Ka(HG₂)',
+    'Ka_H2G': 'Ka(H₂G)',
+    'I_G': 'I(G)',
+    'I_H': 'I(H)',
+    'I_HG': 'I(HG)',
+    'I_HG2': 'I(HG₂)',
+    'I_H2G': 'I(H₂G)',
+}
+
+
+def fmt_param_plain(name: str) -> str:
+    """Return a plain-text (no HTML) parameter label, fallback to raw name."""
+    return PARAM_LABELS_PLAIN.get(name, name)
+
+
 def fmt_unit_html(unit_str: str) -> str:
     """Format a unit string as abbreviated HTML with negative exponents.
 

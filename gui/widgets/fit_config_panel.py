@@ -50,34 +50,20 @@ budget.</p>
 """
 
 _RMSE_HELP_HTML = """
-<h3>RMSE Factor &mdash; Trial Acceptance Filter</h3>
+<h3>Trim by RMSE factor &mdash; optional pool tightening</h3>
 
-<p><b>What It Does</b></p>
-<p>After all multi-start trials finish, each one is ranked by its
-root-mean-squared error to the data. Trials whose RMSE is worse than
-<i>best_RMSE &times; factor</i> are discarded before the median/MAD
-aggregation step. This removes local-minimum trials that clearly
-didn&rsquo;t find a reasonable solution.</p>
+<p><b>What it does</b></p>
+<p>Off by default. The Min&nbsp;R<sup>2</sup> floor is the primary quality
+gate and already keeps only good fits. Tick this to <i>additionally</i>
+drop valid fits whose RMSE exceeds <i>best&nbsp;RMSE &times; factor</i> —
+useful only to tighten an unusually scattered pool.</p>
 
-<p><b>The Rule</b></p>
-<p align="center"><i>keep trial if RMSE<sub>i</sub> &le; factor &middot; best_RMSE</i></p>
+<p align="center"><i>keep fit if RMSE<sub>i</sub> &le; factor &middot; best_RMSE</i></p>
 
-<p><b>Practical Values</b></p>
-<ul>
-  <li><b>1.0</b> &mdash; extremely strict, keeps only trials tied with
-      the best. Almost always too tight; the aggregate uncertainty
-      collapses.</li>
-  <li><b>1.5</b> (default) &mdash; keeps trials within 50&nbsp;% of the
-      best RMSE. A good balance.</li>
-  <li><b>3.0&ndash;5.0</b> &mdash; permissive; useful when the landscape
-      is very flat and many trials are reasonable.</li>
-</ul>
-
-<p><b>When to Change It</b></p>
-<p>If the reported K<sub>a</sub> uncertainty looks implausibly small,
-loosen the factor &mdash; the trial population was too small to estimate
-it. If the aggregate parameter is clearly wrong but the plot looks okay,
-tighten the factor to weed out partial-convergence runs.</p>
+<p><b>Note</b></p>
+<p>This only narrows the spread reported for the ensemble; it never changes
+the reported best-fit value or the plotted curve. Leave it off unless you
+have a specific reason to prune.</p>
 """
 
 _PER_REPLICA_HELP_HTML = """
@@ -87,18 +73,18 @@ _PER_REPLICA_HELP_HTML = """
 <p>All active replicas are averaged into a single curve, then the
 fitter runs one multi-start optimisation on that average. Every
 starting point that produces an acceptable fit (low RMSE, high
-R<sup>2</sup>) is kept. The reported parameter is the <i>median</i> of
-those acceptable fits and the &plusmn; value is their spread (MAD).
-This tells you how tight the optimiser landscape is &mdash; <b>not</b>
-how reproducible your experiment is.</p>
+R<sup>2</sup>) is kept. The reported value is the <i>best</i> of those
+acceptable fits and the &plusmn; value is the spread of the pool (MAD by
+default). This tells you how tight the optimiser landscape is &mdash;
+<b>not</b> how reproducible your experiment is.</p>
 
 <p><b>Per-replica mode (default, on)</b></p>
 <p>Every active replica is fit on its own with a full multi-start
 run. From each replica, every trial that passes the acceptance
 filter (R<sup>2</sup>, RMSE) is retained. All those passing trials from
 all replicas are then <b>pooled into one flat collection</b>. The
-reported parameter is the median of that pool and the &plusmn; value
-is the MAD of the same pool. This captures both the optimiser spread
+reported value is the best fit in that pool and the &plusmn; value is the
+pool's spread (MAD by default). This captures both the optimiser spread
 <i>and</i> the experimental spread across replicas in one honest
 distribution &mdash; the kind you can quote in a paper or draw
 box-and-whisker plots from.</p>
@@ -113,8 +99,8 @@ box-and-whisker plots from.</p>
       summaries &mdash; so box-whiskers, histograms, and confidence
       intervals drawn from it are statistically meaningful rather than
       based on just N&nbsp;= (number of replicas) points.</li>
-  <li>The plot curve labelled <i>Median Fit</i> is the forward model
-      evaluated at the pooled median parameters.</li>
+  <li>The plot curve labelled <i>Best Fit</i> is the forward model
+      evaluated at the representative (best) pooled fit.</li>
 </ul>
 
 <p><b>When to use per-replica mode</b></p>
@@ -139,10 +125,10 @@ box-and-whisker plots from.</p>
   <li><b>Slower</b>: each replica runs its own multi-start, so the
       fit takes roughly <i>N</i> times longer. Usually still seconds.</li>
   <li><b>Fit curve looks the same</b>: when your replicas agree well,
-      the median parameter values in per-replica mode are very close
-      to the average-mode values, so the plotted curve may look
-      unchanged. The real difference shows up in the reported
-      &plusmn;&nbsp;uncertainty, not in the curve shape.</li>
+      the representative fit in per-replica mode is very close to the
+      average-mode one, so the plotted curve may look unchanged. The real
+      difference shows up in the reported &plusmn;&nbsp;uncertainty, not in
+      the curve shape.</li>
 </ul>
 """
 
@@ -245,7 +231,7 @@ class FitConfigPanel(InfoGroupBox):
     def current_config(self) -> FitConfig:
         return FitConfig(
             n_trials=self._trials_spin.value(),
-            rmse_threshold_factor=self._rmse_spin.value(),
+            rmse_threshold_factor=(self._rmse_spin.value() if self._rmse_check.isChecked() else None),
             min_r_squared=self._r2_spin.value(),
             rescale_parameters=self._rescale_check.isChecked(),
             per_replica=self._per_replica_check.isChecked(),
@@ -253,7 +239,11 @@ class FitConfigPanel(InfoGroupBox):
 
     def set_config(self, config: FitConfig) -> None:
         self._trials_spin.setValue(config.n_trials)
-        self._rmse_spin.setValue(config.rmse_threshold_factor)
+        factor = config.rmse_threshold_factor
+        self._rmse_check.setChecked(factor is not None)
+        self._rmse_spin.setEnabled(factor is not None)
+        if factor is not None:
+            self._rmse_spin.setValue(factor)
         self._r2_spin.setValue(config.min_r_squared)
         self._rescale_check.setChecked(config.rescale_parameters)
         self._per_replica_check.setChecked(config.per_replica)
@@ -273,14 +263,21 @@ class FitConfigPanel(InfoGroupBox):
         self._trials_spin.valueChanged.connect(self.config_changed)
         form.addRow('Trials:', self._with_info(self._trials_spin, 'Trials', _TRIALS_HELP_HTML))
 
+        # Optional RMSE trim — off by default; the R² floor is the primary gate.
+        self._rmse_check = QCheckBox()
+        self._rmse_check.setChecked(FitConfig().rmse_threshold_factor is not None)  # default: off
+        self._rmse_check.setToolTip('Optionally trim the valid pool by RMSE relative to the best fit (off by default).')
         self._rmse_spin = NoScrollDoubleSpinBox()
         self._rmse_spin.setRange(1.0, 10.0)
         self._rmse_spin.setSingleStep(0.1)
         self._rmse_spin.setDecimals(2)
         self._rmse_spin.setValue(1.5)
-        self._rmse_spin.setToolTip('Trials with RMSE > (best_RMSE × factor) are discarded before aggregation.')
+        self._rmse_spin.setEnabled(self._rmse_check.isChecked())
+        self._rmse_spin.setToolTip('Drop valid fits with RMSE > (best_RMSE × factor). Only applied when enabled.')
+        self._rmse_check.toggled.connect(self._rmse_spin.setEnabled)
+        self._rmse_check.toggled.connect(self.config_changed)
         self._rmse_spin.valueChanged.connect(self.config_changed)
-        form.addRow('RMSE factor:', self._with_info(self._rmse_spin, 'RMSE factor', _RMSE_HELP_HTML))
+        form.addRow('Trim by RMSE factor:', self._rmse_trim_row())
 
         self._r2_spin = NoScrollDoubleSpinBox()
         self._r2_spin.setRange(0.0, 1.0)
@@ -312,6 +309,19 @@ class FitConfigPanel(InfoGroupBox):
             'Fit per replica:',
             self._with_info(self._per_replica_check, 'Fit per replica', _PER_REPLICA_HELP_HTML),
         )
+
+    def _rmse_trim_row(self) -> QWidget:
+        """Row: [enable checkbox] [factor spinbox] [info] for the optional trim."""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(15)
+        lay.addWidget(self._rmse_check)
+        self._rmse_spin.setFixedWidth(120)
+        lay.addWidget(self._rmse_spin)
+        lay.addWidget(InfoButton('RMSE factor', _RMSE_HELP_HTML))
+        lay.addStretch(1)
+        return row
 
     @staticmethod
     def _with_info(widget: QWidget, title: str, html: str) -> QWidget:

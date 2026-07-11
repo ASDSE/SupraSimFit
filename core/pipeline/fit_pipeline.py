@@ -4,9 +4,10 @@ This module provides the main entry point for fitting assay data. The
 pipeline orchestrates:
 1. Loading/preparing data
 2. Running multi-start optimization
-3. Filtering results by quality metrics
-4. Aggregating to robust median estimates
-5. Computing final fit metrics
+3. Filtering to the valid-fit pool by quality metrics
+4. Collapsing the pool to a representative real fit (see
+   :mod:`core.optimizer.ensemble`)
+5. Summarising the pool's spread (median/MAD, mean/STDEV)
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ import numpy as np
 from core.assays.base import BaseAssay
 from core.assays.dye_alone import DyeAloneAssay
 from core.data_processing.measurement_set import MeasurementSet
-from core.optimizer.filters import calculate_fit_metrics, filter_fits
+from core.optimizer.ensemble import DEFAULT_STATISTICS_MODE, ENSEMBLE_STATISTICS, central_spread, collapse
+from core.optimizer.filters import calculate_fit_metrics, select_valid_fits
 from core.optimizer.multistart import multistart_minimize
 from core.optimizer.scaling import ParamScaler
 from core.units import Q_, Quantity
@@ -55,15 +57,20 @@ class FitResult:
     Attributes
     ----------
     parameters : dict[str, Quantity]
-        Best-fit parameter name → Quantity value.
+        Representative-fit parameter name → Quantity value. This is an
+        *actual* fit from the valid pool (the one with the highest R²),
+        not a synthetic per-parameter aggregate — so it lies on the
+        model's degenerate manifold and reconstructs ``y_fit`` exactly.
     uncertainties : dict[str, Quantity]
-        Parameter name → uncertainty (MAD of filtered fits) as Quantity.
+        Parameter name → reported spread across the valid pool, as a
+        Quantity. The spread flavour follows ``statistics_mode`` (MAD for
+        ``"median"``, STDEV for ``"mean"``).
     rmse : float
-        Root mean squared error of the fit.
+        RMSE of the representative fit.
     r_squared : float
-        Coefficient of determination.
+        R² of the representative fit.
     n_passing : int
-        Number of fits that passed filtering criteria.
+        Number of fits in the valid pool.
     n_total : int
         Total number of fit attempts.
     x_fit : Quantity
@@ -100,17 +107,27 @@ class FitResult:
     replica_fits : list[FitResult] | None
         Per-replica fit results when this is an aggregate from
         :func:`fit_measurement_set_per_replica`; ``None`` for single-signal
-        fits.  Retained for diagnostic inspection only — the reported
-        ``parameters`` and ``uncertainties`` are computed directly from
-        the pooled ``parameter_samples``, not from these.
+        fits.  Retained for diagnostic inspection only.
     parameter_samples : dict[str, np.ndarray] | None
-        One flat array per parameter key holding every passing trial's
-        parameter value (length == ``n_passing``).  In average mode this
-        is the multistart pool on the single averaged signal; in
-        per-replica mode it is the concatenation of passing trials
-        across every active replica (the pool downstream box-and-whisker
-        plots consume).  Both ``parameters`` (median) and
-        ``uncertainties`` (MAD) are computed directly from this pool.
+        One flat array per parameter key holding every valid trial's
+        parameter value (length == ``n_passing``), aligned by index.  In
+        average mode this is the multistart pool on the single averaged
+        signal; in per-replica mode it is the concatenation of valid
+        trials across every active replica.  The reported ``uncertainties``
+        and the table's Median/MAD/Mean/STDEV are computed from this pool.
+    quality_samples : dict[str, np.ndarray] | None
+        ``{"rmse": ..., "r_squared": ...}`` — per-trial fit quality for the
+        pool, aligned to ``parameter_samples`` by index.  Drives the
+        RMSE/R² distribution plots and representative selection.
+    representative_index : int | None
+        Index (into the ``parameter_samples``/``quality_samples`` arrays)
+        of the representative fit reported in ``parameters``/``rmse``/
+        ``r_squared``/``y_fit``.
+    statistics_mode : str
+        Which aggregation drives the reported ± and annotation: ``"median"``
+        (± MAD, robust default) or ``"mean"`` (± STDEV).  A display choice —
+        it never changes ``parameters`` (the representative), the curve, or
+        RMSE/R².
     """
 
     parameters: Dict[str, Quantity]
@@ -133,6 +150,9 @@ class FitResult:
     uncertainty_source: str = 'optimizer'
     replica_fits: Optional[List['FitResult']] = None
     parameter_samples: Optional[Dict[str, np.ndarray]] = None
+    quality_samples: Optional[Dict[str, np.ndarray]] = None
+    representative_index: Optional[int] = None
+    statistics_mode: str = DEFAULT_STATISTICS_MODE
 
     @property
     def success(self) -> bool:
@@ -192,6 +212,10 @@ class FitResult:
         if self.parameter_samples is not None:
             parameter_samples_serial = {k: [float(v) for v in arr] for k, arr in self.parameter_samples.items()}
 
+        quality_samples_serial: Optional[Dict[str, List[float]]] = None
+        if self.quality_samples is not None:
+            quality_samples_serial = {k: [float(v) for v in arr] for k, arr in self.quality_samples.items()}
+
         return {
             'id': self.id,
             'timestamp': self.timestamp,
@@ -214,6 +238,9 @@ class FitResult:
             'uncertainty_source': self.uncertainty_source,
             'replica_fits': replica_fits_serial,
             'parameter_samples': parameter_samples_serial,
+            'quality_samples': quality_samples_serial,
+            'representative_index': self.representative_index,
+            'statistics_mode': self.statistics_mode,
         }
 
     @classmethod
@@ -265,6 +292,22 @@ class FitResult:
         if parameter_samples_data is not None:
             parameter_samples = {k: np.asarray(v, dtype=float) for k, v in parameter_samples_data.items()}
 
+        quality_samples_data = d.get('quality_samples')
+        quality_samples: Optional[Dict[str, np.ndarray]] = None
+        if quality_samples_data is not None:
+            quality_samples = {k: np.asarray(v, dtype=float) for k, v in quality_samples_data.items()}
+
+        # Normalise the enum-ish display fields so a malformed/legacy JSON can't
+        # crash the GUI later (e.g. ENSEMBLE_STATISTICS[mode] or pool indexing).
+        statistics_mode = d.get('statistics_mode', DEFAULT_STATISTICS_MODE)
+        if statistics_mode not in ENSEMBLE_STATISTICS:
+            statistics_mode = DEFAULT_STATISTICS_MODE
+        representative_index = d.get('representative_index')
+        if representative_index is not None:
+            pool_size = len(next(iter(parameter_samples.values()))) if parameter_samples else 0
+            if not 0 <= representative_index < pool_size:
+                representative_index = None
+
         return cls(
             parameters=parameters,
             uncertainties=uncertainties,
@@ -286,15 +329,24 @@ class FitResult:
             uncertainty_source=d.get('uncertainty_source', 'optimizer'),
             replica_fits=replica_fits,
             parameter_samples=parameter_samples,
+            quality_samples=quality_samples,
+            representative_index=representative_index,
+            statistics_mode=statistics_mode,
         )
 
 
 @dataclass
 class FitConfig:
-    """Configuration for the fitting pipeline."""
+    """Configuration for the fitting pipeline.
+
+    ``rmse_threshold_factor`` is an *optional* extra trim on top of the
+    absolute R² floor (``min_r_squared``), and is off by default
+    (``None``). When set, fits with ``RMSE > best_valid_RMSE * factor`` are
+    also dropped from the valid pool.
+    """
 
     n_trials: int = 100
-    rmse_threshold_factor: float = 1.5
+    rmse_threshold_factor: Optional[float] = None
     min_r_squared: float = 0.9
     log_scale_params: Optional[List[str]] = None
     custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
@@ -381,6 +433,100 @@ def _wrap_params_as_quantities(
     return result
 
 
+def representative_view(
+    assay: BaseAssay,
+    params: np.ndarray,
+) -> Tuple[float, float, Quantity, Quantity]:
+    """Self-consistent reported fields for one real parameter vector.
+
+    The single source for "a parameter vector → its RMSE/R² and plotted
+    curve against *assay*'s data", used both when first reporting a fit and
+    when the user re-selects a different representative. Because *params* is
+    a real fit (on the model's degenerate manifold), the curve and metrics
+    reconstruct correctly — unlike a synthetic per-parameter aggregate.
+
+    Returns
+    -------
+    tuple[float, float, Quantity, Quantity]
+        ``(rmse, r_squared, x_fit, y_fit)``.
+    """
+    y_pred = assay.forward_model(params)
+    rmse, r_squared = calculate_fit_metrics(assay.y_data.magnitude, y_pred.magnitude)
+    x_fit, y_fit = _dense_fit_curve(assay, params)
+    return rmse, r_squared, x_fit, y_fit
+
+
+def apply_statistics_mode(result: FitResult, mode: str) -> None:
+    """Recompute the reported ± on *result* from its pool under *mode*.
+
+    Mutates *result* in place: updates ``statistics_mode`` and recomputes
+    ``uncertainties`` (the spread) from ``parameter_samples`` via
+    :func:`core.optimizer.ensemble.central_spread`. The reported value
+    (representative), curve, and RMSE/R² are unchanged — only the ± flavour
+    (MAD vs STDEV) changes. Used by the GUI median↔mean toggle (no re-fit).
+
+    Raises
+    ------
+    ValueError
+        If *result* has no ``parameter_samples`` pool to summarise.
+    """
+    from core.assays.registry import ASSAY_REGISTRY, AssayType
+
+    if not result.parameter_samples:
+        raise ValueError('Cannot set statistics mode: result has no parameter_samples pool.')
+    if mode not in ENSEMBLE_STATISTICS:
+        raise ValueError(f"Unknown statistics mode '{mode}'. Valid modes: {sorted(ENSEMBLE_STATISTICS)}.")
+
+    try:
+        units = dict(ASSAY_REGISTRY[AssayType[result.assay_type]].units)
+    except KeyError:
+        units = {}
+
+    # Compute before mutating so a failure can't leave the result half-updated.
+    uncertainties = {
+        key: Q_(central_spread(samples, mode)[1], units.get(key, 'dimensionless'))
+        for key, samples in result.parameter_samples.items()
+    }
+    result.statistics_mode = mode
+    result.uncertainties = uncertainties
+
+
+def select_representative(result: FitResult, assay: BaseAssay, index: int) -> None:
+    """Re-point *result* at a different valid fit from its pool.
+
+    Mutates *result* in place: sets ``representative_index`` to *index* and
+    rebuilds ``parameters``/``rmse``/``r_squared``/``x_fit``/``y_fit`` from
+    that pooled trial via :func:`representative_view`. ``uncertainties`` and
+    the pool are unchanged — only which real fit is reported. Used by the GUI
+    when the user picks a fit from the distribution plot or the selector.
+
+    Parameters
+    ----------
+    result : FitResult
+        A successful fit carrying a ``parameter_samples`` pool.
+    assay : BaseAssay
+        Assay rebuilt from the same data (the averaged signal for
+        per-replica results) so curve/metrics match the reported data.
+    index : int
+        Index into the pooled samples of the fit to report.
+    """
+    if not result.parameter_samples:
+        raise ValueError('Cannot select a representative: result has no parameter_samples pool.')
+
+    pool_size = len(next(iter(result.parameter_samples.values())))
+    if not 0 <= index < pool_size:
+        raise ValueError(f'Representative index {index} out of range for pool of size {pool_size}.')
+
+    rep_params = np.array([result.parameter_samples[k][index] for k in assay.parameter_keys], dtype=float)
+    rmse, r_squared, x_fit, y_fit = representative_view(assay, rep_params)
+    result.representative_index = index
+    result.parameters = _wrap_params_as_quantities(rep_params, assay)
+    result.rmse = rmse
+    result.r_squared = r_squared
+    result.x_fit = x_fit
+    result.y_fit = y_fit
+
+
 def fit_assay(
     assay: BaseAssay,
     config: Optional[FitConfig] = None,
@@ -446,44 +592,37 @@ def fit_assay(
         scaler=scaler,
     )
 
-    # Keep the filtered pool around so parameter_samples can be populated —
-    # this is the full distribution of passing trials, not just their median.
-    passing_attempts = filter_fits(
+    # Select the valid pool: absolute R² floor (primary) + optional RMSE trim.
+    valid_attempts = select_valid_fits(
         all_attempts,
-        rmse_threshold_factor=config.rmse_threshold_factor,
         min_r_squared=config.min_r_squared,
+        rmse_threshold_factor=config.rmse_threshold_factor,
     )
 
-    if passing_attempts:
-        param_matrix = np.array([a.params for a in passing_attempts], dtype=float)
-        median_params = np.median(param_matrix, axis=0)
-        mad = np.median(np.abs(param_matrix - median_params), axis=0)
-        n_passing = len(passing_attempts)
-    else:
-        median_params = None
-        mad = None
-        n_passing = 0
-
     # Handle case where no fits pass
-    if median_params is None:
+    if not valid_attempts:
         if all_attempts:
             best = all_attempts[0]
             logger.warning(
-                'No fits passed filtering (n_trials=%d, rmse_factor=%.1f, min_r2=%.2f). Best attempt: RMSE=%.4e, R2=%.4f.',
+                'No fits passed filtering (n_trials=%d, min_r2=%.2f, rmse_factor=%s). Best attempt: RMSE=%.4e, R2=%.4f.',
                 config.n_trials,
-                config.rmse_threshold_factor,
                 config.min_r_squared,
+                config.rmse_threshold_factor,
                 best.rmse,
                 best.r_squared,
             )
+            hint = (
+                'All fit attempts were rejected by the quality filter. Try: (1) lowering min_r_squared, '
+                '(2) increasing n_trials, or (3) reviewing parameter bounds.'
+            )
+            if config.rmse_threshold_factor is not None:
+                hint += ' The optional RMSE-factor trim is also active — disabling it may help.'
             diag = {
                 'error': 'No fits passed filtering criteria',
                 'best_attempt_rmse': best.rmse,
                 'best_attempt_r_squared': best.r_squared,
                 'best_attempt_params': assay.params_to_dict(best.params),
-                'hint': (
-                    'All fit attempts were rejected by the quality filter. Try: (1) increasing rmse_threshold_factor, (2) lowering min_r_squared, (3) increasing n_trials, or (4) reviewing parameter bounds.'
-                ),
+                'hint': hint,
             }
         else:
             logger.warning(
@@ -510,23 +649,28 @@ def fit_assay(
             metadata=diag,
         )
 
-    # Calculate metrics for median parameters
-    y_pred = assay.forward_model(median_params)
-    rmse, r_squared = calculate_fit_metrics(y_data_mag, y_pred.magnitude)
+    # Collapse the pool: keep every valid trial, report a real representative fit.
+    keys = list(assay.parameter_keys)
+    param_matrix = np.array([a.params for a in valid_attempts], dtype=float)
+    rmse_pool = np.array([a.rmse for a in valid_attempts], dtype=float)
+    r2_pool = np.array([a.r_squared for a in valid_attempts], dtype=float)
+    ens = collapse(param_matrix, rmse_pool, r2_pool, keys)
 
-    # Build Quantity parameter dicts
-    params_q = _wrap_params_as_quantities(median_params, assay)
-    unc_q = _wrap_params_as_quantities(mad, assay)
-    x_fit, y_fit = _dense_fit_curve(assay, median_params)
+    # Reported result = the representative real fit (on-manifold, self-consistent).
+    rep_params = ens.representative_params
+    rmse, r_squared, x_fit, y_fit = representative_view(assay, rep_params)
+    params_q = _wrap_params_as_quantities(rep_params, assay)
 
-    parameter_samples = {k: param_matrix[:, i].copy() for i, k in enumerate(assay.parameter_keys)}
+    # Reported ± = spread of the pool under the default statistics mode.
+    spread_vec = np.array([central_spread(ens.parameter_samples[k], DEFAULT_STATISTICS_MODE)[1] for k in keys])
+    unc_q = _wrap_params_as_quantities(spread_vec, assay)
 
     return FitResult(
         parameters=params_q,
         uncertainties=unc_q,
         rmse=rmse,
         r_squared=r_squared,
-        n_passing=n_passing,
+        n_passing=len(valid_attempts),
         n_total=len(all_attempts),
         x_fit=x_fit,
         y_fit=y_fit,
@@ -536,7 +680,10 @@ def fit_assay(
         fit_config=_config_to_dict(config),
         measurement_set_id=measurement_set_id,
         source_file=source_file,
-        parameter_samples=parameter_samples,
+        parameter_samples=ens.parameter_samples,
+        quality_samples=ens.quality_samples,
+        representative_index=ens.representative_index,
+        statistics_mode=DEFAULT_STATISTICS_MODE,
     )
 
 
@@ -718,24 +865,18 @@ def fit_measurement_set_per_replica(
     its per-replica scaler, so parameter values from every replica
     live in the same raw-unit space.
 
-    **Aggregation semantics (approach (b), pooled):** every replica's
-    passing trials — not its pre-collapsed median — are concatenated
-    into a single flat pool (per parameter key) stored on the returned
-    ``FitResult.parameter_samples``.  The reported ``parameters`` are
-    the **median of that pool** and ``uncertainties`` are the MAD of
-    that pool.  A replica with more passing trials therefore
-    contributes proportionally more samples to the pool; this matches
-    the user-requested design (every acceptable fit counts equally).
+    **Aggregation semantics (pooled):** every replica's valid trials are
+    concatenated into a single flat pool (per parameter key) stored on the
+    returned ``FitResult.parameter_samples``, aligned with a pooled
+    ``quality_samples`` whose RMSE/R² are recomputed against the averaged
+    active-replica signal.  A replica with more valid trials contributes
+    proportionally more samples to the pool.
 
-    This is strictly richer than the earlier median-of-medians approach:
-    with N replicas × ~80 passing trials each, the pool has ~80N
-    samples; the previous aggregator collapsed the same data to N
-    points before computing MAD.
-
-    The reported ``x_fit``/``y_fit`` is the forward model evaluated at
-    the pooled median parameters on the shared concentration grid — this
-    is the "Median Fit" curve drawn in the plot.  RMSE and R² on the
-    aggregate are computed against the averaged active-replica signal.
+    The reported ``parameters``/``rmse``/``r_squared``/``y_fit`` come from
+    the **representative** pooled trial — the one with the highest R²
+    against the averaged signal, a real on-manifold fit, not a synthetic
+    per-parameter aggregate.  ``uncertainties`` are the pool's spread under
+    the default statistics mode (MAD).
 
     Failure handling: a replica that raises (degenerate scaler input,
     convergence failure, …) is skipped and recorded in the returned
@@ -759,12 +900,13 @@ def fit_measurement_set_per_replica(
     Returns
     -------
     FitResult
-        Aggregate result whose ``parameters`` and ``uncertainties`` are
-        the pooled median and MAD across every passing trial from every
-        successful replica, ``uncertainty_source == "replicate"`` (string
-        kept for backward compat with previously exported JSONs),
-        ``parameter_samples`` holds the pool, and ``replica_fits`` holds
-        the per-replica successful fits for diagnostic inspection.
+        Aggregate result whose ``parameters``/``rmse``/``r_squared`` are
+        the representative pooled trial and ``uncertainties`` the pool's
+        spread, ``uncertainty_source == "replicate"`` (string kept for
+        backward compat with previously exported JSONs),
+        ``parameter_samples``/``quality_samples`` hold the pool, and
+        ``replica_fits`` holds the per-replica successful fits for
+        diagnostic inspection.
     """
     if config is None:
         config = FitConfig()
@@ -811,7 +953,7 @@ def fit_measurement_set_per_replica(
             failures,
         )
 
-    # Pool: concatenate every replica's passing-trial samples per parameter.
+    # Pool every replica's valid trials (per parameter key), aligned by index.
     param_keys = tuple(replica_fits[0].parameter_samples.keys())
     for rr in replica_fits[1:]:
         if tuple(rr.parameter_samples.keys()) != param_keys:
@@ -821,30 +963,30 @@ def fit_measurement_set_per_replica(
     }
     pool_size = len(next(iter(pool.values())))
 
-    any_fit = replica_fits[0]
-    param_units = {k: v.units for k, v in any_fit.parameters.items()}
-    params_q: Dict[str, Any] = {}
-    unc_q: Dict[str, Any] = {}
-    for k in param_keys:
-        samples = pool[k]
-        median = float(np.median(samples))
-        mad = float(np.median(np.abs(samples - median)))
-        params_q[k] = Q_(median, param_units[k])
-        unc_q[k] = Q_(mad, param_units[k])
-
     template_assay = ms.to_assay(
         assay_cls,
         conditions=conditions,
         use_average=True,
     )
-    median_vec = np.array(
-        [float(params_q[k].magnitude) for k in template_assay.parameter_keys],
-        dtype=float,
-    )
+    keys = list(template_assay.parameter_keys)
+
+    # Recompute each pooled trial's quality against the averaged signal so the
+    # pooled representative and its reported RMSE/R² stay self-consistent.
+    param_matrix = np.column_stack([pool[k] for k in keys])
     y_avg = template_assay.y_data.magnitude
-    y_pred = template_assay.forward_model(median_vec)
-    rmse, r_squared = calculate_fit_metrics(y_avg, y_pred.magnitude)
-    x_fit, y_fit = _dense_fit_curve(template_assay, median_vec)
+    rmse_pool = np.empty(pool_size)
+    r2_pool = np.empty(pool_size)
+    for j in range(pool_size):
+        y_pred = template_assay.forward_model(param_matrix[j])
+        rmse_pool[j], r2_pool[j] = calculate_fit_metrics(y_avg, y_pred.magnitude)
+    ens = collapse(param_matrix, rmse_pool, r2_pool, keys)
+
+    # Reported result = the representative pooled trial (a real, on-manifold fit).
+    rep_params = ens.representative_params
+    rmse, r_squared, x_fit, y_fit = representative_view(template_assay, rep_params)
+    params_q = _wrap_params_as_quantities(rep_params, template_assay)
+    spread_vec = np.array([central_spread(ens.parameter_samples[k], DEFAULT_STATISTICS_MODE)[1] for k in keys])
+    unc_q = _wrap_params_as_quantities(spread_vec, template_assay)
 
     n_total_pool = sum(rr.n_total for rr in replica_fits)
 
@@ -876,5 +1018,8 @@ def fit_measurement_set_per_replica(
         metadata=metadata,
         uncertainty_source='replicate',
         replica_fits=replica_fits,
-        parameter_samples=pool,
+        parameter_samples=ens.parameter_samples,
+        quality_samples=ens.quality_samples,
+        representative_index=ens.representative_index,
+        statistics_mode=DEFAULT_STATISTICS_MODE,
     )
