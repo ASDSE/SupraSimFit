@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from PyQt6.QtCore import QLocale, Qt, pyqtSignal
@@ -20,6 +21,10 @@ _UNIT_TYPE_CHOICES: dict[str, tuple[tuple[str, ...], str]] = {
     'concentration': (('nM', 'µM', 'mM', 'M'), 'µM'),
     'binding_constant': (('M⁻¹',), 'M⁻¹'),
 }
+
+# Decimals shown in the finest offered unit; coarser units widen from this so a
+# unit switch never rounds a nonzero quantity to zero (see _decimals_for_scale).
+_BASE_DECIMALS = 3
 
 _LOCALE_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
 
@@ -53,6 +58,9 @@ class _UnitWidget(QWidget):
             if choices and self._base_unit
             else []
         )
+        # Finest offered unit sets the smallest representable step; coarser units
+        # widen their decimals relative to it so a switch never loses the value.
+        self._min_scale: float = min((scale for _, scale in self._units), default=1.0)
         self._current_scale: float = 1.0
 
         layout = QHBoxLayout(self)
@@ -74,8 +82,6 @@ class _UnitWidget(QWidget):
             layout.addWidget(self._combo)
         else:
             self._combo = None
-            self._spinbox.setRange(0.0, 1e15)
-            self._spinbox.setDecimals(3)
 
         # Set spinbox range/decimals for the initial unit
         self._apply_range_for_current_unit()
@@ -101,10 +107,20 @@ class _UnitWidget(QWidget):
         if self._combo is not None:
             self._combo.setToolTip(tip)
 
+    def _decimals_for_scale(self, scale: float) -> int:
+        """Decimals so a value resolvable in the finest unit survives here.
+
+        The finest offered unit is shown with ``_BASE_DECIMALS`` places; a coarser
+        unit (larger ``scale``) is widened by one decimal per decade so converting
+        a nonzero quantity into it never rounds to ``0``.
+        """
+        extra = round(math.log10(scale / self._min_scale)) if self._min_scale > 0 else 0
+        return _BASE_DECIMALS + max(0, extra)
+
     def _apply_range_for_current_unit(self) -> None:
         self._spinbox.blockSignals(True)
         self._spinbox.setRange(0.0, 1e15)
-        self._spinbox.setDecimals(3)
+        self._spinbox.setDecimals(self._decimals_for_scale(self._current_scale))
         self._spinbox.blockSignals(False)
 
     def _on_unit_changed(self, idx: int) -> None:
