@@ -78,16 +78,19 @@ class TestUnitWidgetInputConversion:
         assert v.units == Q_(1, 'M').units
         assert v.to('M').magnitude == pytest.approx(50e-6)
 
-    def test_changing_display_unit_preserves_quantity(self, qapp):
-        # 50 µM stays 5e-5 M when reinterpreted through nM (both representable in
-        # the spinbox; switching to a coarser unit like M is a display-precision
-        # concern, not a unit-conversion one).
-        w = _UnitWidget(ConditionField('h0', '[Host]', '', 50e-6, 'M', 'concentration'))
-        before = w.value().to('M').magnitude
-        w._combo.setCurrentText('nM')
-        assert w.value().to('M').magnitude == pytest.approx(before)
-        w._combo.setCurrentText('µM')
-        assert w.value().to('M').magnitude == pytest.approx(before)
+    # Switching a field's display unit must never alter the physical quantity —
+    # for *every* offered unit, including a coarse one like 'M'. Regression for a
+    # fixed 3-decimal spinbox that silently rounded a small value to 0 on switch
+    # (e.g. 50 µM shown as M → 0.000), zeroing the condition and corrupting fits.
+    @pytest.mark.parametrize('base_value', [50e-6, 1e-9, 4.3e-6, 250e-6])
+    def test_switching_display_unit_preserves_quantity(self, qapp, base_value):
+        w = _UnitWidget(ConditionField('h0', '[Host]', '', base_value, 'M', 'concentration'))
+        for idx, (label, _) in enumerate(w._units):  # includes 'M', where the bug bit
+            w._combo.setCurrentIndex(idx)
+            got = w.value().to('M').magnitude
+            assert got == pytest.approx(base_value, rel=1e-9), (
+                f'switching to {label!r} changed {base_value} M to {got} M'
+            )
 
     def test_spinbox_value_interpreted_in_display_unit(self, qapp):
         w = _UnitWidget(ConditionField('h0', '[Host]', '', 1e-6, 'M', 'concentration'))
