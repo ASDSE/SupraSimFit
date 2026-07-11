@@ -14,7 +14,7 @@ import pytest
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.simulation import build_concentration_vector, simulate_signal
 from core.units import Q_
-from gui.simulation.controls import ConcentrationInput, ParameterControl, _display_factor
+from gui.simulation.controls import ParameterControl, TitrantInput, _display_factor
 from gui.simulation.sim_knob import knobs_for
 from gui.simulation.simulation_panel import SimulationPanel
 from gui.widgets.assay_conditions import condition_fields
@@ -98,23 +98,36 @@ def test_display_factor_is_pint_derived(qapp):
     assert _display_factor('mM', 'M') == Q_(1, 'mM').to('M').magnitude
 
 
-def test_concentration_explicit_vector_preserved_across_unit_switch(qapp):
-    """Switching the unit in explicit mode must convert the vector, not silently rescale it."""
-    ci = ConcentrationInput()
-    ci.load_spec('explicit', {'values': [1e-6, 2e-6, 3e-6]})  # 1, 2, 3 µM
-    ci._unit.setCurrentText('mM')
-    mode, kwargs = ci.spec()
+def test_titrant_default_is_linear_scan_to_max(qapp):
+    """With no custom vector, the titration is a 0 → max linear scan of N_POINTS points."""
+    ti = TitrantInput()
+    ti.set_titrant('[Guest]<sub>0</sub>', 'tip', 30e-6)  # 30 µM default maximum
+    mode, kwargs = ti.spec()
+    assert mode == 'linear'
+    assert kwargs['start'] == 0.0
+    assert kwargs['stop'] == pytest.approx(30e-6)
+    assert kwargs['n'] == TitrantInput.N_POINTS == 300
+
+
+def test_titrant_custom_vector_overrides_scan(qapp):
+    """A custom vector is used verbatim (in M) instead of the 0 → max scan."""
+    ti = TitrantInput()
+    ti.set_titrant('[Guest]<sub>0</sub>', 'tip', 30e-6)
+    ti.set_explicit([1e-6, 2e-6, 5e-6])  # switches to the custom vector
+    mode, kwargs = ti.spec()
     assert mode == 'explicit'
+    v = build_concentration_vector(mode, **kwargs)  # independently rebuild the vector
+    np.testing.assert_allclose(v, [1e-6, 2e-6, 5e-6], rtol=1e-9)
+
+
+def test_titrant_custom_vector_preserved_across_unit_switch(qapp):
+    """Switching the vector's unit must convert the values, not silently rescale them."""
+    ti = TitrantInput()
+    ti.set_titrant('[Guest]<sub>0</sub>', 'tip', 30e-6)
+    ti.set_explicit([1e-6, 2e-6, 3e-6])  # 1, 2, 3 µM
+    ti._vector_unit.setCurrentText('mM')
+    _, kwargs = ti.spec()
     np.testing.assert_allclose(kwargs['values'], [1e-6, 2e-6, 3e-6], rtol=1e-9)
-
-
-def test_concentration_log_mode_round_trips_to_geometric_vector(qapp):
-    ci = ConcentrationInput()
-    ci.load_spec('log', {'start': 1e-8, 'stop': 1e-4, 'n': 9})
-    mode, kwargs = ci.spec()
-    v = build_concentration_vector(mode, **kwargs)
-    ratios = v[1:] / v[:-1]
-    assert np.allclose(ratios, ratios[0], rtol=1e-4)
 
 
 def test_settings_round_trip_restores_assay_and_values(qapp):
@@ -222,7 +235,6 @@ def test_titration_input_lives_in_concentrations_section(qapp):
     """The titrant input renders inside the Concentrations section, not a separate box."""
     from PyQt6.QtWidgets import QGroupBox
 
-    from gui.simulation.controls import ConcentrationInput
     from gui.simulation.sim_knob import SECTION_TITLES
 
     panel = SimulationPanel()
@@ -230,7 +242,7 @@ def test_titration_input_lives_in_concentrations_section(qapp):
     conc_box = next(
         b for b in panel._knob_container.findChildren(QGroupBox) if b.title() == SECTION_TITLES['concentration']
     )
-    assert conc_box.findChild(ConcentrationInput) is not None
+    assert conc_box.findChild(TitrantInput) is not None
     # No stand-alone "Titration" box remains.
     assert 'Titration' not in {b.title() for b in panel.findChildren(QGroupBox)}
 

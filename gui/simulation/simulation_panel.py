@@ -11,16 +11,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Type
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QGroupBox, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import QGroupBox, QVBoxLayout, QWidget
 
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from gui.simulation.controls import ConcentrationInput, NoiseControl, ParameterControl
+from gui.simulation.controls import NoiseControl, ParameterControl, TitrantInput
 from gui.simulation.sim_knob import SECTION_CONCENTRATION, SECTION_ORDER, SECTION_TITLES, TITRANT_RANGE, knobs_for
 from gui.widgets.assay_conditions import assay_class
-
-_DEFAULT_N = 11
 
 # DBA carries a categorical titration mode that is NOT a knob — it is fixed by the
 # chosen subtype, exactly as AssayConfigPanel.current_conditions injects it.
@@ -63,12 +61,10 @@ class SimulationPanel(QWidget):
         self._knob_layout.setSpacing(8)
         root.addWidget(self._knob_container)
 
-        # The titrant is itself a concentration, so its input renders inside the
+        # The titrant is itself a concentration, so its setup renders inside the
         # Concentrations section (placed there by _rebuild_knobs).  Created here,
         # parentless, so it survives the section boxes being rebuilt on assay change.
-        self._conc_label = QLabel()
-        self._conc_label.setTextFormat(Qt.TextFormat.RichText)
-        self._conc_input = ConcentrationInput()
+        self._titrant = TitrantInput()
 
         noise_box = QGroupBox('Noise')
         noise_layout = QVBoxLayout(noise_box)
@@ -76,31 +72,33 @@ class SimulationPanel(QWidget):
         noise_layout.addWidget(self._noise)
         root.addWidget(noise_box)
 
-        self._conc_input.changed.connect(self.changed)
+        self._titrant.changed.connect(self.changed)
         self._noise.changed.connect(self.changed)
 
-        self.set_assay_type(assay_type, _reset_range=True)
+        self.set_assay_type(assay_type)
 
     # -- public API ----------------------------------------------------------
 
     def assay_type(self) -> AssayType:
         return self._assay_type
 
-    def set_assay_type(self, assay_type: AssayType, *, _reset_range: bool = True) -> None:
+    def set_assay_type(self, assay_type: AssayType) -> None:
         """Rebuild the knob controls for *assay_type* (registry-driven)."""
         self._assay_type = assay_type
-        self._rebuild_knobs(assay_type)
+        self._rebuild_knobs(assay_type)  # reparents self._titrant into the Concentrations box
         species = ASSAY_REGISTRY[assay_type].x_label
-        self._conc_label.setTextFormat(Qt.TextFormat.RichText)
-        self._conc_label.setText(f'Titrated species: <b>{species}</b>')
-        if _reset_range:
-            start, stop = TITRANT_RANGE.get(assay_type, (0.0, 50e-6))
-            self._conc_input.set_linear(start, stop, _DEFAULT_N)
+        _, stop = TITRANT_RANGE.get(assay_type, (0.0, 50e-6))
+        self._titrant.set_titrant(
+            f'[{species}]<sub>0</sub>',
+            f'Maximum {species.lower()} concentration — the titration scans 0 → this in '
+            f'{TitrantInput.N_POINTS} points.',
+            stop,
+        )
         self.changed.emit()
 
     def set_concentration_explicit(self, values_m) -> None:
         """Switch the titration input to an explicit vector (Molar). Used on data import."""
-        self._conc_input.load_spec('explicit', {'values': [float(v) for v in values_m]})
+        self._titrant.set_explicit([float(v) for v in values_m])
 
     def spec(self) -> SimSpec:
         conditions: dict[str, Any] = {}
@@ -112,7 +110,7 @@ class SimulationPanel(QWidget):
                 parameters[key] = ctrl.value()
         if self._assay_type in _DBA_MODE:
             conditions['mode'] = _DBA_MODE[self._assay_type]
-        conc_mode, conc_kwargs = self._conc_input.spec()
+        conc_mode, conc_kwargs = self._titrant.spec()
         return SimSpec(
             assay_type=self._assay_type,
             assay_cls=assay_class(self._assay_type),
@@ -125,23 +123,20 @@ class SimulationPanel(QWidget):
 
     def state(self) -> dict:
         """Full serializable settings for save."""
-        mode, kwargs = self._conc_input.spec()
         return {
             'assay_type': self._assay_type.name,
             'knobs': {key: ctrl.state() for key, ctrl in self._controls.items()},
-            'concentration': {'mode': mode, 'kwargs': kwargs},
+            'titrant': self._titrant.state(),
             'noise': self._noise.settings(),
         }
 
     def load_state(self, data: dict) -> None:
         at = AssayType[data['assay_type']]
-        self.set_assay_type(at, _reset_range=False)
+        self.set_assay_type(at)
         for key, st in data.get('knobs', {}).items():
             if key in self._controls:
                 self._controls[key].load_state(st)
-        conc = data.get('concentration', {})
-        if conc:
-            self._conc_input.load_spec(conc.get('mode', 'linear'), conc.get('kwargs', {}))
+        self._titrant.load_state(data.get('titrant', {}))
         self._noise.load_settings(data.get('noise', {}))
         self.changed.emit()
 
@@ -153,8 +148,7 @@ class SimulationPanel(QWidget):
         # section boxes synchronously: deleteLater() alone is async, so the previous
         # assay's knobs keep painting (overlapping the new ones) until the event loop
         # runs — setParent(None) hides them immediately.
-        self._conc_label.setParent(None)
-        self._conc_input.setParent(None)
+        self._titrant.setParent(None)
         while self._knob_layout.count():
             item = self._knob_layout.takeAt(0)
             w = item.widget()
@@ -187,6 +181,5 @@ class SimulationPanel(QWidget):
                 self._controls[knob.key] = ctrl
                 self._is_condition[knob.key] = knob.is_condition
             if is_concentration:
-                box_layout.addWidget(self._conc_label)
-                box_layout.addWidget(self._conc_input)
+                box_layout.addWidget(self._titrant)
             self._knob_layout.addWidget(box)

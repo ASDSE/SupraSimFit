@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QSlider,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -148,8 +149,6 @@ class ParameterControl(QWidget):
             sb.setMinimumWidth(74)
         self._slider = QSlider(Qt.Orientation.Horizontal)
         self._slider.setRange(0, _SLIDER_STEPS)
-        if self._log:  # decade ticks so a log axis reads as multiplicative
-            self._slider.setTickPosition(QSlider.TickPosition.TicksBelow)
 
         grid.addWidget(_labelled(self._min_spin, 'min', before=True), 1, 0)
         grid.addWidget(self._slider, 1, 1)
@@ -270,184 +269,148 @@ class ParameterControl(QWidget):
     def _on_log10_toggled(self, on: bool) -> None:
         self._log10_display = on
         if self._unit_label is not None:
-            self._unit_label.setText('log₁₀ M⁻¹' if on else _unit_text(self._knob.unit))
+            # log₁₀ of a dimensioned Ka is only defined on its numeric value: the
+            # displayed quantity is log₁₀(K / M⁻¹), which is dimensionless.
+            self._unit_label.setText('log₁₀(K/M⁻¹)' if on else _unit_text(self._knob.unit))
         # Value unchanged — only its representation flips; no recompute needed.
         self._sync_value_spin()
         self._sync_bounds_spins()
 
 
-class ConcentrationInput(QWidget):
-    """Titrant concentration vector with selectable input modes.
+class TitrantInput(QWidget):
+    """Titrant setup: a maximum concentration (0 → max in N points), or an explicit vector.
 
-    ``spec()`` returns ``(mode, kwargs)`` (concentrations in M) ready for
+    The applet needs only two ways to define the titration — scan from zero up to a
+    chosen concentration, or use exactly the concentrations the user lists.  The maximum
+    is a normal concentration knob (slider + bounds + unit), so it looks and behaves like
+    the fixed-concentration controls; ticking *Custom concentration vector* swaps in an
+    explicit list.  ``spec()`` returns ``(mode, kwargs)`` in M, ready for
     :func:`core.simulation.build_concentration_vector`.
     """
 
     changed = pyqtSignal()
 
-    _MODES = [
-        ('Linear (start, stop, N)', 'linear'),
-        ('Start, step, N', 'step'),
-        ('Log (start, stop, N)', 'log'),
-        ('Explicit vector', 'explicit'),
-    ]
+    N_POINTS = 300
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # The titrant vector is always Molar; the selector only rescales the display.
-        self._scale = _display_factor(_CONC_DEFAULT, 'M')
+        self._max_knob: SimKnob | None = None
+        self._max_control: ParameterControl | None = None
+        self._vector_scale = _display_factor(_CONC_DEFAULT, 'M')
 
-        form = QFormLayout(self)
-        form.setContentsMargins(0, 0, 0, 0)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
-        self._mode = QComboBox()
-        for label, key in self._MODES:
-            self._mode.addItem(label, userData=key)
-        self._mode.currentIndexChanged.connect(self._on_mode_changed)
+        # The maximum-concentration knob is rebuilt per assay (its label + default follow
+        # the titrant); it sits in this holder so the rest of the row persists.
+        self._max_holder = QWidget()
+        self._max_layout = QVBoxLayout(self._max_holder)
+        self._max_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._max_holder)
 
-        self._unit = QComboBox()
-        self._unit.addItems(list(_CONC_LABELS))
-        self._unit.setCurrentText(_CONC_DEFAULT)
-        self._unit.currentTextChanged.connect(self._on_unit_changed)
-        mode_row = QWidget()
-        mr = QHBoxLayout(mode_row)
-        mr.setContentsMargins(0, 0, 0, 0)
-        mr.addWidget(self._mode, 1)
-        mr.addWidget(self._unit)
-        form.addRow('Mode', mode_row)
+        self._custom = QCheckBox('Custom concentration vector')
+        self._custom.setToolTip('Simulate at exactly these concentrations instead of a 0 → max scan')
+        self._custom.toggled.connect(self._on_custom_toggled)
+        layout.addWidget(self._custom)
 
-        self._start = SciLineEdit(allow_negative=False)
-        self._stop = SciLineEdit(allow_negative=False)
-        self._step = SciLineEdit(allow_negative=False)
-        self._n = NoScrollSpinBox()
-        self._n.setRange(2, 100000)
-        self._n.setValue(11)
-        self._explicit = QLineEdit()
-        self._explicit.setPlaceholderText('e.g. 0, 1, 2.5, 5, 10')
+        self._vector = QLineEdit()
+        self._vector.setPlaceholderText('e.g. 0, 1, 2.5, 5, 10')
+        self._vector.textChanged.connect(self.changed)
+        self._vector_unit = QComboBox()
+        self._vector_unit.addItems(list(_CONC_LABELS))
+        self._vector_unit.setCurrentText(_CONC_DEFAULT)
+        self._vector_unit.currentTextChanged.connect(self._on_vector_unit_changed)
+        self._vector_row = QWidget()
+        vrow = QHBoxLayout(self._vector_row)
+        vrow.setContentsMargins(0, 0, 0, 0)
+        vrow.addWidget(self._vector, 1)
+        vrow.addWidget(self._vector_unit)
+        layout.addWidget(self._vector_row)
 
-        # Rows are shown/hidden per mode.
-        self._row_start = self._add_row(form, 'Start', self._start)
-        self._row_stop = self._add_row(form, 'Stop', self._stop)
-        self._row_step = self._add_row(form, 'Step', self._step)
-        self._row_n = self._add_row(form, 'Points (N)', self._n)
-        self._row_explicit = self._add_row(form, 'Values', self._explicit)
+        self._on_custom_toggled(False)
 
-        for sb in (self._start, self._stop, self._step):
-            sb.value_changed.connect(self._emit_changed)
-        self._n.valueChanged.connect(self.changed)
-        self._explicit.textChanged.connect(self.changed)
+    # -- public API ----------------------------------------------------------
 
-        self._apply_mode_visibility('linear')
-
-    @staticmethod
-    def _add_row(form: QFormLayout, label: str, w: QWidget):
-        lbl = QLabel(label)
-        form.addRow(lbl, w)
-        return (lbl, w)
-
-    def _emit_changed(self, *_args) -> None:
-        self.changed.emit()
-
-    def current_mode(self) -> str:
-        return self._mode.currentData()
-
-    def set_linear(self, start_m: float, stop_m: float, n: int) -> None:
-        """Programmatically set a linear range (Molar). Used on assay change."""
-        self._mode.blockSignals(True)
-        self._mode.setCurrentIndex(0)
-        self._mode.blockSignals(False)
-        self._apply_mode_visibility('linear')
-        self._start.setValue(start_m / self._scale)
-        self._stop.setValue(stop_m / self._scale)
-        self._n.blockSignals(True)
-        self._n.setValue(int(n))
-        self._n.blockSignals(False)
-        self.changed.emit()
+    def set_titrant(self, label_html: str, tooltip: str, default_max_m: float) -> None:
+        """(Re)build the maximum-concentration knob for a new assay's titrant."""
+        if self._max_control is not None:
+            self._max_control.setParent(None)
+            self._max_control.deleteLater()
+        default = default_max_m if default_max_m > 0 else 1e-5
+        self._max_knob = SimKnob(
+            key='titrant_max',
+            label=label_html,
+            tooltip=tooltip,
+            unit=Q_(1, 'M').units,
+            log=False,
+            default=default,
+            vmin=0.0,
+            vmax=default * 5,
+            is_condition=False,
+            section='concentration',
+        )
+        self._max_control = ParameterControl(self._max_knob)
+        self._max_control.setEnabled(not self._custom.isChecked())
+        self._max_control.changed.connect(self.changed)
+        self._max_layout.addWidget(self._max_control)
 
     def spec(self) -> tuple[str, dict]:
-        mode = self.current_mode()
-        s = self._scale
-        if mode == 'linear':
-            return mode, {'start': self._start.value() * s, 'stop': self._stop.value() * s, 'n': self._n.value()}
-        if mode == 'step':
-            return mode, {'start': self._start.value() * s, 'step': self._step.value() * s, 'n': self._n.value()}
-        if mode == 'log':
-            return mode, {'start': self._start.value() * s, 'stop': self._stop.value() * s, 'n': self._n.value()}
-        return mode, {'values': [v * s for v in _parse_floats(self._explicit.text())]}
+        if self._custom.isChecked():
+            return 'explicit', {'values': [v * self._vector_scale for v in _parse_floats(self._vector.text())]}
+        stop = self._max_control.value() if self._max_control is not None else 0.0
+        return 'linear', {'start': 0.0, 'stop': stop, 'n': self.N_POINTS}
 
-    def load_spec(self, mode: str, kwargs: dict) -> None:
-        idx = next((i for i, (_, k) in enumerate(self._MODES) if k == mode), 0)
-        self._mode.blockSignals(True)
-        self._mode.setCurrentIndex(idx)
-        self._mode.blockSignals(False)
-        self._apply_mode_visibility(mode)
-        s = self._scale
-        if mode in ('linear', 'log'):
-            self._start.setValue(kwargs.get('start', 0.0) / s)
-            self._stop.setValue(kwargs.get('stop', 0.0) / s)
-            self._set_n(kwargs.get('n', 11))
-        elif mode == 'step':
-            self._start.setValue(kwargs.get('start', 0.0) / s)
-            self._step.setValue(kwargs.get('step', 0.0) / s)
-            self._set_n(kwargs.get('n', 11))
-        else:
-            self._explicit.blockSignals(True)
-            self._explicit.setText(', '.join(f'{v / s:g}' for v in kwargs.get('values', [])))
-            self._explicit.blockSignals(False)
-        self.changed.emit()
+    def set_explicit(self, values_m) -> None:
+        """Switch to a custom vector from Molar values (used on data import)."""
+        self._vector.blockSignals(True)
+        self._vector.setText(', '.join(f'{v / self._vector_scale:g}' for v in values_m))
+        self._vector.blockSignals(False)
+        self._custom.setChecked(True)  # emits toggled → changed
+
+    def state(self) -> dict:
+        return {
+            'max': self._max_control.value() if self._max_control is not None else 0.0,
+            'custom': self._custom.isChecked(),
+            'vector': self._vector.text(),
+            'vector_unit': self._vector_unit.currentText(),
+        }
+
+    def load_state(self, s: dict) -> None:
+        if self._max_control is not None and 'max' in s:
+            m = float(s['max'])
+            self._max_control.load_state({'value': m, 'min': 0.0, 'max': (m if m > 0 else 1e-5) * 5})
+        self._vector_unit.blockSignals(True)
+        self._vector_unit.setCurrentText(s.get('vector_unit', _CONC_DEFAULT))
+        self._vector_unit.blockSignals(False)
+        self._vector_scale = _display_factor(self._vector_unit.currentText(), 'M')
+        self._vector.blockSignals(True)
+        self._vector.setText(s.get('vector', ''))
+        self._vector.blockSignals(False)
+        self._custom.setChecked(bool(s.get('custom', False)))
 
     # -- internals -----------------------------------------------------------
 
-    def _set_n(self, n) -> None:
-        self._n.blockSignals(True)
-        self._n.setValue(int(n))
-        self._n.blockSignals(False)
-
-    def _on_mode_changed(self) -> None:
-        self._apply_mode_visibility(self.current_mode())
+    def _on_custom_toggled(self, on: bool) -> None:
+        if self._max_control is not None:
+            self._max_control.setEnabled(not on)
+        self._vector_row.setVisible(on)
         self.changed.emit()
 
-    def _on_unit_changed(self) -> None:
-        old_scale = self._scale
-        self._scale = _display_factor(self._unit.currentText(), 'M')
-        ratio = old_scale / self._scale
-        # Preserve the physical value across a unit switch (convert, don't reinterpret) —
-        # for the start/stop/step fields AND the explicit vector, or the titrant would
-        # silently jump by the unit ratio in explicit mode.
-        for sb in (self._start, self._stop, self._step):
-            sb.setValue(sb.value() * ratio)
-        self._rescale_explicit(ratio)
-        self.changed.emit()
-
-    def _rescale_explicit(self, ratio: float) -> None:
-        """Rescale the explicit vector's displayed values so the physical vector is unchanged."""
+    def _on_vector_unit_changed(self) -> None:
+        old = self._vector_scale
+        self._vector_scale = _display_factor(self._vector_unit.currentText(), 'M')
+        ratio = old / self._vector_scale
+        # Preserve the physical vector across a unit switch (convert, don't reinterpret).
         try:
-            values = _parse_floats(self._explicit.text())
+            values = _parse_floats(self._vector.text())
         except ValueError:
-            return  # a partial/invalid in-progress entry — leave it for the user to finish
-        if not values:
-            return
-        self._explicit.blockSignals(True)
-        self._explicit.setText(', '.join(f'{v * ratio:g}' for v in values))
-        self._explicit.blockSignals(False)
-
-    def _apply_mode_visibility(self, mode: str) -> None:
-        show = {
-            'linear': {'start', 'stop', 'n'},
-            'step': {'start', 'step', 'n'},
-            'log': {'start', 'stop', 'n'},
-            'explicit': {'explicit'},
-        }[mode]
-        for key, (lbl, w) in {
-            'start': self._row_start,
-            'stop': self._row_stop,
-            'step': self._row_step,
-            'n': self._row_n,
-            'explicit': self._row_explicit,
-        }.items():
-            visible = key in show
-            lbl.setVisible(visible)
-            w.setVisible(visible)
+            values = []
+        if values:
+            self._vector.blockSignals(True)
+            self._vector.setText(', '.join(f'{v * ratio:g}' for v in values))
+            self._vector.blockSignals(False)
+        self.changed.emit()
 
 
 class NoiseControl(QWidget):
