@@ -219,6 +219,12 @@ fmt_unit_pretty('1/M')  # 'M⁻¹'
 - Pint's `~P` renders `au`'s symbol as `a.u.` and micromolar as `uM` (ASCII).
   When you need to match a GUI token (`µM`), compare **pint-unit identity**, not
   the formatted string: `next(u for u in UNITS if Q_(1, u).units == q.units)`.
+- **Source a displayed unit from the value, not a registry re-lookup.** The fit
+  summary and TXT export read `str(value.units)` off each parameter Quantity, so
+  the label is right even for an assay type absent from the registry.
+- The registry stores the y-axis unit as the `a.u.` alias for raw display; the
+  `labels.py` formatters normalise it to `au` first — pint parses the dotted
+  `a.u.` as `year·amu`, so a raw `a.u.` would garble to `u a`.
 
 ---
 
@@ -238,7 +244,13 @@ fmt_unit_pretty('1/M')  # 'M⁻¹'
   conditions come back as Quantities (a re-imported result still prints its
   condition units in the TXT report).
 - A missing unit is **not** silently defaulted to dimensionless — `from_dict`
-  logs a warning naming the parameter.
+  **raises** (the GUI import path surfaces it), and the median/mean toggle
+  (`apply_statistics_mode`) takes each ± unit from the fitted parameter rather
+  than a registry re-lookup.
+- `x_fit`/`y_fit` and `custom_bounds` also store their unit tokens (older files
+  fall back to the M/au convention), so the whole payload is self-describing.
+- `Infinity`/`NaN` are still emitted for failed/linear fits — the app's own
+  importer (`json.loads`) reads them and there is no external-consumer need.
 - Pint's `to_tuple()`/`from_tuple()` is a registry-independent alternative worth
   knowing, but the readable token scheme is preferred here and needs no change.
 
@@ -281,6 +293,15 @@ cross-dimension conversion (e.g. Ka↔ΔG) is ever added.
 
 `read_raw_concentrations(path)` returns a **`Quantity`** (magnitude + unit
 together), not a bare array plus a separate unit string — so the two cannot drift.
+
+**Readers declare; every consumer must honor.** A declared unit is worthless if a
+consumer ignores it (the re-audit found three that did, each a silent 1e6–1e9
+error). The normalization point is `MeasurementSet.from_dataframe` (attr → M);
+`extract_concentrations_from_file`, batch import (`load_measurements_multi`
+converts each file *before* `pd.concat` drops per-file attrs), and the DataPanel
+loader all route through the declared unit — none assumes M behind a reader that
+declared otherwise. A concentration unit outside the GUI's nM/µM/mM/M set is
+converted to M with a notice, never silently reinterpreted.
 
 ---
 
