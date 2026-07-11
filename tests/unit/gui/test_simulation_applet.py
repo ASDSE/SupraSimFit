@@ -214,3 +214,43 @@ def test_ka_log10_toggle_preserves_value_and_flips_display(qapp):
     c._log_toggle.setChecked(True)
     assert c.value() == pytest.approx(base)
     assert float(c._value_spin.text()) == pytest.approx(math.log10(base), rel=1e-3)
+
+
+def test_species_plot_draws_a_curve_per_species(qapp):
+    """The speciation plot renders one line per model species with a hover readout."""
+    from core.simulation import build_concentration_vector, simulate_species
+    from gui.simulation.species_plot import SpeciesPlotWidget
+
+    panel = SimulationPanel()
+    panel.set_assay_type(AssayType.GDA)
+    spec = panel.spec()
+    x = build_concentration_vector(spec.conc_mode, **spec.conc_kwargs)
+    species = simulate_species(spec.assay_cls, spec.conditions, spec.parameters, x)
+
+    sp = SpeciesPlotWidget()
+    sp.update_species(x, species, ASSAY_REGISTRY[AssayType.GDA].x_label)
+    assert set(sp._series) == {'H', 'D', 'G', 'HD', 'HG'}
+
+    html = sp._readout_html(len(x) // 2)  # hover readout at the middle point
+    assert '[HG]' in html and '[H]' in html and 'Dye' in html
+
+
+def test_species_plot_shows_note_for_dye_alone(qapp):
+    """Dye-alone has no equilibrium, so the plot is blanked with a plain-language note."""
+    from gui.simulation.species_plot import SpeciesPlotWidget
+
+    sp = SpeciesPlotWidget()
+    sp.show_empty('No speciation for a dye-alone calibration')
+    assert sp._series == {}
+    assert sp._x is None
+
+
+def test_window_updates_species_and_notes_dye_alone(qapp):
+    """The window redraws speciation on every recompute and blanks it for dye-alone."""
+    from gui.simulation.simulation_window import SimulationWindow
+
+    w = SimulationWindow()
+    w._selector.set_assay_type(AssayType.DBA_HG2)
+    assert set(w._species_plot._series) == {'H', 'G', 'HG', 'HG2'}
+    w._selector.set_assay_type(AssayType.DYE_ALONE)
+    assert w._species_plot._series == {}  # no speciation for a linear calibration

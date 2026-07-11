@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -25,10 +26,11 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.simulation import build_concentration_vector, simulate_dataset, simulate_signal
+from core.simulation import build_concentration_vector, simulate_dataset, simulate_signal, simulate_species
 from gui.plotting.plot_widget import PlotWidget
 from gui.simulation.settings_io import load_simulation_settings, save_simulation_settings
 from gui.simulation.simulation_panel import SimulationPanel
+from gui.simulation.species_plot import SpeciesPlotWidget
 from gui.widgets.assay_type_selector import AssayTypeSelector
 
 _INITIAL_ASSAY = AssayType.IDA
@@ -67,10 +69,20 @@ class SimulationWindow(QMainWindow):
         scroll.setMinimumWidth(360)
         splitter.addWidget(scroll)
 
+        # Right: the signal plot with the speciation plot stacked below it, sharing
+        # the titrant x-axis so the hover crosshair tracks the same point on both.
         self._plot = PlotWidget()
-        splitter.addWidget(self._plot)
+        self._species_plot = SpeciesPlotWidget()
+        right = QSplitter(Qt.Orientation.Vertical)
+        right.setChildrenCollapsible(False)
+        right.addWidget(self._plot)
+        right.addWidget(self._species_plot)
+        right.setStretchFactor(0, 3)
+        right.setStretchFactor(1, 2)
+        splitter.addWidget(right)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        self._species_plot.link_x(self._plot.plot_item)
 
         self.setStatusBar(QStatusBar())
 
@@ -143,7 +155,23 @@ class SimulationWindow(QMainWindow):
             'fits': [{'x': x, 'y': y, 'label': 'Simulated model', 'id': 'sim'}],
         }
         self._plot.update_plot(plot_data, x_label=meta.x_label, y_label=meta.y_label, y_unit=meta.y_unit)
+        self._update_species(spec, x)
         self.statusBar().showMessage(f'{meta.display_name} — {len(x)} points')
+
+    def _update_species(self, spec, x: np.ndarray) -> None:
+        """Redraw the speciation plot, or show a note where there is no equilibrium."""
+        meta = ASSAY_REGISTRY[spec.assay_type]
+        if spec.assay_type == AssayType.DYE_ALONE:
+            self._species_plot.show_empty(
+                'No speciation for a dye-alone calibration — the signal is a linear function of dye concentration.'
+            )
+            return
+        try:
+            species = simulate_species(spec.assay_cls, spec.conditions, spec.parameters, x)
+        except Exception:  # non-physical parameters / solver failure
+            self._species_plot.show_empty('Speciation is unavailable for the current parameters.')
+            return
+        self._species_plot.update_species(x, species, meta.x_label)
 
     def _on_export_curve(self) -> None:
         path, _ = QFileDialog.getSaveFileName(

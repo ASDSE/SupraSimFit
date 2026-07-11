@@ -250,6 +250,11 @@ class PlotWidget(QWidget):
         self._last_y_label: str | None = None
         self._last_y_unit: str = 'a.u.'
 
+    @property
+    def plot_item(self) -> pg.PlotItem:
+        """The underlying pyqtgraph PlotItem — used to x-link a second plot to this one."""
+        return self._pg_widget.getPlotItem()
+
     def update_plot(
         self,
         plot_data: dict[str, Any],
