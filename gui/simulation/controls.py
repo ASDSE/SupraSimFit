@@ -4,10 +4,11 @@ These are generic and assay-agnostic — they render whatever :class:`SimKnob` /
 concentration / noise configuration they are given, so the same widgets serve
 every assay.
 
-* :class:`ParameterControl` — one knob: a slider with user-editable [min, max]
-  bounds and an exact-value field.  Log slider for association constants, linear
-  otherwise; a nM/µM/mM/M selector for concentrations; negatives allowed for
-  signal coefficients (e.g. a calibration intercept).
+* :class:`ParameterControl` — one knob: a labelled ``min``/value/``max`` triple
+  around a slider.  Log slider for association constants (with an optional
+  ``Ka ⟷ log₁₀ Ka`` display toggle), linear otherwise; a nM/µM/mM/M selector for
+  concentrations; scientific-notation entry for large-magnitude quantities;
+  negatives allowed for signal coefficients (e.g. a calibration intercept).
 * :class:`ConcentrationInput` — the titrant vector, via explicit / linear /
   start-step / log modes.
 * :class:`NoiseControl` — optional Gaussian measurement noise (fraction of the
@@ -33,7 +34,7 @@ from PyQt6.QtWidgets import (
 
 from core.units import Q_
 from gui.simulation.sim_knob import SimKnob
-from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, NoScrollSpinBox, decimals_for_scale
+from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, NoScrollSpinBox, SciLineEdit
 
 _SLIDER_STEPS = 1000
 
@@ -44,21 +45,37 @@ _CONC_LABELS: tuple[str, ...] = ('nM', 'µM', 'mM', 'M')
 _CONC_DEFAULT = 'µM'
 
 
-def _new_spin(*, decimals: int = 4, vmin: float = -1e15, vmax: float = 1e15) -> NoScrollDoubleSpinBox:
-    sb = NoScrollDoubleSpinBox()
-    sb.setDecimals(decimals)
-    sb.setRange(vmin, vmax)
-    sb.setKeyboardTracking(False)
-    sb.setMinimumWidth(96)
-    return sb
+def _unit_text(unit) -> str:
+    """Short Unicode unit label for a static (non-selectable) unit."""
+    return f'{unit:~P}'
+
+
+def _labelled(field: QWidget, caption: str, *, before: bool) -> QWidget:
+    """Wrap a numeric field with a small muted ``min``/``max`` caption."""
+    box = QWidget()
+    lay = QHBoxLayout(box)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(3)
+    lbl = QLabel(caption)
+    lbl.setStyleSheet('color: palette(mid);')
+    lbl.setToolTip(f'{caption} of the slider range')
+    if before:
+        lay.addWidget(lbl)
+        lay.addWidget(field)
+    else:
+        lay.addWidget(field)
+        lay.addWidget(lbl)
+    return box
 
 
 class ParameterControl(QWidget):
-    """A single live knob: slider + editable bounds + exact value.
+    """A single live knob: slider + labelled editable bounds + exact value.
 
     Internals are kept in **base units** (M / M⁻¹ / au / au·M⁻¹); for concentration
-    knobs a unit selector only rescales the *display*.  ``changed`` fires on every
-    user adjustment.
+    knobs a unit selector only rescales the *display*, and for association constants
+    an optional ``log₁₀`` toggle shows/edits the exponent instead (the slider is
+    geometric either way, so log₁₀ is just a linear readout of the same handle).
+    ``changed`` fires on every user adjustment.
     """
 
     changed = pyqtSignal()
@@ -71,24 +88,46 @@ class ParameterControl(QWidget):
         self._vmin = float(knob.vmin)
         self._vmax = float(knob.vmax)
         self._scale = _display_factor(_CONC_DEFAULT, knob.unit) if knob.is_concentration else 1.0
-        # Finest offered concentration unit (→ base); drives per-unit spinbox decimals
-        # so a value never rounds to zero when shown in a coarser unit.
-        self._min_scale = (
-            min((_display_factor(u, knob.unit) for u in _CONC_LABELS), default=1.0) if knob.is_concentration else 1.0
-        )
+        self._log10_display = False  # association constants only: show log₁₀(Ka)
+
+        # Signal coefficients (and log knobs in log₁₀ view) may be negative.
+        allow_neg = knob.allows_negative or knob.log
 
         grid = QGridLayout(self)
-        grid.setContentsMargins(0, 2, 0, 6)
+        grid.setContentsMargins(0, 2, 0, 8)
         grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(2)
+        grid.setVerticalSpacing(3)
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 0)
 
-        # Row 0: label, value, unit (combo for concentration, static label else).
+        # Row 0: name (+ log₁₀ toggle for Ka) | value | unit.
         name = QLabel(knob.label)
         name.setTextFormat(Qt.TextFormat.RichText)
         name.setToolTip(knob.tooltip)
-        self._value_spin = _new_spin()
+        name_cell = QWidget()
+        name_lay = QHBoxLayout(name_cell)
+        name_lay.setContentsMargins(0, 0, 0, 0)
+        name_lay.setSpacing(4)
+        name_lay.addWidget(name)
+        if self._log:
+            self._log_toggle: QCheckBox | None = QCheckBox('log₁₀')
+            self._log_toggle.setToolTip('Show and edit this constant as log₁₀(Ka)')
+            self._log_toggle.toggled.connect(self._on_log10_toggled)
+            name_lay.addWidget(self._log_toggle)
+        else:
+            self._log_toggle = None
+        name_lay.addStretch()
+
+        self._value_spin = SciLineEdit(allow_negative=allow_neg)
         self._value_spin.setToolTip(knob.tooltip)
-        grid.addWidget(name, 0, 0)
+        self._value_spin.setMinimumWidth(90)
+        self._value_spin.setStyleSheet('border: 1px solid palette(highlight); border-radius: 3px;')
+        vf = self._value_spin.font()
+        vf.setBold(True)
+        self._value_spin.setFont(vf)
+
+        grid.addWidget(name_cell, 0, 0)
         grid.addWidget(self._value_spin, 0, 1)
         if knob.is_concentration:
             self._unit_combo: QComboBox | None = QComboBox()
@@ -96,28 +135,32 @@ class ParameterControl(QWidget):
             self._unit_combo.setCurrentText(_CONC_DEFAULT)
             self._unit_combo.currentTextChanged.connect(self._on_unit_changed)
             grid.addWidget(self._unit_combo, 0, 2)
+            self._unit_label: QLabel | None = None
         else:
             self._unit_combo = None
-            grid.addWidget(QLabel(f'{knob.unit:~P}'), 0, 2)
+            self._unit_label = QLabel(_unit_text(knob.unit))
+            grid.addWidget(self._unit_label, 0, 2)
 
-        # Row 1: min, slider, max.  Concentrations/association constants stay ≥ 0;
-        # signal coefficients (incl. a calibration intercept) may go negative.
-        floor = -1e15 if knob.allows_negative else 0.0
-        self._min_spin = _new_spin(vmin=floor)
-        self._max_spin = _new_spin(vmin=floor)
+        # Row 1: min (labelled) | slider | max (labelled).
+        self._min_spin = SciLineEdit(allow_negative=allow_neg)
+        self._max_spin = SciLineEdit(allow_negative=allow_neg)
+        for sb in (self._min_spin, self._max_spin):
+            sb.setMinimumWidth(74)
         self._slider = QSlider(Qt.Orientation.Horizontal)
         self._slider.setRange(0, _SLIDER_STEPS)
-        grid.addWidget(self._min_spin, 1, 0)
-        grid.addWidget(self._slider, 1, 1)
-        grid.addWidget(self._max_spin, 1, 2)
+        if self._log:  # decade ticks so a log axis reads as multiplicative
+            self._slider.setTickPosition(QSlider.TickPosition.TicksBelow)
 
-        self._apply_decimals()
+        grid.addWidget(_labelled(self._min_spin, 'min', before=True), 1, 0)
+        grid.addWidget(self._slider, 1, 1)
+        grid.addWidget(_labelled(self._max_spin, 'max', before=False), 1, 2)
+
         self._sync_all()
 
         self._slider.valueChanged.connect(self._on_slider)
-        self._value_spin.valueChanged.connect(self._on_value_edit)
-        self._min_spin.valueChanged.connect(self._on_bounds_edit)
-        self._max_spin.valueChanged.connect(self._on_bounds_edit)
+        self._value_spin.value_changed.connect(self._on_value_edit)
+        self._min_spin.value_changed.connect(self._on_bounds_edit)
+        self._max_spin.value_changed.connect(self._on_bounds_edit)
 
     # -- public API ----------------------------------------------------------
 
@@ -140,7 +183,23 @@ class ParameterControl(QWidget):
         self._sync_all()
         self.changed.emit()
 
-    # -- slider <-> value mapping -------------------------------------------
+    # -- display <-> base transform (unit scale, or log₁₀ for Ka) ------------
+
+    def _to_display(self, base: float) -> float:
+        if self._knob.is_concentration:
+            return base / self._scale
+        if self._log and self._log10_display:
+            return math.log10(base) if base > 0 else 0.0
+        return base
+
+    def _from_display(self, shown: float) -> float:
+        if self._knob.is_concentration:
+            return shown * self._scale
+        if self._log and self._log10_display:
+            return 10.0**shown
+        return shown
+
+    # -- slider <-> value mapping (always in base units) --------------------
 
     def _pos_to_value(self, pos: int) -> float:
         f = pos / _SLIDER_STEPS
@@ -159,17 +218,7 @@ class ParameterControl(QWidget):
             f = (v - self._vmin) / (self._vmax - self._vmin)
         return int(round(_clamp(f, 0.0, 1.0) * _SLIDER_STEPS))
 
-    # -- sync helpers (block signals to avoid feedback loops) ---------------
-
-    def _apply_decimals(self) -> None:
-        """Size concentration spinbox decimals per current unit (shared decimal policy)."""
-        if not self._knob.is_concentration:
-            return
-        d = decimals_for_scale(self._scale, self._min_scale)
-        for sb in (self._value_spin, self._min_spin, self._max_spin):
-            sb.blockSignals(True)
-            sb.setDecimals(d)
-            sb.blockSignals(False)
+    # -- sync helpers (SciLineEdit.setValue never emits) --------------------
 
     def _sync_all(self) -> None:
         self._sync_bounds_spins()
@@ -177,15 +226,11 @@ class ParameterControl(QWidget):
         self._sync_slider()
 
     def _sync_value_spin(self) -> None:
-        self._value_spin.blockSignals(True)
-        self._value_spin.setValue(self._value / self._scale)
-        self._value_spin.blockSignals(False)
+        self._value_spin.setValue(self._to_display(self._value))
 
     def _sync_bounds_spins(self) -> None:
-        for sb, val in ((self._min_spin, self._vmin), (self._max_spin, self._vmax)):
-            sb.blockSignals(True)
-            sb.setValue(val / self._scale)
-            sb.blockSignals(False)
+        self._min_spin.setValue(self._to_display(self._vmin))
+        self._max_spin.setValue(self._to_display(self._vmax))
 
     def _sync_slider(self) -> None:
         self._slider.blockSignals(True)
@@ -199,14 +244,15 @@ class ParameterControl(QWidget):
         self._sync_value_spin()
         self.changed.emit()
 
-    def _on_value_edit(self, shown: float) -> None:
-        self._value = _clamp(shown * self._scale, self._vmin, self._vmax)
+    def _on_value_edit(self) -> None:
+        self._value = _clamp(self._from_display(self._value_spin.value()), self._vmin, self._vmax)
+        self._sync_value_spin()  # reflect any clamping / canonical formatting
         self._sync_slider()
         self.changed.emit()
 
     def _on_bounds_edit(self) -> None:
-        vmin = self._min_spin.value() * self._scale
-        vmax = self._max_spin.value() * self._scale
+        vmin = self._from_display(self._min_spin.value())
+        vmax = self._from_display(self._max_spin.value())
         if self._log:
             vmin = max(vmin, 1e-12)  # log slider needs a positive floor
         if vmax <= vmin:
@@ -218,7 +264,14 @@ class ParameterControl(QWidget):
 
     def _on_unit_changed(self, label: str) -> None:
         self._scale = _display_factor(label, self._knob.unit)
-        self._apply_decimals()
+        self._sync_value_spin()
+        self._sync_bounds_spins()
+
+    def _on_log10_toggled(self, on: bool) -> None:
+        self._log10_display = on
+        if self._unit_label is not None:
+            self._unit_label.setText('log₁₀ M⁻¹' if on else _unit_text(self._knob.unit))
+        # Value unchanged — only its representation flips; no recompute needed.
         self._sync_value_spin()
         self._sync_bounds_spins()
 
@@ -243,7 +296,6 @@ class ConcentrationInput(QWidget):
         super().__init__(parent)
         # The titrant vector is always Molar; the selector only rescales the display.
         self._scale = _display_factor(_CONC_DEFAULT, 'M')
-        self._min_scale = min(_display_factor(u, 'M') for u in _CONC_LABELS)
 
         form = QFormLayout(self)
         form.setContentsMargins(0, 0, 0, 0)
@@ -264,9 +316,9 @@ class ConcentrationInput(QWidget):
         mr.addWidget(self._unit)
         form.addRow('Mode', mode_row)
 
-        self._start = _new_spin(vmin=0.0)
-        self._stop = _new_spin(vmin=0.0)
-        self._step = _new_spin(vmin=0.0)
+        self._start = SciLineEdit(allow_negative=False)
+        self._stop = SciLineEdit(allow_negative=False)
+        self._step = SciLineEdit(allow_negative=False)
         self._n = NoScrollSpinBox()
         self._n.setRange(2, 100000)
         self._n.setValue(11)
@@ -281,11 +333,10 @@ class ConcentrationInput(QWidget):
         self._row_explicit = self._add_row(form, 'Values', self._explicit)
 
         for sb in (self._start, self._stop, self._step):
-            sb.valueChanged.connect(self.changed)
+            sb.value_changed.connect(self._emit_changed)
         self._n.valueChanged.connect(self.changed)
         self._explicit.textChanged.connect(self.changed)
 
-        self._apply_decimals()
         self._apply_mode_visibility('linear')
 
     @staticmethod
@@ -293,6 +344,9 @@ class ConcentrationInput(QWidget):
         lbl = QLabel(label)
         form.addRow(lbl, w)
         return (lbl, w)
+
+    def _emit_changed(self, *_args) -> None:
+        self.changed.emit()
 
     def current_mode(self) -> str:
         return self._mode.currentData()
@@ -303,10 +357,8 @@ class ConcentrationInput(QWidget):
         self._mode.setCurrentIndex(0)
         self._mode.blockSignals(False)
         self._apply_mode_visibility('linear')
-        for sb, val in ((self._start, start_m), (self._stop, stop_m)):
-            sb.blockSignals(True)
-            sb.setValue(val / self._scale)
-            sb.blockSignals(False)
+        self._start.setValue(start_m / self._scale)
+        self._stop.setValue(stop_m / self._scale)
         self._n.blockSignals(True)
         self._n.setValue(int(n))
         self._n.blockSignals(False)
@@ -331,12 +383,12 @@ class ConcentrationInput(QWidget):
         self._apply_mode_visibility(mode)
         s = self._scale
         if mode in ('linear', 'log'):
-            self._set_silent(self._start, kwargs.get('start', 0.0) / s)
-            self._set_silent(self._stop, kwargs.get('stop', 0.0) / s)
+            self._start.setValue(kwargs.get('start', 0.0) / s)
+            self._stop.setValue(kwargs.get('stop', 0.0) / s)
             self._set_n(kwargs.get('n', 11))
         elif mode == 'step':
-            self._set_silent(self._start, kwargs.get('start', 0.0) / s)
-            self._set_silent(self._step, kwargs.get('step', 0.0) / s)
+            self._start.setValue(kwargs.get('start', 0.0) / s)
+            self._step.setValue(kwargs.get('step', 0.0) / s)
             self._set_n(kwargs.get('n', 11))
         else:
             self._explicit.blockSignals(True)
@@ -345,12 +397,6 @@ class ConcentrationInput(QWidget):
         self.changed.emit()
 
     # -- internals -----------------------------------------------------------
-
-    @staticmethod
-    def _set_silent(sb: NoScrollDoubleSpinBox, val: float) -> None:
-        sb.blockSignals(True)
-        sb.setValue(val)
-        sb.blockSignals(False)
 
     def _set_n(self, n) -> None:
         self._n.blockSignals(True)
@@ -361,24 +407,12 @@ class ConcentrationInput(QWidget):
         self._apply_mode_visibility(self.current_mode())
         self.changed.emit()
 
-    def _apply_decimals(self) -> None:
-        """Size the start/stop/step decimals per current unit (shared decimal policy)."""
-        d = decimals_for_scale(self._scale, self._min_scale)
-        for sb in (self._start, self._stop, self._step):
-            sb.blockSignals(True)
-            sb.setDecimals(d)
-            sb.blockSignals(False)
-
     def _on_unit_changed(self) -> None:
         old_scale = self._scale
         self._scale = _display_factor(self._unit.currentText(), 'M')
-        self._apply_decimals()
         # Preserve the physical value across a unit switch (convert, don't reinterpret).
         for sb in (self._start, self._stop, self._step):
-            base = sb.value() * old_scale
-            sb.blockSignals(True)
-            sb.setValue(base / self._scale)
-            sb.blockSignals(False)
+            sb.setValue(sb.value() * old_scale / self._scale)
         self.changed.emit()
 
     def _apply_mode_visibility(self, mode: str) -> None:

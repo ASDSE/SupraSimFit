@@ -28,6 +28,20 @@ from gui.widgets.assay_conditions import condition_fields
 # Dimensionality shared by every concentration unit (M, µM, nM, …).
 _MOLAR_DIM = Q_(1, 'M').dimensionality
 
+# Semantic sections for the control panel, in display order.  Grouping is by
+# physical role (what the user is choosing), routed from the registry's explicit
+# classification — NOT from is_condition (a fit-only backend seam that would
+# scatter the binding constants) and NOT from unit dimensionality.
+SECTION_CONCENTRATION = 'concentration'
+SECTION_EQUILIBRIUM = 'equilibrium'
+SECTION_SIGNAL = 'signal'
+SECTION_ORDER = (SECTION_CONCENTRATION, SECTION_EQUILIBRIUM, SECTION_SIGNAL)
+SECTION_TITLES = {
+    SECTION_CONCENTRATION: 'Concentrations',
+    SECTION_EQUILIBRIUM: 'Equilibrium (association constants)',
+    SECTION_SIGNAL: 'Signal parameters',
+}
+
 
 @dataclass(frozen=True)
 class SimKnob:
@@ -42,6 +56,7 @@ class SimKnob:
     vmin: float
     vmax: float
     is_condition: bool
+    section: str  # one of SECTION_ORDER — the panel groups by this
 
     @property
     def is_concentration(self) -> bool:
@@ -127,7 +142,12 @@ def knobs_for(assay_type: AssayType) -> list[SimKnob]:
         log = f.unit_type == 'binding_constant'
         unit = Q_(1, f.unit).units
         vmin, vmax = slider_bounds(f.default, log)
-        knobs.append(SimKnob(f.key, f.label, f.tooltip, unit, log, f.default, vmin, vmax, is_condition=True))
+        # A condition is either a concentration (→ Concentrations) or a known
+        # binding constant like GDA/IDA's Ka_dye (→ Equilibrium, with all Ka).
+        section = SECTION_EQUILIBRIUM if log else SECTION_CONCENTRATION
+        knobs.append(
+            SimKnob(f.key, f.label, f.tooltip, unit, log, f.default, vmin, vmax, is_condition=True, section=section)
+        )
 
     for key in meta.parameter_keys:
         if key not in SIM_PARAM_DEFAULTS:
@@ -136,8 +156,20 @@ def knobs_for(assay_type: AssayType) -> list[SimKnob]:
         kind = meta.param_kinds[key]  # registry-declared, lint-checked classification
         log = kind == ParamKind.BINDING_CONSTANT
         unit = Q_(1, KIND_UNIT[kind]).units
+        section = SECTION_EQUILIBRIUM if kind == ParamKind.BINDING_CONSTANT else SECTION_SIGNAL
         knobs.append(
-            SimKnob(key, spec.label, spec.tooltip, unit, log, spec.default, spec.vmin, spec.vmax, is_condition=False)
+            SimKnob(
+                key,
+                spec.label,
+                spec.tooltip,
+                unit,
+                log,
+                spec.default,
+                spec.vmin,
+                spec.vmax,
+                is_condition=False,
+                section=section,
+            )
         )
 
     return knobs

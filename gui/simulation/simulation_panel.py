@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QGroupBox, QLabel, QVBoxLayout, QWidget
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from gui.simulation.controls import ConcentrationInput, NoiseControl, ParameterControl
-from gui.simulation.sim_knob import TITRANT_RANGE, knobs_for
+from gui.simulation.sim_knob import SECTION_ORDER, SECTION_TITLES, TITRANT_RANGE, knobs_for
 from gui.widgets.assay_conditions import assay_class
 
 _DEFAULT_N = 11
@@ -55,10 +55,13 @@ class SimulationPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
 
-        self._knob_box = QGroupBox('Model parameters & conditions')
-        self._knob_layout = QVBoxLayout(self._knob_box)
-        self._knob_layout.setSpacing(2)
-        root.addWidget(self._knob_box)
+        # Knob controls live in registry-derived sections (built in _rebuild_knobs):
+        # Concentrations / Equilibrium / Signal parameters.
+        self._knob_container = QWidget()
+        self._knob_layout = QVBoxLayout(self._knob_container)
+        self._knob_layout.setContentsMargins(0, 0, 0, 0)
+        self._knob_layout.setSpacing(8)
+        root.addWidget(self._knob_container)
 
         conc_box = QGroupBox('Titration')
         conc_layout = QVBoxLayout(conc_box)
@@ -146,16 +149,34 @@ class SimulationPanel(QWidget):
     # -- internals -----------------------------------------------------------
 
     def _rebuild_knobs(self, assay_type: AssayType) -> None:
+        # Detach old section boxes synchronously: deleteLater() alone is async, so
+        # the previous assay's knobs keep painting (overlapping the new ones) until
+        # the event loop runs — setParent(None) hides them immediately.
         while self._knob_layout.count():
             item = self._knob_layout.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
         self._controls.clear()
         self._is_condition.clear()
+
+        by_section: dict[str, list] = {}
         for knob in knobs_for(assay_type):
-            ctrl = ParameterControl(knob)
-            ctrl.changed.connect(self.changed)
-            self._knob_layout.addWidget(ctrl)
-            self._controls[knob.key] = ctrl
-            self._is_condition[knob.key] = knob.is_condition
+            by_section.setdefault(knob.section, []).append(knob)
+
+        # One group box per non-empty section, in the canonical display order.
+        for section in SECTION_ORDER:
+            section_knobs = by_section.get(section)
+            if not section_knobs:
+                continue
+            box = QGroupBox(SECTION_TITLES[section])
+            box_layout = QVBoxLayout(box)
+            box_layout.setSpacing(2)
+            for knob in section_knobs:
+                ctrl = ParameterControl(knob)
+                ctrl.changed.connect(self.changed)
+                box_layout.addWidget(ctrl)
+                self._controls[knob.key] = ctrl
+                self._is_condition[knob.key] = knob.is_condition
+            self._knob_layout.addWidget(box)

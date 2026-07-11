@@ -145,3 +145,72 @@ def test_window_recompute_overlays_noisy_scatter(qapp):
 
     assert len(captured['active_replicas']) == 3
     assert captured['fits'][0]['label'] == 'Simulated model'
+
+
+def test_format_number_is_readable_and_scientific():
+    """Large magnitudes read as scientific notation; O(1) values stay plain."""
+    from gui.widgets.numeric_inputs import format_number
+
+    assert format_number(33000000.0) == '3.3e7'
+    assert format_number(5e7) == '5e7'
+    assert format_number(1e9) == '1e9'
+    assert format_number(50.0) == '50'
+    assert format_number(292.0) == '292'
+    assert format_number(0.0) == '0'
+    assert format_number(-250.0) == '-250'
+    assert format_number(5e-5) == '5e-5'
+
+
+def test_sci_line_edit_accepts_scientific_entry(qapp):
+    """A user can type '1e8' — the field parses and reformats it, no zero-counting."""
+    from gui.widgets.numeric_inputs import SciLineEdit
+
+    e = SciLineEdit()
+    e.setValue(3.3e7)
+    assert e.text() == '3.3e7'
+    e.setText('1e8')
+    e.editingFinished.emit()
+    assert e.value() == pytest.approx(1e8)
+    assert e.text() == '1e8'
+
+
+def test_knobs_partition_into_registry_sections(qapp):
+    """Every knob lands in the section its physical role dictates, for all assays."""
+    from gui.simulation.sim_knob import SECTION_CONCENTRATION, SECTION_EQUILIBRIUM, SECTION_SIGNAL
+
+    for at in AssayType:
+        for k in knobs_for(at):
+            if k.is_concentration:
+                assert k.section == SECTION_CONCENTRATION, (at, k.key)
+            elif k.log:  # association constant, condition or parameter
+                assert k.section == SECTION_EQUILIBRIUM, (at, k.key)
+            else:
+                assert k.section == SECTION_SIGNAL, (at, k.key)
+
+
+def test_panel_groups_knobs_into_section_boxes(qapp):
+    """The flat list is gone: knobs render inside titled section group boxes."""
+    from PyQt6.QtWidgets import QGroupBox
+
+    from gui.simulation.sim_knob import SECTION_TITLES
+
+    panel = SimulationPanel()
+    panel.set_assay_type(AssayType.GDA)
+    titles = {b.title() for b in panel._knob_container.findChildren(QGroupBox)}
+    assert SECTION_TITLES['concentration'] in titles
+    assert SECTION_TITLES['equilibrium'] in titles
+    assert SECTION_TITLES['signal'] in titles
+
+    # Dye-alone is purely a linear calibration → only the Signal parameters box.
+    panel.set_assay_type(AssayType.DYE_ALONE)
+    titles = {b.title() for b in panel._knob_container.findChildren(QGroupBox)}
+    assert titles == {SECTION_TITLES['signal']}
+
+
+def test_ka_log10_toggle_preserves_value_and_flips_display(qapp):
+    """Toggling log₁₀ changes only the readout — the physical Ka is untouched."""
+    c = ParameterControl(_knob(AssayType.GDA, 'Ka_guest'))
+    base = c.value()
+    c._log_toggle.setChecked(True)
+    assert c.value() == pytest.approx(base)
+    assert float(c._value_spin.text()) == pytest.approx(math.log10(base), rel=1e-3)
