@@ -18,7 +18,7 @@ import numpy as np
 
 from core.assays.base import BaseAssay
 from core.assays.registry import AssayType
-from core.models.equilibrium import ida_signal
+from core.models.equilibrium import ida_signal, ida_species
 from core.units import Q_, Quantity
 
 
@@ -104,6 +104,11 @@ class IDAAssay(BaseAssay):
             g0_values=xx,
         )
         return Q_(result, 'au')
+
+    def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
+        """Free host, dye, guest and both complexes (M) across the guest titration."""
+        Ka_guest = params[0]
+        return ida_species(Ka_guest, self.Ka_dye.magnitude, self.h0.magnitude, self.d0.magnitude, self.x_data.magnitude)
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.

@@ -21,7 +21,7 @@ import numpy as np
 
 from core.assays.base import BaseAssay
 from core.assays.registry import AssayType
-from core.models.equilibrium import hg2_signal
+from core.models.equilibrium import hg2_signal, hg2_species
 from core.units import Q_, Quantity
 
 
@@ -88,6 +88,11 @@ class HG2Assay(BaseAssay):
             g0_values=xx,
         )
         return Q_(result, 'au')
+
+    def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
+        """Free host, guest, HG and HG2 complexes (M) across the guest titration."""
+        Ka_HG, Ka_HG2 = params[0], params[1]
+        return hg2_species(Ka_HG, Ka_HG2, self.h0.magnitude, self.x_data.magnitude)
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.

@@ -21,7 +21,7 @@ from core.assays.base import BaseAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.units import Q_
 
-__all__ = ['build_concentration_vector', 'simulate_signal', 'simulate_dataset']
+__all__ = ['build_concentration_vector', 'simulate_signal', 'simulate_species', 'simulate_dataset']
 
 
 def _as_count(n: Any) -> int:
@@ -147,6 +147,40 @@ def simulate_signal(
     assay = _build_assay(assay_cls, conditions, x_vector)
     y = assay.forward_model(assay.params_from_dict(dict(parameters)))
     return np.asarray(getattr(y, 'magnitude', y), dtype=float)
+
+
+def simulate_species(
+    assay_cls: Type[BaseAssay],
+    conditions: Mapping[str, Any],
+    parameters: Mapping[str, float],
+    x_vector: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Evaluate an assay's equilibrium speciation at *x_vector* from explicit parameters.
+
+    Uses the assay's own ``species()`` accessor — the same solve the forward model
+    is built from — so the returned per-species concentrations are exactly those
+    underlying :func:`simulate_signal` for the same inputs.
+
+    Parameters
+    ----------
+    assay_cls : Type[BaseAssay]
+        Concrete assay class (e.g. ``GDAAssay``).
+    conditions : Mapping[str, Any]
+        Quantity-valued conditions (plus ``mode`` for DBA), as for
+        :func:`simulate_signal`.
+    parameters : Mapping[str, float]
+        Base-unit parameter values keyed by the assay's ``parameter_keys``.
+    x_vector : np.ndarray
+        Titrant concentrations (M).
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        Species name → concentration array (M magnitudes), insertion order giving
+        the intended plotting order; NaN where the equilibrium solve fails.
+    """
+    assay = _build_assay(assay_cls, conditions, x_vector)
+    return assay.species(assay.params_from_dict(dict(parameters)))
 
 
 def _signal_span(y: np.ndarray) -> float:
