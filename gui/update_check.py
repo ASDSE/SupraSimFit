@@ -70,10 +70,10 @@ class UpdateCheckWorker(QThread):
             with urllib.request.urlopen(req, timeout=self._TIMEOUT_S) as resp:
                 data: dict[str, Any] = json.load(resp)
         except urllib.error.HTTPError as exc:
-            self.error.emit(f'GitHub API returned HTTP {exc.code}: {exc.reason}')
+            self.error.emit(f'The update server returned an error (HTTP {exc.code}). Please try again later.')
             return
-        except Exception as exc:  # noqa: BLE001 — surface any network/parse error
-            self.error.emit(f'{type(exc).__name__}: {exc}')
+        except Exception:  # noqa: BLE001 — any network/parse error → one clear message
+            self.error.emit('Could not reach the update server. Check your internet connection and try again.')
             return
 
         try:
@@ -90,8 +90,8 @@ class UpdateCheckWorker(QThread):
                     for a in data.get('assets', [])
                 ],
             }
-        except KeyError as exc:
-            self.error.emit(f'Unexpected GitHub response (missing key {exc})')
+        except KeyError:
+            self.error.emit('The update server returned an unexpected response. Please try again later.')
             return
 
         self.finished.emit(info)

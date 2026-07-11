@@ -130,6 +130,11 @@ class MeasurementSet:
             if col not in df.columns:
                 raise ValueError(f"Missing required column: '{col}'")
 
+        # Capture a reader-declared concentration unit before any reshaping that
+        # could drop ``df.attrs`` (readers tag non-M files, e.g. an external µM
+        # CSV, via ``df.attrs['concentration_unit']``; absent means M).
+        declared_conc_unit = df.attrs.get('concentration_unit')
+
         # Sort for deterministic order
         df = df.sort_values([replica_col, concentration_col]).reset_index(drop=True)
 
@@ -140,6 +145,14 @@ class MeasurementSet:
         reference_conc = groups[replica_labels[0]][concentration_col].values
         for label, grp in groups.items():
             conc = grp[concentration_col].values
+            # Check length first: np.allclose on unequal-length arrays raises a
+            # cryptic "operands could not be broadcast together" error.
+            if len(conc) != len(reference_conc):
+                raise ValueError(
+                    f"Replica '{label}' has {len(conc)} concentration points but replica "
+                    f"'{replica_labels[0]}' has {len(reference_conc)} — all replicas must share "
+                    'the same concentration grid.'
+                )
             if not np.allclose(conc, reference_conc, rtol=1e-12):
                 raise ValueError(
                     f"Replica '{label}' has a different concentration grid than replica '{replica_labels[0]}'"
@@ -148,6 +161,11 @@ class MeasurementSet:
         # Build 2-D signals array
         signals = np.array([groups[label][signal_col].values for label in replica_labels])
         replica_ids = tuple(str(label) for label in replica_labels)
+
+        # Convert to molar if a non-M unit was declared, so the stored grid is
+        # always M. Pint validates the token and the dimensionality.
+        if declared_conc_unit and declared_conc_unit != 'M':
+            reference_conc = Q_(np.asarray(reference_conc, dtype=float), declared_conc_unit).to('M').magnitude
 
         return cls(
             concentrations=reference_conc,

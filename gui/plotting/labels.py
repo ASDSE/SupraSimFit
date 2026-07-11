@@ -17,6 +17,17 @@ from __future__ import annotations
 
 from core.units import ureg
 
+
+def _canonical_unit(unit_str: str) -> str:
+    """Map the signal unit's display alias ``a.u.`` to its parseable token ``au``.
+
+    Pint parses the dotted ``a.u.`` as ``year · atomic_mass_unit`` (the dots are
+    multiplications), so any unit string reaching the formatters below must use
+    ``au``. The registry stores the y-axis unit as ``a.u.`` for raw display; this
+    guard keeps that alias from garbling if it is ever formatted here.
+    """
+    return 'au' if unit_str.strip() in ('a.u.', 'a.u') else unit_str
+
 PARAM_LABELS: dict[str, str] = {
     'Ka_guest': '<b>K<sub>a(G)</sub></b>',
     'Ka_dye': '<b>K<sub>a(D)</sub></b>',
@@ -42,6 +53,32 @@ def fmt_param(name: str) -> str:
     return PARAM_LABELS.get(name, name)
 
 
+# Plain-text (no HTML) labels for widgets that cannot render rich text,
+# e.g. QCheckBox toggle labels. Uses Unicode subscripts where unambiguous.
+PARAM_LABELS_PLAIN: dict[str, str] = {
+    'Ka_guest': 'Ka(G)',
+    'Ka_dye': 'Ka(D)',
+    'I0': 'I₀',
+    'I_dye_free': 'I(D)',
+    'I_dye_bound': 'I(HD)',
+    'slope': 'slope',
+    'intercept': 'intercept',
+    'Ka_HG': 'Ka(HG)',
+    'Ka_HG2': 'Ka(HG₂)',
+    'Ka_H2G': 'Ka(H₂G)',
+    'I_G': 'I(G)',
+    'I_H': 'I(H)',
+    'I_HG': 'I(HG)',
+    'I_HG2': 'I(HG₂)',
+    'I_H2G': 'I(H₂G)',
+}
+
+
+def fmt_param_plain(name: str) -> str:
+    """Return a plain-text (no HTML) parameter label, fallback to raw name."""
+    return PARAM_LABELS_PLAIN.get(name, name)
+
+
 def fmt_unit_html(unit_str: str) -> str:
     """Format a unit string as abbreviated HTML with negative exponents.
 
@@ -51,7 +88,7 @@ def fmt_unit_html(unit_str: str) -> str:
     """
     if not unit_str:
         return ''
-    formatted = f'{ureg.Unit(unit_str):~H}'
+    formatted = f'{ureg.Unit(_canonical_unit(unit_str)):~H}'
     if formatted.startswith('1/'):
         base = formatted[2:].strip()
         return f'{base}<sup>−1</sup>'
@@ -66,7 +103,7 @@ def fmt_unit_pretty(unit_str: str) -> str:
     """
     if not unit_str:
         return ''
-    formatted = f'{ureg.Unit(unit_str):~P}'
+    formatted = f'{ureg.Unit(_canonical_unit(unit_str)):~P}'
     if formatted.startswith('1/'):
         base = formatted[2:].strip()
         return f'{base}⁻¹'

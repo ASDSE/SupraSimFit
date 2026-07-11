@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, Tuple
 
 import numpy as np
+import pint
 
 from core.assays.registry import AssayMetadata, AssayType, get_metadata
 from core.units import Quantity
@@ -58,9 +59,21 @@ class BaseAssay(ABC):
         if not isinstance(self.y_data, Quantity):
             raise TypeError(f'y_data must be a pint Quantity, got {type(self.y_data).__name__}')
 
-        # Normalize to base units so .magnitude is always M / au
-        object.__setattr__(self, 'x_data', self.x_data.to('M'))
-        object.__setattr__(self, 'y_data', self.y_data.to('au'))
+        # Normalize to canonical units so .magnitude is always M / au. Give a
+        # domain-clear error (x is a concentration, y is a signal) rather than a
+        # bare pint DimensionalityError. The ``au = [signal]`` dimension means a
+        # dimensionless or wrong-dimension y_data now fails here instead of being
+        # silently accepted as a signal.
+        try:
+            object.__setattr__(self, 'x_data', self.x_data.to('M'))
+        except pint.DimensionalityError as err:
+            raise ValueError(
+                f"x_data must be a concentration (e.g. M, µM, nM); got units '{self.x_data.units}'."
+            ) from err
+        try:
+            object.__setattr__(self, 'y_data', self.y_data.to('au'))
+        except pint.DimensionalityError as err:
+            raise ValueError(f"y_data must be a signal in au; got units '{self.y_data.units}'.") from err
 
         if self.x_data.shape != self.y_data.shape:
             raise ValueError(f'x_data and y_data must have same shape, got {self.x_data.shape} and {self.y_data.shape}')
@@ -86,7 +99,7 @@ class BaseAssay(ABC):
         return len(self.x_data)
 
     @abstractmethod
-    def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> np.ndarray:
+    def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
         Parameters
@@ -100,8 +113,12 @@ class BaseAssay(ABC):
 
         Returns
         -------
-        np.ndarray
-            Predicted signal values, same shape as ``x`` (or ``y_data``).
+        Quantity
+            Predicted signal as a ``pint.Quantity`` in signal units — an
+            implementation MUST return ``Q_(values, 'au')``, not a bare ndarray.
+            Because ``au`` carries the ``[signal]`` dimension, :meth:`residuals`
+            subtracts this from the ``au`` ``y_data``; returning a bare array
+            raises a ``DimensionalityError`` there.
         """
         pass
 

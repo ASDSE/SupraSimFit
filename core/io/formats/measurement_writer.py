@@ -30,6 +30,10 @@ def _header_comment(ms: 'MeasurementSet') -> list[str]:
     source = ms.metadata.get('source_file') if ms.metadata else None
     if source:
         lines.append(f'# Source: {source}')
+    # Self-describing unit declaration: MeasurementSet always stores M / au, so
+    # the file is unambiguous and TxtReader can convert if a future writer emits
+    # a non-M unit here.
+    lines.append('# units: concentration=M, signal=au')
     lines.append(f'# Replicas: {ms.n_replicas}  Points: {ms.n_points}')
     return lines
 

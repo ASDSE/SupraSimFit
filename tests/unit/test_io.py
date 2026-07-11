@@ -6,12 +6,45 @@ the reader/writer handle edge cases correctly.
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
+from core.data_processing.measurement_set import MeasurementSet
 from core.io import load_measurements, save_results
 from core.io.formats.csv_reader import CsvReader
+from core.io.formats.measurement_writer import write_measurements_txt
 from core.io.formats.txt import TxtReader
+
+
+class TestSelfDescribingUnits:
+    """A declared concentration unit survives from file to a molar MeasurementSet."""
+
+    def test_txt_units_header_converts_uM_to_M(self, tmp_path):
+        """A '# units: concentration=µM' header makes the reader tag the frame so
+        MeasurementSet.from_dataframe converts the grid to molar."""
+        data = '# units: concentration=µM, signal=au\nvar\tsignal\n0.1\t100\n0.5\t200\n1.0\t300\n'
+        p = tmp_path / 'uM.txt'
+        p.write_text(data)
+
+        df = load_measurements(p)
+        assert df.attrs.get('concentration_unit') == 'µM'
+
+        ms = MeasurementSet.from_dataframe(df)
+        np.testing.assert_allclose(ms.concentrations, [1e-7, 5e-7, 1e-6], rtol=1e-12)
+
+    def test_measurement_writer_txt_round_trips_in_M(self, tmp_path):
+        """A molar MeasurementSet written to TXT reads back unchanged (M)."""
+        ms = MeasurementSet(
+            concentrations=np.array([1e-7, 5e-7, 1e-6]),
+            signals=np.array([[100.0, 200.0, 300.0]]),
+            replica_ids=('0',),
+        )
+        out = tmp_path / 'out.txt'
+        write_measurements_txt(ms, out)
+
+        ms2 = MeasurementSet.from_dataframe(load_measurements(out))
+        np.testing.assert_allclose(ms2.concentrations, ms.concentrations, rtol=1e-12)
 
 
 class TestTxtReader:

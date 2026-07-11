@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.pipeline.fit_pipeline import FitResult
 from core.units import Quantity
 from gui.plotting.labels import fmt_unit_pretty
@@ -84,14 +83,6 @@ def export_results_txt(results: list[FitResult], path: str | Path) -> None:
         lines.append(f'Timestamp:   {result.timestamp}')
         lines.append('')
 
-        # Resolve units from registry
-        units: dict[str, str] = {}
-        try:
-            assay_type = AssayType[result.assay_type]
-            units = ASSAY_REGISTRY[assay_type].units
-        except KeyError:
-            pass
-
         # Parameters table
         lines.append('FITTED PARAMETERS')
         lines.append('-' * 60)
@@ -100,7 +91,7 @@ def export_results_txt(results: list[FitResult], path: str | Path) -> None:
         rows: list[tuple[str, str, str, str]] = []
         for key, val in result.parameters.items():
             unc = result.uncertainties.get(key, float('nan'))
-            unit_str = units.get(key, '')
+            unit_str = str(val.units) if isinstance(val, Quantity) else ''
             val_mag = float(val.magnitude) if isinstance(val, Quantity) else float(val)
             unc_mag = float(unc.magnitude) if isinstance(unc, Quantity) else float(unc)
             unit_display = fmt_unit_pretty(unit_str)
@@ -120,7 +111,7 @@ def export_results_txt(results: list[FitResult], path: str | Path) -> None:
         # Fit quality
         lines.append('FIT QUALITY')
         lines.append('-' * 60)
-        lines.append(f'  RMSE:          {result.rmse:.4g} a.u.')
+        lines.append(f'  RMSE:          {result.rmse:.4g} {fmt_unit_pretty("au")}')
         lines.append(f'  R²:            {result.r_squared:.6f}')
         lines.append(f'  Fits passing:  {result.n_passing} / {result.n_total}')
         lines.append('')
