@@ -255,6 +255,11 @@ class PlotWidget(QWidget):
         """The underlying pyqtgraph PlotItem — used to x-link a second plot to this one."""
         return self._pg_widget.getPlotItem()
 
+    @property
+    def x_unit(self) -> str:
+        """Current x-axis concentration unit (e.g. ``'µM'``) — for a linked plot to match."""
+        return self._style['axes'].get('x_unit', 'µM')
+
     def update_plot(
         self,
         plot_data: dict[str, Any],

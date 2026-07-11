@@ -211,10 +211,28 @@ def test_panel_groups_knobs_into_section_boxes(qapp):
     assert SECTION_TITLES['equilibrium'] in titles
     assert SECTION_TITLES['signal'] in titles
 
-    # Dye-alone is purely a linear calibration → only the Signal parameters box.
+    # Dye-alone has no fixed concentrations or binding constants, but the titrant
+    # input still lives in the (always-present) Concentrations section.
     panel.set_assay_type(AssayType.DYE_ALONE)
     titles = {b.title() for b in panel._knob_container.findChildren(QGroupBox)}
-    assert titles == {SECTION_TITLES['signal']}
+    assert titles == {SECTION_TITLES['concentration'], SECTION_TITLES['signal']}
+
+
+def test_titration_input_lives_in_concentrations_section(qapp):
+    """The titrant input renders inside the Concentrations section, not a separate box."""
+    from PyQt6.QtWidgets import QGroupBox
+
+    from gui.simulation.controls import ConcentrationInput
+    from gui.simulation.sim_knob import SECTION_TITLES
+
+    panel = SimulationPanel()
+    panel.set_assay_type(AssayType.GDA)
+    conc_box = next(
+        b for b in panel._knob_container.findChildren(QGroupBox) if b.title() == SECTION_TITLES['concentration']
+    )
+    assert conc_box.findChild(ConcentrationInput) is not None
+    # No stand-alone "Titration" box remains.
+    assert 'Titration' not in {b.title() for b in panel.findChildren(QGroupBox)}
 
 
 def test_ka_log10_toggle_preserves_value_and_flips_display(qapp):
@@ -243,6 +261,15 @@ def test_species_plot_draws_a_curve_per_species(qapp):
 
     html = sp._readout_html(len(x) // 2)  # hover readout at the middle point
     assert '[HG]' in html and '[H]' in html and 'Dye' in html
+
+
+def test_species_plot_honors_display_unit(qapp):
+    """The plot scales to the unit it is given, so it can match the signal plot's x-unit."""
+    from gui.simulation.species_plot import SpeciesPlotWidget
+
+    sp = SpeciesPlotWidget()
+    sp.update_species(np.array([1e-6, 2e-6]), {'H': np.array([1e-6, 2e-6])}, 'Guest', unit='nM')
+    np.testing.assert_allclose(sp._x, [1000.0, 2000.0])  # 1 µM = 1000 nM
 
 
 def test_species_plot_shows_note_for_dye_alone(qapp):

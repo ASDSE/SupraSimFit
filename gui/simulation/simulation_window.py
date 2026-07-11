@@ -159,19 +159,21 @@ class SimulationWindow(QMainWindow):
         self.statusBar().showMessage(f'{meta.display_name} — {len(x)} points')
 
     def _update_species(self, spec, x: np.ndarray) -> None:
-        """Redraw the speciation plot, or show a note where there is no equilibrium."""
-        meta = ASSAY_REGISTRY[spec.assay_type]
+        """Redraw the speciation plot, or show a note where there is no equilibrium.
+
+        Only reached after the signal computed successfully, so the conditions are
+        already validated; the species solve then returns NaN (never raises) for any
+        non-physical parameters, and the plot gaps those points.  Deliberately no broad
+        ``except`` here — that would only mask a genuine bug as a parameter note.
+        """
         if spec.assay_type == AssayType.DYE_ALONE:
             self._species_plot.show_empty(
                 'No speciation for a dye-alone calibration — the signal is a linear function of dye concentration.'
             )
             return
-        try:
-            species = simulate_species(spec.assay_cls, spec.conditions, spec.parameters, x)
-        except Exception:  # non-physical parameters / solver failure
-            self._species_plot.show_empty('Speciation is unavailable for the current parameters.')
-            return
-        self._species_plot.update_species(x, species, meta.x_label)
+        meta = ASSAY_REGISTRY[spec.assay_type]
+        species = simulate_species(spec.assay_cls, spec.conditions, spec.parameters, x)
+        self._species_plot.update_species(x, species, meta.x_label, self._plot.x_unit)
 
     def _on_export_curve(self) -> None:
         path, _ = QFileDialog.getSaveFileName(

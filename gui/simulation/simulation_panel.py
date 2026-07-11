@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QGroupBox, QLabel, QVBoxLayout, QWidget
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from gui.simulation.controls import ConcentrationInput, NoiseControl, ParameterControl
-from gui.simulation.sim_knob import SECTION_ORDER, SECTION_TITLES, TITRANT_RANGE, knobs_for
+from gui.simulation.sim_knob import SECTION_CONCENTRATION, SECTION_ORDER, SECTION_TITLES, TITRANT_RANGE, knobs_for
 from gui.widgets.assay_conditions import assay_class
 
 _DEFAULT_N = 11
@@ -63,13 +63,12 @@ class SimulationPanel(QWidget):
         self._knob_layout.setSpacing(8)
         root.addWidget(self._knob_container)
 
-        conc_box = QGroupBox('Titration')
-        conc_layout = QVBoxLayout(conc_box)
+        # The titrant is itself a concentration, so its input renders inside the
+        # Concentrations section (placed there by _rebuild_knobs).  Created here,
+        # parentless, so it survives the section boxes being rebuilt on assay change.
         self._conc_label = QLabel()
-        conc_layout.addWidget(self._conc_label)
+        self._conc_label.setTextFormat(Qt.TextFormat.RichText)
         self._conc_input = ConcentrationInput()
-        conc_layout.addWidget(self._conc_input)
-        root.addWidget(conc_box)
 
         noise_box = QGroupBox('Noise')
         noise_layout = QVBoxLayout(noise_box)
@@ -149,9 +148,13 @@ class SimulationPanel(QWidget):
     # -- internals -----------------------------------------------------------
 
     def _rebuild_knobs(self, assay_type: AssayType) -> None:
-        # Detach old section boxes synchronously: deleteLater() alone is async, so
-        # the previous assay's knobs keep painting (overlapping the new ones) until
-        # the event loop runs — setParent(None) hides them immediately.
+        # Detach the persistent titration widgets first so they survive the teardown
+        # below (they are re-added to the new Concentrations box), then remove the old
+        # section boxes synchronously: deleteLater() alone is async, so the previous
+        # assay's knobs keep painting (overlapping the new ones) until the event loop
+        # runs — setParent(None) hides them immediately.
+        self._conc_label.setParent(None)
+        self._conc_input.setParent(None)
         while self._knob_layout.count():
             item = self._knob_layout.takeAt(0)
             w = item.widget()
@@ -165,10 +168,14 @@ class SimulationPanel(QWidget):
         for knob in knobs_for(assay_type):
             by_section.setdefault(knob.section, []).append(knob)
 
-        # One group box per non-empty section, in the canonical display order.
+        # One group box per section, in canonical display order.  The Concentrations
+        # box is always shown — it also hosts the titrant input, which every assay has
+        # (dye-alone has no fixed concentrations but is still a titration).  The other
+        # sections appear only when they contain knobs.
         for section in SECTION_ORDER:
-            section_knobs = by_section.get(section)
-            if not section_knobs:
+            section_knobs = by_section.get(section, [])
+            is_concentration = section == SECTION_CONCENTRATION
+            if not section_knobs and not is_concentration:
                 continue
             box = QGroupBox(SECTION_TITLES[section])
             box_layout = QVBoxLayout(box)
@@ -179,4 +186,7 @@ class SimulationPanel(QWidget):
                 box_layout.addWidget(ctrl)
                 self._controls[knob.key] = ctrl
                 self._is_condition[knob.key] = knob.is_condition
+            if is_concentration:
+                box_layout.addWidget(self._conc_label)
+                box_layout.addWidget(self._conc_input)
             self._knob_layout.addWidget(box)
