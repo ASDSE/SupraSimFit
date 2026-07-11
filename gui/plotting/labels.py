@@ -94,9 +94,14 @@ SPECIES_LABELS: dict[str, str] = {
 }
 
 
-def fmt_species(key: str) -> str:
-    """Return a bracketed concentration label for a species, e.g. ``HG2`` → ``[HG₂]``."""
-    return SPECIES_LABELS.get(key, f'[{key}]')
+def fmt_species(key: str, *, brackets: bool = True) -> str:
+    """Return a concentration label for a species, e.g. ``HG2`` → ``[HG₂]``.
+
+    ``brackets=False`` drops them (``HG₂``) — used for the compact plot legend,
+    where the concentration-bracket notation isn't needed.
+    """
+    label = SPECIES_LABELS.get(key, f'[{key}]')
+    return label if brackets else label.strip('[]')
 
 
 def fmt_unit_html(unit_str: str) -> str:

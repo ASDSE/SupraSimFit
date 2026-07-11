@@ -29,6 +29,12 @@ from gui.plotting.plot_widget import ScientificAxisItem
 # if that unit changes.  µM is the sensible default for these assays.
 _DEFAULT_UNIT = 'µM'
 
+# --- Legend appearance — tweak these to taste ---
+_LEGEND_FONT_SIZE = '8pt'  # label text size; smaller = more compact
+_LEGEND_VER_SPACING = -4  # vertical gap between rows (px); more negative = tighter
+_LEGEND_HOR_SPACING = 6  # gap between a line's colour swatch and its label (px)
+_LEGEND_BRACKETS = False  # True → show [H], [HD]; False → show H, HD
+
 
 def _m_to(unit: str) -> float:
     """Pint-derived M→display multiplier for a concentration unit (single source of truth)."""
@@ -65,7 +71,12 @@ class SpeciesPlotWidget(QWidget):
         self._item = self._pg.getPlotItem()
         self._item.showGrid(x=False, y=False)
         self._item.setLabel('left', f'Species [{self._unit}]', **{'font-size': '12pt', 'color': 'k'})
-        self._legend = self._item.addLegend(labelTextSize='10pt', offset=(-10, 10))
+        self._legend = self._item.addLegend(
+            labelTextSize=_LEGEND_FONT_SIZE,
+            verSpacing=_LEGEND_VER_SPACING,
+            horSpacing=_LEGEND_HOR_SPACING,
+            offset=(-8, 8),
+        )
         layout.addWidget(self._pg, 1)
 
         self._vline = pg.InfiniteLine(
@@ -99,7 +110,11 @@ class SpeciesPlotWidget(QWidget):
             disp = np.asarray(arr, dtype=float) * scale
             self._species_disp[key] = disp
             curve = pg.PlotCurveItem(
-                x=self._x, y=disp, pen=pg.mkPen(color=color, width=2), connect='finite', name=fmt_species(key)
+                x=self._x,
+                y=disp,
+                pen=pg.mkPen(color=color, width=2),
+                connect='finite',
+                name=fmt_species(key, brackets=_LEGEND_BRACKETS),
             )
             self._item.addItem(curve)
             self._series[key] = (curve, color)
