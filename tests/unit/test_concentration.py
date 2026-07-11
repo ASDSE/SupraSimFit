@@ -8,6 +8,7 @@ from core.data_processing.concentration import (
     load_concentration_vector,
     save_concentration_vector,
 )
+from core.units import Q_
 
 
 class TestConcentrationRoundTrip:
@@ -48,12 +49,25 @@ class TestConcentrationRoundTrip:
 
 class TestExtractConcentrations:
     def test_extract_from_txt_file(self, tmp_path):
-        """Extracts unique sorted concentrations from a measurement file."""
+        """Extracts unique sorted concentrations as a Quantity, molar by default."""
         data = 'var\tsignal\n0.0\t100\n1e-6\t200\n2e-6\t300\nvar\tsignal\n0.0\t110\n1e-6\t210\n2e-6\t310\n'
         p = tmp_path / 'extract.txt'
         p.write_text(data)
 
         conc = extract_concentrations_from_file(p)
 
-        assert len(conc) == 3
-        np.testing.assert_allclose(conc, [0.0, 1e-6, 2e-6])
+        assert conc.units == Q_(1, 'M').units
+        np.testing.assert_allclose(conc.to('M').magnitude, [0.0, 1e-6, 2e-6])
+
+    def test_extract_honors_declared_uM_unit(self, tmp_path):
+        """A '# units: concentration=uM' header is honored: face values stay µM and
+        convert to the correct molar grid — no silent 1e6 error (H1)."""
+        data = '# units: concentration=uM\nvar\tsignal\n1\t100\n2\t200\n5\t500\n'
+        p = tmp_path / 'um.txt'
+        p.write_text(data)
+
+        conc = extract_concentrations_from_file(p)
+
+        assert conc.units == Q_(1, 'µM').units
+        np.testing.assert_allclose(conc.magnitude, [1.0, 2.0, 5.0])
+        np.testing.assert_allclose(conc.to('M').magnitude, [1e-6, 2e-6, 5e-6])

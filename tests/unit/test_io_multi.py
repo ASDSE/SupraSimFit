@@ -37,6 +37,15 @@ def _write(path, concs_umol: list[float], signals: list[float]) -> str:
     return str(path)
 
 
+def _txt(path, concs: list[float], signals: list[float], *, unit: str | None = None) -> str:
+    """Minimal TXT measurement file, optionally self-describing its unit via a
+    ``# units: concentration=<unit>`` header (values are face values in that unit)."""
+    header = f'# units: concentration={unit}\n' if unit else ''
+    rows = '\n'.join(f'{c}\t{s}' for c, s in zip(concs, signals))
+    path.write_text(header + 'var\tsignal\n' + rows + '\n')
+    return str(path)
+
+
 def test_three_files_stack_as_replicas(tmp_path):
     """Three same-grid JASCO files load as three replicas, each round-tripped."""
     concs = [0.0, 1.0, 2.0]  # µmol/L → 0, 1e-6, 2e-6 M
@@ -55,6 +64,20 @@ def test_three_files_stack_as_replicas(tmp_path):
     # Each replica row preserves its own file's signals (data integrity).
     for stem, sig in files.items():
         np.testing.assert_allclose(ms.get_replica_signal(stem), sig)
+
+
+def test_heterogeneous_declared_units_converted_before_stack(tmp_path):
+    """A µM-declared file and an M-declared file describing the SAME physical grid
+    stack correctly: each is converted to molar via its own declared unit before
+    the concat drops per-file attrs (H2 — no silent 1e6 error on a mixed batch)."""
+    a = _txt(tmp_path / 'a.txt', [1.0, 2.0, 5.0], [10, 20, 30], unit='uM')  # µM face values
+    b = _txt(tmp_path / 'b.txt', [1e-6, 2e-6, 5e-6], [11, 21, 31], unit='M')  # M face values
+
+    ms = MeasurementSet.from_dataframe(load_measurements_multi([a, b]))
+
+    assert ms.n_replicas == 2
+    # Both replicas describe the one molar grid; the µM file was NOT read as M.
+    np.testing.assert_allclose(ms.concentrations, [1e-6, 2e-6, 5e-6])
 
 
 def test_mismatched_grid_rejected(tmp_path):

@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from core.units import Q_
+
 # Auto-register built-in formats. Register instrument-specific .csv sniffers
 # *before* the generic csv_reader fallback so they get first claim on dispatch.
 # Order is load-bearing — get_reader() walks readers in registration order — so
@@ -131,6 +133,14 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
         label = path.stem if seen == 0 else f'{path.stem} ({seen + 1})'
 
         out = df[['concentration', 'signal']].copy()
+        # Convert this file's grid to molar using its own reader-declared unit
+        # BEFORE pd.concat drops per-file df.attrs. Otherwise a µM replicate is
+        # stacked as raw numbers and, since the combined frame carries no
+        # per-file unit, silently read as molar downstream (a 1e6 error). Files
+        # with no declared unit keep the documented M default.
+        conc_unit = df.attrs.get('concentration_unit')
+        if conc_unit and conc_unit != 'M':
+            out['concentration'] = Q_(out['concentration'].to_numpy(dtype=float), conc_unit).to('M').magnitude
         replicas = df['replica']
         if replicas.nunique() > 1:
             out['replica'] = label + '#' + replicas.astype(str)

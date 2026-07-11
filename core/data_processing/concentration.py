@@ -90,8 +90,9 @@ def read_raw_concentrations(path: str | Path) -> Quantity:
       are returned *at face value* in that unit (not pre-converted), so a caller
       can both display them in the declared unit and convert with ``.to('M')``.
     - Anything else — delegates to :func:`extract_concentrations_from_file`,
-      whose registered readers already return molar values, and wraps them as
-      ``M``.
+      which wraps the file's concentration grid in its reader-declared unit
+      (e.g. the TXT ``# units:`` header), falling back to ``M`` only when the
+      reader declares none.
 
     Returning a ``Quantity`` keeps magnitude and unit together, so no bare-float
     vector with a separately-remembered unit token can drift apart.
@@ -115,14 +116,20 @@ def read_raw_concentrations(path: str | Path) -> Quantity:
         if not isinstance(raw, list) or len(raw) == 0:
             raise ValueError(f"'concentrations' must be a non-empty list in {path}")
         return Q_(np.asarray(raw, dtype=float), data.get('unit', 'M'))
-    return Q_(extract_concentrations_from_file(path), 'M')
+    return extract_concentrations_from_file(path)
 
 
-def extract_concentrations_from_file(path: str | Path) -> np.ndarray:
-    """Load a data file via the I/O registry and extract its concentration column.
+def extract_concentrations_from_file(path: str | Path) -> Quantity:
+    """Load a data file via the I/O registry and extract its concentration grid.
 
     This imports the reader lazily so that the core module has no hard
     dependency on the full I/O stack at import time.
+
+    Returns a self-describing ``Quantity``: the unique, sorted concentration
+    values wrapped in the reader-declared unit (``df.attrs['concentration_unit']``,
+    e.g. the TXT ``# units:`` header), or ``M`` when the reader declares none.
+    Honouring the declared unit here is what stops a µM file from being read as
+    molar — a silent 1e6 error — by a caller that only ``.to('M')`` the result.
 
     Parameters
     ----------
@@ -131,11 +138,13 @@ def extract_concentrations_from_file(path: str | Path) -> np.ndarray:
 
     Returns
     -------
-    np.ndarray
-        Unique, sorted concentration values found in the file.
+    pint.Quantity
+        Unique, sorted concentrations in their reader-declared unit.
     """
     from core.io import load_measurements  # lazy import
 
     path = Path(path)
     df = load_measurements(path)
-    return np.sort(df['concentration'].unique()).astype(float)
+    unit = df.attrs.get('concentration_unit', 'M')
+    values = np.sort(df['concentration'].unique()).astype(float)
+    return Q_(values, unit)
