@@ -192,16 +192,20 @@ def central_spread(samples: np.ndarray, mode: str) -> tuple[float, float]:
 def describe(samples: np.ndarray) -> dict[str, float]:
     """Full per-parameter summary of a 1-D pool: center, spread, and range.
 
-    Returns ``{'median', 'mad', 'mean', 'std', 'min', 'max'}`` — the
-    median/MAD and mean/SD pairs from :data:`ENSEMBLE_STATISTICS` plus the
-    observed range, all computed directly from *samples*.
+    Returns ``{'median', 'mad', 'mean', 'std', 'p16', 'p84', 'min', 'max'}``
+    — the median/MAD and mean/SD pairs, the central-68% interval (16th and
+    84th percentiles, the distribution-free analog of ±1 SD), and the observed
+    range, all computed directly from *samples*.
     """
     s = np.asarray(samples, dtype=float)
+    p16, p84 = np.percentile(s, [16, 84])
     return {
         'median': _median(s),
         'mad': _mad(s),
         'mean': _mean(s),
         'std': _std(s),
+        'p16': float(p16),
+        'p84': float(p84),
         'min': float(np.min(s)),
         'max': float(np.max(s)),
     }

@@ -102,6 +102,14 @@ class TestDescribe:
         assert d['min'] == np.min(s)
         assert d['max'] == np.max(s)
 
+    def test_p16_p84_are_the_16th_84th_percentiles(self):
+        s = np.array([3.0, 1.0, 2.0, 5.0, 8.0, 4.0])
+        d = ensemble.describe(s)
+        p16, p84 = np.percentile(s, [16, 84])
+        assert d['p16'] == pytest.approx(p16)
+        assert d['p84'] == pytest.approx(p84)
+        assert d['p16'] <= d['median'] <= d['p84']
+
     def test_describe_log10_transforms_first_not_log_of_spread(self):
         """log₁₀ stats must come from log₁₀(pool). The centre commutes (median),
         but the spread does NOT — log of a Ka MAD/std is wrong."""

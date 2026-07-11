@@ -107,21 +107,22 @@ def full_fit_result():
     )
 
 
-def test_six_columns_merged_stats_and_range(qapp, full_fit_result):
+def test_seven_columns_merged_stats_and_ranges(qapp, full_fit_result):
     from gui.plotting.fit_summary_widget import _COLUMN_HEADERS, FitSummaryWidget
 
     widget = FitSummaryWidget()
     widget.update_result(full_fit_result)
 
-    assert widget._table.columnCount() == 6
-    headers = [widget._table.horizontalHeaderItem(c).text() for c in range(6)]
+    assert widget._table.columnCount() == 7
+    headers = [widget._table.horizontalHeaderItem(c).text() for c in range(7)]
     assert headers == list(_COLUMN_HEADERS)
     # Merged 'central ± spread' cells (Median ± MAD, Mean ± SD) render one '±'.
     for col in (2, 3):
         assert '±' in widget._table.cellWidget(0, col).text()
-    # Range cell renders '[min, max]'.
-    range_text = widget._table.cellWidget(0, 4).text()
-    assert range_text.startswith('[') and range_text.endswith(']') and ',' in range_text
+    # 68% Range (col 4) and Min-Max Range (col 5) both render '[lo, hi]'.
+    for col in (4, 5):
+        t = widget._table.cellWidget(0, col).text()
+        assert t.startswith('[') and t.endswith(']') and ',' in t
 
 
 def test_log10_ka_row_computed_in_log_space(qapp, full_fit_result):

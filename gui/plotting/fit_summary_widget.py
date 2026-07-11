@@ -29,26 +29,38 @@ _PARAMS_HELP_HTML = """
 valid pool (highest R&sup2;), the one drawn on the plot. It is a point
 estimate among a distribution, not a proven optimum.</p>
 
-<p><b>Median &plusmn; MAD</b> and <b>Mean &plusmn; SD</b> &mdash; the centre
-and spread of each parameter across <i>all</i> valid fits.
-Median&nbsp;/&nbsp;MAD is robust to outlier fits; Mean&nbsp;/&nbsp;SD is the
-ordinary average. The <b>Statistics</b> selector bolds whichever pair is the
-reported &plusmn; in the plot annotation and export &mdash; it does not change
-the Estimate or the curve.</p>
+<p><b>Median &plusmn; MAD</b> and <b>Mean &plusmn; SD</b> &mdash; the centre and
+spread of each parameter across <i>all</i> valid fits. <b>MAD</b> is the median
+absolute deviation, median(|x<sub>i</sub> &minus; median|): a robust spread that
+ignores outlier fits (reported unscaled). <b>SD</b> is the sample standard
+deviation (N&minus;1) &mdash; the ordinary spread, pulled by outliers and
+assuming a roughly symmetric distribution. (The <i>median</i> absolute deviation
+is not the <i>mean</i> absolute deviation mean(|x<sub>i</sub> &minus; mean|); we
+use the median form because it pairs with the robust median.) The
+<b>Statistics</b> selector bolds whichever pair is the reported &plusmn; in the
+plot annotation and export &mdash; it does not change the Estimate or the curve.</p>
 
-<p><b>Range [min, max]</b> &mdash; the smallest and largest fitted value in
-the pool, an intuitive sense of the spread alongside the statistics.</p>
+<p><b>68% Range</b> &mdash; the interval [P16, P84] holding the central 68% of
+the fits. For a bell-shaped distribution this equals mean&nbsp;&plusmn;&nbsp;1
+SD, but it is read straight from the fits, so it stays correct &mdash; and
+reveals any skew &mdash; even when they are not bell-shaped. <b>Min-Max Range</b>
+is the full extent of the fitted values.</p>
 
 <p><b>log<sub>10</sub>(K<sub>a</sub>) row</b> &mdash; for each association
 constant, a second row reports log<sub>10</sub>(K<sub>a</sub>). Its statistics
 come from the per-fit log<sub>10</sub> values directly &mdash; never from the
 log of a K<sub>a</sub> spread, which would be meaningless.</p>
 
-<p><b>Large spread on signal coefficients is expected.</b> Only
-K<sub>a</sub> is uniquely determined; I<sub>0</sub>, I<sub>D</sub>,
-I<sub>HD</sub> trade off along a degenerate manifold, so their Median/Mean
-differ from the Estimate and their spread is wide. That is informative,
-not an error.</p>
+<p><b>What the spread means (and doesn&rsquo;t).</b> These numbers describe how
+<i>reproducibly the optimiser converges</i> across its many starting points on
+the same data &mdash; not the experimental uncertainty of your measurement. A
+tight spread means the fit reliably lands on the same value; it does <b>not</b>
+by itself mean the parameter is known to that precision. Real error bars come
+from repeating the experiment (replicates) or resampling it (bootstrap)
+&mdash; that is what <i>per-replica</i> fitting gives you. The wide spread on the
+signal coefficients (I<sub>0</sub>, I<sub>D</sub>, I<sub>HD</sub>) is the
+clearest case: it is not uncertainty, it is the model telling you those
+coefficients are not individually determined &mdash; only K<sub>a</sub> is.</p>
 """
 
 
@@ -76,11 +88,13 @@ increasing the trial budget.</p>
 # Merged stat columns: (header, (central_key, spread_key)) from ensemble.describe().
 # Rendered as a single "central ± spread" cell; the active pair is bold-emphasised.
 _STAT_COLUMNS = (('Median ± MAD', ('median', 'mad')), ('Mean ± SD', ('mean', 'std')))
-_RANGE_HEADER = 'Range [min, max]'
-_COLUMN_HEADERS = ('Parameter', 'Estimate') + tuple(h for h, _ in _STAT_COLUMNS) + (_RANGE_HEADER, 'Units')
-# Column indices: 0 Parameter | 1 Estimate | 2 Median±MAD | 3 Mean±SD | 4 Range | 5 Units.
+_P68_HEADER = '68% Range'  # central 68% interval [P16, P84]
+_RANGE_HEADER = 'Min-Max Range'
+_COLUMN_HEADERS = ('Parameter', 'Estimate') + tuple(h for h, _ in _STAT_COLUMNS) + (_P68_HEADER, _RANGE_HEADER, 'Units')
+# Columns: 0 Parameter | 1 Estimate | 2 Median±MAD | 3 Mean±SD | 4 68% Range | 5 Min-Max Range | 6 Units.
 _STAT_COL0 = 2
-_RANGE_COL = _STAT_COL0 + len(_STAT_COLUMNS)
+_P68_COL = _STAT_COL0 + len(_STAT_COLUMNS)
+_RANGE_COL = _P68_COL + 1
 _UNITS_COL = _RANGE_COL + 1
 # Column bolded for each mode's merged (central ± spread) cell.
 _ACTIVE_COLUMNS = {'median': (_STAT_COL0,), 'mean': (_STAT_COL0 + 1,)}
@@ -233,6 +247,7 @@ class FitSummaryWidget(QWidget):
             else:
                 for offset, (_, (ck, sk)) in enumerate(_STAT_COLUMNS):
                     self._set_cell(row, _STAT_COL0 + offset, self._fmt_pair(d[ck], d[sk], unit_str))
+                self._set_cell(row, _P68_COL, self._fmt_range(d['p16'], d['p84'], unit_str))
                 self._set_cell(row, _RANGE_COL, self._fmt_range(d['min'], d['max'], unit_str))
             self._set_cell(row, _UNITS_COL, fmt_unit_html(unit_str) if unit_str else '—')
 
