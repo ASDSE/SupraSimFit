@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 
 from core.units import Q_
 from gui.simulation.sim_knob import SimKnob
-from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, NoScrollSpinBox
+from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, NoScrollSpinBox, decimals_for_scale
 
 _SLIDER_STEPS = 1000
 
@@ -71,6 +71,11 @@ class ParameterControl(QWidget):
         self._vmin = float(knob.vmin)
         self._vmax = float(knob.vmax)
         self._scale = _display_factor(_CONC_DEFAULT, knob.unit) if knob.is_concentration else 1.0
+        # Finest offered concentration unit (→ base); drives per-unit spinbox decimals
+        # so a value never rounds to zero when shown in a coarser unit.
+        self._min_scale = (
+            min((_display_factor(u, knob.unit) for u in _CONC_LABELS), default=1.0) if knob.is_concentration else 1.0
+        )
 
         grid = QGridLayout(self)
         grid.setContentsMargins(0, 2, 0, 6)
@@ -106,6 +111,7 @@ class ParameterControl(QWidget):
         grid.addWidget(self._slider, 1, 1)
         grid.addWidget(self._max_spin, 1, 2)
 
+        self._apply_decimals()
         self._sync_all()
 
         self._slider.valueChanged.connect(self._on_slider)
@@ -155,6 +161,16 @@ class ParameterControl(QWidget):
 
     # -- sync helpers (block signals to avoid feedback loops) ---------------
 
+    def _apply_decimals(self) -> None:
+        """Size concentration spinbox decimals per current unit (shared decimal policy)."""
+        if not self._knob.is_concentration:
+            return
+        d = decimals_for_scale(self._scale, self._min_scale)
+        for sb in (self._value_spin, self._min_spin, self._max_spin):
+            sb.blockSignals(True)
+            sb.setDecimals(d)
+            sb.blockSignals(False)
+
     def _sync_all(self) -> None:
         self._sync_bounds_spins()
         self._sync_value_spin()
@@ -202,6 +218,7 @@ class ParameterControl(QWidget):
 
     def _on_unit_changed(self, label: str) -> None:
         self._scale = _display_factor(label, self._knob.unit)
+        self._apply_decimals()
         self._sync_value_spin()
         self._sync_bounds_spins()
 
@@ -226,6 +243,7 @@ class ConcentrationInput(QWidget):
         super().__init__(parent)
         # The titrant vector is always Molar; the selector only rescales the display.
         self._scale = _display_factor(_CONC_DEFAULT, 'M')
+        self._min_scale = min(_display_factor(u, 'M') for u in _CONC_LABELS)
 
         form = QFormLayout(self)
         form.setContentsMargins(0, 0, 0, 0)
@@ -267,6 +285,7 @@ class ConcentrationInput(QWidget):
         self._n.valueChanged.connect(self.changed)
         self._explicit.textChanged.connect(self.changed)
 
+        self._apply_decimals()
         self._apply_mode_visibility('linear')
 
     @staticmethod
@@ -342,8 +361,24 @@ class ConcentrationInput(QWidget):
         self._apply_mode_visibility(self.current_mode())
         self.changed.emit()
 
+    def _apply_decimals(self) -> None:
+        """Size the start/stop/step decimals per current unit (shared decimal policy)."""
+        d = decimals_for_scale(self._scale, self._min_scale)
+        for sb in (self._start, self._stop, self._step):
+            sb.blockSignals(True)
+            sb.setDecimals(d)
+            sb.blockSignals(False)
+
     def _on_unit_changed(self) -> None:
+        old_scale = self._scale
         self._scale = _display_factor(self._unit.currentText(), 'M')
+        self._apply_decimals()
+        # Preserve the physical value across a unit switch (convert, don't reinterpret).
+        for sb in (self._start, self._stop, self._step):
+            base = sb.value() * old_scale
+            sb.blockSignals(True)
+            sb.setValue(base / self._scale)
+            sb.blockSignals(False)
         self.changed.emit()
 
     def _apply_mode_visibility(self, mode: str) -> None:
