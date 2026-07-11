@@ -765,7 +765,16 @@ class DistributionWidget(QWidget):
         if replica_samples:
             offset = 0
             for r_idx, r_samp in enumerate(replica_samples):
-                r_vals = r_samp[key]
+                # Unlike the box/median loops, the strip cannot tolerate a
+                # missing key by skipping: that would desync the pooled index
+                # from the drawn points and misplace the selection ring. Fail
+                # loudly with a clear message instead of a bare KeyError.
+                r_vals = r_samp.get(key)
+                if r_vals is None:
+                    raise ValueError(
+                        f'Replica {r_idx} has no samples for parameter {key!r}; '
+                        f'cannot align the selection strip with the pooled fits.'
+                    )
                 display = np.log10(r_vals) if use_log else r_vals
                 n = len(display)
                 x_base = x_positions[r_idx] if r_idx < len(x_positions) else r_idx

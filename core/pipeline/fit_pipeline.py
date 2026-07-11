@@ -297,6 +297,17 @@ class FitResult:
         if quality_samples_data is not None:
             quality_samples = {k: np.asarray(v, dtype=float) for k, v in quality_samples_data.items()}
 
+        # Normalise the enum-ish display fields so a malformed/legacy JSON can't
+        # crash the GUI later (e.g. ENSEMBLE_STATISTICS[mode] or pool indexing).
+        statistics_mode = d.get('statistics_mode', DEFAULT_STATISTICS_MODE)
+        if statistics_mode not in ENSEMBLE_STATISTICS:
+            statistics_mode = DEFAULT_STATISTICS_MODE
+        representative_index = d.get('representative_index')
+        if representative_index is not None:
+            pool_size = len(next(iter(parameter_samples.values()))) if parameter_samples else 0
+            if not 0 <= representative_index < pool_size:
+                representative_index = None
+
         return cls(
             parameters=parameters,
             uncertainties=uncertainties,
@@ -319,8 +330,8 @@ class FitResult:
             replica_fits=replica_fits,
             parameter_samples=parameter_samples,
             quality_samples=quality_samples,
-            representative_index=d.get('representative_index'),
-            statistics_mode=d.get('statistics_mode', DEFAULT_STATISTICS_MODE),
+            representative_index=representative_index,
+            statistics_mode=statistics_mode,
         )
 
 
@@ -461,7 +472,7 @@ def apply_statistics_mode(result: FitResult, mode: str) -> None:
     """
     from core.assays.registry import ASSAY_REGISTRY, AssayType
 
-    if result.parameter_samples is None:
+    if not result.parameter_samples:
         raise ValueError('Cannot set statistics mode: result has no parameter_samples pool.')
     if mode not in ENSEMBLE_STATISTICS:
         raise ValueError(f"Unknown statistics mode '{mode}'. Valid modes: {sorted(ENSEMBLE_STATISTICS)}.")
@@ -499,7 +510,7 @@ def select_representative(result: FitResult, assay: BaseAssay, index: int) -> No
     index : int
         Index into the pooled samples of the fit to report.
     """
-    if result.parameter_samples is None:
+    if not result.parameter_samples:
         raise ValueError('Cannot select a representative: result has no parameter_samples pool.')
 
     pool_size = len(next(iter(result.parameter_samples.values())))

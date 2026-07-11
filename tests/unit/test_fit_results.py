@@ -178,3 +178,28 @@ class TestEnsembleMutators:
         r = _sample_fit_result()  # pool size 3
         with pytest.raises(ValueError, match='out of range'):
             select_representative(r, None, 99)  # index validated before the assay is used
+
+    def test_select_representative_rejects_empty_pool(self):
+        from dataclasses import replace
+
+        from core.pipeline.fit_pipeline import select_representative
+
+        r = replace(_sample_fit_result(), parameter_samples={})
+        with pytest.raises(ValueError, match='no parameter_samples'):
+            select_representative(r, None, 0)  # empty dict -> clear error, not StopIteration
+
+
+class TestFromDictNormalisation:
+    """Malformed/legacy imports are sanitised so they can't crash the GUI later."""
+
+    def test_unknown_statistics_mode_falls_back_to_default(self):
+        from core.optimizer.ensemble import DEFAULT_STATISTICS_MODE
+
+        d = _sample_fit_result().to_dict()
+        d['statistics_mode'] = 'bogus'
+        assert FitResult.from_dict(d).statistics_mode == DEFAULT_STATISTICS_MODE
+
+    def test_out_of_range_representative_index_dropped(self):
+        d = _sample_fit_result().to_dict()  # pool size 3
+        d['representative_index'] = 999
+        assert FitResult.from_dict(d).representative_index is None
