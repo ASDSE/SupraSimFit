@@ -410,10 +410,26 @@ class ConcentrationInput(QWidget):
     def _on_unit_changed(self) -> None:
         old_scale = self._scale
         self._scale = _display_factor(self._unit.currentText(), 'M')
-        # Preserve the physical value across a unit switch (convert, don't reinterpret).
+        ratio = old_scale / self._scale
+        # Preserve the physical value across a unit switch (convert, don't reinterpret) —
+        # for the start/stop/step fields AND the explicit vector, or the titrant would
+        # silently jump by the unit ratio in explicit mode.
         for sb in (self._start, self._stop, self._step):
-            sb.setValue(sb.value() * old_scale / self._scale)
+            sb.setValue(sb.value() * ratio)
+        self._rescale_explicit(ratio)
         self.changed.emit()
+
+    def _rescale_explicit(self, ratio: float) -> None:
+        """Rescale the explicit vector's displayed values so the physical vector is unchanged."""
+        try:
+            values = _parse_floats(self._explicit.text())
+        except ValueError:
+            return  # a partial/invalid in-progress entry — leave it for the user to finish
+        if not values:
+            return
+        self._explicit.blockSignals(True)
+        self._explicit.setText(', '.join(f'{v * ratio:g}' for v in values))
+        self._explicit.blockSignals(False)
 
     def _apply_mode_visibility(self, mode: str) -> None:
         show = {

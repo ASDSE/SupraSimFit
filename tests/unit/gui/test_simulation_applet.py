@@ -98,6 +98,16 @@ def test_display_factor_is_pint_derived(qapp):
     assert _display_factor('mM', 'M') == Q_(1, 'mM').to('M').magnitude
 
 
+def test_concentration_explicit_vector_preserved_across_unit_switch(qapp):
+    """Switching the unit in explicit mode must convert the vector, not silently rescale it."""
+    ci = ConcentrationInput()
+    ci.load_spec('explicit', {'values': [1e-6, 2e-6, 3e-6]})  # 1, 2, 3 µM
+    ci._unit.setCurrentText('mM')
+    mode, kwargs = ci.spec()
+    assert mode == 'explicit'
+    np.testing.assert_allclose(kwargs['values'], [1e-6, 2e-6, 3e-6], rtol=1e-9)
+
+
 def test_concentration_log_mode_round_trips_to_geometric_vector(qapp):
     ci = ConcentrationInput()
     ci.load_spec('log', {'start': 1e-8, 'stop': 1e-4, 'n': 9})
