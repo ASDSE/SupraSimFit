@@ -177,6 +177,29 @@ class TestEnsembleMutators:
         assert r.statistics_mode == 'median'
         assert r.uncertainties == before
 
+    def test_apply_statistics_mode_preserves_parameter_units(self):
+        """Toggling the ± flavour keeps each parameter's real unit — a Ka spread
+        stays 1/M, a coefficient au/M, an offset au — never dimensionless (M1)."""
+        from core.pipeline.fit_pipeline import apply_statistics_mode
+
+        r = _sample_fit_result()
+        expected = {k: v.units for k, v in r.parameters.items()}
+        for mode in ('mean', 'median'):
+            apply_statistics_mode(r, mode)
+            assert r.statistics_mode == mode
+            for k, u in expected.items():
+                assert r.uncertainties[k].units == u, f'{k} lost its unit under {mode!r}'
+
+    def test_apply_statistics_mode_unknown_assay_keeps_units(self):
+        """Even for an assay_type outside the registry, the ± takes its units from
+        the fitted parameters — not a silent registry-miss dimensionless (M1)."""
+        from core.pipeline.fit_pipeline import apply_statistics_mode
+
+        r = _sample_fit_result(assay_type='LEGACY_UNKNOWN')
+        apply_statistics_mode(r, 'mean')
+        assert r.uncertainties['Ka_guest'].units == Q_(1, '1/M').units
+        assert r.uncertainties['I_dye_free'].units == Q_(1, 'au/M').units
+
     def test_select_representative_rejects_out_of_range_index(self):
         from core.pipeline.fit_pipeline import select_representative
 
@@ -208,3 +231,12 @@ class TestFromDictNormalisation:
         d = _sample_fit_result().to_dict()  # pool size 3
         d['representative_index'] = 999
         assert FitResult.from_dict(d).representative_index is None
+
+    def test_from_dict_raises_on_missing_units_unknown_assay(self):
+        """A legacy dict with no parameter_units AND an unknown assay type must
+        fail loud, not silently load a real unit (1/M) as dimensionless (L1)."""
+        d = _sample_fit_result().to_dict()
+        d.pop('parameter_units', None)
+        d['assay_type'] = 'LEGACY_UNKNOWN'  # not resolvable via the registry
+        with pytest.raises(ValueError, match='no unit for parameter'):
+            FitResult.from_dict(d)

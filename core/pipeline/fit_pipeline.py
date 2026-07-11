@@ -274,15 +274,15 @@ class FitResult:
         def _unit_for(key: str) -> str:
             unit = param_units.get(key)
             if unit is None:
-                # Surface rather than silently treat a real unit (e.g. 1/M) as
-                # dimensionless — that would drop the unit from the loaded result.
-                logger.warning(
-                    "FitResult.from_dict: no unit for parameter '%s' (assay_type=%r); loading as "
-                    'dimensionless. The file may predate parameter_units or use an unknown assay type.',
-                    key,
-                    d.get('assay_type'),
+                # Fail loud rather than silently loading a real unit (e.g. 1/M)
+                # as dimensionless, which would drop it from the result with no
+                # signal. The GUI import path turns this into a user warning.
+                raise ValueError(
+                    f"FitResult.from_dict: no unit for parameter '{key}' "
+                    f'(assay_type={d.get("assay_type")!r}). The file predates '
+                    'parameter_units or uses an unknown assay type, so it cannot '
+                    'be loaded without corrupting units.'
                 )
-                return 'dimensionless'
             return unit
 
         # Reconstruct Quantity parameters
@@ -494,23 +494,25 @@ def apply_statistics_mode(result: FitResult, mode: str) -> None:
     ValueError
         If *result* has no ``parameter_samples`` pool to summarise.
     """
-    from core.assays.registry import ASSAY_REGISTRY, AssayType
-
     if not result.parameter_samples:
         raise ValueError('Cannot set statistics mode: result has no parameter_samples pool.')
     if mode not in ENSEMBLE_STATISTICS:
         raise ValueError(f"Unknown statistics mode '{mode}'. Valid modes: {sorted(ENSEMBLE_STATISTICS)}.")
 
-    try:
-        units = dict(ASSAY_REGISTRY[AssayType[result.assay_type]].units)
-    except KeyError:
-        units = {}
-
+    # Attach the recomputed spread to each parameter's existing, authoritative
+    # unit (set when the fit was built or loaded). Never re-derive it from the
+    # registry — that fabricates 'dimensionless' for an unknown/legacy assay type
+    # and silently strips a real unit (1/M, au/M) from the reported ±.
     # Compute before mutating so a failure can't leave the result half-updated.
-    uncertainties = {
-        key: Q_(central_spread(samples, mode)[1], units.get(key, 'dimensionless'))
-        for key, samples in result.parameter_samples.items()
-    }
+    uncertainties = {}
+    for key, samples in result.parameter_samples.items():
+        prior = result.parameters.get(key)
+        if prior is None:
+            raise KeyError(
+                f"Cannot set statistics mode: parameter '{key}' has a sample pool but no "
+                'fitted value to take its unit from.'
+            )
+        uncertainties[key] = Q_(central_spread(samples, mode)[1], prior.units)
     result.statistics_mode = mode
     result.uncertainties = uncertainties
 
