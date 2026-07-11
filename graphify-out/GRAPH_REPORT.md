@@ -1,13 +1,18 @@
-# Graph Report - .  (2026-07-11)
+# Graph Report - fitting_app  (2026-07-11)
 
 ## Corpus Check
-- 143 files · ~107,610 words
+- 147 files · ~118,288 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2282 nodes · 4743 edges · 125 communities (104 shown, 21 thin omitted)
-- Extraction: 90% EXTRACTED · 10% INFERRED · 0% AMBIGUOUS · INFERRED: 485 edges (avg confidence: 0.54)
-- Token cost: 51,000 input · 3,532 output
+- 2672 nodes · 5560 edges · 140 communities (121 shown, 19 thin omitted)
+- Extraction: 91% EXTRACTED · 9% INFERRED · 0% AMBIGUOUS · INFERRED: 525 edges (avg confidence: 0.54)
+- Token cost: 0 input · 0 output
+
+## Graph Freshness
+- Built from commit: `476b803a`
+- Run `git rev-parse HEAD` and compare to check if the graph is stale.
+- Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - [[_COMMUNITY_Fitting Pipeline Orchestration|Fitting Pipeline Orchestration]]
@@ -127,17 +132,32 @@
 - [[_COMMUNITY_Pint Documentation|Pint Documentation]]
 - [[_COMMUNITY_Pint Contexts Note|Pint Contexts Note]]
 - [[_COMMUNITY_Project Manifest|Project Manifest]]
+- [[_COMMUNITY_Community 125|Community 125]]
+- [[_COMMUNITY_Community 126|Community 126]]
+- [[_COMMUNITY_Community 127|Community 127]]
+- [[_COMMUNITY_Community 128|Community 128]]
+- [[_COMMUNITY_Community 129|Community 129]]
+- [[_COMMUNITY_Community 130|Community 130]]
+- [[_COMMUNITY_Community 131|Community 131]]
+- [[_COMMUNITY_Community 132|Community 132]]
+- [[_COMMUNITY_Community 133|Community 133]]
+- [[_COMMUNITY_Community 134|Community 134]]
+- [[_COMMUNITY_Community 135|Community 135]]
+- [[_COMMUNITY_Community 136|Community 136]]
+- [[_COMMUNITY_Community 137|Community 137]]
+- [[_COMMUNITY_Community 138|Community 138]]
+- [[_COMMUNITY_Community 139|Community 139]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `MeasurementSet` - 134 edges
+1. `MeasurementSet` - 139 edges
 2. `FitResult` - 86 edges
-3. `FitConfig` - 83 edges
-4. `FittingSession` - 77 edges
-5. `AssayType` - 60 edges
-6. `GDAAssay` - 59 edges
-7. `BaseAssay` - 57 edges
-8. `DistributionWidget` - 55 edges
-9. `IDAAssay` - 52 edges
+3. `FitConfig` - 86 edges
+4. `AssayType` - 81 edges
+5. `FittingSession` - 77 edges
+6. `BaseAssay` - 66 edges
+7. `GDAAssay` - 64 edges
+8. `IDAAssay` - 57 edges
+9. `DistributionWidget` - 55 edges
 10. `DataPanel` - 51 edges
 
 ## Surprising Connections (you probably didn't know these)
@@ -168,103 +188,103 @@
 - **ParamKind + [signal] dimension parameter-identity design** — docs_pint_findings_au_signal_dimension, docs_pint_findings_paramkind, docs_pint_findings_scale_factor, docs_pint_findings_dimensionless_collision [EXTRACTED 0.90]
 - **Self-describing, fail-loud unit data flow** — docs_pint_findings_no_silent_fallbacks, docs_pint_findings_self_describing_io, docs_pint_findings_serialization_tokens, docs_pint_audit_concentration_boundary_bug [INFERRED 0.85]
 
-## Communities (125 total, 21 thin omitted)
+## Communities (140 total, 19 thin omitted)
 
 ### Community 0 - "Fitting Pipeline Orchestration"
-Cohesion: 0.05
-Nodes (68): _config_to_dict(), _dense_fit_curve(), fit_assay(), fit_linear_assay(), fit_measurement_set(), fit_measurement_set_per_replica(), FitConfig, FitResult (+60 more)
+Cohesion: 0.07
+Nodes (29): PerReplicaFitError, Raised when per-replica fitting cannot produce any surviving fit.      Carries a, assert_within_tolerance(), Assert fitted value is within tolerance of true value.      Parameters     -----, clean_pr_result(), _ida_conditions(), _ida_ms(), noisy_pr_result() (+21 more)
 
 ### Community 1 - "DBA Assay & Models"
-Cohesion: 0.05
-Nodes (46): create_dba_dye_to_host(), create_dba_host_to_dye(), DBAAssay, ndarray, DBA (Direct Binding Assay) data containers.  DBA measures direct binding between, Create DBA assay for host-to-dye titration.      Parameters     ----------     h, Create DBA assay for dye-to-host titration.      Parameters     ----------     d, Direct Binding Assay data container.      This class handles both Host→Dye and D (+38 more)
+Cohesion: 0.07
+Nodes (22): DBAAssay, Direct Binding Assay data container.      This class handles both Host→Dye and D, Validate data and set assay type based on mode., GDAAssay, Guest Displacement Assay data container.      Attributes     ----------     x_da, Validate data and conditions., Ka_dye recovered in HtoD mode (host titrated, dye fixed)., TestDBAHtoD (+14 more)
 
 ### Community 2 - "Assay Base Class"
-Cohesion: 0.05
-Nodes (41): ABC, BaseAssay, Base class for assay data containers.  This module defines the abstract base cla, Abstract base class for assay data containers.      Subclasses must implement:, Validate data after initialization., Get metadata from the assay registry., Parameter names for this assay type., Number of parameters to fit. (+33 more)
+Cohesion: 0.07
+Nodes (41): Base class for assay data containers.  This module defines the abstract base cla, Get metadata from the assay registry., create_dba_host_to_dye(), DBA (Direct Binding Assay) data containers.  DBA measures direct binding between, Create DBA assay for host-to-dye titration.      Parameters     ----------     h, Dye-alone calibration assay.  This is a simple linear calibration where signal i, GDA (Guest Displacement Assay) data container.  In GDA, dye is titrated into a s, IDA (Indicator Displacement Assay) data container.  In IDA, guest is titrated in (+33 more)
 
 ### Community 3 - "Assay Type Registry"
 Cohesion: 0.06
-Nodes (30): AssayType, Enumeration of all supported assay types.      Each assay type has associated me, Enum, Scientist-facing descriptions of each supported assay type.  Each entry maps an, Scientist-facing descriptions of fitted parameters and their bounds.  Each entry, _lookup_assay_type(), Read-only display widget for FitResult statistics., Reverse-lookup AssayType by its ``.name`` string.      Parameters     ------- (+22 more)
+Nodes (30): ABC, BaseAssay, Any, ndarray, Quantity, Compute predicted signal from parameters.          Parameters         ----------, Equilibrium speciation across ``x_data`` from the same solve as the signal., Return experimental conditions needed for the forward model.          Returns (+22 more)
 
 ### Community 4 - "Distributions Export Dialog"
-Cohesion: 0.08
-Nodes (25): QWidget, Dialog for saving the distributions plot as a composite PNG or SVG.  The dialog, Return ``width_in`` for a preset, or ``None`` for 'custom'.          Height is n, DPI input is meaningless for vector SVG; grey it out., Pick subplots, layout, dimensions, and format for the distributions image., SaveDistributionsPlotDialog, Save the distributions composite as PNG or SVG.          The export figure's asp, export_plot_item() (+17 more)
+Cohesion: 0.19
+Nodes (5): QWidget, Return ``width_in`` for a preset, or ``None`` for 'custom'.          Height is n, DPI input is meaningless for vector SVG; grey it out., Pick subplots, layout, dimensions, and format for the distributions image., SaveDistributionsPlotDialog
 
 ### Community 5 - "Flat Tab Bar Widget"
 Cohesion: 0.07
 Nodes (26): ButtonPosition, _FlatCloseButton, FlatTabBar, FlatTabWidget, Flat / minimal tab widgets — one reusable style for every tab in the app.  Imple, Tab bar that keeps an optional inline "+" button after the last tab., Create (or reconfigure) the inline "+" affordance; run ``callback`` on click., Borderless neutral "✕" close affordance for a flat tab. (+18 more)
 
 ### Community 6 - "Assay Config Checkbox Rows"
-Cohesion: 0.07
-Nodes (20): Append one checkbox + HTML label to a shared single-row layout., FitConfigPanel, QWidget, FitConfigPanel — optimizer configuration (n_trials, RMSE factor, min R²)., Editor for :class:`~core.pipeline.fit_pipeline.FitConfig` parameters.      Signa, Row: [enable checkbox] [factor spinbox] [info] for the optional trim., Wrap ``widget`` in an HBox together with a trailing info button.          The sp, InfoGroupBox (+12 more)
+Cohesion: 0.10
+Nodes (17): FittingSession — one complete fitting workspace (one tab)., FitConfigPanel, QWidget, FitConfigPanel — optimizer configuration (n_trials, RMSE factor, min R²)., Editor for :class:`~core.pipeline.fit_pipeline.FitConfig` parameters.      Signa, Row: [enable checkbox] [factor spinbox] [info] for the optional trim., Wrap ``widget`` in an HBox together with a trailing info button.          The sp, _info_button_qss() (+9 more)
 
 ### Community 7 - "FitResult Statistics Modes"
-Cohesion: 0.07
-Nodes (26): apply_statistics_mode(), Reconstruct a ``FitResult`` from a dictionary.          Parameters         -----, Recompute the reported ± on *result* from its pool under *mode*.      Mutates *r, Re-point *result* at a different valid fit from its pool.      Mutates *result*, select_representative(), Switch the reported ± between median±MAD and mean±STDEV (no re-fit)., Tests for FitResult serialization and traceability., from_dict handles missing optional keys gracefully. (+18 more)
+Cohesion: 0.09
+Nodes (18): Reconstruct a ``FitResult`` from a dictionary.          Parameters         -----, from_dict handles missing optional keys gracefully., NaN uncertainties survive round-trip., x_fit/y_fit carry their own unit tokens; older files without them fall         b, Build a minimal FitResult for testing., to_dict emits unit tokens from the parameter Quantities (not a registry, Fail-fast contracts on the public pipeline mutation helpers., Toggling the ± flavour keeps each parameter's real unit — a Ka spread         st (+10 more)
 
 ### Community 8 - "Design Notes & Bug Postmortems"
-Cohesion: 0.07
-Nodes (43): Free-Dye vs Free-Host Concentration Swap Bug, Explicit Mode Keyword (HtoD/DtoH) Fix, DBA_DtoH Signal-Coefficient Bug Postmortem, MultiAssayFit Architecture Sketch, Multi-Wavelength / Multi-Cut Global Fit, Global / Multi-Dataset Fitting Design Note, Global Parameter-Mapping Pattern, Keep Forward Models Pure and Flat-Keyed (+35 more)
+Cohesion: 0.21
+Nodes (12): Brent's Method Root-Finding, Ensemble Statistics & Robust Aggregation, Law of Mass Action, Bound-Constrained Quasi-Newton (L-BFGS-B), Mass Balance Equations (Quadratic / Cubic), Non-Negative Signal/Ka Constraints, Scientific Summary of the Fitting Toolkit, Signal Response Model (I = I0 + sum Ii[Ci]) (+4 more)
 
 ### Community 9 - "MeasurementSet Tests"
-Cohesion: 0.08
-Nodes (16): Tests for MeasurementSet construction and behaviour., Raw data arrays are read-only after construction., Auto-generated IDs are unique., Active mask management., iter_replicas, get_replica_signal, average_signal., Yielded signals are views (not copies) into the underlying array., to_assay construction of BaseAssay subclasses., Shortcut to create a MeasurementSet from a sample DataFrame. (+8 more)
+Cohesion: 0.07
+Nodes (18): Tests for MeasurementSet construction and behaviour., Raw data arrays are read-only after construction., Auto-generated IDs are unique., Active mask management., Build a simple long-form DataFrame with known values., iter_replicas, get_replica_signal, average_signal., Yielded signals are views (not copies) into the underlying array., to_assay construction of BaseAssay subclasses. (+10 more)
 
 ### Community 10 - "Dye-Alone Bounds & Tolerance"
 Cohesion: 0.07
-Nodes (24): bounds_from_dye_alone(), Derive signal-coefficient bounds from a dye-alone calibration.      Returns Quan, assert_within_tolerance(), Assert fitted value is within tolerance of true value.      Parameters     -----, _dye_alone_assay(), _gda_assay(), _ida_assay(), _max_rel_err() (+16 more)
+Nodes (32): DyeAloneAssay, Dye-alone calibration data container.      Attributes     ----------     x_data, bounds_from_dye_alone(), fit_linear_assay(), FitResult, Whether the fit was successful (at least one passing fit)., Convert to a JSON-safe dictionary.          ``Quantity`` fields are converted to, Serializable container for fitting results.      All fitted parameter values and (+24 more)
 
 ### Community 11 - "MeasurementSet Replica Access"
-Cohesion: 0.06
-Nodes (21): MeasurementSet, Any, ndarray, Quantity, Total number of replicas (active + dropped)., Number of currently active replicas., Number of concentration points per replica., Replica IDs currently marked active. (+13 more)
+Cohesion: 0.14
+Nodes (9): Any, ndarray, Return the row index for *replica_id*, or raise ValueError., Set the active state of a single replica.          Parameters         ----------, Check whether *replica_id* is currently active., Iterate over replicas as ``(replica_id, signal_view)`` pairs.          Parameter, Return the signal array (read-only view) for a single replica.          Paramete, Compute the mean signal across replicas.          Parameters         ---------- (+1 more)
 
 ### Community 12 - "Fitting Session Controller"
-Cohesion: 0.07
-Nodes (13): FittingSession, One complete fitting workflow: data → preprocess → configure → fit → visualize., Set a manual tab name (double-click rename); empty reverts to auto., Resolve the tab title: custom name, else dataset stem, else 'Untitled'., Stem-only version of :meth:`_default_save_name` (no tag, no suffix)., Import fit results from JSON and replot., Save current plot style settings to a JSON file., Load plot style settings from a JSON file. (+5 more)
+Cohesion: 0.16
+Nodes (3): FittingSession, One complete fitting workflow: data → preprocess → configure → fit → visualize., Import fit results from JSON and replot.
 
 ### Community 13 - "Plot Widget & Axes"
-Cohesion: 0.09
-Nodes (28): _format_exponent_unicode(), PlotWidget, Update exponent, firing callback only on change.          The callback guard (, Qt widget that renders ``prepare_plot_data()`` output via PyQtGraph.      Para, Convert an integer exponent to Unicode superscript, e.g. 5 → '⁵', -3 → '⁻³'., Set an axis label, appending ×10ⁿ if *exp* is not None., Compose ``"<name> [<unit>]"`` using *override* if non-empty.          The over, Update y-axis label reactively when the exponent changes during paint. (+20 more)
+Cohesion: 0.11
+Nodes (23): PlotWidget, PlotItem, Update exponent, firing callback only on change.          The callback guard (, Qt widget that renders ``prepare_plot_data()`` output via PyQtGraph.      Para, The underlying pyqtgraph PlotItem — used to x-link a second plot to this one., Current x-axis concentration unit (e.g. ``'µM'``) — for a linked plot to match., AxisItem that formats tick labels with a shared exponent.      When all tick v, ScientificAxisItem (+15 more)
 
 ### Community 14 - "Fit Result Filtering"
-Cohesion: 0.12
-Nodes (19): filter_by_r_squared(), filter_by_rmse(), Filtering utilities for fit results.  Filter multi-start fit attempts down to th, Filter fit attempts by RMSE threshold.      Parameters     ----------     result, Filter fit attempts by minimum R² value.      Parameters     ----------     resu, Select the valid-fit pool kept for aggregation.      The absolute R² floor is th, select_valid_fits(), FitAttempt (+11 more)
+Cohesion: 0.13
+Nodes (18): filter_by_r_squared(), filter_by_rmse(), Filtering utilities for fit results.  Filter multi-start fit attempts down to th, Filter fit attempts by RMSE threshold.      Parameters     ----------     result, Filter fit attempts by minimum R² value.      Parameters     ----------     resu, Select the valid-fit pool kept for aggregation.      The absolute R² floor is th, select_valid_fits(), FitAttempt (+10 more)
 
 ### Community 15 - "Synthetic Test Fixtures"
-Cohesion: 0.07
-Nodes (33): dba_clean(), dba_noisy(), dye_alone_clean(), gda_clean(), gda_noisy(), h2g_clean(), hg2_clean(), ida_clean() (+25 more)
+Cohesion: 0.05
+Nodes (43): dba_clean(), dba_noisy(), dye_alone_clean(), gda_clean(), gda_noisy(), h2g_clean(), hg2_clean(), ida_clean() (+35 more)
 
 ### Community 16 - "CSV Reader"
 Cohesion: 0.11
 Nodes (16): CsvReader, DataFrame, Path, True if every column name parses as a number (suggesting no header row)., Reader for CSV measurement files., Read a CSV measurement file.          Parameters         ----------         path, Series, CsvReader handles varied CSV dialects and headers. (+8 more)
 
 ### Community 17 - "Assay Condition Fields"
-Cohesion: 0.09
-Nodes (17): ConditionField, Schema for one assay condition input field.      Attributes     ----------     k, Any, Quantity, Set widget from a base-unit value., Decimals so a value resolvable in the finest unit survives here.          The fi, Return conditions dict (values in base units) including implicit DBA mode., Spinbox paired with an optional unit selector.      For fields with display choi (+9 more)
+Cohesion: 0.07
+Nodes (26): ConditionField, Schema for one assay condition input field.      Attributes     ----------     k, AssayConfigPanel, Any, Quantity, Per-unit decimals via the shared policy in ``gui.widgets.numeric_inputs``., Registry-driven assay type selector and dynamic conditions form.      A two-leve, Return conditions dict (values in base units) including implicit DBA mode. (+18 more)
 
 ### Community 18 - "Measurement Writer"
-Cohesion: 0.09
-Nodes (26): _header_comment(), _iter_points(), Path, Writers that serialise a :class:`MeasurementSet` back to disk.  These produce fi, Yield ``(replica_idx, concentration, signal)`` tuples for every point.      Incl, Write *ms* to a tab-separated ``.txt`` file with repeated headers.      Output r, Write *ms* to a long-format ``.csv`` file.      Output round-trips through :clas, write_measurements_csv() (+18 more)
+Cohesion: 0.12
+Nodes (22): _header_comment(), _iter_points(), Path, Writers that serialise a :class:`MeasurementSet` back to disk.  These produce fi, Yield ``(replica_idx, concentration, signal)`` tuples for every point.      Incl, Write *ms* to a tab-separated ``.txt`` file with repeated headers.      Output r, Write *ms* to a long-format ``.csv`` file.      Output round-trips through :clas, write_measurements_csv() (+14 more)
 
 ### Community 19 - "Equilibrium Signal Models"
-Cohesion: 0.10
-Nodes (22): h2g_signal(), h2g_species(), hg2_signal(), hg2_species(), ndarray, Forward models for equilibrium binding assays.  This module contains pure mathem, Solve for free-ligand concentration in a stepwise 1:2 (core·ligand₂) system., Equilibrium speciation for stepwise 1:2 host–guest binding.      Two successive (+14 more)
+Cohesion: 0.06
+Nodes (42): H2G assay: stepwise 2:1 host–guest direct binding.  Guest is titrated into a fix, _competitive_species_grid(), competitive_species_point(), dba_signal(), dba_species(), gda_species(), h2g_signal(), h2g_species() (+34 more)
 
 ### Community 20 - "Parameter Scaling"
-Cohesion: 0.09
-Nodes (25): ParamScaler, ndarray, Data-driven parameter rescaling for well-conditioned fitting.  Given an assay wi, Rescale raw (lower, upper) bound tuples to tilded space., Return a tilded-parameter objective wrapping a raw-parameter one.          ``obj, Compute the affine rescaling factor for a parameter unit.      Each component of, Per-parameter affine rescaler derived from assay data.      Attributes     -----, Build a scaler from a ``BaseAssay`` instance.          Raises         ------ (+17 more)
+Cohesion: 0.14
+Nodes (19): Multi-start optimization for nonlinear fitting.  This module provides a robust m, Data-driven parameter rescaling for well-conditioned fitting.  Given an assay wi, Compute the affine rescaling factor for a parameter unit.      Each component of, Build a scaler from a ``BaseAssay`` instance.          Raises         ------, _scale_factor(), ida_assay(), _make_ida_assay(), ndarray (+11 more)
 
 ### Community 21 - "Plot Styling & Error Bars"
-Cohesion: 0.08
-Nodes (19): line_style_to_qt(), Map style string to Qt.PenStyle.      Accepts both internal strings (``"solid", _ErrorBarSample, Any, ndarray, Clear and redraw from a ``prepare_plot_data()`` dict.          Parameters, Return the M→display multiplier for an x-axis concentration unit.      Fast pa, Mutate existing plot items in-place with new style settings.          Wired to (+11 more)
+Cohesion: 0.09
+Nodes (17): line_style_to_qt(), Map style string to Qt.PenStyle.      Accepts both internal strings (``"solid", _ErrorBarSample, Any, ndarray, Clear and redraw from a ``prepare_plot_data()`` dict.          Parameters, Return the M→display multiplier for an x-axis concentration unit.      Fast pa, Mutate existing plot items in-place with new style settings.          Wired to (+9 more)
 
 ### Community 22 - "Concentration Extraction"
 Cohesion: 0.11
 Nodes (19): extract_concentrations_from_file(), ndarray, Path, Quantity, Helpers for saving, loading, and extracting concentration vectors.  Concentratio, Save a concentration vector to a JSON file.      Parameters     ----------     c, Read a concentration vector as a self-describing ``pint.Quantity``.      Dispatc, Load a data file via the I/O registry and extract its concentration grid.      T (+11 more)
 
 ### Community 23 - "Session State"
-Cohesion: 0.11
-Nodes (18): Mutable state for one fitting session (one tab).      All widgets within a Fitti, SessionState, DistributionsExportConfig, Return value when the dialog is accepted.      ``height_in`` is derived from ``w, _Grouped(), _GroupedPlain, _GroupedWithInfo, Vertically-scrolling sidebar whose width follows its content.      A plain ``QSc (+10 more)
+Cohesion: 0.09
+Nodes (19): Mutable state for one fitting session (one tab).      All widgets within a Fitti, SessionState, DistributionsExportConfig, Return value when the dialog is accepted.      ``height_in`` is derived from ``w, _Grouped(), _GroupedPlain, _GroupedWithInfo, Vertically-scrolling sidebar whose width follows its content.      A plain ``QSc (+11 more)
 
 ### Community 24 - "Distribution Box Plots"
 Cohesion: 0.12
@@ -275,24 +295,24 @@ Cohesion: 0.08
 Nodes (22): QImage, annotated_plot_widget(), fitted_dist_widget(), Tests for the consolidated image-export pipeline.  Verifies:   * single-plot PNG, The composite PNG's width matches the request exactly; height comes     from the, A 2x2 layout with 3 selected keys exports as a valid composite PNG., ``derive_height_in`` returns a height that preserves the live cell aspect., A PlotWidget with a fit result + annotation visible.      The widget is shown of (+14 more)
 
 ### Community 26 - "Measurement Loading"
-Cohesion: 0.11
-Nodes (27): load_measurements(), load_measurements_multi(), DataFrame, Path, Load measurement data from file.      Unit contract     -------------     The re, Load several measurement files and stack them as replicas.      Each file is rea, _jasco(), Tests for batch-loading several files as replicas (``load_measurements_multi``). (+19 more)
+Cohesion: 0.10
+Nodes (27): DataFrame, Build a MeasurementSet from a long-form DataFrame.          The DataFrame must c, load_measurements_multi(), Load several measurement files and stack them as replicas.      Each file is rea, Build a MeasurementSet from a single-channel frame, forwarding the         place, _jasco(), Tests for batch-loading several files as replicas (``load_measurements_multi``)., Same file name in different folders → distinct replica IDs, no collision. (+19 more)
 
 ### Community 27 - "Data Processing Package"
-Cohesion: 0.13
-Nodes (19): Data processing: containers, preprocessing, and plot helpers.  Public API ------, In-memory container for multi-replica measurement data.  MeasurementSet holds a, apply_preprocessing(), get_step(), PreprocessingStep, Any, Minimalist preprocessing pipeline for MeasurementSet.  Provides a tiny registry, Apply a sequence of preprocessing steps to *ms* in order.      Each entry in *st (+11 more)
+Cohesion: 0.08
+Nodes (24): Data processing: containers, preprocessing, and plot helpers.  Public API ------, MeasurementSet, Total number of replicas (active + dropped)., Number of currently active replicas., Number of concentration points per replica., Replica IDs currently marked active., Replica IDs currently marked inactive., Mark all replicas active (undo all filtering). (+16 more)
 
 ### Community 28 - "Jasco Reader"
-Cohesion: 0.14
-Nodes (12): JascoReader, Reader for JASCO Spectra Manager titration CSV exports., Return True if ``path`` looks like a JASCO export.          Sniffs the first ~30, _minimal_jasco(), Tests for the JASCO Spectra Manager CSV reader.  Covers the parts of the format, Real JASCO exports stack accessories — both must survive., Non-duplicate keys keep the plain-string value type., Build a minimal JASCO-shaped CSV. n_points = real data rows; header     NPOINTS (+4 more)
+Cohesion: 0.08
+Nodes (21): JascoReader, Any, DataFrame, ndarray, Path, Split file into (header dict, data lines, extended-info sections)., Parse the bracketed-INI extended-info block into nested dicts.          Real JAS, Parse two-column numeric data and cross-check against ``NPOINTS``. (+13 more)
 
 ### Community 29 - "Ensemble Aggregation"
 Cohesion: 0.14
-Nodes (24): central_spread(), collapse(), describe(), describe_log10(), EnsembleResult, EnsembleStatistic, _mad(), _mean() (+16 more)
+Nodes (23): collapse(), describe(), describe_log10(), EnsembleResult, EnsembleStatistic, _mad(), _mean(), _median() (+15 more)
 
 ### Community 30 - "Main Window Shell"
-Cohesion: 0.13
-Nodes (4): FittingMainWindow, Block until any in-flight update check finishes before closing.          The sta, Main application window: tab management + toolbar + menu routing.      All fitti, QMainWindow
+Cohesion: 0.17
+Nodes (3): FittingMainWindow, Block until any in-flight update check finishes before closing.          The sta, Main application window: tab management + toolbar + menu routing.      All fitti
 
 ### Community 31 - "Update Download Worker"
 Cohesion: 0.10
@@ -300,15 +320,15 @@ Nodes (14): DownloadWorker, Path, Background download worker — streams a URL t
 
 ### Community 32 - "Plot Colors"
 Cohesion: 0.12
-Nodes (16): FittingSession — one complete fitting workspace (one tab)., Color constants and helpers for the plotting module., Return an RGBA tuple from an RGB tuple and optional alpha.      Parameters, rgba(), Box-whisker distribution plots for fitted parameters (pyqtgraph)., Re-apply the y-axis label, appending ×10ⁿ when an exponent is set.      The base, _refresh_axis_label_with_exponent(), load_style_json() (+8 more)
+Nodes (16): Color constants and helpers for the plotting module., Box-whisker distribution plots for fitted parameters (pyqtgraph)., Re-apply the y-axis label, appending ×10ⁿ when an exponent is set.      The base, _refresh_axis_label_with_exponent(), Style configuration widget using PyQtGraph ParameterTree., _format_exponent_unicode(), Main plot widget wrapping a PyQtGraph PlotWidget., Convert an integer exponent to Unicode superscript, e.g. 5 → '⁵', -3 → '⁻³'. (+8 more)
 
 ### Community 33 - "Pint Findings & Audit"
 Cohesion: 0.10
 Nodes (24): Concentration-input boundary bug (3 HIGH, silent 1e6-1e9), Multi-agent re-audit after merging main, Prior-art comparison (astropy/MetPy/unyt/OpenFF), test_registry_units.py kind↔unit↔log-scale lint, au shadows Pint astronomical_unit, au = [signal] custom dimension, Runtime unit validation at boundaries, Canonical internal units (M, 1/M, au) (+16 more)
 
 ### Community 34 - "Fit Summary Widget"
-Cohesion: 0.12
-Nodes (20): FitSummaryWidget, Read-only display of ``FitResult`` statistics.      Layout     ------     -, Remember *index* as the sticky 'Selected' representative.          Called when, full_fit_result(), minimal_fit_result(), Widget tests for FitSummaryWidget — requires a QApplication., A log₁₀(Ka) row follows the Ka row; its Estimate is log₁₀ of the     representa, The plot-picked fit becomes a sticky 'Selected' item that survives     switchin (+12 more)
+Cohesion: 0.07
+Nodes (30): FitSummaryWidget, _lookup_assay_type(), Read-only display of ``FitResult`` statistics.      Layout     ------     -, Populate the widget from a ``FitResult``.          ``Estimate`` is the represe, Pint HTML value with the trailing unit stripped (units have a column)., Merged 'central ± spread' cell (units stripped; shown in the Units column)., Merged '[min, max]' range cell., Reflect *mode* in the selector without re-emitting the change. (+22 more)
 
 ### Community 35 - "Plot Style Widget"
 Cohesion: 0.12
@@ -316,87 +336,87 @@ Nodes (17): PlotStyleWidget, _qcolor_to_tuple(), Convert a QColor (or tuple) fro
 
 ### Community 36 - "Data Panel Tests"
 Cohesion: 0.09
-Nodes (15): loaded_panel(), _multi_channel_frame(), multi_channel_panel(), Tests for the inline DataPanel concentration controls., A DataPanel set up as ``load_file`` would leave it for a 2-channel file., The Channel combo is enabled only for multi-channel data., A DataPanel populated with a tiny three-point dataset (face values in M)., Changing the Imported Unit must reinterpret face values via Pint. (+7 more)
+Nodes (15): loaded_panel(), _multi_channel_frame(), multi_channel_panel(), Tests for the inline DataPanel concentration controls., A DataPanel set up as ``load_file`` would leave it for a 2-channel file., A DataPanel populated with a tiny three-point dataset (face values in M)., A loaded concentration vector honours its declared unit; a unit outside the, Changing the Imported Unit must reinterpret face values via Pint. (+7 more)
 
 ### Community 37 - "Z-Score Outlier Filter"
-Cohesion: 0.13
-Nodes (13): Mark replicas as inactive if any point is a z-score outlier.      Uses **robust, Apply modified z-score filtering to *ms* in-place., ZScoreReplicaFilter, _ms_with_outlier(), Running filter twice doesn't crash or double-drop., Identical replicas (std=0) → no drops, no errors., Log entry contains threshold, dropped, kept., Create a MeasurementSet where one replica is a clear outlier.      The outlier r (+5 more)
+Cohesion: 0.11
+Nodes (16): Mark replicas as inactive if any point is a z-score outlier.      Uses **robust, Apply modified z-score filtering to *ms* in-place., ZScoreReplicaFilter, _ms_few_replicas(), _ms_with_outlier(), Tests for the preprocessing pipeline and z-score replica filter., Running filter twice doesn't crash or double-drop., Identical replicas (std=0) → no drops, no errors. (+8 more)
 
 ### Community 38 - "TXT Reader"
-Cohesion: 0.11
-Nodes (14): DataFrame, Check if a row is a header row., Reader for tab-separated measurement files with multi-replica support., Read tab-separated measurement file.          Handles multi-replica files where, TxtReader, Empty file raises ValueError., Load the actual GDA data file from the data/ directory., Accepts 'concentration' as header name. (+6 more)
+Cohesion: 0.13
+Nodes (15): Reader for tab-separated measurement files with multi-replica support., TxtReader, P4: I/O round-trip tests.  Verify that measurement data survives write→read cycl, Empty file raises ValueError., Accepts 'concentration' as header name., A declared concentration unit survives from file to a molar MeasurementSet., TxtWriter correctly serializes fit results., TxtReader correctly parses measurement files. (+7 more)
 
 ### Community 39 - "Ensemble Collapse Tests"
 Cohesion: 0.09
 Nodes (9): Unit tests for the ensemble-collapse module.  Pins the single-source collapse be, log₁₀ stats must come from log₁₀(pool). The centre commutes (median),         bu, One sample → no dispersion defined; both modes report 0 (no NaN)., On a fixed dataset the two criteria agree by construction., When R² ties (e.g. all 0 for constant y, ss_tot==0), pick lowest RMSE., TestCollapse, TestDescribe, TestSelectRepresentativeIndex (+1 more)
 
 ### Community 40 - "Plot Data Preparation"
-Cohesion: 0.16
-Nodes (12): prepare_plot_data(), Any, Plot data preparation helpers.  Prepares structured data from a ``MeasurementSet, Gather plot-ready data from a MeasurementSet and optional fits.      Parameters, _noisy(), ndarray, End-to-end demo of the gui/plotting module.  Shows the full pipeline:   synth, Tests for prepare_plot_data() — the MeasurementSet → plot dict bridge. (+4 more)
+Cohesion: 0.19
+Nodes (10): In-memory container for multi-replica measurement data.  MeasurementSet holds a, prepare_plot_data(), Any, Plot data preparation helpers.  Prepares structured data from a ``MeasurementSet, Gather plot-ready data from a MeasurementSet and optional fits.      Parameters, Tests for prepare_plot_data() — the MeasurementSet → plot dict bridge., _simple_fit_result(), _simple_ms() (+2 more)
 
 ### Community 41 - "I/O Reader Protocols"
-Cohesion: 0.13
-Nodes (16): MeasurementReader, Protocol definitions for I/O readers and writers.  This module defines the inter, Protocol for reading measurement data files.      Implementations must define:, Protocol for writing fit results.      Implementations must define:     - extens, ResultWriter, CSV format reader for comma-separated measurement data.  Supported formats -----, JASCO Spectra Manager titration export reader.  JASCO instruments (FP-8300 spect, TXT format reader and writer for tab-separated measurement data.  File Format -- (+8 more)
+Cohesion: 0.09
+Nodes (26): MeasurementReader, Protocol definitions for I/O readers and writers.  This module defines the inter, Protocol for reading measurement data files.      Implementations must define:, Protocol for writing fit results.      Implementations must define:     - extens, ResultWriter, CSV format reader for comma-separated measurement data.  Supported formats -----, PerkinElmer EnSight plate-reader CSV export parser.  EnSight (Kaleido 3.x) expor, JASCO Spectra Manager titration export reader.  JASCO instruments (FP-8300 spect (+18 more)
 
 ### Community 42 - "Distribution Widget"
 Cohesion: 0.12
 Nodes (17): DistributionWidget, Parameter keys of the currently displayed subplots, in order., Emit representative_selected with the front-most clicked fit's index.          `, Side-by-side box-whisker plots of fitted parameter distributions.      One pyqtg, pooled_result(), Widget tests for DistributionWidget — selection, highlight, toggles.  Requires a, A FitResult carrying parameter + quality pools (average mode)., Stand-in for a pyqtgraph SpotItem carrying a pool index. (+9 more)
 
 ### Community 43 - "Replica Panel"
-Cohesion: 0.15
-Nodes (10): _display_label(), ReplicaPanel — per-replica activation checkboxes., Rebuild the checkbox grid from current MeasurementSet state., Map a zero-based replica index to an A–Z display label.      For indices 0–25 re, Show one checkbox per replica and allow toggling active/inactive state.      Aut, Populate checkboxes from MeasurementSet replica IDs., Re-read active states from the MeasurementSet (after preprocessing)., ReplicaPanel (+2 more)
+Cohesion: 0.26
+Nodes (5): Rebuild the checkbox grid from current MeasurementSet state., Show one checkbox per replica and allow toggling active/inactive state.      Aut, Populate checkboxes from MeasurementSet replica IDs., Re-read active states from the MeasurementSet (after preprocessing)., ReplicaPanel
 
 ### Community 44 - "Export Multiple Dialog"
-Cohesion: 0.14
-Nodes (7): ExportMultipleDialog, Exception, Path, QWidget, Pick artefacts, folder, and filename base; export in one click., Show the consolidated multi-artefact export dialog., QLineEdit
+Cohesion: 0.16
+Nodes (6): ExportMultipleDialog, Exception, Path, QWidget, Pick artefacts, folder, and filename base; export in one click., Show the consolidated multi-artefact export dialog.
 
 ### Community 45 - "Data Panel Concentration Table"
-Cohesion: 0.12
-Nodes (8): _fmt_cell(), Format a float for the concentration table — short, scientific when needed., Load a single file: parse → build the MeasurementSet → emit.          No modal d, Build a MeasurementSet from a single-channel frame, forwarding the         place, Return the single-channel sub-frame for *channel*, attrs preserved., Rebuild the MeasurementSet for the newly selected channel in-memory.          Th, Return the token in ``UNITS`` whose pint unit matches ``units``.          Matche, Write the face-value buffer into the current MeasurementSet and announce it.
+Cohesion: 0.13
+Nodes (7): _fmt_cell(), Format a float for the concentration table — short, scientific when needed., Load a single file: parse → build the MeasurementSet → emit.          No modal d, Return the single-channel sub-frame for *channel*, attrs preserved., Rebuild the MeasurementSet for the newly selected channel in-memory.          Th, Return the token in ``UNITS`` whose pint unit matches ``units``.          Matche, Write the face-value buffer into the current MeasurementSet and announce it.
 
 ### Community 46 - "Data Panel Interface"
 Cohesion: 0.13
 Nodes (10): DataPanel, Load measurement data and edit the concentration vector inline.      Signals, Set the Display Unit combo without re-emitting if unchanged., Bring keyboard focus to the inline table.          Public hook for the fit-time, End-to-end load of the real EnSight fixture through ``load_file``., JASCO reader metadata must survive the load into MeasurementSet., Selecting several files in the import dialog stacks them as replicas., TestEnsightLoadIntegration (+2 more)
 
 ### Community 47 - "MeasurementSet Construction Tests"
-Cohesion: 0.11
-Nodes (12): DataFrame, Build a simple long-form DataFrame with known values., MeasurementSet construction and validation., Happy-path construction from a long-form DataFrame., Concentrations are sorted ascending after construction., Missing required column raises ValueError., Replicas with different concentration grids raise ValueError., concentrations must be 1-D. (+4 more)
+Cohesion: 0.12
+Nodes (10): DataFrame, MeasurementSet construction and validation., Happy-path construction from a long-form DataFrame., Concentrations are sorted ascending after construction., Missing required column raises ValueError., Replicas with different concentration grids raise ValueError., concentrations must be 1-D., signals columns must match concentrations length. (+2 more)
 
 ### Community 48 - "Assay Forward-Model Tests"
-Cohesion: 0.13
-Nodes (13): ndarray, Quantity, Compute predicted signal from parameters.          Parameters         ----------, Forward models for molecular binding assays., linear_signal(), ndarray, Linear model for dye-alone calibration.  This module provides a simple linear mo, Compute linear signal.      Parameters     ----------     slope : float (+5 more)
+Cohesion: 0.05
+Nodes (39): competitive_signal_point(), gda_signal(), ida_signal(), Compute signal for a single point in competitive binding equilibrium.      Deleg, Compute GDA signal across dye concentration range.      In GDA (Guest Displaceme, Compute IDA signal across guest concentration range.      In IDA (Indicator Disp, Forward models for molecular binding assays., linear_signal() (+31 more)
 
 ### Community 49 - "GDA Signal Model"
-Cohesion: 0.11
-Nodes (13): ndarray, Quantity, Compute predicted signal from parameters.          Parameters         ----------, gda_signal(), Compute GDA signal across dye concentration range.      In GDA (Guest Displaceme, Tests for GDA and IDA competitive binding models., GDA signal increases as dye is titrated in., IDA signal decreases as guest displaces dye. (+5 more)
+Cohesion: 0.22
+Nodes (6): Any, ndarray, Quantity, Free host, dye, guest and both complexes (M) across the dye titration., Return experimental conditions.          Returns         -------         Dict[st, Compute predicted signal from parameters.          Parameters         ----------
 
 ### Community 50 - "BMG Reader"
-Cohesion: 0.18
-Nodes (15): _extract_metadata(), _find_bmg_sheet(), _find_header_row(), is_bmg_workbook(), parse_bmg_workbook(), Any, DataFrame, BMG plate reader export parser.  BMG CLARIOstar / FLUOstar / PHERAstar instrumen (+7 more)
+Cohesion: 0.12
+Nodes (22): _extract_metadata(), _find_bmg_sheet(), _find_header_row(), is_bmg_workbook(), parse_bmg_workbook(), Any, DataFrame, BMG plate reader export parser.  BMG CLARIOstar / FLUOstar / PHERAstar instrumen (+14 more)
 
 ### Community 51 - "I/O Reader Registry"
-Cohesion: 0.18
-Nodes (9): get_reader(), Register a reader class for its supported extensions.      Multiple readers may, Get a reader instance for the given file path.      Walks the registered candida, register_reader(), isolated_registry(), Tests for the content-sniffing reader registry.  Covers the dispatch contract in, Snapshot READERS and restore after the test., Default registrations (txt, csv, xlsx) survive the rewrite. (+1 more)
+Cohesion: 0.08
+Nodes (41): _as_count(), _build_assay(), build_concentration_vector(), Any, ndarray, Forward simulation of titration data.  This is the inverse of the fitting pipeli, Construct an assay for forward evaluation over *x_vector* (M).      Mirrors :met, Evaluate an assay's forward model at *x_vector* from explicit parameters.      U (+33 more)
 
 ### Community 52 - "DBA Signal Model"
-Cohesion: 0.14
-Nodes (11): Quantity, Compute predicted signal from parameters.          Parameters         ----------, dba_signal(), Compute DBA signal for host-dye equilibrium.      Works for both Host→Dye and Dy, Tests for the DBA (direct binding) forward model., HtoD with no host => all dye free; signal = I0 + I_dye_free * d0., Very high Ka_dye should drive binding to saturation., HtoD and DtoH produce the same signal at the same physical state.          Regre (+3 more)
+Cohesion: 0.18
+Nodes (8): create_dba_dye_to_host(), Any, ndarray, Quantity, Free host, free dye and host-dye complex (M) across the titration., Return experimental conditions.          Returns         -------         Dict[st, Create DBA assay for dye-to-host titration.      Parameters     ----------     d, Compute predicted signal from parameters.          Parameters         ----------
 
 ### Community 53 - "EnSight Reader Tests"
-Cohesion: 0.22
-Nodes (7): EnsightReader, Reader for PerkinElmer EnSight CSV_PLATE exports., _minimal_ensight(), Row A of the FL channel must match the legacy txt row-for-row., `Post Processing Sequence` rows must not parse into the last         `Details of, Build a minimal EnSight-shaped CSV with `n_channels` Result blocks., TestParsing
+Cohesion: 0.07
+Nodes (24): EnsightReader, DataFrame, ndarray, Path, Capture the few lines above the first 'Result for ...' block., Return list of (block name, line index) for every 'Result for' line., Locate and parse the plate grid that follows a 'Result for' line., Extract a flat key/value dict from one of the trailing sections.          Sectio (+16 more)
 
 ### Community 54 - "Fitting Workflow Diagram"
 Cohesion: 0.18
 Nodes (17): Aggregate Good Fits, Any Good Fits? (decision), Compute Final Model, Compute RMSE & R², Filter Fits using RMSE & R², Generate Multiple Parameter Sets, Initial Guess Available? (decision), Initialize Randomly (+9 more)
 
 ### Community 55 - "User Preferences"
-Cohesion: 0.18
-Nodes (15): get_bool(), Thin wrapper around :class:`QSettings` for persistent user preferences.  The cod, Return a QSettings bound to the currently running application.      Uses ``QSett, Return a boolean preference, falling back to *default*., Persist a boolean preference., set_bool(), _settings(), QSettings (+7 more)
+Cohesion: 0.16
+Nodes (16): Dialog for saving the distributions plot as a composite PNG or SVG.  The dialog, get_bool(), Thin wrapper around :class:`QSettings` for persistent user preferences.  The cod, Return a QSettings bound to the currently running application.      Uses ``QSett, Return a boolean preference, falling back to *default*., Persist a boolean preference., set_bool(), _settings() (+8 more)
 
 ### Community 56 - "Forward Model Verification"
-Cohesion: 0.12
-Nodes (11): competitive_signal_point(), Compute signal for a single point in competitive binding equilibrium.      This, Verify the forward models against equilibrium solutions computed by a     differ, dba_signal (quadratic) agrees with a Brent solve of the dye balance., competitive_signal_point agrees with an fsolve of the full         3-species sys, No dye → signal equals I0 (no dye contribution)., Verify the competitive Brent solver finds a physical root across     several dec, [H_free] must be finite and in (0, h0) regardless of Ka magnitudes. (+3 more)
+Cohesion: 0.10
+Nodes (32): central_spread(), Return ``(central, spread)`` for *samples* under aggregation *mode*.      Parame, calculate_fit_metrics(), ndarray, Calculate RMSE and R² for a fit.      Parameters     ----------     y_observed :, apply_statistics_mode(), _config_to_dict(), _dense_fit_curve() (+24 more)
 
 ### Community 57 - "Multi-Start Optimizer"
 Cohesion: 0.18
@@ -415,56 +435,56 @@ Cohesion: 0.17
 Nodes (11): _app_icon_path(), launch(), FittingMainWindow — thin shell managing tabbed fitting sessions., Block non-focused spinboxes from swallowing wheel events.      Qt's event-filter, Locate the bundled app icon for both source runs and PyInstaller bundles., Entry point — create the QApplication and launch the main window., _SpinBoxWheelRedirect, Query GitHub ``/releases/latest`` for the configured repo.      Signals     ---- (+3 more)
 
 ### Community 61 - "Assay Parameter Interface"
-Cohesion: 0.18
-Nodes (8): ndarray, Quantity, Compute predicted signal from parameters.          Parameters         ----------, Compute residuals (observed - predicted).          Parameters         ----------, Compute sum of squared residuals (SSR) for optimization.          Parameters, Get default parameter bounds as a name-keyed dictionary.          Returns the ``, Convert parameter array to named dictionary.          Parameters         -------, Convert named dictionary to parameter array.          Parameters         -------
+Cohesion: 0.09
+Nodes (21): _display_factor(), _labelled(), NoiseControl, _parse_floats(), QWidget, Reusable live controls for the simulation applet.  These are generic and assay-a, Titrant setup: a maximum concentration (0 → max in N points), or an explicit vec, (Re)build the maximum-concentration knob for a new assay's titrant. (+13 more)
 
 ### Community 62 - "IDA Signal Model"
-Cohesion: 0.16
-Nodes (10): ndarray, Quantity, Compute predicted signal from parameters.          Parameters         ----------, ida_signal(), Compute IDA signal across guest concentration range.      In IDA (Indicator Disp, Limiting cases for the competitive binding model., IDA's titration start (g0=0) numerically matches the DBA quadratic         for t, Non-binding guest (Ka→0) produces constant signal. (+2 more)
+Cohesion: 0.22
+Nodes (6): Any, ndarray, Quantity, Free host, dye, guest and both complexes (M) across the guest titration., Return experimental conditions.          Returns         -------         Dict[st, Compute predicted signal from parameters.          Parameters         ----------
 
 ### Community 63 - "Measurement File Parsing"
-Cohesion: 0.19
-Nodes (9): Any, DataFrame, ndarray, Path, Split file into (header dict, data lines, extended-info sections)., Parse the bracketed-INI extended-info block into nested dicts.          Real JAS, Parse two-column numeric data and cross-check against ``NPOINTS``., Convert the x column to M using the unit token in ``XUNITS``.          JASCO wri (+1 more)
+Cohesion: 0.07
+Nodes (33): _knob(), GUI tests for the forward-simulation applet.  These pin the applet-specific cont, With no custom vector, the titration is a 0 → max linear scan of N_POINTS points, A custom vector is used verbatim (in M) instead of the 0 → max scan., Switching the vector's unit must convert the values, not silently rescale them., Large magnitudes read as scientific notation; O(1) values stay plain., A user can type '1e8' — the field parses and reformats it, no zero-counting., Every knob lands in the section its physical role dictates, for all assays. (+25 more)
 
 ### Community 64 - "Export Batch Tests"
 Cohesion: 0.22
 Nodes (12): Consolidated multi-artefact export dialog.  Lets the user pick which artefacts t, _Row, export_batch(), ExportableArtefact, Exception, One thing the user can export in a batch.      Attributes     ----------     key, Run a batch of artefact writers and report per-item outcomes.      Returns a lis, Path (+4 more)
 
 ### Community 65 - "Fit Summary Formatting"
-Cohesion: 0.16
-Nodes (6): Populate the widget from a ``FitResult``.          ``Estimate`` is the represe, Pint HTML value with the trailing unit stripped (units have a column)., Merged 'central ± spread' cell (units stripped; shown in the Units column)., Merged '[min, max]' range cell., Reflect *mode* in the selector without re-emitting the change., Bold the header of the active (central, spread) pair.
+Cohesion: 0.10
+Nodes (21): fit_measurement_set(), FitConfig, Configuration for the fitting pipeline.      ``rmse_threshold_factor`` is an *op, Convenience: build an assay from a MeasurementSet and fit it.      When ``config, Background worker threads for long-running operations., fit_measurement_set honors config.per_replica and dispatches., _dba_assay(), Relaxing min_r_squared allows more fits to pass filtering. (+13 more)
 
 ### Community 66 - "Parameter Label Formatting"
-Cohesion: 0.18
-Nodes (8): fmt_param(), fmt_param_plain(), HTML display labels for parameter names.  Used by FitSummaryWidget and plot an, Return HTML display label for a parameter name, fallback to raw name., Return a plain-text (no HTML) parameter label, fallback to raw name., Tests for gui.plotting.labels — HTML and Unicode formatting., TestFmtParam, TestLabelsAndHelp
+Cohesion: 0.09
+Nodes (18): _canonical_unit(), fmt_param(), fmt_param_plain(), fmt_unit_html(), fmt_unit_pretty(), HTML display labels for parameter names.  Used by FitSummaryWidget and plot an, Format a unit string as abbreviated HTML with negative exponents.      Pint's, Format a unit string as abbreviated Unicode with negative exponents.      Like (+10 more)
 
 ### Community 67 - "Update Check"
 Cohesion: 0.19
 Nodes (8): is_newer(), Background check for newer SupraSimFit releases on GitHub.  Queries the GitHub R, Return True if *remote_tag* represents a strictly newer version than *local*., Tests for :func:`gui.update_check.is_newer`.  Pure-function tests — no GitHub ne, Behaviour of ``is_newer(remote_tag, local)``., Malformed remote tags must not raise — treat as 'not newer'., TestIsNewer, Single source of truth for SupraSimFit's version and GitHub repo.  Everything th
 
 ### Community 68 - "Measurement Writer Tests"
-Cohesion: 0.19
-Nodes (7): DataFrame, Build a MeasurementSet from a long-form DataFrame.          The DataFrame must c, TestMeasurementWriters, A declared concentration unit survives from file to a molar MeasurementSet., A '# units: concentration=µM' header makes the reader tag the frame so         M, A molar MeasurementSet written to TXT reads back unchanged (M)., TestSelfDescribingUnits
+Cohesion: 0.08
+Nodes (17): Core domain logic for molecular binding assay fitting.  Main entry points: - cor, load_measurements(), DataFrame, Path, Save fit results to file.      Parameters     ----------     results : dict, Load measurement data from file.      Unit contract     -------------     The re, save_results(), Load BMG, replace placeholder concentrations, export, reload. (+9 more)
 
 ### Community 69 - "XLSX Reader"
 Cohesion: 0.32
 Nodes (7): DataFrame, Path, Reader for Excel measurement files.      Dispatches on workbook structure: BMG p, Read an Excel measurement file.          Parameters         ----------         p, Pandas-based long / wide / multi-sheet fallback., XlsxReader, ExcelFile
 
 ### Community 70 - "Bounds Panel Rows"
-Cohesion: 0.19
-Nodes (6): _BoundRow, _parse_sci(), Quantity, Return custom Quantity bounds or None if all match defaults., Apply dye-alone–derived bounds to I0 and I_dye_free rows., A single row: lower QLineEdit | '—' | upper QLineEdit | info ⓘ.
+Cohesion: 0.11
+Nodes (11): Scientist-facing descriptions of fitted parameters and their bounds.  Each entry, _BoundRow, BoundsPanel, _parse_sci(), Quantity, BoundsPanel — registry-driven parameter bounds editor with dye-alone priors., Registry-driven parameter bounds editor.      Auto-populates from ``ASSAY_REGIST, Return custom Quantity bounds or None if all match defaults. (+3 more)
 
 ### Community 71 - "Parameter Kind & Unit Lint"
-Cohesion: 0.17
-Nodes (11): ParamKind, Semantic identity of a fitted parameter.      Dimensional analysis alone cannot, Registry unit-lint and the signal-dimension invariant.  These guard the "both" d, Every registered parameter carries an explicit ParamKind., Each parameter's ParamKind is dimensionally consistent with its unit.      With, A parameter is a BINDING_CONSTANT iff it is sampled in log space., ``au`` is not dimensionless, so ``au/M`` cannot be read as ``1/M``., test_binding_constants_are_exactly_the_log_scale_params() (+3 more)
+Cohesion: 0.10
+Nodes (17): fmt_species(), Return a concentration label for a species, e.g. ``HG2`` → ``[HG₂]``.      ``b, _fmt(), _m_to(), ndarray, PlotItem, Redraw one line per species (concentrations in M) versus the titrant, shown in *, Clear the plot and show *message* (e.g. dye-alone has no speciation). (+9 more)
 
 ### Community 72 - "Plate Block Parsing"
-Cohesion: 0.17
-Nodes (6): DataFrame, Capture the few lines above the first 'Result for ...' block., Return list of (block name, line index) for every 'Result for' line., Extract a flat key/value dict from one of the trailing sections.          Sectio, Return the subset of details belonging to one Operation block.          Walks ``, Parse an EnSight CSV into a long-format DataFrame.          Returned columns: ``
+Cohesion: 0.16
+Nodes (6): _clamp(), ParameterControl, Current value in the base unit (M / M⁻¹ / au / au·M⁻¹)., Current value as a pint Quantity (for assay conditions)., Serializable knob state for settings save., A single live knob: slider + labelled editable bounds + exact value.      Intern
 
 ### Community 73 - "Plot Visibility Toggles"
-Cohesion: 0.18
-Nodes (6): Redraw all subplots from a FitResult's parameter_samples.          One subplot p, Plain-text label for a subplot's toggle checkbox., Rebuild the checkbox row when the key-set changes; else reflect state., Show/hide one subplot without re-rendering (no jitter/stat recompute)., Pick the stacked page: placeholder, all-hidden notice, or the plots., Update visual style (fonts, palette) from PlotStyleWidget.
+Cohesion: 0.13
+Nodes (8): Redraw all subplots from a FitResult's parameter_samples.          One subplot p, Plain-text label for a subplot's toggle checkbox., Rebuild the checkbox row when the key-set changes; else reflect state., Show/hide one subplot without re-rendering (no jitter/stat recompute)., Pick the stacked page: placeholder, all-hidden notice, or the plots., Update visual style (fonts, palette) from PlotStyleWidget., Reset to empty placeholder., Remove all data items AND the legend from a PlotItem.
 
 ### Community 74 - "Linear Fit"
 Cohesion: 0.20
@@ -475,8 +495,8 @@ Cohesion: 0.18
 Nodes (8): format_channel_label(), Any, Build a human label for an EnSight channel: name + Ex/Em hints.      Used by the, _build_file_filter(), Load one or more measurement files.          From the dialog the user may select, Stack several files as replicas in one MeasurementSet.          Replica labels c, Fill the channel combo from the loaded frame; disable if ≤1 channel., Build QFileDialog filter string from registered I/O readers.
 
 ### Community 76 - "Fit Metrics (RMSE/R2)"
-Cohesion: 0.24
-Nodes (7): calculate_fit_metrics(), ndarray, Calculate RMSE and R² for a fit.      Parameters     ----------     y_observed :, When all y_observed are identical, ss_tot=0 → R²=0., Hand-computed RMSE and R² for simple data., A NaN anywhere in y_predicted (failed model eval) must yield NaN         metrics, TestCalculateFitMetrics
+Cohesion: 0.25
+Nodes (4): When all y_observed are identical, ss_tot=0 → R²=0., Hand-computed RMSE and R² for simple data., A NaN anywhere in y_predicted (failed model eval) must yield NaN         metrics, TestCalculateFitMetrics
 
 ### Community 77 - "Initial Guess Generation"
 Cohesion: 0.29
@@ -487,27 +507,27 @@ Cohesion: 0.25
 Nodes (6): _Accepter, _Fallback, DataFrame, Path, No can_read → always-accepting fallback., _Rejecter
 
 ### Community 79 - "EnSight Reader"
-Cohesion: 0.20
-Nodes (7): PerkinElmer EnSight plate-reader CSV export parser.  EnSight (Kaleido 3.x) expor, ndarray, Path, Tests for the PerkinElmer EnSight CSV plate-reader.  Real fixtures are europium-, Parse the legacy var/signal txt into an n_replicas × n_points array., _read_legacy_var_signal(), TestDispatch
+Cohesion: 0.12
+Nodes (11): Open (or re-raise) the non-modal forward-simulation applet., ndarray, Re-evaluate the forward model and redraw.  Errors surface in the status bar., Redraw the speciation plot, or show a note where there is no equilibrium., Interactive forward-simulation applet (non-modal)., SimulationWindow, QMainWindow, Enabling noise puts N replicate scatter series alongside the model line. (+3 more)
 
 ### Community 80 - "Session Export Actions"
 Cohesion: 0.20
 Nodes (5): Build a default save filename based on the loaded dataset's stem.          Falls, Export current fit results to JSON., Export current fit results as a human-readable text report., Save the current plot as PNG or SVG., Save the distributions plot as a composite PNG with a layout picker.
 
 ### Community 81 - "Plate Grid Parsing"
-Cohesion: 0.25
-Nodes (5): ndarray, Path, Locate and parse the plate grid that follows a 'Result for' line., Return True if the first non-empty line is the EnSight signature., TestSniffing
+Cohesion: 0.10
+Nodes (19): 1. Introduction, 2. Scientific Methodology: The Forward Modeling Approach, 3.1. Law of Mass Action, 3.2. Mass Balance Equations, 3.3. Signal Response Model, 3. Mathematical Framework, 4.1. Numerical Optimization, 4.2. Root-Finding Algorithms (+11 more)
 
 ### Community 82 - "Unit HTML Formatting"
-Cohesion: 0.28
-Nodes (6): _canonical_unit(), fmt_unit_html(), Map the signal unit's display alias ``a.u.`` to its parseable token ``au``., Format a unit string as abbreviated HTML with negative exponents.      Pint's, The registry's 'a.u.' y-unit alias must format like 'au', not the         'u a', TestFmtUnitHtml
+Cohesion: 0.14
+Nodes (18): export_plot_item(), export_scene(), _ext(), _install_textitem_export_patch(), prepare_widget_for_offscreen_render(), Path, PlotItem, High-quality image export for PyQtGraph plots and scenes.  This module owns ever (+10 more)
 
 ### Community 83 - "Unit Unicode Formatting"
-Cohesion: 0.33
-Nodes (4): fmt_unit_pretty(), Format a unit string as abbreviated Unicode with negative exponents.      Like, a.u.' must format like 'au', not the 'u·a' pint emits from the dots (L3)., TestFmtUnitPretty
+Cohesion: 0.12
+Nodes (12): knobs_for(), Default slider range for a *condition* knob, derived from its default.      Asso, Return the full live-knob list for *assay_type*: conditions ∪ parameters., slider_bounds(), Switch the titration input to an explicit vector (Molar). Used on data import., Full serializable settings for save., Live control stack: model/condition knobs + titration vector + noise., Rebuild the knob controls for *assay_type* (registry-driven). (+4 more)
 
 ### Community 84 - "Main Window Update Wiring"
-Cohesion: 0.29
+Cohesion: 0.19
 Nodes (3): Set the window title to ``SupraSimFit <version> [suffix]``.          Called once, Spawn an :class:`UpdateCheckWorker`.          Parameters         ----------, Clear the worker reference and schedule the QObject for deletion.          Must
 
 ### Community 85 - "Session Layout Regression"
@@ -515,64 +535,132 @@ Cohesion: 0.29
 Nodes (7): _assert_embedded(), Regression guard: the plot widget must stay embedded after any import.  A previo, The sidebar must be freely widenable — no finite max-width cap.      A previous, The sidebar must advertise at least its content's width to the splitter.      A, test_plot_stays_embedded_through_ensight_load_and_switch(), test_sidebar_has_no_hard_maxwidth_cap(), test_sidebar_reserves_content_width_so_it_never_clips()
 
 ### Community 86 - "XLSX Fallback Tests"
-Cohesion: 0.25
-Nodes (6): Path, Write a minimal non-BMG .xlsx so the dispatcher's fallback path is exercised., XlsxReader must fall back to the structured path for non-BMG files., TestBMGDetection, TestXlsxDispatcher, _write_structured_xlsx()
+Cohesion: 0.21
+Nodes (12): Cross-Platform PyInstaller Build Matrix, Tag/Version Drift Guard, Build and Release GitHub Actions Workflow, Association Constant (Ka), Binding models, Direct Binding Assay (DBA), Forward Modelling Approach, Guest Displacement Assay (GDA) (+4 more)
 
 ### Community 87 - "Composite Plot Layout"
-Cohesion: 0.29
-Nodes (5): GraphicsLayoutWidget, Build a transient ``GraphicsLayoutWidget`` whose cells match the live GUI., Ensure we have exactly *n* PlotWidget instances with ScientificAxisItem., Wire *axis* to update *plot_item*'s y-label when its exponent changes., _wire_exponent_callback()
+Cohesion: 0.15
+Nodes (8): GraphicsLayoutWidget, Pixel size of a single live distribution subplot.          This is the source of, Height in inches that preserves live cell aspect for the chosen layout., Build a transient ``GraphicsLayoutWidget`` whose cells match the live GUI., Save the distributions composite as PNG or SVG.          The export figure's asp, Ensure we have exactly *n* PlotWidget instances with ScientificAxisItem., Wire *axis* to update *plot_item*'s y-label when its exponent changes., _wire_exponent_callback()
 
 ### Community 88 - "Non-Zero I0 Recovery Test"
-Cohesion: 0.33
-Nodes (5): _bounds_with_i0_window(), Recovery test with non-zero I0 (Option-1 from Phase-1 binding-model survey).  Th, Override the I0 bounds to a finite window around the non-zero ground truth., IDA recovers Ka_guest to within 10% even with a non-zero I0 baseline., TestIDARecoveryNonzeroI0
+Cohesion: 0.13
+Nodes (12): IDAAssay, Indicator Displacement Assay data container.      Attributes     ----------, Validate data and conditions., IDA assay accepts Quantity conditions with dimensional validation., TestIDAQuantityConditions, IDA constructor rejects invalid inputs., TestIDAFailFast, _bounds_with_i0_window() (+4 more)
 
 ### Community 89 - "I/O Read/Write Base"
 Cohesion: 0.33
 Nodes (4): DataFrame, Path, Read measurement data from file.          Parameters         ----------, Write fit results to file.          Parameters         ----------         result
 
 ### Community 90 - "TXT Writer Tests"
-Cohesion: 0.33
-Nodes (5): Save fit results to file.      Parameters     ----------     results : dict, save_results(), TxtWriter correctly serializes fit results., save_results() public API works end-to-end., TestTxtWriter
+Cohesion: 0.21
+Nodes (6): Update default axis names (and optionally the y-unit).          The current ov, Set an axis label, appending ×10ⁿ if *exp* is not None., Compose ``"<name> [<unit>]"`` using *override* if non-empty.          The over, Update y-axis label reactively when the exponent changes during paint., Update x-axis label reactively when the exponent changes during paint., Set axis labels with exponent suffix if known.          Exponents may be stale
 
 ### Community 91 - "I/O Round-Trip Integrity"
-Cohesion: 0.33
-Nodes (4): Measurement data survives load with correct types and values., Write a measurement file, read it back, values match., Loaded data has numeric dtypes, not strings., TestIODataIntegrity
+Cohesion: 0.23
+Nodes (8): load_simulation_settings(), Any, Path, Save / load simulation applet settings as JSON.  The settings dict (from ``Simul, Write *state* (from :meth:`SimulationPanel.state`) to a JSON file., Read a settings dict previously written by :func:`save_simulation_settings`., save_simulation_settings(), SimulationWindow — the non-modal forward-simulation applet.  Left: a two-level a
 
 ### Community 92 - "TXT Fit-Result Writer"
-Cohesion: 0.40
-Nodes (4): Path, Writer for tab-separated fit results., Write fit results as tab-separated text.          Parameters         ----------, TxtWriter
+Cohesion: 0.20
+Nodes (7): DataFrame, Path, Check if a row is a header row., Writer for tab-separated fit results., Write fit results as tab-separated text.          Parameters         ----------, Read tab-separated measurement file.          Handles multi-replica files where, TxtWriter
 
 ### Community 93 - "Toolbar Menu Buttons"
 Cohesion: 0.50
 Nodes (3): QToolButton, Create a toolbar button that pops a menu without the Qt auto-arrow.          The, QMenu
 
 ### Community 95 - "Assay Forward Model (B)"
-Cohesion: 0.50
-Nodes (3): ndarray, Quantity, Compute predicted signal from parameters.          Parameters         ----------
+Cohesion: 0.07
+Nodes (31): H2GAssay, Any, ndarray, Quantity, Stepwise 2:1 host–guest direct-binding assay (two hosts bind one guest).      At, Validate data and the fixed host concentration., Compute predicted signal from parameters.          Parameters         ----------, Free host, guest, HG and H2G complexes (M) across the guest titration. (+23 more)
 
 ### Community 96 - "Assay Forward Model (C)"
+Cohesion: 0.22
+Nodes (7): ParamScaler, ndarray, Rescale raw (lower, upper) bound tuples to tilded space., Return a tilded-parameter objective wrapping a raw-parameter one.          ``obj, Per-parameter affine rescaler derived from assay data.      Attributes     -----, Raw parameters → tilded., Tilded parameters → raw.
+
+### Community 99 - "Plot Clear & Reset"
+Cohesion: 0.18
+Nodes (11): 1. Load data, 2. Configure and fit, 3. Export results, Dependencies, Development, Download, License, Molecular Binding Assay Fitting Toolkit (+3 more)
+
+### Community 100 - "Distribution Cell Sizing"
+Cohesion: 0.33
+Nodes (3): AssayTypeSelector, Two dependent combos: assay *category* then *subtype*.      Signals     -------, Programmatically select an assay, emitting ``assay_type_changed`` once.
+
+### Community 101 - "Representative Selector Combo"
+Cohesion: 0.24
+Nodes (4): PreprocessingPanel, Return preprocessing step configuration list for :func:`apply_preprocessing`., Programmatically apply the current preprocessing steps.          Unlike the inte, Configure and apply outlier removal to a MeasurementSet.      Exposes the Z-Scor
+
+### Community 102 - "Concentration Unit Tests"
+Cohesion: 0.31
+Nodes (6): Return an RGBA tuple from an RGB tuple and optional alpha.      Parameters, rgba(), Tests for gui.plotting.colors — no QApplication required., test_rgba_custom_alpha(), test_rgba_default_alpha(), test_rgba_zero_alpha()
+
+### Community 104 - "Assay Conditions Accessor 1"
+Cohesion: 0.28
+Nodes (5): format_number(), Human-readable float: plain for O(1) magnitudes, scientific for the rest.      U, Single-float entry shown in adaptive/scientific notation.      Preferred over ``, Set the shown value from code without emitting ``value_changed``., SciLineEdit
+
+### Community 105 - "Assay Conditions Accessor 2"
+Cohesion: 0.25
+Nodes (7): Architectural sketch, Global / multi-dataset fitting — design notes, Implementation phasing, Multi-wavelength: clean vs efficient, Out of scope for this note, Two motivating use cases, What to preserve when adding new models *now*
+
+### Community 106 - "Assay Conditions Accessor 3"
+Cohesion: 0.22
+Nodes (6): Any, ndarray, Quantity, Compute predicted signal from parameters.          Parameters         ----------, Free dye equals the titrant — a linear calibration has no equilibrium., Return experimental conditions.          Returns         -------         Dict[st
+
+### Community 107 - "Assay Conditions Accessor 4"
+Cohesion: 0.43
+Nodes (7): Free-Dye vs Free-Host Concentration Swap Bug, Explicit Mode Keyword (HtoD/DtoH) Fix, Degenerate Manifold (Offset + Contrast), Degeneracy Mitigation via DBA Calibration, Dye Alone, 4-Parameter Signal Model, Signal Coefficient Degeneracy
+
+### Community 108 - "Assay Conditions Accessor 5"
+Cohesion: 0.33
+Nodes (7): MultiAssayFit Architecture Sketch, Multi-Wavelength / Multi-Cut Global Fit, Global / Multi-Dataset Fitting Design Note, Global Parameter-Mapping Pattern, Keep Forward Models Pure and Flat-Keyed, Separable Species/Signal Computation (Option B), Observable Identifiability with More Species
+
+### Community 109 - "Assay Conditions Accessor 6"
+Cohesion: 0.29
+Nodes (6): Observable scope — fluorescence vs absorbance, Open question (not blocking current work), Practical implications for adding new models, The shared signal model, When Eq. (1) is approximate (fluorescence), When Eq. (1) is exact (absorbance, Beer–Lambert)
+
+### Community 110 - "Assay Conditions Accessor 7"
+Cohesion: 0.33
+Nodes (4): DBA System Information (host-to-dye), GDA System Information, IDA System Information, Meta Data
+
+### Community 114 - "Pint Documentation"
+Cohesion: 0.06
+Nodes (33): Concentration-input boundary — 3 HIGH (silent 1e6–1e9), Deliberate non-changes (and why), Display / export parity — LOW, Ensemble / distribution (main's new code), Findings — severity, disposition, evidence, Key questions answered, Method, Miscellaneous — LOW (+25 more)
+
+### Community 125 - "Community 125"
+Cohesion: 0.33
+Nodes (5): DBA_DtoH signal-coefficient bug — postmortem, Lessons / follow-up, The fix, What the bug was, Why standard tests didn't catch it
+
+### Community 126 - "Community 126"
+Cohesion: 0.33
+Nodes (6): DBA_DtoH Signal-Coefficient Bug Postmortem, Beer–Lambert Exactness for Absorbance, Dilute-Regime Fluorescence Linearization, Inner-Filter Effect Breakdown, Linear-in-Species Signal Model (Shared), Observable Scope — Fluorescence vs Absorbance Note
+
+### Community 128 - "Community 128"
+Cohesion: 0.40
+Nodes (3): Append one checkbox + HTML label to a shared single-row layout., QDoubleSpinBox, QSpinBox
+
+### Community 129 - "Community 129"
+Cohesion: 0.40
+Nodes (4): Load plot style settings from a JSON file., load_style_json(), Path, Load a style dict from a JSON file.      Parameters     ----------     path
+
+### Community 132 - "Community 132"
 Cohesion: 0.50
-Nodes (3): ndarray, Quantity, Compute predicted signal from parameters.          Parameters         ----------
+Nodes (4): Fitting strategy, Identifiability note, Scientific background, Why forward modelling
 
 ## Knowledge Gaps
-- **21 isolated node(s):** `fitting-app`, `Tag/Version Drift Guard`, `Cross-Platform PyInstaller Build Matrix`, `Association Constant (Ka)`, `Replica Outlier Removal (Modified Z-score)` (+16 more)
+- **92 isolated node(s):** `fitting-app`, `Download`, `Quick start (from source)`, `1. Load data`, `2. Configure and fit` (+87 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **21 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **19 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `MeasurementSet` connect `MeasurementSet Replica Access` to `Fitting Pipeline Orchestration`, `DBA Assay & Models`, `Assay Base Class`, `Assay Type Registry`, `Assay Config Checkbox Rows`, `MeasurementSet Tests`, `Dye-Alone Bounds & Tolerance`, `Fitting Session Controller`, `CSV Reader`, `Measurement Writer`, `Concentration Extraction`, `Session State`, `Measurement Loading`, `Data Processing Package`, `Plot Colors`, `Data Panel Tests`, `Z-Score Outlier Filter`, `TXT Reader`, `Plot Data Preparation`, `Replica Panel`, `Data Panel Concentration Table`, `Data Panel Interface`, `MeasurementSet Construction Tests`, `BMG Reader`, `Measurement Writer Tests`, `Bounds Panel Rows`, `XLSX Fallback Tests`, `TXT Writer Tests`, `I/O Round-Trip Integrity`, `Concentration Unit Tests`?**
-  _High betweenness centrality (0.217) - this node is a cross-community bridge._
-- **Why does `FittingSession` connect `Fitting Session Controller` to `Fitting Pipeline Orchestration`, `Assay Type Registry`, `Distributions Export Dialog`, `Flat Tab Bar Widget`, `Assay Config Checkbox Rows`, `FitResult Statistics Modes`, `MeasurementSet Replica Access`, `Plot Widget & Axes`, `Measurement Writer`, `Session State`, `Main Window Shell`, `Plot Colors`, `Fit Summary Widget`, `Plot Style Widget`, `Distribution Widget`, `Replica Panel`, `Export Multiple Dialog`, `Data Panel Interface`, `App Launch & Main Window`, `Export Batch Tests`, `Session Export Actions`, `Session Layout Regression`, `Distributions Export Config`, `Demo IDA & Fit Runner`?**
-  _High betweenness centrality (0.124) - this node is a cross-community bridge._
-- **Why does `AssayType` connect `Assay Type Registry` to `Fitting Pipeline Orchestration`, `DBA Assay & Models`, `Assay Base Class`, `Plot Colors`, `Fit Summary Widget`, `Bounds Panel Rows`, `Plot Data Preparation`, `Distribution Widget`, `Fitting Session Controller`, `Plot Widget & Axes`, `Assay Condition Fields`, `Plot Styling & Error Bars`, `Session State`, `Distribution Box Plots`?**
-  _High betweenness centrality (0.088) - this node is a cross-community bridge._
-- **Are the 63 inferred relationships involving `MeasurementSet` (e.g. with `BaseAssay` and `PreprocessingStep`) actually correct?**
-  _`MeasurementSet` has 63 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `MeasurementSet` connect `Data Processing Package` to `Fitting Pipeline Orchestration`, `DBA Assay & Models`, `Assay Base Class`, `Assay Type Registry`, `Community 130`, `Community 133`, `Assay Config Checkbox Rows`, `MeasurementSet Tests`, `Dye-Alone Bounds & Tolerance`, `MeasurementSet Replica Access`, `Fitting Session Controller`, `Synthetic Test Fixtures`, `CSV Reader`, `Measurement Writer`, `Concentration Extraction`, `Session State`, `Measurement Loading`, `Plot Colors`, `Data Panel Tests`, `Z-Score Outlier Filter`, `TXT Reader`, `Plot Data Preparation`, `Replica Panel`, `Data Panel Interface`, `MeasurementSet Construction Tests`, `BMG Reader`, `I/O Reader Registry`, `Forward Model Verification`, `Fit Summary Formatting`, `Measurement Writer Tests`, `Bounds Panel Rows`, `EnSight Reader`, `I/O Round-Trip Integrity`, `Representative Selector Combo`?**
+  _High betweenness centrality (0.187) - this node is a cross-community bridge._
+- **Why does `AssayType` connect `Assay Base Class` to `Fitting Pipeline Orchestration`, `DBA Assay & Models`, `Assay Type Registry`, `Assay Config Checkbox Rows`, `Dye-Alone Bounds & Tolerance`, `Fitting Session Controller`, `Plot Widget & Axes`, `Assay Condition Fields`, `Equilibrium Signal Models`, `Plot Styling & Error Bars`, `Session State`, `Distribution Box Plots`, `Ensemble Aggregation`, `Plot Colors`, `Fit Summary Widget`, `Distribution Widget`, `Forward Model Verification`, `Assay Parameter Interface`, `Measurement File Parsing`, `Fit Summary Formatting`, `Bounds Panel Rows`, `EnSight Reader`, `Unit Unicode Formatting`, `Non-Zero I0 Recovery Test`, `I/O Round-Trip Integrity`, `Assay Forward Model (B)`, `Distribution Cell Sizing`?**
+  _High betweenness centrality (0.125) - this node is a cross-community bridge._
+- **Why does `FittingSession` connect `Fitting Session Controller` to `Community 129`, `Assay Base Class`, `Community 131`, `Distributions Export Dialog`, `Flat Tab Bar Widget`, `Assay Config Checkbox Rows`, `Community 135`, `Community 136`, `Community 137`, `Dye-Alone Bounds & Tolerance`, `Community 138`, `Community 134`, `Plot Widget & Axes`, `Assay Condition Fields`, `Measurement Writer`, `Session State`, `Data Processing Package`, `Main Window Shell`, `Fit Summary Widget`, `Plot Style Widget`, `Distribution Widget`, `Replica Panel`, `Export Multiple Dialog`, `Data Panel Interface`, `App Launch & Main Window`, `Export Batch Tests`, `Fit Summary Formatting`, `Bounds Panel Rows`, `Session Export Actions`, `Session Layout Regression`, `Distributions Export Config`, `Demo IDA & Fit Runner`, `Representative Selector Combo`, `Community 127`?**
+  _High betweenness centrality (0.081) - this node is a cross-community bridge._
+- **Are the 64 inferred relationships involving `MeasurementSet` (e.g. with `BaseAssay` and `PreprocessingStep`) actually correct?**
+  _`MeasurementSet` has 64 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 37 inferred relationships involving `FitResult` (e.g. with `BaseAssay` and `DyeAloneAssay`) actually correct?**
   _`FitResult` has 37 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 37 inferred relationships involving `FitConfig` (e.g. with `BaseAssay` and `DyeAloneAssay`) actually correct?**
   _`FitConfig` has 37 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 25 inferred relationships involving `FittingSession` (e.g. with `ExportMultipleDialog` and `_Row`) actually correct?**
-  _`FittingSession` has 25 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 30 inferred relationships involving `AssayType` (e.g. with `BaseAssay` and `DBAAssay`) actually correct?**
+  _`AssayType` has 30 INFERRED edges - model-reasoned connections that need verification._
