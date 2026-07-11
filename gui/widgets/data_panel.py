@@ -517,7 +517,7 @@ class DataPanel(InfoGroupBox):
         if not path:
             return
         try:
-            values, declared_unit = read_raw_concentrations(path)
+            q = read_raw_concentrations(path)
         except Exception:
             QMessageBox.warning(
                 self,
@@ -526,6 +526,7 @@ class DataPanel(InfoGroupBox):
                 'file (.json) exported by SupraSimFit.',
             )
             return
+        values = np.asarray(q.magnitude, dtype=np.float64)
         if values.size != self._ms.n_points:
             QMessageBox.warning(
                 self,
@@ -533,8 +534,12 @@ class DataPanel(InfoGroupBox):
                 f'Loaded vector has {values.size} points but the dataset has {self._ms.n_points}. They must match.',
             )
             return
-        self._face_values = np.asarray(values, dtype=np.float64)
-        if declared_unit and declared_unit in UNITS:
+        self._face_values = values
+        # The Quantity carries its unit; show it in that unit if it maps to one of
+        # the selectable display units (matched by pint-unit identity, so 'µM' and
+        # pint's 'uM' symbol don't diverge), else keep the current Imported Unit.
+        declared_unit = next((u for u in UNITS if Q_(1.0, u).units == q.units), None)
+        if declared_unit is not None:
             self._imported_unit = declared_unit
             self._imported_unit_combo.blockSignals(True)
             self._imported_unit_combo.setCurrentText(declared_unit)

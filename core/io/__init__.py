@@ -41,6 +41,18 @@ from core.io.registry import get_reader, get_writer
 def load_measurements(path: str | Path) -> pd.DataFrame:
     """Load measurement data from file.
 
+    Unit contract
+    -------------
+    The returned ``concentration`` column is in **molar (M)** and ``signal`` is
+    in **au** *unless* the reader declares otherwise. A reader that can read a
+    unit unambiguously from the file (JASCO's ``XUNITS``, the TXT ``# units:``
+    header) converts to M itself or tags the frame with
+    ``df.attrs['concentration_unit']`` for :meth:`MeasurementSet.from_dataframe`
+    to convert. Plain CSV/XLSX/TXT files with no in-band unit are assumed to be
+    in M; a file that is actually in another unit must be corrected at the GUI
+    boundary (the DataPanel "Imported Unit" selector, which converts via Pint) —
+    unit tokens are *not* guessed from column names.
+
     Parameters
     ----------
     path : str or Path
@@ -50,8 +62,8 @@ def load_measurements(path: str | Path) -> pd.DataFrame:
     -------
     pd.DataFrame
         Long-format DataFrame with columns:
-        - concentration: titrant concentration (M)
-        - signal: measured signal value
+        - concentration: titrant concentration (M unless tagged, see above)
+        - signal: measured signal value (au)
         - replica: replica index (0, 1, 2, ...)
     """
     path = Path(path)

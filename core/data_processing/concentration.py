@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from core.units import Q_
+from core.units import Q_, Quantity
 
 
 def save_concentration_vector(
@@ -80,18 +80,21 @@ def load_concentration_vector(path: str | Path) -> tuple[np.ndarray, str, str]:
     return concentrations, unit, label
 
 
-def read_raw_concentrations(path: str | Path) -> tuple[np.ndarray, str | None]:
-    """Read a concentration vector as face-value numbers plus a declared unit.
+def read_raw_concentrations(path: str | Path) -> Quantity:
+    """Read a concentration vector as a self-describing ``pint.Quantity``.
 
     Dispatches by file extension:
 
-    - ``.json`` — reads via :func:`load_concentration_vector`-style schema and
-      returns ``(raw_values, declared_unit)``. **Unlike**
-      :func:`load_concentration_vector`, the values are *not* converted to
-      molar; the caller is responsible for the conversion via Pint.
-    - Anything else — delegates to :func:`extract_concentrations_from_file`
-      and returns ``(values, None)`` (no unit declaration is available in
-      raw measurement files).
+    - ``.json`` — reads the ``{"concentrations": [...], "unit": ...}`` schema
+      and wraps the values in their declared unit (default ``M``). The values
+      are returned *at face value* in that unit (not pre-converted), so a caller
+      can both display them in the declared unit and convert with ``.to('M')``.
+    - Anything else — delegates to :func:`extract_concentrations_from_file`,
+      whose registered readers already return molar values, and wraps them as
+      ``M``.
+
+    Returning a ``Quantity`` keeps magnitude and unit together, so no bare-float
+    vector with a separately-remembered unit token can drift apart.
 
     Parameters
     ----------
@@ -100,9 +103,8 @@ def read_raw_concentrations(path: str | Path) -> tuple[np.ndarray, str | None]:
 
     Returns
     -------
-    tuple[np.ndarray, str | None]
-        ``(face_values, declared_unit)``. ``declared_unit`` is ``None`` when
-        the source file format does not carry unit metadata.
+    pint.Quantity
+        Concentration vector carrying its unit.
     """
     path = Path(path)
     if path.suffix.lower() == '.json':
@@ -112,8 +114,8 @@ def read_raw_concentrations(path: str | Path) -> tuple[np.ndarray, str | None]:
         raw = data['concentrations']
         if not isinstance(raw, list) or len(raw) == 0:
             raise ValueError(f"'concentrations' must be a non-empty list in {path}")
-        return np.asarray(raw, dtype=float), data.get('unit')
-    return extract_concentrations_from_file(path), None
+        return Q_(np.asarray(raw, dtype=float), data.get('unit', 'M'))
+    return Q_(extract_concentrations_from_file(path), 'M')
 
 
 def extract_concentrations_from_file(path: str | Path) -> np.ndarray:
