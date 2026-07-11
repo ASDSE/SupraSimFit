@@ -17,6 +17,17 @@ from __future__ import annotations
 
 from core.units import ureg
 
+
+def _canonical_unit(unit_str: str) -> str:
+    """Map the signal unit's display alias ``a.u.`` to its parseable token ``au``.
+
+    Pint parses the dotted ``a.u.`` as ``year · atomic_mass_unit`` (the dots are
+    multiplications), so any unit string reaching the formatters below must use
+    ``au``. The registry stores the y-axis unit as ``a.u.`` for raw display; this
+    guard keeps that alias from garbling if it is ever formatted here.
+    """
+    return 'au' if unit_str.strip() in ('a.u.', 'a.u') else unit_str
+
 PARAM_LABELS: dict[str, str] = {
     'Ka_guest': '<b>K<sub>a(G)</sub></b>',
     'Ka_dye': '<b>K<sub>a(D)</sub></b>',
@@ -77,7 +88,7 @@ def fmt_unit_html(unit_str: str) -> str:
     """
     if not unit_str:
         return ''
-    formatted = f'{ureg.Unit(unit_str):~H}'
+    formatted = f'{ureg.Unit(_canonical_unit(unit_str)):~H}'
     if formatted.startswith('1/'):
         base = formatted[2:].strip()
         return f'{base}<sup>−1</sup>'
@@ -92,7 +103,7 @@ def fmt_unit_pretty(unit_str: str) -> str:
     """
     if not unit_str:
         return ''
-    formatted = f'{ureg.Unit(unit_str):~P}'
+    formatted = f'{ureg.Unit(_canonical_unit(unit_str)):~P}'
     if formatted.startswith('1/'):
         base = formatted[2:].strip()
         return f'{base}⁻¹'

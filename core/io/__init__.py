@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from core.units import Q_
+
 # Auto-register built-in formats. Register instrument-specific .csv sniffers
 # *before* the generic csv_reader fallback so they get first claim on dispatch.
 # Order is load-bearing — get_reader() walks readers in registration order — so
@@ -41,6 +43,18 @@ from core.io.registry import get_reader, get_writer
 def load_measurements(path: str | Path) -> pd.DataFrame:
     """Load measurement data from file.
 
+    Unit contract
+    -------------
+    The returned ``concentration`` column is in **molar (M)** and ``signal`` is
+    in **au** *unless* the reader declares otherwise. A reader that can read a
+    unit unambiguously from the file (JASCO's ``XUNITS``, the TXT ``# units:``
+    header) converts to M itself or tags the frame with
+    ``df.attrs['concentration_unit']`` for :meth:`MeasurementSet.from_dataframe`
+    to convert. Plain CSV/XLSX/TXT files with no in-band unit are assumed to be
+    in M; a file that is actually in another unit must be corrected at the GUI
+    boundary (the DataPanel "Imported Unit" selector, which converts via Pint) —
+    unit tokens are *not* guessed from column names.
+
     Parameters
     ----------
     path : str or Path
@@ -50,8 +64,8 @@ def load_measurements(path: str | Path) -> pd.DataFrame:
     -------
     pd.DataFrame
         Long-format DataFrame with columns:
-        - concentration: titrant concentration (M)
-        - signal: measured signal value
+        - concentration: titrant concentration (M unless tagged, see above)
+        - signal: measured signal value (au)
         - replica: replica index (0, 1, 2, ...)
     """
     path = Path(path)
@@ -119,6 +133,14 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
         label = path.stem if seen == 0 else f'{path.stem} ({seen + 1})'
 
         out = df[['concentration', 'signal']].copy()
+        # Convert this file's grid to molar using its own reader-declared unit
+        # BEFORE pd.concat drops per-file df.attrs. Otherwise a µM replicate is
+        # stacked as raw numbers and, since the combined frame carries no
+        # per-file unit, silently read as molar downstream (a 1e6 error). Files
+        # with no declared unit keep the documented M default.
+        conc_unit = df.attrs.get('concentration_unit')
+        if conc_unit and conc_unit != 'M':
+            out['concentration'] = Q_(out['concentration'].to_numpy(dtype=float), conc_unit).to('M').magnitude
         replicas = df['replica']
         if replicas.nunique() > 1:
             out['replica'] = label + '#' + replicas.astype(str)

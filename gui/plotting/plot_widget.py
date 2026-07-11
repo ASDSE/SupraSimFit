@@ -31,6 +31,26 @@ _X_UNIT_SCALES: dict[str, float] = {label: float(Q_(1, label).to('M').magnitude)
 # Invert: we need M→display, i.e. multiply M value to get display value
 _X_UNIT_SCALES = {k: 1.0 / v for k, v in _X_UNIT_SCALES.items()}
 
+
+def _x_unit_scale(x_unit: str) -> float:
+    """Return the M→display multiplier for an x-axis concentration unit.
+
+    Fast path uses the precomputed table; any other valid concentration unit is
+    derived from Pint. An unknown/invalid token raises instead of silently
+    falling back to a fixed scale (which would mis-scale the axis while the
+    label showed a different unit).
+    """
+    scale = _X_UNIT_SCALES.get(x_unit)
+    if scale is not None:
+        return scale
+    try:
+        return 1.0 / float(Q_(1, x_unit).to('M').magnitude)
+    except Exception as err:
+        raise ValueError(
+            f'Invalid x-axis concentration unit {x_unit!r} in plot style; expected e.g. nM, µM, mM, M.'
+        ) from err
+
+
 _SUPERSCRIPT_DIGITS = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻')
 
 
@@ -269,7 +289,7 @@ class PlotWidget(QWidget):
 
         style = self._style
         x_unit = style['axes'].get('x_unit', 'µM')
-        x_scale = _X_UNIT_SCALES.get(x_unit, 1e6)
+        x_scale = _x_unit_scale(x_unit)
 
         if x_label is not None:
             self._last_x_label_base = x_label

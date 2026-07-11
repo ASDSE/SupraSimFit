@@ -271,3 +271,40 @@ class TestMultiFileReplicaLoad:
         ms = panel.measurement_set()
         assert ms.n_replicas == 1
         assert panel._file_label.text() == 'solo.csv'
+
+
+class TestLoadConcentrationVectorUnits:
+    """A loaded concentration vector honours its declared unit; a unit outside the
+    selectable set is converted to molar, never silently reinterpreted (H3)."""
+
+    def test_display_unit_reflected_in_combo(self, loaded_panel, tmp_path, monkeypatch):
+        import json
+
+        from gui.widgets import data_panel
+
+        p = tmp_path / 'um.json'
+        p.write_text(json.dumps({'concentrations': [1.0, 2.0, 3.0], 'unit': 'µM'}))
+        monkeypatch.setattr(data_panel.QFileDialog, 'getOpenFileName', lambda *a, **k: (str(p), ''))
+
+        loaded_panel._on_load_concentrations()
+
+        assert loaded_panel._imported_unit == 'µM'
+        np.testing.assert_allclose(loaded_panel.measurement_set().concentrations, [1e-6, 2e-6, 3e-6])
+
+    def test_non_display_unit_converted_to_molar_with_notice(self, loaded_panel, tmp_path, monkeypatch):
+        import json
+
+        from gui.widgets import data_panel
+
+        p = tmp_path / 'pm.json'
+        p.write_text(json.dumps({'concentrations': [1000, 2000, 5000], 'unit': 'pM'}))
+        monkeypatch.setattr(data_panel.QFileDialog, 'getOpenFileName', lambda *a, **k: (str(p), ''))
+        infos: list = []
+        monkeypatch.setattr(data_panel.QMessageBox, 'information', lambda *a, **k: infos.append(a))
+
+        loaded_panel._on_load_concentrations()
+
+        # 1000 pM = 1e-9 M: converted, not reinterpreted as 1000 M under a stale unit.
+        assert loaded_panel._imported_unit == 'M'
+        np.testing.assert_allclose(loaded_panel.measurement_set().concentrations, [1e-9, 2e-9, 5e-9])
+        assert infos, 'expected an information dialog explaining the unit conversion'

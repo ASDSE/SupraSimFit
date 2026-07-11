@@ -130,6 +130,11 @@ class MeasurementSet:
             if col not in df.columns:
                 raise ValueError(f"Missing required column: '{col}'")
 
+        # Capture a reader-declared concentration unit before any reshaping that
+        # could drop ``df.attrs`` (readers tag non-M files, e.g. an external µM
+        # CSV, via ``df.attrs['concentration_unit']``; absent means M).
+        declared_conc_unit = df.attrs.get('concentration_unit')
+
         # Sort for deterministic order
         df = df.sort_values([replica_col, concentration_col]).reset_index(drop=True)
 
@@ -156,6 +161,11 @@ class MeasurementSet:
         # Build 2-D signals array
         signals = np.array([groups[label][signal_col].values for label in replica_labels])
         replica_ids = tuple(str(label) for label in replica_labels)
+
+        # Convert to molar if a non-M unit was declared, so the stored grid is
+        # always M. Pint validates the token and the dimensionality.
+        if declared_conc_unit and declared_conc_unit != 'M':
+            reference_conc = Q_(np.asarray(reference_conc, dtype=float), declared_conc_unit).to('M').magnitude
 
         return cls(
             concentrations=reference_conc,

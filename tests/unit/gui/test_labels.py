@@ -26,6 +26,12 @@ class TestFmtUnitHtml:
     def test_empty(self):
         assert fmt_unit_html('') == ''
 
+    def test_signal_alias_not_garbled(self):
+        """The registry's 'a.u.' y-unit alias must format like 'au', not the
+        'u a' pint emits when it parses the dots as multiplication (L3)."""
+        assert fmt_unit_html('a.u.') == fmt_unit_html('au')
+        assert 'u a' not in fmt_unit_html('a.u.')
+
 
 class TestFmtUnitPretty:
     def test_reciprocal(self):
@@ -44,3 +50,8 @@ class TestFmtUnitPretty:
         result = fmt_unit_pretty('au/M')
         # pint formats 'au' as 'a.u.'
         assert 'a.u.' in result or 'au' in result
+
+    def test_signal_alias_not_garbled(self):
+        """'a.u.' must format like 'au', not the 'u·a' pint emits from the dots (L3)."""
+        assert fmt_unit_pretty('a.u.') == fmt_unit_pretty('au')
+        assert 'u·a' not in fmt_unit_pretty('a.u.')

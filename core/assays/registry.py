@@ -50,6 +50,33 @@ class AssayType(Enum):
     DBA_H2G = auto()  # Stepwise 2:1 host:guest (two hosts bind one guest)
 
 
+class ParamKind(Enum):
+    """Semantic identity of a fitted parameter.
+
+    Dimensional analysis alone cannot separate a binding constant (``1/M``)
+    from a signal coefficient (``au/M``) unless ``au`` carries its own
+    ``[signal]`` dimension — and even then a *label* is clearer than
+    re-deriving intent from the unit string.  ``ParamKind`` is that explicit
+    label; it is cross-checked against each parameter's unit (and against
+    ``log_scale_keys``) by the registry unit-lint test, so the two can never
+    silently drift.
+    """
+
+    BINDING_CONSTANT = auto()  # association constant, unit 1/M, log-scale
+    SIGNAL_OFFSET = auto()  # additive signal baseline, unit au
+    SIGNAL_COEFFICIENT = auto()  # signal per unit concentration, unit au/M
+
+
+# Canonical unit token expected for each ParamKind (used by the unit-lint test
+# and by boundary validation to confirm a parameter's declared unit matches its
+# semantic kind).
+KIND_UNIT: Dict[ParamKind, str] = {
+    ParamKind.BINDING_CONSTANT: '1/M',
+    ParamKind.SIGNAL_OFFSET: 'au',
+    ParamKind.SIGNAL_COEFFICIENT: 'au/M',
+}
+
+
 @dataclass(frozen=True)
 class AssayMetadata:
     """Immutable metadata container for an assay type.
@@ -94,6 +121,10 @@ class AssayMetadata:
         ``FitConfig.log_scale_params``.
     units : Dict[str, str]
         Unit strings for each parameter (for display/export).
+    param_kinds : Dict[str, ParamKind]
+        Semantic identity of each parameter (binding constant / signal
+        offset / signal coefficient).  Cross-checked against ``units`` and
+        ``log_scale_keys`` by the registry unit-lint test.
     """
 
     display_name: str
@@ -104,6 +135,7 @@ class AssayMetadata:
     subtype_label: str
     default_bounds: Dict[str, Tuple[Quantity, Quantity]] = field(default_factory=dict)
     log_scale_keys: Tuple[str, ...] = ()
+    param_kinds: Dict[str, ParamKind] = field(default_factory=dict)
     y_unit: str = 'a.u.'
 
     @property
@@ -128,6 +160,12 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
         },
         log_scale_keys=('Ka_guest',),
+        param_kinds={
+            'Ka_guest': ParamKind.BINDING_CONSTANT,
+            'I0': ParamKind.SIGNAL_OFFSET,
+            'I_dye_free': ParamKind.SIGNAL_COEFFICIENT,
+            'I_dye_bound': ParamKind.SIGNAL_COEFFICIENT,
+        },
     ),
     AssayType.IDA: AssayMetadata(
         display_name='IDA (Indicator Displacement Assay)',
@@ -143,6 +181,12 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
         },
         log_scale_keys=('Ka_guest',),
+        param_kinds={
+            'Ka_guest': ParamKind.BINDING_CONSTANT,
+            'I0': ParamKind.SIGNAL_OFFSET,
+            'I_dye_free': ParamKind.SIGNAL_COEFFICIENT,
+            'I_dye_bound': ParamKind.SIGNAL_COEFFICIENT,
+        },
     ),
     AssayType.DBA_HtoD: AssayMetadata(
         display_name='DBA Host→Dye (Direct Binding Assay)',
@@ -158,6 +202,12 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
         },
         log_scale_keys=('Ka_dye',),
+        param_kinds={
+            'Ka_dye': ParamKind.BINDING_CONSTANT,
+            'I0': ParamKind.SIGNAL_OFFSET,
+            'I_dye_free': ParamKind.SIGNAL_COEFFICIENT,
+            'I_dye_bound': ParamKind.SIGNAL_COEFFICIENT,
+        },
     ),
     AssayType.DBA_DtoH: AssayMetadata(
         display_name='DBA Dye→Host (Direct Binding Assay)',
@@ -173,6 +223,12 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
         },
         log_scale_keys=('Ka_dye',),
+        param_kinds={
+            'Ka_dye': ParamKind.BINDING_CONSTANT,
+            'I0': ParamKind.SIGNAL_OFFSET,
+            'I_dye_free': ParamKind.SIGNAL_COEFFICIENT,
+            'I_dye_bound': ParamKind.SIGNAL_COEFFICIENT,
+        },
     ),
     AssayType.DYE_ALONE: AssayMetadata(
         display_name='Dye Alone (Linear Calibration)',
@@ -186,6 +242,10 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'intercept': (Q_(-1e6, 'au'), Q_(1e6, 'au')),
         },
         log_scale_keys=(),
+        param_kinds={
+            'slope': ParamKind.SIGNAL_COEFFICIENT,
+            'intercept': ParamKind.SIGNAL_OFFSET,
+        },
     ),
     AssayType.DBA_HG2: AssayMetadata(
         display_name='DBA 1:2 (HG2, stepwise host–guest)',
@@ -206,6 +266,15 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_HG2': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
         },
         log_scale_keys=('Ka_HG', 'Ka_HG2'),
+        param_kinds={
+            'Ka_HG': ParamKind.BINDING_CONSTANT,
+            'Ka_HG2': ParamKind.BINDING_CONSTANT,
+            'I0': ParamKind.SIGNAL_OFFSET,
+            'I_G': ParamKind.SIGNAL_COEFFICIENT,
+            'I_H': ParamKind.SIGNAL_COEFFICIENT,
+            'I_HG': ParamKind.SIGNAL_COEFFICIENT,
+            'I_HG2': ParamKind.SIGNAL_COEFFICIENT,
+        },
     ),
     AssayType.DBA_H2G: AssayMetadata(
         display_name='DBA 2:1 (H2G, stepwise host–guest)',
@@ -226,6 +295,15 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_H2G': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
         },
         log_scale_keys=('Ka_HG', 'Ka_H2G'),
+        param_kinds={
+            'Ka_HG': ParamKind.BINDING_CONSTANT,
+            'Ka_H2G': ParamKind.BINDING_CONSTANT,
+            'I0': ParamKind.SIGNAL_OFFSET,
+            'I_G': ParamKind.SIGNAL_COEFFICIENT,
+            'I_H': ParamKind.SIGNAL_COEFFICIENT,
+            'I_HG': ParamKind.SIGNAL_COEFFICIENT,
+            'I_H2G': ParamKind.SIGNAL_COEFFICIENT,
+        },
     ),
 }
 

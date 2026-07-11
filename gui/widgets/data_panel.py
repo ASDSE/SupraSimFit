@@ -278,11 +278,20 @@ class DataPanel(InfoGroupBox):
         self._ms = ms
         self._source_path = path
         self._source_paths = [path]
-        # Numbers in the file are taken as face values (no implicit unit
-        # conversion). Default the Imported Unit to M, which matches the
-        # historical loader behavior and preserves fits on existing files.
-        self._face_values = np.asarray(ms.concentrations, dtype=np.float64).copy()
-        self._imported_unit = DEFAULT_IMPORTED_UNIT
+        # ms.concentrations is already molar (from_dataframe converted using the
+        # reader-declared unit). Reflect that declared unit in the UI: show the
+        # file's own numbers under its unit when it is a selectable display unit,
+        # else show molar. Keeping the table consistent with the file stops the
+        # user from "correcting" the Imported Unit and silently rescaling (L5).
+        declared = df_used.attrs.get('concentration_unit')
+        display = self._display_unit_for(Q_(1.0, declared).units) if declared else None
+        molar = np.asarray(ms.concentrations, dtype=np.float64)
+        if display is not None:
+            self._imported_unit = display
+            self._face_values = Q_(molar, 'M').to(display).magnitude
+        else:
+            self._imported_unit = DEFAULT_IMPORTED_UNIT
+            self._face_values = molar.copy()
         self._populate_channel_combo(df)
         self._refresh_after_load()
         self.data_loaded.emit(ms)
@@ -454,6 +463,16 @@ class DataPanel(InfoGroupBox):
     # Slots
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _display_unit_for(units) -> str | None:
+        """Return the token in ``UNITS`` whose pint unit matches ``units``.
+
+        Matched by pint identity so display ``'µM'`` and a file's ``'uM'`` /
+        ``'micromolar'`` token resolve to the same selectable unit; ``None`` when
+        no display unit matches (e.g. ``pM``, ``nmol/L``).
+        """
+        return next((u for u in UNITS if Q_(1.0, u).units == units), None)
+
     def _on_imported_unit_changed(self, new_unit: str) -> None:
         if new_unit == self._imported_unit or self._ms is None:
             return
@@ -517,7 +536,7 @@ class DataPanel(InfoGroupBox):
         if not path:
             return
         try:
-            values, declared_unit = read_raw_concentrations(path)
+            q = read_raw_concentrations(path)
         except Exception:
             QMessageBox.warning(
                 self,
@@ -526,6 +545,7 @@ class DataPanel(InfoGroupBox):
                 'file (.json) exported by SupraSimFit.',
             )
             return
+        values = np.asarray(q.magnitude, dtype=np.float64)
         if values.size != self._ms.n_points:
             QMessageBox.warning(
                 self,
@@ -533,12 +553,28 @@ class DataPanel(InfoGroupBox):
                 f'Loaded vector has {values.size} points but the dataset has {self._ms.n_points}. They must match.',
             )
             return
-        self._face_values = np.asarray(values, dtype=np.float64)
-        if declared_unit and declared_unit in UNITS:
-            self._imported_unit = declared_unit
-            self._imported_unit_combo.blockSignals(True)
-            self._imported_unit_combo.setCurrentText(declared_unit)
-            self._imported_unit_combo.blockSignals(False)
+        # The Quantity carries its unit. Show its face numbers under that unit
+        # when it is a selectable display unit (matched by pint identity so 'µM'
+        # and pint's 'uM' symbol don't diverge); otherwise convert to molar and
+        # show M. Never reinterpret the face numbers under the stale Imported
+        # Unit — that would silently mis-scale (e.g. read a nmol/L file as M).
+        display = self._display_unit_for(q.units)
+        if display is not None:
+            self._face_values = values
+            self._imported_unit = display
+        else:
+            self._face_values = np.asarray(q.to('M').magnitude, dtype=np.float64)
+            self._imported_unit = 'M'
+            QMessageBox.information(
+                self,
+                'Units converted',
+                f'The file declares concentrations in {q.units:~P}, which is not one of '
+                f'the selectable units ({", ".join(UNITS)}). The values were converted to '
+                'molar (M) and are shown in M.',
+            )
+        self._imported_unit_combo.blockSignals(True)
+        self._imported_unit_combo.setCurrentText(self._imported_unit)
+        self._imported_unit_combo.blockSignals(False)
         self._populate_table()
         self._push_buffer_to_ms()
         self._info_label.setText(

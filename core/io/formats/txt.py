@@ -17,12 +17,15 @@ by repeated headers:
 The reader detects repeated headers and assigns replica indices.
 """
 
+import re
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
 from core.io.registry import register_reader, register_writer
+
+_CONC_UNIT_COMMENT_RE = re.compile(r'concentration\s*=\s*([^\s,;]+)', re.IGNORECASE)
 
 
 class TxtReader:
@@ -56,10 +59,18 @@ class TxtReader:
         replicas = []
         current_block = []
         header_seen = False
+        declared_conc_unit: str | None = None
 
         for line in lines:
             line = line.strip()
-            if not line or line.startswith('#'):
+            if not line:
+                continue
+            if line.startswith('#'):
+                # Self-describing unit header, e.g. "# units: concentration=M, signal=au".
+                if 'units:' in line.lower():
+                    m = _CONC_UNIT_COMMENT_RE.search(line)
+                    if m:
+                        declared_conc_unit = m.group(1)
                 continue
 
             # Detect header row (contains 'var' or non-numeric first field)
@@ -92,8 +103,12 @@ class TxtReader:
         if not dfs:
             raise ValueError(f'No data found in {path}')
 
-        result = pd.concat(dfs, ignore_index=True)
-        return result.dropna()
+        result = pd.concat(dfs, ignore_index=True).dropna()
+        # Propagate a declared non-M concentration unit so MeasurementSet
+        # converts to molar; absent header means M by contract.
+        if declared_conc_unit:
+            result.attrs['concentration_unit'] = declared_conc_unit
+        return result
 
     def _is_header(self, parts: list[str]) -> bool:
         """Check if a row is a header row."""

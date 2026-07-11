@@ -36,6 +36,20 @@ _FALLBACK_CELL_W = 320
 _FALLBACK_CELL_H = 380
 
 
+def _log10_positive(values: np.ndarray) -> np.ndarray:
+    """``log10`` of a strictly-positive pool, matching ``ensemble.describe_log10``.
+
+    A log-scale parameter (Ka) is bounded > 0; a non-positive sample is a real
+    defect, so raise rather than emit a silent ``-inf``/``nan`` point that would
+    show as a gap in the distribution plot (the summary table's ``describe_log10``
+    already raises on the same condition — keep the two consistent).
+    """
+    arr = np.asarray(values, dtype=float)
+    if arr.size and np.min(arr) <= 0:
+        raise ValueError('Cannot log10-transform a non-positive value for the log-scale distribution.')
+    return np.log10(arr)
+
+
 def _box_stats(data: np.ndarray) -> Dict[str, float]:
     """Compute box-whisker statistics for a 1-D array."""
     q1, median, q3 = np.percentile(data, [25, 50, 75])
@@ -521,7 +535,7 @@ class DistributionWidget(QWidget):
 
         pool = result.parameter_samples[key]
         use_log = (key in log_keys) and ka_scale == 'log₁₀'
-        values = np.log10(pool) if use_log else pool
+        values = _log10_positive(pool) if use_log else pool
         pool_stats = _box_stats(values)
 
         # Boxes: one per replica in per-replica mode, one pooled in average mode
@@ -530,7 +544,7 @@ class DistributionWidget(QWidget):
                 r_vals = r_samp.get(key)
                 if r_vals is None:
                     continue
-                r_display = np.log10(r_vals) if use_log else r_vals
+                r_display = _log10_positive(r_vals) if use_log else r_vals
                 r_stats = _box_stats(r_display)
                 color = palette[r_idx % len(palette)]
                 self._draw_box(plot_item, r_stats, float(x_positions[r_idx]), color)
@@ -775,7 +789,7 @@ class DistributionWidget(QWidget):
                         f'Replica {r_idx} has no samples for parameter {key!r}; '
                         f'cannot align the selection strip with the pooled fits.'
                     )
-                display = np.log10(r_vals) if use_log else r_vals
+                display = _log10_positive(r_vals) if use_log else r_vals
                 n = len(display)
                 x_base = x_positions[r_idx] if r_idx < len(x_positions) else r_idx
                 jitter = rng.uniform(-_JITTER_HALF, _JITTER_HALF, size=n)
@@ -845,7 +859,7 @@ class DistributionWidget(QWidget):
             r_vals = r_samp.get(key)
             if r_vals is None or len(r_vals) == 0:
                 continue
-            med = float(np.median(np.log10(r_vals) if use_log else r_vals))
+            med = float(np.median(_log10_positive(r_vals) if use_log else r_vals))
             x_pos = x_positions[r_idx] if r_idx < len(x_positions) else r_idx
             color = palette[r_idx % len(palette)]
             marker = pg.ScatterPlotItem(
