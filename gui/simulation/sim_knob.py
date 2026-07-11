@@ -7,21 +7,21 @@ condition vs a parameter (that differs across assays: ``Ka_dye`` is a condition
 for GDA/IDA but a parameter for DBA).  The categorical DBA ``mode`` is not a knob;
 it is derived from the assay subtype where the spec is assembled.
 
-Each knob carries its **canonical Pint unit** (from the registry), so display,
-dimensionality, and unit conversions all go through Pint / ``core.units`` — never a
-hand-rolled token or hardcoded factor.  From the unit we derive whether the knob is
-a concentration (→ nM/µM/mM/M selector) and whether it may be negative.  Whether it
-is *log*-scaled is a modelling fact read from the registry: because ``au`` is
-dimensionless, a signal coefficient ``au/M`` is dimensionally identical to a binding
-constant ``1/M``, so dimensionality cannot tell them apart — ``log_scale_keys`` /
-``unit_type`` can.
+Each knob carries its **canonical Pint unit** (from the registry), so display and unit
+conversions go through Pint / ``core.units`` — never a hand-rolled token or hardcoded
+factor.  Classification is read from the registry's explicit labels, not re-derived:
+parameters use ``param_kinds`` (``ParamKind`` + ``KIND_UNIT``) — ``log`` ⇔
+``BINDING_CONSTANT``, unit from ``KIND_UNIT`` — which is lint-checked against the units on
+the registry side, so the applet cannot drift.  Conditions (not in ``param_kinds``) use
+``ConditionField.unit_type``.  Whether a knob is a concentration (→ nM/µM/mM/M selector)
+is the one thing derived from the unit, via Pint dimensionality.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.assays.registry import ASSAY_REGISTRY, AssayType
+from core.assays.registry import ASSAY_REGISTRY, KIND_UNIT, AssayType, ParamKind
 from core.units import Q_, Unit
 from gui.widgets.assay_conditions import condition_fields
 
@@ -129,13 +129,13 @@ def knobs_for(assay_type: AssayType) -> list[SimKnob]:
         vmin, vmax = slider_bounds(f.default, log)
         knobs.append(SimKnob(f.key, f.label, f.tooltip, unit, log, f.default, vmin, vmax, is_condition=True))
 
-    units = meta.units
     for key in meta.parameter_keys:
         if key not in SIM_PARAM_DEFAULTS:
             raise KeyError(f'No simulation default for parameter {key!r}; add it to SIM_PARAM_DEFAULTS.')
         spec = SIM_PARAM_DEFAULTS[key]
-        log = key in meta.log_scale_keys
-        unit = Q_(1, units[key]).units
+        kind = meta.param_kinds[key]  # registry-declared, lint-checked classification
+        log = kind == ParamKind.BINDING_CONSTANT
+        unit = Q_(1, KIND_UNIT[kind]).units
         knobs.append(
             SimKnob(key, spec.label, spec.tooltip, unit, log, spec.default, spec.vmin, spec.vmax, is_condition=False)
         )

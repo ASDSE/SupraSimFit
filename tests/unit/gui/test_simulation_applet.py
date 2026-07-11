@@ -46,6 +46,17 @@ def test_dba_treats_ka_dye_as_parameter(qapp):
     assert spec.conditions['mode'] == 'DtoH'
 
 
+def test_param_knob_classification_matches_registry_param_kinds(qapp):
+    """Applet's per-parameter log/unit track the registry's ParamKind — they can't drift."""
+    from core.assays.registry import ASSAY_REGISTRY, KIND_UNIT, ParamKind
+
+    for at in AssayType:
+        knobs = {k.key: k for k in knobs_for(at)}
+        for key, kind in ASSAY_REGISTRY[at].param_kinds.items():
+            assert knobs[key].log == (kind == ParamKind.BINDING_CONSTANT), (at, key)
+            assert knobs[key].unit == Q_(1, KIND_UNIT[kind]).units, (at, key)
+
+
 def test_log_slider_maps_geometrically(qapp):
     knob = _knob(AssayType.GDA, 'Ka_guest')  # association constant → log slider, [1e3, 1e9]
     c = ParameterControl(knob)
