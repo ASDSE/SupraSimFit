@@ -238,6 +238,8 @@ class FitResult:
             'n_total': self.n_total,
             'x_fit': x_list,
             'y_fit': y_list,
+            'x_fit_unit': str(self.x_fit.units),
+            'y_fit_unit': str(self.y_fit.units),
             'metadata': self.metadata,
             'uncertainty_source': self.uncertainty_source,
             'replica_fits': replica_fits_serial,
@@ -289,9 +291,10 @@ class FitResult:
         parameters = {k: Q_(v, _unit_for(k)) for k, v in d['parameters'].items()}
         uncertainties = {k: Q_(v, _unit_for(k)) for k, v in d['uncertainties'].items()}
 
-        # Reconstruct x_fit / y_fit as Quantities
-        x_fit = Q_(np.asarray(d['x_fit']), 'M')
-        y_fit = Q_(np.asarray(d['y_fit']), 'au')
+        # Reconstruct x_fit / y_fit as Quantities from their own stored unit
+        # tokens (older files without them fall back to the M/au convention).
+        x_fit = Q_(np.asarray(d['x_fit']), d.get('x_fit_unit', 'M'))
+        y_fit = Q_(np.asarray(d['y_fit']), d.get('y_fit_unit', 'au'))
 
         replica_fits_data = d.get('replica_fits')
         replica_fits: Optional[List['FitResult']] = None
@@ -384,11 +387,13 @@ def _model_name_for_assay(assay: BaseAssay) -> str:
 
 def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
     """Serialize a FitConfig to a plain dict."""
-    custom_bounds: Optional[Dict[str, List[float]]] = None
+    # Provenance only (never deserialized back): keep the unit token so a bound
+    # entered in µM / MM⁻¹ is not stored as a unit-ambiguous bare number.
+    custom_bounds: Optional[Dict[str, list]] = None
     if config.custom_bounds is not None:
         custom_bounds = {}
         for key, (lo, hi) in config.custom_bounds.items():
-            custom_bounds[key] = [float(lo.magnitude), float(hi.magnitude)]
+            custom_bounds[key] = [float(lo.magnitude), float(hi.magnitude), str(lo.units)]
     return {
         'n_trials': config.n_trials,
         'rmse_threshold_factor': config.rmse_threshold_factor,

@@ -162,6 +162,31 @@ class TestSerialization:
         restored = FitResult.from_dict(d)
         assert np.isnan(restored.uncertainties['Ka_guest'].magnitude)
 
+    def test_x_y_fit_units_round_trip(self):
+        """x_fit/y_fit carry their own unit tokens; older files without them fall
+        back to the M/au convention (L10)."""
+        r = _sample_fit_result()
+        restored = FitResult.from_dict(r.to_dict())
+        assert restored.x_fit.units == r.x_fit.units
+        assert restored.y_fit.units == r.y_fit.units
+
+        legacy = r.to_dict()
+        legacy.pop('x_fit_unit')
+        legacy.pop('y_fit_unit')
+        loaded = FitResult.from_dict(legacy)
+        assert loaded.x_fit.units == Q_(1, 'M').units
+        assert loaded.y_fit.units == Q_(1, 'au').units
+
+    def test_config_custom_bounds_keep_unit_token(self):
+        """Serialized custom_bounds provenance keeps its unit token so a bound in
+        1/M isn't stored as a unit-ambiguous bare number (L9)."""
+        from core.pipeline.fit_pipeline import FitConfig, _config_to_dict
+
+        cfg = FitConfig(custom_bounds={'Ka_guest': (Q_(1e5, '1/M'), Q_(1e9, '1/M'))})
+        lo, hi, unit = _config_to_dict(cfg)['custom_bounds']['Ka_guest']
+        assert (lo, hi) == (1e5, 1e9)
+        assert unit == str(Q_(1, '1/M').units)
+
 
 class TestEnsembleMutators:
     """Fail-fast contracts on the public pipeline mutation helpers."""
