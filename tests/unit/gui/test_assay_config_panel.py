@@ -9,7 +9,9 @@ import pytest
 
 from core.assays import AssayType
 from core.assays.registry import ASSAY_REGISTRY
-from gui.widgets.assay_config_panel import AssayConfigPanel
+from core.units import Q_
+from gui.widgets.assay_conditions import ConditionField
+from gui.widgets.assay_config_panel import AssayConfigPanel, _UnitWidget
 
 
 @pytest.fixture
@@ -64,3 +66,35 @@ def test_changing_subtype_within_category_emits_that_assay(panel):
 
     assert panel.current_assay_type() is AssayType.DBA_H2G
     assert emitted == [AssayType.DBA_H2G]
+
+
+class TestUnitWidgetInputConversion:
+    """The primary user-input boundary: _UnitWidget always returns a base-unit
+    Quantity (M / M⁻¹) regardless of the display unit selected (G13)."""
+
+    def test_concentration_default_returns_base_molar(self, qapp):
+        w = _UnitWidget(ConditionField('h0', '[Host]', '', 50e-6, 'M', 'concentration'))
+        v = w.value()
+        assert v.units == Q_(1, 'M').units
+        assert v.to('M').magnitude == pytest.approx(50e-6)
+
+    def test_changing_display_unit_preserves_quantity(self, qapp):
+        # 50 µM stays 5e-5 M when reinterpreted through nM (both representable in
+        # the spinbox; switching to a coarser unit like M is a display-precision
+        # concern, not a unit-conversion one).
+        w = _UnitWidget(ConditionField('h0', '[Host]', '', 50e-6, 'M', 'concentration'))
+        before = w.value().to('M').magnitude
+        w._combo.setCurrentText('nM')
+        assert w.value().to('M').magnitude == pytest.approx(before)
+        w._combo.setCurrentText('µM')
+        assert w.value().to('M').magnitude == pytest.approx(before)
+
+    def test_spinbox_value_interpreted_in_display_unit(self, qapp):
+        w = _UnitWidget(ConditionField('h0', '[Host]', '', 1e-6, 'M', 'concentration'))
+        w._combo.setCurrentText('µM')
+        w._spinbox.setValue(5.0)  # 5 µM
+        assert w.value().to('M').magnitude == pytest.approx(5e-6)
+
+    def test_binding_constant_returns_inverse_molar(self, qapp):
+        w = _UnitWidget(ConditionField('Ka_dye', 'Ka', '', 1e6, 'M⁻¹', 'binding_constant'))
+        assert w.value().to('1/M').magnitude == pytest.approx(1e6)
