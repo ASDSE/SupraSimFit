@@ -5,46 +5,46 @@ import pytest
 
 from core.data_processing.concentration import (
     extract_concentrations_from_file,
-    load_concentration_vector,
+    read_raw_concentrations,
     save_concentration_vector,
 )
 from core.units import Q_
 
 
 class TestConcentrationRoundTrip:
-    """Verify save → load preserves values regardless of stored unit."""
+    """save_concentration_vector → read_raw_concentrations preserves the physical
+    quantity as a self-describing Quantity in the saved unit."""
 
-    def test_save_M_load_M(self, tmp_path):
-        """Values saved in M come back as M."""
+    def test_save_M_read_back(self, tmp_path):
+        """Values saved in M read back as a molar Quantity."""
         conc = np.array([1e-7, 5e-7, 1e-6, 5e-6])
         path = tmp_path / 'conc.json'
         save_concentration_vector(conc, path, unit='M')
-        loaded, unit, label = load_concentration_vector(path)
-        np.testing.assert_allclose(loaded, conc)
+        q = read_raw_concentrations(path)
+        assert q.units == Q_(1, 'M').units
+        np.testing.assert_allclose(q.to('M').magnitude, conc)
 
-    def test_save_uM_load_M(self, tmp_path):
-        """Values saved in µM are converted to M on load (the bug fix);
-        the display unit string and label round-trip unchanged."""
-        conc_uM = np.array([0.1, 0.5, 1.0, 5.0])  # µM
-        expected_M = conc_uM * 1e-6
+    def test_save_uM_read_back_converts(self, tmp_path):
+        """µM saved → read back as a µM Quantity → correct molar (the bug fix)."""
+        conc_uM = np.array([0.1, 0.5, 1.0, 5.0])
         path = tmp_path / 'conc.json'
         save_concentration_vector(conc_uM, path, unit='µM', label='GDA standard')
-        loaded, unit, label = load_concentration_vector(path)
-        np.testing.assert_allclose(loaded, expected_M, rtol=1e-12)
-        assert unit == 'µM'
-        assert label == 'GDA standard'
+        q = read_raw_concentrations(path)
+        assert q.units == Q_(1, 'µM').units
+        np.testing.assert_allclose(q.magnitude, conc_uM)
+        np.testing.assert_allclose(q.to('M').magnitude, conc_uM * 1e-6, rtol=1e-12)
 
     def test_missing_concentrations_raises(self, tmp_path):
         path = tmp_path / 'bad.json'
         path.write_text('{"unit": "M"}')
         with pytest.raises(ValueError, match='concentrations'):
-            load_concentration_vector(path)
+            read_raw_concentrations(path)
 
     def test_empty_list_raises(self, tmp_path):
         path = tmp_path / 'bad.json'
         path.write_text('{"concentrations": [], "unit": "M"}')
         with pytest.raises(ValueError, match='non-empty'):
-            load_concentration_vector(path)
+            read_raw_concentrations(path)
 
 
 class TestExtractConcentrations:

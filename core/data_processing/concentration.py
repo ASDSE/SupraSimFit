@@ -46,40 +46,6 @@ def save_concentration_vector(
     path.write_text(json.dumps(data, indent=2))
 
 
-def load_concentration_vector(path: str | Path) -> tuple[np.ndarray, str, str]:
-    """Load a concentration vector from a JSON file.
-
-    Parameters
-    ----------
-    path : str or Path
-        Path to the JSON file written by :func:`save_concentration_vector`.
-
-    Returns
-    -------
-    tuple[np.ndarray, str, str]
-        ``(concentrations, unit, label)`` where *unit* and *label* may be
-        empty strings if absent from the file.
-
-    Raises
-    ------
-    ValueError
-        If the file does not contain a ``"concentrations"`` key or the value
-        is not a non-empty list of numbers.
-    """
-    path = Path(path)
-    data = json.loads(path.read_text())
-    if 'concentrations' not in data:
-        raise ValueError(f"'concentrations' key missing from {path}")
-    raw = data['concentrations']
-    if not isinstance(raw, list) or len(raw) == 0:
-        raise ValueError(f"'concentrations' must be a non-empty list in {path}")
-    unit = data.get('unit', 'M')
-    label = data.get('label', '')
-    # Convert to M using pint so values saved in non-M units are correct
-    concentrations = Q_(np.asarray(raw, dtype=float), unit).to('M').magnitude
-    return concentrations, unit, label
-
-
 def read_raw_concentrations(path: str | Path) -> Quantity:
     """Read a concentration vector as a self-describing ``pint.Quantity``.
 

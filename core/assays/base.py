@@ -99,7 +99,7 @@ class BaseAssay(ABC):
         return len(self.x_data)
 
     @abstractmethod
-    def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> np.ndarray:
+    def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
         Parameters
@@ -113,8 +113,12 @@ class BaseAssay(ABC):
 
         Returns
         -------
-        np.ndarray
-            Predicted signal values, same shape as ``x`` (or ``y_data``).
+        Quantity
+            Predicted signal as a ``pint.Quantity`` in signal units — an
+            implementation MUST return ``Q_(values, 'au')``, not a bare ndarray.
+            Because ``au`` carries the ``[signal]`` dimension, :meth:`residuals`
+            subtracts this from the ``au`` ``y_data``; returning a bare array
+            raises a ``DimensionalityError`` there.
         """
         pass
 
