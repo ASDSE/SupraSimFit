@@ -177,6 +177,17 @@ class TestSerialization:
         assert loaded.x_fit.units == Q_(1, 'M').units
         assert loaded.y_fit.units == Q_(1, 'au').units
 
+    def test_unknown_assay_round_trips_via_quantity_units(self):
+        """to_dict emits unit tokens from the parameter Quantities (not a registry
+        lookup), so a result whose assay_type is unknown to the registry still
+        round-trips with units — the write side is self-describing."""
+        r = _sample_fit_result(assay_type='LEGACY_UNKNOWN')
+        d = r.to_dict()
+        assert d['parameter_units']['Ka_guest'] == str(Q_(1, '1/M').units)
+        restored = FitResult.from_dict(d)
+        assert restored.parameters['Ka_guest'].units == Q_(1, '1/M').units
+        assert restored.uncertainties['I_dye_free'].units == Q_(1, 'au/M').units
+
     def test_config_custom_bounds_keep_unit_token(self):
         """Serialized custom_bounds provenance keeps its unit token so a bound in
         1/M isn't stored as a unit-ambiguous bare number (L9)."""

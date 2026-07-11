@@ -174,23 +174,20 @@ class FitResult:
         -------
         dict[str, Any]
         """
-        from core.assays.registry import ASSAY_REGISTRY, AssayType
-
-        # Look up units from registry
-        try:
-            at = AssayType[self.assay_type]
-            units = dict(ASSAY_REGISTRY[at].units)
-        except KeyError:
-            units = {}
-
-        # Serialize parameters as magnitudes
+        # Serialize parameter and uncertainty magnitudes, emitting each unit
+        # token from the Quantity itself (not a registry lookup) so the JSON is
+        # self-describing and correct even when assay_type is unknown to the
+        # registry — parameters/uncertainties already carry authoritative units.
         params_serial = {}
+        units = {}
         for k, v in self.parameters.items():
             params_serial[k] = float(v.magnitude)
+            units[k] = str(v.units)
 
         unc_serial = {}
         for k, v in self.uncertainties.items():
             unc_serial[k] = float(v.magnitude)
+            units.setdefault(k, str(v.units))
 
         # Serialize conditions, keeping each Quantity's unit token so the
         # conditions survive a round-trip as Quantities (not bare floats).
