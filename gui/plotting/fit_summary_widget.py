@@ -200,15 +200,15 @@ class FitSummaryWidget(QWidget):
         :func:`core.optimizer.ensemble.describe`. Each association constant gets
         a second log₁₀ row whose statistics come from the per-fit log₁₀ values
         (:func:`~core.optimizer.ensemble.describe_log10`), never from the log of
-        a Ka spread. Units are resolved from ``ASSAY_REGISTRY``.
+        a Ka spread. Each unit comes from the parameter's own ``Quantity``.
         """
         assay_type = _lookup_assay_type(result.assay_type)
-        units: dict[str, str] = {}
+        # Which parameters are log-scale (Ka) is registry metadata; each unit,
+        # though, comes from the parameter's own Quantity below — authoritative
+        # and correct even when the assay type isn't in the registry.
         log_keys: set[str] = set()
         if assay_type is not None:
-            meta = ASSAY_REGISTRY[assay_type]
-            units = dict(meta.units)
-            log_keys = set(meta.log_scale_keys)
+            log_keys = set(ASSAY_REGISTRY[assay_type].log_scale_keys)
 
         # A new fit clears the sticky plot-selection; refreshes of the same
         # result (mode toggle, re-selection) keep it.
@@ -226,7 +226,7 @@ class FitSummaryWidget(QWidget):
         # A log₁₀ twin row follows each association constant (log-scale key).
         specs: list[tuple[str, str, dict | None, str]] = []
         for key, value in result.parameters.items():
-            unit_str = units.get(key, '')
+            unit_str = str(value.units) if isinstance(value, Quantity) else ''
             val_mag = float(value.magnitude) if isinstance(value, Quantity) else float(value)
             pool = np.asarray(samples[key], dtype=float) if samples else None
             specs.append(
