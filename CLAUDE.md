@@ -52,6 +52,7 @@ Use `uv run` to execute, `uv add`/`uv remove` for dependencies. Never edit `uv.l
 - If multiple approaches exist, present them with tradeoffs. If a simpler one exists, say so.
 - If something is unclear, stop. Name what's confusing. Ask.
 - Push back when warranted — including on the user's request if it would introduce unnecessary complexity.
+- Before implementing an established scientific or numerical method (sensitivity analysis, bootstrap, profile likelihood, …), look for a maintained library that provides it and present it as an option, with its tradeoffs, before writing a custom implementation. Never drop an option silently to avoid a dependency; ask.
 
 **Simplicity is the priority:**
 - Minimum code that solves the problem. No speculative features, no premature abstractions, no "flexibility" that wasn't requested.

@@ -205,6 +205,7 @@ AGENTS.md
 .github/instructions/*
 .github/*instructions.md
 .vscode/*
+.agents/
 scratch/*
 app/*
 data/results/*

@@ -1,0 +1,17 @@
+web_search = "cached"
+model_verbosity = "medium"
+[mcp_servers.graphify]
+command = "uv"
+args = [
+    "tool",
+    "run",
+    "--from",
+    "graphifyy[mcp]",
+    "python",
+    "-m",
+    "graphify.serve",
+    "graphify-out/graph.json",
+]
+
+[projects."$HOME/git/fitting_app"]
+trust_level = "trusted"
