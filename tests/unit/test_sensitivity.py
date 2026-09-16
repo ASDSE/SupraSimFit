@@ -406,6 +406,26 @@ def test_heatmap_same_axis_twice_raises(ida_setup):
         run_sensitivity(ms, assay_cls, conditions, fit_config, cfg)
 
 
+@pytest.mark.parametrize(
+    ('key', 'spec'),
+    [
+        ('Ka_dye', InputSpec.sigma_pct(50.0)),
+        ('h0', InputSpec.sigma_abs(0.5 * IDA_TRUE['h0'])),
+        (TITRANT, InputSpec.interval_pct(-100.0, 10.0)),
+    ],
+    ids=['sigma-percent', 'sigma-absolute', 'range-to-zero'],
+)
+def test_heatmap_axis_reaching_zero_raises_before_any_fit(ida_setup, monkeypatch, key, spec):
+    """A σ axis runs over ±2σ and a range axis over its whole range, ends included: an end at zero is refused."""
+    monkeypatch.setattr(sens, '_fit_perturbed', lambda *a, **k: pytest.fail('no fit may run'))
+    other = 'd0'
+    cfg = SensitivityConfig(
+        SensitivityMode.HEATMAP, 6, {key: spec, other: InputSpec.sigma_pct(5.0)}, x_key=key, y_key=other, n_steps=3
+    )
+    with pytest.raises(ValueError, match='reaches zero or below'):
+        _run(ida_setup, cfg)
+
+
 def test_unknown_input_key_raises(ida_setup):
     ms, assay_cls, conditions, fit_config = ida_setup
     cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {'not_an_input': InputSpec.sigma_pct(5.0)})

@@ -166,6 +166,15 @@ def spec_bounds(spec: InputSpec, nominal: Optional[float], key: str) -> tuple[fl
     return (spec.lo - nominal) / nominal, (spec.hi - nominal) / nominal
 
 
+def axis_reaches_zero(spec: InputSpec, nominal: Optional[float], key: str) -> bool:
+    """Whether a heatmap axis swept over :func:`spec_bounds` would take the input to zero or below.
+
+    The sweep includes both ends, so a lower end at -100 % of the nominal value, to
+    rounding, would fit the model with the input at zero.
+    """
+    return spec_bounds(spec, nominal, key)[0] <= -1.0 + 1e-9
+
+
 def spec_fraction(spec: InputSpec, nominal: Optional[float], key: str, quantile: float) -> float:
     """Map a uniform draw in (0, 1) to a relative offset.
 
@@ -1030,8 +1039,8 @@ def run_sensitivity(
     ValueError
         For an invalid config (a SOBOL ``n_samples`` outside
         ``_SOBOL_SAMPLE_SIZES``, no input set to vary,
-        negative percent, a range reaching below zero, unknown key, HEATMAP with ``x_key == y_key`` or a
-        non-perturbable axis key), an assay with no Ka keys (DYE_ALONE), or a
+        negative percent, a range reaching below zero, unknown key, HEATMAP with ``x_key == y_key``, a
+        non-perturbable axis key or an axis reaching zero), an assay with no Ka keys (DYE_ALONE), or a
         baseline fit that does not clear the R² floor, just as the user's own
         fit would fail.
     """
@@ -1081,6 +1090,14 @@ def run_sensitivity(
                 raise ValueError(f'Heatmap {axis} axis input {axis_key!r} is not a perturbable input for this assay.')
         if sens_config.x_key == sens_config.y_key:
             raise ValueError('Heatmap X and Y axes must be two different inputs.')
+        for axis_key in (sens_config.x_key, sens_config.y_key):
+            spec = sens_config.input_specs.get(axis_key)
+            if spec is not None and axis_reaches_zero(spec, nominal_value(axis_key, base_conditions), axis_key):
+                name = 'the titrant' if axis_key == TITRANT else repr(axis_key)
+                raise ValueError(
+                    f'The heatmap axis for {name} reaches zero or below, and a concentration or binding constant '
+                    'must stay positive. Use a σ below 50 % of the set value, or a range whose lower end is above zero.'
+                )
         if sens_config.n_steps < 1:
             raise ValueError('Heatmap grid resolution must be at least 1.')
 

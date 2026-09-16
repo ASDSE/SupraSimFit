@@ -2,10 +2,10 @@
 
 Pins the wiring the compute-layer tests can't reach:
 
-- :class:`SensitivityPanel` rebuilds its per-input ±% rows (titrant + every
-  concentration / binding-constant condition, including ``Ka_dye``) when the
-  assay type changes, hides the heatmap controls outside heatmap mode, filters
-  0 % inputs out of the emitted config, and disables itself for ``DYE_ALONE``.
+- :class:`SensitivityPanel` rebuilds its per-input uncertainty rows (titrant +
+  every concentration / binding-constant condition, including ``Ka_dye``) when
+  the assay type changes, hides the heatmap controls outside heatmap mode, and
+  disables itself for ``DYE_ALONE``.
 - :class:`SensitivityWidget` draws each Sobol index with a whisker spanning
   its confidence interval, the legend naming it, one Ka vs input panel per varied input with the
   below-floor samples hollow and the unfitted ones left out, rings below-floor
@@ -62,7 +62,7 @@ from core.units import Q_  # noqa: E402
 
 
 def test_set_assay_type_rebuilds_input_rows(qapp):
-    """The ±% rows track the assay's perturbable inputs (titrant + conditions)."""
+    """The uncertainty rows track the assay's perturbable inputs (titrant + conditions)."""
     from gui.widgets.sensitivity_panel import SensitivityPanel
 
     panel = SensitivityPanel()
@@ -100,22 +100,6 @@ def test_heatmap_controls_hidden_outside_heatmap_mode(qapp):
     panel._mode_combo.setCurrentIndex(0)
     assert panel._heatmap_group.isHidden()
     assert not panel._samples_row.isHidden()
-
-
-def test_current_config_drops_inputs_that_do_not_vary(qapp):
-    """Inputs left at zero are excluded from the emitted specs."""
-    from gui.widgets.sensitivity_panel import SensitivityPanel
-
-    panel = SensitivityPanel()
-    panel.set_assay_type(AssayType.IDA)
-
-    for key, row in panel._rows.items():
-        row.set_spec(InputSpec.sigma_pct(7.0 if key == TITRANT else 0.0))
-
-    cfg = panel.current_config()
-    assert isinstance(cfg, SensitivityConfig)
-    assert cfg.mode is SensitivityMode.SOBOL
-    assert cfg.input_specs == {TITRANT: InputSpec.sigma_pct(7.0)}
 
 
 def test_sample_size_choices_are_the_valid_sobol_sizes_defaulting_to_1024(qapp):

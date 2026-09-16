@@ -859,6 +859,7 @@ class FittingSession(QWidget):
         # Initialise BoundsPanel and SensitivityPanel for default assay type
         self._bounds_panel.set_assay_type(self._state.assay_type)
         self._sensitivity_panel.set_assay_type(self._state.assay_type)
+        self._sensitivity_panel.set_nominal_values(self._assay_panel.current_conditions())
 
         # Push the initial display unit into PlotStyleWidget so the style
         # dict reflects the DataPanel's combo from the first emission.
@@ -881,6 +882,9 @@ class FittingSession(QWidget):
         self._assay_panel.assay_type_changed.connect(self._on_assay_type_changed)
         self._assay_panel.assay_type_changed.connect(self._sensitivity_panel.set_assay_type)
         self._assay_panel.conditions_changed.connect(self._on_conditions_changed)
+        self._assay_panel.conditions_changed.connect(
+            lambda: self._sensitivity_panel.set_nominal_values(self._assay_panel.current_conditions())
+        )
         self._assay_panel.conditions_edited.connect(self._show_results)
 
         self._fit_panel.config_changed.connect(self._on_config_changed)
@@ -1126,13 +1130,21 @@ class FittingSession(QWidget):
             )
             return
 
+        problems = self._sensitivity_panel.run_problems()
+        if problems:
+            QMessageBox.warning(
+                self,
+                'Sensitivity Analysis',
+                'The analysis cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in problems),
+            )
+            return
         sens_config = self._sensitivity_panel.current_config()
         if not sens_config.input_specs:
             QMessageBox.warning(
                 self,
                 'Sensitivity Analysis',
-                'No input is set to vary. Set a ±% above zero for at least one input '
-                '(the titrant or a concentration) so the analysis has something to perturb.',
+                'Every input is set to fixed, so the analysis has nothing to vary. '
+                'Choose a σ or a range for at least one input.',
             )
             return
 
