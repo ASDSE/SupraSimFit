@@ -5,13 +5,14 @@ Renders the output of :func:`core.pipeline.sensitivity.run_sensitivity`:
 - **SOBOL** — per Ka key, a Ka histogram over the sampled input space (titled
   with the median Ka and the fold range the middle 90 % of samples spans, with a
   marker line at the unperturbed baseline Ka) beside a grouped bar chart of the
-  first-order and total-order Sobol indices of every varied input, each bar
+  S₁ (first order) and S_T (total) Sobol indices of every varied input, each bar
   carrying its 95 % confidence interval as a whisker (a delete-one-block
   jackknife over the independent Sobol' sample blocks). The chart shows indices
   from -0.5 to 1.5; one beyond that is drawn to the edge and marked with an
   arrow. Below them, one "Ka vs input" panel per varied input plots every
-  sample's best Ka against that input's offset, with the binned median as a
-  trend line.
+  sample's best Ka against that input's offset. Each panel opens on the input's
+  range as entered, or for a σ input symmetric about zero out to the farthest
+  sampled offset.
 - **HEATMAP** — an image per Ka key over the two swept input offsets,
   coloured by the statistic chosen above the maps: the Ka change from the
   baseline fit (the default, on a diverging scale symmetric in
@@ -21,8 +22,9 @@ Renders the output of :func:`core.pipeline.sensitivity.run_sensitivity`:
   input offsets and reading out its Ka, Ka change and R²; cells where no fit
   could be produced are transparent.
 
-Fits below the configured R² floor are kept everywhere: they are drawn hollow
-(ringed on the heatmap) and a note under the plots states how many there are.
+Fits below the configured R² floor are kept everywhere: they are drawn in light
+grey behind the others (ringed on the heatmap) and a note under the plots states
+how many there are.
 
 The fitted parameters across a SOBOL run's samples are tabled under the plot
 tabs, by :class:`gui.plotting.fit_summary_widget.FitSummaryWidget`, while this
@@ -58,7 +60,15 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.pipeline.sensitivity import _SOBOL_BLOCKS, TITRANT, SensitivityMode, SensitivityResult
+from core.pipeline.sensitivity import (
+    _SOBOL_BLOCKS,
+    TITRANT,
+    SensitivityMode,
+    SensitivityResult,
+    SpecKind,
+    nominal_value,
+    spec_bounds,
+)
 from gui.plotting.distribution_widget import draw_histogram
 from gui.plotting.fit_summary_widget import unfitted_sentence
 from gui.plotting.labels import fmt_param, fmt_sci, fmt_unit_html
@@ -71,9 +81,14 @@ _SURFACE = '#fcfcfb'
 _INK = '#0b0b0b'
 _INK_SECONDARY = '#52514e'
 _INK_MUTED = '#898781'
-# Series colours: histogram bars, first-order indices and sample dots; total-order indices.
+# Series colours: histogram bars, S₁ (first order) and sample dots; S_T (total).
 _SERIES = '#2a78d6'
 _SERIES_TOTAL = '#eb6834'
+# Samples whose best fit falls below the Min R², drawn behind the others.
+_BELOW_FLOOR = '#c3c2b7'
+# Share of a "Ka vs input" panel's default Δ-input range left clear at each end,
+# the same at every panel width, so the outermost dots sit off the axis line.
+_OFFSET_VIEW_MARGIN = 0.03
 # Grouped-bar geometry, in tick units: each series sits this far off the input's
 # tick centre, and every bar spans twice this half-width.
 _GROUP_OFFSET = 0.2
@@ -215,15 +230,78 @@ class _LogKaAxis(pg.AxisItem):
         return bool(np.all(np.diff(centres) - (extents[:-1] + extents[1:]) / 2 >= _LABEL_GAP))
 
 
-def _binned_median(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Median of *x* and of *y* within equal-count bins along *x*.
+def _end_label(value: float) -> str:
+    """Tick label of a range end, to three significant figures: ``-6``, ``8.33``."""
+    return f'{float(f"{value:.3g}"):g}'
 
-    Equal-count bins keep every point of the trend on the same number of
-    samples, so the sparse tails of a Gaussian spec do not make it jumpy.
+
+class _OffsetAxis(pg.AxisItem):
+    """Δ-input axis of a "Ka vs input" panel that always labels the ends of an entered range.
+
+    The *ends* join the major ticks, labelled by :func:`_end_label`, and their
+    labels may reach past the ends of the axis. A regular tick whose label would
+    come within ``_LABEL_GAP`` pixels of an end's label is left out.
     """
-    n_bins = min(12, max(4, x.size // 40))
-    chunks = [c for c in np.array_split(np.argsort(x), n_bins) if c.size]
-    return np.array([np.median(x[c]) for c in chunks]), np.array([np.median(y[c]) for c in chunks])
+
+    def __init__(self, ends: tuple[float, ...] = (), **kwargs):
+        super().__init__('bottom', **kwargs)
+        self._ends = tuple(float(end) for end in ends)
+
+    def _metrics(self) -> QFontMetrics:
+        return QFontMetrics(self.style['tickFont'] if self.style['tickFont'] is not None else self.font())
+
+    def tickValues(self, minVal, maxVal, size):
+        levels = super().tickValues(minVal, maxVal, size)
+        ends = [end for end in self._ends if minVal <= end <= maxVal]
+        if not ends or maxVal <= minVal:
+            return levels
+        metrics = self._metrics()
+        per_unit = size / (maxVal - minVal)
+        end_widths = [metrics.horizontalAdvance(_end_label(end)) for end in ends]
+        kept_levels = []
+        for i, (spacing, values) in enumerate(levels):
+            texts = super().tickStrings(values, self.autoSIPrefixScale * self.scale, spacing)
+            kept = [
+                value
+                for value, text in zip(values, texts)
+                if all(
+                    abs(value - end) * per_unit >= (metrics.horizontalAdvance(text) + width) / 2 + _LABEL_GAP
+                    for end, width in zip(ends, end_widths)
+                )
+            ]
+            kept_levels.append((spacing, sorted(kept + ends) if i == 0 else kept))
+        return kept_levels
+
+    def tickStrings(self, values, scale, spacing):
+        texts = super().tickStrings(values, scale, spacing)
+        return [_end_label(value) if value in self._ends else text for value, text in zip(values, texts)]
+
+    def boundingRect(self):
+        rect = super().boundingRect()
+        if not self._ends:
+            return rect
+        metrics = self._metrics()
+        overhang = max(metrics.horizontalAdvance(_end_label(end)) for end in self._ends) / 2
+        return rect.adjusted(-overhang, 0, overhang, 0)
+
+
+def _offset_view(result: SensitivityResult, key: str) -> tuple[float, float]:
+    """The Δ-input range, in percent, that input *key*'s "Ka vs input" panel opens on.
+
+    A range input opens on exactly the range entered; an absolute range is
+    restated in percent of the value the analysis started from, which is how the
+    samples are placed. A σ input has no edge, so it opens symmetric about zero
+    out to the farthest sampled offset, which keeps every sample in view.
+    """
+    spec = result.config.input_specs[key]
+    if spec.kind is SpecKind.INTERVAL:
+        if spec.relative:
+            return spec.lo, spec.hi
+        lo, hi = spec_bounds(spec, nominal_value(key, result.baseline_fit.conditions), key)
+        return 100.0 * lo, 100.0 * hi
+    offsets = np.asarray(result.sample_offsets_pct[key], dtype=float)
+    reach = float(np.max(np.abs(offsets[np.isfinite(offsets)]), initial=0.0))
+    return -reach, reach
 
 
 def _signed_pct(value: float, digits: int = 3) -> str:
@@ -329,7 +407,7 @@ def _quality_note(result: SensitivityResult) -> str:
         kept = 'These fits stay in the map, each cell marked with a ring.'
     else:
         r2, kas, noun = result.sample_r2, (result.sample_ka or {}).values(), 'samples'
-        kept = 'These fits stay in every result, drawn as hollow dots.'
+        kept = 'These fits stay in every result; the Ka vs each input panels draw them in light grey.'
     parts = []
     if _indices_off_scale(result):
         lo, hi = _INDEX_LIMITS
@@ -339,7 +417,7 @@ def _quality_note(result: SensitivityResult) -> str:
         )
     if r2 is not None and result.floor is not None and np.isfinite(result.floor):
         total = int(np.asarray(r2).size)
-        threshold = f'the Min R² set in the Fit panel ({result.floor:g})'
+        threshold = f'the Min R² this analysis used ({result.floor:g})'
         if result.n_below_floor:
             parts.append(f'The best fit of {result.n_below_floor} of {total} {noun} falls below {threshold}. {kept}')
         else:
@@ -355,9 +433,9 @@ def _quality_note(result: SensitivityResult) -> str:
         counts = {None: next(iter(counts.values()))}
     for key, n in counts.items():
         if n:
-            shares = 'The shares' if key is None else f'The shares for {key}'
+            indices = 'The Sobol indices' if key is None else f'The Sobol indices for {_plain_label(fmt_param(key))}'
             parts.append(
-                f'{shares} leave out {n} of the {result.config.n_samples} sample groups set by the sample size: '
+                f'{indices} leave out {n} of the {result.config.n_samples} sample groups set by the sample size: '
                 f'at least one fit in {"that group" if n == 1 else "each of those groups"} '
                 f'{"is missing" if result.stopped else "could not be made"}.'
             )
@@ -413,7 +491,11 @@ class SensitivityWidget(QWidget):
         self._stack_host = QWidget()
         self._stack = QStackedLayout(self._stack_host)
 
-        self._placeholder = QLabel('Configure ±Δ and run a sensitivity analysis.')
+        self._placeholder = QLabel(
+            'Set how uncertain each input is under Input uncertainty in the Ka Sensitivity panel, '
+            'then press Run Sensitivity Analysis.'
+        )
+        self._placeholder.setWordWrap(True)
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder.setStyleSheet('color: rgba(0,0,0,0.35); font-size: 14px;')
         self._stack.addWidget(self._placeholder)
@@ -431,7 +513,7 @@ class SensitivityWidget(QWidget):
         self._progress_bar = QProgressBar()
         self._progress_bar.setMinimumWidth(240)
         self._progress_bar.setMaximumWidth(360)
-        self._progress_label = QLabel('Running… cancel from the Sensitivity panel.')
+        self._progress_label = QLabel('Running… cancel from the Ka Sensitivity panel.')
         self._progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._progress_label.setStyleSheet('color: rgba(0,0,0,0.55); font-size: 13px;')
         prog_layout.addWidget(self._progress_bar, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -665,13 +747,20 @@ class SensitivityWidget(QWidget):
             heading.setTextFormat(Qt.TextFormat.RichText)
             heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
             heading.setStyleSheet(f'color: {_INK}; font-weight: bold; font-size: {self._title_size()}pt;')
-            grid.addWidget(heading, 2 * r, 0, 1, len(offsets_by_input))
+            grid.addWidget(heading, 3 * r, 0, 1, len(offsets_by_input))
+            key = self._floor_key(result.floor, bool(below.any()))
+            if key is not None:
+                grid.addWidget(key, 3 * r + 1, 0, 1, len(offsets_by_input))
             first: pg.PlotWidget | None = None
             for c, input_key in enumerate(offsets_by_input):
+                x_view = _offset_view(result, input_key)
+                ranged = result.config.input_specs[input_key].kind is SpecKind.INTERVAL
                 pw = self._make_ka_vs_input(
                     ka_key=ka_key,
                     input_label=self._input_label(assay_type, input_key),
                     offsets=np.asarray(offsets_by_input[input_key], dtype=float),
+                    x_view=x_view,
+                    range_ends=x_view if ranged else (),
                     ka=np.asarray(ka_by_key[ka_key], dtype=float),
                     below=below,
                     unit_html=self._ka_unit_html(assay_type, ka_key),
@@ -681,7 +770,7 @@ class SensitivityWidget(QWidget):
                     first = pw
                 else:
                     pw.setYLink(first)
-                grid.addWidget(pw, 2 * r + 1, c)
+                grid.addWidget(pw, 3 * r + 2, c)
                 grid.setColumnStretch(c, 1)
         self._results_layout.addWidget(panels)
 
@@ -760,7 +849,7 @@ class SensitivityWidget(QWidget):
         st_ci: dict[str, tuple[float, float]],
         assay_type: Optional[AssayType],
     ) -> pg.PlotWidget:
-        """Build the paired first-order / total-order index panel for one Ka key.
+        """Build the paired S₁ (first order) / S_T (total) index panel for one Ka key.
 
         A bar is drawn only where the index is finite, with a whisker spanning
         its 95 % confidence interval where that interval is finite; an index
@@ -773,7 +862,7 @@ class SensitivityWidget(QWidget):
         pw, plot = self._new_plot(260, 220)
         pw.setToolTip(
             'Each whisker is a 95% confidence interval. It is built so that in about 95 of every 100 '
-            'analyses it contains the share you would get with unlimited samples for the uncertainties you '
+            'analyses it contains the index you would get with unlimited samples for the uncertainties you '
             'set. A repeat run with fresh samples usually lands inside it, but not always. It is worked out '
             f'from {_SOBOL_BLOCKS} independent sample sets, and more samples narrow it. It does not account '
             'for errors in the input settings or in the model.'
@@ -858,12 +947,34 @@ class SensitivityWidget(QWidget):
         self._apply_axis_style(plot)
         return pw
 
+    def _floor_key(self, floor: Optional[float], any_below: bool) -> Optional[QLabel]:
+        """One-line key to the dot colours of the "Ka vs input" panels; ``None`` without a floor to compare against.
+
+        The grey entry appears only when some sample falls below the floor.
+        """
+        if floor is None or not np.isfinite(floor):
+            return None
+        entries = [(_SERIES, f'best fit meets the Min R² ({floor:g})')]
+        if any_below:
+            entries.append((_BELOW_FLOOR, 'best fit falls below it'))
+        key = QLabel(
+            '&nbsp;&nbsp;&nbsp;&nbsp;'.join(
+                f'<span style="color: {colour};">●</span> {text}' for colour, text in entries
+            )
+        )
+        key.setTextFormat(Qt.TextFormat.RichText)
+        key.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        key.setStyleSheet(f'color: {_INK_SECONDARY}; font-size: {self._tick_font().pointSize()}pt;')
+        return key
+
     def _make_ka_vs_input(
         self,
         *,
         ka_key: str,
         input_label: str,
         offsets: np.ndarray,
+        x_view: tuple[float, float],
+        range_ends: tuple[float, ...],
         ka: np.ndarray,
         below: np.ndarray,
         unit_html: str,
@@ -872,14 +983,16 @@ class SensitivityWidget(QWidget):
         """Each sample's best Ka against one input's offset, on a log Ka axis.
 
         The panel has no title: the heading above its row names the Ka and the
-        x-axis label names the input. Fits that clear the floor are filled
-        dots, fits below it hollow dots;
-        the line follows the median Ka of equal-count bins along the offset.
-        Samples without a fit have no Ka to place and are left out.
+        x-axis label names the input. Fits that meet the floor are blue dots;
+        fits below it are the same dots in light grey, drawn behind the blue.
+        Samples without a fit have no Ka to place and are left out. The panel
+        opens on the offsets *x_view* with a margin of ``_OFFSET_VIEW_MARGIN``
+        at each end; zoom, pan and View All work from there. The x axis labels
+        *range_ends*, the ends of an entered range, wherever they are in view.
         """
         left_axis = _LogKaAxis(orientation='left')
         left_axis.enableAutoSIPrefix(False)
-        pw, plot = self._new_plot(170, 220, axisItems={'left': left_axis})
+        pw, plot = self._new_plot(170, 220, axisItems={'left': left_axis, 'bottom': _OffsetAxis(range_ends)})
         plot.setLogMode(y=True)
         plot.showGrid(x=True, y=True, alpha=0.25)
         ka_label = fmt_param(ka_key)
@@ -889,33 +1002,23 @@ class SensitivityWidget(QWidget):
 
         placed = np.isfinite(ka) & (ka > 0) & np.isfinite(offsets)
         x, y, low = offsets[placed], ka[placed], below[placed]
-        plot.addItem(
-            pg.PlotDataItem(
-                x[~low],
-                y[~low],
+        for mask, colour, z, name in (
+            (low, _BELOW_FLOOR, 0, 'below the threshold'),
+            (~low, _SERIES, 1, 'meets the threshold'),
+        ):
+            dots = pg.PlotDataItem(
+                x[mask],
+                y[mask],
                 pen=None,
                 symbol='o',
                 symbolSize=_MARKER_SIZE + 2,
-                symbolBrush=pg.mkBrush(_SERIES),
+                symbolBrush=pg.mkBrush(colour),
                 symbolPen=pg.mkPen(_SURFACE, width=2),
-                name='meets the threshold',
+                name=name,
             )
-        )
-        plot.addItem(
-            pg.PlotDataItem(
-                x[low],
-                y[low],
-                pen=None,
-                symbol='o',
-                symbolSize=_MARKER_SIZE - 1,
-                symbolBrush=pg.mkBrush(_SURFACE),
-                symbolPen=pg.mkPen(_SERIES, width=2),
-                name='below the threshold',
-            )
-        )
-        if x.size >= 8:
-            trend_x, trend_y = _binned_median(x, y)
-            plot.addItem(pg.PlotDataItem(trend_x, trend_y, pen=pg.mkPen(_INK, width=2), name='binned median'))
+            dots.setZValue(z)
+            plot.addItem(dots)
+        plot.setXRange(*x_view, padding=_OFFSET_VIEW_MARGIN)
         self._apply_axis_style(plot)
         # pyqtgraph sizes tick text at paint time, too late for y-linked panels, which then
         # drop their labels; a fixed width that holds the widest label keeps every one in view.
@@ -1123,7 +1226,7 @@ class SensitivityWidget(QWidget):
         if target['r2_grid'] is not None:
             r2 = target['r2_grid'][iy, ix]
             below = target['floor'] is not None and r2 < target['floor']
-            lines.append(f'R² = {r2:.4f}' + (' (below the threshold)' if below else ''))
+            lines.append(f'R² = {r2:.4f}' + (' (below Min R²)' if below else ''))
         return '<br>'.join(lines)
 
     # ------------------------------------------------------------------

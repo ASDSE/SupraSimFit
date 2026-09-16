@@ -7,9 +7,12 @@ Pins the wiring the compute-layer tests can't reach:
   the assay type changes, hides the heatmap controls outside heatmap mode, and
   disables itself for ``DYE_ALONE``.
 - :class:`SensitivityWidget` draws each Sobol index with a whisker spanning
-  its confidence interval, the legend naming it, one Ka vs input panel per varied input with the
-  below-floor samples hollow and the unfitted ones left out, rings below-floor
-  heatmap cells, states those counts in a note, and restyles/clears cleanly.
+  its confidence interval, the legend naming it, one Ka vs input panel per varied
+  input with the below-floor samples light grey behind the others, a key to the
+  two colours and the unfitted ones left out, each panel opening on the input's
+  range as entered (± the farthest sampled offset for a σ input), rings
+  below-floor heatmap cells, states those counts in a note, names the indices one
+  way, and restyles/clears cleanly.
 - The heatmap colours each cell by the chosen statistic (Ka change by default,
   symmetric in the log ratio to the baseline Ka; Ka on the Plot Style's Ka
   scale; R²), labels its colour bar in the style's tick font, keeps the choice
@@ -300,8 +303,25 @@ def test_no_gui_text_calls_the_interval_wide_side():
     assert offenders == []
 
 
-def test_ka_vs_input_panels_draw_below_floor_samples_hollow(qapp):
-    """One panel per varied input; below-floor fits hollow, the unfitted sample left out."""
+def _ka_vs_input_panels(widget) -> dict:
+    """Each "Ka vs input" panel's plot item, by the input key its x-axis names."""
+    by_label = {plot.getAxis('bottom').labelText: plot for plot in _plots(widget)}
+    return {
+        key: by_label[f'Δ {widget._input_label(AssayType.IDA, key)} [%]'] for key in widget._result.sample_offsets_pct
+    }
+
+
+def _floor_keys(widget) -> list[str]:
+    """Text of every dot-colour key on the results page, once the pages of earlier results are deleted."""
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    from PyQt6.QtWidgets import QLabel
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    return [label.text() for label in widget._results_host.widget().findChildren(QLabel) if '●' in label.text()]
+
+
+def test_ka_vs_input_panels_draw_below_floor_samples_grey_behind_the_blue(qapp):
+    """Below-floor fits are the same dots in light grey behind the blue, with a key; no line; the unfitted left out."""
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
     result = _sobol_result()
@@ -311,21 +331,154 @@ def test_ka_vs_input_panels_draw_below_floor_samples_hollow(qapp):
     w = SensitivityWidget()
     w.update_result(result)
 
-    panels = [
-        {item.name(): item for item in plot.items if isinstance(item, pg.PlotDataItem)}
-        for plot in _plots(w)
-        if any(isinstance(item, pg.PlotDataItem) for item in plot.items)
-    ]
+    panels = _ka_vs_input_panels(w)
     assert len(panels) == len(_INPUTS)
-    for by_name in panels:
-        _, hollow_ka = by_name['below the threshold'].getOriginalDataset()
-        _, filled_ka = by_name['meets the threshold'].getOriginalDataset()
-        np.testing.assert_array_equal(np.sort(hollow_ka), np.sort(ka[below]))
-        np.testing.assert_array_equal(np.sort(filled_ka), np.sort(ka[fitted & ~below]))
+    for plot in panels.values():
+        items = [item for item in plot.items if isinstance(item, pg.PlotDataItem)]
+        by_name = {item.name(): item for item in items}
+        assert len(items) == 2 and all(item.opts['pen'] is None for item in items)
+        grey, blue = by_name['below the threshold'], by_name['meets the threshold']
+        np.testing.assert_array_equal(np.sort(grey.getOriginalDataset()[1]), np.sort(ka[below]))
+        np.testing.assert_array_equal(np.sort(blue.getOriginalDataset()[1]), np.sort(ka[fitted & ~below]))
+        assert (grey.opts['symbolBrush'].color().name(), blue.opts['symbolBrush'].color().name()) == (
+            '#c3c2b7',
+            '#2a78d6',
+        )
+        assert grey.opts['symbol'] == blue.opts['symbol'] == 'o'
+        assert grey.opts['symbolSize'] == blue.opts['symbolSize'] >= 8
+        for dots in (grey, blue):
+            assert (dots.opts['symbolPen'].color().name(), dots.opts['symbolPen'].widthF()) == ('#fcfcfb', 2.0)
+        assert grey.zValue() < blue.zValue()
+
+    (key,) = _floor_keys(w)
+    assert 'color: #2a78d6;">●</span> best fit meets the Min R² (0.99)' in key
+    assert 'color: #c3c2b7;">●</span> best fit falls below it' in key
+    assert 'the Ka vs each input panels draw them in light grey' in w._note.text() and 'hollow' not in w._note.text()
+
+    # With no fit below the floor the key has no grey entry.
+    w.update_result(replace(result, sample_r2=np.where(fitted, 0.995, np.nan), n_below_floor=0))
+    (key,) = _floor_keys(w)
+    assert '#c3c2b7' not in key and 'below' not in key
+
+
+_H0_RANGE_PCT = (100 * (4.1e-6 / 4.3e-6 - 1), 100 * (4.4e-6 / 4.3e-6 - 1))
+
+
+def _ranged_result() -> SensitivityResult:
+    """Ka,dye entered as the range −6 % to +4 %, [Host]₀ as 4.1–4.4 µM of 4.3 µM, the titrant as σ 5 %."""
+    rng = np.random.default_rng(1)
+    base = _sobol_result()
+    specs = {
+        'Ka_dye': InputSpec.interval_pct(-6.0, 4.0),
+        'h0': InputSpec.interval_abs(4.1e-6, 4.4e-6),
+        TITRANT: InputSpec.sigma_pct(5.0),
+    }
+    offsets = {
+        'Ka_dye': rng.uniform(-6.0, 4.0, 40),
+        'h0': rng.uniform(*_H0_RANGE_PCT, 40),
+        TITRANT: base.sample_offsets_pct[TITRANT],
+    }
+    conditions = {'Ka_dye': Q_(1.68e7, '1/M'), 'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M')}
+    return replace(
+        base,
+        config=replace(base.config, input_specs=specs),
+        sample_offsets_pct=offsets,
+        baseline_fit=replace(base.baseline_fit, conditions=conditions),
+    )
+
+
+def test_ka_vs_input_panels_open_on_the_range_entered_whatever_their_width(qapp):
+    """A range opens on exactly its ends, an absolute one in percent of the set value; a σ on ± the farthest sample.
+
+    The margin at each end is a fixed share of that range, so a narrow panel is framed like a wide one, and
+    zoom, pan and View All stay available.
+    """
+    from PyQt6.QtCore import Qt
+
+    from gui.plotting.sensitivity_widget import _OFFSET_VIEW_MARGIN, SensitivityWidget
+
+    result = _ranged_result()
+    reach = float(np.max(np.abs(result.sample_offsets_pct[TITRANT])))
+    entered = {'Ka_dye': (-6.0, 4.0), 'h0': _H0_RANGE_PCT, TITRANT: (-reach, reach)}
+    assert 0 < _OFFSET_VIEW_MARGIN <= 0.05
+
+    w = SensitivityWidget()
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.update_result(result)
+    w.show()
+    for width in (1500, 560):
+        w.resize(width, 1100)
+        qapp.processEvents()
+        for key, plot in _ka_vs_input_panels(w).items():
+            lo, hi = entered[key]
+            margin = _OFFSET_VIEW_MARGIN * (hi - lo)
+            np.testing.assert_allclose(plot.viewRange()[0], (lo - margin, hi + margin), rtol=0, atol=1e-9)
+
+    for plot in _ka_vs_input_panels(w).values():
+        vb = plot.getViewBox()
+        assert vb.state['mouseEnabled'] == [True, True]
+        vb.autoRange()
+        x_lo, x_hi = plot.viewRange()[0]
+        for item in plot.items:
+            if isinstance(item, pg.PlotDataItem) and item.getOriginalDataset()[0].size:
+                x = item.getOriginalDataset()[0]
+                assert x_lo <= x.min() and x.max() <= x_hi
+    w.close()
+
+
+def test_a_range_inputs_panel_labels_both_ends_entered_however_narrow(qapp):
+    """The Δ-input axis of a range input labels its two ends (−6 and 4; −4.65 and 2.33 for 4.1–4.4 µM of 4.3 µM).
+
+    A σ input has no entered ends, so its axis carries only the regular ticks.
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QImage, QPainter
+
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.update_result(_ranged_result())
+    w.show()
+    expected = {'Ka_dye': {'-6', '4'}, 'h0': {'-4.65', '2.33'}, TITRANT: set()}
+    image = QImage(10, 10, QImage.Format.Format_ARGB32)
+    for width in (1500, 560):
+        w.resize(width, 1100)
+        qapp.processEvents()
+        for key, plot in _ka_vs_input_panels(w).items():
+            axis = plot.getAxis('bottom')
+            painter = QPainter(image)
+            _, _, texts = axis.generateDrawSpecs(painter)
+            painter.end()
+            labels = {text for _, _, text in texts}
+            assert expected[key] <= labels, (width, key, labels)
+            if key == TITRANT:
+                assert all(float(label) == round(float(label)) for label in labels)
+    w.close()
+
+
+def test_ka_sensitivity_tab_names_the_indices_one_way_and_the_uncertainty_group(qapp):
+    """S₁ (first order) and S_T (total), as the legend names them, are the only names the tab gives the indices."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    assert 'Input uncertainty' in w._placeholder.text() and 'Δ' not in w._placeholder.text()
+
+    w.update_result(replace(_sobol_result(), sobol_rows_left_out={'Ka_guest': 3}, sobol_s1={'Ka_guest': {'h0': 4.0}}))
+    (index_panel,) = [
+        pw
+        for pw in w._results_host.widget().findChildren(pg.PlotWidget)
+        if 'Sobol indices' in pw.getPlotItem().titleLabel.text
+    ]
+    legend = [label.text for _, label in index_panel.getPlotItem().legend.items]
+    assert legend[:2] == ['S<sub>1</sub> (first order)', 'S<sub>T</sub> (total)']
+    texts = (w.toolTip(), index_panel.toolTip(), w._note.text())
+    assert 'An arrow on the index chart' in w._note.text() and 'Sobol indices leave out' in w._note.text()
+    assert not any(re.search(r'share|first-order|total-order|direct', text, re.IGNORECASE) for text in texts)
 
 
 def test_interval_texts_name_what_the_interval_covers_and_the_block_count(qapp):
-    """Both interval texts describe the share unlimited samples give and take the block count from the core."""
+    """Both interval texts describe the index unlimited samples give and take the block count from the core."""
     from gui.plotting.sensitivity_widget import SensitivityWidget
     from gui.widgets.sensitivity_panel import _SAMPLES_HELP_HTML
 
@@ -352,12 +505,12 @@ def test_interval_texts_name_what_the_interval_covers_and_the_block_count(qapp):
         ({'Ka_guest': 0}, None),
         (
             {'Ka_guest': 3},
-            'The shares leave out 3 of the 20 sample groups set by the sample size: '
+            'The Sobol indices leave out 3 of the 20 sample groups set by the sample size: '
             'at least one fit in each of those groups could not be made.',
         ),
         (
             {'Ka_dye': 0, 'Ka_guest': 1},
-            'The shares for Ka_guest leave out 1 of the 20 sample groups set by the '
+            'The Sobol indices for Ka(G) leave out 1 of the 20 sample groups set by the '
             'sample size: at least one fit in that group could not be made.',
         ),
     ],
@@ -648,7 +801,7 @@ def test_heatmap_readout_names_both_inputs_with_ka_change_and_r2(qapp):
     assert 'Guest −5%, [Host]<sub>0</sub> −5%' in text
     assert '1.80×10⁶' in text
     assert 'change: −10%' in text
-    assert 'R² = 0.9500 (below the threshold)' in text
+    assert 'R² = 0.9500 (below Min R²)' in text
 
     # The failed cell still names where it is.
     assert w._readout_html(target, 1, 2) == 'Guest 0%, [Host]<sub>0</sub> +5%<br>no fit could be produced'
