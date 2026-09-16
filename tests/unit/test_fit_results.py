@@ -5,8 +5,10 @@ import json
 import numpy as np
 import pytest
 
-from core.pipeline.fit_pipeline import FitResult
+from core.assays.gda import GDAAssay
+from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_assay
 from core.units import Q_, Quantity
+from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, GDA_TRUE, _make_gda_data
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,6 +47,17 @@ def _sample_fit_result(**overrides) -> FitResult:
             'r_squared': np.array([0.997, 0.998, 0.996]),
         },
         representative_index=1,
+        # Every attempt: the three accepted trials above, then two the R² floor rejected.
+        attempt_samples={
+            'Ka_guest': np.array([1.4e6, 1.5e6, 1.6e6, 2.0e2, 8.0e9]),
+            'I0': np.array([-1.0, 0.0, 1.0, 60.0, -80.0]),
+            'I_dye_free': np.array([4.9e7, 5.0e7, 5.1e7, 4.1e7, 5.9e7]),
+            'I_dye_bound': np.array([2.9e8, 3.0e8, 3.1e8, 2.6e8, 3.4e8]),
+        },
+        attempt_quality={
+            'rmse': np.array([45.0, 42.0, 48.0, 910.0, 640.0]),
+            'r_squared': np.array([0.997, 0.998, 0.996, 0.41, 0.63]),
+        },
     )
     defaults.update(overrides)
     return FitResult(**defaults)
@@ -116,6 +129,28 @@ class TestSerialization:
         assert r.measurement_set_id is None
         assert r.source_file is None
         assert isinstance(r.id, str)
+
+    def test_attempt_record_survives_json(self):
+        """Every attempt and its quality come back from a JSON file value for value."""
+        original = _sample_fit_result()
+        restored = FitResult.from_dict(json.loads(json.dumps(original.to_dict())))
+
+        for field in ('attempt_samples', 'attempt_quality'):
+            written, read = getattr(original, field), getattr(restored, field)
+            assert read.keys() == written.keys()
+            for k in written:
+                np.testing.assert_array_equal(read[k], written[k])
+
+    def test_json_without_an_attempt_record_loads(self):
+        """Fit-result files already on disk carry no attempt record; they load with both fields ``None``."""
+        original = _sample_fit_result()
+        d = original.to_dict()
+        del d['attempt_samples'], d['attempt_quality']
+        restored = FitResult.from_dict(json.loads(json.dumps(d)))
+
+        assert restored.attempt_samples is None
+        assert restored.attempt_quality is None
+        np.testing.assert_array_equal(restored.parameter_samples['Ka_guest'], original.parameter_samples['Ka_guest'])
 
     def test_x_y_fit_units_round_trip(self):
         """x_fit/y_fit carry their own unit tokens; older files without them fall
@@ -264,3 +299,81 @@ class TestFromDictNormalisation:
         d['assay_type'] = 'LEGACY_UNKNOWN'  # not resolvable via the registry
         with pytest.raises(ValueError, match='no unit for parameter'):
             FitResult.from_dict(d)
+
+
+# ---------------------------------------------------------------------------
+# Attempt record on a real fit
+# ---------------------------------------------------------------------------
+
+# Seeded so the pool is reproducible. On the 5 %-noise GDA data this search
+# leaves some attempts stuck far from the minimum (R² ≈ 0.75, below the app's
+# default floor) beside the accepted ones (R² ≈ 0.996).
+_ATTEMPT_CONFIG = FitConfig(n_trials=12, seed=1, custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
+
+
+def _noisy_gda_assay() -> GDAAssay:
+    x, y = _make_gda_data(GDA_TRUE, noise_frac=0.05)
+    return GDAAssay(
+        x_data=Q_(x, 'M'),
+        y_data=Q_(y, 'au'),
+        Ka_dye=Q_(GDA_TRUE['Ka_dye'], '1/M'),
+        h0=Q_(GDA_TRUE['h0'], 'M'),
+        g0=Q_(GDA_TRUE['g0'], 'M'),
+    )
+
+
+@pytest.fixture(scope='module')
+def noisy_gda_fit() -> FitResult:
+    """One seeded fit that accepts some attempts and rejects others."""
+    return fit_assay(_noisy_gda_assay(), _ATTEMPT_CONFIG)
+
+
+class TestAttemptRecord:
+    """A fit carries every completed attempt, accepted or rejected.
+
+    The Identifiability view plots each attempt's Ka against its R² with the
+    quality floor drawn as a line, so the record must hold the rejected
+    attempts too, while every reported number comes from the accepted pool
+    alone.
+    """
+
+    def test_every_accepted_trial_is_among_the_attempts(self, noisy_gda_fit):
+        keys = list(noisy_gda_fit.parameter_samples)
+        attempts = np.column_stack([noisy_gda_fit.attempt_samples[k] for k in keys])
+        accepted = np.column_stack([noisy_gda_fit.parameter_samples[k] for k in keys])
+
+        for row in accepted:
+            assert np.isclose(attempts, row, rtol=1e-12, atol=0.0).all(axis=1).any(), f'accepted {row} not recorded'
+
+    def test_one_entry_per_completed_attempt_split_by_the_floor(self, noisy_gda_fit):
+        r2 = noisy_gda_fit.attempt_quality['r_squared']
+        lengths = {len(a) for a in (*noisy_gda_fit.attempt_samples.values(), noisy_gda_fit.attempt_quality['rmse'])}
+
+        assert lengths == {len(r2)}, 'attempt arrays must be index-aligned'
+        assert len(r2) == noisy_gda_fit.n_total  # n_total counts the completed attempts
+        assert len(r2) >= noisy_gda_fit.n_passing
+        # No RMSE trim is set, so the floor alone decides: exactly the accepted trials sit on or above it.
+        assert np.count_nonzero(r2 >= _ATTEMPT_CONFIG.min_r_squared) == noisy_gda_fit.n_passing
+
+    def test_attempts_are_kept_when_no_trial_passes(self):
+        from dataclasses import replace
+
+        floor = 0.999999  # unreachable on 5 % noise
+        result = fit_assay(_noisy_gda_assay(), replace(_ATTEMPT_CONFIG, min_r_squared=floor))
+
+        assert result.n_passing == 0
+        r2 = result.attempt_quality['r_squared']
+        assert r2.size > 0
+        assert np.all(r2 < floor)
+        assert all(len(a) == r2.size for a in result.attempt_samples.values())
+
+    def test_rejected_attempts_never_reach_the_reported_summary(self, noisy_gda_fit):
+        from dataclasses import replace
+
+        from core.pipeline.fit_pipeline import summarize_parameters
+
+        # Guard: rejected attempts reach past the pool, so summarising them would change the reported range.
+        assert noisy_gda_fit.attempt_samples['Ka_guest'].max() > noisy_gda_fit.parameter_samples['Ka_guest'].max()
+
+        without_attempts = replace(noisy_gda_fit, attempt_samples=None, attempt_quality=None)
+        assert summarize_parameters(noisy_gda_fit) == summarize_parameters(without_attempts)

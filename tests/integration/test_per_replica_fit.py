@@ -346,6 +346,19 @@ class TestPoolAggregation:
             for k in rf.parameters.keys():
                 assert len(rf.parameter_samples[k]) == rf.n_passing
 
+    def test_aggregate_attempts_hold_every_fitted_replicas_attempts(self, noisy_pr_result):
+        result = noisy_pr_result
+        replicas = result.replica_fits
+        r2 = result.attempt_quality['r_squared']
+
+        assert len(r2) == sum(len(rf.attempt_quality['r_squared']) for rf in replicas)
+        for k, attempts in result.attempt_samples.items():
+            from_replicas = np.concatenate([rf.attempt_samples[k] for rf in replicas])
+            np.testing.assert_array_equal(np.sort(attempts), np.sort(from_replicas))
+        # Each attempt keeps the R² its own replica's filter judged, so the floor
+        # splits the pooled attempts into exactly the pooled accepted trials.
+        assert np.count_nonzero(r2 >= NOISY_R2_FLOOR) == result.n_passing
+
     def test_reported_value_is_representative_and_range_is_pool_extent(self, noisy_pr_result):
         from core.pipeline.fit_pipeline import summarize_parameters
 

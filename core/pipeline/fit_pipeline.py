@@ -47,6 +47,16 @@ def _dense_fit_curve(assay: BaseAssay, params: np.ndarray) -> tuple[Quantity, Qu
     return Q_(x_dense, 'M'), assay.forward_model(params, x=x_dense)
 
 
+def _samples_to_json(samples: Optional[Dict[str, np.ndarray]]) -> Optional[Dict[str, List[float]]]:
+    """JSON-safe copy of a per-key sample dict; ``None`` stays ``None``."""
+    return None if samples is None else {k: [float(v) for v in arr] for k, arr in samples.items()}
+
+
+def _samples_from_json(samples: Optional[Dict[str, List[float]]]) -> Optional[Dict[str, np.ndarray]]:
+    """Per-key float arrays rebuilt from their JSON lists; ``None`` stays ``None``."""
+    return None if samples is None else {k: np.asarray(v, dtype=float) for k, v in samples.items()}
+
+
 @dataclass
 class FitResult:
     """Serializable container for fitting results.
@@ -120,6 +130,26 @@ class FitResult:
         Index (into the ``parameter_samples``/``quality_samples`` arrays)
         of the representative fit reported in ``parameters``/``rmse``/
         ``r_squared``/``y_fit``.
+    attempt_samples : dict[str, np.ndarray] | None
+        One flat array per parameter key holding every completed multistart
+        attempt's value, accepted or rejected, aligned by index with
+        ``attempt_quality``. It includes the attempts below ``min_r_squared``
+        (and any the optional RMSE trim removed), so it shows where the
+        accepted pool sits among everything the optimizer found. An attempt
+        whose optimizer call raised is dropped, so there can be fewer
+        entries than ``n_trials``. In per-replica mode it is the
+        concatenation of every fitted replica's attempts. Nothing reported
+        is derived from it: ``parameter_samples`` stays the sole basis of
+        every reported value and interval. ``None`` for fits without a
+        multistart search (dye-alone linear fits) and for imported results
+        whose file records no attempts.
+    attempt_quality : dict[str, np.ndarray] | None
+        ``{"rmse": ..., "r_squared": ...}`` for the same attempts, aligned
+        to ``attempt_samples`` by index. Each value is measured against the
+        signal the attempt was fitted to — the one the ``min_r_squared``
+        floor was applied to — so in per-replica mode it is the replica's
+        own signal, whereas ``quality_samples`` is recomputed against the
+        average of the replicates the fit used.
     """
 
     parameters: Dict[str, Quantity]
@@ -143,6 +173,8 @@ class FitResult:
     parameter_samples: Optional[Dict[str, np.ndarray]] = None
     quality_samples: Optional[Dict[str, np.ndarray]] = None
     representative_index: Optional[int] = None
+    attempt_samples: Optional[Dict[str, np.ndarray]] = None
+    attempt_quality: Optional[Dict[str, np.ndarray]] = None
 
     @property
     def success(self) -> bool:
@@ -193,14 +225,6 @@ class FitResult:
         if self.replica_fits is not None:
             replica_fits_serial = [rf.to_dict() for rf in self.replica_fits]
 
-        parameter_samples_serial: Optional[Dict[str, List[float]]] = None
-        if self.parameter_samples is not None:
-            parameter_samples_serial = {k: [float(v) for v in arr] for k, arr in self.parameter_samples.items()}
-
-        quality_samples_serial: Optional[Dict[str, List[float]]] = None
-        if self.quality_samples is not None:
-            quality_samples_serial = {k: [float(v) for v in arr] for k, arr in self.quality_samples.items()}
-
         return {
             'id': self.id,
             'timestamp': self.timestamp,
@@ -224,9 +248,11 @@ class FitResult:
             'metadata': self.metadata,
             'uncertainty_source': self.uncertainty_source,
             'replica_fits': replica_fits_serial,
-            'parameter_samples': parameter_samples_serial,
-            'quality_samples': quality_samples_serial,
+            'parameter_samples': _samples_to_json(self.parameter_samples),
+            'quality_samples': _samples_to_json(self.quality_samples),
             'representative_index': self.representative_index,
+            'attempt_samples': _samples_to_json(self.attempt_samples),
+            'attempt_quality': _samples_to_json(self.attempt_quality),
         }
 
     @classmethod
@@ -280,15 +306,7 @@ class FitResult:
         if replica_fits_data is not None:
             replica_fits = [cls.from_dict(rf) for rf in replica_fits_data]
 
-        parameter_samples_data = d.get('parameter_samples')
-        parameter_samples: Optional[Dict[str, np.ndarray]] = None
-        if parameter_samples_data is not None:
-            parameter_samples = {k: np.asarray(v, dtype=float) for k, v in parameter_samples_data.items()}
-
-        quality_samples_data = d.get('quality_samples')
-        quality_samples: Optional[Dict[str, np.ndarray]] = None
-        if quality_samples_data is not None:
-            quality_samples = {k: np.asarray(v, dtype=float) for k, v in quality_samples_data.items()}
+        parameter_samples = _samples_from_json(d.get('parameter_samples'))
 
         # Normalise the pool index so a malformed/legacy JSON can't crash the
         # GUI later on an out-of-range lookup.
@@ -326,8 +344,10 @@ class FitResult:
             uncertainty_source=d.get('uncertainty_source', 'optimizer'),
             replica_fits=replica_fits,
             parameter_samples=parameter_samples,
-            quality_samples=quality_samples,
+            quality_samples=_samples_from_json(d.get('quality_samples')),
             representative_index=representative_index,
+            attempt_samples=_samples_from_json(d.get('attempt_samples')),
+            attempt_quality=_samples_from_json(d.get('attempt_quality')),
         )
 
 
@@ -604,7 +624,8 @@ def fit_assay(
     Returns
     -------
     FitResult
-        With Quantity parameters, x_fit, y_fit, and the valid-fit pool.
+        With Quantity parameters, x_fit, y_fit, the valid-fit pool, and every
+        completed attempt — the attempts are kept when none passes the filter.
     """
     if config is None:
         config = FitConfig()
@@ -657,6 +678,14 @@ def fit_assay(
         scaler=scaler,
         rng=np.random.default_rng(config.seed) if config.seed is not None else None,
     )
+
+    # Every completed attempt, accepted or rejected, aligned by index.
+    keys = list(assay.parameter_keys)
+    attempt_samples = {k: np.array([a.params[i] for a in all_attempts], dtype=float) for i, k in enumerate(keys)}
+    attempt_quality = {
+        'rmse': np.array([a.rmse for a in all_attempts], dtype=float),
+        'r_squared': np.array([a.r_squared for a in all_attempts], dtype=float),
+    }
 
     # Select the valid pool: absolute R² floor (primary) + optional RMSE trim.
     valid_attempts = select_valid_fits(
@@ -712,10 +741,11 @@ def fit_assay(
             measurement_set_id=measurement_set_id,
             source_file=source_file,
             metadata=diag,
+            attempt_samples=attempt_samples,
+            attempt_quality=attempt_quality,
         )
 
     # Collapse the pool: keep every valid trial, report a real representative fit.
-    keys = list(assay.parameter_keys)
     param_matrix = np.array([a.params for a in valid_attempts], dtype=float)
     rmse_pool = np.array([a.rmse for a in valid_attempts], dtype=float)
     r2_pool = np.array([a.r_squared for a in valid_attempts], dtype=float)
@@ -743,6 +773,8 @@ def fit_assay(
         parameter_samples=ens.parameter_samples,
         quality_samples=ens.quality_samples,
         representative_index=ens.representative_index,
+        attempt_samples=attempt_samples,
+        attempt_quality=attempt_quality,
     )
 
 
@@ -925,7 +957,12 @@ def fit_measurement_set_per_replica(
     returned ``FitResult.parameter_samples``, aligned with a pooled
     ``quality_samples`` whose RMSE/R² are recomputed against the averaged
     active-replica signal.  A replica with more valid trials contributes
-    proportionally more samples to the pool.
+    proportionally more samples to the pool.  Every fitted replica's
+    completed attempts, accepted or rejected, are concatenated the same way
+    into ``attempt_samples``/``attempt_quality``, each keeping its RMSE/R²
+    against its own replica's signal — the values that replica's quality
+    filter judged.  A replica recorded as a failure contributes no attempts,
+    matching ``n_total``.
 
     The reported ``parameters``/``rmse``/``r_squared``/``y_fit`` come from
     the **representative** pooled trial — the one with the highest R²
@@ -1017,6 +1054,8 @@ def fit_measurement_set_per_replica(
         k: np.concatenate([rr.parameter_samples[k] for rr in replica_fits]) for k in param_keys
     }
     pool_size = len(next(iter(pool.values())))
+    attempt_samples = {k: np.concatenate([rr.attempt_samples[k] for rr in replica_fits]) for k in param_keys}
+    attempt_quality = {k: np.concatenate([rr.attempt_quality[k] for rr in replica_fits]) for k in ('rmse', 'r_squared')}
 
     template_assay = ms.to_assay(
         assay_cls,
@@ -1073,4 +1112,6 @@ def fit_measurement_set_per_replica(
         parameter_samples=ens.parameter_samples,
         quality_samples=ens.quality_samples,
         representative_index=ens.representative_index,
+        attempt_samples=attempt_samples,
+        attempt_quality=attempt_quality,
     )
