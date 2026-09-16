@@ -54,6 +54,10 @@ from gui.widgets.replica_panel import ReplicaPanel, describe_replicates
 from gui.widgets.sensitivity_panel import SensitivityPanel
 from gui.workers import FitWorker, ProfileWorker, SensitivityWorker
 
+# Height a plot tab's page keeps however far the summary below is dragged up: the
+# Fit Curve plot keeps its axis labels apart, the Distributions panels their titles.
+_PLOT_PAGE_MIN_HEIGHT = 250
+
 
 def _format_remaining(seconds: float) -> str:
     """Time left, rounded to something a person would actually say."""
@@ -842,6 +846,12 @@ class FittingSession(QWidget):
         self._plot_tabs.addTab(self._distribution_widget, 'Distributions')
         self._plot_tabs.addTab(self._identifiability_widget, 'Identifiability')
         self._plot_tabs.addTab(self._sensitivity_widget, 'Ka Sensitivity')
+        # Every plot page's floor is _PLOT_PAGE_MIN_HEIGHT, whichever tab is showing:
+        # dragging the summary up stops where a plot is still readable, and a page
+        # whose content is taller scrolls or clips rather than limiting the drag.
+        # Only the page on screen sets the tabs' width (FlatTabWidget).
+        for index in range(self._plot_tabs.count()):
+            self._plot_tabs.widget(index).setMinimumHeight(_PLOT_PAGE_MIN_HEIGHT)
 
         self._summary_widget = FitSummaryWidget()
 

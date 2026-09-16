@@ -17,7 +17,10 @@ from collections.abc import Callable
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QResizeEvent, QWheelEvent
-from PyQt6.QtWidgets import QAbstractButton, QLineEdit, QStyle, QTabBar, QTabWidget, QToolButton
+from PyQt6.QtWidgets import QAbstractButton, QLineEdit, QSizePolicy, QStyle, QTabBar, QTabWidget, QToolButton
+
+# Dynamic property holding a page's own size policy while it is hidden.
+_OWN_POLICY = 'flatTabsOwnSizePolicy'
 
 # Authoritative flat/minimal QSS. The 2px transparent bottom border lives on the
 # base ::tab rule (not only on :selected) so selecting a tab never shifts its
@@ -271,12 +274,37 @@ class FlatTabWidget(QTabWidget):
             self.tabBarDoubleClicked.connect(self._begin_rename)
         if add_callback is not None:
             self.tabBar().set_add_callback(add_callback, add_tooltip)
+        self.currentChanged.connect(self._size_to_current_page)
 
     def tabInserted(self, index: int) -> None:
         super().tabInserted(index)
         if self._closable:
             self._install_close_button(index)
         self._update_close_buttons()
+        self._size_to_current_page()
+
+    def _size_to_current_page(self) -> None:
+        """Let only the page on screen set this widget's size hints.
+
+        A tab widget is otherwise as large as the largest minimum of all its pages,
+        hidden ones included, so a tall or wide page would limit every other tab.
+        Hidden pages get an ``Ignored`` size policy; the page on screen gets its own
+        policy back.
+        """
+        current = self.currentWidget()
+        for i in range(self.count()):
+            page = self.widget(i)
+            own = page.property(_OWN_POLICY)
+            if own is None:
+                own = page.sizePolicy()
+                page.setProperty(_OWN_POLICY, own)
+            if page is current:
+                page.setSizePolicy(own)
+            else:
+                ignored = QSizePolicy(own)
+                ignored.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+                ignored.setVerticalPolicy(QSizePolicy.Policy.Ignored)
+                page.setSizePolicy(ignored)
 
     def tabRemoved(self, index: int) -> None:
         super().tabRemoved(index)
