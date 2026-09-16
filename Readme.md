@@ -90,8 +90,8 @@ See the [Scientific background](#scientific-background) below for how each of th
 
 From the **File** menu:
 
-- **Export Fit Results (JSON)** — full result ensemble (parameters, statistics, source file). Re-importable via *Import Results*.
-- **Export Results (TXT)** — human-readable report.
+- **Export Fit Results (JSON)** — full result ensemble (parameters, statistics, source file) with a record of the data the fit was made on. Re-importable via *Import Results*, which first re-scores each result on the data loaded now and refuses one made on other data. With no data loaded, the stored numbers are shown unchecked.
+- **Export Results (TXT)** — human-readable report, naming the replicates the fit used and any it left out.
 - **Export Raw Data** — round-trip the loaded measurements back to `.txt` or `.csv`.
 - **Export Plot** — save the current plot as PNG or SVG.
 
@@ -157,7 +157,7 @@ The nonlinear binding likelihood is typically multi-modal, so single-start gradi
 - **Multi-start L-BFGS-B** — the constrained quasi-Newton optimiser is launched from many random initial parameter vectors (the `n_trials` knob), with Ka parameters sampled in log space (they span several orders of magnitude).
 - **Physical bounds** — every parameter has lower/upper bounds so the search stays inside a thermodynamically reasonable region (Ka defaults: 10⁻⁸ to 10¹² M⁻¹). Tighten these in the Bounds panel when you have prior knowledge.
 - **Quality filter** — after all starts complete, failed fits are rejected by `min_r_squared` and by an RMSE tolerance factor (`rmse_threshold_factor × best_RMSE`). Only survivors are aggregated.
-- **Real fits, honestly summarised** — the reported estimate is the **representative fit**: an actual member of the surviving ensemble, the one with the highest R². Being a real fit, it lies on the model's degenerate manifold and reproduces the plotted curve exactly. Alongside it the app quotes the **range (min, max) across every accepted fit**, with the median ± MAD, mean ± SD and central-68% interval in the summary table. Each of these is read straight from the ensemble, so it describes a skewed or nonlinear parameter distribution as faithfully as a symmetric one.
+- **Real fits, honestly summarised** — the reported estimate is the **representative fit**: an actual member of the surviving ensemble. A fit of the averaged signal reports its highest-R² attempt; a per-replicate fit reports, among each replicate's best attempt, the one with the highest R² against the average of the replicates it used (a replicate with no acceptable fit is left out and plays no part in the reported R² or RMSE). The Representative selector in the Fit Summary lets you report another accepted fit instead. Being a real fit, it lies on the model's degenerate manifold and reproduces the plotted curve exactly. Alongside it the app quotes the **range (min, max) across every accepted fit**, with the median ± MAD, mean ± SD and central-68% interval in the summary table. Each of these is read straight from the ensemble, so it describes a skewed or nonlinear parameter distribution as faithfully as a symmetric one.
 - **Replica outlier removal** — the optional Z-score preprocessing step uses a *modified* Z-score based on the median and MAD, so it is not biased by the very outliers it is trying to flag.
 
 ### Identifiability note

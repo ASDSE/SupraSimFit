@@ -83,8 +83,11 @@ default). This tells you how tight the optimiser landscape is &mdash;
 run. From each replica, every trial that passes the acceptance
 filter (R<sup>2</sup>, RMSE) is retained. All those passing trials from
 all replicas are then <b>pooled into one flat collection</b>. The
-reported value is the best fit in that pool and the &plusmn; value is the
-pool's spread (MAD by default). This captures both the optimiser spread
+reported value is one replicate's best fit &mdash; of each replicate's best
+fit, the one with the highest R&sup2; against the average of the replicates it
+used &mdash; and the &plusmn; value is the pool's spread (MAD by default). A
+replicate with no acceptable fit is left out, and its signal plays no part in
+the reported R&sup2; or RMSE. This captures both the optimiser spread
 <i>and</i> the experimental spread across replicas in one honest
 distribution &mdash; the kind you can quote in a paper or draw
 box-and-whisker plots from.</p>
@@ -99,8 +102,8 @@ box-and-whisker plots from.</p>
       summaries &mdash; so box-whiskers, histograms, and confidence
       intervals drawn from it are statistically meaningful rather than
       based on just N&nbsp;= (number of replicas) points.</li>
-  <li>The plot curve labelled <i>Best Fit</i> is the forward model
-      evaluated at the representative (best) pooled fit.</li>
+  <li>The plot curve labelled <i>Fit</i> is the forward model evaluated
+      at the representative fit shown in the Representative selector.</li>
 </ul>
 
 <p><b>When to use per-replica mode</b></p>
@@ -120,8 +123,9 @@ box-and-whisker plots from.</p>
       each individual trace. Three replicas is a good minimum; four
       or more is better.</li>
   <li><b>Noisy individual traces</b>: a very noisy single replica may
-      fail to converge. Those replicas are skipped and listed in a
-      warning so you know exactly which ones dropped out.</li>
+      fail to converge or miss the Min R&sup2; floor. Those replicas are left
+      out of the fit and of its R&sup2; and RMSE, and listed in a warning so
+      you know exactly which ones dropped out.</li>
   <li><b>Slower</b>: each replica runs its own multi-start, so the
       fit takes roughly <i>N</i> times longer. Usually still seconds.</li>
   <li><b>Fit curve looks the same</b>: when your replicas agree well,
