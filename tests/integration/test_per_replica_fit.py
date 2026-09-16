@@ -19,6 +19,7 @@ with the smallest budget that still answers its question.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict
 
 import numpy as np
@@ -26,6 +27,7 @@ import pytest
 
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
+from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline.fit_pipeline import (
     FitConfig,
     FitResult,
@@ -406,3 +408,56 @@ class TestPoolAggregation:
         ridx = result.representative_index
         for k, q in result.parameters.items():
             assert float(q.magnitude) == pytest.approx(float(result.parameter_samples[k][ridx]), rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Quality measured on the replicates the fit used (IDA demo data)
+# ---------------------------------------------------------------------------
+
+_DEMO_PATH = Path(__file__).resolve().parents[2] / 'data' / 'IDA_system.txt'
+
+
+@pytest.fixture(scope='module')
+def demo_fit() -> tuple[MeasurementSet, FitResult]:
+    """The app's demo IDA fit: eight measured replicates, 100 trials each, a fixed seed."""
+    from core.io import load_measurements
+
+    ms = MeasurementSet.from_dataframe(load_measurements(_DEMO_PATH))
+    conditions = {'Ka_dye': Q_(16.8e6, '1/M'), 'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M')}
+    config = FitConfig(n_trials=100, min_r_squared=0.99, per_replica=True, seed=20260915)
+    return ms, fit_measurement_set(ms, IDAAssay, conditions, config)
+
+
+class TestDemoQualityOnFittedReplicates:
+    """Replicate '0' of the demo fits no better than R² 0.976, so the fit leaves it out.
+
+    Every reported quality number must then describe the average of the seven
+    replicates the fit used: the eight-replicate average scores the same fits
+    about 0.0008 lower in R².
+    """
+
+    def test_replicate_zero_is_left_out(self, demo_fit):
+        _, result = demo_fit
+
+        assert list(result.metadata['replica_failures']) == ['0']
+        assert result.metadata['replica_ids_fit'] == ['1', '2', '3', '4', '5', '6', '7']
+
+    def test_every_quality_number_is_scored_against_the_used_replicates(self, demo_fit):
+        ms, result = demo_fit
+        used = [ms.replica_ids.index(rid) for rid in result.metadata['replica_ids_fit']]
+        assay = ms.to_assay(IDAAssay, conditions=result.conditions)
+        keys = assay.parameter_keys
+        models = [
+            assay.forward_model(np.array([result.parameter_samples[k][i] for k in keys])).magnitude
+            for i in range(result.n_passing)
+        ]
+        on_used = np.array([calculate_fit_metrics(ms.signals[used].mean(axis=0), m) for m in models])
+        on_all = np.array([calculate_fit_metrics(ms.signals.mean(axis=0), m) for m in models])
+
+        np.testing.assert_allclose(result.quality_samples['rmse'], on_used[:, 0], rtol=1e-12, atol=0)
+        np.testing.assert_allclose(result.quality_samples['r_squared'], on_used[:, 1], rtol=1e-12, atol=0)
+        rep = result.representative_index
+        assert result.rmse == pytest.approx(on_used[rep, 0], rel=1e-12)
+        assert result.r_squared == pytest.approx(on_used[rep, 1], rel=1e-12)
+        assert abs(on_all[rep, 1] - result.r_squared) > 5e-4
+        assert result.r_squared == pytest.approx(0.99414, abs=1e-4)

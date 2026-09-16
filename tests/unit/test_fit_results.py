@@ -283,6 +283,65 @@ class TestSummarizeParameters:
         assert log_row.stats['max'] == pytest.approx(7.0)
 
 
+class TestFittedRepresentativeIndex:
+    """The fit's own choice of attempt, told apart from an attempt picked afterwards."""
+
+    @staticmethod
+    def _imported(result: FitResult) -> FitResult:
+        """*result* as a file that does not record the fit's choice would load it."""
+        d = json.loads(json.dumps(result.to_dict()))
+        d['metadata'].pop('fitted_representative_index', None)
+        return FitResult.from_dict(d)
+
+    @staticmethod
+    def _per_replicate(shown: int) -> FitResult:
+        """Replicates hold attempts 0-1 (led by 1) and 2 (led by 2); against the average of the replicates used
+        attempt 2 beats attempt 1, so the fit chose 2, while attempt 0 has the pool's highest R²."""
+        from dataclasses import replace
+
+        base = _sample_fit_result(
+            quality_samples={'rmse': np.array([40.0, 60.0, 50.0]), 'r_squared': np.array([0.99, 0.95, 0.97])},
+        )
+        replicas = [
+            replace(
+                base, parameter_samples={k: v[s] for k, v in base.parameter_samples.items()}, representative_index=i
+            )
+            for s, i in ((slice(0, 2), 1), (slice(2, 3), 0))
+        ]
+        return replace(base, uncertainty_source='replicate', replica_fits=replicas, representative_index=shown)
+
+    def test_recorded_choice_is_returned(self):
+        from core.pipeline.fit_pipeline import fitted_representative_index
+
+        result = _sample_fit_result(representative_index=2, metadata={'fitted_representative_index': 0})
+        assert fitted_representative_index(result) == 0  # the pool alone would say attempt 1
+
+    @pytest.mark.parametrize('shown', [0, 1, 2])
+    def test_single_fit_choice_is_derived_as_the_highest_r2_attempt(self, shown):
+        from core.pipeline.fit_pipeline import fitted_representative_index
+
+        assert fitted_representative_index(self._imported(_sample_fit_result(representative_index=shown))) == 1
+
+    @pytest.mark.parametrize('shown', [0, 1, 2])
+    def test_per_replicate_choice_is_derived_from_the_replicate_best_attempts(self, shown):
+        from core.pipeline.fit_pipeline import fitted_representative_index
+
+        assert fitted_representative_index(self._imported(self._per_replicate(shown))) == 2
+
+    def test_per_replicate_pool_without_replicate_fits_cannot_tell(self):
+        from dataclasses import replace
+
+        from core.pipeline.fit_pipeline import fitted_representative_index
+
+        assert fitted_representative_index(replace(self._per_replicate(2), replica_fits=None)) is None
+
+    def test_result_without_a_pool_reports_its_own_attempt(self):
+        from core.pipeline.fit_pipeline import fitted_representative_index
+
+        result = _sample_fit_result(parameter_samples=None, quality_samples=None, representative_index=0)
+        assert fitted_representative_index(result) == 0
+
+
 class TestFromDictNormalisation:
     """Malformed/legacy imports are sanitised so they can't crash the GUI later."""
 

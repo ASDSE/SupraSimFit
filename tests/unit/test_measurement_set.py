@@ -150,6 +150,58 @@ class TestReplicaManagement:
         assert ms.n_active == 3
 
 
+class TestWithActive:
+    """A copy fixed to a replicate selection, which later changes to the original never reach."""
+
+    def test_copy_has_exactly_the_given_replicates_active_and_keeps_the_id(self):
+        ms = _sample_measurement_set(n_replicas=3)
+        ms.set_active('0', False)
+
+        copy = ms.with_active(['0', '2'])
+
+        assert copy.active_replica_ids == ['0', '2']
+        assert copy.id == ms.id
+        assert ms.active_replica_ids == ['1', '2']
+
+    def test_later_changes_to_the_original_do_not_reach_the_copy(self):
+        ms = _sample_measurement_set(n_replicas=3)
+        copy = ms.with_active(ms.active_replica_ids)
+        average = copy.average_signal()
+
+        ms.set_active('1', False)
+        ms.set_concentrations(Q_(ms.concentrations * 2, 'M'))
+
+        np.testing.assert_array_equal(copy.average_signal(), average)
+        assert copy.concentrations[-1] == pytest.approx(50e-6)
+        assert copy.active_replica_ids == ['0', '1', '2']
+
+    def test_unknown_replicate_raises(self):
+        with pytest.raises(ValueError, match="no replicate '7'"):
+            _sample_measurement_set(n_replicas=3).with_active(['0', '7'])
+
+
+class TestFingerprint:
+    """The data identity a fit records: blind to the selection and the uuid, not to the values."""
+
+    def test_same_values_give_the_same_fingerprint_whatever_is_active(self):
+        first, second = _sample_measurement_set(), _sample_measurement_set()
+        second.set_active('1', False)
+
+        assert first.id != second.id
+        assert first.fingerprint() == second.fingerprint()
+
+    def test_a_changed_value_changes_the_fingerprint(self):
+        ms = _sample_measurement_set()
+        signals = np.array(ms.signals)
+        signals[2, 4] *= 1 + 1e-12
+        edited = MeasurementSet(concentrations=ms.concentrations, signals=signals, replica_ids=ms.replica_ids)
+        rescaled = _sample_measurement_set()
+        rescaled.set_concentrations(Q_(rescaled.concentrations, 'µM'))
+
+        assert edited.fingerprint() != ms.fingerprint()
+        assert rescaled.fingerprint() != ms.fingerprint()
+
+
 # ---------------------------------------------------------------------------
 # Data access
 # ---------------------------------------------------------------------------
