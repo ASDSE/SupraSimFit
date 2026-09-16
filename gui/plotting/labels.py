@@ -15,7 +15,30 @@ format modifier for that.
 
 from __future__ import annotations
 
+import math
+
 from core.units import ureg
+
+_SUPERSCRIPT_DIGITS = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻')
+
+
+def _format_exponent_unicode(exp: int) -> str:
+    """Convert an integer exponent to Unicode superscript, e.g. 5 → '⁵', -3 → '⁻³'."""
+    return str(exp).translate(_SUPERSCRIPT_DIGITS)
+
+
+def fmt_sci(value: float, digits: int = 2) -> str:
+    """*value* to *digits* significant figures: plain from 0.01 to 999, else as ``1.7×10⁸``.
+
+    Examples: ``150``, ``0.012``, ``3.22×10³`` (``digits=3``), ``5.7×10⁴``.
+    """
+    if value == 0 or not math.isfinite(value):
+        return f'{value:g}'
+    rounded = float(f'{value:.{digits}g}')
+    exp = math.floor(math.log10(abs(rounded)))
+    if -2 <= exp <= 2:
+        return f'{rounded:.{max(digits - 1 - exp, 0)}f}'
+    return f'{rounded / 10.0**exp:.{digits - 1}f}×10{_format_exponent_unicode(exp)}'
 
 
 def _canonical_unit(unit_str: str) -> str:

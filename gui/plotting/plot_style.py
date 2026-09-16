@@ -51,6 +51,10 @@ DEFAULT_STYLE: dict = {
         'replica_median_size': 10,
         'ka_scale': 'log\u2081\u2080',
     },
+    'sensitivity': {
+        'baseline_line_width': 2.5,
+        'baseline_line_color': (220, 0, 0, 255),
+    },
     'error_bars': {
         'visible': True,
         'width': 2,
@@ -181,6 +185,15 @@ _PARAMS_SPEC = [
             {'name': 'Median line width', 'type': 'float', 'value': 2.5, 'limits': (0.5, 8.0), 'step': 0.5},
             {'name': 'Median line color', 'type': 'color', 'value': (220, 0, 0, 255)},
             {'name': 'Replica median size', 'type': 'int', 'value': 10, 'limits': (2, 20)},
+        ],
+    },
+    {
+        'name': 'Ka Sensitivity',
+        'type': 'group',
+        'expanded': False,
+        'children': [
+            {'name': 'Baseline line width', 'type': 'float', 'value': 2.5, 'limits': (0.5, 8.0), 'step': 0.5},
+            {'name': 'Baseline line color', 'type': 'color', 'value': (220, 0, 0, 255)},
         ],
     },
     {
@@ -345,6 +358,10 @@ class PlotStyleWidget(QWidget):
                 'replica_median_size': p['Distribution', 'Replica median size'],
                 'ka_scale': p['Distribution', 'Ka scale'],
             },
+            'sensitivity': {
+                'baseline_line_width': p['Ka Sensitivity', 'Baseline line width'],
+                'baseline_line_color': _qcolor_to_tuple(p['Ka Sensitivity', 'Baseline line color']),
+            },
             'error_bars': {
                 'visible': p['Visibility', 'Show error bars'],
                 'width': p['Error bars', 'Width'],
@@ -411,6 +428,8 @@ class PlotStyleWidget(QWidget):
             ('Distribution', 'Median line color'): ('distribution', 'median_line_color'),
             ('Distribution', 'Replica median size'): ('distribution', 'replica_median_size'),
             ('Distribution', 'Ka scale'): ('distribution', 'ka_scale'),
+            ('Ka Sensitivity', 'Baseline line width'): ('sensitivity', 'baseline_line_width'),
+            ('Ka Sensitivity', 'Baseline line color'): ('sensitivity', 'baseline_line_color'),
             ('Error bars', 'Width'): ('error_bars', 'width'),
             ('Error bars', 'Color'): ('error_bars', 'color'),
             ('Error bars', 'Cap size'): ('error_bars', 'cap_size'),

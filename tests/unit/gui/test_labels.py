@@ -51,3 +51,17 @@ class TestFmtUnitPretty:
         """'a.u.' must format like 'au', not the 'u·a' pint emits from the dots (L3)."""
         assert fmt_unit_pretty('a.u.') == fmt_unit_pretty('au')
         assert 'u·a' not in fmt_unit_pretty('a.u.')
+
+
+def test_fmt_sci_reads_plainly_at_every_magnitude():
+    """Hundreds and thousands read as numbers or ×10ⁿ, never as ``1.5e+02``."""
+    from gui.plotting.labels import fmt_sci
+
+    assert fmt_sci(150) == '150'
+    assert fmt_sci(999) == '1.0×10³'
+    assert fmt_sci(3218.73, 3) == '3.22×10³'
+    assert fmt_sci(9999) == '1.0×10⁴'
+    assert fmt_sci(56800) == '5.7×10⁴'
+    assert fmt_sci(0.0123) == '0.012'
+    assert fmt_sci(1.7e8) == '1.7×10⁸'
+    assert fmt_sci(3.3e-6) == '3.3×10⁻⁶'
