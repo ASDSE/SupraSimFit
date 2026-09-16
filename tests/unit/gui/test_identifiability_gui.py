@@ -120,29 +120,6 @@ def _n_points(scatter):
     return len(scatter.getData()[0])
 
 
-def _contrast(colour, other) -> float:
-    """WCAG contrast ratio of two colours."""
-    from PyQt6.QtGui import QColor
-
-    def luminance(c):
-        c = QColor(c)
-        channels = [
-            v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4 for v in (c.redF(), c.greenF(), c.blueF())
-        ]
-        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
-
-    high, low = sorted((luminance(colour), luminance(other)), reverse=True)
-    return (high + 0.05) / (low + 0.05)
-
-
-def _point_colour(scatter, i):
-    """Colour a point shows: its fill, or its ring when drawn hollow."""
-    brush = scatter.data['brush'][i]
-    if brush.color().name() == '#fcfcfb':
-        return scatter.data['pen'][i].color()
-    return brush.color()
-
-
 # ---------------------------------------------------------------------------
 # States
 # ---------------------------------------------------------------------------
@@ -213,9 +190,7 @@ def test_per_replicate_mode_draws_one_thin_line_per_replicate(qapp):
     assert len(items['replicas']) == 3
     assert all(c.opts['pen'].widthF() == 1 for c in items['replicas'])
     assert items['average'].opts['pen'].widthF() == 2
-    assert "replicate's own thin line" in w._notes.text()
     assert "best fit of the replicates' average" in w._summary.text()
-    assert 'look more certain than it is' in w._notes.text()
 
 
 def test_hidden_attempts_are_counted(qapp):
@@ -251,16 +226,20 @@ def test_a_drop_close_to_minus_100_percent_is_not_rounded_to_it(qapp):
 
 
 def test_fit_attempts_far_below_the_floor_do_not_squeeze_the_view(qapp):
-    """One attempt at the Ka lower bound leaves the view on the interval, and the note counts it."""
+    """One attempt at the Ka lower bound leaves the view on the interval; the note counts every attempt out of view."""
     fit = _fit()
     ka, r2 = fit.attempt_samples['Ka_guest'], fit.attempt_quality['r_squared']
     ka[N_NEGATIVE], r2[N_NEGATIVE] = 1e-8, 0.5
     w = _widget(fit, _profile())
-    (x_lo, x_hi), _ = w._items['Ka_guest']['main'].viewRange()
+    (x_lo, x_hi), (y_lo, y_hi) = w._items['Ka_guest']['main'].viewRange()
     assert x_lo > 0  # the attempt at log10 Ka = −8 is out of view
     assert x_hi - x_lo < 5  # the interval (one decade) keeps a readable share of the width
-    assert '1 of 35 attempts' in w._notes.text()
-    assert 'zoom out to see them' in w._notes.text()
+    shown = r2 >= 0
+    log_ka, r2 = np.log10(ka[shown]), r2[shown]
+    outside = int(np.sum((log_ka < x_lo) | (log_ka > x_hi) | (r2 < y_lo) | (r2 > y_hi)))
+    assert outside >= 1 and np.all(r2[(log_ka < x_lo) | (log_ka > x_hi) | (r2 < y_lo)] < FLOOR)
+    assert f'{outside} of 35 attempts at' in w._notes.text()
+    assert 'all below Min R², lie outside the default view; zoom out to see them' in w._notes.text()
 
 
 def test_replicates_the_fit_left_out_are_named(qapp):
@@ -270,48 +249,218 @@ def test_replicates_the_fit_left_out_are_named(qapp):
     assert 'Replicate A is left out here, as it was from the fit.' in w._notes.text()
 
 
-def test_floor_label_has_a_surface_background(qapp):
-    """The floor's label sits on a surface-coloured box above the dots, so no dot runs through its text."""
-    import pyqtgraph as pg
+def test_floor_and_cut_off_are_named_beside_the_plot(qapp):
+    """The dashed Min R² line and the dotted cut-off are named on a right-hand axis at their heights, never over the data."""
+    from PyQt6.QtCore import Qt
 
-    w = _widget(_fit(), _profile())
-    main = w._items['Ka_guest']['main']
-    (line,) = [item for item in main.items if isinstance(item, pg.InfiniteLine) and item.label is not None]
-    assert line.label.fill.color().name() == '#fcfcfb'
-    assert line.zValue() > w._items['Ka_guest']['attempts_passing'].zValue()
+    profile = _profile()
+    w = _widget(_fit(), profile)
+    items = w._items['Ka_guest']
+    assert items['floor'].pen.style() == Qt.PenStyle.DashLine and items['floor'].value() == FLOOR
+    assert items['cut'].pen.style() == Qt.PenStyle.DotLine and items['cut'].value() == profile.r2_threshold
+    axis = items['main'].getAxis('right')
+    assert axis.isVisible()
+    assert axis._tickLevels == [[(profile.r2_threshold, 'cut-off 0.9900'), (FLOOR, 'Min R² 0.99')]]
+    for line in (items['floor'], items['cut']):
+        assert line.zValue() < items['attempts_below'].zValue() < items['average'].zValue()
+
+
+def test_r2_axis_is_linear(qapp):
+    """Every point sits at its R² itself: the line, the attempts and the levels share one linear scale."""
+    fit = _fit()
+    profile = _profile()
+    w = _widget(fit, profile)
+    items = w._items['Ka_guest']
+    assert not items['main'].getAxis('left').logMode
+    np.testing.assert_array_equal(items['average'].getData()[1], profile.r2)
+    r2 = fit.attempt_quality['r_squared']
+    drawn = np.concatenate([items['attempts_below'].getData()[1], items['attempts_passing'].getData()[1]])
+    np.testing.assert_array_equal(np.sort(drawn), np.sort(r2[r2 >= 0]))
 
 
 def test_default_view_frames_the_attempts_and_the_floor(qapp):
-    from gui.plotting.identifiability_widget import _r2_to_y
-
     fit = _fit()
     w = _widget(fit, _profile())
     (x_lo, x_hi), (y_lo, y_hi) = w._items['Ka_guest']['main'].viewRange()
     shown = fit.attempt_quality['r_squared'] >= 0
     log_ka = np.log10(fit.attempt_samples['Ka_guest'][shown])
     assert x_lo <= log_ka.min() and log_ka.max() <= x_hi
-    assert y_lo <= _r2_to_y(FLOOR) <= y_hi
+    assert y_lo <= FLOOR <= y_hi
 
 
-def test_r2_axis_reads_in_r2(qapp):
-    from gui.plotting.identifiability_widget import _r2_label, _R2Axis
+def test_default_r2_view_separates_the_levels_from_what_lies_inside_the_ka_view(qapp):
+    """Peak 0.995, cut-off and floor 0.99: the view starts one level span (0.005) below them, at R² 0.985.
 
-    assert [_r2_label(y) for y in (0.0, 1.0, 2.0, 3.0)] == ['0', '0.9', '0.99', '0.999']
-    assert _r2_label(2.0 - np.log10(5.0)) == '0.95'
-    majors = _R2Axis('left').tickValues(0.0, 3.0, 300)[0][1]
-    assert majors == [0.0, 1.0, 2.0, 3.0]
+    It reaches the best attempt in view and stops just above R² = 1. Attempts
+    outside the Ka view never move it, and View All still reaches the full range.
+    """
+    fit = _fit()
+    w = _widget(fit, _profile())
+    main = w._items['Ka_guest']['main']
+    (x_lo, x_hi), (y_lo, y_hi) = main.viewRange()
+    assert y_lo == pytest.approx(0.985)
+    ka, r2 = fit.attempt_samples['Ka_guest'], fit.attempt_quality['r_squared']
+    in_view = (np.log10(ka) >= x_lo) & (np.log10(ka) <= x_hi) & (r2 >= 0)
+    assert r2[in_view].max() <= y_hi <= 1.001
+    # The peak-to-floor span keeps a readable share of the height.
+    assert (0.995 - FLOOR) / (y_hi - y_lo) > 0.25
+
+    # A poor attempt far outside the Ka view (the old framing let it pull the view down to R² ≈ 0).
+    ka[N_NEGATIVE], r2[N_NEGATIVE] = 1e-8, 0.01
+    moved = _widget(fit, _profile())._items['Ka_guest']['main'].viewRange()
+    np.testing.assert_allclose(moved, [[x_lo, x_hi], [y_lo, y_hi]])
+
+    main.autoRange()
+    _, (all_lo, all_hi) = main.viewRange()
+    assert all_lo <= 0.0 and all_hi >= r2.max()
 
 
-@pytest.mark.parametrize('y_range', [(1.47, 2.25), (2.0, 2.05), (1.2, 2.6), (3.1, 3.12)])
-def test_r2_axis_ticks_are_round_on_a_narrow_range(qapp, y_range):
-    """At least three ticks, each at an R² its label states exactly (0.97, 0.993 — never 0.9937)."""
-    from gui.plotting.identifiability_widget import _r2_label, _R2Axis
+@pytest.mark.parametrize(('floor', 'in_view'), [(0.985, True), (0.9999, True), (0.95, False), (0.9, False)])
+def test_a_min_r2_far_from_the_peak_and_cut_off_never_squeezes_them_together(qapp, floor, in_view):
+    """Peak 0.995 and cut-off 0.99 keep at least an eighth of the view's height between them, whatever the Min R².
 
-    axis = _R2Axis('left')
-    ys = [y for _, values in axis.tickValues(*y_range, 400) for y in values]
-    assert len(ys) >= 3
-    for y in ys:
-        assert float(_r2_label(y)) == pytest.approx(1.0 - 10.0 ** (-y), abs=1e-12)
+    A Min R² within two peak-to-cut-off gaps of them stays in the default view; one further out is left
+    out of it, and a note says where it is.
+    """
+    fit = _fit()
+    fit.fit_config = {'min_r_squared': floor}
+    w = _widget(fit, _profile())
+    _, (y_lo, y_hi) = w._items['Ka_guest']['main'].viewRange()
+    assert (0.995 - 0.99) / (y_hi - y_lo) >= 1 / 8
+    assert (y_lo <= floor <= y_hi) is in_view
+    note = f'The Min R² line ({floor:g}) lies outside the default view; zoom out to see it.'
+    assert (note in w._notes.text()) is not in_view
+
+
+def test_marginal_histograms_count_attempts_in_forty_bins_across_the_view(qapp):
+    """Both histograms bin the attempts in view into 40 equal bins, below-floor then passing, and rebin on zoom."""
+    from PyQt6.QtCore import Qt
+
+    fit = _fit()
+    w = _widget(fit, _profile())
+    # Linked ranges line up by pixel, so the histograms need a laid-out widget.
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.resize(1100, 800)
+    w.show()
+    qapp.processEvents()
+    items = w._items['Ka_guest']
+    top, right = items['marginals']
+    assert top.getAxis('left').labelText == 'attempts' and right.getAxis('bottom').labelText == 'attempts'
+    ka, r2 = fit.attempt_samples['Ka_guest'], fit.attempt_quality['r_squared']
+    shown = r2 >= 0
+    values = {'hist_ka': np.log10(ka[shown]), 'hist_r2': r2[shown]}
+    below_floor = r2[shown] < FLOOR
+
+    def check():
+        qapp.processEvents()
+        (x_lo, x_hi), (y_lo, y_hi) = items['main'].viewRange()
+        assert top.viewRange()[0] == pytest.approx([x_lo, x_hi]) and right.viewRange()[1] == pytest.approx([y_lo, y_hi])
+        for key, (lo, hi), edges_key, counts_key in (
+            ('hist_ka', (x_lo, x_hi), 'x', 'y'),
+            ('hist_r2', (y_lo, y_hi), 'y', 'x'),
+        ):
+            below, stacked = items[key]
+            starts, ends = stacked.opts[f'{edges_key}0'], stacked.opts[f'{edges_key}1']
+            np.testing.assert_allclose(ends - starts, (hi - lo) / 40)
+            assert starts[0] <= lo and ends[-1] >= hi and len(starts) <= 41
+            inside = (values[key] >= starts[0]) & (values[key] < ends[-1])
+            assert stacked.opts[f'{counts_key}1'].sum() == inside.sum()
+            assert below.opts[f'{counts_key}1'].sum() == (inside & below_floor).sum()
+
+    check()
+    items['main'].setXRange(8.3, 8.7, padding=0)
+    items['main'].setYRange(0.99, 1.0, padding=0)
+    check()
+    w.close()
+
+
+def test_legend_and_notes_start_below_the_ka_axis_label_in_the_default_window(qapp, monkeypatch):
+    """In the 1280×820 main window the page scrolls, so the text under the chart never runs over its axis label."""
+    from PyQt6.QtCore import Qt
+
+    from gui.main_window import FittingMainWindow
+
+    monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
+    window = FittingMainWindow()
+    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    session = window.active_session()
+    w = session._identifiability_widget
+    fit = _fit(per_replica=True)
+    fit.metadata['replica_failures'] = {'A': 'No trials passed the quality filter.'}
+    w.update_fit(fit, _profile(per_replica=True), 'IDA')
+    w.update_sensitivity(_sensitivity())
+    session._plot_tabs.setCurrentWidget(w)
+    window.resize(1280, 820)
+    window.show()
+    for _ in range(5):
+        qapp.processEvents()
+
+    page, canvas = w._content.widget(), w._glw
+    axis = w._items['Ka_guest']['main'].getAxis('bottom')
+    label = axis.label.mapRectToScene(axis.label.boundingRect())
+    label_bottom = canvas.mapTo(page, canvas.mapFromScene(label.bottomLeft())).y()
+    assert w._notes.text().count('<br>') >= 3
+    assert canvas.height() >= canvas.minimumHeight()
+    assert label_bottom <= w._legend.geometry().top() <= w._notes.geometry().top()
+    window.close()
+
+
+@pytest.mark.parametrize('size', [(1280, 820), (1600, 1000)])
+def test_the_whole_chart_is_in_view_without_scrolling_in_the_default_windows(qapp, monkeypatch, size):
+    """The chart takes the tab's height, down to its minimum: its K<sub>a</sub> axis title never needs a scroll.
+
+    Where the tab has room, the legend below the chart is in view too.
+    """
+    from PyQt6.QtCore import Qt
+
+    from gui.main_window import FittingMainWindow
+    from gui.plotting.identifiability_widget import _CANVAS_MIN_HEIGHT
+
+    monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
+    window = FittingMainWindow()
+    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    session = window.active_session()
+    w = session._identifiability_widget
+    w.update_fit(_fit(), _profile(), 'IDA')
+    w.update_sensitivity(_sensitivity())
+    session._plot_tabs.setCurrentWidget(w)
+    window.resize(*size)
+    window.show()
+    for _ in range(5):
+        qapp.processEvents()
+
+    viewport, canvas = w._content.viewport(), w._glw
+    axis = w._items['Ka_guest']['main'].getAxis('bottom')
+    title = axis.label.mapRectToScene(axis.label.boundingRect())
+    assert w._content.verticalScrollBar().value() == 0
+    assert canvas.mapTo(viewport, canvas.mapFromScene(title.bottomLeft())).y() <= viewport.height()
+    assert canvas.height() >= _CANVAS_MIN_HEIGHT
+    if size == (1600, 1000):
+        assert canvas.height() > _CANVAS_MIN_HEIGHT
+        assert w._legend.mapTo(viewport, w._legend.rect().bottomLeft()).y() <= viewport.height()
+    window.close()
+
+
+def test_the_main_plot_keeps_its_minimum_width_at_the_pages_minimum_width(qapp):
+    """A splitter can narrow the page only to its minimum size hint, where the R² plot is still 240 px wide."""
+    from PyQt6.QtCore import Qt
+
+    from gui.plotting.identifiability_widget import _MAIN_MIN_WIDTH
+
+    w = _widget(_fit(), _profile())
+    w.update_sensitivity(_sensitivity())
+    w._colour_combo.setCurrentIndex(w._colour_combo.findText('[Host]₀'))
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.show()
+    w.resize(w.minimumSizeHint().width(), 700)
+    for _ in range(5):
+        qapp.processEvents()
+    assert _MAIN_MIN_WIDTH == 240
+    assert w._items['Ka_guest']['main'].getViewBox().width() >= _MAIN_MIN_WIDTH
+    assert w._content.horizontalScrollBar().maximum() == 0
+    w.clear()
+    assert w.minimumSizeHint().width() < _MAIN_MIN_WIDTH
+    w.close()
 
 
 # ---------------------------------------------------------------------------
@@ -319,9 +468,12 @@ def test_r2_axis_ticks_are_round_on_a_narrow_range(qapp, y_range):
 # ---------------------------------------------------------------------------
 
 
-def test_sensitivity_samples_overlay_in_one_colour(qapp):
+def test_sensitivity_samples_are_a_translucent_cloud_behind_the_attempts_and_lines(qapp):
+    """One colour at about 30 % opacity, no ring, below the floor or not; above the band, under everything else."""
+    from PyQt6.QtCore import Qt
+
     sens = _sensitivity()
-    w = _widget(_fit(), _profile())
+    w = _widget(_fit(per_replica=True), _profile(per_replica=True))
     w.update_sensitivity(sens)
     assert not w._controls.isHidden()
     assert [w._colour_combo.itemText(i) for i in range(w._colour_combo.count())] == [
@@ -329,14 +481,55 @@ def test_sensitivity_samples_overlay_in_one_colour(qapp):
         '[Host]₀',
         'Guest (titrant)',
     ]
-    scatter = w._items['Ka_guest']['samples']
+    items = w._items['Ka_guest']
+    scatter = items['samples']
     assert _n_points(scatter) == N_SAMPLES - 1
-    assert w._items['Ka_guest']['colour_bar'] is None
-    assert {_point_colour(scatter, i).name() for i in range(N_SAMPLES - 1)} == {'#2a78d6'}
-    n_hollow = sum(scatter.data['brush'][i].color().name() == '#fcfcfb' for i in range(N_SAMPLES - 1))
-    assert n_hollow == sens.n_below_floor
-    assert f'the {sens.n_below_floor} below the quality floor are hollow' in w._notes.text()
-    assert '1 not shown' in w._notes.text()
+    assert items['colour_bar'] is None
+    fill = scatter.opts['brush'].color()
+    assert fill.name() == '#2a78d6' and 0.25 <= fill.alphaF() <= 0.35
+    assert scatter.opts['pen'].style() == Qt.PenStyle.NoPen
+    band = next(item for item in items['main'].items if type(item).__name__ == 'LinearRegionItem')
+    lines = [items['average'], *items['replicas'], items['floor'], items['cut']]
+    attempts = [items['attempts_below'], items['attempts_passing']]
+    assert band.zValue() < scatter.zValue() < min(item.zValue() for item in lines + attempts)
+    assert '1 of 21 sensitivity samples not shown' in w._notes.text()
+    assert 'Min R² of' not in w._notes.text()
+
+
+def test_a_run_with_another_quality_floor_is_noted(qapp):
+    sens = _sensitivity()
+    sens.floor = 0.95
+    w = _widget(_fit(), _profile())
+    w.update_sensitivity(sens)
+    assert "flagged its samples against a Min R² of 0.95; the dashed line is this fit's Min R² of 0.99" in (
+        w._notes.text()
+    )
+
+
+def test_show_samples_checkbox_hides_the_cloud_and_keeps_the_view(qapp):
+    """Unticking hides the cloud, its colour bar, colour control, legend entries and notes; the zoom stays as it was."""
+    w = _widget(_fit(), _profile())
+    w.update_sensitivity(_sensitivity())
+    w._colour_combo.setCurrentIndex(w._colour_combo.findText('[Host]₀'))
+    items = w._items['Ka_guest']
+    assert 'sample&nbsp;best&nbsp;fit' in w._legend.text() and 'than&nbsp;entered' in w._legend.text()
+    items['main'].setRange(xRange=(8.4, 8.6), yRange=(0.99, 0.995), padding=0)
+    zoomed = items['main'].viewRange()
+
+    assert '1 of 21 sensitivity samples not shown' in w._notes.text()
+
+    w._show_samples.setChecked(False)
+    assert 'sensitivity samples' not in w._notes.text()
+    assert not items['samples'].isVisible() and not items['colour_bar'].isVisible()
+    assert w._colour_combo.isHidden() and w._colour_label.isHidden() and not w._controls.isHidden()
+    assert 'sample&nbsp;best&nbsp;fit' not in w._legend.text() and 'than&nbsp;entered' not in w._legend.text()
+    assert w._items['Ka_guest'] is items and items['main'].viewRange() == zoomed
+
+    w._show_samples.setChecked(True)
+    assert '1 of 21 sensitivity samples not shown' in w._notes.text()
+    assert items['samples'].isVisible() and items['colour_bar'].isVisible() and not w._colour_combo.isHidden()
+    assert 'sample&nbsp;best&nbsp;fit' in w._legend.text() and 'than&nbsp;entered' in w._legend.text()
+    assert items['main'].viewRange() == zoomed
 
 
 def test_colour_by_input_uses_the_diverging_scale(qapp):
@@ -345,12 +538,10 @@ def test_colour_by_input_uses_the_diverging_scale(qapp):
     w._colour_combo.setCurrentIndex(w._colour_combo.findText('[Host]₀'))
     items = w._items['Ka_guest']
     assert items['colour_bar'] is not None
-    scatter = items['samples']
-    # h0 runs from −10 % (first sample) to +10 % (last): blue to red.
-    assert _point_colour(scatter, 0).getRgb()[:3] == (42, 120, 214)
-    assert _point_colour(scatter, N_SAMPLES - 2).getRgb()[:3] == (227, 73, 72)
-    # Every dot's outline stands out from the surface, the near-zero ones included.
-    assert min(_contrast(pen.color(), '#fcfcfb') for pen in scatter.data['pen']) >= 3.0
+    brushes = items['samples'].data['brush']
+    # h0 runs from −10 % (first sample) to +10 % (last): blue to red, more opaque than the one-colour cloud.
+    assert brushes[0].color().getRgb() == (42, 120, 214, 153)
+    assert brushes[N_SAMPLES - 2].color().getRgb() == (227, 73, 72, 153)
 
     # Restyling keeps the chosen input.
     from gui.plotting.plot_style import DEFAULT_STYLE

@@ -69,6 +69,11 @@ def _single(x, y) -> MeasurementSet:
     return MeasurementSet(concentrations=x, signals=np.asarray(y).reshape(1, -1), replica_ids=('r0',))
 
 
+def _regular_grid_size(profile) -> int:
+    """Points of the log-spaced grid a profile's drawn curve starts from."""
+    return profile_module._ka_grid(profile.grid[0], profile.grid[-1], profile_module._PROFILE_PER_DECADE).size
+
+
 def _homoscedastic(y: np.ndarray, frac: float, seed: int) -> np.ndarray:
     """*y* plus Gaussian noise of constant sigma, *frac* of the largest signal."""
     return y + np.random.default_rng(seed).normal(0.0, frac * np.abs(y).max(), y.size)
@@ -115,6 +120,30 @@ def test_every_multistart_attempt_lies_on_or_below_the_profile(source, ida_noisy
         _, profile_r2 = best_fit_by_profile(assay, pinned)
         excess.append(r2 - profile_r2)
     assert max(excess) <= 1e-9
+
+
+def test_straight_lines_between_the_drawn_points_follow_the_exact_profile():
+    # The plot joins the profile's points with straight lines. On the demo the
+    # exact curve bends away from lines between 20-per-decade points by up to
+    # 2e-4 R² next to the interval's lower edge, enough to draw attempts above it.
+    ms = _demo_ms()
+    profile = fit_profile(ms, IDAAssay, _DEMO_CONDITIONS, _AVERAGE)
+    assay = ms.to_assay(IDAAssay, conditions=_DEMO_CONDITIONS, use_average=True)
+    y = ms.average_signal(active_only=True)[np.newaxis, :]
+    _, _, ssr_at = profile_module._profile_function(assay, _resolve_bounds(assay, None), y)
+    ss_tot = profile_module._ss_tot(y)[0]
+    log_grid = np.log10(profile.grid)
+
+    log_ka = np.linspace(np.log10(profile.ci[0]) - 0.3, np.log10(profile.ci[1]) + 0.3, 1500)
+    exact = np.array([1.0 - ssr_at(10.0**t)[0] / ss_tot for t in log_ka])
+    drawn = np.interp(log_ka, log_grid, profile.r2)
+    allowance = profile_module._CURVE_R2_TOL + profile_module._CURVE_DEPTH_TOL * (profile.best_r2 - exact)
+    assert np.all(np.abs(exact - drawn) <= allowance)
+
+    # The line peaks at the best fit and meets the cut-off at the interval's edges.
+    assert np.interp(np.log10(profile.best_ka), log_grid, profile.r2) == pytest.approx(profile.best_r2, abs=1e-12)
+    for edge in profile.ci:
+        assert np.interp(np.log10(edge), log_grid, profile.r2) == pytest.approx(profile.r2_threshold, abs=1e-8)
 
 
 @pytest.mark.parametrize('case', ['GDA', 'IDA', 'DBA', 'demo'])
@@ -207,7 +236,11 @@ def test_per_replicate_profile_describes_the_average_and_adds_each_replicates_cu
     profile = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, FitConfig(per_replica=True))
     averaged = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
 
-    np.testing.assert_allclose(profile.r2, averaged.r2, rtol=0, atol=1e-12)
+    # The replicates' curves add drawing points of their own; every Ka both grids share
+    # (at least the regular grid) carries the same averaged R².
+    shared, in_profile, in_averaged = np.intersect1d(profile.grid, averaged.grid, return_indices=True)
+    assert shared.size >= _regular_grid_size(averaged)
+    np.testing.assert_allclose(profile.r2[in_profile], averaged.r2[in_averaged], rtol=0, atol=1e-12)
     assert (profile.best_ka, profile.ci, profile.r2_threshold) == (averaged.best_ka, averaged.ci, averaged.r2_threshold)
     assert (profile.n_points, profile.n_params) == (15, averaged.n_params)
     assert profile.per_replica and not averaged.per_replica
@@ -216,8 +249,9 @@ def test_per_replicate_profile_describes_the_average_and_adds_each_replicates_cu
     assert list(profile.replica_r2) == active
     for rid in active:
         own = fit_profile(_single(x, ms.get_replica_signal(rid)), IDAAssay, _IDA_CONDITIONS, _AVERAGE)
-        np.testing.assert_allclose(own.grid, profile.grid)
-        np.testing.assert_allclose(profile.replica_r2[rid], own.r2, rtol=0, atol=1e-12)
+        shared, in_profile, in_own = np.intersect1d(profile.grid, own.grid, return_indices=True)
+        assert shared.size >= _regular_grid_size(own)
+        np.testing.assert_allclose(profile.replica_r2[rid][in_profile], own.r2[in_own], rtol=0, atol=1e-12)
 
 
 def test_pinned_coefficients_make_the_profile_the_model_at_those_values(dba_clean):
@@ -249,9 +283,10 @@ def test_narrowing_a_coefficient_bound_never_raises_the_profile(dba_noisy):
     capped = dict(DBA_RECOVERY_BOUNDS, I_dye_bound=(Q_(0, 'au/M'), Q_(0.5 * true['I_dye_bound'], 'au/M')))
     restricted = fit_profile(ms, DBAAssay, _DBA_CONDITIONS, FitConfig(per_replica=False, custom_bounds=capped))
 
-    # Same Ka bounds, so the same grid: a smaller feasible set can only lose fit.
-    np.testing.assert_allclose(restricted.grid, free.grid)
-    assert np.all(restricted.r2 <= free.r2 + 1e-12)
+    # Same Ka bounds, so the same regular grid: a smaller feasible set can only lose fit.
+    shared, in_restricted, in_free = np.intersect1d(restricted.grid, free.grid, return_indices=True)
+    assert shared.size >= _regular_grid_size(free)
+    assert np.all(restricted.r2[in_restricted] <= free.r2[in_free] + 1e-12)
     assert restricted.best_r2 < free.best_r2 - 1e-3
 
 

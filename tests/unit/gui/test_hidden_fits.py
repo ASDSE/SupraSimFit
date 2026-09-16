@@ -265,7 +265,7 @@ def test_a_sensitivity_run_is_hidden_and_shown_on_its_own_record(qapp, make_sess
     assert session._state.sensitivity_note.startswith('This sensitivity analysis was made on replicates A–C.')
     assert session._summary_widget._sensitivity_note == session._state.sensitivity_note
     identifiability = session._identifiability_widget
-    assert 'The sensitivity dots are not shown.' in identifiability._notes.text()
+    assert 'The sensitivity samples are not shown.' in identifiability._notes.text()
     assert identifiability._controls.isHidden(), 'no colour control for dots that are not drawn'
     _toggle(session, 'c', True)
     assert session._state.sensitivity_note is None

@@ -1,14 +1,17 @@
 """Identifiability view: how well each Ka value explains the data (pyqtgraph).
 
 Section 1, after a fit: every multistart attempt as a dot at its Ka and R², the
-exact profile (the best R² reachable at each Ka) as a line, the quality floor,
-and the profile confidence interval as a band, with marginal Ka and R²
-histograms of the attempts. Section 2, after a sensitivity run: the best fit of
-every Sobol sample on the same axes, optionally coloured by one input's offset.
+exact profile (the best R² reachable at each Ka) as a line, the Min R² line,
+the profile confidence interval as a band with its R² cut-off as a dotted line,
+and marginal Ka and R² histograms of the attempts. Section 2, after a
+sensitivity run: the best fit of every Sobol sample as a translucent cloud
+behind the attempts and lines, optionally coloured by one input's offset.
 
-The R² axis plots ``y = -log10(1 - R²)`` so that the gap between good fits
-(0.99 against 0.999) gets as much room as the gap between 0 and 0.9; its ticks
-read in R².
+The R² axis is linear: for one signal the squared misfit is linear in R², so
+equal R² gaps are equal misfit gaps. The peak, the cut-off and the floor sit
+close together near 1, so the default view frames them and View All shows the
+full range. A Min R² far from the peak and the cut-off is left out of the
+default view, with a note, so it never squeezes them together.
 """
 
 from __future__ import annotations
@@ -18,9 +21,19 @@ from typing import Sequence
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QFontMetrics
-from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QStackedLayout, QVBoxLayout, QWidget
+from PyQt6.QtCore import QEvent, QSize, Qt
+from PyQt6.QtGui import QColor, QFont, QFontMetrics
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QStackedLayout,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
 from core.pipeline.fit_pipeline import FitResult, fit_replica_ids, input_replica_ids
@@ -39,37 +52,46 @@ _INK_3 = '#898781'
 _BELOW_FLOOR = '#c3c2b7'
 _SAMPLE = '#2a78d6'
 _BAND = (82, 81, 78, 28)
+_GRID_ALPHA = 0.18
 # Diverging scale for colouring samples by an input's offset: lower, zero, higher.
-_OFFSET_CMAP = pg.ColorMap(pos=[0.0, 0.5, 1.0], color=[(42, 120, 214), (240, 239, 236), (227, 73, 72)])
-# Ring of a coloured sample: the same hues, with a mid-grey centre that stays
-# visible on the surface where the fill near zero offset does not.
-_OFFSET_RING_CMAP = pg.ColorMap(pos=[0.0, 0.5, 1.0], color=[(42, 120, 214), (137, 135, 129), (227, 73, 72)])
+# The mid-grey centre stays visible on the surface.
+_OFFSET_CMAP = pg.ColorMap(pos=[0.0, 0.5, 1.0], color=[(42, 120, 214), (137, 135, 129), (227, 73, 72)])
 
 _DOT_SIZE = 10
 _RING_WIDTH = 2
-# 1 - R² is clipped here, so R² = 0.999999 is the top of the axis.
-_MIN_R2_GAP = 1e-6
-# Marginal-histogram bin width, in axis units (decades of Ka, decades of 1 - R²).
-_BIN_WIDTH = 0.1
-# Mantissas k of the minor R² ticks, where 1 - R² = k·10⁻ⁿ, coarsest first. The
-# axis takes the first set that gives at least three ticks in view.
-_R2_MANTISSAS = (
-    (2, 5),
-    (2, 3, 5, 7),
-    (1.5, 2, 3, 4, 5, 6, 7, 8, 9),
-    tuple(np.round(np.arange(1.1, 10.0, 0.1), 1)),
-    tuple(np.round(np.arange(1.01, 10.0, 0.01), 2)),
-)
+# The sensitivity samples are a background density layer of up to thousands of
+# dots: translucent and without rings, which would form a lattice over the
+# attempts and lines drawn on top.
+_SAMPLE_SIZE = 8
+_SAMPLE_ALPHA = 77  # of 255: about 30 %
+# Coloured samples are more opaque, so an offset's hue stays readable.
+_COLOURED_SAMPLE_ALPHA = 153  # about 60 %
+_SAMPLE_Z = 1  # above the band (-10), below the attempts (2, 2.5) and every line (2.8 and up)
+
+# Bins of each marginal histogram across the part of its axis in view.
+_HIST_BINS = 40
+_TOP_HIST_HEIGHT = 100
+_RIGHT_HIST_WIDTH = 140
+# Narrowest the main R² plot's data area may be squeezed, by the sidebar say.
+_MAIN_MIN_WIDTH = 240
+# Smallest R² span the default view separates its levels by, so tick labels
+# stay at six decimals or fewer.
+_MIN_R2_SPAN = 1e-5
+# How many peak-to-cut-off gaps beyond the peak and the cut-off the default view
+# reaches to include the Min R² line. At two, the peak and the cut-off keep at
+# least an eighth of the view's height between them, unless sensitivity samples
+# reach above the peak.
+_FLOOR_REACH = 2.0
+# How far the view can be zoomed out: every drawn dot has an R² from 0 to 1.
+_R2_LIMITS = (-0.05, 1.05)
+# Below this height the chart stops shrinking and the page scrolls.
+_CANVAS_MIN_HEIGHT = 340
 
 _PLACEHOLDER = 'Run a fit to see how well each Ka value can explain your data.'
 _PROFILE_PENDING = 'Working out how well each Ka value can explain the data of this fit…'
+_READING_POINTER = 'How to read this plot: the ? button above.'
 
 _SUB_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
-
-
-def _r2_to_y(r2: np.ndarray) -> np.ndarray:
-    """Plot coordinate of R²: ``-log10(1 - R²)``, so better fits sit higher."""
-    return -np.log10(np.maximum(1.0 - np.asarray(r2, dtype=float), _MIN_R2_GAP))
 
 
 def _pct(ratio: float) -> str:
@@ -85,6 +107,20 @@ def _pct(ratio: float) -> str:
     return f'{change:+.{decimals}f}%'.replace('-', '−')
 
 
+def _r2_text(r2: float) -> str:
+    """R² with enough decimals to show how far below 1 it is: 0.9908, 0.999984."""
+    gap = 1.0 - r2
+    decimals = 4 if gap <= 0 else max(4, int(np.ceil(-np.log10(gap))) + 1)
+    return f'{r2:.{decimals}f}'
+
+
+def _on_surface(colour: str, alpha: int) -> str:
+    """The solid colour *colour* shows at *alpha* (of 255) over the surface, for a legend glyph."""
+    top, base = QColor(colour), QColor(_SURFACE)
+    a = alpha / 255.0
+    return QColor(*(round(a * t + (1.0 - a) * b) for t, b in zip(top.getRgb()[:3], base.getRgb()[:3]))).name()
+
+
 def _plain_input_label(assay_type: AssayType, key: str) -> str:
     """Plain-text name of a perturbable input, for the colour-by combo box."""
     if key == TITRANT:
@@ -96,52 +132,113 @@ def _plain_input_label(assay_type: AssayType, key: str) -> str:
     return fmt_param_plain(key)
 
 
-def _histogram(values: np.ndarray, masks: list[np.ndarray]) -> tuple[np.ndarray, list[np.ndarray]]:
-    """Bin edges over ``values`` and the counts of each masked subset, for stacked bars."""
-    lo = np.floor(values.min() / _BIN_WIDTH) * _BIN_WIDTH
-    n_bins = max(int(np.ceil((values.max() - lo) / _BIN_WIDTH)), 1)
-    edges = lo + _BIN_WIDTH * np.arange(n_bins + 1)
-    return edges, [np.histogram(values[m], bins=edges)[0] for m in masks]
+def _default_r2_range(
+    values: np.ndarray, peak: float | None, cut: float | None, floor: float | None
+) -> tuple[float, float] | None:
+    """Default R² span of the view, from the reference levels and the R² *values* inside the default Ka span.
 
-
-class _R2Axis(pg.AxisItem):
-    """Axis of ``y = -log10(1 - R²)`` whose ticks read in R².
-
-    The axis is logarithmic in ``1 - R²``, so ticks sit where ``1 - R²`` is
-    ``10⁻ⁿ`` (R² = 0, 0.9, 0.99, …) and, between them, at round multiples
-    ``k·10⁻ⁿ``: 2 and 5 (0.98, 0.95, …) across a wide range, finer steps of
-    ``k`` from ``_R2_MANTISSAS`` (0.97, 0.993, …) as the range narrows. Every
-    tick is a value a reader can take at face value.
+    With a confidence cut-off or a floor, the levels that decide the reading are
+    the peak (the profile's best R², else the best of *values*), the cut-off and
+    the floor. A floor more than ``_FLOOR_REACH`` peak-to-cut-off gaps beyond
+    them is left out, so it cannot squeeze the peak and the cut-off together.
+    The view runs from one level span below the lowest level kept to 0.6 spans
+    above the highest of them and *values*, never more than 0.1 span above
+    R² = 1. Values far below the levels stay out of the default view, so a few
+    poor attempts cannot squeeze the levels into a few pixels. Without a cut-off
+    or a floor, the view frames *values*. ``None`` when there is nothing to frame.
     """
+    values = values[np.isfinite(values)]
+    if cut is None and floor is None:
+        if not values.size:
+            return None
+        lo, hi = float(values.min()), float(values.max())
+        pad = max(0.08 * (hi - lo), _MIN_R2_SPAN)
+        return lo - pad, hi + pad
+    best = peak if peak is not None else (float(values.max()) if values.size else None)
+    levels = [v for v in (cut, best) if v is not None]
+    if floor is not None:
+        if cut is not None and best is not None:
+            reach = _FLOOR_REACH * max(best - cut, _MIN_R2_SPAN)
+            if min(cut, best) - reach <= floor <= max(cut, best) + reach:
+                levels.append(floor)
+        else:
+            levels.append(floor)
+    low, high = min(levels), max(levels)
+    span = max(high - low, _MIN_R2_SPAN)
+    top = max(high, float(values.max())) if values.size else high
+    return low - span, min(top + 0.6 * span, 1.0 + 0.1 * span)
+
+
+def _fill_histogram(
+    bars: tuple[pg.BarGraphItem, pg.BarGraphItem],
+    values: np.ndarray,
+    passing: np.ndarray,
+    view_range: Sequence[float],
+    vertical: bool,
+) -> None:
+    """Recount *values* in view into ``_HIST_BINS`` bins across *view_range*, stacked: below the floor, then passing.
+
+    Bin edges sit on multiples of the bin width, so panning without zooming
+    keeps every bin in place.
+    """
+    lo, hi = sorted(view_range)
+    width = (hi - lo) / _HIST_BINS
+    if not width > 0:
+        return
+    edges = np.floor(lo / width) * width + width * np.arange(_HIST_BINS + 2)
+    below = np.histogram(values[~passing], bins=edges)[0]
+    stacked = below + np.histogram(values[passing], bins=edges)[0]
+    for bar, start, end in zip(bars, (np.zeros_like(below), below), (below, stacked)):
+        if vertical:
+            bar.setOpts(x0=edges[:-1], x1=edges[1:], y0=start, y1=end)
+        else:
+            bar.setOpts(x0=start, x1=end, y0=edges[:-1], y1=edges[1:])
+
+
+class _CountAxis(pg.AxisItem):
+    """Count axis of a histogram: major ticks and gridlines only, at whole numbers."""
 
     def tickValues(self, minVal, maxVal, size):
-        lo, hi = sorted((minVal, maxVal))
-        decades = range(int(np.floor(lo)), int(np.ceil(hi)) + 1)
-        majors = [float(d) for d in decades if lo <= d <= hi]
-        for mantissas in _R2_MANTISSAS:
-            minors = sorted(d - np.log10(k) for d in decades for k in mantissas if lo <= d - np.log10(k) <= hi)
-            if len(majors) + len(minors) >= 3:
-                break
-        return [(1.0, majors), (None, minors)]
+        levels = super().tickValues(minVal, maxVal, size)
+        if not levels:
+            return levels
+        spacing, values = levels[0]
+        return [(spacing, [v for v in values if abs(v - round(v)) < 1e-9])]
 
     def tickStrings(self, values, scale, spacing):
-        return [_r2_label(v) for v in values]
+        return [f'{v:.0f}' for v in values]
 
 
-def _r2_label(y: float) -> str:
-    """R² at plot coordinate *y*, with the fewest decimals that state it exactly.
+class _LevelAxis(pg.AxisItem):
+    """Right-hand axis naming the horizontal reference lines at their heights, outside the data.
 
-    Ticks sit at round values of ``1 - R²``, so a short exact label exists; the
-    tolerance only absorbs floating-point error.
+    Its ticks are set with :meth:`setTicks`. Where two names would overlap,
+    they are moved apart symmetrically about their levels.
     """
-    if abs(y) < 1e-9:
-        return '0'
-    r2 = 1.0 - 10.0 ** (-y)
-    gap = abs(1.0 - r2)
-    for digits in range(max(int(np.ceil(y - 1e-9)), 0), 12):
-        if abs(round(r2, digits) - r2) <= 1e-6 * gap:
-            break
-    return f'{r2:.{digits}f}'
+
+    def generateDrawSpecs(self, p):
+        specs = super().generateDrawSpecs(p)
+        if specs is None:
+            return None
+        axis_spec, tick_specs, text_specs = specs
+        text_specs = sorted(text_specs, key=lambda spec: spec[0].center().y())
+        for upper, lower in zip(text_specs, text_specs[1:]):
+            overlap = upper[0].bottom() - lower[0].top()
+            if overlap > 0:
+                upper[0].translate(0, -overlap / 2)
+                lower[0].translate(0, overlap / 2)
+        return axis_spec, tick_specs, text_specs
+
+
+class _Canvas(pg.GraphicsLayoutWidget):
+    """Chart canvas that prefers its minimum height, which :meth:`IdentifiabilityWidget._fit_canvas` sets.
+
+    The scrolling page sizes its word-wrapped content from preferred heights,
+    so the canvas takes the height it is given and the text below moves down.
+    """
+
+    def sizeHint(self) -> QSize:
+        return QSize(super().sizeHint().width(), self.minimumHeight())
 
 
 class IdentifiabilityWidget(QWidget):
@@ -175,6 +272,9 @@ class IdentifiabilityWidget(QWidget):
         self._colour_key: str | None = None
         # Drawn items per Ka key, for tests and restyling: main plot, curves, scatters.
         self._items: dict[str, dict] = {}
+        self._legend_entries: dict[str, tuple[str, str]] = {}
+        # The last render's notes: about the chart, and about the drawn sensitivity samples.
+        self._note_lists: tuple[list[str], list[str]] = ([], [])
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -187,11 +287,17 @@ class IdentifiabilityWidget(QWidget):
         self._message.setStyleSheet(f'color: {_INK_3}; font-size: 14px;')
         self._stack.addWidget(self._message)
 
-        self._content = QWidget()
-        self._content.setObjectName('identifiabilityContent')
-        self._content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._content.setStyleSheet(f'#identifiabilityContent {{ background: {_SURFACE}; }}')
-        content = QVBoxLayout(self._content)
+        # The page scrolls: the chart fills the tab's height (see _fit_canvas)
+        # and the text below it moves down instead of running over its axis.
+        self._content = QScrollArea()
+        self._content.setWidgetResizable(True)
+        self._content.setFrameShape(QFrame.Shape.NoFrame)
+        self._content.viewport().installEventFilter(self)
+        page = QWidget()
+        page.setObjectName('identifiabilityContent')
+        page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        page.setStyleSheet(f'#identifiabilityContent {{ background: {_SURFACE}; }}')
+        content = QVBoxLayout(page)
         content.setContentsMargins(10, 6, 10, 6)
         content.setSpacing(4)
 
@@ -204,9 +310,15 @@ class IdentifiabilityWidget(QWidget):
         self._controls = QWidget()
         controls = QHBoxLayout(self._controls)
         controls.setContentsMargins(0, 0, 0, 0)
-        colour_label = QLabel('Colour sensitivity samples by:')
-        colour_label.setStyleSheet(f'color: {_INK_2};')
-        controls.addWidget(colour_label)
+        self._show_samples = QCheckBox('Show sensitivity samples')
+        self._show_samples.setChecked(True)
+        self._show_samples.setToolTip('Show or hide the best fits of the sensitivity run. The view stays as it is.')
+        self._show_samples.toggled.connect(self._on_show_samples)
+        controls.addWidget(self._show_samples)
+        controls.addSpacing(16)
+        self._colour_label = QLabel('Colour by:')
+        self._colour_label.setStyleSheet(f'color: {_INK_2};')
+        controls.addWidget(self._colour_label)
         self._colour_combo = QComboBox()
         self._colour_combo.setToolTip('Colour each sample by how far that input was moved from what you entered.')
         self._colour_combo.currentIndexChanged.connect(self._on_colour_changed)
@@ -215,9 +327,9 @@ class IdentifiabilityWidget(QWidget):
         self._controls.setVisible(False)
         content.addWidget(self._controls)
 
-        self._glw = pg.GraphicsLayoutWidget()
+        self._glw = _Canvas()
         self._glw.setBackground(_SURFACE)
-        self._glw.setMinimumHeight(360)
+        self._glw.setMinimumHeight(_CANVAS_MIN_HEIGHT)
         content.addWidget(self._glw, stretch=1)
 
         self._legend = QLabel()
@@ -232,9 +344,51 @@ class IdentifiabilityWidget(QWidget):
         self._notes.setStyleSheet(f'color: {_INK_2}; font-size: 13px;')
         content.addWidget(self._notes)
 
+        self._content.setWidget(page)
         self._stack.addWidget(self._content)
         self._stack.setCurrentWidget(self._message)
         outer.addWidget(self._stack_host)
+
+    # ------------------------------------------------------------------
+    # Size
+    # ------------------------------------------------------------------
+
+    def minimumSizeHint(self) -> QSize:
+        """Wide enough for the chart with its main plot at ``_MAIN_MIN_WIDTH``, so a splitter cannot squeeze it."""
+        hint = super().minimumSizeHint()
+        if self._stack.currentWidget() is not self._content:
+            return hint
+        margins = self._content.widget().layout().contentsMargins()
+        chart = self._glw.ci.effectiveSizeHint(Qt.SizeHint.MinimumSize).width()
+        scrollbar = self._content.verticalScrollBar().sizeHint().width()
+        width = int(np.ceil(chart)) + margins.left() + margins.right() + scrollbar
+        return QSize(max(hint.width(), width), hint.height())
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self._content.viewport() and event.type() == QEvent.Type.Resize:
+            self._fit_canvas()
+        return super().eventFilter(watched, event)
+
+    def _fit_canvas(self) -> None:
+        """Give the chart the tab's height less the text above it and the legend, or that text alone when short.
+
+        Where the legend leaves the chart less than ``_CANVAS_MIN_HEIGHT``, the
+        legend moves below the fold instead, so the whole chart stays in view;
+        the chart never gets less than that minimum, and the page scrolls. The
+        notes are always below the chart.
+        """
+        viewport = self._content.viewport()
+        layout = self._content.widget().layout()
+        margins = layout.contentsMargins()
+        width = viewport.width() - margins.left() - margins.right()
+        above = margins.top() + self._summary.heightForWidth(width) + layout.spacing()
+        if not self._controls.isHidden():
+            above += self._controls.sizeHint().height() + layout.spacing()
+        room = viewport.height() - above
+        with_legend = room - self._legend.heightForWidth(width) - layout.spacing()
+        height = with_legend if with_legend >= _CANVAS_MIN_HEIGHT else max(room, _CANVAS_MIN_HEIGHT)
+        if height != self._glw.minimumHeight():
+            self._glw.setMinimumHeight(height)
 
     # ------------------------------------------------------------------
     # Public API
@@ -302,7 +456,7 @@ class IdentifiabilityWidget(QWidget):
         self._render()
 
     # ------------------------------------------------------------------
-    # Colour-by control
+    # Sample controls
     # ------------------------------------------------------------------
 
     def _sample_inputs(self) -> list[str]:
@@ -330,6 +484,36 @@ class IdentifiabilityWidget(QWidget):
         self._colour_key = self._colour_combo.itemData(index)
         self._render()
 
+    def _on_show_samples(self, shown: bool) -> None:
+        """Show or hide the sample cloud with its colour bar, colour control and legend entries; the view stays."""
+        for items in self._items.values():
+            for key in ('samples', 'colour_bar'):
+                if items.get(key) is not None:
+                    items[key].setVisible(shown)
+        self._sync_colour_control()
+        self._set_legend()
+        self._set_notes()
+        self._fit_canvas()
+
+    def _sync_colour_control(self) -> None:
+        """Offer the colour choice only while the samples it colours are shown."""
+        offered = self._show_samples.isChecked() and bool(self._sample_inputs())
+        self._colour_label.setVisible(offered)
+        self._colour_combo.setVisible(offered)
+
+    def _set_legend(self) -> None:
+        """Write the legend, leaving out the sample entries while the samples are hidden."""
+        hidden = () if self._show_samples.isChecked() else ('samples', 'colour')
+        entries = [entry for key, entry in self._legend_entries.items() if key not in hidden]
+        # Non-breaking spaces inside each entry, so the legend only wraps between entries.
+        self._legend.setText('&emsp; '.join(f'{glyph}&nbsp;{text.replace(" ", "&nbsp;")}' for glyph, text in entries))
+
+    def _set_notes(self) -> None:
+        """Write the notes, leaving out those about the sensitivity samples while the samples are hidden."""
+        notes, sample_notes = self._note_lists
+        shown = [*notes, *(sample_notes if self._show_samples.isChecked() else ()), _READING_POINTER]
+        self._notes.setText('<br>'.join(shown))
+
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
@@ -337,12 +521,14 @@ class IdentifiabilityWidget(QWidget):
     def _show_message(self, text: str) -> None:
         self._message.setText(text)
         self._stack.setCurrentWidget(self._message)
+        self.updateGeometry()
 
     def _render(self) -> None:
         """Rebuild the page from the stored fit, profile and sensitivity result."""
         self._glw.clear()
         self._items = {}
-        # The colour control is offered only while the sensitivity dots it colours are drawn.
+        self._legend_entries = {}
+        # The sample controls are offered only while there are sensitivity samples to draw.
         self._controls.setVisible(False)
         if self._fit is None:
             self._show_message(_PLACEHOLDER)
@@ -364,7 +550,8 @@ class IdentifiabilityWidget(QWidget):
         floor = fit.fit_config.get('min_r_squared')
         profile = self._profile
         notes: list[str] = []
-        legend: dict[str, tuple[str, str]] = {}
+        # Notes about the drawn sensitivity samples, shown only while the samples are.
+        sample_notes: list[str] = []
         if not profile_supported(assay_type):
             notes.append(
                 'The best R² reachable at each K<sub>a</sub> can only be computed for assays with a single '
@@ -373,39 +560,33 @@ class IdentifiabilityWidget(QWidget):
         elif profile is None:
             notes.append('The best-R² line and the confidence interval are not available for this fit.')
         if floor is None:
-            notes.append('This fit does not record its quality floor, so no floor is drawn.')
+            notes.append('This fit does not record its Min R², so no Min R² line is drawn.')
 
         attempts = self._attempts(fit, notes)
-        samples = self._samples(notes)
-        self._controls.setVisible(samples is not None and bool(self._sample_inputs()))
-        self._replicate_notes(fit, samples is not None, notes)
-        if profile is not None and profile.per_replica:
-            notes.append(
-                "The line and the interval are for the replicates' average: the replicates miss the model in the "
-                'same way, so counting every replicate as separate evidence would make K<sub>a</sub> look more '
-                'certain than it is.'
-            )
+        samples = self._samples(floor, notes, sample_notes)
+        self._controls.setVisible(samples is not None)
+        self._sync_colour_control()
+        self._replicate_notes(fit, samples is not None, notes, sample_notes)
 
         summary = []
         for col, ka_key in enumerate(ka_keys):
             key_profile = profile if profile is not None and profile.ka_key == ka_key else None
             unit_html = fmt_unit_html(meta.units.get(ka_key, ''))
-            self._render_key(3 * col, ka_key, unit_html, floor, key_profile, attempts, samples, legend, notes)
+            self._render_key(3 * col, ka_key, unit_html, floor, key_profile, attempts, samples, notes, sample_notes)
             summary.append(self._summary_line(ka_key, unit_html, key_profile))
 
         self._summary.setText('<br>'.join(summary))
-        # Non-breaking spaces inside each entry, so the legend only wraps between entries.
-        self._legend.setText(
-            '&emsp; '.join(f'{glyph}&nbsp;{text.replace(" ", "&nbsp;")}' for glyph, text in legend.values())
-        )
-        self._notes.setText('<br>'.join(notes))
-        self._notes.setVisible(bool(notes))
+        self._set_legend()
+        self._note_lists = (notes, sample_notes)
+        self._set_notes()
         self._stack.setCurrentWidget(self._content)
+        self._fit_canvas()
+        self.updateGeometry()
 
-    def _replicate_notes(self, fit: FitResult, dots: bool, notes: list[str]) -> None:
-        """Name the replicates the fit left out, and a sensitivity run whose dots describe other replicates.
+    def _replicate_notes(self, fit: FitResult, drawn: bool, notes: list[str], sample_notes: list[str]) -> None:
+        """Name the replicates the fit left out in *notes*, and in *sample_notes* a run whose samples describe others.
 
-        *dots* says whether the sensitivity dots are drawn.
+        *drawn* says whether the sensitivity samples are drawn.
         """
         used = fit_replica_ids(fit)
         if used is None:
@@ -413,22 +594,22 @@ class IdentifiabilityWidget(QWidget):
         else:
             skipped = [rid for rid in input_replica_ids(fit) or () if rid not in used]
         run_used = None
-        if dots and self._sensitivity.baseline_fit is not None:
+        if drawn and self._sensitivity.baseline_fit is not None:
             run_used = fit_replica_ids(self._sensitivity.baseline_fit)
-        same_run = dots and run_used is not None and used is not None and set(run_used) == set(used)
+        same_run = drawn and run_used is not None and used is not None and set(run_used) == set(used)
         if skipped:
             names = describe_replicates(skipped, self._replica_ids)
             many = len(skipped) > 1
-            where = 'of the line, the attempts and the sensitivity dots' if same_run else 'here'
+            where = 'of the line, the attempts and the sensitivity samples' if same_run else 'here'
             notes.append(
                 f'{names[0].upper()}{names[1:]} {"are" if many else "is"} left out {where}, '
                 f'as {"they were" if many else "it was"} from the fit.'
             )
         if run_used is not None and used is not None and set(run_used) != set(used):
-            notes.append(
+            sample_notes.append(
                 f'The sensitivity run used {describe_replicates(run_used, self._replica_ids)}, but this fit used '
-                f'{describe_replicates(used, self._replica_ids)}, so the dots describe other replicates than the '
-                'line and the attempts.'
+                f'{describe_replicates(used, self._replica_ids)}, so the samples describe other replicates than '
+                'the line and the attempts.'
             )
 
     def _attempts(self, fit: FitResult, notes: list[str]) -> dict | None:
@@ -440,20 +621,18 @@ class IdentifiabilityWidget(QWidget):
         n_negative = int(np.sum(r2 < 0))
         if n_negative:
             notes.append(f'{n_negative} of {r2.size} attempts not shown: they fit worse than a flat line (R² &lt; 0).')
-        if fit.uncertainty_source == 'replicate':
-            notes.append(
-                "Each attempt fitted one replicate, so its R² belongs to that replicate's own thin line, "
-                'not to the line for their average.'
-            )
         return {'samples': fit.attempt_samples, 'r2': r2}
 
-    def _samples(self, notes: list[str]) -> dict | None:
-        """The sensitivity run's sample best fits, when they can be compared with this fit."""
+    def _samples(self, floor: float | None, notes: list[str], sample_notes: list[str]) -> dict | None:
+        """The sensitivity run's sample best fits, when they can be compared with this fit of Min R² *floor*.
+
+        Why no samples are drawn goes in *notes*; what to know about the drawn samples in *sample_notes*.
+        """
         result = self._sensitivity
         if result is None:
             return None
         if self._sensitivity_note:
-            notes.append(f'The sensitivity dots are not shown. {self._sensitivity_note}')
+            notes.append(f'The sensitivity samples are not shown. {self._sensitivity_note}')
             return None
         if result.assay_type != self._assay_type_name:
             notes.append('The last sensitivity run was for another assay type; run it again to compare it here.')
@@ -465,14 +644,17 @@ class IdentifiabilityWidget(QWidget):
             )
             return None
         r2 = np.asarray(result.sample_r2, dtype=float)
-        below = r2 < result.floor if result.floor is not None else np.zeros(r2.size, dtype=bool)
         hidden = int(np.sum(~(r2 >= 0)))
-        text = f'Sensitivity dots: the best fit of each of the {r2.size} samples'
-        text += f'; the {int(below.sum())} below the quality floor are hollow.' if below.any() else '.'
         if hidden:
-            text += f' {hidden} not shown: no fit could be made, or it fit worse than a flat line (R² &lt; 0).'
-        text += ' A dot can sit above the line: the line uses the inputs as entered, each dot its own changed inputs.'
-        notes.append(text)
+            sample_notes.append(
+                f'{hidden} of {r2.size} sensitivity samples not shown: no fit could be made, or it fit worse '
+                'than a flat line (R² &lt; 0).'
+            )
+        if result.floor is not None and floor is not None and result.floor != floor:
+            sample_notes.append(
+                f'The sensitivity run flagged its samples against a Min R² of {result.floor:g}; '
+                f"the dashed line is this fit's Min R² of {floor:g}."
+            )
         mode = result.config.replicate_mode
         fit_per_replica = self._fit.uncertainty_source == 'replicate'
         if mode is not ReplicateMode.FOLLOW and (mode is ReplicateMode.PER_REPLICA) != fit_per_replica:
@@ -481,12 +663,12 @@ class IdentifiabilityWidget(QWidget):
                 if mode is ReplicateMode.PER_REPLICA
                 else ('the average of the replicates', 'each replicate separately')
             )
-            notes.append(
-                f'The sensitivity run fitted {run_way} but this fit used {fit_way}, so the blue dots and the '
-                'grey ones measure R² against different signals.'
+            sample_notes.append(
+                f'The sensitivity run fitted {run_way} but this fit used {fit_way}, so the samples and the '
+                'attempts measure R² against different signals.'
             )
         offsets = result.sample_offsets_pct.get(self._colour_key) if self._colour_key is not None else None
-        return {'ka': result.sample_ka, 'r2': r2, 'below': below, 'offsets': offsets}
+        return {'ka': result.sample_ka, 'r2': r2, 'offsets': offsets}
 
     def _summary_line(self, ka_key: str, unit_html: str, profile: ProfileResult | None) -> str:
         """One line per Ka key: best fit, then the confidence interval and how far it reaches."""
@@ -528,30 +710,43 @@ class IdentifiabilityWidget(QWidget):
         profile: ProfileResult | None,
         attempts: dict | None,
         samples: dict | None,
-        legend: dict[str, tuple[str, str]],
         notes: list[str],
+        sample_notes: list[str],
     ) -> None:
         """Draw one Ka key's chart: marginal histograms, main plot and, when colouring, a colour bar."""
+        legend = self._legend_entries
         tick_font, label_font = self._fonts()
         tick_fm, label_fm = QFontMetrics(tick_font), QFontMetrics(label_font)
         left_width = tick_fm.horizontalAdvance('0.999999') + label_fm.height() + 16
         bottom_height = tick_fm.height() + label_fm.height() + 16
 
-        main = self._glw.addPlot(row=1, col=col, axisItems={'left': _R2Axis('left'), 'bottom': _LogKaAxis('bottom')})
+        main = self._glw.addPlot(
+            row=1, col=col, axisItems={'bottom': _LogKaAxis('bottom'), 'right': _LevelAxis('right')}
+        )
         main.getAxis('bottom').setLogMode(True)
         for name in ('left', 'bottom'):
             main.getAxis(name).enableAutoSIPrefix(False)
+        main.getViewBox().setMinimumWidth(_MAIN_MIN_WIDTH)
         main.setLabel('left', 'R²')
         main.setLabel('bottom', f'{fmt_param(ka_key)} [{unit_html}]' if unit_html else fmt_param(ka_key))
-        main.showGrid(x=True, y=True, alpha=0.18)
+        main.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
         self._style_axes(main, tick_font, label_font)
         main.getAxis('left').setWidth(left_width)
         main.getAxis('bottom').setHeight(bottom_height)
-        items: dict = {'main': main, 'average': None, 'replicas': [], 'colour_bar': None}
+        items: dict = {
+            'main': main,
+            'average': None,
+            'replicas': [],
+            'cut': None,
+            'floor': None,
+            'samples': None,
+            'colour_bar': None,
+        }
         self._items[ka_key] = items
         xs: list[np.ndarray] = []
-        ys: list[np.ndarray] = []
-        attempt_x = np.empty(0)
+        attempt_x = attempt_y = sample_x = sample_y = np.empty(0)
+        passing = np.empty(0, dtype=bool)
+        levels: list[tuple[float, str]] = []  # reference lines named on the right-hand axis
 
         if profile is not None:
             log_grid = np.log10(profile.grid)
@@ -561,40 +756,28 @@ class IdentifiabilityWidget(QWidget):
             main.addItem(band)
             legend['band'] = ('<span style="color:#dddcd7">&#9608;</span>', f'{profile.level:.0%} confidence interval')
             for r2 in (profile.replica_r2 or {}).values():
-                curve = main.plot(log_grid, _r2_to_y(r2), pen=pg.mkPen(_INK_3, width=1))
+                curve = main.plot(log_grid, r2, pen=pg.mkPen(_INK_3, width=1))
                 curve.setZValue(2.8)
                 items['replicas'].append(curve)
             if profile.replica_r2:
                 legend['replicas'] = (f'<span style="color:{_INK_3}">&#9472;</span>', 'each replicate on its own')
-            items['average'] = main.plot(log_grid, _r2_to_y(profile.r2), pen=pg.mkPen(_INK, width=2))
+            items['average'] = main.plot(log_grid, profile.r2, pen=pg.mkPen(_INK, width=2))
             items['average'].setZValue(3)
             legend['profile'] = (
                 f'<span style="color:{_INK}">&#9473;</span>',
                 'best R² reachable at each K<sub>a</sub>'
                 + (" on the replicates' average" if profile.per_replica else ''),
             )
+            # The band spans the Ka values where the line is above this cut-off.
+            items['cut'] = self._level_line(main, profile.r2_threshold, Qt.PenStyle.DotLine, _INK)
+            levels.append((profile.r2_threshold, f'cut-off {_r2_text(profile.r2_threshold)}'))
+            legend['cut'] = (f'<span style="color:{_INK}">&#8943;</span>', f'{profile.level:.0%} CI cut-off')
             xs.append(np.array([lo, hi, np.log10(profile.best_ka)]))
 
         if floor is not None:
-            floor_y = float(_r2_to_y(floor))
-            line = pg.InfiniteLine(
-                pos=floor_y,
-                angle=0,
-                pen=pg.mkPen(_INK_2, width=1.5, style=Qt.PenStyle.DashLine),
-                label=f'quality floor {floor:g}',
-                labelOpts={
-                    'position': 0.02,
-                    'color': _INK_2,
-                    'anchors': [(0, 1), (0, 1)],
-                    'fill': pg.mkBrush(_SURFACE),
-                },
-            )
-            line.label.setFont(tick_font)
-            # Above every dot, so the filled label stays legible where it crosses them.
-            line.setZValue(6)
-            main.addItem(line, ignoreBounds=True)
-            legend['floor'] = (f'<span style="color:{_INK_2}">&#8211;&nbsp;&#8211;</span>', 'quality floor')
-            ys.append(np.array([floor_y]))
+            items['floor'] = self._level_line(main, floor, Qt.PenStyle.DashLine, _INK_2)
+            levels.append((floor, f'Min R² {floor:g}'))
+            legend['floor'] = (f'<span style="color:{_INK_2}">&#8211;&nbsp;&#8211;</span>', 'Min R²')
 
         if attempts is not None:
             ka = np.asarray(attempts['samples'][ka_key], dtype=float)
@@ -603,12 +786,12 @@ class IdentifiabilityWidget(QWidget):
             if (~positive).any():
                 notes.append(f'{int((~positive).sum())} attempts without a positive {fmt_param(ka_key)} not shown.')
             shown = positive & (r2 >= 0)
-            x, y = np.log10(ka[shown]), _r2_to_y(r2[shown])
-            passing = r2[shown] >= floor if floor is not None else np.ones(x.size, dtype=bool)
+            attempt_x, attempt_y = np.log10(ka[shown]), r2[shown]
+            passing = attempt_y >= floor if floor is not None else np.ones(attempt_x.size, dtype=bool)
             for key, mask, colour, z in (('below', ~passing, _BELOW_FLOOR, 2), ('passing', passing, _INK_2, 2.5)):
                 scatter = pg.ScatterPlotItem(
-                    x=x[mask],
-                    y=y[mask],
+                    x=attempt_x[mask],
+                    y=attempt_y[mask],
                     size=_DOT_SIZE,
                     brush=pg.mkBrush(colour),
                     pen=pg.mkPen(_SURFACE, width=_RING_WIDTH),
@@ -616,57 +799,85 @@ class IdentifiabilityWidget(QWidget):
                 scatter.setZValue(z)
                 main.addItem(scatter)
                 items[f'attempts_{key}'] = scatter
-            legend['passing'] = (f'<span style="color:{_INK_2}">&#9679;</span>', 'fit attempt passing the floor')
+            legend['passing'] = (f'<span style="color:{_INK_2}">&#9679;</span>', 'fit attempt meeting Min R²')
             if (~passing).any():
-                legend['below'] = (f'<span style="color:{_BELOW_FLOOR}">&#9679;</span>', 'fit attempt below the floor')
+                legend['below'] = (f'<span style="color:{_BELOW_FLOOR}">&#9679;</span>', 'fit attempt below Min R²')
             # An attempt below the floor far from the rest (at a Ka bound, say)
             # would squeeze the interval to a sliver, so the view frames the
-            # passing attempts across and every attempt up and down.
-            attempt_x = x
-            xs.append(x[passing])
-            ys.append(y)
-            if x.size:
-                self._add_marginals(col, main, x, y, passing, left_width, bottom_height)
+            # passing attempts across.
+            xs.append(attempt_x[passing])
 
         if samples is not None and ka_key in samples['ka']:
-            x, y = self._add_samples(col, main, ka_key, samples, legend)
-            xs.append(x)
-            ys.append(y)
+            sample_x, sample_y = self._add_samples(col, main, ka_key, samples)
+            xs.append(sample_x)
+
+        right_width = 0
+        if levels:
+            axis = main.getAxis('right')
+            axis.setTicks([levels])
+            axis.setTickFont(tick_font)
+            axis.setPen(pg.mkPen(_INK_3, width=1))
+            axis.setTextPen(pg.mkPen(_INK_2))
+            right_width = max(tick_fm.horizontalAdvance(text) for _, text in levels) + 14
+            axis.setWidth(right_width)
+            main.showAxis('right')
 
         if not any(x.size for x in xs):
             xs = [attempt_x]
-        x_view = self._frame(main, profile, xs, ys)
-        outside = int(np.sum((attempt_x < x_view[0]) | (attempt_x > x_view[1]))) if x_view else 0
-        if outside:
-            notes.append(
-                f'{outside} of {attempt_x.size} attempts at {fmt_param(ka_key)}, all below the quality floor, '
-                'lie outside this view; zoom out to see them.'
+        view = self._frame(main, profile, floor, xs, (attempt_x, attempt_y), (sample_x, sample_y))
+        if attempt_x.size:
+            self._add_marginals(col, items, attempt_x, attempt_y, passing, (left_width, bottom_height, right_width))
+        if view is None:
+            return
+        if floor is not None and not view[1][0] <= floor <= view[1][1]:
+            notes.append(f'The Min R² line ({floor:g}) lies outside the default view; zoom out to see it.')
+        for x, y, what in ((attempt_x, attempt_y, 'attempts'), (sample_x, sample_y, 'sensitivity samples')):
+            outside = (x < view[0][0]) | (x > view[0][1]) | (y < view[1][0]) | (y > view[1][1])
+            if not outside.any():
+                continue
+            all_below = what == 'attempts' and floor is not None and not passing[outside].any()
+            (notes if what == 'attempts' else sample_notes).append(
+                f'{int(outside.sum())} of {x.size} {what} at {fmt_param(ka_key)}'
+                f'{", all below Min R²," if all_below else ""} '
+                'lie outside the default view; zoom out to see them.'
             )
 
-    def _add_samples(
-        self, col: int, main: pg.PlotItem, ka_key: str, samples: dict, legend: dict[str, tuple[str, str]]
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Scatter the sensitivity samples' best fits, hollow below the floor, coloured by offset if chosen."""
+    @staticmethod
+    def _level_line(main: pg.PlotItem, r2: float, style: Qt.PenStyle, colour: str) -> pg.InfiniteLine:
+        """Add a horizontal reference line at *r2* to *main*; its name is on the right-hand axis."""
+        line = pg.InfiniteLine(pos=r2, angle=0, pen=pg.mkPen(colour, width=1.5, style=style))
+        # Above the sample cloud, below the attempts and the lines.
+        line.setZValue(1.5)
+        main.addItem(line, ignoreBounds=True)
+        return line
+
+    def _add_samples(self, col: int, main: pg.PlotItem, ka_key: str, samples: dict) -> tuple[np.ndarray, np.ndarray]:
+        """Draw the sensitivity samples' best fits as a translucent cloud behind the attempts and lines.
+
+        Coloured by the chosen input's offset, with a colour bar; hidden while
+        "Show sensitivity samples" is off. Returns the drawn log10 Ka and R².
+        """
+        legend = self._legend_entries
         ka = np.asarray(samples['ka'][ka_key], dtype=float)
         r2 = samples['r2']
         shown = np.isfinite(ka) & (ka > 0) & (r2 >= 0)
-        x, y = np.log10(ka[shown]), _r2_to_y(r2[shown])
-        below = samples['below'][shown]
+        x, y = np.log10(ka[shown]), r2[shown]
         offsets = samples['offsets']
+        visible = self._show_samples.isChecked()
         if offsets is None:
-            brushes = [pg.mkBrush(_SURFACE) if b else pg.mkBrush(_SAMPLE) for b in below]
-            pens = [pg.mkPen(_SAMPLE if b else _SURFACE, width=_RING_WIDTH) for b in below]
+            fill = QColor(_SAMPLE)
+            fill.setAlpha(_SAMPLE_ALPHA)
+            brushes = pg.mkBrush(fill)
+            glyph = f'<span style="color:{_on_surface(_SAMPLE, _SAMPLE_ALPHA)}">&#9679;</span>'
         else:
             off = np.asarray(offsets, dtype=float)[shown]
             reach = float(np.max(np.abs(off))) if off.size else 0.0
             reach = reach or 1.0
             position = (off + reach) / (2.0 * reach)
-            colours = [pg.mkColor(*c) for c in _OFFSET_CMAP.map(position, mode='byte')]
-            rings = [pg.mkColor(*c) for c in _OFFSET_RING_CMAP.map(position, mode='byte')]
-            # Fills near zero offset are close to the surface colour, so every
-            # coloured dot carries a ring of its own hue that stays visible.
-            brushes = [pg.mkBrush(_SURFACE) if b else pg.mkBrush(c) for b, c in zip(below, colours)]
-            pens = [pg.mkPen(r, width=_RING_WIDTH if b else 1) for b, r in zip(below, rings)]
+            brushes = [
+                pg.mkBrush(QColor(int(r), int(g), int(b), _COLOURED_SAMPLE_ALPHA))
+                for r, g, b, _ in _OFFSET_CMAP.map(position, mode='byte')
+            ]
             name = self._colour_combo.currentText()
             cbar = pg.ColorBarItem(
                 values=(-reach, reach), colorMap=_OFFSET_CMAP, interactive=False, width=14, pen=_INK_3
@@ -675,79 +886,112 @@ class IdentifiabilityWidget(QWidget):
             cbar.axis.setTickFont(tick_font)
             cbar.axis.setTextPen(pg.mkPen(_INK_2))
             cbar.axis.setLabel(f'{name} offset [%]', color=_INK_2, **{'font-size': f'{label_font.pointSize()}pt'})
-            legend['colour'] = (
-                f'<span style="color:{_SAMPLE}">&#9679;</span><span style="color:#e34948">&#9679;</span>',
-                f'{name} set lower (blue) or higher (red) than entered',
+            cbar.setVisible(visible)
+            ends = ''.join(
+                f'<span style="color:{_on_surface(c, _COLOURED_SAMPLE_ALPHA)}">&#9679;</span>'
+                for c in (_SAMPLE, '#e34948')
             )
+            legend['colour'] = (ends, f'{name} set lower (blue) or higher (red) than entered')
             self._glw.addItem(cbar, row=1, col=col + 2)
             self._items[ka_key]['colour_bar'] = cbar
-        scatter = pg.ScatterPlotItem(x=x, y=y, size=_DOT_SIZE, brush=brushes, pen=pens)
-        scatter.setZValue(5)
+            glyph = f'<span style="color:{_on_surface(_INK_3, _COLOURED_SAMPLE_ALPHA)}">&#9679;</span>'
+        scatter = pg.ScatterPlotItem(x=x, y=y, size=_SAMPLE_SIZE, brush=brushes, pen=pg.mkPen(None))
+        scatter.setZValue(_SAMPLE_Z)
+        scatter.setVisible(visible)
         main.addItem(scatter)
         self._items[ka_key]['samples'] = scatter
-        colour = _SAMPLE if offsets is None else _INK_2
-        legend['samples'] = (f'<span style="color:{colour}">&#9679;</span>', 'sensitivity sample best fit')
-        if below.any():
-            legend['samples_below'] = (f'<span style="color:{colour}">&#9675;</span>', 'sample below the floor')
+        legend['samples'] = (glyph, 'sensitivity sample best fit')
         return x, y
 
     def _add_marginals(
         self,
         col: int,
-        main: pg.PlotItem,
+        items: dict,
         x: np.ndarray,
         y: np.ndarray,
         passing: np.ndarray,
-        left_width: int,
-        bottom_height: int,
+        axis_sizes: tuple[int, int, int],
     ) -> None:
-        """Stacked Ka histogram above and R² histogram to the right of *main*, linked to its axes."""
-        top = self._glw.addPlot(row=0, col=col)
-        right = self._glw.addPlot(row=1, col=col + 1)
-        top.setMaximumHeight(80)
-        right.setMaximumWidth(110)
+        """Stacked Ka histogram above and R² histogram to the right of the main plot in *items*, linked to its axes.
+
+        Each counts the attempts in view, in ``_HIST_BINS`` bins across its
+        linked axis, recounted whenever that axis's range changes. *axis_sizes*
+        are the main plot's left axis width, bottom axis height and right axis
+        width (0 when it has none).
+        """
+        main = items['main']
+        left_width, bottom_height, right_width = axis_sizes
+        tick_font, _ = self._fonts()
+        top = self._glw.addPlot(row=0, col=col, axisItems={'left': _CountAxis('left')})
+        right = self._glw.addPlot(row=1, col=col + 1, axisItems={'bottom': _CountAxis('bottom')})
+        top.setMinimumHeight(_TOP_HIST_HEIGHT)
+        top.setMaximumHeight(_TOP_HIST_HEIGHT)
+        right.setMinimumWidth(_RIGHT_HIST_WIDTH)
+        right.setMaximumWidth(_RIGHT_HIST_WIDTH)
         top.setXLink(main)
         right.setYLink(main)
-        for plot, count_axis in ((top, 'y'), (right, 'x')):
-            plot.hideButtons()
-            plot.setMenuEnabled(False)
-            plot.setMouseEnabled(x=count_axis == 'y', y=count_axis == 'x')
-            plot.enableAutoRange(axis=count_axis)
-            plot.setAutoVisible(**{count_axis: True})
+        items['marginals'] = (top, right)
         top.hideAxis('bottom')
         right.hideAxis('left')
-        tick_font, _ = self._fonts()
-        caption = pg.LabelItem('counts of<br>attempts', color=_INK_3, size=f'{tick_font.pointSize()}pt', justify='left')
-        caption.setMaximumSize(110, 80)
-        self._glw.addItem(caption, row=0, col=col + 1)
-        # The main plot takes every spare pixel; the marginal cells keep their capped sizes.
+        # Axes of the main plot's sizes keep the histograms aligned with it.
+        top.getAxis('left').setWidth(left_width)
+        right.getAxis('bottom').setHeight(bottom_height)
+        if right_width:
+            top.showAxis('right')
+            top.getAxis('right').setStyle(showValues=False)
+            top.getAxis('right').setPen(pg.mkPen(None))
+            top.getAxis('right').setWidth(right_width)
+        # The main plot takes every spare pixel; the marginal cells keep their fixed sizes.
         grid = self._glw.ci.layout
         grid.setRowStretchFactor(1, 1)
         grid.setColumnStretchFactor(col, 1)
-        # Invisible axes of the same size as the main plot's keep the histograms aligned with it.
-        top.getAxis('left').setStyle(showValues=False)
-        top.getAxis('left').setPen(pg.mkPen(None))
-        top.getAxis('left').setWidth(left_width)
-        right.showAxis('bottom')
-        right.getAxis('bottom').setStyle(showValues=False)
-        right.getAxis('bottom').setPen(pg.mkPen(None))
-        right.getAxis('bottom').setHeight(bottom_height)
-
-        for values, plot, vertical in ((x, top, True), (y, right, False)):
-            edges, (below, passed) = _histogram(values, [~passing, passing])
-            for y0, y1, colour in ((0, below, _BELOW_FLOOR), (below, below + passed, _INK_2)):
-                if vertical:
-                    bars = pg.BarGraphItem(x0=edges[:-1], x1=edges[1:], y0=y0, y1=y1, brush=colour, pen=pg.mkPen(None))
-                else:
-                    bars = pg.BarGraphItem(x0=y0, x1=y1, y0=edges[:-1], y1=edges[1:], brush=colour, pen=pg.mkPen(None))
-                plot.addItem(bars)
+        for plot, axis_name, values, vertical, changed in (
+            (top, 'left', x, True, top.sigXRangeChanged),
+            (right, 'bottom', y, False, right.sigYRangeChanged),
+        ):
+            count_axis = 'y' if vertical else 'x'
+            plot.hideButtons()
+            plot.setMenuEnabled(False)
+            plot.setMouseEnabled(x=vertical, y=not vertical)
+            plot.enableAutoRange(axis=count_axis)
+            plot.setAutoVisible(**{count_axis: True})
+            plot.showGrid(**{count_axis: True}, alpha=_GRID_ALPHA)
+            axis = plot.getAxis(axis_name)
+            axis.enableAutoSIPrefix(False)
+            axis.setTickFont(tick_font)
+            axis.setPen(pg.mkPen(_INK_3, width=1))
+            axis.setTextPen(pg.mkPen(_INK_2))
+            axis.setLabel('attempts', color=_INK_2, **{'font-size': f'{tick_font.pointSize()}pt'})
+            bars = tuple(
+                pg.BarGraphItem(x0=[0.0], x1=[0.0], y0=[0.0], y1=[0.0], brush=colour, pen=pg.mkPen(None))
+                for colour in (_BELOW_FLOOR, _INK_2)
+            )
+            for bar in bars:
+                plot.addItem(bar)
+            view_range = main.viewRange()[0 if vertical else 1]
+            _fill_histogram(bars, values, passing, view_range, vertical)
+            # The linked axis follows the main plot's, so its range changes are the main plot's.
+            changed.connect(
+                lambda _view, rng, bars=bars, values=values, vertical=vertical: _fill_histogram(
+                    bars, values, passing, rng, vertical
+                )
+            )
+            items['hist_ka' if vertical else 'hist_r2'] = bars
 
     def _frame(
-        self, main: pg.PlotItem, profile: ProfileResult | None, xs: list[np.ndarray], ys: list[np.ndarray]
-    ) -> tuple[float, float] | None:
-        """Default view: the Ka values in *xs* across, *ys* and the best-R² line inside that span up and down.
+        self,
+        main: pg.PlotItem,
+        profile: ProfileResult | None,
+        floor: float | None,
+        xs: list[np.ndarray],
+        attempts: tuple[np.ndarray, np.ndarray],
+        samples: tuple[np.ndarray, np.ndarray],
+    ) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        """Set the default view and return its (Ka, R²) ranges, Ka in log10 units; ``None`` if nothing to frame.
 
-        Returns the Ka range of the view in log10 units, ``None`` when there is nothing to frame.
+        Across: the Ka values in *xs*, at least a decade wide. Up and down:
+        :func:`_default_r2_range` of the attempts and samples inside that Ka span
+        only, with the profile's peak and cut-off and the *floor*.
         """
         x_all = np.concatenate(xs) if xs else np.empty(0)
         if not x_all.size:
@@ -758,15 +1002,12 @@ class IdentifiabilityWidget(QWidget):
             x_lo, x_hi = mid - 0.5, mid + 0.5
         pad = 0.05 * (x_hi - x_lo)
         x_lo, x_hi = x_lo - pad, x_hi + pad
-        if profile is not None:
-            log_grid = np.log10(profile.grid)
-            inside = (log_grid >= x_lo) & (log_grid <= x_hi)
-            ys.append(_r2_to_y(profile.r2[inside]))
-        y_all = np.concatenate(ys)
-        y_lo, y_hi = float(y_all.min()), float(y_all.max())
-        y_pad = max(0.08 * (y_hi - y_lo), 0.1)
-        main.setRange(xRange=(x_lo, x_hi), yRange=(y_lo - y_pad, y_hi + y_pad), padding=0)
-        return x_lo, x_hi
+        in_view = np.concatenate([y[(x >= x_lo) & (x <= x_hi)] for x, y in (attempts, samples)])
+        peak, cut = (profile.best_r2, profile.r2_threshold) if profile is not None else (None, None)
+        y_lo, y_hi = _default_r2_range(in_view, peak, cut, floor) or (0.0, 1.0)
+        main.setLimits(yMin=min(_R2_LIMITS[0], y_lo), yMax=max(_R2_LIMITS[1], y_hi))
+        main.setRange(xRange=(x_lo, x_hi), yRange=(y_lo, y_hi), padding=0)
+        return (x_lo, x_hi), (y_lo, y_hi)
 
     # ------------------------------------------------------------------
     # Styling

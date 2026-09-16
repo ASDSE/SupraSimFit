@@ -11,6 +11,7 @@ profile-likelihood confidence interval for Ka from an F test.
 
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass
 from typing import Any, Callable, Type
 
@@ -26,9 +27,25 @@ from core.units import Quantity
 
 # Ka grid densities, in points per decade across the Ka bounds. The search grid
 # only has to land next to the optimum (a bounded refinement finds it between
-# the neighbouring points); the profile grid is the plotted curve.
+# the neighbouring points); the profile grid is where the plotted curve starts.
 _SEARCH_PER_DECADE = 4
 _PROFILE_PER_DECADE = 20
+
+# The plotted curve joins exact points with straight lines. A stretch of it is
+# split while the exact R² at its midpoint misses the line by more than half of
+# its allowance, _CURVE_R2_TOL + _CURVE_DEPTH_TOL × (the curve's best R² − the
+# stretch's highest R²); a stretch that bends one way then stays within the
+# allowance of the exact curve. At the peak that is 1e-6 R². Below it, the
+# allowance is 0.1 % of the depth, so in any view that shows a stretch together
+# with the peak the line is off by less than 0.1 % of the view's height. Where
+# a species barely forms, rounding makes the curve jitter, so the stretches with
+# the worst miss for their allowance are split first, _CURVE_MAX_EXTRA extra
+# evaluations bound the work, and _CURVE_MIN_STEP, in decades of Ka, stops the
+# splitting at a sharp corner or a jump.
+_CURVE_R2_TOL = 1e-6
+_CURVE_DEPTH_TOL = 1e-3
+_CURVE_MAX_EXTRA = 2000
+_CURVE_MIN_STEP = 1e-6
 
 # Tolerance of the refinement and of the interval edges, in decades of Ka.
 _LOG_KA_XTOL = 1e-7
@@ -52,7 +69,10 @@ class ProfileResult:
     ka_key : str
         The binding-constant parameter key (e.g. ``"Ka_guest"``).
     grid : np.ndarray
-        Ka values in 1/M, log-spaced across the Ka bounds in force.
+        Ka values in 1/M across the Ka bounds in force, ascending: a log-spaced
+        grid plus the best fit, the interval's closed edges and extra points
+        where the curves bend, so straight lines between them follow the exact
+        curves (see ``_CURVE_R2_TOL``).
     r2 : np.ndarray
         Best R² of the averaged signal at each grid Ka.
     replica_r2 : dict[str, np.ndarray] | None
@@ -212,8 +232,14 @@ def fit_profile(
     ka_key, (lo, hi), ssr_at = _profile_function(assay, bounds, y_avg)
     ss_tot = float(_ss_tot(y_avg)[0])
 
+    # Every plotted curve: the average first, then each active replicate's own.
+    replica_ids = list(ms.active_replica_ids) if fit_config.per_replica else []
+    y_curves = np.vstack([y_avg, *(ms.get_replica_signal(rid) for rid in replica_ids)])
+    _, _, curves_ssr_at = _profile_function(assay, bounds, y_curves)
+    curves_ss_tot = _ss_tot(y_curves)
     grid = _ka_grid(lo, hi, _PROFILE_PER_DECADE)
-    ssr = np.array([ssr_at(ka)[0] for ka in grid])
+    curves_ssr = np.array([curves_ssr_at(ka) for ka in grid])
+    ssr = curves_ssr[:, 0]
     best_ka, best_ssr = _refine_best(lambda ka: ssr_at(ka)[0], grid, ssr)
 
     n_points = y_avg.size
@@ -227,19 +253,21 @@ def fit_profile(
     ssr_threshold = best_ssr * (1.0 + f_dist.ppf(level, 1, dof) / dof)
     ci, ci_open = _interval(lambda ka: ssr_at(ka)[0] - ssr_threshold, grid, ssr - ssr_threshold, best_ka)
 
+    # The curves as drawn: the best fit, the interval and the cut-off come from the
+    # regular grid alone, whatever points drawing adds. The drawn curve peaks at
+    # the best fit and crosses the cut-off where the interval ends.
+    grid, curves_ssr = _follow_curves(curves_ssr_at, curves_ss_tot, grid, curves_ssr)
+    marks = [best_ka] + [edge for edge, is_open in zip(ci, ci_open) if not is_open]
+    grid, curves_ssr = _with_points(curves_ssr_at, grid, curves_ssr, marks)
+    curves_r2 = 1.0 - curves_ssr / curves_ss_tot
     replica_r2 = None
     if fit_config.per_replica:
-        replica_ids = list(ms.active_replica_ids)
-        y_reps = np.vstack([ms.get_replica_signal(rid) for rid in replica_ids])
-        _, _, replica_ssr_at = _profile_function(assay, bounds, y_reps)
-        replica_ssr = np.array([replica_ssr_at(ka) for ka in grid])  # (n_grid, n_replicas)
-        replica_ss_tot = _ss_tot(y_reps)
-        replica_r2 = {rid: 1.0 - replica_ssr[:, i] / replica_ss_tot[i] for i, rid in enumerate(replica_ids)}
+        replica_r2 = {rid: curves_r2[:, i] for i, rid in enumerate(replica_ids, start=1)}
 
     return ProfileResult(
         ka_key=ka_key,
         grid=grid,
-        r2=1.0 - ssr / ss_tot,
+        r2=curves_r2[:, 0],
         replica_r2=replica_r2,
         best_ka=best_ka,
         best_r2=float(1.0 - best_ssr / ss_tot),
@@ -271,6 +299,67 @@ def _ka_grid(lo: float, hi: float, per_decade: int) -> np.ndarray:
     if lo == hi:
         return np.array([lo])
     return np.geomspace(lo, hi, int(np.ceil(np.log10(hi / lo) * per_decade)) + 1)
+
+
+def _follow_curves(
+    ssr_at: Callable[[float], np.ndarray], ss_tot: np.ndarray, grid: np.ndarray, ssr: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """*grid* with exact points added until straight lines between them follow every curve.
+
+    *ssr_at* gives each curve's best SSR at a Ka, *ss_tot* each curve's total
+    sum of squares and *ssr* each curve's SSR on *grid*. Every stretch between neighbouring points is checked at its
+    midpoint in log Ka, which becomes a point. A stretch whose midpoint misses
+    the line by more than half its allowance (see ``_CURVE_R2_TOL``) on any curve
+    at R² 0 or above is split, the worst first, until none is left or the
+    evaluations reach ``_CURVE_MAX_EXTRA``. Curves below R² 0 across a stretch
+    are off every plot and do not split it.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        ``(Ka values, SSR per curve)`` in ascending Ka, shapes ``(n,)`` and ``(n, n_curves)``.
+    """
+    kas, ssrs = list(grid), list(ssr)
+    peak = np.max(1.0 - ssr / ss_tot, axis=0)
+    # Stretches to split, worst first: (-worst miss over allowance, tie-breaker, Ka and SSR at start, middle, end).
+    to_split: list[tuple] = []
+
+    def check(ka_a: float, ssr_a: np.ndarray, ka_b: float, ssr_b: np.ndarray) -> None:
+        log_a, log_b = np.log10(ka_a), np.log10(ka_b)
+        if log_b - log_a <= _CURVE_MIN_STEP:
+            return
+        ka_m = 10.0 ** (0.5 * (log_a + log_b))
+        ssr_m = ssr_at(ka_m)
+        kas.append(ka_m)
+        ssrs.append(ssr_m)
+        r2_a, r2_m, r2_b = (1.0 - s / ss_tot for s in (ssr_a, ssr_m, ssr_b))
+        top = np.maximum(np.maximum(r2_a, r2_b), r2_m)
+        allowance = _CURVE_R2_TOL + _CURVE_DEPTH_TOL * (peak - top)
+        miss = np.where(top >= 0.0, np.abs(r2_m - 0.5 * (r2_a + r2_b)) / (0.5 * allowance), 0.0)
+        if miss.max() > 1.0:
+            heapq.heappush(to_split, (-float(miss.max()), len(kas), ka_a, ssr_a, ka_m, ssr_m, ka_b, ssr_b))
+
+    for i in range(grid.size - 1):
+        check(grid[i], ssrs[i], grid[i + 1], ssrs[i + 1])
+    while to_split and len(kas) - grid.size + 2 <= _CURVE_MAX_EXTRA:
+        _, _, ka_a, ssr_a, ka_m, ssr_m, ka_b, ssr_b = heapq.heappop(to_split)
+        check(ka_a, ssr_a, ka_m, ssr_m)
+        check(ka_m, ssr_m, ka_b, ssr_b)
+    order = np.argsort(kas)
+    return np.array(kas)[order], np.array(ssrs)[order]
+
+
+def _with_points(
+    ssr_at: Callable[[float], np.ndarray], grid: np.ndarray, ssr: np.ndarray, kas: list[float]
+) -> tuple[np.ndarray, np.ndarray]:
+    """*grid* and its per-curve *ssr* with the Ka values *kas* added in order, each evaluated by *ssr_at*."""
+    new = [ka for ka in kas if not np.any(np.isclose(grid, ka, rtol=1e-12, atol=0.0))]
+    if not new:
+        return grid, ssr
+    all_ka = np.concatenate([grid, new])
+    all_ssr = np.vstack([ssr, [ssr_at(ka) for ka in new]])
+    order = np.argsort(all_ka, kind='stable')
+    return all_ka[order], all_ssr[order]
 
 
 def _split_keys(assay: BaseAssay) -> tuple[str, list[str]]:
