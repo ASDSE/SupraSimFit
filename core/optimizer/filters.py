@@ -45,7 +45,7 @@ def filter_by_rmse(
 
 def filter_by_r_squared(
     results: List[FitAttempt],
-    min_r_squared: float = 0.9,
+    min_r_squared: float = 0.99,
 ) -> List[FitAttempt]:
     """Filter fit attempts by minimum R² value.
 
@@ -66,7 +66,7 @@ def filter_by_r_squared(
 
 def select_valid_fits(
     results: List[FitAttempt],
-    min_r_squared: float = 0.9,
+    min_r_squared: float = 0.99,
     rmse_threshold_factor: Optional[float] = None,
 ) -> List[FitAttempt]:
     """Select the valid-fit pool kept for aggregation.

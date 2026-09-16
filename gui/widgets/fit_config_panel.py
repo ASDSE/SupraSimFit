@@ -283,7 +283,7 @@ class FitConfigPanel(InfoGroupBox):
         self._r2_spin.setRange(0.0, 1.0)
         self._r2_spin.setSingleStep(0.01)
         self._r2_spin.setDecimals(2)
-        self._r2_spin.setValue(0.90)
+        self._r2_spin.setValue(0.99)
         self._r2_spin.setToolTip('Minimum R² for a trial to pass the acceptance filter.')
         self._r2_spin.valueChanged.connect(self.config_changed)
         form.addRow('Min R²:', self._with_info(self._r2_spin, 'Min R²', _R2_HELP_HTML))

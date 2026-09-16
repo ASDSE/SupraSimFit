@@ -41,6 +41,11 @@ N_TRIALS = 60  # Smaller than default; 5 replicas * 60 still fast enough for CI.
 CLEAN_TOL = 0.10
 NOISY_TOL = 0.25
 
+# 5% Gaussian noise caps the achievable R² near 0.98, under the app's default
+# quality floor. A recovery test pins a floor its own noise level can reach, so
+# it measures Ka recovery rather than the default acceptance policy.
+NOISY_R2_FLOOR = 0.90
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -77,11 +82,15 @@ def _ida_ms(
     )
 
 
-def _per_replica_config() -> FitConfig:
+def _per_replica_config(min_r_squared: float | None = None) -> FitConfig:
+    """Per-replica config; *min_r_squared* pins a floor for noise levels that
+    cannot reach the app default."""
+    floor = {} if min_r_squared is None else {'min_r_squared': min_r_squared}
     return FitConfig(
         n_trials=N_TRIALS,
         custom_bounds=GDA_IDA_RECOVERY_BOUNDS,
         per_replica=True,
+        **floor,
     )
 
 
@@ -90,7 +99,7 @@ def _per_replica_config() -> FitConfig:
 # ---------------------------------------------------------------------------
 
 
-def _seeded_per_replica_fit(noise_frac: float, seed: int) -> FitResult:
+def _seeded_per_replica_fit(noise_frac: float, seed: int, min_r_squared: float | None = None) -> FitResult:
     """Run a per-replica fit under a deterministic global RNG seed, restoring
     the prior RNG state afterwards (module fixtures run before the autouse
     per-test seeder, so leaked state could affect other module fixtures)."""
@@ -98,7 +107,7 @@ def _seeded_per_replica_fit(noise_frac: float, seed: int) -> FitResult:
     state = np.random.get_state()
     np.random.seed(42)
     try:
-        return fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+        return fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config(min_r_squared))
     finally:
         np.random.set_state(state)
 
@@ -112,7 +121,7 @@ def clean_pr_result() -> FitResult:
 @pytest.fixture(scope='module')
 def noisy_pr_result() -> FitResult:
     """Per-replica fit of 5 replicas with 5% Gaussian noise."""
-    return _seeded_per_replica_fit(noise_frac=0.05, seed=7)
+    return _seeded_per_replica_fit(noise_frac=0.05, seed=7, min_r_squared=NOISY_R2_FLOOR)
 
 
 # ---------------------------------------------------------------------------

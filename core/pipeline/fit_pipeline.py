@@ -347,7 +347,7 @@ class FitConfig:
 
     n_trials: int = 100
     rmse_threshold_factor: Optional[float] = None
-    min_r_squared: float = 0.9
+    min_r_squared: float = 0.99
     log_scale_params: Optional[List[str]] = None
     custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
     rescale_parameters: bool = True
