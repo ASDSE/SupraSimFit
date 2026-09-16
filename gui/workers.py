@@ -244,5 +244,9 @@ class SensitivityWorker(QThread):
             self.finished.emit(result)
         except ValueError as exc:
             self.error.emit(f'The sensitivity analysis could not run:\n{exc}')
-        except Exception as exc:
-            self.error.emit(f'The sensitivity analysis could not be completed:\n{exc}')
+        except Exception:
+            logger.exception('Sensitivity analysis failed')
+            self.error.emit(
+                'The sensitivity analysis could not be completed. Check the data, the assay conditions and the '
+                'input uncertainties, then run it again.'
+            )

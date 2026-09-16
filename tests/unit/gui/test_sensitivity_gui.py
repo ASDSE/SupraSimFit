@@ -898,6 +898,24 @@ def test_worker_throttles_progress_but_never_drops_the_last_count(qapp, monkeypa
     assert events == [(1, 1000), (1000, 1000), 'finished']
 
 
+def test_worker_reports_an_unexpected_failure_in_plain_words(qapp, monkeypatch):
+    from gui import workers
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('broadcast shapes (3,) (4,) mismatch in _jansen')
+
+    monkeypatch.setattr(workers, 'run_sensitivity', fail)
+    worker = workers.SensitivityWorker(None, None, {}, None, None)
+    messages = []
+    worker.error.connect(messages.append)
+
+    worker.run()
+
+    assert len(messages) == 1
+    assert 'could not be completed' in messages[0]
+    assert 'broadcast' not in messages[0] and '_jansen' not in messages[0]
+
+
 def _demo_session(monkeypatch):
     """A session with the demo IDA data and the smallest sample size; returns it and the list its warnings go to.
 
