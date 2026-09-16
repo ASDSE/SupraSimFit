@@ -70,12 +70,22 @@ log of a K<sub>a</sub> spread, which would be meaningless.</p>
 <i>reproducibly the optimiser converges</i> across its many starting points on
 the same data &mdash; not the experimental uncertainty of your measurement. A
 tight spread means the fit reliably lands on the same value; it does <b>not</b>
-by itself mean the parameter is known to that precision. Real error bars come
-from repeating the experiment (replicates) or resampling it (bootstrap)
-&mdash; that is what <i>per-replica</i> fitting gives you. The wide spread on the
-signal coefficients (I<sub>0</sub>, I<sub>D</sub>, I<sub>HD</sub>) is the
-clearest case: it is not uncertainty, it is the model telling you those
-coefficients are not individually determined &mdash; only K<sub>a</sub> is.</p>
+by itself mean the parameter is known to that precision. With per-replica
+fitting the pool holds each replicate&rsquo;s own fits, so the spread also
+reflects how far the replicates&rsquo; fits differ; it is still not a confidence
+interval. The wide spread on the signal coefficients (I<sub>0</sub>,
+I<sub>D</sub>, I<sub>HD</sub>) is the clearest case: it is not uncertainty, it
+is the model telling you those coefficients are not individually determined
+&mdash; only K<sub>a</sub> is.</p>
+
+<p><b>How precisely K<sub>a</sub> is known.</b> The <b>Identifiability</b> tab
+gives the 95% confidence interval: the K<sub>a</sub> values whose best fit to
+your data is not significantly worse than the best one. On the demo data the
+68% Range lies within 0.1% of the estimate, while that interval reaches &minus;44%
+to +182%. The
+interval assumes the model and the inputs you entered are right; the <b>Ka
+Sensitivity</b> tab shows how far errors in those inputs move K<sub>a</sub>.
+Help &#9656; Reading the plots explains both tabs.</p>
 """
 
 
@@ -88,9 +98,11 @@ Compare it to the noise level in your data: if RMSE is similar to the
 noise floor, the fit is explaining the data about as well as possible.</p>
 
 <p><b>R&sup2;</b> (coefficient of determination) &mdash; fraction of the
-data variance explained by the fit, from 0 to 1. Values above 0.99 are
-typical for clean fluorescence titrations; below 0.90 suggests the model
-does not capture the data shape well.</p>
+data variance explained by the fit, from 0 to 1. Close to 1, small
+differences still matter: on the demo data the 95% confidence interval for
+K<sub>a</sub> on the Identifiability tab ends where the best R&sup2; drops from
+0.9941 to 0.9908. A high R&sup2; does not show that the model describes the
+data: check the Fit Curve for runs of points on one side of the curve.</p>
 
 <p><b>Fits passing</b> &mdash; how many of the multi-start trials cleared
 the minimum&nbsp;R&sup2; floor (plus the optional RMSE trim, if enabled) and

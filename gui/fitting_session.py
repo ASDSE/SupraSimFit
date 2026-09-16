@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -35,8 +36,9 @@ from core.pipeline.fit_pipeline import (
 )
 from core.pipeline.profile import ProfileResult, profile_supported
 from core.pipeline.sensitivity import estimated_fit_count, estimated_optimizer_runs, resolve_fit_config
-from gui import preferences
+from gui import plot_guide, preferences
 from gui.app_state import SessionState
+from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.plotting.distribution_widget import DistributionWidget
 from gui.plotting.fit_summary_widget import FitSummaryWidget, and_join, same_inputs
 from gui.plotting.identifiability_widget import IdentifiabilityWidget
@@ -57,6 +59,23 @@ from gui.workers import FitWorker, ProfileWorker, SensitivityWorker
 # Height a plot tab's page keeps however far the summary below is dragged up: the
 # Fit Curve plot keeps its axis labels apart, the Distributions panels their titles.
 _PLOT_PAGE_MIN_HEIGHT = 250
+
+# The plot tab bar's "?" button: secondary ink on a hairline pill, darker on hover.
+_GUIDE_BUTTON_QSS = """
+QToolButton {
+    color: #52514e;
+    background: transparent;
+    border: 1px solid #d6d5cf;
+    border-radius: 10px;
+    padding: 2px 9px;
+    margin: 4px 8px 4px 0;
+    font-size: 13px;
+}
+QToolButton:hover {
+    color: #0b0b0b;
+    border-color: #898781;
+}
+"""
 
 
 def _format_remaining(seconds: float) -> str:
@@ -846,6 +865,14 @@ class FittingSession(QWidget):
         self._plot_tabs.addTab(self._distribution_widget, 'Distributions')
         self._plot_tabs.addTab(self._identifiability_widget, 'Identifiability')
         self._plot_tabs.addTab(self._sensitivity_widget, 'Ka Sensitivity')
+        guide_button = QToolButton()
+        guide_button.setText('? How to read this plot')
+        guide_button.setToolTip('Open the guide to reading the plot on this tab')
+        guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        guide_button.setStyleSheet(_GUIDE_BUTTON_QSS)
+        guide_button.clicked.connect(self._show_plot_guide)
+        self._plot_tabs.setCornerWidget(guide_button, Qt.Corner.TopRightCorner)
+
         # Every plot page's floor is _PLOT_PAGE_MIN_HEIGHT, whichever tab is showing:
         # dragging the summary up stops where a plot is still readable, and a page
         # whose content is taller scrolls or clips rather than limiting the drag.
@@ -1119,6 +1146,16 @@ class FittingSession(QWidget):
         self._profile_worker = None
         self._state.profile_result = None
         self._identifiability_widget.clear()
+
+    def _show_plot_guide(self) -> None:
+        """Open Help ▸ Reading the plots at the section for the plot tab on screen."""
+        sections = {
+            self._plot_widget: plot_guide.FIT_CURVE,
+            self._distribution_widget: plot_guide.DISTRIBUTIONS,
+            self._identifiability_widget: plot_guide.IDENTIFIABILITY,
+            self._sensitivity_widget: plot_guide.SENSITIVITY,
+        }
+        show_plot_guide(self, sections[self._plot_tabs.currentWidget()])
 
     # ------------------------------------------------------------------
     # Ka sensitivity analysis

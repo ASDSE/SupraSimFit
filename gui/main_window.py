@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from _version import __version__
+from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.fitting_session import FittingSession
 from gui.preferences import APP_NAME, ORG_NAME
 from gui.update_check import UpdateCheckWorker, is_newer
@@ -342,6 +343,10 @@ class FittingMainWindow(QMainWindow):
 
         # Help menu
         help_menu = mb.addMenu('&Help')
+        self._act_plot_guide = QAction('Reading the plots…', self)
+        self._act_plot_guide.triggered.connect(lambda: show_plot_guide(self))
+        help_menu.addAction(self._act_plot_guide)
+        help_menu.addSeparator()
         self._act_check_updates = QAction('Check for updates…', self)
         self._act_check_updates.setToolTip('Query GitHub for a newer release of SupraSimFit')
         self._act_check_updates.triggered.connect(lambda: self._run_update_check(silent=False))
