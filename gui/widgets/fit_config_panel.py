@@ -256,7 +256,7 @@ class FitConfigPanel(InfoGroupBox):
         form = QFormLayout(self)
 
         self._trials_spin = NoScrollSpinBox()
-        self._trials_spin.setRange(10, 10_000)
+        self._trials_spin.setRange(1, 10_000)
         self._trials_spin.setSingleStep(10)
         self._trials_spin.setValue(100)
         self._trials_spin.setToolTip('Number of multi-start L-BFGS-B optimization trials.')
