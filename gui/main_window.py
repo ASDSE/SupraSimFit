@@ -106,6 +106,7 @@ class FittingMainWindow(QMainWindow):
         self._setup_toolbar()
         self._setup_menus()
         self._setup_statusbar()
+        self._tabs.currentChanged.connect(lambda _index: self._sync_actions())
         # Open one empty session on startup
         self._new_session()
         # Silent background check for newer releases on GitHub.
@@ -236,7 +237,21 @@ class FittingMainWindow(QMainWindow):
         self._act_export_all.setToolTip('Export selected artefacts (raw data, results, plots, style) into one folder')
         self._act_export_all.triggered.connect(self._on_export_all)
 
+        # Run Fit and the result exports follow the active session (_sync_actions);
+        # their own tooltips are shown whenever they are available.
+        self._action_tips: dict[QAction, str] = {
+            action: action.toolTip()
+            for action in (
+                self._act_fit,
+                self._act_export,
+                self._act_export_txt,
+                self._act_export_csv,
+                self._act_export_dists,
+            )
+        }
+
         export_menu = QMenu(self)
+        export_menu.setToolTipsVisible(True)
         export_menu.addAction(self._act_export_all)
         export_menu.addSeparator()
         export_menu.addAction(self._act_export)
@@ -269,11 +284,18 @@ class FittingMainWindow(QMainWindow):
         btn.setStyleSheet('QToolButton::menu-indicator { image: none; width: 0; }')
         return btn
 
+    def _open_preferences(self) -> None:
+        """Show the application preferences."""
+        from gui.dialogs.preferences_dialog import PreferencesDialog
+
+        PreferencesDialog(self).exec()
+
     def _setup_menus(self) -> None:
         mb = self.menuBar()
 
         # File menu
         file_menu = mb.addMenu('&File')
+        file_menu.setToolTipsVisible(True)
 
         self._act_new = QAction('New Session', self)
         self._act_new.setShortcut(QKeySequence('Ctrl+T'))
@@ -298,6 +320,13 @@ class FittingMainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._act_save_style)
         file_menu.addAction(self._act_load_style)
+        file_menu.addSeparator()
+        prefs_act = QAction('Preferences\u2026', self)
+        prefs_act.setShortcut(QKeySequence.StandardKey.Preferences)
+        prefs_act.setMenuRole(QAction.MenuRole.PreferencesRole)
+        prefs_act.triggered.connect(self._open_preferences)
+        file_menu.addAction(prefs_act)
+
         file_menu.addSeparator()
         quit_act = QAction('&Quit', self)
         quit_act.setShortcut(QKeySequence.StandardKey.Quit)
@@ -331,8 +360,29 @@ class FittingMainWindow(QMainWindow):
         session = FittingSession()
         session.title_changed.connect(lambda title, s=session: self._rename_tab(s, title))
         session.status_message.connect(self._statusbar.showMessage)
+        session.actions_changed.connect(self._sync_actions)
         idx = self._tabs.addTab(session, 'Untitled')
         self._tabs.setCurrentIndex(idx)
+        self._sync_actions()
+
+    def _sync_actions(self) -> None:
+        """Enable Run Fit and the result exports for what the active session can do now.
+
+        Run Fit is unavailable while a fit is running, and the result exports
+        while every fit the session holds is hidden; the tooltip then says why.
+        """
+        session = self.active_session()
+        running = session is not None and session.fit_running()
+        self._act_fit.setEnabled(not running)
+        self._act_fit.setToolTip(
+            'A fit is running in this session. Run Fit is available again once it finishes.'
+            if running
+            else self._action_tips[self._act_fit]
+        )
+        note = None if session is None else session.hidden_results_note()
+        for action in (self._act_export, self._act_export_txt, self._act_export_csv, self._act_export_dists):
+            action.setEnabled(note is None)
+            action.setToolTip(note or self._action_tips[action])
 
     def _close_tab(self, idx: int) -> None:
         if self._tabs.count() == 1:

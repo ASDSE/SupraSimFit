@@ -50,3 +50,34 @@ def get_bool(key: str, default: bool = False) -> bool:
 def set_bool(key: str, value: bool) -> None:
     """Persist a boolean preference."""
     _settings().setValue(key, bool(value))
+
+
+#: Worker processes for long analyses. ``0`` means choose automatically.
+WORKER_COUNT_KEY = 'analysis/worker_count'
+
+
+def get_int(key: str, default: int = 0) -> int:
+    """Return an integer preference, falling back to *default*."""
+    value = _settings().value(key, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def set_int(key: str, value: int) -> None:
+    """Persist an integer preference."""
+    _settings().setValue(key, int(value))
+
+
+def worker_count() -> int:
+    """Worker processes to run an analysis with.
+
+    A stored value of ``0`` — the default — means let the machine decide, which
+    leaves one core free for the interface. ``1`` runs everything in the
+    application process.
+    """
+    from core.pipeline.sensitivity import default_worker_count
+
+    stored = get_int(WORKER_COUNT_KEY, 0)
+    return stored if stored >= 1 else default_worker_count()

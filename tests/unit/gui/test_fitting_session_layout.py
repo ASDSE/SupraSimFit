@@ -80,3 +80,81 @@ def test_sidebar_reserves_content_width_so_it_never_clips(qapp):
     content = scroll.widget()
     scrollbar = scroll.verticalScrollBar().sizeHint().width()
     assert scroll.minimumSizeHint().width() >= content.minimumSizeHint().width() + scrollbar
+
+
+def _shown_session(qapp):
+    """A session at a fixed window size, shown off-screen.
+
+    Qt propagates a panel's layout change to the sidebar only in a shown
+    window; WA_DontShowOnScreen shows it without putting it on screen.
+    """
+    from PyQt6.QtCore import Qt
+
+    from gui.fitting_session import FittingSession
+
+    session = FittingSession()
+    session.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    session.resize(1400, 900)
+    session.show()
+    qapp.processEvents()
+    return session
+
+
+def _settle(qapp):
+    for _ in range(5):
+        qapp.processEvents()
+
+
+def test_sidebar_width_follows_a_panel_growing_and_shrinking(qapp):
+    """A row wider than the sidebar appearing in a panel widens the sidebar; hiding it narrows it back.
+
+    The window keeps its size: the plot pane gives up the width, and the
+    sidebar content is never wider than the sidebar shows.
+    """
+    from PyQt6.QtWidgets import QWidget
+
+    session = _shown_session(qapp)
+    scroll = session._sidebar_scroll
+    base = scroll.sizeHint().width()
+    assert scroll.width() == base
+    wide = QWidget()
+    wide.setMinimumWidth(base + 200)
+
+    session._sensitivity_panel.layout().addWidget(wide)
+    _settle(qapp)
+    assert scroll.minimumSizeHint().width() > base + 200
+    assert scroll.sizeHint().width() == scroll.minimumSizeHint().width()
+    assert scroll.width() == scroll.minimumSizeHint().width()
+    assert scroll.widget().width() <= scroll.viewport().width()
+    assert session.width() == 1400
+
+    wide.hide()
+    _settle(qapp)
+    assert scroll.minimumSizeHint().width() == base
+    assert scroll.sizeHint().width() == base
+    assert scroll.width() == base
+    session.close()
+
+
+def test_sidebar_keeps_the_width_the_user_dragged_it_to(qapp):
+    """Content narrowing back returns the sidebar to the width the user dragged it to, not below."""
+    from PyQt6.QtWidgets import QWidget
+
+    session = _shown_session(qapp)
+    scroll = session._sidebar_scroll
+    base = scroll.width()
+    scroll.parentWidget().moveSplitter(base + 100, 1)
+    _settle(qapp)
+    dragged = scroll.width()
+    assert dragged == base + 100
+
+    wide = QWidget()
+    wide.setMinimumWidth(base + 300)
+    session._sensitivity_panel.layout().addWidget(wide)
+    _settle(qapp)
+    assert scroll.width() == scroll.minimumSizeHint().width() > dragged
+
+    wide.hide()
+    _settle(qapp)
+    assert scroll.width() == dragged
+    session.close()
