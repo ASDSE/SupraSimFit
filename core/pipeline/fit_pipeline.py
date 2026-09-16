@@ -339,6 +339,10 @@ class FitConfig:
     absolute R² floor (``min_r_squared``), and is off by default
     (``None``). When set, fits with ``RMSE > best_valid_RMSE * factor`` are
     also dropped from the valid pool.
+
+    ``seed`` fixes the multi-start starting points, which is what makes a fit
+    reproducible: the same seed on the same data returns the same pool. Leave
+    it ``None`` to draw from the global NumPy random state.
     """
 
     n_trials: int = 100
@@ -348,6 +352,7 @@ class FitConfig:
     custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
     rescale_parameters: bool = True
     per_replica: bool = True
+    seed: Optional[int] = None
 
 
 def _model_name_for_assay(assay: BaseAssay) -> str:
@@ -375,6 +380,7 @@ def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
         'log_scale_params': config.log_scale_params,
         'custom_bounds': custom_bounds,
         'rescale_parameters': config.rescale_parameters,
+        'seed': config.seed,
         # JSON key kept as 'per_replicate' for backward compat with
         # previously exported fit-result files.
         'per_replicate': config.per_replica,
@@ -649,6 +655,7 @@ def fit_assay(
         log_scale_params=log_scale,
         compute_metrics=compute_metrics,
         scaler=scaler,
+        rng=np.random.default_rng(config.seed) if config.seed is not None else None,
     )
 
     # Select the valid pool: absolute R² floor (primary) + optional RMSE trim.
