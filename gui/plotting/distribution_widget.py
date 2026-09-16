@@ -1,17 +1,28 @@
-"""Box-whisker distribution plots for fitted parameters (pyqtgraph)."""
+"""Box-whisker and histogram distribution plots for fitted parameters (pyqtgraph)."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QStackedLayout, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QButtonGroup,
+    QCheckBox,
+    QHBoxLayout,
+    QLabel,
+    QRadioButton,
+    QSpinBox,
+    QStackedLayout,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.pipeline.fit_pipeline import FitResult
+from core.pipeline.fit_pipeline import FitResult, fit_replica_ids, input_replica_ids
 from gui.plotting.colors import BACKGROUND_COLOR, FOREGROUND_COLOR, PALETTES, REPLICA_PALETTE, rgba
 from gui.plotting.labels import fmt_param, fmt_param_plain, fmt_unit_html
 from gui.plotting.plot_style import DEFAULT_STYLE
@@ -21,6 +32,13 @@ from gui.widgets.replica_panel import _display_label
 _BOX_HALF = 0.3
 _CAP_HALF = 0.2
 _JITTER_HALF = 0.25
+
+_HIST_BAR = '#2a78d6'
+_MIN_BINS = 5
+_MAX_BINS = 200
+_BAR_GAP_PX = 2
+_MIN_BAR_PX = 3
+_FLAT_BAR_PX = 8
 
 # Fit-quality metrics shown as extra distribution subplots.
 # key -> (title, uses_signal_unit): RMSE carries the assay's signal (y) unit,
@@ -48,6 +66,68 @@ def _log10_positive(values: np.ndarray) -> np.ndarray:
     if arr.size and np.min(arr) <= 0:
         raise ValueError('Cannot log10-transform a non-positive value for the log-scale distribution.')
     return np.log10(arr)
+
+
+def _default_bins(pool_size: int) -> int:
+    """Square-root rule for the histogram bin count, clamped to the Bins control's range."""
+    return int(np.clip(round(np.sqrt(pool_size)), _MIN_BINS, _MAX_BINS))
+
+
+def _count_tick_step(span: float) -> int:
+    """Smallest 1-2-5 step that puts at most three labelled ticks on a count axis spanning *span*.
+
+    Distribution subplots can be as narrow as 170 px, so the count axis keeps
+    its labels sparse and integer.
+    """
+    target = max(span / 3, 1.0)
+    magnitude = 10 ** int(np.floor(np.log10(target)))
+    return next(m * magnitude for m in (1, 2, 5, 10) if m * magnitude >= target)
+
+
+def draw_histogram(
+    plot_item: pg.PlotItem, values: np.ndarray, bins: int, *, color: str, gap_color: str, horizontal: bool
+) -> int:
+    """Draw a histogram of *values* in *bins* bins on *plot_item* and return its tallest count.
+
+    Bars grow from a count of zero, to the right when *horizontal* and upwards
+    otherwise; the caller starts the count axis exactly at zero. Neighbouring
+    bars touch, split by a ``_BAR_GAP_PX`` line in *gap_color* along each inner
+    bin edge, so the gap never shortens a bar. Every non-empty bin is drawn at
+    least ``_MIN_BAR_PX`` long, so a bin holding one value stays visible however
+    many the tallest bin holds: that stroke is centred on the zero line, and the
+    plot clips the half below it. Values that are all equal have no spread to
+    bin, so they are drawn as one bar ``_FLAT_BAR_PX`` thick at that value.
+    """
+    values = np.asarray(values, dtype=float)
+
+    def lines(count_pairs, value_pairs, width: float, pen_color: str) -> None:
+        # One straight line per (start, end) pair; the pen width is in pixels.
+        counts_xy, values_xy = np.ravel(count_pairs), np.ravel(value_pairs)
+        x, y = (counts_xy, values_xy) if horizontal else (values_xy, counts_xy)
+        pen = pg.mkPen(pen_color, width=width)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        plot_item.addItem(pg.PlotCurveItem(x=x, y=y, pen=pen, connect='pairs'))
+
+    if np.ptp(values) == 0:
+        lines([0, values.size], [values[0], values[0]], _FLAT_BAR_PX, color)
+        return int(values.size)
+
+    counts, edges = np.histogram(values, bins=bins)
+    lo, hi = edges[:-1], edges[1:]
+    zeros = np.zeros(len(counts))
+    if horizontal:
+        bars = pg.BarGraphItem(x0=zeros, y0=lo, width=counts, height=hi - lo)
+    else:
+        bars = pg.BarGraphItem(x0=lo, y0=zeros, width=hi - lo, height=counts)
+    bars.setOpts(brush=pg.mkBrush(color), pen=pg.mkPen(None))
+    plot_item.addItem(bars)
+
+    filled = counts > 0
+    lines(np.zeros((filled.sum(), 2)), np.column_stack([lo[filled], hi[filled]]), 2 * _MIN_BAR_PX, color)
+    tallest = int(counts.max())
+    inner = edges[1:-1]
+    lines(np.tile([0, tallest], (inner.size, 1)), np.column_stack([inner, inner]), _BAR_GAP_PX, gap_color)
+    return tallest
 
 
 def _box_stats(data: np.ndarray) -> Dict[str, float]:
@@ -95,22 +175,34 @@ def _wire_exponent_callback(plot_item: pg.PlotItem, axis: ScientificAxisItem) ->
 
 
 class DistributionWidget(QWidget):
-    """Side-by-side box-whisker plots of fitted parameter distributions.
+    """Side-by-side box-whisker plots or histograms of fitted parameter distributions.
 
-    One pyqtgraph subplot per parameter, arranged horizontally.
+    One pyqtgraph subplot per parameter, arranged horizontally. A control row
+    above the plots switches every subplot between the box view (default) and
+    the histogram view, and sets one bin count shared by every histogram.
 
-    **Per-replica mode**: x-axis = replica ID (A, B, C, …).  Each replica
-    gets its own box-whisker at its x position.  A red pooled-median line
+    **Per-replica mode**: one box-whisker per replicate the fit used, labelled
+    and coloured by the replicate's position in the loaded data (A, B, C, …),
+    as on the Fit Curve and in the Replicas panel.  A red pooled-median line
     spans all positions.
 
     **Average mode**: x-axis labeled "Pool of Fits" with no tick marks.
     One box-whisker at x=0 for the single optimizer pool.
 
+    **Histogram view**: the value axis stays vertical, as in the box view, and
+    bars grow to the right with the number of fits per bin. Each histogram is of
+    the pooled values the box view summarises, with the pool-median line. Its
+    legend sits on a line under the controls, which in per-replica mode also
+    says the replicates are pooled.
+
+    While :meth:`show_mismatch` hides the fit, a note takes the place of the
+    plots.
+
     Two extra subplots show the **RMSE** and **R²** distributions across the
-    valid fits. A gold ring marks the current representative in every subplot;
-    clicking any point (parameter or quality) reports that fit as the
-    representative (emits :attr:`representative_selected`). Each subplot can be
-    shown/hidden via the checkbox row beneath the plots.
+    valid fits. In the box view a gold ring marks the current representative in
+    every subplot; clicking any point (parameter or quality) reports that fit as
+    the representative (emits :attr:`representative_selected`). Each subplot can
+    be shown/hidden via the checkbox row beneath the plots, in either view.
 
     Signals
     -------
@@ -124,13 +216,18 @@ class DistributionWidget(QWidget):
         super().__init__(parent)
         self.setToolTip(
             '<qt>Distribution of each parameter and of fit quality (RMSE, R²) '
-            'across all valid fits.<br>Click any point to report that fit as the '
-            'representative; the gold ring marks the current one.<br>Show or hide '
-            'each plot with the checkboxes below.</qt>'
+            'across all valid fits, as box plots or histograms.<br>In the box plot '
+            'view, click any point to report that fit as the representative; the gold '
+            'ring marks the current one.<br>Show or hide each plot with the '
+            'checkboxes below.</qt>'
         )
         self._style: dict = dict(DEFAULT_STYLE)
         self._plots: list[pg.PlotWidget] = []
         self._result: FitResult | None = None
+        # The loaded data's replicate order, which gives each replicate its label and colour.
+        self._replica_ids: tuple[str, ...] | None = None
+        # Set by show_mismatch(): while not None the fit is hidden and this note says why.
+        self._mismatch_note: str | None = None
         self._param_keys: list[str] = []
         # Visibility toggles (issue 7): ordered keys = param keys then quality keys.
         self._all_keys: list[str] = []
@@ -139,10 +236,52 @@ class DistributionWidget(QWidget):
         self._hidden_keys: set[str] = {'rmse'}
         self._plot_by_key: dict[str, pg.PlotWidget] = {}
         self._checkboxes: dict[str, QCheckBox] = {}
+        self._histogram = False
+        # The user's bin count; while None, the Bins control follows each result's pool size.
+        self._bins: int | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
+
+        # View controls above the plots: box plot | histogram, and the shared bin count.
+        self._view_bar_host = QWidget()
+        view_rows = QVBoxLayout(self._view_bar_host)
+        view_rows.setContentsMargins(4, 0, 4, 0)
+        view_rows.setSpacing(2)
+        view_bar = QHBoxLayout()
+        view_bar.setSpacing(10)
+        view_rows.addLayout(view_bar)
+        view_bar.addWidget(QLabel('Show as:'))
+        self._box_radio = QRadioButton('Box plot')
+        self._box_radio.setChecked(True)
+        self._hist_radio = QRadioButton('Histogram')
+        view_group = QButtonGroup(self)
+        view_group.addButton(self._box_radio)
+        view_group.addButton(self._hist_radio)
+        self._hist_radio.toggled.connect(self._on_view_toggled)
+        view_bar.addWidget(self._box_radio)
+        view_bar.addWidget(self._hist_radio)
+        view_bar.addSpacing(16)
+        self._bins_label = QLabel('Bins:')
+        self._bins_spin = QSpinBox()
+        self._bins_spin.setRange(_MIN_BINS, _MAX_BINS)
+        self._bins_spin.setKeyboardTracking(False)
+        self._bins_spin.setToolTip('Number of bars in every histogram.')
+        self._bins_spin.valueChanged.connect(self._on_bins_changed)
+        view_bar.addWidget(self._bins_label)
+        view_bar.addWidget(self._bins_spin)
+        view_bar.addStretch(1)
+        # Histogram legend: a wrapping line under the controls, so it never
+        # covers bars, clips in a narrow subplot, or sets the widget's minimum width.
+        self._hist_note = QLabel()
+        self._hist_note.setTextFormat(Qt.TextFormat.RichText)
+        self._hist_note.setWordWrap(True)
+        self._hist_note.setStyleSheet('color: #52514e;')
+        view_rows.addWidget(self._hist_note)
+        self._set_bins_enabled(False)
+        self._view_bar_host.setVisible(False)
+        outer.addWidget(self._view_bar_host)
 
         self._stack_host = QWidget()
         self._stack = QStackedLayout(self._stack_host)
@@ -166,6 +305,13 @@ class DistributionWidget(QWidget):
         self._all_hidden.setStyleSheet('color: rgba(0,0,0,0.35); font-size: 14px;')
         self._stack.addWidget(self._all_hidden)
 
+        self._mismatch_label = QLabel()
+        self._mismatch_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._mismatch_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._mismatch_label.setWordWrap(True)
+        self._mismatch_label.setStyleSheet('color: #3d3a33; font-size: 14px; padding: 16px;')
+        self._stack.addWidget(self._mismatch_label)
+
         self._stack.setCurrentWidget(self._placeholder)
         outer.addWidget(self._stack_host, stretch=1)
 
@@ -181,23 +327,67 @@ class DistributionWidget(QWidget):
     # Public API
     # ------------------------------------------------------------------
 
-    def update_result(self, result: FitResult) -> None:
+    def update_result(self, result: FitResult, replica_ids: Sequence[str] | None = None) -> None:
         """Redraw all subplots from a FitResult's parameter_samples.
 
         One subplot per parameter, then RMSE and R² fit-quality subplots
         (when ``quality_samples`` is present). Only the parameter subplots are
         reported by :meth:`param_keys` / exported; the quality subplots are a
         live, clickable diagnostic for picking a representative fit.
+
+        Parameters
+        ----------
+        result : FitResult
+            The fit to show.
+        replica_ids : sequence of str, optional
+            The loaded data's replicate ids in order
+            (``MeasurementSet.replica_ids``). A per-replicate fit's boxes take
+            the display label and colour of each replicate's position here.
+            Without it (no data loaded) they are labelled by the replicate ids
+            the fit records.
         """
         self._result = result
+        self._replica_ids = None if replica_ids is None else tuple(replica_ids)
+        self._render()
+
+    def show_mismatch(self, note: str | None) -> None:
+        """Show *note* in place of the plots while the fit does not match the loaded data; ``None`` shows them again.
+
+        The note stays through later :meth:`update_result`, style and view
+        changes, so a hidden fit's distributions are never shown by accident;
+        :meth:`clear` removes it together with the result. The plots are kept
+        while hidden, so ``None`` shows them exactly as they were.
+
+        Parameters
+        ----------
+        note : str or None
+            Short plain text naming what differs from the fit's record, or
+            ``None`` when the fit matches the loaded data.
+        """
+        self._mismatch_note = note
+        self._mismatch_label.setText(note or '')
+        self._update_stack_page()
+
+    def _render(self) -> None:
+        """Draw every subplot from the stored result."""
+        result = self._result
+        if result is None:
+            return
 
         if result.parameter_samples is None or not result.parameters:
-            self._stack.setCurrentWidget(self._placeholder)
-            self._toggle_bar_host.setVisible(False)
+            self._param_keys = []
+            self._all_keys = []
+            self._update_stack_page()
             return
 
         param_keys = list(result.parameter_samples.keys())
         self._param_keys = list(param_keys)
+
+        if self._bins is None:
+            self._bins_spin.blockSignals(True)
+            self._bins_spin.setValue(_default_bins(len(result.parameter_samples[param_keys[0]])))
+            self._bins_spin.blockSignals(False)
+        self._update_hist_note(pooled_replicas=self._replicate_pools(result) is not None)
 
         quality_keys = []
         if result.quality_samples:
@@ -263,7 +453,6 @@ class DistributionWidget(QWidget):
                 cb.blockSignals(True)
                 cb.setChecked(key not in self._hidden_keys)
                 cb.blockSignals(False)
-        self._toggle_bar_host.setVisible(True)
 
     def _on_toggle(self, key: str, checked: bool) -> None:
         """Show/hide one subplot without re-rendering (no jitter/stat recompute)."""
@@ -276,9 +465,47 @@ class DistributionWidget(QWidget):
             pw.setVisible(checked)
         self._update_stack_page()
 
+    # ------------------------------------------------------------------
+    # View controls
+    # ------------------------------------------------------------------
+
+    def _set_bins_enabled(self, enabled: bool) -> None:
+        self._bins_label.setEnabled(enabled)
+        self._bins_spin.setEnabled(enabled)
+
+    def _update_hist_note(self, *, pooled_replicas: bool) -> None:
+        """Show the histogram legend: the pool-median swatch, and the pooling note per replica."""
+        self._hist_note.setVisible(self._histogram)
+        r, g, b, *_ = self._style.get('distribution', {}).get('median_line_color', (220, 0, 0, 255))
+        text = f'<span style="color: rgb({r}, {g}, {b}); font-weight: bold;">━━</span> Pool median'
+        if pooled_replicas:
+            text += ' &nbsp;·&nbsp; Each histogram pools the fits from all replicates.'
+        self._hist_note.setText(text)
+
+    def _on_view_toggled(self, histogram: bool) -> None:
+        """Switch every subplot between the box view and the histogram view."""
+        self._histogram = histogram
+        self._set_bins_enabled(histogram)
+        self._render()
+
+    def _on_bins_changed(self, bins: int) -> None:
+        """Apply the shared bin count to every histogram."""
+        self._bins = bins
+        if self._histogram:
+            self._render()
+
     def _update_stack_page(self) -> None:
-        """Pick the stacked page: placeholder, all-hidden notice, or the plots."""
-        if self._result is None or not self._all_keys:
+        """Pick the stacked page: the hidden-fit note, placeholder, all-hidden notice, or the plots.
+
+        The view controls and the show/hide checkboxes appear only with the plots they act on.
+        """
+        has_plots = self._result is not None and bool(self._all_keys)
+        hidden_fit = self._mismatch_note is not None
+        self._view_bar_host.setVisible(has_plots and not hidden_fit)
+        self._toggle_bar_host.setVisible(has_plots and not hidden_fit)
+        if hidden_fit:
+            self._stack.setCurrentWidget(self._mismatch_label)
+        elif not has_plots:
             self._stack.setCurrentWidget(self._placeholder)
         elif all(k in self._hidden_keys for k in self._all_keys):
             self._stack.setCurrentWidget(self._all_hidden)
@@ -288,18 +515,18 @@ class DistributionWidget(QWidget):
     def apply_style(self, style: dict) -> None:
         """Update visual style (fonts, palette) from PlotStyleWidget."""
         self._style = style
-        if self._result is not None:
-            self.update_result(self._result)
+        self._render()
 
     def clear(self) -> None:
-        """Reset to empty placeholder."""
+        """Reset to empty placeholder, removing any hidden-fit note."""
         self._result = None
+        self._replica_ids = None
+        self._mismatch_note = None
         self._param_keys = []
         self._all_keys = []
         for pw in self._plots:
             self._clear_subplot(pw.getPlotItem())
-        self._toggle_bar_host.setVisible(False)
-        self._stack.setCurrentWidget(self._placeholder)
+        self._update_stack_page()
 
     def param_keys(self) -> list[str]:
         """Parameter keys of the currently displayed subplots, in order."""
@@ -496,7 +723,7 @@ class DistributionWidget(QWidget):
         add_legend: bool = False,
         interactive: bool = True,
     ) -> None:
-        """Populate one PlotItem with the box-whisker distribution for *key*.
+        """Populate one PlotItem with the box-whisker or histogram distribution for *key*.
 
         Single source of truth for distribution subplot rendering: used
         both by :meth:`update_result` on the live widget and by
@@ -523,45 +750,55 @@ class DistributionWidget(QWidget):
         palette_name = self._style['data_points'].get('palette', 'Default (Tab10)')
         palette = PALETTES.get(palette_name, REPLICA_PALETTE)
 
-        replica_samples = self._extract_replica_samples(result)
-        n_replicas = len(replica_samples) if replica_samples else 0
+        pools = self._replicate_pools(result)
+        replica_samples = [samples for _, samples in pools] if pools else None
 
-        if n_replicas > 0:
-            x_positions = list(range(n_replicas))
-            x_tick_labels = [_display_label(i) for i in range(n_replicas)]
+        if replica_samples:
+            x_positions = list(range(len(replica_samples)))
+            x_tick_labels, colors = self._replicate_labels_and_colors(result, pools, palette)
             x_axis_label = 'Replica'
         else:
             x_positions = [0]
-            x_tick_labels = []
+            x_tick_labels, colors = [], []
             x_axis_label = 'Pool of Fits'
 
         pool = result.parameter_samples[key]
         use_log = (key in log_keys) and ka_scale == 'log₁₀'
         values = _log10_positive(pool) if use_log else pool
-        pool_stats = _box_stats(values)
 
-        # Boxes: one per replica in per-replica mode, one pooled in average mode
-        if replica_samples:
-            for r_idx, r_samp in enumerate(replica_samples):
-                r_vals = r_samp.get(key)
-                if r_vals is None:
-                    continue
-                r_display = _log10_positive(r_vals) if use_log else r_vals
-                r_stats = _box_stats(r_display)
-                color = palette[r_idx % len(palette)]
-                self._draw_box(plot_item, r_stats, float(x_positions[r_idx]), color)
+        if self._histogram:
+            self._draw_histogram(plot_item, values)
         else:
-            self._draw_box(plot_item, pool_stats, 0.0)
+            pool_stats = _box_stats(values)
+            # Boxes: one per replica in per-replica mode, one pooled in average mode
+            if replica_samples:
+                for r_idx, r_samp in enumerate(replica_samples):
+                    r_vals = r_samp.get(key)
+                    if r_vals is None:
+                        continue
+                    r_display = _log10_positive(r_vals) if use_log else r_vals
+                    r_stats = _box_stats(r_display)
+                    self._draw_box(plot_item, r_stats, float(x_positions[r_idx]), colors[r_idx])
+            else:
+                self._draw_box(plot_item, pool_stats, 0.0)
 
-        coords = self._draw_strip(
-            plot_item, values, replica_samples, key, param_idx, palette, use_log, x_positions, interactive=interactive
-        )
-        self._draw_median_line(plot_item, pool_stats['median'], x_positions)
+            coords = self._draw_strip(
+                plot_item,
+                values,
+                replica_samples,
+                key,
+                param_idx,
+                colors,
+                use_log,
+                x_positions,
+                interactive=interactive,
+            )
+            self._draw_median_line(plot_item, pool_stats['median'], min(x_positions) - 0.5, max(x_positions) + 0.5)
 
-        if replica_samples:
-            self._draw_replica_medians(plot_item, replica_samples, key, palette, use_log, x_positions)
+            if replica_samples:
+                self._draw_replica_medians(plot_item, replica_samples, key, colors, use_log, x_positions)
 
-        self._draw_selection_highlight(plot_item, coords)
+            self._draw_selection_highlight(plot_item, coords)
 
         # Y-axis label — base form; ScientificAxisItem appends ×10ⁿ via callback.
         unit_str = units.get(key, '')
@@ -577,11 +814,6 @@ class DistributionWidget(QWidget):
             left_axis.exponent = None
         plot_item.setLabel('left', base_label)
 
-        # X-axis ticks and label
-        bottom_ax = plot_item.getAxis('bottom')
-        bottom_ax.setTicks([[(pos, lbl) for pos, lbl in zip(x_positions, x_tick_labels)]])
-        plot_item.setLabel('bottom', x_axis_label)
-
         # Title — mirror the log-wrap so title + axis stay consistent
         title_size = self._style.get('distribution', {}).get('title_font_size', 16)
         title_text = f'log₁₀({label})' if use_log else label
@@ -589,11 +821,14 @@ class DistributionWidget(QWidget):
 
         self._apply_axis_style(plot_item)
 
-        x_pad = 0.8
-        plot_item.setXRange(min(x_positions) - x_pad, max(x_positions) + x_pad, padding=0)
-        plot_item.enableAutoRange(axis='y')
+        if not self._histogram:
+            plot_item.getAxis('bottom').setTicks([[(pos, lbl) for pos, lbl in zip(x_positions, x_tick_labels)]])
+            plot_item.setLabel('bottom', x_axis_label)
+            x_pad = 0.8
+            plot_item.setXRange(min(x_positions) - x_pad, max(x_positions) + x_pad, padding=0)
+            plot_item.enableAutoRange(axis='y')
 
-        if add_legend:
+        if add_legend and not self._histogram:
             self._add_legend(plot_item, replica_samples is not None)
 
     def _populate_quality_subplot(self, plot_item: pg.PlotItem, *, metric_key: str) -> None:
@@ -609,12 +844,15 @@ class DistributionWidget(QWidget):
         values = np.asarray(result.quality_samples[metric_key], dtype=float)
         if values.size == 0:
             return
-        stats = _box_stats(values)
 
-        self._draw_box(plot_item, stats, 0.0)
-        coords = self._draw_quality_strip(plot_item, values)
-        self._draw_median_line(plot_item, stats['median'], [0])
-        self._draw_selection_highlight(plot_item, coords)
+        if self._histogram:
+            self._draw_histogram(plot_item, values)
+        else:
+            stats = _box_stats(values)
+            self._draw_box(plot_item, stats, 0.0)
+            coords = self._draw_quality_strip(plot_item, values)
+            self._draw_median_line(plot_item, stats['median'], -0.5, 0.5)
+            self._draw_selection_highlight(plot_item, coords)
 
         # RMSE label unit = the assay's signal unit from the registry (the same
         # 'a.u.' string the main plot uses). Pass it plainly — Pint's HTML
@@ -632,15 +870,15 @@ class DistributionWidget(QWidget):
             left_axis.exponent = None
         plot_item.setLabel('left', base_label)
 
-        plot_item.getAxis('bottom').setTicks([[]])
-        plot_item.setLabel('bottom', 'Pool of Fits')
-
         title_size = self._style.get('distribution', {}).get('title_font_size', 16)
         plot_item.setTitle(title, size=f'{title_size}pt', bold=True)
 
         self._apply_axis_style(plot_item)
-        plot_item.setXRange(-0.8, 0.8, padding=0)
-        plot_item.enableAutoRange(axis='y')
+        if not self._histogram:
+            plot_item.getAxis('bottom').setTicks([[]])
+            plot_item.setLabel('bottom', 'Pool of Fits')
+            plot_item.setXRange(-0.8, 0.8, padding=0)
+            plot_item.enableAutoRange(axis='y')
 
     def _draw_quality_strip(self, plot_item: pg.PlotItem, values: np.ndarray) -> dict[int, tuple[float, float]]:
         """Jittered, clickable strip — clicking a point selects that fit.
@@ -761,13 +999,13 @@ class DistributionWidget(QWidget):
         replica_samples: Optional[List[Dict[str, np.ndarray]]],
         key: str,
         param_idx: int,
-        palette: list,
+        colors: list,
         use_log: bool,
         x_positions: list[int],
         *,
         interactive: bool = True,
     ) -> dict[int, tuple[float, float]]:
-        """Jittered strip plot with each replica at its own x position.
+        """Jittered strip plot with each replica at its own x position, in its colour from *colors*.
 
         Returns the pool-index → ``(x, y)`` coordinate map (the exact numbers
         handed to the scatter) so the selection ring lands on the right dot,
@@ -804,7 +1042,7 @@ class DistributionWidget(QWidget):
                     y=display,
                     size=5,
                     pen=pg.mkPen(None),
-                    brush=pg.mkBrush(rgba(palette[r_idx % len(palette)], 120)),
+                    brush=pg.mkBrush(rgba(colors[r_idx], 120)),
                     data=gidx,
                 )
                 if interactive:
@@ -832,10 +1070,33 @@ class DistributionWidget(QWidget):
             plot_item.addItem(scatter)
         return coords
 
-    def _draw_median_line(self, plot_item: pg.PlotItem, median: float, x_positions: list[int]) -> None:
-        """Solid horizontal line at the pool median, spanning all positions."""
-        x_lo = min(x_positions) - 0.5
-        x_hi = max(x_positions) + 0.5
+    def _draw_histogram(self, plot_item: pg.PlotItem, values: np.ndarray) -> None:
+        """Histogram of *values* with the shared bin count, plus the pool-median line.
+
+        Bars run horizontally so the value axis stays vertical, as in the box
+        view: the y-axis label, ×10ⁿ exponent and log₁₀ transform are shared by
+        both views. Sets the count axis (bottom) and both ranges. See
+        :func:`draw_histogram` for how bars are drawn.
+        """
+        values = np.asarray(values, dtype=float)
+        tallest = draw_histogram(
+            plot_item, values, self._bins_spin.value(), color=_HIST_BAR, gap_color=BACKGROUND_COLOR, horizontal=True
+        )
+        x_hi = tallest * 1.08
+        self._draw_median_line(plot_item, float(np.median(values)), 0.0, x_hi)
+
+        step = _count_tick_step(x_hi)
+        plot_item.getAxis('bottom').setTicks([[(v, str(v)) for v in range(step, int(x_hi) + 1, step)], []])
+        plot_item.setLabel('bottom', 'Fits')
+        plot_item.setXRange(0.0, x_hi, padding=0)
+        lo, hi = float(values.min()), float(values.max())
+        if lo == hi:
+            # One value: the same ±0.5 range around it that the box view shows.
+            lo, hi = lo - 0.5, hi + 0.5
+        plot_item.setYRange(lo, hi, padding=0.05)
+
+    def _draw_median_line(self, plot_item: pg.PlotItem, median: float, x_lo: float, x_hi: float) -> None:
+        """Solid horizontal line at the pool median, spanning ``x_lo`` to ``x_hi``."""
         dist = self._style.get('distribution', {})
         width = dist.get('median_line_width', 2.5)
         color = dist.get('median_line_color', (220, 0, 0, 255))
@@ -851,11 +1112,11 @@ class DistributionWidget(QWidget):
         plot_item: pg.PlotItem,
         replica_samples: List[Dict[str, np.ndarray]],
         key: str,
-        palette: list,
+        colors: list,
         use_log: bool,
         x_positions: list[int],
     ) -> None:
-        """Diamond markers at each replica's median value, at that replica's x."""
+        """Diamond markers at each replica's median value, at that replica's x, in its colour from *colors*."""
         marker_size = self._style.get('distribution', {}).get('replica_median_size', 10)
         for r_idx, r_samp in enumerate(replica_samples):
             r_vals = r_samp.get(key)
@@ -863,14 +1124,13 @@ class DistributionWidget(QWidget):
                 continue
             med = float(np.median(_log10_positive(r_vals) if use_log else r_vals))
             x_pos = x_positions[r_idx] if r_idx < len(x_positions) else r_idx
-            color = palette[r_idx % len(palette)]
             marker = pg.ScatterPlotItem(
                 x=[float(x_pos)],
                 y=[med],
                 symbol='d',
                 size=marker_size,
                 pen=pg.mkPen(FOREGROUND_COLOR, width=1),
-                brush=pg.mkBrush(rgba(color, 220)),
+                brush=pg.mkBrush(rgba(colors[r_idx], 220)),
             )
             plot_item.addItem(marker)
 
@@ -915,18 +1175,49 @@ class DistributionWidget(QWidget):
             axis.setPen(pg.mkPen(FOREGROUND_COLOR, width=1))
             axis.setTextPen(pg.mkPen(FOREGROUND_COLOR))
 
-    def _extract_replica_samples(
-        self,
-        result: FitResult,
-    ) -> Optional[List[Dict[str, np.ndarray]]]:
-        """Return per-replica parameter_samples if available."""
+    @staticmethod
+    def _replicate_pools(result: FitResult) -> Optional[List[Tuple[str, Dict[str, np.ndarray]]]]:
+        """Each replicate's accepted fits with that replicate's id, in pool order; None for a fit of the average.
+
+        Raises
+        ------
+        ValueError
+            If a per-replicate fit does not record which replicate each of its
+            fits belongs to, so no box could be named truthfully.
+        """
         if result.replica_fits is None:
             return None
-        out = []
-        for rf in result.replica_fits:
-            if rf.parameter_samples is not None:
-                out.append(rf.parameter_samples)
-        return out or None
+        ids = fit_replica_ids(result)
+        if ids is None or len(ids) != len(result.replica_fits):
+            raise ValueError('This per-replicate fit does not record which replicate each of its fits belongs to.')
+        pools = [
+            (rid, rf.parameter_samples) for rid, rf in zip(ids, result.replica_fits) if rf.parameter_samples is not None
+        ]
+        return pools or None
+
+    def _replicate_labels_and_colors(
+        self, result: FitResult, pools: List[Tuple[str, Dict[str, np.ndarray]]], palette: list
+    ) -> tuple[list[str], list[Tuple[int, int, int]]]:
+        """Tick label and colour of each replicate in *pools*.
+
+        With the loaded data's replicate order, each replicate is named and
+        coloured by its position there, so a replicate reads the same on every
+        tab whichever replicates are active. Without it, replicates are named
+        by id and coloured by their position among the replicates the fit was
+        given.
+        """
+        ids = [rid for rid, _ in pools]
+        if self._replica_ids is not None:
+            missing = [rid for rid in ids if rid not in self._replica_ids]
+            if missing:
+                raise ValueError(f'The loaded data has no replicates {missing}, which this fit used.')
+            positions = [self._replica_ids.index(rid) for rid in ids]
+            labels = [_display_label(position) for position in positions]
+        else:
+            given = input_replica_ids(result) or ids
+            positions = [given.index(rid) for rid in ids]
+            labels = list(ids)
+        return labels, [palette[position % len(palette)] for position in positions]
 
     @staticmethod
     def _lookup_assay_type(name: str) -> Optional[AssayType]:

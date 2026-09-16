@@ -7,9 +7,9 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QPointF, QRectF
+from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from core.units import Q_
 from gui.plotting.colors import (
@@ -23,9 +23,9 @@ from gui.plotting.colors import (
     REPLICA_PALETTE,
     rgba,
 )
-from gui.plotting.labels import fmt_param, fmt_unit_html
+from gui.plotting.labels import _format_exponent_unicode, fmt_param, fmt_unit_html
 from gui.plotting.plot_style import DEFAULT_STYLE, line_style_to_qt
-from gui.widgets.replica_panel import _display_label
+from gui.widgets.replica_panel import _display_label, describe_replicates
 
 # Overlay auto-placement (legend + fit-summary annotation). PyQtGraph has no
 # equivalent of matplotlib's legend loc='best' — upstream issue #2769 asking for
@@ -104,12 +104,46 @@ def _x_unit_scale(x_unit: str) -> float:
         ) from err
 
 
-_SUPERSCRIPT_DIGITS = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻')
+def _replica_order(plot_data: dict[str, Any]) -> tuple[str, ...]:
+    """Every replicate id in the data's order, which fixes each replicate's label and colour.
+
+    ``all_replica_ids`` when the data carries it (``prepare_plot_data`` always
+    does); otherwise the order the replicates are listed in.
+    """
+    listed = plot_data.get('all_replica_ids')
+    if listed:
+        return tuple(str(rid) for rid in listed)
+    groups = ('active_replicas', 'left_out_replicas', 'dropped_replicas')
+    return tuple(str(rid) for group in groups for rid, _ in plot_data.get(group, []))
 
 
-def _format_exponent_unicode(exp: int) -> str:
-    """Convert an integer exponent to Unicode superscript, e.g. 5 → '⁵', -3 → '⁻³'."""
-    return str(exp).translate(_SUPERSCRIPT_DIGITS)
+def _without_fit(plot_data: dict[str, Any]) -> dict[str, Any]:
+    """*plot_data* as drawn with no fit: left-out replicates rejoin the active ones and the mean covers them all."""
+    left_out = plot_data.get('left_out_replicas', [])
+    if not left_out:
+        return {**plot_data, 'fits': []}
+    order = _replica_order(plot_data)
+    active = sorted([*plot_data.get('active_replicas', []), *left_out], key=lambda pair: order.index(str(pair[0])))
+    average = np.stack([np.asarray(sig) for _, sig in active]).mean(axis=0)
+    return {**plot_data, 'active_replicas': active, 'left_out_replicas': [], 'average': average, 'fits': []}
+
+
+def _differing_replicates_note(fits: list[dict[str, Any]], order: tuple[str, ...]) -> str | None:
+    """A plain note when overlaid fits used different replicates, naming each set; otherwise None.
+
+    The mean and SD follow the last fit, the one the summary panel reports.
+    """
+    if len(fits) < 2 or any('replica_ids' not in fit for fit in fits):
+        return None
+    reported = fits[-1]['replica_ids']
+    others = [fit['replica_ids'] for fit in fits[:-1] if set(fit['replica_ids']) != set(reported)]
+    if not others:
+        return None
+    other_names = '; '.join(describe_replicates(ids, order) for ids in others)
+    return (
+        f'Mean \u00b1 SD is over {describe_replicates(reported, order)}, the ones the fit in the summary used. '
+        f'{"Another fit" if len(others) == 1 else "Other fits"} shown used {other_names}.'
+    )
 
 
 class _ErrorBarSample(pg.ItemSample):
@@ -268,8 +302,18 @@ class PlotWidget(QWidget):
             ax.setStyle(tickLength=-8, tickFont=_tick_font)
             ax.label.setFont(_label_font)
 
+        # A short plain note above the plot: why a fit is hidden, or that
+        # overlaid fits used different replicates.
+        self._note = QLabel()
+        self._note.setTextFormat(Qt.TextFormat.PlainText)
+        self._note.setWordWrap(True)
+        self._note.setStyleSheet('color: #3d3a33; background: #f3f1ea; padding: 4px 8px;')
+        self._note.setVisible(False)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._note)
         layout.addWidget(self._pg_widget)
 
         # The ViewBox has no real geometry until it has been laid out and
@@ -290,8 +334,8 @@ class PlotWidget(QWidget):
         self._style: dict = DEFAULT_STYLE
 
         self._replica_items: list[pg.ScatterPlotItem] = []
-        self._dropped_item: pg.ScatterPlotItem | None = None
         self._dropped_items: list[pg.ScatterPlotItem] = []
+        self._left_out_items: list[pg.ScatterPlotItem] = []
         self._average_item: pg.PlotCurveItem | None = None
         self._error_bar_item: pg.ErrorBarItem | None = None
         self._error_cap_items: list[pg.PlotCurveItem] = []
@@ -305,8 +349,14 @@ class PlotWidget(QWidget):
         self._replica_ids: list[str] = []
         self._all_replica_ids: tuple[str, ...] = ()
         self._dropped_replica_ids: list[str] = []
+        self._left_out_replica_ids: list[str] = []
         self._fit_labels: list[str] = []
         self._fit_results: list[Any] = []
+        # Set by show_mismatch(): while not None the fit is hidden and this note says why.
+        self._mismatch_note: str | None = None
+        self._replicates_note: str | None = None
+        # Set by show_hidden_results(): other results held but not drawn, while the drawn fits stay.
+        self._hidden_results_note: str | None = None
 
         self._last_plot_data: dict[str, Any] = {}
         self._last_error_bar_data: tuple | None = None
@@ -353,8 +403,18 @@ class PlotWidget(QWidget):
             were put so both are re-placed against the new data. Set to True
             when the caller is redrawing the *same* data (e.g. an x-axis unit
             rescale) and wants user-dragged positions to survive.
+
+        Notes
+        -----
+        Each replicate's colour and label come from its position in
+        ``all_replica_ids``, so they stay the same whichever replicates are
+        active and whether or not a fit is shown. Replicates the fit left out
+        are drawn in the dropped style. While :meth:`show_mismatch` hides the
+        fit, the data is drawn without it.
         """
         self._last_plot_data = plot_data
+        if self._mismatch_note is not None:
+            plot_data = _without_fit(plot_data)
         if not preserve_positions:
             self._legend_placed = False
             self._annotation_pos = None
@@ -377,15 +437,14 @@ class PlotWidget(QWidget):
         palette_name = style['data_points'].get('palette', 'Default (Tab10)')
         palette = PALETTES.get(palette_name, REPLICA_PALETTE)
 
-        # Store full replica id list for correct legend labels
-        self._all_replica_ids = tuple(plot_data.get('all_replica_ids', ()))
+        self._all_replica_ids = _replica_order(plot_data)
 
         # Active replicas — outlined markers for matplotlib-like look
         active = plot_data.get('active_replicas', [])
         self._replica_ids = []
         if style['visibility']['show_data_points']:
-            for i, (rid, sig) in enumerate(active):
-                color = palette[i % len(palette)]
+            for rid, sig in active:
+                color = palette[self._all_replica_ids.index(str(rid)) % len(palette)]
                 item = pg.ScatterPlotItem(
                     x=x,
                     y=np.asarray(sig),
@@ -399,24 +458,10 @@ class PlotWidget(QWidget):
                 self._replica_items.append(item)
                 self._replica_ids.append(str(rid))
 
-        # Dropped replicas — individual items so each gets its own legend entry
-        dropped = plot_data.get('dropped_replicas', [])
-        self._dropped_replica_ids = []
-        if dropped and style['visibility']['show_dropped']:
-            self._dropped_items = []
-            for rid, sig in dropped:
-                item = pg.ScatterPlotItem(
-                    x=x,
-                    y=np.asarray(sig),
-                    symbol=style['dropped_replicas']['symbol'],
-                    size=style['dropped_replicas']['size'],
-                    pen=pg.mkPen(None),
-                    brush=pg.mkBrush(rgba(DROPPED_REPLICA_COLOR, style['dropped_replicas']['alpha'])),
-                    name=None,
-                )
-                self._pg_widget.addItem(item)
-                self._dropped_items.append(item)
-                self._dropped_replica_ids.append(str(rid))
+        # Replicates the fit left out, then inactive ones, in the dropped style:
+        # individual items so each gets its own legend entry.
+        self._left_out_items, self._left_out_replica_ids = self._add_greyed(x, plot_data.get('left_out_replicas', []))
+        self._dropped_items, self._dropped_replica_ids = self._add_greyed(x, plot_data.get('dropped_replicas', []))
 
         # Average line + error bars — always create items when data permits so
         # that apply_style() can toggle visibility without requiring a full redraw.
@@ -458,6 +503,7 @@ class PlotWidget(QWidget):
 
         # Fit curves
         fits = plot_data.get('fits', [])
+        self._replicates_note = _differing_replicates_note(fits, self._all_replica_ids)
         self._fit_labels = []
         if style['visibility']['show_fit']:
             for i, fit in enumerate(fits):
@@ -484,6 +530,51 @@ class PlotWidget(QWidget):
         self._rebuild_legend()
         self._rebuild_annotation()
         self._update_axis_labels_with_exponents()
+        self._sync_note()
+
+    def _sync_note(self) -> None:
+        """Put the note above the plot: why the fit is hidden, or else what to know about the fits drawn."""
+        if self._mismatch_note is not None:
+            note = self._mismatch_note
+        else:
+            note = ' '.join(text for text in (self._replicates_note, self._hidden_results_note) if text)
+        self._note.setText(note)
+        self._note.setVisible(bool(note))
+
+    def show_hidden_results(self, note: str | None) -> None:
+        """Say above the plot that other results are held but not drawn; ``None`` removes the note.
+
+        The fits drawn stay as they are. A note from :meth:`show_mismatch`
+        takes its place while every fit is hidden.
+        """
+        self._hidden_results_note = note
+        self._sync_note()
+
+    def show_mismatch(self, note: str | None) -> None:
+        """Hide the fit while it does not match the loaded data, or show it again with ``None``.
+
+        With a *note*, the plot shows the data with no fit curve and no
+        annotation: replicates the fit left out are drawn as ordinary points,
+        Mean ± SD covers every replicate drawn as active, and *note* sits above
+        the plot saying why. The widget stays so through later
+        :meth:`update_plot`, :meth:`set_fit_results` and style changes, so a
+        hidden fit is never drawn by accident. ``None`` shows the last data and
+        fit results given, exactly as before they were hidden.
+
+        Parameters
+        ----------
+        note : str or None
+            Short plain text naming what differs from the fit's record, or
+            ``None`` when the fit matches the loaded data.
+        """
+        self._mismatch_note = note
+        self._redraw()
+
+    def _redraw(self) -> None:
+        """Redraw the last plot data and fit results, keeping the legend and annotation where they are."""
+        results = self._fit_results
+        self.update_plot(self._last_plot_data, preserve_positions=True)
+        self.set_fit_results(results)
 
     def apply_style(self, style: dict) -> None:
         """Mutate existing plot items in-place with new style settings.
@@ -500,16 +591,8 @@ class PlotWidget(QWidget):
         if old_x_unit != new_x_unit and self._last_plot_data:
             # x-unit change requires rescaling all data — do a full redraw
             # but keep legend/annotation exactly where the user left them.
-            fit_results_backup = list(self._fit_results)
             self._style = style
-            self.update_plot(
-                self._last_plot_data,
-                x_label=self._last_x_label_base,
-                y_label=self._last_y_label,
-                preserve_positions=True,
-            )
-            self._fit_results = fit_results_backup
-            self._rebuild_annotation()
+            self._redraw()
             return
 
         self._style = style
@@ -519,8 +602,8 @@ class PlotWidget(QWidget):
         palette = PALETTES.get(palette_name, REPLICA_PALETTE)
 
         dp = style['data_points']
-        for i, item in enumerate(self._replica_items):
-            color = palette[i % len(palette)]
+        for item, rid in zip(self._replica_items, self._replica_ids):
+            color = palette[self._all_replica_ids.index(rid) % len(palette)]
             item.setSymbol(dp['symbol'])
             item.setSize(dp['size'])
             item.setPen(pg.mkPen(color=rgba(color, 220), width=0.8))
@@ -528,12 +611,7 @@ class PlotWidget(QWidget):
             item.setVisible(style['visibility']['show_data_points'])
 
         dr = style['dropped_replicas']
-        if self._dropped_item is not None:
-            self._dropped_item.setSymbol(dr['symbol'])
-            self._dropped_item.setSize(dr['size'])
-            self._dropped_item.setBrush(pg.mkBrush(rgba(DROPPED_REPLICA_COLOR, dr['alpha'])))
-            self._dropped_item.setVisible(style['visibility']['show_dropped'])
-        for item in getattr(self, '_dropped_items', []):
+        for item in [*self._left_out_items, *self._dropped_items]:
             item.setSymbol(dr['symbol'])
             item.setSize(dr['size'])
             item.setBrush(pg.mkBrush(rgba(DROPPED_REPLICA_COLOR, dr['alpha'])))
@@ -768,21 +846,17 @@ class PlotWidget(QWidget):
         entry_count = 0
         if leg['show_replicas'] and vis['show_data_points']:
             for item, rid in zip(self._replica_items, self._replica_ids):
-                # Use original replica index from full id list for correct label
-                if self._all_replica_ids and rid in self._all_replica_ids:
-                    idx = self._all_replica_ids.index(rid)
-                else:
-                    idx = self._replica_ids.index(rid)
-                self._legend.addItem(item, _display_label(idx))
+                self._legend.addItem(item, _display_label(self._all_replica_ids.index(rid)))
                 entry_count += 1
         if leg.get('show_dropped', True) and vis['show_dropped']:
-            for item, rid in zip(getattr(self, '_dropped_items', []), self._dropped_replica_ids):
-                if self._all_replica_ids and rid in self._all_replica_ids:
-                    idx = self._all_replica_ids.index(rid)
-                else:
-                    idx = 0
-                self._legend.addItem(item, f'{_display_label(idx)} (dropped)')
-                entry_count += 1
+            greyed = (
+                (self._left_out_items, self._left_out_replica_ids, 'left out of fit'),
+                (self._dropped_items, self._dropped_replica_ids, 'dropped'),
+            )
+            for items, ids, reason in greyed:
+                for item, rid in zip(items, ids):
+                    self._legend.addItem(item, f'{_display_label(self._all_replica_ids.index(rid))} ({reason})')
+                    entry_count += 1
         if leg['show_average'] and vis['show_average'] and self._average_item is not None:
             self._legend.addItem(self._average_item, 'Mean')
             entry_count += 1
@@ -838,21 +912,21 @@ class PlotWidget(QWidget):
             if scene is not None:
                 scene.removeItem(self._annotation_item)
         all_items = [
-            self._dropped_item,
             self._average_item,
             self._error_bar_item,
             *self._replica_items,
             *self._fit_items,
             *self._error_cap_items,
-            *getattr(self, '_dropped_items', []),
+            *self._dropped_items,
+            *self._left_out_items,
         ]
         for item in all_items:
             if item is not None:
                 self._pg_widget.removeItem(item)
 
         self._replica_items = []
-        self._dropped_item = None
         self._dropped_items = []
+        self._left_out_items = []
         self._average_item = None
         self._error_bar_item = None
         self._error_cap_items = []
@@ -862,12 +936,35 @@ class PlotWidget(QWidget):
 
         self._replica_ids = []
         self._dropped_replica_ids = []
+        self._left_out_replica_ids = []
         self._fit_labels = []
         self._fit_results = []
 
         plot_item = self._pg_widget.getPlotItem()
         if plot_item.legend is not None:
             plot_item.legend.clear()
+
+    def _add_greyed(self, x: np.ndarray, replicas: list) -> tuple[list[pg.ScatterPlotItem], list[str]]:
+        """Scatter each ``(replica_id, signal)`` of *replicas* in the dropped style; return the items and ids."""
+        style = self._style['dropped_replicas']
+        items: list[pg.ScatterPlotItem] = []
+        ids: list[str] = []
+        if not self._style['visibility']['show_dropped']:
+            return items, ids
+        for rid, sig in replicas:
+            item = pg.ScatterPlotItem(
+                x=x,
+                y=np.asarray(sig),
+                symbol=style['symbol'],
+                size=style['size'],
+                pen=pg.mkPen(None),
+                brush=pg.mkBrush(rgba(DROPPED_REPLICA_COLOR, style['alpha'])),
+                name=None,
+            )
+            self._pg_widget.addItem(item)
+            items.append(item)
+            ids.append(str(rid))
+        return items, ids
 
     def _obstacle_points_px(self) -> np.ndarray:
         """Every plotted vertex, in ViewBox-local pixel coordinates.
@@ -888,9 +985,9 @@ class PlotWidget(QWidget):
         items = [
             *self._replica_items,
             *self._dropped_items,
+            *self._left_out_items,
             *self._fit_items,
             *self._error_cap_items,
-            self._dropped_item,
             self._average_item,
         ]
         for item in items:
@@ -977,7 +1074,7 @@ class PlotWidget(QWidget):
         R² shown here. The log₁₀ twin rows stay in the table — repeating them
         here would double the box height for no new information.
         """
-        from core.pipeline.fit_pipeline import summarize_parameters
+        from core.pipeline.fit_pipeline import fitted_representative_index, summarize_parameters
 
         lines: list[str] = []
         for idx, result in enumerate(self._fit_results):
@@ -988,10 +1085,19 @@ class PlotWidget(QWidget):
                 title = self._fit_labels[idx] if idx < len(self._fit_labels) else f'fit {idx}'
             else:
                 title = 'Fit Summary'
-            if pooled:
-                lines.append(f'<b>{title}</b> — best fit (range over {result.n_passing} accepted fits)')
+            # Name the fit the numbers come from: a picked attempt or one replicate's best fit is not the
+            # highest-R² fit of the pool, and a fit whose own choice cannot be told is named only as shown.
+            fitted = fitted_representative_index(result)
+            if fitted != result.representative_index:
+                shown = 'picked fit' if fitted is not None else 'shown fit'
+            elif result.uncertainty_source == 'replicate':
+                shown = "one replicate's best fit"
             else:
-                lines.append(f'<b>{title}</b> — best fit (no fit pool stored, so no range)')
+                shown = 'best fit'
+            if pooled:
+                lines.append(f'<b>{title}</b> — {shown} (range over {result.n_passing} accepted fits)')
+            else:
+                lines.append(f'<b>{title}</b> — {shown} (no fit pool stored, so no range)')
 
             for spec in rows:
                 # Pint's HTML formatter gives proper superscripts; the unit is
@@ -1023,7 +1129,7 @@ class PlotWidget(QWidget):
 
         if not self._style['visibility']['show_fit_results']:
             return
-        if not self._fit_results:
+        if not self._fit_results or self._mismatch_note is not None:
             return
 
         font_pt = self._style['annotations']['font_size']
