@@ -163,6 +163,33 @@ def test_txt_report_range_is_the_pool_extent(tmp_path: Path) -> None:
     assert f'{np.max(pool):.4g}' in line
 
 
+def test_txt_report_writes_a_log_value_no_coarser_than_its_own_spread(tmp_path: Path) -> None:
+    """A log₁₀ row reads to the decimals its spread needs, as the summary table on screen does.
+
+    Four significant figures put 8.496983 ± 0.000096 in the file as
+    '8.497 ± 9.6e-05', where the value is a hundred times coarser than the
+    spread it is quoted with and two fits a reader can tell apart on screen
+    become one number.
+    """
+    rng = np.random.default_rng(3)
+    tight = 10 ** rng.normal(8.496983, 1e-4, 60)  # a pool that agrees to four decimals of log₁₀
+    result = replace(
+        _result(),
+        parameters={'Ka_guest': Q_(float(10**8.496983), '1/M'), 'I_0': Q_(1000.0, 'au')},
+        parameter_samples={'Ka_guest': tight, 'I_0': rng.normal(1000.0, 20.0, 60)},
+    )
+    path = tmp_path / 'r.txt'
+    export_results_txt([result], path)
+
+    logs = np.log10(tight)
+    lines = [ln for ln in path.read_text(encoding='utf-8').splitlines() if ln.strip().startswith('log10(Ka_guest)')]
+    estimate_line, spread_line = lines
+    assert f'{np.log10(result.parameters["Ka_guest"].magnitude):.6f}'[:-1] in estimate_line
+    assert '8.497 ' not in estimate_line  # not rounded past the spread beside it
+    assert f'{np.median(logs):.5f}'[:-1] in spread_line
+    assert 'e-0' not in spread_line  # a spread in the same fixed notation as its value
+
+
 def test_txt_report_without_pool_says_so(tmp_path: Path) -> None:
     path = tmp_path / 'r.txt'
     export_results_txt([_result(pool=False)], path)

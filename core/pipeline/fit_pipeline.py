@@ -16,7 +16,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Type
 
 import numpy as np
 
@@ -27,7 +27,7 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.optimizer.ensemble import collapse, describe, describe_log10, select_representative_index
 from core.optimizer.filters import calculate_fit_metrics, select_valid_fits
-from core.optimizer.multistart import multistart_minimize
+from core.optimizer.multistart import FitCancelled, multistart_minimize
 from core.optimizer.scaling import ParamScaler
 from core.units import Q_, Quantity
 
@@ -374,6 +374,12 @@ class FitResult:
         )
 
 
+#: Largest seed the application draws and accepts. A recorded seed is meant to be
+#: typed back in, and the interface's Fixed seed boxes are 32-bit signed integers,
+#: so every seed drawn anywhere stays inside that range.
+MAX_SEED = 2**31 - 1
+
+
 @dataclass
 class FitConfig:
     """Configuration for the fitting pipeline.
@@ -463,6 +469,32 @@ def _resolve_log_scale(
             raise ValueError(f"Unknown log-scale parameter '{name}'. Valid keys: {list(keys)}")
         indices.append(keys.index(name))
     return indices
+
+
+def _check_log_scale_bounds(assay: BaseAssay, config: FitConfig) -> None:
+    """Refuse bounds a log-scale parameter's starting values cannot be drawn from.
+
+    Starting values for a log-scale parameter are spread across orders of
+    magnitude, which needs both of its bounds above zero. The refusal names the
+    parameter and the numbers, so the caller can say which field to change.
+
+    Raises
+    ------
+    ValueError
+        If a log-scale parameter's lower or upper bound is zero or negative.
+    """
+    bounds_dict = _resolve_bounds(assay, config.custom_bounds)
+    canonical_units = ASSAY_REGISTRY[assay.assay_type].units
+    for index in _resolve_log_scale(assay, config.log_scale_params):
+        key = assay.parameter_keys[index]
+        lower = float(bounds_dict[key][0].to(canonical_units[key]).magnitude)
+        upper = float(bounds_dict[key][1].to(canonical_units[key]).magnitude)
+        if lower <= 0 or upper <= 0:
+            raise ValueError(
+                f'The starting values for {key} are drawn across orders of magnitude, so both of its '
+                f'bounds must be above zero. They are {lower:g} and {upper:g}: raise the lower bound to '
+                'a small positive value and run the fit again.'
+            )
 
 
 def _wrap_params_as_quantities(
@@ -759,6 +791,7 @@ def fit_assay(
     *,
     measurement_set_id: Optional[str] = None,
     source_file: Optional[str] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> FitResult:
     """Fit an assay using multi-start optimisation.
 
@@ -772,12 +805,22 @@ def fit_assay(
         UUID of the source ``MeasurementSet`` for traceability.
     source_file : str, optional
         Original filename, if known.
+    should_cancel : Callable[[], bool], optional
+        Asked between optimizer runs whether to stop.
 
     Returns
     -------
     FitResult
         With Quantity parameters, x_fit, y_fit, the valid-fit pool, and every
         completed attempt — the attempts are kept when none passes the filter.
+
+    Raises
+    ------
+    ValueError
+        If a parameter sampled across orders of magnitude has a bound at or
+        below zero.
+    FitCancelled
+        If *should_cancel* returns True.
     """
     if config is None:
         config = FitConfig()
@@ -801,6 +844,7 @@ def fit_assay(
 
     # Resolve log-scale parameters (names -> indices)
     log_scale = _resolve_log_scale(assay, config.log_scale_params)
+    _check_log_scale_bounds(assay, config)
 
     # y_data magnitude for metrics
     y_data_mag = assay.y_data.magnitude
@@ -827,6 +871,7 @@ def fit_assay(
         compute_metrics=compute_metrics,
         scaler=scaler,
         rng=np.random.default_rng(config.seed) if config.seed is not None else None,
+        should_cancel=should_cancel,
     )
 
     # Every completed attempt, accepted or rejected, aligned by index.
@@ -1021,6 +1066,7 @@ def fit_measurement_set(
     *,
     use_average: bool = True,
     replica_id: Optional[str] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> FitResult:
     """Convenience: build an assay from a MeasurementSet and fit it.
 
@@ -1043,18 +1089,27 @@ def fit_measurement_set(
         Use the averaged active-replica signal (default ``True``).
     replica_id : str, optional
         Fit a specific replica instead of the average.
+    should_cancel : Callable[[], bool], optional
+        Asked between optimizer runs whether to stop; a linear dye-alone fit
+        is a single solve and never asks.
 
     Returns
     -------
     FitResult
-        A fit of the active replicas (per replica or averaged) records their
-        ids in ``metadata['active_replica_ids']``: the mask of *ms* changes in
-        place, so ``measurement_set_id`` alone does not say which replicas a
-        fit used. Every fit also records the data it was made on (see
-        :attr:`FitResult.metadata`).
+        Recording in ``metadata['active_replica_ids']`` the replicates its
+        RMSE and R² are measured against — the active ones for a fit of their
+        average, the named one for a fit of a single replicate. The mask of
+        *ms* changes in place, so ``measurement_set_id`` alone does not say
+        which replicates a fit used. Every fit also records the data it was
+        made on (see :attr:`FitResult.metadata`).
+
+    Raises
+    ------
+    FitCancelled
+        If *should_cancel* returns True.
     """
     if config is not None and config.per_replica and replica_id is None and use_average:
-        return fit_measurement_set_per_replica(ms, assay_cls, conditions, config)
+        return fit_measurement_set_per_replica(ms, assay_cls, conditions, config, should_cancel=should_cancel)
 
     assay = ms.to_assay(
         assay_cls,
@@ -1075,9 +1130,9 @@ def fit_measurement_set(
             config=config,
             measurement_set_id=ms.id,
             source_file=ms.metadata.get('source_file'),
+            should_cancel=should_cancel,
         )
-    if use_average and replica_id is None:
-        result.metadata['active_replica_ids'] = ms.active_replica_ids
+    result.metadata['active_replica_ids'] = ms.active_replica_ids if replica_id is None else [replica_id]
     _record_data(result, ms)
     return result
 
@@ -1113,6 +1168,8 @@ def fit_measurement_set_per_replica(
     assay_cls: Type[BaseAssay],
     conditions: Dict[str, Any],
     config: Optional[FitConfig] = None,
+    *,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> FitResult:
     """Fit every active replica independently and pool passing trials.
 
@@ -1139,11 +1196,10 @@ def fit_measurement_set_per_replica(
     The reported ``parameters``/``rmse``/``r_squared``/``y_fit`` come from
     the **representative**: each fitted replica's own best trial is a
     candidate, and the one with the highest R² against the average of the
-    replicates used is reported — a real best fit of one replica.  Choosing
-    among the replicas' best fits, rather than among every pooled trial, keeps
-    the pick independent of which near-optimal attempts the optimizer happens
-    to produce.  The pooled trials from every replica are kept in
-    ``parameter_samples``, which every reported spread derives from.
+    replicates used is reported.  Every candidate is therefore the best fit
+    of a measured replicate, which is what the reported parameters describe.
+    The pooled trials from every replica are kept in ``parameter_samples``,
+    which every reported spread derives from.
 
     Failure handling: a replica that raises (degenerate scaler input,
     convergence failure, …) or whose attempts all miss the R² floor is left
@@ -1164,6 +1220,9 @@ def fit_measurement_set_per_replica(
         Fitting configuration.  ``per_replica`` is ignored (this function
         *is* the per-replica path) but every other field — including
         ``rescale_parameters`` — is forwarded to each per-replica fit.
+    should_cancel : Callable[[], bool], optional
+        Asked between optimizer runs whether to stop, the replicates already
+        fitted included: a cancelled run returns no result.
 
     Returns
     -------
@@ -1176,6 +1235,13 @@ def fit_measurement_set_per_replica(
         diagnostic inspection, and the metadata records the replicates given
         (``active_replica_ids``), used (``replica_ids_fit``) and left out
         (``replica_failures``).
+
+    Raises
+    ------
+    PerReplicaFitError
+        If no replicate produced an accepted fit.
+    FitCancelled
+        If *should_cancel* returns True.
     """
     if config is None:
         config = FitConfig()
@@ -1185,6 +1251,11 @@ def fit_measurement_set_per_replica(
         raise ValueError('No active replicas to fit.')
 
     per_call_config = replace(config, per_replica=False)
+
+    # A bound the search cannot draw starting values from is a setting, not a
+    # property of one replicate: check it once, so its named reason reaches the
+    # caller instead of being recorded as every replicate failing to fit.
+    _check_log_scale_bounds(ms.to_assay(assay_cls, conditions=conditions, use_average=True), per_call_config)
 
     replica_fits: List[FitResult] = []
     succeeded_ids: List[str] = []
@@ -1198,7 +1269,10 @@ def fit_measurement_set_per_replica(
                 per_call_config,
                 use_average=False,
                 replica_id=rid,
+                should_cancel=should_cancel,
             )
+        except FitCancelled:
+            raise
         except Exception as exc:
             failures[rid] = 'Its signal could not be fitted.'
             logger.warning('Per-replica fit failed for replica %s: %s', rid, exc)
@@ -1287,17 +1361,28 @@ def fit_measurement_set_per_replica(
 
 
 def _no_passing_reason(result: FitResult, floor: float) -> str:
-    """Why a replicate's own fit produced no accepted attempt, in plain words."""
+    """Why a replicate's own fit produced no accepted attempt, in plain words.
+
+    Names the signal the R² was measured against: each replicate is judged on
+    its own, so the number here is not comparable with the R² reported for the
+    whole fit, which is measured against the average of the replicates used.
+    """
     best = result.metadata.get('best_attempt_r_squared')
     if best is None:
         return 'None of its fit attempts could be completed.'
-    return f'None of its fit attempts reached the minimum R² of {floor:g} (the closest reached {best:.4f}).'
+    return (
+        f"None of its fit attempts reached the minimum R² of {floor:g} against this replicate's own signal, "
+        f'which is noisier than the average of the replicates (the closest reached {best:.4f}).'
+    )
 
 
-#: Relative tolerance within which a stored score counts as reproduced. A JSON
-#: round trip keeps every float exactly; this leaves room only for rounding in
-#: the forward model on another machine.
-_REPRODUCE_RTOL = 1e-12
+#: Relative tolerance within which a stored score counts as reproduced. The gate
+#: tells the data a fit was made on from other data, which move every RMSE and
+#: R² by 1e-3 or more. The forward model's arithmetic moves them by up to about
+#: 5e-9 between two ways of writing the same root (measured on the DBA data at
+#: binding constants up to the default bound), so the tolerance sits well above
+#: that and far below the difference between datasets.
+_REPRODUCE_RTOL = 1e-6
 
 ImportStatus = Literal['verified', 'rescored_legacy', 'different_data', 'unverifiable']
 
@@ -1311,7 +1396,7 @@ def verify_imported_result(result: FitResult, ms: Optional[MeasurementSet]) -> T
 
     ``'verified'``
         The data carry the fit's fingerprint, or the file records none, and
-        every stored RMSE and R² is reproduced (relative 1e-12). The returned
+        every stored RMSE and R² is reproduced (relative 1e-6). The returned
         copy records the loaded data's fingerprint and the ``quality_scored_on``
         marker. A fit of the average whose file does not record its
         replicates is scored on the replicates active in *ms* now, and the copy

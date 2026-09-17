@@ -72,12 +72,15 @@ class TestGenerateInitialGuesses:
         log_range = np.log10(values.max()) - np.log10(values.min())
         assert log_range > 5, f'Log range {log_range} too narrow for log-scale sampling'
 
-    def test_log_scale_non_positive_lower_falls_back_to_linear(self):
-        """When lower bound is 0, log-scale falls back to linear (no log10(0) crash)."""
-        bounds = [(0.0, 100.0)]
-        guesses = generate_initial_guesses(50, bounds, log_scale_params=[0])
-        for g in guesses:
-            assert 0.0 <= g[0] <= 100.0
+    def test_log_scale_bound_at_zero_is_refused(self):
+        """A bound log space cannot hold is named, rather than sampled linearly.
+
+        Linear starting points over a range that spans orders of magnitude sit
+        almost entirely in its top decade, so the fit would quietly search a
+        fraction of the range the user asked for.
+        """
+        with pytest.raises(ValueError, match='above zero'):
+            generate_initial_guesses(50, [(0.0, 100.0)], log_scale_params=[0])
 
     def test_equal_bounds_gives_fixed_value(self):
         bounds = [(5.0, 5.0), (3.0, 3.0)]

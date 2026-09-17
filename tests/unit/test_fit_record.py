@@ -9,6 +9,9 @@ reproduced on the data loaded now.
 The synthetic data hold two replicates that fit well and one of pure noise that
 no attempt fits to the R² floor. Expected scores are measured against the mean
 of the used replicates computed here, independently of the pipeline's masking.
+
+``tests/unit/test_released_results.py`` checks the same import rules against
+files genuine releases of the app wrote.
 """
 
 from __future__ import annotations
@@ -83,6 +86,15 @@ def test_left_out_replicate_is_recorded(fitted):
     assert fit_replica_ids(result) == ['a', 'b']
     assert input_replica_ids(result) == ['a', 'b', 'c']
     assert list(result.metadata['replica_failures']) == ['c']
+
+
+def test_each_replicate_fit_records_the_replicate_it_was_measured_against(fitted):
+    """A sub-fit's quality is measured on one replicate, and its record names that replicate."""
+    _, result = fitted
+
+    for rid, sub in zip(fit_replica_ids(result), result.replica_fits):
+        assert fit_replica_ids(sub) == [rid]
+        assert sub.metadata['quality_scored_on'] == 'fitted_replicates'
 
 
 def test_pool_quality_is_measured_against_the_average_of_the_used_replicates(fitted):
@@ -234,58 +246,21 @@ def test_results_on_other_data_are_refused(fitted):
     assert verify_imported_result(_legacy(ms, result), rescaled)[0] == 'different_data'
 
 
-def _released_file(result: FitResult, *, r_squared: float | None = None, rmse: float | None = None) -> dict:
-    """*result* as a file from a release without condition units, quality pool or record of the data.
-
-    Such a file stores every condition as a bare number and may report RMSE and
-    R² measured on other replicates than the ones the fit used.
-    """
-    d = json.loads(json.dumps(result.to_dict()))
-    for key in ('condition_units', 'quality_samples', 'attempt_samples', 'attempt_quality', 'representative_index'):
-        d.pop(key)
-    for key in ('quality_scored_on', 'data_fingerprint', 'active_replica_ids'):
-        d['metadata'].pop(key)
-    for replica_fit in d['replica_fits'] or ():
-        replica_fit.pop('condition_units')
-    d['rmse'] = d['rmse'] if rmse is None else rmse
-    d['r_squared'] = d['r_squared'] if r_squared is None else r_squared
-    return d
+def _with_scores_scaled(result: FitResult, factor: float) -> FitResult:
+    """*result* as a file whose stored RMSE and R² all differ from a re-score by *factor*."""
+    shifted = copy.deepcopy(result)
+    shifted.quality_samples = {k: np.asarray(v) * factor for k, v in result.quality_samples.items()}
+    shifted.rmse, shifted.r_squared = result.rmse * factor, result.r_squared * factor
+    return shifted
 
 
-def test_bare_number_conditions_load_in_the_units_their_assay_holds_them_in(fitted):
-    _, result = fitted
-    loaded = FitResult.from_dict(_released_file(result))
-
-    for key, value in _CONDITIONS.items():
-        assert loaded.conditions[key].units == value.units
-        assert loaded.conditions[key].magnitude == value.magnitude
-
-    unknown = _released_file(result)
-    unknown['conditions']['temperature'] = 298.0
-    with pytest.raises(ValueError, match="no unit for condition 'temperature'"):
-        FitResult.from_dict(unknown)
-
-
-def test_released_per_replicate_file_without_a_pool_is_rescored_on_the_used_replicates(fitted):
-    """Its reported R² and RMSE were measured against every replicate it was given; they are measured again."""
+def test_scores_written_by_other_arithmetic_of_the_same_model_still_verify(fitted):
+    """Two ways of writing the same equilibrium root move a score by about 5e-9; another dataset moves it by 1e-3."""
     ms, result = fitted
-    vector = {key: np.array([result.parameters[key].magnitude]) for key in _KEYS}
-    as_given = _scores(ms.signals.mean(axis=0), ms.concentrations, vector)
-    as_used = _scores(_used_mean(ms), ms.concentrations, vector)
-    released = FitResult.from_dict(
-        _released_file(result, rmse=float(as_given['rmse'][0]), r_squared=float(as_given['r_squared'][0]))
-    )
+    selection = ms.with_active(result.metadata['active_replica_ids'])
 
-    status, shown = verify_imported_result(released, ms)
-
-    assert status == 'rescored_legacy'
-    assert shown.r_squared == pytest.approx(as_used['r_squared'][0], rel=1e-12)
-    assert shown.rmse == pytest.approx(as_used['rmse'][0], rel=1e-12)
-    for key in _KEYS:
-        assert shown.parameters[key].magnitude == result.parameters[key].magnitude
-    assert shown.metadata['data_fingerprint'] == ms.fingerprint()
-    rescaled = MeasurementSet(concentrations=ms.concentrations * 1.01, signals=ms.signals, replica_ids=ms.replica_ids)
-    assert verify_imported_result(released, rescaled)[0] == 'different_data'
+    assert verify_imported_result(_with_scores_scaled(_round_trip(result), 1 + 5e-9), selection)[0] == 'verified'
+    assert verify_imported_result(_with_scores_scaled(_round_trip(result), 1 + 1e-4), selection)[0] == 'different_data'
 
 
 def test_results_without_data_are_unverifiable_and_unchanged(fitted):
