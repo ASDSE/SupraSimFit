@@ -65,7 +65,9 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
   helper. Build on it; don't re-roll constants or synthetic data per file.
 - **Fits are deterministic by seeding** (the global RNG is seeded per test), so
   treat fit results as reproducible — but assert the recovered *physics*, never
-  exact optimizer output.
+  exact optimizer output. A fit started through `FittingSession.run_fit()` is the
+  exception: it draws its own seed when the panel gives none, so a GUI test that
+  runs a real fit must hand it a `FitConfig` carrying a `seed`.
 - **Signal coefficients are degenerate.** In DBA/IDA only `Ka` is identifiable
   (`I0`, `I_dye_free`, `I_dye_bound` trade off). Test `Ka` recovery and signal
   reconstruction — never the individual signal coefficients.

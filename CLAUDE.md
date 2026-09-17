@@ -17,7 +17,7 @@ Rules:
 
 ## Project Overview
 
-SupraSimFit — a desktop toolkit that fits equilibrium binding models to fluorescence titration data using multi-start L-BFGS-B optimization, extracting association constants (Ka) via rigorous forward-modelling rather than linearised transforms. Assay types: `GDA`, `IDA`, `DBA_HtoD`, `DBA_DtoH`, `DYE_ALONE`.
+SupraSimFit — a desktop toolkit that fits equilibrium binding models to fluorescence titration data using multi-start L-BFGS-B optimization, extracting association constants (Ka) via rigorous forward-modelling rather than linearised transforms. Assay types: `GDA`, `IDA`, `DBA_HtoD`, `DBA_DtoH`, `DBA_HG2`, `DBA_H2G`, `DYE_ALONE`.
 
 PyQt6 GUI + PyQtGraph plots, packaged as a standalone PyInstaller binary (no Python required by end users). Single-developer research codebase — backwards compatibility and GUI stability are **not** constraints. Python **3.13+**, package manager is **uv** (not pip/poetry).
 
@@ -87,16 +87,20 @@ All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY:
 | **Models** | `core/models/` | Pure, unit-free math: `equilibrium.py`, `linear.py` |
 | **Optimizer** | `core/optimizer/` | Stateless multi-start L-BFGS-B: `multistart`, result filtering, ensemble collapse + `describe()` summary stats, scaling, linear fit |
 | **Pipeline** | `core/pipeline/` | Orchestration: `fit_assay()`, `FitConfig`, `FitResult` (`fit_pipeline.py`) |
+| **Ka profile** | `core/pipeline/profile.py` | Exact Ka profile by variable projection (linear coefficients solved at each fixed Ka): `fit_profile()` → `ProfileResult` with the F-test interval, `profile_supported()`, `best_fit_by_profile()` |
+| **Ka sensitivity** | `core/pipeline/sensitivity.py` | `run_sensitivity()` → `SensitivityResult`: Sobol' (`sobol_design`, `sobol_indices_with_ci`) and heatmap runs over perturbed inputs; `perturbable_inputs()`, `InputSpec`, worker-process fan-out |
 | **Data Processing** | `core/data_processing/` | `MeasurementSet` (immutable 2D container), Z-score replica filter, concentration helpers, `prepare_plot_data()` (`plotting.py`) |
 | **I/O** | `core/io/` | Strategy pattern with explicit dict registries (no decorators); readers per format under `io/formats/` (BMG/csv/ensight/jasco/txt/xlsx) + measurement writer |
 | **Units** | `core/units.py` | pint `UnitRegistry` singleton; plain `dict[str,str]` unit tables (`PARAM_UNITS`, `CONDITION_UNITS`); custom `au` unit for signals |
 | **GUI shell** | `gui/main_window.py` | `FittingMainWindow` + `launch()` entry point; sets `QLocale` (English/US) before `QApplication`; triggers a silent update check on startup |
 | **GUI session** | `gui/fitting_session.py` | `FittingSession` — one tab: owns state, wires all panels, dispatches the fit |
 | **GUI state** | `gui/app_state.py` | `AppState` dataclass — mutable session state (`ms`, `fit_results`, …) |
-| **GUI workers** | `gui/workers.py` | `FitWorker` QThread — runs the fit off the main thread, emits `fit_complete`/`fit_error` |
-| **GUI widgets** | `gui/widgets/` | `AssayConfigPanel`, `BoundsPanel`, `DataPanel`, `FitConfigPanel`, `PreprocessingPanel`, `ReplicaPanel` + shared inputs (`numeric_inputs.py`, `info_button.py`) |
-| **GUI plotting** | `gui/plotting/` | `PlotWidget`, `FitSummaryWidget`, `PlotStyleWidget`, `DistributionWidget`; labels in `labels.py`, colors in `colors.py`, image export in `export.py` (PyQtGraph native) |
+| **GUI workers** | `gui/workers.py` | `FitWorker`, `ProfileWorker`, `SensitivityWorker` QThreads — run the fit, the Ka profile and the sensitivity analysis off the main thread; each emits `finished`/`error`, and `SensitivityWorker` also emits `progress(done, total)` and `stopped()` (a cancel that lands before the baseline fit) |
+| **GUI widgets** | `gui/widgets/` | `AssayConfigPanel`, `BoundsPanel`, `DataPanel`, `FitConfigPanel`, `PreprocessingPanel`, `ReplicaPanel`, `SensitivityPanel` (per-input uncertainties, mode and sample size) + shared inputs (`numeric_inputs.py`, `info_button.py`) |
+| **GUI plotting** | `gui/plotting/` | `PlotWidget`, `FitSummaryWidget`, `PlotStyleWidget`, `DistributionWidget`, `IdentifiabilityWidget` (Ka profile tab), `SensitivityWidget` (Ka Sensitivity tab); labels in `labels.py`, colors in `colors.py`, image export in `export.py` (PyQtGraph native) |
 | **GUI dialogs** | `gui/dialogs/` | `ExportMultipleDialog`, `SaveDistributionsDialog` — modal dialogs invoked from the toolbar |
+| **GUI help** | `gui/plot_guide.py`, `gui/dialogs/plot_guide_dialog.py` | "Reading the plots" guide: one HTML section per plot tab, opened from the Help menu |
+| **Calibration scripts** | `scripts/` | Standalone coverage checks of the profile interval and the Sobol' index intervals; see `scripts/README.md` |
 | **Auto-update** | `gui/update_check.py`, `gui/update_dialog.py`, `gui/download_worker.py` | Compares latest GitHub release against `_version.py`; prompts and downloads if newer |
 
 ### Fitting Pipeline Flow
