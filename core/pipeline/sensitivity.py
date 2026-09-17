@@ -20,10 +20,13 @@ Two analysis modes:
 Every perturbation yields its best fit whatever its quality. The configured R²
 floor only counts and flags the fits below it, because dropping them would
 remove exactly the input combinations the data disagree with and bias the Ka
-distribution. An assay whose signal is linear in every parameter but one Ka is
-fitted through its exact Ka profile (:mod:`core.pipeline.profile`), which finds
-the global best fit without a multi-start search; any other assay runs the
-multi-start fit.
+distribution. Every perturbation is refitted through the exact Ka profile
+(:mod:`core.pipeline.profile`), which locates the best fit along the profile by a
+grid search with a bounded refinement rather than a multi-start search, so the
+analysis applies to the assays whose signal is linear in every parameter but one
+Ka (:func:`~core.pipeline.profile.profile_supported`).
+A search that can land on a different optimum from one seed to the next would
+report its own scatter as input sensitivity, so no other assay is accepted.
 
 Layering: this module must not import from ``gui.*``. Perturbable inputs are
 classified by pint dimensionality of the passed condition Quantities
@@ -36,10 +39,12 @@ from __future__ import annotations
 import multiprocessing as mp
 import operator
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Callable, Optional
+from itertools import islice
+from typing import Callable, Iterator, Optional
 
 import numpy as np
 from scipy.stats import qmc, truncnorm
@@ -50,7 +55,9 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
 from core.data_processing.measurement_set import MeasurementSet
 from core.optimizer.ensemble import select_representative_index
 from core.optimizer.filters import calculate_fit_metrics
+from core.optimizer.multistart import FitCancelled
 from core.pipeline.fit_pipeline import (
+    MAX_SEED,
     FitConfig,
     FitResult,
     PerReplicaFitError,
@@ -61,7 +68,7 @@ from core.pipeline.fit_pipeline import (
     representative_view,
 )
 from core.pipeline.profile import _LINEAR_KINDS, _RANK_RTOL, _float_bounds, best_params_by_profile, profile_supported
-from core.units import Q_, Quantity
+from core.units import Quantity
 
 # Sentinel input key for the titrant (the varying x-axis concentration vector).
 TITRANT = '__titrant__'
@@ -129,28 +136,33 @@ class InputSpec:
 _SIGMA_GRID_SPAN = 2.0
 
 
-def _to_fraction(value: float, relative: bool, nominal: Optional[float], key: str) -> float:
-    """Express *value* as a fraction of the input's nominal value."""
+def _to_fraction(value: float, relative: bool, nominal: Optional[float], name: str) -> float:
+    """Express *value* as a fraction of the input's nominal value.
+
+    *name* names the input in the messages a user reads, so it is a display
+    label, never a dict key.
+    """
     if relative:
         return value / 100.0
     if nominal is None:
         raise ValueError(
-            f'{key!r} is the titrant, a series of concentrations with no single nominal value, '
-            'so its uncertainty must be given as a percentage.'
+            'The titrant is a series of concentrations with no single value to measure against, '
+            'so its uncertainty has to be given as a percentage.'
         )
     if nominal == 0:
-        raise ValueError(f'{key!r} is zero, so an absolute uncertainty cannot be expressed as a fraction of it.')
+        raise ValueError(f'{name} is set to zero, so an uncertainty in its own unit says nothing about it.')
     return value / nominal
 
 
-def spec_bounds(spec: InputSpec, nominal: Optional[float], key: str) -> tuple[float, float]:
+def spec_bounds(spec: InputSpec, nominal: Optional[float], name: str) -> tuple[float, float]:
     """Relative-offset range a spec spans, as fractions of nominal.
 
     A SIGMA spec has no hard edges, so its sweep is taken at
-    ``±_SIGMA_GRID_SPAN`` standard deviations.
+    ``±_SIGMA_GRID_SPAN`` standard deviations. *name* names the input in the
+    messages a user reads, so it is a display label, never a dict key.
     """
     if spec.kind is SpecKind.SIGMA:
-        s = _to_fraction(spec.sigma, spec.relative, nominal, key)
+        s = _to_fraction(spec.sigma, spec.relative, nominal, name)
         return -_SIGMA_GRID_SPAN * s, _SIGMA_GRID_SPAN * s
     if spec.relative:
         return spec.lo / 100.0, spec.hi / 100.0
@@ -158,38 +170,46 @@ def spec_bounds(spec: InputSpec, nominal: Optional[float], key: str) -> tuple[fl
     # binding constant carried over from an earlier fit already comes in.
     if nominal is None:
         raise ValueError(
-            f'{key!r} is the titrant, a series of concentrations with no single nominal value, '
-            'so its range must be given as percentages.'
+            'The titrant is a series of concentrations with no single value to measure against, '
+            'so its range has to be given as percentages.'
         )
     if nominal == 0:
-        raise ValueError(f'{key!r} is zero, so an absolute range cannot be expressed relative to it.')
+        raise ValueError(f'{name} is set to zero, so a range in its own unit says nothing about it.')
     return (spec.lo - nominal) / nominal, (spec.hi - nominal) / nominal
 
 
-def axis_reaches_zero(spec: InputSpec, nominal: Optional[float], key: str) -> bool:
+def axis_reaches_zero(spec: InputSpec, nominal: Optional[float], name: str) -> bool:
     """Whether a heatmap axis swept over :func:`spec_bounds` would take the input to zero or below.
 
     The sweep includes both ends, so a lower end at -100 % of the nominal value, to
     rounding, would fit the model with the input at zero.
     """
-    return spec_bounds(spec, nominal, key)[0] <= -1.0 + 1e-9
+    return spec_bounds(spec, nominal, name)[0] <= -1.0 + 1e-9
 
 
-def spec_fraction(spec: InputSpec, nominal: Optional[float], key: str, quantile: float) -> float:
-    """Map a uniform draw in (0, 1) to a relative offset.
+def spec_fraction(spec: InputSpec, nominal: Optional[float], name: str, quantile):
+    """Map uniform draws in (0, 1) to relative offsets.
 
     Going through the inverse CDF keeps the draw independent of how the
     quantile was produced, so plain random sampling and a low-discrepancy
     sequence share one definition of an input's distribution.
+
+    One quantile gives one float; an array of quantiles gives an array of the
+    same shape, which is how a whole column of a sampling design is mapped in a
+    single call.
     """
+    quantiles = np.asarray(quantile, dtype=float)
     if spec.kind is SpecKind.SIGMA:
-        s = _to_fraction(spec.sigma, spec.relative, nominal, key)
+        s = _to_fraction(spec.sigma, spec.relative, nominal, name)
         if s <= 0:
-            return 0.0
-        # Truncated at -1 so the perturbed value never reaches zero or below.
-        return float(truncnorm.ppf(quantile, a=-1.0 / s, b=np.inf, loc=0.0, scale=s))
-    lo, hi = spec_bounds(spec, nominal, key)
-    return lo + quantile * (hi - lo)
+            offsets = np.zeros_like(quantiles)
+        else:
+            # Truncated at -1 so the perturbed value never reaches zero or below.
+            offsets = truncnorm.ppf(quantiles, a=-1.0 / s, b=np.inf, loc=0.0, scale=s)
+    else:
+        lo, hi = spec_bounds(spec, nominal, name)
+        offsets = lo + quantiles * (hi - lo)
+    return offsets if quantiles.ndim else float(offsets)
 
 
 def nominal_value(key: str, base_conditions: dict) -> Optional[float]:
@@ -197,6 +217,28 @@ def nominal_value(key: str, base_conditions: dict) -> Optional[float]:
     if key == TITRANT:
         return None
     return float(base_conditions[key].magnitude)
+
+
+def input_name(key: str, input_labels: Optional[dict[str, str]]) -> str:
+    """Name an input the way a message shown to the user should name it.
+
+    Parameters
+    ----------
+    key : str
+        Input key: ``TITRANT`` or a condition key.
+    input_labels : dict[str, str] or None
+        Display label per input key, as the interface writes it.
+
+    Returns
+    -------
+    str
+        The label when one is given. Otherwise 'the titrant' for the titrant and
+        a neutral phrase for a condition, so a message never shows a dict key.
+    """
+    label = (input_labels or {}).get(key)
+    if label:
+        return label
+    return 'the titrant' if key == TITRANT else 'this input'
 
 
 class ReplicateMode(Enum):
@@ -236,7 +278,8 @@ class SensitivityConfig:
         absent key, or a spec that does not vary, holds that input fixed.
     seed : int or None
         Seed of the run: fixes the Sobol' scrambles and every fit's optimizer
-        seed. ``None`` is nondeterministic.
+        seed. ``None`` lets the run draw one, which it reports as
+        ``SensitivityResult.seed_used``, so any run can be repeated.
     x_key : str or None
         HEATMAP only — input key swept along the X axis.
     y_key : str or None
@@ -273,10 +316,6 @@ class SensitivityResult:
         Association-constant parameter keys (registry ``log_scale_keys``).
     baseline_ka : dict[str, float]
         Unperturbed representative Ka per key, in ``1/M``.
-    histograms : dict[str, dict[str, np.ndarray]] or None
-        SOBOL only — ``{'sobol': {ka_key: Ka samples in 1/M}}``, the ``A``
-        and ``B`` samples including those below the floor. ``None`` for
-        HEATMAP.
     x_offsets_pct : np.ndarray or None
         HEATMAP only — X-axis offset grid, in percent.
     y_offsets_pct : np.ndarray or None
@@ -290,6 +329,9 @@ class SensitivityResult:
         Perturbed fits attempted (excludes the baseline).
     config : SensitivityConfig
         The configuration that produced this result.
+    seed_used : int
+        Root seed of the run: ``config.seed`` when one was set, otherwise the
+        seed the run drew. Feeding it back as ``config.seed`` repeats the run.
     sobol_s1, sobol_st : dict[str, dict[str, float]] or None
         SOBOL only — ka_key → input key → first-order / total-order index of
         the variance of log₁₀(Ka).
@@ -321,12 +363,11 @@ class SensitivityResult:
     baseline_fit : FitResult or None
         The unperturbed fit, made with the inputs as entered, that every
         perturbation starts from. It reports the fit an unperturbed sample
-        gets, so the baseline and the samples share one estimator. Where the
-        samples are refitted through the exact Ka profile, that is the profile
-        fit, and the result carries no pool of its own: its multistart search
-        only checks that the inputs as entered meet the R² floor. It records
-        the replicates it used and left out, and every sample uses and is
-        scored on the same replicates.
+        gets, so the baseline and the samples share one estimator: it is the
+        profile fit of the zero-offset sample, and the result carries no pool of
+        its own, its multistart search only checking that the inputs as entered
+        meet the R² floor. It records the replicates it used and left out, and
+        every sample uses and is scored on the same replicates.
     sample_params : dict[str, np.ndarray] or None
         SOBOL only — parameter key → that parameter's best-fit value per
         sample, index-aligned with ``sample_ka`` (whose arrays are its Ka
@@ -352,13 +393,13 @@ class SensitivityResult:
     assay_type: str
     ka_keys: tuple[str, ...]
     baseline_ka: dict[str, float]
-    histograms: Optional[dict[str, dict[str, np.ndarray]]]
     x_offsets_pct: Optional[np.ndarray]
     y_offsets_pct: Optional[np.ndarray]
     ka_grid: Optional[dict[str, np.ndarray]]
     n_success: int
     n_total: int
     config: SensitivityConfig
+    seed_used: int
     sobol_s1: Optional[dict[str, dict[str, float]]] = None
     sobol_st: Optional[dict[str, dict[str, float]]] = None
     sobol_s1_ci: Optional[dict[str, dict[str, tuple[float, float]]]] = None
@@ -460,71 +501,66 @@ def resolve_fit_config(fit_config: FitConfig, sens_config: SensitivityConfig) ->
 _PROFILE_FIT_RUNS = 3
 
 
-def estimated_optimizer_runs(
-    sens_config: SensitivityConfig, fit_config: FitConfig, n_replicas: int = 1, *, assay_type: AssayType
-) -> int:
+def estimated_optimizer_runs(sens_config: SensitivityConfig, fit_config: FitConfig, n_replicas: int = 1) -> int:
     """Work a configuration will take, counted in L-BFGS-B runs.
 
     The baseline runs the full ``n_trials`` multi-start, as the user's own fit
-    does. Each perturbation runs a multi-start of ``n_trials`` as well, except
-    for an assay with an exact Ka profile, whose perturbations are profile fits
-    counted at the ``_PROFILE_FIT_RUNS`` optimizer runs each costs; there the
-    baseline also takes the profile fit of a zero-offset sample, which it
-    reports. This is the number that reflects how long a run takes;
-    :func:`estimated_fit_count` counts perturbations only.
+    does, and then the profile fit of a zero-offset sample, which it reports.
+    Each perturbation is one profile fit, counted at the ``_PROFILE_FIT_RUNS``
+    optimizer runs it costs. This is the number that reflects how long a run
+    takes; :func:`estimated_fit_count` counts perturbations only.
 
     Parameters
     ----------
     sens_config : SensitivityConfig
         The sensitivity configuration to size.
     fit_config : FitConfig
-        Supplies ``n_trials``, the multi-start depth of each fit.
+        Supplies ``n_trials``, the multi-start depth of the baseline fit.
     n_replicas : int
         Replicas fitted per perturbation. A per-replica run fits each active
         replica separately, multiplying the work.
-    assay_type : AssayType
-        Decides whether perturbations are profile fits.
 
     Returns
     -------
     int
         Total optimizer runs, or their equivalent.
     """
-    if profile_supported(assay_type):
-        profile_fits = estimated_fit_count(sens_config) + 1  # the perturbations and the baseline's own
-        return (fit_config.n_trials + profile_fits * _PROFILE_FIT_RUNS) * n_replicas
-    return (fit_config.n_trials + estimated_fit_count(sens_config) * fit_config.n_trials) * n_replicas
+    profile_fits = estimated_fit_count(sens_config) + 1  # the perturbations and the baseline's own
+    return (fit_config.n_trials + profile_fits * _PROFILE_FIT_RUNS) * n_replicas
 
 
 #: Keeps a quantile off the exact edges, where a truncated normal maps to its bound.
 _QUANTILE_EPS = 1e-9
 
 
-def _axis_bounds(sens_config: 'SensitivityConfig', key: str, base_conditions: dict) -> tuple[float, float]:
+def _axis_bounds(sens_config: 'SensitivityConfig', key: str, base_conditions: dict, name: str) -> tuple[float, float]:
     """Offset range a heatmap axis sweeps, as fractions of nominal."""
     spec = sens_config.input_specs.get(key)
     if spec is None:
         return 0.0, 0.0
-    return spec_bounds(spec, nominal_value(key, base_conditions), key)
+    return spec_bounds(spec, nominal_value(key, base_conditions), name)
 
 
-#: Independent Sobol' scrambles behind each SOBOL design. More scrambles give
-#: the jackknife more degrees of freedom and so a narrower t quantile, at the
-#: price of fewer rows per scramble. Eight is the value the coverage check
-#: supports: on four functions with known indices (Ishigami, a g-function, a
-#: smooth four-input function and a polynomial emulator of log10(Ka) from IDA
-#: fits), the 34 nominal 95 % intervals held their index in 93.75–97.15 % of
-#: 2000 designs at N = 1024 and in 94.3–97.9 % of 1000 designs at N = 4096, all
-#: inside the pre-set acceptance bands of 93.5–98.5 % and 92.9–99.0 %. Sixteen
-#: scrambles also stayed inside those bands; eight gave the emulator's indices
-#: about 30 % smaller root-mean-square error at N = 1024.
+#: Independent Sobol' scrambles behind each SOBOL design. Splitting the rows
+#: into scrambles is what gives the jackknife independent replicates to measure
+#: the sampling error from, and it costs accuracy: a Sobol' point set balances
+#: each coordinate over its whole length, so N rows split into blocks are a
+#: coarser design than N rows in one scramble. Measured on the Ishigami function
+#: and a g-function, the indices pooled over eight scrambles of N/8 rows carry
+#: about the error of one scramble of N/2 rows — half the design size, for the
+#: eight replicates the intervals need. More scrambles give the jackknife more
+#: degrees of freedom and so a narrower t quantile, fewer give each scramble
+#: more rows. ``scripts/sobol_interval_coverage.py`` is the coverage study
+#: behind this value and behind ``_SOBOL_SAMPLE_SIZES``: it reruns the interval
+#: over many designs of functions whose indices are known and reports how often
+#: each interval held its index.
 _SOBOL_BLOCKS: int = 8
 
-#: SOBOL sample sizes a run accepts: the sizes at which the eight-scramble
-#: intervals passed the coverage check. At N = 2048 they held their index in
-#: 94.35–98.05 % of 2000 designs on the same four functions. At N = 256 one of
-#: the 34 intervals fell below its acceptance band, so smaller designs are not
-#: offered.
+#: SOBOL sample sizes a run accepts. The smallest is the size at which an index
+#: already carries about the error of one undivided scramble of half it, which is
+#: the price the eight scrambles cost; below that the indices are too coarse to
+#: rank the inputs by. ``scripts/sobol_interval_coverage.py`` measures both the
+#: blocking price and how often the intervals hold their index at these sizes.
 _SOBOL_SAMPLE_SIZES: tuple[int, ...] = (1024, 2048, 4096)
 
 
@@ -700,8 +736,22 @@ def sobol_indices_with_ci(
 #: saves — every worker re-imports numpy and scipy before it can fit anything.
 _PARALLEL_MIN_JOBS = 8
 
-#: Caps each worker's own internal threading, so N processes do not each start M
-#: threads and fight over the machine.
+#: How long the perturbation loop waits for a result before it asks again
+#: whether the user has stopped the run. Short enough that a stop is acted on
+#: while the button is still under the pointer, long enough that the wait does
+#: not spin.
+_CANCEL_POLL_SECONDS = 0.05
+
+#: Perturbations handed to the pool at once, per worker. A pool holds about one
+#: call per worker in its own queue, and those are the fits a stop cannot take
+#: back, so the batch keeps only a couple of rounds in flight and holds the rest
+#: here, where stopping drops them without a worker ever seeing them.
+_IN_FLIGHT_PER_WORKER = 2
+
+#: Cap each worker's own internal threading, so N processes do not each start M
+#: threads and fight over the machine. A linear-algebra library reads these when
+#: it is loaded, so they only bite when a worker inherits them before it imports
+#: numpy: see :func:`_thread_capped_children`.
 _THREAD_LIMIT_VARS = (
     'OMP_NUM_THREADS',
     'OPENBLAS_NUM_THREADS',
@@ -725,38 +775,74 @@ def default_worker_count() -> int:
     return max(1, (total or 1) - 1)
 
 
-#: Per-worker copy of everything the jobs in a batch share.
+@contextmanager
+def _thread_capped_children() -> Iterator[None]:
+    """Hold the thread-cap variables in this process while worker processes start.
+
+    A linear-algebra library reads them when it is loaded, which in a worker
+    happens before any code of ours runs there, so the cap has to be in the
+    environment the worker inherits. Only the variables that are not already set
+    are touched, and this process's environment is put back as it was, so a run
+    leaves the application exactly as it found it.
+    """
+    previous = {name: os.environ.get(name) for name in _THREAD_LIMIT_VARS}
+    os.environ.update({name: '1' for name, value in previous.items() if value is None})
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+
+
+#: Everything the jobs of a batch share, in the worker process that runs them.
+#: A worker cannot be handed the batch with every job, so the pool's initializer
+#: leaves it here for :func:`_worker_fit` to pick up. Only a worker process fills
+#: it; this process keeps a batch's state in a local of :func:`_evaluate_batch`,
+#: so two runs going at once never see each other's data.
 _WORKER_STATE: dict = {}
 
 
-def _init_worker(ms, assay_cls, x_base, base_conditions, fit_config, by_profile) -> None:
+def _init_worker(ms, assay_cls, x_base, base_conditions, fit_config) -> None:
     """Hand a worker process the data every job in the batch needs."""
-    for name in _THREAD_LIMIT_VARS:
-        os.environ.setdefault(name, '1')
     _WORKER_STATE.update(
         ms=ms,
         assay_cls=assay_cls,
         x_base=x_base,
         base_conditions=base_conditions,
         fit_config=fit_config,
-        by_profile=by_profile,
     )
 
 
-def _worker_fit(job):
-    """Run one perturbation, in whichever process picks the job up."""
+def _run_job(state: dict, job):
+    """Run one perturbation with the batch state *state* → ``(index, result)``."""
     index, offsets, seed = job
-    state = _WORKER_STATE
-    fit_config = state['fit_config'] if seed is None else replace(state['fit_config'], seed=seed)
     return index, _fit_perturbed(
         state['ms'],
         state['assay_cls'],
         state['x_base'],
         state['base_conditions'],
         offsets,
-        fit_config,
-        state['by_profile'],
+        replace(state['fit_config'], seed=seed),
     )
+
+
+def _worker_fit(job):
+    """Run one perturbation in the worker process that picked the job up."""
+    return _run_job(_WORKER_STATE, job)
+
+
+#: Shown when a perturbation stops the run rather than reporting no fit: the fits
+#: themselves already turn a failure into a sample without a fit, so whatever is
+#: left is not something the analysis can work around.
+_BATCH_FAILURE_MESSAGE = (
+    'The analysis stopped because one of the re-fits of your data could not be completed. '
+    'Run it again, and if it stops again choose a smaller sample size or vary fewer inputs.'
+)
+
+
+class SensitivityRunError(RuntimeError):
+    """A perturbation stopped the run. Its message is written for the user to read."""
 
 
 def _evaluate_batch(
@@ -765,7 +851,6 @@ def _evaluate_batch(
     x_base,
     base_conditions,
     fit_config,
-    by_profile,
     offsets_list,
     seeds,
     *,
@@ -783,49 +868,71 @@ def _evaluate_batch(
     ``spawn`` is used on every platform. Workers start from a Qt application
     that already runs threads, and forking such a process is unsafe, so the
     platform default is not inherited.
+
+    Stopping is answered within seconds at any point of the batch, including
+    while the pool is still starting: only ``_IN_FLIGHT_PER_WORKER`` rounds of
+    fits are handed to the pool at a time, and the wait for a result times out
+    every ``_CANCEL_POLL_SECONDS`` so *should_cancel* is asked again. What is
+    left when a stop arrives is therefore a handful of fits mid-solve rather
+    than the whole batch.
+
+    Raises
+    ------
+    SensitivityRunError
+        If a job fails in a way the per-fit guard does not cover. The queued
+        jobs are dropped and the pool shut down before the error is raised, so
+        the caller hears about it instead of waiting out the rest of the batch.
     """
     results: list = [None] * len(offsets_list)
     jobs = [(index, offsets_list[index], seeds[index]) for index in range(len(offsets_list))]
+    state = {
+        'ms': ms,
+        'assay_cls': assay_cls,
+        'x_base': x_base,
+        'base_conditions': base_conditions,
+        'fit_config': fit_config,
+    }
 
     if max_workers <= 1 or len(jobs) < _PARALLEL_MIN_JOBS:
-        _init_worker(ms, assay_cls, x_base, base_conditions, fit_config, by_profile)
         for job in jobs:
             if should_cancel():
                 break
-            index, value = _worker_fit(job)
+            index, value = _run_job(state, job)
             results[index] = value
             on_result(value)
         return results
 
-    with ProcessPoolExecutor(
-        max_workers=max_workers,
-        mp_context=mp.get_context('spawn'),
-        initializer=_init_worker,
-        initargs=(ms, assay_cls, x_base, base_conditions, fit_config, by_profile),
-    ) as executor:
-        futures = [executor.submit(_worker_fit, job) for job in jobs]
-        cancelled = False
-        for future in as_completed(futures):
-            index, value = future.result()
-            results[index] = value
-            on_result(value)
-            if should_cancel():
-                cancelled = True
-                break
-        if cancelled:
+    queue = iter(jobs)
+    with _thread_capped_children():
+        executor = ProcessPoolExecutor(
+            max_workers=max_workers,
+            mp_context=mp.get_context('spawn'),
+            initializer=_init_worker,
+            initargs=(ms, assay_cls, x_base, base_conditions, fit_config),
+        )
+        # Submitting inside the cap: the pool starts a process per job until it
+        # is full, so the first round starts every worker under the cap.
+        try:
+            pending = {executor.submit(_worker_fit, job) for job in islice(queue, max_workers * _IN_FLIGHT_PER_WORKER)}
+        except BaseException:
             executor.shutdown(cancel_futures=True)
+            raise
+    try:
+        while pending:
+            if should_cancel():
+                break
+            finished, pending = wait(pending, timeout=_CANCEL_POLL_SECONDS, return_when=FIRST_COMPLETED)
+            for future in finished:
+                try:
+                    index, value = future.result()
+                except Exception as exc:
+                    raise SensitivityRunError(_BATCH_FAILURE_MESSAGE) from exc
+                results[index] = value
+                on_result(value)
+            pending.update(executor.submit(_worker_fit, job) for job in islice(queue, len(finished)))
+    finally:
+        executor.shutdown(cancel_futures=True)
     return results
-
-
-def _build_assay(assay_cls, x_base: np.ndarray, y_avg: np.ndarray, base_conditions: dict, offsets: dict):
-    """Build a perturbed assay directly (mirrors ``MeasurementSet.to_assay``).
-
-    No ``MeasurementSet`` mutation, so this is thread-safe. ``Quantity × scalar``
-    scales a condition in place for both ``M`` and ``1/M`` alike.
-    """
-    x = x_base * (1 + offsets.get(TITRANT, 0.0))
-    conds = {k: (v * (1 + offsets[k]) if k in offsets else v) for k, v in base_conditions.items()}
-    return assay_cls(x_data=Q_(x, 'M'), y_data=Q_(y_avg, 'au'), **conds)
 
 
 def _perturbed_ms(ms, x_base: np.ndarray, offsets: dict) -> MeasurementSet:
@@ -846,43 +953,43 @@ def _perturbed_ms(ms, x_base: np.ndarray, offsets: dict) -> MeasurementSet:
     return out
 
 
-def _fit_perturbed(ms, assay_cls, x_base, base_conditions, offsets, fit_config, by_profile):
+def _fit_perturbed(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
     """Best fit of one perturbation → ``({parameter key: value}, R²)``.
 
     Every parameter is reported in its canonical registry unit, the unit
     ``FitResult.parameters`` and ``FitResult.parameter_samples`` carry.
 
-    ``None`` when no fit could be produced, and on the multi-start path also
-    when a replicate could not be fitted: every sample is scored on the same
-    replicates, the active ones of *ms*, so a sample that lost one is not a fit
-    of that set. Quality is not judged here: the multi-start path is handed a
-    *fit_config* whose floor admits every attempt, and the caller flags the
-    result against the real floor.
+    ``None`` when no fit could be produced. A perturbed design the profile
+    cannot solve — a singular least-squares system, a model value that comes
+    out non-finite — is one sample without a fit, which the caller records as
+    NaN; the other thousands of samples are unaffected by it. Quality is not
+    judged here: the caller flags the result against the R² floor.
     """
     perturbed = _perturbed_ms(ms, x_base, offsets)
     conditions = {k: (v * (1 + offsets[k]) if k in offsets else v) for k, v in base_conditions.items()}
-    if by_profile:
-        return _fit_by_profile(perturbed, assay_cls, conditions, fit_config)
+    # The guard covers the solve, the fragile part: applying the offsets is
+    # arithmetic on the values the caller validated, and a failure there is a
+    # fault of the run rather than of one sample.
     try:
-        result = fit_measurement_set(perturbed, assay_cls, conditions, fit_config)
-    except PerReplicaFitError:
+        return _fit_by_profile(perturbed, assay_cls, conditions, fit_config)
+    except Exception:
         return None
-    if not result.success or result.metadata.get('replica_failures'):
-        return None
-    return {key: float(value.magnitude) for key, value in result.parameters.items()}, float(result.r_squared)
 
 
-def _fit_by_profile(ms, assay_cls, conditions, fit_config) -> tuple[dict[str, float], float]:
-    """Global best fit through the exact Ka profile, reported as :func:`fit_measurement_set` reports it.
+def _fit_by_profile(ms, assay_cls, conditions, fit_config) -> tuple[dict[str, float], float] | None:
+    """Best fit along the exact Ka profile, reported as :func:`fit_measurement_set` reports it.
 
     Each fitted signal — the averaged one, or every active replicate under
-    ``per_replica`` — contributes its own global best fit, and the one that
-    best fits the average of the active replicates is reported. That is the
-    rule :func:`~core.pipeline.fit_pipeline.fit_measurement_set_per_replica`
+    ``per_replica`` — contributes its own best fit along the profile, and the
+    one that best fits the average of the active replicates is reported. That
+    is the rule :func:`~core.pipeline.fit_pipeline.fit_measurement_set_per_replica`
     applies to its replicas' best trials, scored against the average of the
-    replicates it used; with every active replicate fitted, both paths report
-    the same Ka and R² up to how closely the multi-start search reaches each
-    replica's optimum.
+    replicates it used, so the two agree on Ka and R² up to how closely a
+    multi-start search reaches each replica's optimum.
+
+    ``None`` when the model has no solution anywhere in the Ka bounds: the
+    profile then scores nothing, and the coefficients at their lower bounds it
+    falls back to are not a fit of these data.
     """
     template = ms.to_assay(assay_cls, conditions=conditions, use_average=True)
     if fit_config.per_replica:
@@ -893,6 +1000,8 @@ def _fit_by_profile(ms, assay_cls, conditions, fit_config) -> tuple[dict[str, fl
     y_avg = template.y_data.magnitude
     rmse, r2 = np.array([calculate_fit_metrics(y_avg, template.forward_model(p).magnitude) for p in candidates]).T
     best = select_representative_index({'rmse': rmse, 'r_squared': r2})
+    if not np.isfinite(r2[best]):
+        return None
     return dict(zip(template.parameter_keys, candidates[best].tolist())), float(r2[best])
 
 
@@ -995,6 +1104,7 @@ def run_sensitivity(
     progress: Optional[Callable[[int, int], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
     max_workers: Optional[int] = None,
+    input_labels: Optional[dict[str, str]] = None,
 ) -> SensitivityResult:
     """Run a Ka input-sensitivity analysis.
 
@@ -1014,20 +1124,23 @@ def run_sensitivity(
         Baseline assay conditions (Quantity values in base units).
     fit_config : FitConfig
         Per-fit configuration. ``sens_config.replicate_mode`` may override its
-        ``per_replica`` flag; when ``sens_config.seed`` is set, every fit also
-        receives its own derived optimizer seed. Its ``min_r_squared`` gates
-        the baseline fit only; perturbed fits are flagged against it.
+        ``per_replica`` flag; every fit receives its own optimizer seed, derived
+        from the run's root seed. Its ``min_r_squared`` gates the baseline fit
+        only; perturbed fits are flagged against it.
     sens_config : SensitivityConfig
         What to perturb and how.
     progress : callable, optional
         Called ``progress(done, total)`` after every fit (baseline included).
     should_cancel : callable, optional
-        Polled in the perturbation loop; on ``True`` the run stops early and
-        returns a partial result.
+        Polled before the baseline fit, inside it and in the perturbation loop;
+        on ``True`` the run stops early and returns a partial result.
     max_workers : int, optional
         Worker processes to fit with. ``1`` keeps everything in this process;
         omitted uses :func:`default_worker_count`. Results are the same either
         way, since every fit carries its own seed.
+    input_labels : dict[str, str], optional
+        Display label per input key, as the interface writes it. Used only to
+        name an input in a message shown to the user.
 
     Returns
     -------
@@ -1040,20 +1153,37 @@ def run_sensitivity(
         For an invalid config (a SOBOL ``n_samples`` outside
         ``_SOBOL_SAMPLE_SIZES``, no input set to vary,
         negative percent, a range reaching below zero, unknown key, HEATMAP with ``x_key == y_key``, a
-        non-perturbable axis key or an axis reaching zero), an assay with no Ka keys (DYE_ALONE), or a
+        non-perturbable axis key or an axis reaching zero), an assay with no Ka keys (DYE_ALONE) or no
+        exact Ka profile (:func:`~core.pipeline.profile.profile_supported`), or a
         baseline fit that does not clear the R² floor, just as the user's own
         fit would fail.
+    FitCancelled
+        If the run is cancelled before its baseline fit finishes, so there is no
+        reference fit to report anything against.
+    PerReplicaFitError
+        If no replicate of the baseline fit could be fitted on its own. It
+        carries the same per-replicate reasons an ordinary fit reports.
+    SensitivityRunError
+        If a perturbation fails in a way the per-fit guard does not cover. Its
+        message is written for the user and can be shown as it stands.
     """
     x_base = np.asarray(ms.concentrations)
     fit_config = resolve_fit_config(fit_config, sens_config)
     workers = default_worker_count() if max_workers is None else max(1, int(max_workers))
 
     # Assay type / Ka keys come from an instance that is built, never fitted.
-    probe_assay = _build_assay(assay_cls, x_base, ms.average_signal(active_only=True), base_conditions, {})
+    probe_assay = ms.to_assay(assay_cls, conditions=base_conditions, use_average=True)
     assay_type: AssayType = probe_assay.assay_type
-    ka_keys = ASSAY_REGISTRY[assay_type].log_scale_keys
+    metadata = ASSAY_REGISTRY[assay_type]
+    ka_keys = metadata.log_scale_keys
     if not ka_keys:
         raise ValueError('This assay has no association constant to analyse, so sensitivity analysis does not apply.')
+    if not profile_supported(assay_type):
+        raise ValueError(
+            f'The sensitivity analysis is not available for {metadata.display_name}. It re-fits your data thousands '
+            'of times, and it needs a model whose best fit can be found exactly every time — which holds for a '
+            'model with one binding constant, not for this one. Use the spread the fit itself reports to judge it.'
+        )
 
     valid_keys = {k for k, _ in perturbable_inputs(assay_type, base_conditions)}
 
@@ -1068,15 +1198,18 @@ def run_sensitivity(
         )
     for key, spec in sens_config.input_specs.items():
         if key not in valid_keys:
-            raise ValueError(f'Unknown sensitivity input key: {key!r}.')
+            raise ValueError(
+                'An uncertainty is set for an input this assay does not have, so the analysis cannot run. '
+                'Set uncertainties only for the inputs this assay lists.'
+            )
+        name = input_name(key, input_labels)
         if spec.kind is SpecKind.SIGMA and spec.sigma < 0:
-            raise ValueError(f'The uncertainty of {key!r} must not be negative.')
+            raise ValueError(f'The uncertainty of {name} must not be negative.')
         if spec.kind is SpecKind.INTERVAL and spec.hi < spec.lo:
-            raise ValueError(f'The upper bound for {key!r} must not be below its lower bound.')
+            raise ValueError(f'The upper bound for {name} must not be below its lower bound.')
         # Surfaces a titrant given an absolute spec, which has no nominal value.
-        _to_fraction(0.0, spec.relative, nominal_value(key, base_conditions), key)
-        if spec.kind is SpecKind.INTERVAL and spec_bounds(spec, nominal_value(key, base_conditions), key)[0] < -1.0:
-            name = 'the titrant' if key == TITRANT else repr(key)
+        _to_fraction(0.0, spec.relative, nominal_value(key, base_conditions), name)
+        if spec.kind is SpecKind.INTERVAL and spec_bounds(spec, nominal_value(key, base_conditions), name)[0] < -1.0:
             raise ValueError(
                 f'The range for {name} reaches below zero, and a concentration or binding constant cannot be '
                 f'negative. Raise its lower end to {"-100 %" if spec.relative else "0"} or more.'
@@ -1087,13 +1220,16 @@ def run_sensitivity(
     if sens_config.mode is SensitivityMode.HEATMAP:
         for axis, axis_key in (('X', sens_config.x_key), ('Y', sens_config.y_key)):
             if axis_key not in valid_keys:
-                raise ValueError(f'Heatmap {axis} axis input {axis_key!r} is not a perturbable input for this assay.')
+                raise ValueError(
+                    f'The {axis} axis of the heatmap is set to an input this assay does not have, so the analysis '
+                    'cannot run. Pick one of the inputs this assay lists.'
+                )
         if sens_config.x_key == sens_config.y_key:
             raise ValueError('Heatmap X and Y axes must be two different inputs.')
         for axis_key in (sens_config.x_key, sens_config.y_key):
             spec = sens_config.input_specs.get(axis_key)
-            if spec is not None and axis_reaches_zero(spec, nominal_value(axis_key, base_conditions), axis_key):
-                name = 'the titrant' if axis_key == TITRANT else repr(axis_key)
+            name = input_name(axis_key, input_labels)
+            if spec is not None and axis_reaches_zero(spec, nominal_value(axis_key, base_conditions), name):
                 raise ValueError(
                     f'The heatmap axis for {name} reaches zero or below, and a concentration or binding constant '
                     'must stay positive. Use a σ below 50 % of the set value, or a range whose lower end is above zero.'
@@ -1105,22 +1241,25 @@ def run_sensitivity(
     total = estimated_fit_count(sens_config) + 1  # +1 for the baseline
     done = 0
 
+    # One root seed drives the whole run, drawn here when none was configured, so
+    # every run can be repeated by feeding its `seed_used` back in. It is drawn
+    # within MAX_SEED, the range the interface's Fixed seed box accepts, so a
+    # reported seed can always be entered there.
+    seed_used = int(np.random.SeedSequence().generate_state(1)[0] % (MAX_SEED + 1))
+    seed_used = seed_used if sens_config.seed is None else sens_config.seed
+
     # Independent streams for the per-fit optimizer seeds and the Sobol'
     # scrambles. Pinning the scrambles alone would still let the multi-start
     # pool inside each fit wander, so a run repeats only when both are pinned.
-    fit_stream, design_stream = np.random.SeedSequence(sens_config.seed).spawn(2)
-    fit_seeds = np.random.default_rng(fit_stream) if sens_config.seed is not None else None
+    fit_stream, design_stream = np.random.SeedSequence(seed_used).spawn(2)
+    fit_seeds = np.random.default_rng(fit_stream)
 
     def _fit_cfg() -> FitConfig:
         """Per-fit config carrying its own optimizer seed."""
-        if fit_seeds is None:
-            return fit_config
         return replace(fit_config, seed=int(fit_seeds.integers(0, 2**32 - 1)))
 
     def _next_seeds(count: int) -> list:
         """Seeds for a batch, drawn before dispatch so order fixes the result."""
-        if fit_seeds is None:
-            return [None] * count
         return [int(fit_seeds.integers(0, 2**32 - 1)) for _ in range(count)]
 
     def _tally(counters: dict):
@@ -1136,14 +1275,24 @@ def run_sensitivity(
 
         return record
 
+    def _cancelled() -> bool:
+        return should_cancel is not None and should_cancel()
+
+    if _cancelled():
+        raise FitCancelled('The sensitivity analysis was stopped before its first fit.')
     try:
-        baseline_result = fit_measurement_set(ms, assay_cls, base_conditions, _fit_cfg())
-    except PerReplicaFitError:
-        baseline_result = None
+        baseline_result = fit_measurement_set(ms, assay_cls, base_conditions, _fit_cfg(), should_cancel=should_cancel)
+    except PerReplicaFitError as exc:
+        # The per-replicate reasons say what went wrong; the caller shows them
+        # as the ordinary fit does, rather than a bare 'did not converge'.
+        raise PerReplicaFitError(
+            f'{exc} There is no reference Ka for the analysis to compare against.',
+            exc.failures,
+        ) from exc
     done += 1
     if progress is not None:
         progress(done, total)
-    if baseline_result is None or not baseline_result.success:
+    if not baseline_result.success:
         raise ValueError(
             'The unperturbed (baseline) fit did not converge, so there is no reference Ka to compare against. '
             'Check the data, conditions, and bounds, and confirm a normal fit succeeds first.'
@@ -1153,22 +1302,22 @@ def run_sensitivity(
     # their average: a replicate the fit left out never enters a sample, and
     # every sample describes the same data.
     ms = ms.with_active(fit_replica_ids(baseline_result))
-    probe_assay = _build_assay(assay_cls, x_base, ms.average_signal(active_only=True), base_conditions, {})
+    probe_assay = ms.to_assay(assay_cls, conditions=base_conditions, use_average=True)
 
     # A perturbation always yields its best fit; the floor only flags it.
     floor = fit_config.min_r_squared
-    perturbed_config = replace(fit_config, min_r_squared=-np.inf)
-    by_profile = profile_supported(assay_type)
-    if by_profile:
-        # The baseline is the zero-offset sample: an estimate from one fitting
-        # method beside a spread from another describes no distribution.
-        params, _ = _fit_perturbed(ms, assay_cls, x_base, base_conditions, {}, perturbed_config, by_profile)
-        baseline_result = _reporting(baseline_result, probe_assay, params)
+    # The baseline is the zero-offset sample: an estimate from one fitting
+    # method beside a spread from another describes no distribution.
+    zero_offset = _fit_perturbed(ms, assay_cls, x_base, base_conditions, {}, _fit_cfg())
+    if zero_offset is None:
+        raise ValueError(
+            'The unperturbed (baseline) fit could not be worked out from the inputs as entered, so there is no '
+            'reference Ka to compare against. Check the data, the conditions and the bounds, and confirm a normal '
+            'fit succeeds first.'
+        )
+    baseline_result = _reporting(baseline_result, probe_assay, zero_offset[0])
     baseline_ka = {k: baseline_result.parameters[k].to('1/M').magnitude for k in ka_keys}
     degenerate_keys = _degenerate_keys(probe_assay, _resolve_bounds(probe_assay, fit_config.custom_bounds), baseline_ka)
-
-    def _cancelled() -> bool:
-        return should_cancel is not None and should_cancel()
 
     def _evaluate(offsets_list: list[dict]) -> tuple[dict[str, np.ndarray], np.ndarray, dict]:
         """Fit every perturbation → (value per parameter key, R²), NaN where no fit was produced."""
@@ -1178,8 +1327,7 @@ def run_sensitivity(
             assay_cls,
             x_base,
             base_conditions,
-            perturbed_config,
-            by_profile,
+            fit_config,
             offsets_list,
             _next_seeds(len(offsets_list)),
             max_workers=workers,
@@ -1202,20 +1350,21 @@ def run_sensitivity(
             mixed = a_points.copy()
             mixed[:, column] = b_points[:, column]
             matrices.append(mixed)
-        # One batch for every matrix, in the order A, B, AB_1 … AB_k.
-        offsets_list = [
-            {
-                key: spec_fraction(
-                    sens_config.input_specs[key],
-                    nominal_value(key, base_conditions),
-                    key,
-                    float(np.clip(quantile, _QUANTILE_EPS, 1.0 - _QUANTILE_EPS)),
-                )
-                for key, quantile in zip(active_keys, row)
-            }
-            for matrix in matrices
-            for row in matrix
+        # One batch for every matrix, in the order A, B, AB_1 … AB_k. Each input
+        # is mapped through its inverse CDF one column at a time: the same
+        # numbers as row by row, and fast enough not to hold the run up before
+        # the first fit is dispatched.
+        quantiles = np.clip(np.vstack(matrices), _QUANTILE_EPS, 1.0 - _QUANTILE_EPS)
+        columns = [
+            spec_fraction(
+                sens_config.input_specs[key],
+                nominal_value(key, base_conditions),
+                input_name(key, input_labels),
+                quantiles[:, column],
+            ).tolist()
+            for column, key in enumerate(active_keys)
         ]
+        offsets_list = [dict(zip(active_keys, row)) for row in zip(*columns)]
         params, r2, counters = _evaluate(offsets_list)
         n_samples = 2 * n_base  # the A and B rows
 
@@ -1224,7 +1373,6 @@ def run_sensitivity(
         sobol_s1_ci: dict[str, dict[str, tuple[float, float]]] = {}
         sobol_st_ci: dict[str, dict[str, tuple[float, float]]] = {}
         rows_left_out: dict[str, int] = {}
-        histograms: dict[str, dict[str, np.ndarray]] = {'sobol': {}}
         for key in ka_keys:
             # The indices split the variance of log10(Ka): Ka spans orders of
             # magnitude, and on the raw scale one far-off fit would own almost
@@ -1237,8 +1385,6 @@ def run_sensitivity(
             sobol_s1_ci[key] = {k: (float(lo), float(hi)) for k, (lo, hi) in zip(active_keys, s1_ci)}
             sobol_st_ci[key] = {k: (float(lo), float(hi)) for k, (lo, hi) in zip(active_keys, st_ci)}
             rows_left_out[key] = int(np.sum(~np.all(np.isfinite(by_matrix), axis=0)))
-            pooled = params[key][:n_samples]
-            histograms['sobol'][key] = pooled[np.isfinite(pooled)]
 
         sample_r2 = r2[:n_samples]
         return SensitivityResult(
@@ -1246,7 +1392,6 @@ def run_sensitivity(
             assay_type=assay_type.name,
             ka_keys=ka_keys,
             baseline_ka=baseline_ka,
-            histograms=histograms,
             x_offsets_pct=None,
             y_offsets_pct=None,
             ka_grid=None,
@@ -1255,6 +1400,7 @@ def run_sensitivity(
             n_success=counters['success'],
             n_total=counters['total'],
             config=sens_config,
+            seed_used=seed_used,
             sobol_s1_ci=sobol_s1_ci,
             sobol_st_ci=sobol_st_ci,
             sample_offsets_pct={
@@ -1272,8 +1418,12 @@ def run_sensitivity(
         )
 
     # --- HEATMAP ---------------------------------------------------------
-    x_lo, x_hi = _axis_bounds(sens_config, sens_config.x_key, base_conditions)
-    y_lo, y_hi = _axis_bounds(sens_config, sens_config.y_key, base_conditions)
+    x_lo, x_hi = _axis_bounds(
+        sens_config, sens_config.x_key, base_conditions, input_name(sens_config.x_key, input_labels)
+    )
+    y_lo, y_hi = _axis_bounds(
+        sens_config, sens_config.y_key, base_conditions, input_name(sens_config.y_key, input_labels)
+    )
     x_offsets = np.linspace(x_lo, x_hi, sens_config.n_steps)
     y_offsets = np.linspace(y_lo, y_hi, sens_config.n_steps)
     cells = [(iy, ix) for iy in range(len(y_offsets)) for ix in range(len(x_offsets))]
@@ -1289,13 +1439,13 @@ def run_sensitivity(
         assay_type=assay_type.name,
         ka_keys=ka_keys,
         baseline_ka=baseline_ka,
-        histograms=None,
         x_offsets_pct=x_offsets * 100.0,
         y_offsets_pct=y_offsets * 100.0,
         ka_grid={key: params[key].reshape(shape) for key in ka_keys},
         n_success=counters['success'],
         n_total=counters['total'],
         config=sens_config,
+        seed_used=seed_used,
         r2_grid=r2_grid,
         floor=floor,
         n_below_floor=int(np.sum(r2_grid < floor)),

@@ -7,12 +7,15 @@ implementation:
   the baseline Ka);
 - larger Δ produces strictly larger Ka spread;
 - the titrant and the non-fitted ``Ka_dye`` are both genuinely perturbable;
-- the ``seed`` knob makes a whole run reproducible, optimiser included;
-- the heatmap centre cell (0 %, 0 %) reproduces the baseline;
+- the ``seed`` knob makes a whole run reproducible, optimiser included, and a
+  run given no seed draws and reports one that repeats it;
+- the heatmap axes perturb the inputs they name, and its centre cell (0 %, 0 %)
+  is the baseline fit itself;
 - ``estimated_fit_count`` matches the driver's actual per-mode workload;
-- invalid configs fail fast with ``ValueError``;
-- the exact-profile path and the multi-start path report the same best fit per
-  perturbation, averaged and per replicate;
+- invalid configs fail fast with ``ValueError``, in words that name inputs the
+  way the interface does;
+- an assay without an exact Ka profile is refused, and a single perturbation
+  that cannot be solved is one missing sample rather than a dead run;
 - a perturbed fit below the R² floor is kept and flagged, never dropped;
 - every sample keeps the whole fit behind its Ka, so the Fit Summary
   statistics can run over the samples, and the signal coefficients the data fix
@@ -23,18 +26,18 @@ implementation:
 
 Fits run on synthetic IDA data with the tight recovery bounds from ``conftest``
 and a small ``n_trials`` — enough to converge reliably while keeping the
-many-fit loops fast. IDA has an exact Ka profile, so its perturbations take the
-profile path; a test reaches the multi-start path by making
-``profile_supported`` reject the assay. A run carrying a ``seed`` repeats on
-its own; helpers that compare *unseeded* runs pin the global RNG before each
-one so any difference is attributable to the sensitivity ``seed`` alone. Runs
-that fit for real accept a design of a few scrambles of two rows each, so they
-stay small; the accepted sizes themselves are tested with the module's own
-values.
+many-fit loops fast. A run carrying a ``seed`` repeats on its own; helpers that
+compare *unseeded* runs pin the global RNG before each one so any difference is
+attributable to the sensitivity ``seed`` alone. Runs that fit for real accept a
+design of a few scrambles of two rows each, so they stay small; the accepted
+sizes themselves are tested with the module's own values. Runs that need real
+worker processes live in ``tests/integration/test_sensitivity_workers.py``.
 """
 
+import ast
 import os
 import pathlib
+import threading
 from dataclasses import replace
 
 import numpy as np
@@ -45,12 +48,20 @@ import core.pipeline.sensitivity as sens
 from core.assays.dba import DBAAssay
 from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
+from core.assays.h2g import H2GAssay
 from core.assays.hg2 import HG2Assay
 from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.optimizer.filters import calculate_fit_metrics
-from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measurement_set, summarize_parameters
+from core.optimizer.multistart import FitCancelled
+from core.pipeline.fit_pipeline import (
+    FitConfig,
+    PerReplicaFitError,
+    _resolve_bounds,
+    fit_measurement_set,
+    summarize_parameters,
+)
 from core.pipeline.profile import _design_rank, best_fit_by_profile
 from core.pipeline.sensitivity import (
     TITRANT,
@@ -61,6 +72,7 @@ from core.pipeline.sensitivity import (
     default_worker_count,
     estimated_fit_count,
     estimated_optimizer_runs,
+    input_name,
     nominal_value,
     perturbable_inputs,
     run_sensitivity,
@@ -76,11 +88,13 @@ from tests.conftest import (
     DBA_TRUE,
     GDA_IDA_RECOVERY_BOUNDS,
     GDA_TRUE,
+    H2G_TRUE,
     HG2_TRUE,
     IDA_TRUE,
     _make_dba_data,
     _make_dye_alone_data,
     _make_gda_data,
+    _make_h2g_data,
     _make_hg2_data,
     _make_ida_data,
 )
@@ -133,13 +147,10 @@ def _run(ida_setup, sens_config, *, global_seed=0, max_workers=1):
     return run_sensitivity(ms, assay_cls, conditions, fit_config, sens_config, max_workers=max_workers)
 
 
-def _force_multistart(monkeypatch):
-    """Send every perturbation down the multi-start path, as for an assay with no exact profile.
-
-    The run decides the path in this process and hands it to its workers, so
-    this holds for parallel runs too.
-    """
-    monkeypatch.setattr(sens, 'profile_supported', lambda assay_type: False)
+def _samples(result) -> np.ndarray:
+    """The run's Ka samples, the ones that got a fit."""
+    ka = result.sample_ka['Ka_guest']
+    return ka[np.isfinite(ka)]
 
 
 def _use_small_design(monkeypatch, n_blocks: int) -> None:
@@ -178,7 +189,7 @@ def test_negligible_delta_collapses_onto_baseline(ida_setup, monkeypatch):
     )
     result = _run(ida_setup, cfg)
 
-    samples = result.histograms['sobol']['Ka_guest']
+    samples = _samples(result)
     baseline = result.baseline_ka['Ka_guest']
     assert samples.size == 2 * 8  # both Sobol' matrices
     # Every sample sits on top of the baseline; spread is negligible.
@@ -195,8 +206,8 @@ def test_spread_grows_with_delta(ida_setup, monkeypatch):
     small = _run(ida_setup, SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(2.0)}, seed=7))
     big = _run(ida_setup, SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(10.0)}, seed=7))
 
-    std_small = float(np.std(small.histograms['sobol']['Ka_guest']))
-    std_big = float(np.std(big.histograms['sobol']['Ka_guest']))
+    std_small = float(np.std(_samples(small)))
+    std_big = float(np.std(_samples(big)))
     assert std_big > std_small > 0
 
 
@@ -217,8 +228,7 @@ def test_titrant_alone_produces_spread(ida_setup, monkeypatch):
     )
     result = _run(ida_setup, cfg)
 
-    assert set(result.histograms) == {'sobol'}
-    samples = result.histograms['sobol']['Ka_guest']
+    samples = _samples(result)
     assert samples.size > 0
     assert np.std(samples) > 0
 
@@ -236,7 +246,7 @@ def test_ka_dye_alone_shifts_ka(ida_setup, monkeypatch):
     )
     result = _run(ida_setup, cfg)
 
-    samples = result.histograms['sobol']['Ka_guest']
+    samples = _samples(result)
     baseline = result.baseline_ka['Ka_guest']
     assert samples.size > 0
     assert np.std(samples) > 0
@@ -264,12 +274,40 @@ def test_seed_makes_draws_reproducible(ida_setup, monkeypatch):
     r2 = _run(ida_setup, cfg_a)
     r3 = _run(ida_setup, cfg_b)
 
-    s1 = r1.histograms['sobol']['Ka_guest']
-    s2 = r2.histograms['sobol']['Ka_guest']
-    s3 = r3.histograms['sobol']['Ka_guest']
+    s1 = _samples(r1)
+    s2 = _samples(r2)
+    s3 = _samples(r3)
 
     np.testing.assert_array_equal(s1, s2)
     assert not np.array_equal(s1, s3)
+
+
+def test_a_run_given_no_seed_reports_the_seed_that_repeats_it(ida_setup, monkeypatch):
+    """An unseeded run draws one root seed and reports it; feeding it back reproduces the run.
+
+    Without that, a run the user did not seed could never be shown to anyone
+    else, and two unseeded runs of the same data would differ with nothing to
+    say why.
+    """
+    _use_small_design(monkeypatch, 2)
+    unseeded = SensitivityConfig(SensitivityMode.SOBOL, 4, {TITRANT: InputSpec.sigma_pct(5.0)})
+
+    first = _run(ida_setup, unseeded)
+    again = _run(ida_setup, replace(unseeded, seed=first.seed_used))
+    another = _run(ida_setup, unseeded)
+
+    assert isinstance(first.seed_used, int)
+    np.testing.assert_array_equal(_samples(again), _samples(first))
+    assert another.seed_used != first.seed_used
+    assert not np.array_equal(_samples(another), _samples(first))
+
+
+def test_a_seeded_run_reports_the_seed_it_was_given(ida_setup, monkeypatch):
+    """With a seed set, that seed is what the result records."""
+    _use_small_design(monkeypatch, 2)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, {TITRANT: InputSpec.sigma_pct(5.0)}, seed=77)
+
+    assert _run(ida_setup, cfg).seed_used == 77
 
 
 # ---------------------------------------------------------------------------
@@ -296,12 +334,43 @@ def test_heatmap_center_matches_baseline_and_shape(ida_setup):
 
     grid = result.ka_grid['Ka_guest']
     assert grid.shape == (3, 3)
-    # linspace(-d, d, 3)[1] == 0 on both axes → centre is an unperturbed fit.
-    center = grid[1, 1]
-    assert center == pytest.approx(result.baseline_ka['Ka_guest'], rel=0.03)
+    # linspace(-d, d, 3)[1] == 0 on both axes → the centre cell is the baseline fit itself.
+    assert (result.x_offsets_pct[1], result.y_offsets_pct[1]) == (0.0, 0.0)
+    assert grid[1, 1] == result.baseline_ka['Ka_guest']
     assert result.n_success == 9
     assert result.n_total == 9
     assert np.all(np.isfinite(grid))
+
+
+def test_heatmap_axes_perturb_the_inputs_they_name(ida_setup, monkeypatch):
+    """Cell ``[iy, ix]`` is fitted with the X input at ``x_offsets_pct[ix]`` and the Y input at ``y_offsets_pct[iy]``.
+
+    Each perturbation reports a Ka that reads off the h0 offset alone, so the
+    grid has to vary along the h0 axis and be flat along the other one. Swapping
+    the two axis keys, or transposing the grid, moves the variation.
+    """
+
+    def ka_from_h0_alone(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
+        signal = dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)
+        return {'Ka_guest': 1e8 * (1 + 3 * offsets.get('h0', 0.0)), **signal}, 1.0
+
+    monkeypatch.setattr(sens, '_fit_perturbed', ka_from_h0_alone)
+    cfg = SensitivityConfig(
+        mode=SensitivityMode.HEATMAP,
+        n_samples=1,
+        input_specs={'h0': InputSpec.sigma_pct(4.0), 'd0': InputSpec.sigma_pct(10.0)},
+        seed=0,
+        x_key='h0',
+        y_key='d0',
+        n_steps=3,
+    )
+
+    result = _run(ida_setup, cfg)
+
+    np.testing.assert_allclose(result.x_offsets_pct, [-8.0, 0.0, 8.0])  # ±2σ of the X input, h0
+    np.testing.assert_allclose(result.y_offsets_pct, [-20.0, 0.0, 20.0])  # ±2σ of the Y input, d0
+    along_x = 1e8 * (1 + 3 * result.x_offsets_pct / 100)
+    np.testing.assert_allclose(result.ka_grid['Ka_guest'], np.tile(along_x, (3, 1)), rtol=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +498,7 @@ def test_heatmap_axis_reaching_zero_raises_before_any_fit(ida_setup, monkeypatch
 def test_unknown_input_key_raises(ida_setup):
     ms, assay_cls, conditions, fit_config = ida_setup
     cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {'not_an_input': InputSpec.sigma_pct(5.0)})
-    with pytest.raises(ValueError, match='Unknown'):
+    with pytest.raises(ValueError, match='an input this assay does not have'):
         run_sensitivity(ms, assay_cls, conditions, fit_config, cfg)
 
 
@@ -440,6 +509,85 @@ def test_dye_alone_has_no_ka_to_analyse():
     cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(5.0)})
     with pytest.raises(ValueError, match='association constant'):
         run_sensitivity(ms, DyeAloneAssay, {}, FitConfig(n_trials=5), cfg)
+
+
+@pytest.mark.parametrize(
+    ('assay_cls', 'true', 'maker', 'name'),
+    [
+        (HG2Assay, HG2_TRUE, _make_hg2_data, 'DBA 1:2'),
+        (H2GAssay, H2G_TRUE, _make_h2g_data, 'DBA 2:1'),
+    ],
+    ids=['HG2', 'H2G'],
+)
+def test_an_assay_without_an_exact_ka_profile_is_refused(monkeypatch, assay_cls, true, maker, name):
+    """Two binding constants leave no exact profile, so the analysis refuses the assay before fitting anything.
+
+    Each perturbation would have to be refitted by a multi-start search that
+    lands on a different optimum from one seed to the next; its scatter would be
+    read as input sensitivity, which is the one thing the analysis claims to
+    separate out.
+    """
+    monkeypatch.setattr(sens, '_fit_perturbed', lambda *a, **k: pytest.fail('no fit may run'))
+    x, y = maker(true, n_points=_N_POINTS)
+    ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(5.0)})
+
+    with pytest.raises(ValueError, match='not available') as raised:
+        run_sensitivity(ms, assay_cls, {'h0': Q_(true['h0'], 'M')}, FitConfig(n_trials=5), cfg)
+
+    assert name in str(raised.value)
+
+
+_MESSAGE_CONFIGS = {
+    'negative-sigma': SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.sigma_pct(-5.0)}),
+    'upside-down-range': SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.interval_pct(5.0, -5.0)}),
+    'range-below-zero': SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.interval_pct(-200.0, 0.0)}),
+    'axis-to-zero': SensitivityConfig(
+        SensitivityMode.HEATMAP,
+        1,
+        {'h0': InputSpec.sigma_pct(50.0), 'd0': InputSpec.sigma_pct(5.0)},
+        x_key='h0',
+        y_key='d0',
+        n_steps=3,
+    ),
+    'absolute-titrant': SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_abs(1e-6)}),
+}
+
+
+_LABELS = {'h0': '[Host]₀', 'd0': '[Dye]₀', TITRANT: 'Guest (titrant)'}
+
+
+@pytest.mark.parametrize('cfg', _MESSAGE_CONFIGS.values(), ids=list(_MESSAGE_CONFIGS))
+@pytest.mark.parametrize('labels', [_LABELS, None], ids=['labelled', 'unlabelled'])
+def test_a_rejected_config_is_explained_without_any_internal_key(ida_setup, cfg, labels):
+    """No message about an input shows a dict key or the sentinel that stands for the titrant.
+
+    The messages reach the user unchanged, so one of those is text a chemist
+    cannot act on.
+    """
+    ms, assay_cls, conditions, fit_config = ida_setup
+
+    with pytest.raises(ValueError) as raised:
+        run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, input_labels=labels)
+
+    message = str(raised.value)
+    assert 'h0' not in message and 'd0' not in message and TITRANT not in message
+
+
+@pytest.mark.parametrize('name', ['negative-sigma', 'upside-down-range', 'range-below-zero', 'axis-to-zero'])
+def test_a_rejected_config_names_its_input_the_way_the_interface_does(ida_setup, name):
+    """A message about a condition carries the label the user set that condition under."""
+    ms, assay_cls, conditions, fit_config = ida_setup
+
+    with pytest.raises(ValueError, match=r'\[Host\]₀'):
+        run_sensitivity(ms, assay_cls, conditions, fit_config, _MESSAGE_CONFIGS[name], input_labels=_LABELS)
+
+
+def test_an_input_with_no_label_is_named_in_plain_words():
+    """Without labels an input is described, never keyed."""
+    assert input_name(TITRANT, None) == 'the titrant'
+    assert input_name(TITRANT, _LABELS) == 'Guest (titrant)'
+    assert 'h0' not in input_name('h0', None)
 
 
 # ---------------------------------------------------------------------------
@@ -464,9 +612,9 @@ def test_seeded_run_repeats_regardless_of_global_rng(ida_setup, monkeypatch):
     )
 
     np.random.seed(1)
-    first = run_sensitivity(ms, assay_cls, conditions, fit_config, cfg).histograms['sobol']['Ka_guest']
+    first = _samples(run_sensitivity(ms, assay_cls, conditions, fit_config, cfg))
     np.random.seed(999)
-    second = run_sensitivity(ms, assay_cls, conditions, fit_config, cfg).histograms['sobol']['Ka_guest']
+    second = _samples(run_sensitivity(ms, assay_cls, conditions, fit_config, cfg))
 
     assert np.array_equal(first, second)
 
@@ -511,60 +659,36 @@ def test_estimated_fit_count_matches_the_fits_actually_run(ida_setup, max_worker
     assert reports[-1] == (expected, expected)
 
 
-def _count_optimizer_runs(monkeypatch) -> list[int]:
-    """Record the optimizer runs of every multi-start fit, in L-BFGS-B runs.
-
-    These tests inspect the fit calls themselves, so they run serially: a
-    worker process imports its own copy of the module, where a patch made here
-    does not exist. Serial and parallel runs execute the same per-fit function
-    and differ only in which process calls it, so what they check holds for
-    both.
-    """
-    runs: list[int] = []
-    real_fit = sens.fit_measurement_set
-
-    def counting_fit(perturbed_ms, assay, conds, config):
-        runs.append(config.n_trials * (perturbed_ms.n_active if config.per_replica else 1))
-        return real_fit(perturbed_ms, assay, conds, config)
-
-    monkeypatch.setattr(sens, 'fit_measurement_set', counting_fit)
-    return runs
-
-
-def test_every_multistart_fit_runs_the_configured_number_of_trials(ida_setup, monkeypatch):
-    """Each fit gets the full multi-start depth the cost estimate assumes."""
-    ms, assay_cls, conditions, fit_config = ida_setup
-    cfg = _cost_config()
-    _force_multistart(monkeypatch)
-    runs = _count_optimizer_runs(monkeypatch)
-
-    run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
-
-    assert sum(runs) == estimated_optimizer_runs(cfg, fit_config, assay_type=AssayType.IDA)
-
-
-def test_profile_path_costs_one_profile_fit_per_fitted_signal(ida_replicas_setup, monkeypatch):
-    """A profile-path run does one multi-start baseline, and one profile fit per signal for it and each perturbation.
+def test_a_run_costs_one_multistart_baseline_and_one_profile_fit_per_fitted_signal(ida_replicas_setup, monkeypatch):
+    """A run does one multi-start baseline, and one profile fit per signal for it and each perturbation.
 
     Checked per replicate, where each perturbation fits every active
-    replicate, so the estimate's replicate multiplier is exercised too.
+    replicate, so the estimate's replicate multiplier is exercised too. The
+    fit calls are inspected here, so the run is serial: a worker process
+    imports its own copy of the module, where a patch made here does not
+    exist. Both dispatches call the same per-fit function.
     """
     ms, assay_cls, conditions, fit_config = ida_replicas_setup
     cfg = _cost_config()
-    runs = _count_optimizer_runs(monkeypatch)
+    runs: list[int] = []
     profile_fits: list[int] = []
-    real_profile = sens.best_params_by_profile
+    real_fit, real_profile = sens.fit_measurement_set, sens.best_params_by_profile
+
+    def counting_fit(perturbed_ms, assay, conds, config, **kwargs):
+        runs.append(config.n_trials * (perturbed_ms.n_active if config.per_replica else 1))
+        return real_fit(perturbed_ms, assay, conds, config, **kwargs)
 
     def counting_profile(assay, bounds):
         profile_fits.append(1)
         return real_profile(assay, bounds)
 
+    monkeypatch.setattr(sens, 'fit_measurement_set', counting_fit)
     monkeypatch.setattr(sens, 'best_params_by_profile', counting_profile)
     run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
 
     assert len(profile_fits) == (estimated_fit_count(cfg) + 1) * ms.n_active  # the baseline reports one too
     assert sum(runs) + len(profile_fits) * sens._PROFILE_FIT_RUNS == estimated_optimizer_runs(
-        cfg, fit_config, ms.n_active, assay_type=AssayType.IDA
+        cfg, fit_config, ms.n_active
     )
 
 
@@ -596,12 +720,11 @@ def _signal_name(ms, y) -> str:
     return next(rid for rid in ms.replica_ids if np.array_equal(y, ms.get_replica_signal(rid)))
 
 
-def _fitted_signals(setup, replicate_mode, monkeypatch, path) -> list[list[str]]:
+def _fitted_signals(setup, replicate_mode, monkeypatch) -> list[list[str]]:
     """Run a one-sample analysis; list, per fit, the signals it fitted.
 
     Each entry holds the ids of the replicates one fit used separately, or
-    ``['average']`` when it fitted the averaged signal. On the multi-start path
-    the baseline fit is listed too.
+    ``['average']`` when it fitted the averaged signal.
     """
     ms, assay_cls, conditions, fit_config = setup
     _use_small_design(monkeypatch, 1)
@@ -613,77 +736,59 @@ def _fitted_signals(setup, replicate_mode, monkeypatch, path) -> list[list[str]]
         replicate_mode=replicate_mode,
     )
     seen: list[list[str]] = []
+    real_fit, real_params = sens._fit_by_profile, sens.best_params_by_profile
 
-    if path == 'multistart':
-        _force_multistart(monkeypatch)
-        real = sens.fit_measurement_set
+    def fit_spy(*args):
+        seen.append([])
+        return real_fit(*args)
 
-        def spy(perturbed_ms, assay, conds, config):
-            seen.append(list(perturbed_ms.active_replica_ids) if config.per_replica else ['average'])
-            return real(perturbed_ms, assay, conds, config)
+    def params_spy(assay, bounds):
+        seen[-1].append(_signal_name(ms, assay.y_data.magnitude))
+        return real_params(assay, bounds)
 
-        monkeypatch.setattr(sens, 'fit_measurement_set', spy)
-    else:
-        real_fit, real_params = sens._fit_by_profile, sens.best_params_by_profile
-
-        def fit_spy(*args):
-            seen.append([])
-            return real_fit(*args)
-
-        def params_spy(assay, bounds):
-            seen[-1].append(_signal_name(ms, assay.y_data.magnitude))
-            return real_params(assay, bounds)
-
-        monkeypatch.setattr(sens, '_fit_by_profile', fit_spy)
-        monkeypatch.setattr(sens, 'best_params_by_profile', params_spy)
+    monkeypatch.setattr(sens, '_fit_by_profile', fit_spy)
+    monkeypatch.setattr(sens, 'best_params_by_profile', params_spy)
 
     run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
     return seen
 
 
-_PATHS = pytest.mark.parametrize('path', ['profile', 'multistart'])
-
-
-@_PATHS
-def test_follow_mode_keeps_the_configured_replicate_handling(ida_replicas_setup, monkeypatch, path):
+def test_follow_mode_keeps_the_configured_replicate_handling(ida_replicas_setup, monkeypatch):
     """A per-replica fit stays per-replica inside the sensitivity run.
 
     Replicates are the measured signal scatter; collapsing them to an average
     would drop that uncertainty from an analysis whose whole subject is
     uncertainty.
     """
-    seen = _fitted_signals(ida_replicas_setup, ReplicateMode.FOLLOW, monkeypatch, path)
+    seen = _fitted_signals(ida_replicas_setup, ReplicateMode.FOLLOW, monkeypatch)
 
     assert seen
     assert all(signals == ['r0', 'r1', 'r2'] for signals in seen)
 
 
-@_PATHS
-def test_average_mode_collapses_the_replicates(ida_replicas_setup, monkeypatch, path):
+def test_average_mode_collapses_the_replicates(ida_replicas_setup, monkeypatch):
     """Averaging is available, but only when it is asked for."""
-    seen = _fitted_signals(ida_replicas_setup, ReplicateMode.AVERAGE, monkeypatch, path)
+    seen = _fitted_signals(ida_replicas_setup, ReplicateMode.AVERAGE, monkeypatch)
 
     assert seen
     assert all(signals == ['average'] for signals in seen)
 
 
-@_PATHS
-def test_per_replica_mode_overrides_the_fit_setting(ida_replicas_setup, monkeypatch, path):
+def test_per_replica_mode_overrides_the_fit_setting(ida_replicas_setup, monkeypatch):
     ms, assay_cls, conditions, fit_config = ida_replicas_setup
     averaging = replace(fit_config, per_replica=False)
-    seen = _fitted_signals((ms, assay_cls, conditions, averaging), ReplicateMode.PER_REPLICA, monkeypatch, path)
+    seen = _fitted_signals((ms, assay_cls, conditions, averaging), ReplicateMode.PER_REPLICA, monkeypatch)
 
     assert seen
     assert all(signals == ['r0', 'r1', 'r2'] for signals in seen)
 
 
-@_PATHS
-def test_deactivated_replicas_stay_out_of_every_perturbed_fit(ida_replicas_setup, monkeypatch, path):
+def test_deactivated_replicas_stay_out_of_every_perturbed_fit(ida_replicas_setup, monkeypatch):
     """A replica switched off in the GUI must not reappear under perturbation."""
     ms, assay_cls, conditions, fit_config = ida_replicas_setup
     ms.set_active('r1', False)
 
-    seen = _fitted_signals((ms, assay_cls, conditions, fit_config), ReplicateMode.FOLLOW, monkeypatch, path)
+    seen = _fitted_signals((ms, assay_cls, conditions, fit_config), ReplicateMode.FOLLOW, monkeypatch)
 
     assert seen
     assert all(signals == ['r0', 'r2'] for signals in seen)
@@ -861,9 +966,80 @@ def test_default_worker_count_is_usable_on_any_machine():
     assert workers <= max(1, total - 1)
 
 
+def _ida_setup_with_ka(scale: float):
+    """A clean IDA setup whose true Ka_guest is *scale* times the shared one."""
+    true = {**IDA_TRUE, 'Ka_guest': IDA_TRUE['Ka_guest'] * scale}
+    x, y = _make_ida_data(true, n_points=_N_POINTS)
+    ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
+    return ms, IDAAssay, dict(_IDA_CONDITIONS), FitConfig(n_trials=6, custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
+
+
+def test_two_runs_at_once_in_one_process_keep_their_own_data():
+    """Two analyses running side by side answer for their own measurements.
+
+    The application runs each analysis in its own thread and can have more than
+    one going — two tabs, or a new run started while the last is draining. With
+    no worker processes the fits happen in this process, and one run reaching
+    the other's data would report a Ka distribution belonging to different
+    measurements, labelled with these ones.
+    """
+    setups = {scale: _ida_setup_with_ka(scale) for scale in (1.0, 4.0)}
+    cfg = _heatmap(2, sigma_pct=5.0)
+    alone = {scale: _run(setup, cfg) for scale, setup in setups.items()}
+    together: dict[float, object] = {}
+
+    threads = [
+        threading.Thread(target=lambda s=scale: together.__setitem__(s, _run(setups[s], cfg))) for scale in setups
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert alone[4.0].ka_grid['Ka_guest'].min() > alone[1.0].ka_grid['Ka_guest'].max()
+    for scale in setups:
+        np.testing.assert_allclose(together[scale].ka_grid['Ka_guest'], alone[scale].ka_grid['Ka_guest'], rtol=1e-9)
+
+
+def test_a_serial_run_leaves_no_state_behind_in_this_process():
+    """The per-worker state belongs to worker processes; a run without them fills nothing here."""
+    sens._WORKER_STATE.clear()
+
+    _run(_ida_setup_with_ka(1.0), _heatmap(2, sigma_pct=5.0))
+
+    assert sens._WORKER_STATE == {}
+
+
+def test_the_thread_cap_is_lifted_from_this_process_again(monkeypatch):
+    """The cap belongs to the worker processes started under it, never to the application.
+
+    A library reads the variables as it loads, so they have to be in the
+    environment a worker inherits; leaving them set afterwards would make this
+    application's own numerical work single-threaded from the first analysis on.
+    """
+    monkeypatch.delenv('OMP_NUM_THREADS', raising=False)
+    monkeypatch.setenv('MKL_NUM_THREADS', '4')
+
+    with sens._thread_capped_children():
+        inside = {name: os.environ.get(name) for name in sens._THREAD_LIMIT_VARS}
+
+    assert inside['OMP_NUM_THREADS'] == '1'
+    assert inside['MKL_NUM_THREADS'] == '4'  # a choice already made is left alone
+    assert os.environ.get('OMP_NUM_THREADS') is None
+    assert os.environ.get('MKL_NUM_THREADS') == '4'
+
+
+def test_a_run_leaves_the_environment_as_it_found_it():
+    """A whole analysis changes none of the thread-cap variables of this process."""
+    before = {name: os.environ.get(name) for name in sens._THREAD_LIMIT_VARS}
+
+    _run(_ida_setup_with_ka(1.0), _heatmap(2, sigma_pct=5.0))
+
+    assert {name: os.environ.get(name) for name in sens._THREAD_LIMIT_VARS} == before
+
+
 def _assert_identical(a, b) -> None:
     """Every reported number of two SOBOL results is bit-identical."""
-    assert np.array_equal(a.histograms['sobol']['Ka_guest'], b.histograms['sobol']['Ka_guest'])
     for field in ('sobol_s1', 'sobol_st', 'sobol_s1_ci', 'sobol_st_ci'):
         assert getattr(a, field) == getattr(b, field), field
     assert a.sample_offsets_pct.keys() == b.sample_offsets_pct.keys()
@@ -881,8 +1057,7 @@ def _assert_identical(a, b) -> None:
     assert a.baseline_fit.r_squared == b.baseline_fit.r_squared
 
 
-@_PATHS
-def test_parallel_and_serial_produce_the_same_answer(ida_setup, monkeypatch, path):
+def test_parallel_and_serial_produce_the_same_answer(ida_setup, monkeypatch):
     """Spreading the fits over processes must not change the result.
 
     Each fit carries its own seed, so the outcome cannot depend on which worker
@@ -900,8 +1075,6 @@ def test_parallel_and_serial_produce_the_same_answer(ida_setup, monkeypatch, pat
         seed=21,
     )
     assert estimated_fit_count(cfg) >= sens._PARALLEL_MIN_JOBS
-    if path == 'multistart':
-        _force_multistart(monkeypatch)
 
     serial = run_sensitivity(ms, assay_cls, conditions, fast, cfg, max_workers=1)
     parallel = run_sensitivity(ms, assay_cls, conditions, fast, cfg, max_workers=2)
@@ -910,54 +1083,29 @@ def test_parallel_and_serial_produce_the_same_answer(ida_setup, monkeypatch, pat
     _assert_identical(serial, parallel)
 
 
-def test_entry_point_prepares_for_frozen_worker_processes():
+def test_entry_point_calls_freeze_support_before_importing_the_interface():
     """A packaged build starts each worker by re-executing the entry point.
 
     Without ``freeze_support`` the worker launches a second copy of the whole
-    application instead, which then does the same again. It only shows up in a
-    frozen build, so nothing else in the suite would catch its removal.
+    application instead, which then does the same again; and every import made
+    ahead of it the worker pays for, Qt included, because ``freeze_support``
+    returns only in the process the user started. Neither shows up outside a
+    frozen build, so nothing else in the suite would catch it.
     """
     entry_point = pathlib.Path(__file__).resolve().parents[2] / 'run_app.py'
+    tree = ast.parse(entry_point.read_text())
+    guard = next(node for node in tree.body if isinstance(node, ast.If))
+    steps = [ast.unparse(node) for node in guard.body]
 
-    assert 'freeze_support()' in entry_point.read_text()
+    assert not [step for step in map(ast.unparse, tree.body) if step.startswith(('import gui', 'from gui'))]
+    freeze = steps.index('multiprocessing.freeze_support()')
+    gui_import = next(i for i, step in enumerate(steps) if step.startswith('from gui.'))
+    assert freeze < gui_import
 
 
 # ---------------------------------------------------------------------------
-# Profile path against the multi-start path
+# The profile fit against a multi-start search of the same signal
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ('n_replicas', 'per_replica', 'n_steps'),
-    [(1, False, 4), (4, True, 3)],
-    ids=['average', 'per_replicate'],
-)
-def test_profile_path_reports_the_multistart_best_fit(monkeypatch, n_replicas, per_replica, n_steps):
-    """Every perturbation gets the same best Ka and R² from either path.
-
-    Per replicate, the multi-start path is ``fit_measurement_set_per_replica``,
-    which reports the replica best fit that best fits the averaged signal; the
-    profile path must pick the same replicate's fit. The data carry independent
-    noise per replicate, so fitting the averaged signal instead gives a
-    different Ka — checked, so that agreement here means the rule matches.
-    """
-    setup = _noisy_ida_setup(n_replicas, per_replica=per_replica)
-    cfg = _heatmap(n_steps)
-
-    profile = _run(setup, cfg)
-    with monkeypatch.context() as patch:
-        _force_multistart(patch)
-        multistart = _run(setup, cfg)
-
-    ka_profile, ka_multi = profile.ka_grid['Ka_guest'], multistart.ka_grid['Ka_guest']
-    assert ka_profile.size >= 9
-    assert np.all(np.abs(ka_profile / ka_multi - 1) < 0.01)
-    assert np.all(np.abs(profile.r2_grid - multistart.r2_grid) < 1e-6)
-
-    if per_replica:
-        ms, assay_cls, conditions, fit_config = setup
-        averaged = _run((ms, assay_cls, conditions, replace(fit_config, per_replica=False)), cfg)
-        assert np.max(np.abs(averaged.ka_grid['Ka_guest'] / ka_profile - 1)) > 0.01
 
 
 _DEMO_PATH = pathlib.Path(__file__).resolve().parents[2] / 'data' / 'IDA_system.txt'
@@ -995,8 +1143,8 @@ def test_profile_path_reports_the_per_replicate_fit_on_the_demo_data(seed):
 
 
 @pytest.mark.parametrize(('n_replicas', 'per_replica'), [(1, False), (4, True)], ids=['average', 'per_replicate'])
-def test_profile_path_baseline_is_the_unperturbed_sample(n_replicas, per_replica):
-    """On the profile path the baseline is the fit a sample with no input offset gets.
+def test_baseline_is_the_unperturbed_sample(n_replicas, per_replica):
+    """The baseline is the fit a sample with no input offset gets.
 
     The grid's centre cell holds the inputs as entered, so its Ka reads no
     change against the baseline, and the report's Estimate comes from the
@@ -1063,54 +1211,110 @@ def test_baseline_keeps_the_record_of_the_replicates_it_used_and_scores_on_them(
     assert result.r2_grid[1, 1] == pytest.approx(baseline.r_squared, abs=1e-12)
 
 
-def test_multistart_samples_use_the_replicates_the_baseline_used(monkeypatch):
+def test_samples_use_the_replicates_the_baseline_used(monkeypatch):
     """A replicate the baseline fit left out enters no perturbed fit, so every sample describes the same data."""
     ms, assay_cls, conditions, fit_config = setup = _noise_replicate_setup()
-    _force_multistart(monkeypatch)
-    real = sens.fit_measurement_set
-    seen: list[list[str]] = []
+    real = sens.best_params_by_profile
+    seen: list[str] = []
 
-    def spy(fit_ms, assay, conds, config):
-        seen.append(list(fit_ms.active_replica_ids))
-        return real(fit_ms, assay, conds, config)
+    def spy(assay, bounds):
+        seen.append(_signal_name(ms, assay.y_data.magnitude))
+        return real(assay, bounds)
 
-    monkeypatch.setattr(sens, 'fit_measurement_set', spy)
+    monkeypatch.setattr(sens, 'best_params_by_profile', spy)
     result = _run(setup, _heatmap(2))
 
-    assert seen[0] == ['r0', 'r1', 'r2']  # the baseline is given every active replicate
     assert result.baseline_fit.metadata['replica_ids_fit'] == ['r0', 'r1']
-    assert len(seen) == 5
-    assert all(ids == ['r0', 'r1'] for ids in seen[1:])
+    assert len(seen) == 2 * 5  # the two replicates of the zero-offset baseline and of the four cells
+    assert set(seen) == {'r0', 'r1'}
 
 
-def test_multistart_sample_that_loses_a_replicate_is_not_a_fit(monkeypatch):
-    """A perturbed per-replicate fit that could not fit one of the set's replicates reports no Ka and no R²."""
-    setup = _noise_replicate_setup()
-    _force_multistart(monkeypatch)
-    real = sens.fit_measurement_set
-    calls = iter(range(100))
+@pytest.mark.parametrize('unsolvable', ['raises', 'scores-nothing'], ids=['the-solve-raises', 'no-ka-is-solvable'])
+def test_a_perturbation_that_cannot_be_solved_is_one_missing_sample(monkeypatch, unsolvable):
+    """A perturbed fit with no solution is NaN in the grid; the other cells are unaffected.
 
-    def lose_a_replicate_on_the_second_sample(fit_ms, assay, conds, config):
-        result = real(fit_ms, assay, conds, config)
-        if next(calls) == 2:
-            result.metadata['replica_failures'] = {'r1': 'Its signal could not be fitted.'}
-        return result
+    A perturbed set of inputs can produce a design the exact profile cannot
+    solve, and discarding thousands of finished fits over one of them would
+    leave the user with nothing. The profile reports that two ways: the solve
+    raises, or it returns its fallback — the coefficients at their lower bounds
+    at a Ka the model cannot be evaluated at, which scores nothing. Neither is a
+    fit, so neither may be counted as a sample.
+    """
+    setup = _noisy_ida_setup(1, per_replica=False)
+    real = sens.best_params_by_profile
+    unsolvable_ka = 1e25  # above the range the equilibrium solver reaches
 
-    monkeypatch.setattr(sens, 'fit_measurement_set', lose_a_replicate_on_the_second_sample)
-    result = _run(setup, _heatmap(2))
+    def no_solution_for_a_shrunken_host(assay, bounds):
+        if assay.h0.magnitude >= IDA_TRUE['h0']:
+            return real(assay, bounds)
+        if unsolvable == 'raises':
+            raise np.linalg.LinAlgError('SVD did not converge in Linear Least Squares')
+        return np.array([unsolvable_ka, 0.0, 0.0, 0.0])
 
-    lost = np.isnan(result.r2_grid.ravel())
-    assert lost.tolist() == [False, True, False, False]
-    assert np.isnan(result.ka_grid['Ka_guest'].ravel()[1])
+    monkeypatch.setattr(sens, 'best_params_by_profile', no_solution_for_a_shrunken_host)
+    result = _run(setup, _heatmap(3))
+
+    assert unsolvable_ka not in result.ka_grid['Ka_guest']  # no fabricated Ka reported as a fit
+
+    lost = np.isnan(result.r2_grid)
+    assert lost.tolist() == [[True, False, False]] * 3  # h0 is the x axis, so its lowest step is one column
+    assert np.array_equal(np.isnan(result.ka_grid['Ka_guest']), lost)
+    assert (result.n_success, result.n_total, result.stopped) == (6, 9, False)
+
+
+def test_a_baseline_no_replicate_could_be_fitted_reports_each_replicate_s_reason():
+    """The analysis explains a failed baseline the way the ordinary fit does.
+
+    The same data and settings must not say 'did not converge' here and name the
+    failing replicates in the Fit Curve tab: the reasons are what the user acts on.
+    """
+    ms, assay_cls, conditions, fit_config = _noisy_ida_setup(2, per_replica=True)
+    unreachable_floor = replace(fit_config, min_r_squared=1.0)
+
+    with pytest.raises(PerReplicaFitError) as raised:
+        run_sensitivity(ms, assay_cls, conditions, unreachable_floor, _heatmap(3), max_workers=1)
+
+    assert set(raised.value.failures) == set(ms.active_replica_ids)
+    assert 'no reference Ka' in str(raised.value)
+
+
+@pytest.mark.parametrize('cancel_at', [0, 3], ids=['before-the-baseline', 'during-the-baseline'])
+def test_a_run_stopped_before_it_has_a_baseline_ends_as_stopped(cancel_at):
+    """Stopping during the reference fit ends the run rather than reporting a result without one.
+
+    Every sample is compared against the baseline fit, so a run that never
+    finished one has nothing to show, and the multi-start baseline is long
+    enough on real data that a user can stop inside it.
+    """
+    ms, assay_cls, conditions, fit_config = _noisy_ida_setup(1, per_replica=False)
+    checks = iter(range(100))
+
+    with pytest.raises(FitCancelled):
+        run_sensitivity(
+            ms,
+            assay_cls,
+            conditions,
+            fit_config,
+            _heatmap(3),
+            max_workers=1,
+            should_cancel=lambda: next(checks) >= cancel_at,
+        )
 
 
 def test_a_run_stopped_early_says_so():
     """Cells the run never reached are NaN like failed ones; ``stopped`` tells the two apart."""
     ms, assay_cls, conditions, fit_config = _noisy_ida_setup(1, per_replica=False)
-    checks = iter(range(100))
+    finished: list[int] = []  # one entry per finished fit, the baseline first
 
     stopped = run_sensitivity(
-        ms, assay_cls, conditions, fit_config, _heatmap(3), max_workers=1, should_cancel=lambda: next(checks) >= 4
+        ms,
+        assay_cls,
+        conditions,
+        fit_config,
+        _heatmap(3),
+        max_workers=1,
+        progress=lambda done, total: finished.append(done),
+        should_cancel=lambda: len(finished) > 4,
     )
     full = _run((ms, assay_cls, conditions, fit_config), _heatmap(3))
 
@@ -1142,16 +1346,13 @@ def _floor_among(setup, r2: np.ndarray) -> float:
     return float(np.median(worse))
 
 
-@_PATHS
-def test_sobol_keeps_and_flags_fits_below_the_floor(monkeypatch, path):
+def test_sobol_keeps_and_flags_fits_below_the_floor(monkeypatch):
     """A floor between the perturbed fits flags some of them and drops none.
 
     The floor sits among the R² values of a first run, so some samples fall
-    below it. The second run must return exactly the same fits, count those
-    below the floor, and still show them in the histogram.
+    below it. The second run must return exactly the same fits and count those
+    below the floor, with every one of them still among the samples.
     """
-    if path == 'multistart':
-        _force_multistart(monkeypatch)
     _use_small_design(monkeypatch, 2)
     setup = _noisy_ida_setup(1, per_replica=False)
     cfg = SensitivityConfig(
@@ -1171,9 +1372,7 @@ def test_sobol_keeps_and_flags_fits_below_the_floor(monkeypatch, path):
     np.testing.assert_array_equal(flagged.sample_r2, probe.sample_r2)
     assert flagged.n_below_floor == int(np.sum(flagged.sample_r2 < floor))
     assert 0 < flagged.n_below_floor < flagged.sample_r2.size
-    histogram = flagged.histograms['sobol']['Ka_guest']
-    assert histogram.size == flagged.sample_r2.size
-    np.testing.assert_array_equal(np.sort(histogram), np.sort(flagged.sample_ka['Ka_guest']))
+    assert _samples(flagged).size == flagged.sample_r2.size
 
 
 def test_heatmap_keeps_and_flags_fits_below_the_floor():
@@ -1257,16 +1456,13 @@ def test_samples_are_aligned_with_the_sobol_points(ida_setup, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@_PATHS
-def test_every_sample_keeps_the_whole_fit_behind_its_ka(monkeypatch, path):
+def test_every_sample_keeps_the_whole_fit_behind_its_ka(monkeypatch):
     """Sample *i*'s parameters are the one fit that produced its Ka and its R².
 
     Its Ka entries are ``sample_ka`` itself, and the model evaluated with all of
     its parameters at the sample's perturbed inputs reproduces the reported R²,
     so the coefficients belong to the same fit as the Ka.
     """
-    if path == 'multistart':
-        _force_multistart(monkeypatch)
     _use_small_design(monkeypatch, 1)
     setup = _noisy_ida_setup(1, per_replica=False)
     ms, _, conditions, _ = setup
@@ -1287,28 +1483,6 @@ def test_every_sample_keeps_the_whole_fit_behind_its_ka(monkeypatch, path):
         params = np.array([result.sample_params[key][i] for key in assay.parameter_keys])
         _, r2 = calculate_fit_metrics(y, assay.forward_model(params).magnitude)
         assert r2 == pytest.approx(result.sample_r2[i], abs=1e-12)
-
-
-def test_multistart_samples_carry_the_perturbed_fits_parameters(monkeypatch):
-    """On the multi-start path each sample holds the parameters its perturbed fit reported."""
-    _force_multistart(monkeypatch)
-    _use_small_design(monkeypatch, 1)
-    reported = []
-    real = sens.fit_measurement_set
-
-    def spy(*args):
-        reported.append(real(*args))
-        return reported[-1]
-
-    monkeypatch.setattr(sens, 'fit_measurement_set', spy)
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 2, {'h0': InputSpec.sigma_pct(5.0)}, seed=8)
-
-    result = _run(_noisy_ida_setup(1, per_replica=False), cfg)
-
-    baseline, perturbed = reported[0], reported[1 : 1 + result.sample_r2.size]
-    assert result.baseline_fit is baseline
-    for key, values in result.sample_params.items():
-        np.testing.assert_array_equal(values, [fit.parameters[key].magnitude for fit in perturbed])
 
 
 def test_fit_summary_statistics_run_over_the_samples(ida_setup, monkeypatch):
@@ -1619,7 +1793,7 @@ def test_sobol_indices_split_the_variance_of_log_ka(ida_setup, monkeypatch):
     variance instead.
     """
 
-    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, by_profile):
+    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
         signal = dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)
         ka = 10.0 ** (8 + 40 * offsets.get('h0', 0.0) + 20 * offsets.get('d0', 0.0))  # no offset: the baseline
         return {'Ka_guest': ka, **signal}, 1.0
@@ -1653,7 +1827,7 @@ def test_run_intervals_leave_out_rows_without_a_fit(ida_setup, monkeypatch):
     def log_ka(h0, d0):
         return 8 + 40 * h0 + 20 * d0
 
-    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, by_profile):
+    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
         h0, d0 = offsets.get('h0', 0.0), offsets.get('d0', 0.0)
         if h0 > 0.08:
             return None
