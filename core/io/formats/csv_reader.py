@@ -50,6 +50,11 @@ _PARSE_OPTIONS = (
     {'sep': '\t'},
 )
 
+#: Read every number to the exact value its decimal stands for. The default
+#: parser is a shortcut that stops short of that: it reads a serial dilution's
+#: ``0.00023077000000000001`` as ``0.00023077``.
+_EXACT_FLOATS = {'float_precision': 'round_trip'}
+
 
 class CsvReader:
     """Reader for CSV measurement files."""
@@ -78,7 +83,7 @@ class CsvReader:
         df, kwargs = self._parse(path)
 
         if self._header_is_numeric(df):
-            df = pd.read_csv(path, header=None, **kwargs)
+            df = pd.read_csv(path, header=None, **_EXACT_FLOATS, **kwargs)
 
         conc_col, signal_cols, replica_col = self._identify_columns(df)
 
@@ -99,7 +104,7 @@ class CsvReader:
         last_df, last_kwargs = None, {}
         for kwargs in _PARSE_OPTIONS:
             try:
-                df = pd.read_csv(path, **kwargs)
+                df = pd.read_csv(path, **_EXACT_FLOATS, **kwargs)
             except Exception:
                 continue
             if len(self._numeric_columns(df)) >= 2:

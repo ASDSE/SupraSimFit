@@ -28,6 +28,20 @@ from core.io.registry import register_reader, register_writer
 _CONC_UNIT_COMMENT_RE = re.compile(r'concentration\s*=\s*([^\s,;]+)', re.IGNORECASE)
 
 
+def _as_float(text: str) -> float:
+    """Return one field as a float, or NaN when it is not a number, so its row is dropped.
+
+    ``float`` recovers exactly the value a shortest round-tripping decimal
+    stands for, which the pandas parser does not: it reads the
+    ``0.00023077000000000001`` that ``data/GDA_system.txt`` carries as
+    ``0.00023077``.
+    """
+    try:
+        return float(text)
+    except ValueError:
+        return float('nan')
+
+
 class TxtReader:
     """Reader for tab-separated measurement files with multi-replica support."""
 
@@ -95,8 +109,8 @@ class TxtReader:
         dfs = []
         for i, block in enumerate(replicas):
             df = pd.DataFrame(block, columns=['concentration', 'signal'])
-            df['concentration'] = pd.to_numeric(df['concentration'], errors='coerce')
-            df['signal'] = pd.to_numeric(df['signal'], errors='coerce')
+            df['concentration'] = [_as_float(v) for v in df['concentration']]
+            df['signal'] = [_as_float(v) for v in df['signal']]
             df['replica'] = i
             dfs.append(df)
 

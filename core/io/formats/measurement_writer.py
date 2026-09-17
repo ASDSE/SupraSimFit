@@ -11,6 +11,11 @@ These produce files that round-trip cleanly through the existing
 Both writers operate on *all* replicas — active and dropped — so the
 export is a faithful copy of the raw data; outlier filtering is
 applied only at fit time.
+
+Every value is written as the shortest decimal that reads back as the same
+float64 (:func:`repr`), so an exported file carries the measured values
+exactly: it loads with the same :meth:`MeasurementSet.fingerprint`, and a fit
+result made on the original data is accepted on the export.
 """
 
 from __future__ import annotations
@@ -46,13 +51,13 @@ def _iter_points(ms: 'MeasurementSet') -> Iterator[Tuple[int, float, float]]:
     """
     for replica_idx, (_rid, signal) in enumerate(ms.iter_replicas(active_only=False)):
         for conc, value in zip(ms.concentrations, signal):
-            yield replica_idx, conc, value
+            yield replica_idx, float(conc), float(value)
 
 
 def write_measurements_txt(ms: 'MeasurementSet', path: str | Path) -> None:
     """Write *ms* to a tab-separated ``.txt`` file with repeated headers.
 
-    Output round-trips exactly through :class:`TxtReader`.
+    Every value round-trips through :class:`TxtReader` as the same float64.
     """
     path = Path(path)
     lines: list[str] = _header_comment(ms)
@@ -61,18 +66,18 @@ def write_measurements_txt(ms: 'MeasurementSet', path: str | Path) -> None:
         if replica_idx != current_replica:
             lines.append('var\tsignal')
             current_replica = replica_idx
-        lines.append(f'{conc:.6e}\t{value:.6e}')
+        lines.append(f'{conc!r}\t{value!r}')
     path.write_text('\n'.join(lines) + '\n')
 
 
 def write_measurements_csv(ms: 'MeasurementSet', path: str | Path) -> None:
     """Write *ms* to a long-format ``.csv`` file.
 
-    Output round-trips through :class:`CsvReader` as long-format CSV.
+    Every value round-trips through :class:`CsvReader` as the same float64.
     No ``#``-style comments are emitted because ``CsvReader`` relies on
     :func:`pandas.read_csv` without a comment character.
     """
     path = Path(path)
     lines: list[str] = ['concentration,signal,replica']
-    lines.extend(f'{conc:.6e},{value:.6e},{replica_idx}' for replica_idx, conc, value in _iter_points(ms))
+    lines.extend(f'{conc!r},{value!r},{replica_idx}' for replica_idx, conc, value in _iter_points(ms))
     path.write_text('\n'.join(lines) + '\n')

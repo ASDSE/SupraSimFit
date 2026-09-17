@@ -244,3 +244,26 @@ class TestIODataIntegrity:
         assert pd.api.types.is_numeric_dtype(df['concentration'])
         assert pd.api.types.is_numeric_dtype(df['signal'])
         assert pd.api.types.is_integer_dtype(df['replica'])
+
+    @pytest.mark.parametrize(
+        'suffix,text',
+        [
+            ('txt', 'var\tsignal\n{conc}\t{signal}\n'),
+            ('csv', 'concentration,signal\n{conc},{signal}\n'),
+        ],
+    )
+    def test_a_value_written_to_the_last_digit_is_read_to_the_last_digit(self, suffix, text, tmp_path):
+        """A serial dilution needs all 17 digits, and the shipped datasets carry them.
+
+        ``data/GDA_system.txt`` holds 0.00023077000000000001; a reader that stops
+        at 0.00023077 fits data the file does not contain, and the fingerprint
+        that guards Import Results is taken on the rounded value.
+        """
+        conc, signal = '0.00023077000000000001', '0.0012345678901234567'
+        p = tmp_path / f'long_digits.{suffix}'
+        p.write_text(text.format(conc=conc, signal=signal))
+
+        df = load_measurements(p)
+
+        assert repr(float(df['concentration'].iloc[0])) == conc
+        assert repr(float(df['signal'].iloc[0])) == signal
