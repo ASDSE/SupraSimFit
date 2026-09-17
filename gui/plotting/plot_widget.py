@@ -19,11 +19,13 @@ from gui.plotting.colors import (
     ERROR_BAR_COLOR,
     FIT_PALETTE,
     FOREGROUND_COLOR,
+    INK_2,
+    NOTE_SURFACE,
     PALETTES,
     REPLICA_PALETTE,
     rgba,
 )
-from gui.plotting.labels import _format_exponent_unicode, fmt_param, fmt_unit_html
+from gui.plotting.labels import _format_exponent_unicode, fmt_param, fmt_r2, fmt_unit_html
 from gui.plotting.plot_style import DEFAULT_STYLE, line_style_to_qt
 from gui.widgets.replica_panel import _display_label, describe_replicates
 
@@ -275,18 +277,22 @@ class PlotWidget(QWidget):
         parent=None,
     ):
         super().__init__(parent)
-        pg.setConfigOption('background', BACKGROUND_COLOR)
-        pg.setConfigOption('foreground', FOREGROUND_COLOR)
-        pg.setConfigOptions(antialias=True)
-
         axis_items = {
             'bottom': ScientificAxisItem(orientation='bottom'),
             'left': ScientificAxisItem(orientation='left'),
         }
-        self._pg_widget = pg.PlotWidget(title=title, axisItems=axis_items)
+        # Colours and antialiasing are set on this view and on the curves drawn
+        # in it, never on pyqtgraph's process-wide defaults: those reach every
+        # other plot in the application, so a tab would draw differently
+        # depending on whether a Fit Curve tab had been built yet. A curve
+        # carries its own antialiasing setting, taken when it is built, and
+        # paints by that rather than by the view's, so each says so itself.
+        self._pg_widget = pg.PlotWidget(axisItems=axis_items, background=BACKGROUND_COLOR)
+        self._pg_widget.setAntialiasing(True)
+        self._pg_widget.setTitle(title, color=FOREGROUND_COLOR)
         self._pg_widget.setLabel('bottom', x_label)
         self._pg_widget.setLabel('left', y_label)
-        self._legend = self._pg_widget.addLegend(labelTextSize='10pt')
+        self._legend = self._pg_widget.addLegend(labelTextSize='10pt', labelTextColor=FOREGROUND_COLOR)
 
         # Style axes: bold pen + tick/label fonts from DEFAULT_STYLE
         _axes_style = DEFAULT_STYLE['axes']
@@ -307,7 +313,7 @@ class PlotWidget(QWidget):
         self._note = QLabel()
         self._note.setTextFormat(Qt.TextFormat.PlainText)
         self._note.setWordWrap(True)
-        self._note.setStyleSheet('color: #3d3a33; background: #f3f1ea; padding: 4px 8px;')
+        self._note.setStyleSheet(f'color: {INK_2}; background: {NOTE_SURFACE}; padding: 4px 8px;')
         self._note.setVisible(False)
 
         layout = QVBoxLayout(self)
@@ -475,7 +481,7 @@ class PlotWidget(QWidget):
                 width=style['average_line']['width'],
                 style=line_style_to_qt(style['average_line']['style']),
             )
-            self._average_item = pg.PlotCurveItem(x=x, y=avg_arr, pen=pen, name=None)
+            self._average_item = pg.PlotCurveItem(x=x, y=avg_arr, pen=pen, name=None, antialias=True)
             self._average_item.setVisible(show_avg)
             self._pg_widget.addItem(self._average_item)
 
@@ -518,6 +524,7 @@ class PlotWidget(QWidget):
                     y=np.asarray(fit['y']),
                     pen=pen,
                     name=None,
+                    antialias=True,
                 )
                 self._pg_widget.addItem(item)
                 self._fit_items.append(item)
@@ -829,6 +836,7 @@ class PlotWidget(QWidget):
                     x=[xi - cap_half, xi + cap_half],
                     y=[cap_y, cap_y],
                     pen=pen,
+                    antialias=True,
                 )
                 self._pg_widget.addItem(cap_item)
                 self._error_cap_items.append(cap_item)
@@ -865,7 +873,7 @@ class PlotWidget(QWidget):
             # visually distinct from the average line.
             eb_color = self._style['error_bars'].get('color', ERROR_BAR_COLOR)
             eb_pen = pg.mkPen(color=eb_color, width=self._style['error_bars'].get('width', 1))
-            eb_stub = pg.PlotCurveItem(pen=eb_pen)
+            eb_stub = pg.PlotCurveItem(pen=eb_pen, antialias=True)
             self._legend.addItem(_ErrorBarSample(eb_stub), 'Mean \u00b1 SD')
             entry_count += 1
         if leg['show_fit'] and vis['show_fit']:
@@ -1113,7 +1121,7 @@ class PlotWidget(QWidget):
                     text += f' ({fmt(spec.stats["min"])}, {fmt(spec.stats["max"])})'
                 lines.append(f'{text}{unit_html}')
 
-            lines.append(f'<b>R\u00b2:</b> {result.r_squared:.4f}')
+            lines.append(f'<b>R\u00b2:</b> {fmt_r2(result.r_squared, result.fit_config.get("min_r_squared"))}')
 
             if idx < len(self._fit_results) - 1:
                 lines.append('')

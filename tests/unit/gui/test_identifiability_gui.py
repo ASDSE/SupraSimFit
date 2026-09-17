@@ -8,6 +8,8 @@ import pytest
 
 pytest.importorskip('PyQt6')
 
+from PyQt6.QtCore import Qt  # noqa: E402
+
 from core.pipeline.fit_pipeline import FitResult  # noqa: E402
 from core.pipeline.profile import ProfileResult  # noqa: E402
 from core.pipeline.sensitivity import (  # noqa: E402
@@ -87,7 +89,6 @@ def _sensitivity(replicate_mode=ReplicateMode.FOLLOW):
         assay_type='IDA',
         ka_keys=('Ka_guest',),
         baseline_ka={'Ka_guest': 10**8.5},
-        histograms={'sobol': {'Ka_guest': ka}},
         x_offsets_pct=None,
         y_offsets_pct=None,
         ka_grid=None,
@@ -99,6 +100,7 @@ def _sensitivity(replicate_mode=ReplicateMode.FOLLOW):
             {'h0': InputSpec.sigma_pct(5.0), TITRANT: InputSpec.sigma_pct(5.0)},
             replicate_mode=replicate_mode,
         ),
+        seed_used=0,
         sample_offsets_pct={'h0': np.linspace(-10, 10, N_SAMPLES), TITRANT: np.linspace(5, -5, N_SAMPLES)},
         sample_ka={'Ka_guest': ka},
         sample_r2=r2,
@@ -193,6 +195,18 @@ def test_per_replicate_mode_draws_one_thin_line_per_replicate(qapp):
     assert "best fit of the replicates' average" in w._summary.text()
 
 
+def test_the_profile_lines_are_drawn_antialiased(qapp):
+    """Each line carries its own antialiasing setting and paints by that, never by the view's.
+
+    A line left at the library's default is drawn in hard stair-steps, on
+    screen and in every picture saved from the tab.
+    """
+    items = _widget(_fit(per_replica=True), _profile(per_replica=True))._items['Ka_guest']
+
+    assert items['average'].opts['antialias']
+    assert items['replicas'] and all(c.opts['antialias'] for c in items['replicas'])
+
+
 def test_hidden_attempts_are_counted(qapp):
     w = _widget(_fit(), _profile())
     assert f'{N_NEGATIVE} of {N_ATTEMPTS} attempts not shown' in w._notes.text()
@@ -207,6 +221,133 @@ def test_confidence_interval_is_stated(qapp):
     assert 'open' not in text
 
 
+def test_header_states_what_the_cut_off_was_worked_out_from(qapp):
+    """The F test's n and p are on screen, with the bounds caveat, so the cut-off can be checked."""
+    w = _widget(_fit(), _profile())
+    text = w._summary.text()
+    assert '12 data points' in text and '3 fitted parameters' in text
+    assert 'reaches no further than the parameter bounds' in text
+
+
+def test_a_ka_pinned_by_its_bounds_says_so_instead_of_giving_an_interval(qapp):
+    """Equal Ka bounds leave nothing to estimate: the header says Ka is fixed, and quotes no interval."""
+    ka = 10**8.5
+    profile = _profile()
+    profile.ka_pinned = True
+    profile.ci = (ka, ka)
+    profile.ci_open = (False, False)
+    w = _widget(_fit(), profile)
+    text = w._summary.text()
+    assert 'is fixed at' in text and 'so there is no interval' in text
+    assert 'CI' not in text and '%' not in text
+    # The chart has to agree with the header: with Ka held, the threshold is the
+    # R² a one-parameter improvement would have to beat, not a CI cut-off.
+    assert 'confidence interval' not in w._legend.text()
+    assert 'CI cut-off' not in w._legend.text()
+    assert w._items[profile.ka_key]['cut'] is None  # no cut-off line on the chart either
+
+
+def test_a_split_accepted_region_is_called_out(qapp):
+    """Where the accepted Ka values come in separate stretches, the band's span is not read as one run."""
+    profile = _profile()
+    profile.ci_split = True
+    w = _widget(_fit(), profile)
+    text = w._summary.text()
+    assert 'separate stretches' in text and 'the band spans all of them' in text
+    assert '95% CI' in text  # the interval is still quoted, as the envelope it is
+
+
+def test_the_headers_r2_never_reads_as_meeting_the_floor_it_misses(qapp):
+    """An R² a hair below the Min R² shows the digits that say so, from the one shared formatter."""
+    from gui.plotting.labels import fmt_r2
+
+    profile = _profile()
+    profile.best_r2 = 0.98999
+    w = _widget(_fit(), profile)
+    assert f'(R² {fmt_r2(0.98999, FLOOR)})' in w._summary.text()
+    assert '(R² 0.9900)' not in w._summary.text()
+
+
+def test_export_image_writes_the_whole_tab(tmp_path, qapp):
+    """The picture carries the header text and the chart, and an empty tab says there is nothing to save.
+
+    Only PNG: Qt's SVG painter drops the clip each plot keeps its curves inside,
+    so the profile curve would be drawn across the legend and the notes.
+    """
+    w = _widget()
+    with pytest.raises(ValueError, match='Run a fit'):
+        w.export_image(str(tmp_path / 'empty.png'))
+
+    w = _widget(_fit(), _profile())
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.resize(900, 700)
+    w.show()
+    qapp.processEvents()
+    path = tmp_path / 'chart.png'
+    w.export_image(str(path))
+    assert path.stat().st_size > 0
+    for unsupported in ('chart.svg', 'chart.pdf'):
+        with pytest.raises(ValueError, match='cannot be written'):
+            w.export_image(str(tmp_path / unsupported))
+    w.close()
+
+
+def test_a_short_tab_keeps_the_whole_chart_in_view_and_puts_the_text_below_it(qapp):
+    """On a short window the chart and its Ka axis fit the viewport; the legend and notes go below the fold.
+
+    A first view of the tab showing a chart cut off above its axis is the one
+    thing the page must not do: without the axis a dot's Ka cannot be read, and
+    nothing on screen says the rest is a scroll away.
+    """
+    w = _widget(_fit(per_replica=True), _profile(per_replica=True))
+    w.update_sensitivity(_sensitivity())
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.resize(728, 340)  # the Identifiability tab of an 1100x700 window
+    w.show()
+    qapp.processEvents()
+
+    viewport = w._content.viewport()
+    assert w._glw.geometry().bottom() <= viewport.height()  # the chart and its Ka axis are in view
+    # What is left below the fold is the legend and the notes, and nothing else.
+    below = w._content.widget().height() - viewport.height()
+    assert 0 < below <= w._legend.height() + w._notes.height() + 16
+    w.close()
+
+
+def test_the_saved_picture_leaves_the_sample_controls_out(tmp_path, qapp):
+    """The check box and the drop-down are not painted into the file, and come back afterwards.
+
+    They change what the chart shows, which a saved picture cannot do, and on
+    macOS Qt draws neither of them outside a window: the file would carry their
+    text with no box and no frame around it.
+    """
+    from PyQt6.QtGui import QColor, QImage, QPalette
+
+    marker = QColor(255, 0, 255)
+    w = _widget(_fit(per_replica=True), _profile(per_replica=True))
+    w.update_sensitivity(_sensitivity())
+    palette = w._controls.palette()
+    palette.setColor(QPalette.ColorRole.Window, marker)
+    w._controls.setPalette(palette)
+    w._controls.setAutoFillBackground(True)  # marks the strip the picture must not show
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.resize(900, 700)
+    w.show()
+    qapp.processEvents()
+    assert not w._controls.isHidden()
+
+    path = tmp_path / 'chart.png'
+    w.export_image(str(path))
+
+    image = QImage(str(path))
+    assert not image.isNull()
+    painted = {image.pixelColor(x, y).rgb() for y in range(image.height()) for x in range(0, image.width(), 40)}
+    assert marker.rgb() not in painted
+    assert not w._controls.isHidden()  # still there for the next click
+    assert w._show_samples.isChecked()
+    w.close()
+
+
 def test_open_interval_says_open(qapp):
     """The unit follows the number it belongs to, never the word "open"."""
     w = _widget(_fit(), _profile(ci_open=(False, True)))
@@ -214,6 +355,22 @@ def test_open_interval_says_open(qapp):
     assert '1.0×10⁸ M<sup>−1</sup> – open (' in text
     assert '(−68% / open)' in text
     assert 'cannot rule out a higher' in text
+
+
+def test_an_edge_open_at_the_solver_wall_does_not_call_it_the_bound(qapp):
+    """The last solvable Ka is neither the bound in force nor a limit the data set.
+
+    Read as the bound, it names a number the fit was never given — with a bound
+    of 1e30 the header would announce a bound of 2×10¹⁹.
+    """
+    from dataclasses import replace
+
+    profile = replace(_profile(ci_open=(False, True)), ci_unsolvable=(False, True))
+    w = _widget(_fit(), profile)
+    text = w._summary.text()
+
+    assert 'cannot be solved past 1.0×10¹²' in text
+    assert 'up to the bound of' not in text
 
 
 def test_a_drop_close_to_minus_100_percent_is_not_rounded_to_it(qapp):
@@ -585,3 +742,19 @@ def test_renders_a_real_ida_fit_and_its_profile(qapp):
     assert _n_points(items['attempts_passing']) + _n_points(items['attempts_below']) == int(np.sum(r2 >= 0))
     assert len(items['average'].getData()[0]) == profile.grid.size
     assert f'95% CI {fmt_sci(profile.ci[0])} – {fmt_sci(profile.ci[1])}' in w._summary.text()
+
+
+def test_the_saved_picture_leaves_the_guide_pointer_out(tmp_path, qapp, monkeypatch):
+    """The note pointing at the guide button belongs to the live tab, not to a picture read on its own."""
+    from gui.plotting import export
+    from gui.plotting.identifiability_widget import _READING_POINTER
+
+    w = _widget(_fit(), _profile())
+    assert _READING_POINTER in w._notes.text()
+    seen = []
+    monkeypatch.setattr(export, 'export_widget', lambda widget, path, **kwargs: seen.append(w._notes.text()))
+
+    w.export_image(str(tmp_path / 'tab.png'))
+
+    assert seen and _READING_POINTER not in seen[0]
+    assert _READING_POINTER in w._notes.text()

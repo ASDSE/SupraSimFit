@@ -8,6 +8,41 @@ pytest.importorskip('PyQt6')
 pytest.importorskip('pyqtgraph')
 
 
+def test_building_the_fit_curve_plot_leaves_the_library_defaults_alone(qapp):
+    """The Fit Curve tab styles its own view, never pyqtgraph's process-wide defaults.
+
+    Those defaults reach every plot the application builds afterwards. With
+    antialiasing switched on for the whole process, the one-pixel stroke that
+    keeps a histogram bin of a single fit visible on the Distributions tab is
+    drawn blended into the background and vanishes.
+    """
+    import pyqtgraph as pg
+
+    from gui.plotting.plot_widget import PlotWidget
+
+    keys = ('background', 'foreground', 'antialias')
+    before = {key: pg.getConfigOption(key) for key in keys}
+
+    PlotWidget()
+
+    assert {key: pg.getConfigOption(key) for key in keys} == before
+
+
+def test_the_fit_curve_plot_draws_every_curve_antialiased(qapp, minimal_plot_data):
+    """Each curve carries its own antialiasing setting and paints by that, never by the view's.
+
+    A curve left at the library's default is drawn in hard stair-steps, on
+    screen and in every picture saved from the tab.
+    """
+    from gui.plotting.plot_widget import PlotWidget
+
+    pw = PlotWidget()
+    pw.update_plot(minimal_plot_data)
+
+    curves = [pw._average_item, *pw._fit_items, *pw._error_cap_items]
+    assert curves and all(item.opts['antialias'] for item in curves)
+
+
 def test_update_plot_clears_on_second_call(qapp, minimal_plot_data):
     from gui.plotting.plot_widget import PlotWidget
 
@@ -360,6 +395,20 @@ def test_annotation_reports_estimate_and_range(qapp):
     lo, hi = re.search(r'\(([\d.]+)×10(\d+), ([\d.]+)×10(\d+)\)', _ka_line(text)).group(1, 3)
     assert float(lo) == pytest.approx(np.min(pool) / 1e6, abs=0.01)
     assert float(hi) == pytest.approx(np.max(pool) / 1e6, abs=0.01)
+
+
+def test_annotation_r2_never_reads_as_meeting_the_floor_it_misses(qapp):
+    """A fit a hair below its own Min R² reads below it, from the one shared R² formatter."""
+    from dataclasses import replace
+
+    from gui.plotting.labels import fmt_r2
+
+    pw = _binding_plot(qapp)
+    below = replace(pw._fit_results[0], r_squared=0.98999, fit_config={'min_r_squared': 0.99})
+    pw.set_fit_results([below])
+    text = pw._annotation_item.textItem.toPlainText()
+    assert f'R²: {fmt_r2(0.98999, 0.99)}' in text
+    assert 'R²: 0.9900' not in text
 
 
 def test_annotation_without_pool_states_no_range(qapp):

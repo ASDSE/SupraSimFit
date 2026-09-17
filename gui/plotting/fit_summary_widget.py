@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import replace
-from typing import Sequence
 
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -28,7 +28,8 @@ from core.pipeline.fit_pipeline import (
 )
 from core.pipeline.sensitivity import SensitivityMode, SensitivityResult
 from core.units import Q_
-from gui.plotting.labels import fmt_param, fmt_unit_html
+from gui.plotting.colors import INK_2
+from gui.plotting.labels import fmt_log10, fmt_param, fmt_r2, fmt_unit_html
 from gui.widgets.info_button import InfoGroupBox
 from gui.widgets.replica_panel import describe_replicates
 
@@ -172,20 +173,6 @@ def _fmt(magnitude: float, unit_str: str) -> str:
     return f'{magnitude:.3g}'
 
 
-def _fmt_r2(value: float, floor: float | None = None) -> str:
-    """R² to four decimals, with more where four would round it up to 1 or across *floor*.
-
-    A value below 1 or below *floor* then always reads below it, so a shown R²
-    never appears to meet a mark it misses.
-    """
-    for digits in range(4, 13):
-        text = f'{value:.{digits}f}'
-        shown = float(text)
-        if (value >= 1.0 or shown < 1.0) and (floor is None or (value < floor) == (shown < floor)):
-            break
-    return text
-
-
 def _distinct_r2_texts(indices: list[int], values: list[float]) -> list[str]:
     """R² texts for the attempts *indices*, with the fewest decimals (four to six) that tell them apart.
 
@@ -206,14 +193,14 @@ def _distinct_r2_texts(indices: list[int], values: list[float]) -> list[str]:
     return texts
 
 
-def _fmt_pair(central: float, spread: float, unit_str: str) -> str:
+def _fmt_pair(central: float, spread: float, fmt: Callable[[float], str]) -> str:
     """Merged 'central ± spread' cell (units stripped; shown in the Units column)."""
-    return f'{_fmt(central, unit_str)} ± {_fmt(spread, unit_str)}'
+    return f'{fmt(central)} ± {fmt(spread)}'
 
 
-def _fmt_range(lo: float, hi: float, unit_str: str) -> str:
+def _fmt_range(lo: float, hi: float, fmt: Callable[[float], str]) -> str:
     """Merged '[min, max]' range cell."""
-    return f'[{_fmt(lo, unit_str)}, {_fmt(hi, unit_str)}]'
+    return f'[{fmt(lo)}, {fmt(hi)}]'
 
 
 class ParameterTable(QTableWidget):
@@ -232,7 +219,12 @@ class ParameterTable(QTableWidget):
         self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
     def show_rows(self, rows: list[ParameterSummary]) -> None:
-        """Render *rows*, one table row each, and size the columns to their contents."""
+        """Render *rows*, one table row each, and size the columns to their contents.
+
+        A log₁₀ row is written through :func:`~gui.plotting.labels.fmt_log10`,
+        which matches its decimals to the spread beside it; every other row to
+        three significant figures with its unit.
+        """
         # Removing the rows hides their cell widgets at once; a replaced cell
         # widget would stay on screen until its deferred deletion.
         self.setRowCount(0)
@@ -240,24 +232,29 @@ class ParameterTable(QTableWidget):
         for row, spec in enumerate(rows):
             # Log rows are dimensionless; their source unit only labels them.
             unit_html = fmt_unit_html(spec.unit) if spec.unit else ''
+            d = spec.stats
             if spec.is_log:
                 label = f'log₁₀({fmt_param(spec.key)} / {unit_html})' if unit_html else f'log₁₀({fmt_param(spec.key)})'
+
+                def fmt(value: float, stats: dict | None = d) -> str:
+                    return fmt_log10(value, stats)
             else:
                 label = fmt_param(spec.key)
-            value_unit = '' if spec.is_log else spec.unit
+
+                def fmt(value: float, unit: str = spec.unit) -> str:
+                    return _fmt(value, unit)
 
             self._set_cell(row, 0, label)
-            self._set_cell(row, 1, _fmt(spec.estimate, value_unit))
-            d = spec.stats
+            self._set_cell(row, 1, fmt(spec.estimate))
             if d is None:
                 for col in range(_STAT_COL0, _RANGE_COL + 1):
                     self._set_cell(row, col, '—', tooltip='No fit pool stored for this result (e.g. a legacy import).')
             else:
                 for offset, (_, (ck, sk)) in enumerate(_STAT_COLUMNS):
-                    self._set_cell(row, _STAT_COL0 + offset, _fmt_pair(d[ck], d[sk], value_unit))
-                self._set_cell(row, _P68_COL, _fmt_range(d['p16'], d['p84'], value_unit))
-                self._set_cell(row, _RANGE_COL, _fmt_range(d['min'], d['max'], value_unit))
-            self._set_cell(row, _UNITS_COL, unit_html if value_unit else '—')
+                    self._set_cell(row, _STAT_COL0 + offset, _fmt_pair(d[ck], d[sk], fmt))
+                self._set_cell(row, _P68_COL, _fmt_range(d['p16'], d['p84'], fmt))
+                self._set_cell(row, _RANGE_COL, _fmt_range(d['min'], d['max'], fmt))
+            self._set_cell(row, _UNITS_COL, unit_html if not spec.is_log and spec.unit else '—')
         self.autosize_columns()
 
     def _set_cell(self, row: int, col: int, html: str, *, tooltip: str | None = None) -> None:
@@ -269,27 +266,42 @@ class ParameterTable(QTableWidget):
         self.setCellWidget(row, col, lbl)
 
     def autosize_columns(self) -> None:
-        """Size each column to its widest cell, then spread any spare width evenly across the columns."""
+        """Size each column to its widest cell, sharing out spare width or a shortfall evenly.
+
+        Where the table is too narrow for its contents, the columns give back
+        the difference between them down to their header width, so the last one
+        — the units — stays readable instead of falling off the right edge.
+        When even that is not enough, the horizontal scrollbar stays on screen,
+        so there is a visible way to reach the rest.
+        """
         # resizeColumnsToContents() ignores widgets set via setCellWidget(),
-        # so we measure each QLabel's sizeHint() directly, then spread any
-        # leftover viewport width evenly across columns.
+        # so we measure each QLabel's sizeHint() directly.
         n_cols = self.columnCount()
         n_rows = self.rowCount()
         fm = self.horizontalHeader().fontMetrics()
-        widths = []
+        widths, floors = [], []
         for col in range(n_cols):
             item = self.horizontalHeaderItem(col)
             header_text = item.text() if item is not None else ''
-            w = fm.horizontalAdvance(header_text) + 24
+            floor = fm.horizontalAdvance(header_text) + 24
+            w = floor
             for row in range(n_rows):
                 widget = self.cellWidget(row, col)
                 if widget is not None:
                     w = max(w, widget.sizeHint().width() + 16)
             widths.append(w)
+            floors.append(floor)
 
-        extra = max(0, (self.viewport().width() - sum(widths)) // n_cols)
+        share = (self.viewport().width() - sum(widths)) // n_cols
+        widths = [max(w + share, floor) for w, floor in zip(widths, floors)]
         for col, w in enumerate(widths):
-            self.setColumnWidth(col, w + extra)
+            self.setColumnWidth(col, w)
+        policy = (
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+            if sum(widths) > self.viewport().width()
+            else Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.setHorizontalScrollBarPolicy(policy)
 
 
 def and_join(items: list[str]) -> str:
@@ -553,7 +565,7 @@ class FitSummaryWidget(QWidget):
         self._footnote.setWordWrap(True)
         self._footnote.setTextFormat(Qt.TextFormat.RichText)
         for label in (self._caption, self._footnote):
-            label.setStyleSheet('color: #52514e; font-size: 13px;')
+            label.setStyleSheet(f'color: {INK_2}; font-size: 13px;')
         params_layout = QVBoxLayout(self._params_group)
         for widget in (self._rep_row, self._caption, self._table, self._footnote):
             params_layout.addWidget(widget)
@@ -612,7 +624,7 @@ class FitSummaryWidget(QWidget):
         self._render()
 
     def set_replica_ids(self, replica_ids: Sequence[str] | None) -> None:
-        """The loaded data's replicate ids in order, so captions name replicates as the Replicas panel does."""
+        """The loaded data's replicate ids in order, so captions name replicates as the Replicates panel does."""
         self._replica_ids = None if replica_ids is None else list(replica_ids)
         self._render()
 
@@ -700,7 +712,7 @@ class FitSummaryWidget(QWidget):
             return
         self._table.show_rows(summarize_parameters(result))
         self._rmse_label.setText(f'{Q_(result.rmse, "au"):.3g~H}')
-        self._r2_label.setText(_fmt_r2(result.r_squared))
+        self._r2_label.setText(fmt_r2(result.r_squared, result.fit_config.get('min_r_squared')))
         passing = f'{result.n_passing} / {result.n_total}'
         if not result.parameter_samples:
             passing += '  (pool unavailable)'
@@ -754,8 +766,8 @@ class FitSummaryWidget(QWidget):
             self._below_label.setText('no Min R² set')
         else:
             self._below_label.setText(f'{int(np.sum(r2 < floor))} of {n}  (Min R² used: {floor:g})')
-        self._median_r2_label.setText(_fmt_r2(float(np.median(r2)), floor))
-        self._r2_range_label.setText(f'[{_fmt_r2(r2.min(), floor)}, {_fmt_r2(r2.max(), floor)}]')
+        self._median_r2_label.setText(fmt_r2(float(np.median(r2)), floor))
+        self._r2_range_label.setText(f'[{fmt_r2(r2.min(), floor)}, {fmt_r2(r2.max(), floor)}]')
 
     # ------------------------------------------------------------------
     # Selector helpers

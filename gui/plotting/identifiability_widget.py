@@ -16,7 +16,6 @@ default view, with a note, so it never squeezes them together.
 
 from __future__ import annotations
 
-import re
 from typing import Sequence
 
 import numpy as np
@@ -39,18 +38,13 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
 from core.pipeline.fit_pipeline import FitResult, fit_replica_ids, input_replica_ids
 from core.pipeline.profile import ProfileResult, profile_supported
 from core.pipeline.sensitivity import TITRANT, ReplicateMode, SensitivityResult
-from gui.plotting.labels import fmt_param, fmt_param_plain, fmt_sci, fmt_unit_html
+from gui.plotting.colors import BELOW_FLOOR, INK, INK_2, INK_3, SERIES, SURFACE
+from gui.plotting.labels import fmt_param, fmt_param_plain, fmt_r2, fmt_sci, fmt_unit_html, plain_label
 from gui.plotting.plot_style import DEFAULT_STYLE
 from gui.plotting.sensitivity_widget import _LogKaAxis
 from gui.widgets.assay_conditions import condition_fields
 from gui.widgets.replica_panel import describe_replicates
 
-_SURFACE = '#fcfcfb'
-_INK = '#0b0b0b'
-_INK_2 = '#52514e'
-_INK_3 = '#898781'
-_BELOW_FLOOR = '#c3c2b7'
-_SAMPLE = '#2a78d6'
 _BAND = (82, 81, 78, 28)
 _GRID_ALPHA = 0.18
 # Diverging scale for colouring samples by an input's offset: lower, zero, higher.
@@ -71,9 +65,14 @@ _SAMPLE_Z = 1  # above the band (-10), below the attempts (2, 2.5) and every lin
 # Bins of each marginal histogram across the part of its axis in view.
 _HIST_BINS = 40
 _TOP_HIST_HEIGHT = 100
+# Shortest the Ka histogram is squeezed to on a short window. It reads as a
+# shape rather than a count, so it gives its room up before the main plot does.
+_TOP_HIST_MIN_HEIGHT = 44
 _RIGHT_HIST_WIDTH = 140
-# Narrowest the main R² plot's data area may be squeezed, by the sidebar say.
+# Narrowest and shortest the main R² plot's data area may be squeezed, by the
+# sidebar or a short window say. Below these the page scrolls instead.
 _MAIN_MIN_WIDTH = 240
+_MAIN_MIN_HEIGHT = 96
 # Smallest R² span the default view separates its levels by, so tick labels
 # stay at six decimals or fewer.
 _MIN_R2_SPAN = 1e-5
@@ -84,14 +83,13 @@ _MIN_R2_SPAN = 1e-5
 _FLOOR_REACH = 2.0
 # How far the view can be zoomed out: every drawn dot has an R² from 0 to 1.
 _R2_LIMITS = (-0.05, 1.05)
-# Below this height the chart stops shrinking and the page scrolls.
-_CANVAS_MIN_HEIGHT = 340
+# Below this height a chart without marginal histograms stops shrinking and the
+# page scrolls; one with them stops at the height its own cells need.
+_CANVAS_MIN_HEIGHT = 320
 
 _PLACEHOLDER = 'Run a fit to see how well each Ka value can explain your data.'
 _PROFILE_PENDING = 'Working out how well each Ka value can explain the data of this fit…'
 _READING_POINTER = 'How to read this plot: the ? button above.'
-
-_SUB_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
 
 
 def _pct(ratio: float) -> str:
@@ -107,16 +105,14 @@ def _pct(ratio: float) -> str:
     return f'{change:+.{decimals}f}%'.replace('-', '−')
 
 
-def _r2_text(r2: float) -> str:
-    """R² with enough decimals to show how far below 1 it is: 0.9908, 0.999984."""
-    gap = 1.0 - r2
-    decimals = 4 if gap <= 0 else max(4, int(np.ceil(-np.log10(gap))) + 1)
-    return f'{r2:.{decimals}f}'
+def _count(n: int, noun: str) -> str:
+    """``1 data point``, ``12 data points``."""
+    return f'{n} {noun}' if n == 1 else f'{n} {noun}s'
 
 
 def _on_surface(colour: str, alpha: int) -> str:
     """The solid colour *colour* shows at *alpha* (of 255) over the surface, for a legend glyph."""
-    top, base = QColor(colour), QColor(_SURFACE)
+    top, base = QColor(colour), QColor(SURFACE)
     a = alpha / 255.0
     return QColor(*(round(a * t + (1.0 - a) * b) for t, b in zip(top.getRgb()[:3], base.getRgb()[:3]))).name()
 
@@ -127,8 +123,7 @@ def _plain_input_label(assay_type: AssayType, key: str) -> str:
         return f'{ASSAY_REGISTRY[assay_type].x_label} (titrant)'
     for field in condition_fields(assay_type):
         if field.key == key:
-            text = re.sub(r'<sub>(.*?)</sub>', lambda m: m.group(1).translate(_SUB_DIGITS), field.label)
-            return re.sub(r'<[^>]+>', '', text)
+            return plain_label(field.label)
     return fmt_param_plain(key)
 
 
@@ -284,7 +279,7 @@ class IdentifiabilityWidget(QWidget):
         self._message = QLabel(_PLACEHOLDER)
         self._message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._message.setWordWrap(True)
-        self._message.setStyleSheet(f'color: {_INK_3}; font-size: 14px;')
+        self._message.setStyleSheet(f'color: {INK_3}; font-size: 14px;')
         self._stack.addWidget(self._message)
 
         # The page scrolls: the chart fills the tab's height (see _fit_canvas)
@@ -296,7 +291,7 @@ class IdentifiabilityWidget(QWidget):
         page = QWidget()
         page.setObjectName('identifiabilityContent')
         page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        page.setStyleSheet(f'#identifiabilityContent {{ background: {_SURFACE}; }}')
+        page.setStyleSheet(f'#identifiabilityContent {{ background: {SURFACE}; }}')
         content = QVBoxLayout(page)
         content.setContentsMargins(10, 6, 10, 6)
         content.setSpacing(4)
@@ -304,7 +299,7 @@ class IdentifiabilityWidget(QWidget):
         self._summary = QLabel()
         self._summary.setTextFormat(Qt.TextFormat.RichText)
         self._summary.setWordWrap(True)
-        self._summary.setStyleSheet(f'color: {_INK}; font-size: 14px;')
+        self._summary.setStyleSheet(f'color: {INK}; font-size: 14px;')
         content.addWidget(self._summary)
 
         self._controls = QWidget()
@@ -317,7 +312,7 @@ class IdentifiabilityWidget(QWidget):
         controls.addWidget(self._show_samples)
         controls.addSpacing(16)
         self._colour_label = QLabel('Colour by:')
-        self._colour_label.setStyleSheet(f'color: {_INK_2};')
+        self._colour_label.setStyleSheet(f'color: {INK_2};')
         controls.addWidget(self._colour_label)
         self._colour_combo = QComboBox()
         self._colour_combo.setToolTip('Colour each sample by how far that input was moved from what you entered.')
@@ -328,20 +323,20 @@ class IdentifiabilityWidget(QWidget):
         content.addWidget(self._controls)
 
         self._glw = _Canvas()
-        self._glw.setBackground(_SURFACE)
+        self._glw.setBackground(SURFACE)
         self._glw.setMinimumHeight(_CANVAS_MIN_HEIGHT)
         content.addWidget(self._glw, stretch=1)
 
         self._legend = QLabel()
         self._legend.setTextFormat(Qt.TextFormat.RichText)
         self._legend.setWordWrap(True)
-        self._legend.setStyleSheet(f'color: {_INK_2}; font-size: 13px;')
+        self._legend.setStyleSheet(f'color: {INK_2}; font-size: 13px;')
         content.addWidget(self._legend)
 
         self._notes = QLabel()
         self._notes.setTextFormat(Qt.TextFormat.RichText)
         self._notes.setWordWrap(True)
-        self._notes.setStyleSheet(f'color: {_INK_2}; font-size: 13px;')
+        self._notes.setStyleSheet(f'color: {INK_2}; font-size: 13px;')
         content.addWidget(self._notes)
 
         self._content.setWidget(page)
@@ -370,23 +365,36 @@ class IdentifiabilityWidget(QWidget):
         return super().eventFilter(watched, event)
 
     def _fit_canvas(self) -> None:
-        """Give the chart the tab's height less the text above it and the legend, or that text alone when short.
+        """Give the chart the tab's height less the text above it and the legend, or the whole of it when short.
 
-        Where the legend leaves the chart less than ``_CANVAS_MIN_HEIGHT``, the
-        legend moves below the fold instead, so the whole chart stays in view;
-        the chart never gets less than that minimum, and the page scrolls. The
-        notes are always below the chart.
+        The chart with its Ka axis is what the tab is for, so it comes first and
+        the text gives way in turn. Where the legend would leave the chart less
+        than ``_CANVAS_MIN_HEIGHT``, the legend moves below the fold and the
+        chart takes the height left over; where even that is short, the chart
+        shrinks with it, down to the height its own cells need — the main plot
+        keeps ``_MAIN_MIN_HEIGHT`` of data area under its Ka axis and the Ka
+        histogram gives up its height first. Only below that does the page
+        scroll. The notes are always below the chart.
         """
         viewport = self._content.viewport()
         layout = self._content.widget().layout()
         margins = layout.contentsMargins()
+        scrollbar = self._content.verticalScrollBar()
         width = viewport.width() - margins.left() - margins.right()
+        if not scrollbar.isVisible():
+            # The text is measured at the width it has once the page scrolls,
+            # which is what this is about to decide. Measured at the wider
+            # viewport it wraps to one line fewer, and the chart it then sizes
+            # runs a line past the bottom of the tab.
+            width -= scrollbar.sizeHint().width()
         above = margins.top() + self._summary.heightForWidth(width) + layout.spacing()
         if not self._controls.isHidden():
             above += self._controls.sizeHint().height() + layout.spacing()
         room = viewport.height() - above
+        needed = int(np.ceil(self._glw.ci.effectiveSizeHint(Qt.SizeHint.MinimumSize).height()))
+        roomy = max(_CANVAS_MIN_HEIGHT, needed)
         with_legend = room - self._legend.heightForWidth(width) - layout.spacing()
-        height = with_legend if with_legend >= _CANVAS_MIN_HEIGHT else max(room, _CANVAS_MIN_HEIGHT)
+        height = with_legend if with_legend >= roomy else min(max(room, needed), roomy)
         if height != self._glw.minimumHeight():
             self._glw.setMinimumHeight(height)
 
@@ -436,7 +444,7 @@ class IdentifiabilityWidget(QWidget):
         self._render()
 
     def set_replica_ids(self, replica_ids: Sequence[str] | None) -> None:
-        """The loaded data's replicate ids in order, so notes name replicates as the Replicas panel does."""
+        """The loaded data's replicate ids in order, so notes name replicates as the Replicates panel does."""
         self._replica_ids = None if replica_ids is None else list(replica_ids)
         self._render()
 
@@ -454,6 +462,41 @@ class IdentifiabilityWidget(QWidget):
         """Adopt a new style dict (fonts) and re-render."""
         self._style = style
         self._render()
+
+    def has_chart(self) -> bool:
+        """Whether the tab is showing a chart rather than a placeholder or a note."""
+        return self._stack.currentWidget() is self._content
+
+    def export_image(self, path: str) -> None:
+        """Save the tab's heading, chart, legend and notes as a picture.
+
+        The sample controls stay out of it: they change what the chart shows and
+        there is nothing to change in a saved picture.
+
+        Parameters
+        ----------
+        path : str
+            Where to write it, ending in ``.png``. A whole tab is saved as one
+            picture; :func:`~gui.plotting.export.export_widget` says why it is
+            not offered as a drawing.
+
+        Raises
+        ------
+        ValueError
+            When there is no chart on screen to save, or the suffix is not
+            ``.png``.
+        """
+        from gui.plotting.export import export_widget
+
+        if not self.has_chart():
+            raise ValueError('There is no identifiability chart to save yet. Run a fit, then save it.')
+        # The pointer to the guide button means nothing in a picture read on its own.
+        notes = self._notes.text()
+        self._notes.setText(notes.removesuffix(_READING_POINTER).removesuffix('<br>'))
+        try:
+            export_widget(self._content.widget(), path, without=(self._controls,))
+        finally:
+            self._notes.setText(notes)
 
     # ------------------------------------------------------------------
     # Sample controls
@@ -573,7 +616,7 @@ class IdentifiabilityWidget(QWidget):
             key_profile = profile if profile is not None and profile.ka_key == ka_key else None
             unit_html = fmt_unit_html(meta.units.get(ka_key, ''))
             self._render_key(3 * col, ka_key, unit_html, floor, key_profile, attempts, samples, notes, sample_notes)
-            summary.append(self._summary_line(ka_key, unit_html, key_profile))
+            summary.append(self._summary_line(ka_key, unit_html, key_profile, floor))
 
         self._summary.setText('<br>'.join(summary))
         self._set_legend()
@@ -670,12 +713,29 @@ class IdentifiabilityWidget(QWidget):
         offsets = result.sample_offsets_pct.get(self._colour_key) if self._colour_key is not None else None
         return {'ka': result.sample_ka, 'r2': r2, 'offsets': offsets}
 
-    def _summary_line(self, ka_key: str, unit_html: str, profile: ProfileResult | None) -> str:
-        """One line per Ka key: best fit, then the confidence interval and how far it reaches."""
+    def _summary_line(self, ka_key: str, unit_html: str, profile: ProfileResult | None, floor: float | None) -> str:
+        """One line per Ka key: best fit, the confidence interval, how far it reaches and what it rests on.
+
+        The second line names the two numbers the cut-off is worked out from —
+        how many data points and how many fitted parameters — and says the
+        interval reaches no further than the bounds the fit was given. An open
+        side names what it stops at: the bound, or the Ka the binding model
+        cannot be solved past, which lies below it.
+        """
         label = fmt_param(ka_key)
         if profile is None:
             return f'{label}: fit attempts'
         best = profile.best_ka
+        best_txt = f'{fmt_sci(best, 3)} {unit_html}'.strip()
+        head = (
+            f'{label}: best fit{" of the replicates' average" if profile.per_replica else ""} '
+            f'{best_txt} (R² {fmt_r2(profile.best_r2, floor)})'
+        )
+        if profile.ka_pinned:
+            return (
+                f'{head}<br><span style="color:{INK_2}">{label} is fixed at {best_txt} by its bounds, '
+                'so there is no interval.</span>'
+            )
         lo, hi = profile.ci
         lo_open, hi_open = profile.ci_open
         if lo_open or hi_open:
@@ -688,16 +748,35 @@ class IdentifiabilityWidget(QWidget):
         else:
             ci_txt = f'{fmt_sci(lo)} – {fmt_sci(hi)} {unit_html}'.strip()
         lo_pct, hi_pct = ('open' if lo_open else _pct(lo / best)), ('open' if hi_open else _pct(hi / best))
-        line = (
-            f'{label}: best fit{" of the replicates' average" if profile.per_replica else ""} '
-            f'{fmt_sci(best, 3)} {unit_html} (R² {profile.best_r2:.4f}) · '
-            f'{profile.level:.0%} CI {ci_txt} ({lo_pct} / {hi_pct})'
+        line = f'{head} · {profile.level:.0%} CI {ci_txt} ({lo_pct} / {hi_pct})'
+        line += (
+            f'<br><span style="color:{INK_2}">The interval is worked out from '
+            f'{_count(profile.n_points, "data point")} and {_count(profile.n_params, "fitted parameter")}, '
+            'and reaches no further than the parameter bounds this fit was given.</span>'
         )
-        for is_open, side, bound in ((lo_open, 'lower', lo), (hi_open, 'higher', hi)):
-            if is_open:
+        if profile.ci_split:
+            line += (
+                f'<br><span style="color:{INK_2}">Not every K<sub>a</sub> inside the band explains the data well '
+                'enough: the ones that do come in separate stretches, and the band spans all of them. The line '
+                'shows where they are.</span>'
+            )
+        for is_open, unsolvable, side, edge in (
+            (lo_open, profile.ci_unsolvable[0], 'lower', lo),
+            (hi_open, profile.ci_unsolvable[1], 'higher', hi),
+        ):
+            if not is_open:
+                continue
+            where = f'{fmt_sci(edge)} {unit_html}'.strip()
+            if unsolvable:
                 line += (
-                    f'<br><span style="color:{_INK_2}">Open: the data cannot rule out a {side} '
-                    f'K<sub>a</sub>, up to the bound of {fmt_sci(bound)} {unit_html}.</span>'
+                    f'<br><span style="color:{INK_2}">Open: the data cannot rule out a {side} '
+                    f'K<sub>a</sub>. The binding model cannot be solved past {where}, so the curve stops '
+                    'there, short of the bound this fit was given.</span>'
+                )
+            else:
+                line += (
+                    f'<br><span style="color:{INK_2}">Open: the data cannot rule out a {side} '
+                    f'K<sub>a</sub>, up to the bound of {where}.</span>'
                 )
         return line
 
@@ -726,7 +805,7 @@ class IdentifiabilityWidget(QWidget):
         main.getAxis('bottom').setLogMode(True)
         for name in ('left', 'bottom'):
             main.getAxis(name).enableAutoSIPrefix(False)
-        main.getViewBox().setMinimumWidth(_MAIN_MIN_WIDTH)
+        main.getViewBox().setMinimumSize(_MAIN_MIN_WIDTH, _MAIN_MIN_HEIGHT)
         main.setLabel('left', 'R²')
         main.setLabel('bottom', f'{fmt_param(ka_key)} [{unit_html}]' if unit_html else fmt_param(ka_key))
         main.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
@@ -751,33 +830,45 @@ class IdentifiabilityWidget(QWidget):
         if profile is not None:
             log_grid = np.log10(profile.grid)
             lo, hi = np.log10(profile.ci)
-            band = pg.LinearRegionItem(values=(lo, hi), movable=False, brush=pg.mkBrush(*_BAND), pen=pg.mkPen(None))
-            band.setZValue(-10)
-            main.addItem(band)
-            legend['band'] = ('<span style="color:#dddcd7">&#9608;</span>', f'{profile.level:.0%} confidence interval')
+            # Equal bounds hold Ka at one value, so there is no interval to draw
+            # and the cut-off is not one: it is the R² a one-parameter
+            # improvement would have to beat. The heading says so instead.
+            if not profile.ka_pinned:
+                band = pg.LinearRegionItem(values=(lo, hi), movable=False, brush=pg.mkBrush(*_BAND), pen=pg.mkPen(None))
+                band.setZValue(-10)
+                main.addItem(band)
+                legend['band'] = (
+                    '<span style="color:#dddcd7">&#9608;</span>',
+                    f'{profile.level:.0%} confidence interval',
+                )
             for r2 in (profile.replica_r2 or {}).values():
-                curve = main.plot(log_grid, r2, pen=pg.mkPen(_INK_3, width=1))
+                curve = main.plot(log_grid, r2, pen=pg.mkPen(INK_3, width=1), connect='finite', antialias=True)
                 curve.setZValue(2.8)
                 items['replicas'].append(curve)
             if profile.replica_r2:
-                legend['replicas'] = (f'<span style="color:{_INK_3}">&#9472;</span>', 'each replicate on its own')
-            items['average'] = main.plot(log_grid, profile.r2, pen=pg.mkPen(_INK, width=2))
+                legend['replicas'] = (f'<span style="color:{INK_3}">&#9472;</span>', 'each replicate on its own')
+            # A Ka the binding model cannot be solved at carries nan: the line
+            # breaks there instead of stepping across the gap.
+            items['average'] = main.plot(
+                log_grid, profile.r2, pen=pg.mkPen(INK, width=2), connect='finite', antialias=True
+            )
             items['average'].setZValue(3)
             legend['profile'] = (
-                f'<span style="color:{_INK}">&#9473;</span>',
+                f'<span style="color:{INK}">&#9473;</span>',
                 'best R² reachable at each K<sub>a</sub>'
                 + (" on the replicates' average" if profile.per_replica else ''),
             )
-            # The band spans the Ka values where the line is above this cut-off.
-            items['cut'] = self._level_line(main, profile.r2_threshold, Qt.PenStyle.DotLine, _INK)
-            levels.append((profile.r2_threshold, f'cut-off {_r2_text(profile.r2_threshold)}'))
-            legend['cut'] = (f'<span style="color:{_INK}">&#8943;</span>', f'{profile.level:.0%} CI cut-off')
+            if not profile.ka_pinned:
+                # The band spans the Ka values where the line is above this cut-off.
+                items['cut'] = self._level_line(main, profile.r2_threshold, Qt.PenStyle.DotLine, INK)
+                levels.append((profile.r2_threshold, f'cut-off {fmt_r2(profile.r2_threshold, floor)}'))
+                legend['cut'] = (f'<span style="color:{INK}">&#8943;</span>', f'{profile.level:.0%} CI cut-off')
             xs.append(np.array([lo, hi, np.log10(profile.best_ka)]))
 
         if floor is not None:
-            items['floor'] = self._level_line(main, floor, Qt.PenStyle.DashLine, _INK_2)
+            items['floor'] = self._level_line(main, floor, Qt.PenStyle.DashLine, INK_2)
             levels.append((floor, f'Min R² {floor:g}'))
-            legend['floor'] = (f'<span style="color:{_INK_2}">&#8211;&nbsp;&#8211;</span>', 'Min R²')
+            legend['floor'] = (f'<span style="color:{INK_2}">&#8211;&nbsp;&#8211;</span>', 'Min R²')
 
         if attempts is not None:
             ka = np.asarray(attempts['samples'][ka_key], dtype=float)
@@ -788,20 +879,20 @@ class IdentifiabilityWidget(QWidget):
             shown = positive & (r2 >= 0)
             attempt_x, attempt_y = np.log10(ka[shown]), r2[shown]
             passing = attempt_y >= floor if floor is not None else np.ones(attempt_x.size, dtype=bool)
-            for key, mask, colour, z in (('below', ~passing, _BELOW_FLOOR, 2), ('passing', passing, _INK_2, 2.5)):
+            for key, mask, colour, z in (('below', ~passing, BELOW_FLOOR, 2), ('passing', passing, INK_2, 2.5)):
                 scatter = pg.ScatterPlotItem(
                     x=attempt_x[mask],
                     y=attempt_y[mask],
                     size=_DOT_SIZE,
                     brush=pg.mkBrush(colour),
-                    pen=pg.mkPen(_SURFACE, width=_RING_WIDTH),
+                    pen=pg.mkPen(SURFACE, width=_RING_WIDTH),
                 )
                 scatter.setZValue(z)
                 main.addItem(scatter)
                 items[f'attempts_{key}'] = scatter
-            legend['passing'] = (f'<span style="color:{_INK_2}">&#9679;</span>', 'fit attempt meeting Min R²')
+            legend['passing'] = (f'<span style="color:{INK_2}">&#9679;</span>', 'fit attempt meeting Min R²')
             if (~passing).any():
-                legend['below'] = (f'<span style="color:{_BELOW_FLOOR}">&#9679;</span>', 'fit attempt below Min R²')
+                legend['below'] = (f'<span style="color:{BELOW_FLOOR}">&#9679;</span>', 'fit attempt below Min R²')
             # An attempt below the floor far from the rest (at a Ka bound, say)
             # would squeeze the interval to a sliver, so the view frames the
             # passing attempts across.
@@ -816,8 +907,8 @@ class IdentifiabilityWidget(QWidget):
             axis = main.getAxis('right')
             axis.setTicks([levels])
             axis.setTickFont(tick_font)
-            axis.setPen(pg.mkPen(_INK_3, width=1))
-            axis.setTextPen(pg.mkPen(_INK_2))
+            axis.setPen(pg.mkPen(INK_3, width=1))
+            axis.setTextPen(pg.mkPen(INK_2))
             right_width = max(tick_fm.horizontalAdvance(text) for _, text in levels) + 14
             axis.setWidth(right_width)
             main.showAxis('right')
@@ -865,10 +956,10 @@ class IdentifiabilityWidget(QWidget):
         offsets = samples['offsets']
         visible = self._show_samples.isChecked()
         if offsets is None:
-            fill = QColor(_SAMPLE)
+            fill = QColor(SERIES)
             fill.setAlpha(_SAMPLE_ALPHA)
             brushes = pg.mkBrush(fill)
-            glyph = f'<span style="color:{_on_surface(_SAMPLE, _SAMPLE_ALPHA)}">&#9679;</span>'
+            glyph = f'<span style="color:{_on_surface(SERIES, _SAMPLE_ALPHA)}">&#9679;</span>'
         else:
             off = np.asarray(offsets, dtype=float)[shown]
             reach = float(np.max(np.abs(off))) if off.size else 0.0
@@ -880,21 +971,21 @@ class IdentifiabilityWidget(QWidget):
             ]
             name = self._colour_combo.currentText()
             cbar = pg.ColorBarItem(
-                values=(-reach, reach), colorMap=_OFFSET_CMAP, interactive=False, width=14, pen=_INK_3
+                values=(-reach, reach), colorMap=_OFFSET_CMAP, interactive=False, width=14, pen=INK_3
             )
             tick_font, label_font = self._fonts()
             cbar.axis.setTickFont(tick_font)
-            cbar.axis.setTextPen(pg.mkPen(_INK_2))
-            cbar.axis.setLabel(f'{name} offset [%]', color=_INK_2, **{'font-size': f'{label_font.pointSize()}pt'})
+            cbar.axis.setTextPen(pg.mkPen(INK_2))
+            cbar.axis.setLabel(f'{name} offset [%]', color=INK_2, **{'font-size': f'{label_font.pointSize()}pt'})
             cbar.setVisible(visible)
             ends = ''.join(
                 f'<span style="color:{_on_surface(c, _COLOURED_SAMPLE_ALPHA)}">&#9679;</span>'
-                for c in (_SAMPLE, '#e34948')
+                for c in (SERIES, '#e34948')
             )
             legend['colour'] = (ends, f'{name} set lower (blue) or higher (red) than entered')
             self._glw.addItem(cbar, row=1, col=col + 2)
             self._items[ka_key]['colour_bar'] = cbar
-            glyph = f'<span style="color:{_on_surface(_INK_3, _COLOURED_SAMPLE_ALPHA)}">&#9679;</span>'
+            glyph = f'<span style="color:{_on_surface(INK_3, _COLOURED_SAMPLE_ALPHA)}">&#9679;</span>'
         scatter = pg.ScatterPlotItem(x=x, y=y, size=_SAMPLE_SIZE, brush=brushes, pen=pg.mkPen(None))
         scatter.setZValue(_SAMPLE_Z)
         scatter.setVisible(visible)
@@ -924,7 +1015,8 @@ class IdentifiabilityWidget(QWidget):
         tick_font, _ = self._fonts()
         top = self._glw.addPlot(row=0, col=col, axisItems={'left': _CountAxis('left')})
         right = self._glw.addPlot(row=1, col=col + 1, axisItems={'bottom': _CountAxis('bottom')})
-        top.setMinimumHeight(_TOP_HIST_HEIGHT)
+        top.setMinimumHeight(_TOP_HIST_MIN_HEIGHT)
+        top.setPreferredHeight(_TOP_HIST_HEIGHT)
         top.setMaximumHeight(_TOP_HIST_HEIGHT)
         right.setMinimumWidth(_RIGHT_HIST_WIDTH)
         right.setMaximumWidth(_RIGHT_HIST_WIDTH)
@@ -959,12 +1051,12 @@ class IdentifiabilityWidget(QWidget):
             axis = plot.getAxis(axis_name)
             axis.enableAutoSIPrefix(False)
             axis.setTickFont(tick_font)
-            axis.setPen(pg.mkPen(_INK_3, width=1))
-            axis.setTextPen(pg.mkPen(_INK_2))
-            axis.setLabel('attempts', color=_INK_2, **{'font-size': f'{tick_font.pointSize()}pt'})
+            axis.setPen(pg.mkPen(INK_3, width=1))
+            axis.setTextPen(pg.mkPen(INK_2))
+            axis.setLabel('attempts', color=INK_2, **{'font-size': f'{tick_font.pointSize()}pt'})
             bars = tuple(
                 pg.BarGraphItem(x0=[0.0], x1=[0.0], y0=[0.0], y1=[0.0], brush=colour, pen=pg.mkPen(None))
-                for colour in (_BELOW_FLOOR, _INK_2)
+                for colour in (BELOW_FLOOR, INK_2)
             )
             for bar in bars:
                 plot.addItem(bar)
@@ -1027,5 +1119,5 @@ class IdentifiabilityWidget(QWidget):
             axis = plot.getAxis(name)
             axis.setTickFont(tick_font)
             axis.label.setFont(label_font)
-            axis.setPen(pg.mkPen(_INK_3, width=1))
-            axis.setTextPen(pg.mkPen(_INK_2))
+            axis.setPen(pg.mkPen(INK_3, width=1))
+            axis.setTextPen(pg.mkPen(INK_2))

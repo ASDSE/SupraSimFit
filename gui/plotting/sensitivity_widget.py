@@ -39,12 +39,11 @@ the heatmap's Ka colours, and ``style['sensitivity']`` for the baseline line).
 
 from __future__ import annotations
 
-import re
 from typing import Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QRectF, Qt
+from PyQt6.QtCore import QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPalette
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -53,6 +52,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QProgressBar,
+    QPushButton,
     QScrollArea,
     QStackedLayout,
     QVBoxLayout,
@@ -69,23 +69,14 @@ from core.pipeline.sensitivity import (
     nominal_value,
     spec_bounds,
 )
+from gui.plotting.colors import BELOW_FLOOR, INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
 from gui.plotting.distribution_widget import draw_histogram
 from gui.plotting.fit_summary_widget import unfitted_sentence
-from gui.plotting.labels import fmt_param, fmt_sci, fmt_unit_html
+from gui.plotting.labels import fmt_param, fmt_r2, fmt_sci, fmt_unit_html, plain_label
 from gui.plotting.plot_style import DEFAULT_STYLE
 from gui.plotting.plot_widget import ScientificAxisItem, _format_exponent_unicode
 from gui.widgets.assay_conditions import ASSAY_CONDITIONS
 
-# Chart surface and ink (text) colours.
-_SURFACE = '#fcfcfb'
-_INK = '#0b0b0b'
-_INK_SECONDARY = '#52514e'
-_INK_MUTED = '#898781'
-# Series colours: histogram bars, S₁ (first order) and sample dots; S_T (total).
-_SERIES = '#2a78d6'
-_SERIES_TOTAL = '#eb6834'
-# Samples whose best fit falls below the Min R², drawn behind the others.
-_BELOW_FLOOR = '#c3c2b7'
 # Share of a "Ka vs input" panel's default Δ-input range left clear at each end,
 # the same at every panel width, so the outermost dots sit off the axis line.
 _OFFSET_VIEW_MARGIN = 0.03
@@ -117,21 +108,14 @@ _CHANGE_TICK_GAP = 0.2
 # percent label stops telling ticks apart, so deeper ticks mark powers of ten and
 # read as the ratio, ``×10⁻⁶``.
 _MIN_CHANGE_TICK_RATIO = 1e-3
-
-_SUBSCRIPT_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
-_SUB_TAG_RE = re.compile(r'<sub>(.*?)</sub>')
-_ANY_TAG_RE = re.compile(r'<[^>]+>')
-
-
-def _plain_label(html: str) -> str:
-    """Flatten an HTML display label into plain text.
-
-    pyqtgraph paints axis tick strings as plain text, so digits inside a
-    ``<sub>`` become their Unicode subscripts and every remaining tag is
-    dropped: ``[Host]<sub>0</sub>`` → ``[Host]₀``.
-    """
-    text = _SUB_TAG_RE.sub(lambda m: m.group(1).translate(_SUBSCRIPT_DIGITS), html)
-    return _ANY_TAG_RE.sub('', text)
+# Shown on the progress page until the first fit count arrives.
+_RUNNING_TEXT = 'Running…'
+#: What a stopping run says. The progress page and the status bar show it at the
+#: same time, so they read as one message rather than two answers.
+STOPPING_TEXT = 'Stopping — finishing the fits already running…'
+# Most tick labels a heatmap axis carries; with more offsets than this it labels
+# every second, third … one, so the labels stay apart.
+_MAX_HEATMAP_TICKS = 9
 
 
 def _wire_x_exponent(plot_item: pg.PlotItem, axis: ScientificAxisItem, base_label: str) -> None:
@@ -197,7 +181,8 @@ class _LogKaAxis(pg.AxisItem):
     run the labels into each other, and a spread of less than a factor of two
     gets one label or none. This axis takes the densest tick set from
     :func:`_log_tick_candidates` whose labels, measured in the tick font, keep
-    ``_LABEL_GAP`` pixels clear of their neighbours. Labels read ``2.5·10⁸``.
+    ``_LABEL_GAP`` pixels clear of their neighbours. Labels read ``2.5×10⁸``,
+    the notation :func:`gui.plotting.labels.fmt_sci` uses across the app.
     """
 
     def logTickValues(self, minVal, maxVal, size, stdTicks):
@@ -207,13 +192,7 @@ class _LogKaAxis(pg.AxisItem):
         return [(None, list(values))]
 
     def logTickStrings(self, values, scale, spacing):
-        strings = []
-        for value in 10.0 ** np.asarray(values, dtype=float) * scale:
-            exp = int(np.floor(np.log10(value)))
-            mantissa = float(f'{value / 10.0**exp:.3g}')
-            power = f'10{_format_exponent_unicode(exp)}'
-            strings.append(power if mantissa == 1 else f'{mantissa:g}·{power}')
-        return strings
+        return [_tick_label(value) for value in 10.0 ** np.asarray(values, dtype=float) * scale]
 
     def _labels_fit(self, values: np.ndarray, lo: float, hi: float, size: float) -> bool:
         """Whether labels at *values* keep ``_LABEL_GAP`` pixels between neighbours on an axis *size* pixels long."""
@@ -400,8 +379,45 @@ def _colour_scale(
     return values, (lo, hi), [(float(p), _tick_label(p)) for p in _linear_ticks(lo, hi)]
 
 
+def _cell_ticks(offsets: np.ndarray) -> list[tuple[float, str]]:
+    """Ticks at the centres of a heatmap axis's cells, at most ``_MAX_HEATMAP_TICKS`` of them.
+
+    With more cells than that, every second, third … one is labelled, at an even
+    spacing across the axis.
+    """
+    values = np.asarray(offsets, dtype=float)
+    if not values.size:
+        return []
+    step = max(1, int(np.ceil(values.size / _MAX_HEATMAP_TICKS)))
+    return [(float(values[i]), _end_label(values[i])) for i in range(0, values.size, step)]
+
+
+def _label_cells_in_view(plot, x_offsets: np.ndarray, y_offsets: np.ndarray) -> None:
+    """Name the cell centres on *plot*'s axes, and keep them named as the view changes.
+
+    A tick per cell reads the map's own steps, but the cells are fixed while the
+    view is not: zoomed in past them, none may fall inside the view and the axis
+    would carry no label at all. Whenever the view no longer holds the whole
+    grid, pyqtgraph's own ticks take over.
+    """
+    axes = (('bottom', np.asarray(x_offsets, dtype=float)), ('left', np.asarray(y_offsets, dtype=float)))
+    for name, offsets in axes:
+        plot.getAxis(name).setTicks([_cell_ticks(offsets)])
+
+    def on_range_changed(_view_box, ranges) -> None:
+        for (name, offsets), (lo, hi) in zip(axes, ranges):
+            whole_grid = offsets.size and lo <= offsets.min() and hi >= offsets.max()
+            plot.getAxis(name).setTicks([_cell_ticks(offsets)] if whole_grid else None)
+
+    plot.getViewBox().sigRangeChanged.connect(on_range_changed)
+
+
 def _quality_note(result: SensitivityResult) -> str:
-    """Plain-language count of fits below the Min R² floor, of samples with no fit and of rows the indices leave out."""
+    """The notes under the plots: what the run's fits were worth, and the seed that repeats it.
+
+    Counts the fits below the Min R² floor, the samples with no fit and the rows
+    the indices leave out, then names the run's root seed.
+    """
     if result.mode is SensitivityMode.HEATMAP:
         r2, kas, noun = result.r2_grid, (result.ka_grid or {}).values(), 'grid cells'
         kept = 'These fits stay in the map, each cell marked with a ring.'
@@ -415,31 +431,80 @@ def _quality_note(result: SensitivityResult) -> str:
             f'An arrow on the index chart marks an index or whisker beyond {lo:g} to {hi:g}: '
             'too few samples to pin it down. More samples bring it back in range.'
         )
-    if r2 is not None and result.floor is not None and np.isfinite(result.floor):
-        total = int(np.asarray(r2).size)
-        threshold = f'the Min R² this analysis used ({result.floor:g})'
-        if result.n_below_floor:
-            parts.append(f'The best fit of {result.n_below_floor} of {total} {noun} falls below {threshold}. {kept}')
-        else:
-            parts.append(f'The best fit of every one of the {total} {noun} meets {threshold}.')
+    inverted = _total_below_first_order(result)
+    if inverted is not None:
+        parts.append(inverted)
+    # The counts describe the fits there are, which after a cancelled or partly
+    # failed run is fewer than the run planned, so they agree with Fit Quality.
     ka_rows = [np.ravel(ka) for ka in kas]
-    if ka_rows:
-        missing = ~np.all(np.isfinite(np.vstack(ka_rows)), axis=0)
-        if missing.any():
-            n = int(missing.sum())
-            parts.append(unfitted_sentence(result, n, missing.size, noun))
+    fitted = np.all(np.isfinite(np.vstack(ka_rows)), axis=0) if ka_rows else None
+    if r2 is not None and result.floor is not None and np.isfinite(result.floor):
+        values = np.ravel(np.asarray(r2, dtype=float))
+        values = values if fitted is None else values[fitted]
+        total = int(values.size)
+        below = int(np.sum(values < result.floor))
+        partial = fitted is not None and total < fitted.size
+        made = f'the {total} {noun}' + (' that have a fit' if partial else '')
+        threshold = f'the Min R² this analysis used ({result.floor:g})'
+        if below:
+            parts.append(f'The best fit of {below} of {made} falls below {threshold}. {kept}')
+        elif total:
+            parts.append(f'The best fit of every one of {made} meets {threshold}.')
+    if fitted is not None and not fitted.all():
+        parts.append(unfitted_sentence(result, int((~fitted).sum()), fitted.size, noun))
     counts = result.sobol_rows_left_out or {}
     if len(set(counts.values())) == 1:
         counts = {None: next(iter(counts.values()))}
     for key, n in counts.items():
         if n:
-            indices = 'The Sobol indices' if key is None else f'The Sobol indices for {_plain_label(fmt_param(key))}'
+            indices = 'The Sobol indices' if key is None else f'The Sobol indices for {plain_label(fmt_param(key))}'
             parts.append(
                 f'{indices} leave out {n} of the {result.config.n_samples} sample groups set by the sample size: '
                 f'at least one fit in {"that group" if n == 1 else "each of those groups"} '
                 f'{"is missing" if result.stopped else "could not be made"}.'
             )
+    # The seed is what repeats the run, so it belongs on the tab — and, through
+    # the tab's picture, in what the user keeps of the analysis.
+    parts.append(f'Seed {result.seed_used}: enter it under Fixed seed to repeat this analysis exactly.')
     return ' '.join(parts)
+
+
+def _total_below_first_order(result: SensitivityResult) -> str | None:
+    """The note for an input whose S_T bar is drawn below its own S_1 bar, or ``None``.
+
+    A true total order is never below its first order, so the order of the bars
+    comes from the estimates. It happens when the interaction share S_T − S_1 is
+    near zero — whatever the size of the share itself — and then either estimate
+    can come out on top in any run, at any sample size. Where the two intervals
+    do not overlap, that is more than the whiskers account for, and the note says
+    so instead.
+    """
+    inverted = separated = False
+    for ka_key, s1 in (result.sobol_s1 or {}).items():
+        st = (result.sobol_st or {}).get(ka_key, {})
+        s1_ci = (result.sobol_s1_ci or {}).get(ka_key, {})
+        st_ci = (result.sobol_st_ci or {}).get(ka_key, {})
+        for key, first in s1.items():
+            total = st.get(key, np.nan)
+            if not (np.isfinite(first) and np.isfinite(total) and total < first):
+                continue
+            inverted = True
+            first_lo = s1_ci.get(key, (first, first))[0]
+            total_hi = st_ci.get(key, (total, total))[1]
+            if np.isfinite(first_lo) and np.isfinite(total_hi) and total_hi < first_lo:
+                separated = True
+    if not inverted:
+        return None
+    bars = 'An input has its S<sub>T</sub> (total) bar drawn below its S<sub>1</sub> (first order) bar. '
+    if separated:
+        return bars + (
+            'The gap is wider than the two whiskers span, which a total order below a first order cannot be: '
+            "take that input's two indices as unreliable and run the analysis again at a larger sample size."
+        )
+    return bars + (
+        'The two are equal to within their whiskers, which means the input acts almost entirely on its own — '
+        'either estimate can come out on top in any run.'
+    )
 
 
 def _indices_off_scale(result: SensitivityResult) -> bool:
@@ -465,8 +530,15 @@ class SensitivityWidget(QWidget):
     :meth:`set_progress` drive the progress page during a run.
     :meth:`show_mismatch` hides the result behind a note while it no longer
     matches the loaded selection; the result is kept and drawn again once the
-    note is removed.
+    note is removed. :meth:`export_image` saves the whole tab as a picture.
+
+    While a run goes, the progress page counts the fits made and carries the
+    Cancel button that stops it, so the count and the control sit where the
+    user is looking. Pressing it emits :attr:`cancel_requested`.
     """
+
+    #: Emitted when the user presses Cancel on the progress page.
+    cancel_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -503,9 +575,10 @@ class SensitivityWidget(QWidget):
         self._mismatch_label = QLabel()
         self._mismatch_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._mismatch_label.setWordWrap(True)
-        self._mismatch_label.setStyleSheet(f'color: {_INK_SECONDARY}; font-size: 14px; padding: 12px;')
+        self._mismatch_label.setStyleSheet(f'color: {INK_2}; font-size: 14px; padding: 12px;')
         self._stack.addWidget(self._mismatch_label)
 
+        self._stopping = False  # the run was asked to stop and the page says so
         self._progress_page = QWidget()
         prog_layout = QVBoxLayout(self._progress_page)
         prog_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -513,11 +586,16 @@ class SensitivityWidget(QWidget):
         self._progress_bar = QProgressBar()
         self._progress_bar.setMinimumWidth(240)
         self._progress_bar.setMaximumWidth(360)
-        self._progress_label = QLabel('Running… cancel from the Ka Sensitivity panel.')
+        self._progress_bar.setTextVisible(False)
+        self._progress_label = QLabel(_RUNNING_TEXT)
         self._progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._progress_label.setStyleSheet('color: rgba(0,0,0,0.55); font-size: 13px;')
-        prog_layout.addWidget(self._progress_bar, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._progress_label.setStyleSheet(f'color: {INK_2}; font-size: 13px;')
+        self._cancel_button = QPushButton('Cancel')
+        self._cancel_button.setToolTip('Stop the analysis. The fits made so far are shown.')
+        self._cancel_button.clicked.connect(self._on_cancel_clicked)
         prog_layout.addWidget(self._progress_label)
+        prog_layout.addWidget(self._progress_bar, alignment=Qt.AlignmentFlag.AlignCenter)
+        prog_layout.addWidget(self._cancel_button, alignment=Qt.AlignmentFlag.AlignCenter)
         self._stack.addWidget(self._progress_page)
 
         # The results scroll: a Sobol run stacks several rows of panels, more
@@ -527,25 +605,29 @@ class SensitivityWidget(QWidget):
         self._results_host.setFrameShape(QFrame.Shape.NoFrame)
         results_inner = QWidget()
         palette = results_inner.palette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(_SURFACE))
+        palette.setColor(QPalette.ColorRole.Window, QColor(SURFACE))
         results_inner.setPalette(palette)
         results_inner.setAutoFillBackground(True)
         self._results_layout = QVBoxLayout(results_inner)
-        self._results_layout.setContentsMargins(0, 0, 0, 0)
+        # The same inset the Identifiability page uses. Without it the rightmost
+        # plot's frame — and the bar standing against it — ends on the last pixel
+        # of the tab and of the picture saved from it.
+        self._results_layout.setContentsMargins(10, 6, 10, 6)
         self._results_layout.setSpacing(4)
         self._results_host.setWidget(results_inner)
         self._stack.addWidget(self._results_host)
 
         self._note = QLabel()
+        self._note.setTextFormat(Qt.TextFormat.RichText)
         self._note.setWordWrap(True)
-        self._note.setStyleSheet(f'color: {_INK_SECONDARY}; font-size: 13px; padding: 2px 6px;')
+        self._note.setStyleSheet(f'color: {INK_2}; font-size: 13px; padding: 2px 6px;')
 
         # Heatmap colour selector, above the maps; its choice holds across new results and restyles.
         self._colour_controls = QWidget()
         controls = QHBoxLayout(self._colour_controls)
         controls.setContentsMargins(6, 4, 6, 0)
         colour_label = QLabel('Colour by:')
-        colour_label.setStyleSheet(f'color: {_INK_SECONDARY};')
+        colour_label.setStyleSheet(f'color: {INK_2};')
         controls.addWidget(colour_label)
         self._colour_combo = QComboBox()
         for text, key, _ in _COLOUR_STATS:
@@ -554,7 +636,7 @@ class SensitivityWidget(QWidget):
         self._colour_combo.currentIndexChanged.connect(lambda _: self._render())
         controls.addWidget(self._colour_combo)
         self._colour_caption = QLabel()
-        self._colour_caption.setStyleSheet(f'color: {_INK_MUTED}; font-size: 13px;')
+        self._colour_caption.setStyleSheet(f'color: {INK_3}; font-size: 13px;')
         controls.addWidget(self._colour_caption, stretch=1)
 
         self._stack.setCurrentWidget(self._placeholder)
@@ -594,17 +676,61 @@ class SensitivityWidget(QWidget):
 
     def show_running(self) -> None:
         """Switch to the progress page (indeterminate until the first update)."""
+        self._stopping = False
+        self._progress_label.setText(_RUNNING_TEXT)
         self._progress_bar.setRange(0, 0)
         self._progress_bar.setValue(0)
+        self._cancel_button.setEnabled(True)
         self._stack.setCurrentWidget(self._progress_page)
 
+    def _on_cancel_clicked(self) -> None:
+        """Take the request on the page the user is looking at, then pass it on.
+
+        The fits already running finish before the analysis returns, so the page
+        says what it is waiting for instead of leaving the button live.
+        """
+        self._cancel_button.setEnabled(False)
+        self._stopping = True
+        self._progress_label.setText(STOPPING_TEXT)
+        self.cancel_requested.emit()
+
     def set_progress(self, done: int, total: int) -> None:
-        """Advance the progress bar to *done* / *total* fits."""
+        """Count *done* of *total* fits on the progress page and advance its bar."""
+        if self._stopping:
+            return  # the page says it is stopping; a rising count would read as progress
         if total > 0:
+            self._progress_label.setText(f'{done:,} of {total:,} fits')
             self._progress_bar.setRange(0, total)
             self._progress_bar.setValue(done)
         else:
+            self._progress_label.setText(_RUNNING_TEXT)
             self._progress_bar.setRange(0, 0)
+
+    def export_image(self, path: str) -> None:
+        """Save the tab's headings, plots, key and notes as a picture.
+
+        The colour selector stays out of it: it chooses what a heatmap's colour
+        shows, which each colour bar then names, and there is nothing to choose
+        in a saved picture.
+
+        Parameters
+        ----------
+        path : str
+            Where to write it, ending in ``.png``. A whole tab is saved as one
+            picture; :func:`~gui.plotting.export.export_widget` says why it is
+            not offered as a drawing.
+
+        Raises
+        ------
+        ValueError
+            When there are no results on screen to save, or the suffix is not
+            ``.png``.
+        """
+        from gui.plotting.export import export_widget
+
+        if self._stack.currentWidget() is not self._results_host:
+            raise ValueError('There is no sensitivity analysis to save yet. Run one, then save it.')
+        export_widget(self._results_host.widget(), path, without=(self._colour_controls,))
 
     # ------------------------------------------------------------------
     # Rendering
@@ -672,7 +798,7 @@ class SensitivityWidget(QWidget):
         if key == TITRANT:
             return ASSAY_REGISTRY[assay_type].x_label if assay_type is not None else 'Titrant'
         if assay_type is not None:
-            for field in ASSAY_CONDITIONS[assay_type][1]:
+            for field in ASSAY_CONDITIONS[assay_type]:
                 if field.key == key:
                     return field.label
         return fmt_param(key)
@@ -685,7 +811,7 @@ class SensitivityWidget(QWidget):
 
     def _new_plot(self, min_width: int, min_height: int, **kwargs) -> tuple[pg.PlotWidget, pg.PlotItem]:
         """A plot on the chart surface with the given minimum size."""
-        pw = pg.PlotWidget(background=_SURFACE, **kwargs)
+        pw = pg.PlotWidget(background=SURFACE, **kwargs)
         pw.setMinimumSize(min_width, min_height)
         return pw, pw.getPlotItem()
 
@@ -695,7 +821,10 @@ class SensitivityWidget(QWidget):
         """Histogram + index bars per Ka key, then the Ka vs input panels."""
         assay_type = self._assay_type(result)
         use_log = self._style.get('distribution', {}).get('ka_scale', 'log₁₀') == 'log₁₀'
-        samples_by_ka = (result.histograms or {}).get('sobol', {})
+        samples_by_ka = {
+            key: values[np.isfinite(values)]
+            for key, values in ((k, np.asarray(v, dtype=float)) for k, v in (result.sample_ka or {}).items())
+        }
         s1_by_ka = result.sobol_s1 or {}
         st_by_ka = result.sobol_st or {}
         input_keys: list[str] = []
@@ -746,7 +875,7 @@ class SensitivityWidget(QWidget):
             heading = QLabel(f'{fmt_param(ka_key)} vs each input')
             heading.setTextFormat(Qt.TextFormat.RichText)
             heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            heading.setStyleSheet(f'color: {_INK}; font-weight: bold; font-size: {self._title_size()}pt;')
+            heading.setStyleSheet(f'color: {INK}; font-weight: bold; font-size: {self._title_size()}pt;')
             grid.addWidget(heading, 3 * r, 0, 1, len(offsets_by_input))
             key = self._floor_key(result.floor, bool(below.any()))
             if key is not None:
@@ -810,7 +939,7 @@ class SensitivityWidget(QWidget):
         disp = np.log10(positive) if use_log else positive
         if disp.size:
             nbins = int(np.clip(round(np.sqrt(disp.size)), 10, 40))
-            tallest = draw_histogram(plot, disp, nbins, color=_SERIES, gap_color=_SURFACE, horizontal=False)
+            tallest = draw_histogram(plot, disp, nbins, color=SERIES, gap_color=SURFACE, horizontal=False)
             plot.setYRange(0.0, tallest * 1.08, padding=0)
 
         if baseline is not None and (not use_log or baseline > 0):
@@ -822,7 +951,7 @@ class SensitivityWidget(QWidget):
                 angle=90,
                 pen=pg.mkPen(baseline_c, width=baseline_w, style=Qt.PenStyle.DashLine),
                 label='baseline',
-                labelOpts={'position': 0.92, 'color': _INK_SECONDARY, 'fill': pg.mkBrush(_SURFACE)},
+                labelOpts={'position': 0.92, 'color': INK_2, 'fill': pg.mkBrush(SURFACE)},
             )
             plot.addItem(line)
 
@@ -831,7 +960,7 @@ class SensitivityWidget(QWidget):
         tick_size = self._style.get('distribution', {}).get('tick_font_size', 12)
         self._set_title(
             plot,
-            f'{ka_label}<br><span style="font-weight: normal; font-size: {tick_size}pt; color: {_INK_SECONDARY};">'
+            f'{ka_label}<br><span style="font-weight: normal; font-size: {tick_size}pt; color: {INK_2};">'
             f'median {val_html}{spread}</span>',
         )
         self._apply_axis_style(plot)
@@ -872,13 +1001,13 @@ class SensitivityWidget(QWidget):
         plot.showGrid(y=True, alpha=0.25)
 
         tick_size = self._style.get('distribution', {}).get('tick_font_size', 12)
-        legend = plot.addLegend(offset=(-10, 10), labelTextSize=f'{tick_size}pt', labelTextColor=_INK)
-        legend.setBrush(pg.mkBrush(_SURFACE))
+        legend = plot.addLegend(offset=(-10, 10), labelTextSize=f'{tick_size}pt', labelTextColor=INK)
+        legend.setBrush(pg.mkBrush(SURFACE))
         centres = np.arange(len(input_keys), dtype=float)
         series = []
         for indices, intervals, shift, colour, name in (
-            (s1, s1_ci, -_GROUP_OFFSET, _SERIES, 'S<sub>1</sub> (first order)'),
-            (st, st_ci, +_GROUP_OFFSET, _SERIES_TOTAL, 'S<sub>T</sub> (total)'),
+            (s1, s1_ci, -_GROUP_OFFSET, SERIES, 'S<sub>1</sub> (first order)'),
+            (st, st_ci, +_GROUP_OFFSET, SERIES_TOTAL, 'S<sub>T</sub> (total)'),
         ):
             values = np.array([indices.get(key, np.nan) for key in input_keys], dtype=float)
             ci = np.array([intervals.get(key, (np.nan, np.nan)) for key in input_keys], dtype=float)
@@ -888,7 +1017,7 @@ class SensitivityWidget(QWidget):
         lo = max(float(everything.min(initial=0.0)), _INDEX_LIMITS[0])
         hi = min(float(everything.max(initial=1.0)), _INDEX_LIMITS[1])
 
-        whisker_pen = pg.mkPen(_INK, width=1.5)
+        whisker_pen = pg.mkPen(INK, width=1.5)
         whiskers = None
         for values, ci, shift, colour, name in series:
             finite = np.isfinite(values)
@@ -899,7 +1028,7 @@ class SensitivityWidget(QWidget):
                 y0=0,
                 y1=np.clip(values[finite], lo, hi),
                 brush=pg.mkBrush(colour),
-                pen=pg.mkPen(_SURFACE, width=1),
+                pen=pg.mkPen(SURFACE, width=1),
             )
             plot.addItem(bars)
             legend.addItem(bars, name)
@@ -920,14 +1049,14 @@ class SensitivityWidget(QWidget):
                 ):
                     if off_scale.any():
                         arrow = pg.TextItem(
-                            html=f'<span style="color: {_INK_SECONDARY}; font-size: {tick_size}pt;">{glyph}</span>',
+                            html=f'<span style="color: {INK_2}; font-size: {tick_size}pt;">{glyph}</span>',
                             anchor=anchor,
                         )
                         arrow.setPos(float(centres[i] + shift), edge)
                         plot.addItem(arrow, ignoreBounds=True)
             for x in centres[~finite] + shift:
                 marker = pg.TextItem(
-                    html=f'<span style="color: {_INK_MUTED}; font-size: {tick_size}pt;">n/a</span>',
+                    html=f'<span style="color: {INK_3}; font-size: {tick_size}pt;">n/a</span>',
                     anchor=(0.5, 1.0),
                 )
                 marker.setPos(float(x), 0.0)
@@ -936,13 +1065,13 @@ class SensitivityWidget(QWidget):
             legend.addItem(whiskers, '95% confidence interval')
 
         if lo < 0:
-            plot.addItem(pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen(_INK_MUTED, width=1)), ignoreBounds=True)
+            plot.addItem(pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen(INK_3, width=1)), ignoreBounds=True)
         pad = 0.08 * (hi - lo)
         # Extra headroom keeps the legend clear of the tallest bars.
         plot.setYRange(lo - pad, hi + 4 * pad, padding=0)
         plot.setXRange(-0.5, len(input_keys) - 0.5)
         plot.getAxis('bottom').setTicks(
-            [[(float(i), _plain_label(self._input_label(assay_type, key))) for i, key in enumerate(input_keys)]]
+            [[(float(i), plain_label(self._input_label(assay_type, key))) for i, key in enumerate(input_keys)]]
         )
         self._apply_axis_style(plot)
         return pw
@@ -954,9 +1083,9 @@ class SensitivityWidget(QWidget):
         """
         if floor is None or not np.isfinite(floor):
             return None
-        entries = [(_SERIES, f'best fit meets the Min R² ({floor:g})')]
+        entries = [(SERIES, f'best fit meets the Min R² ({floor:g})')]
         if any_below:
-            entries.append((_BELOW_FLOOR, 'best fit falls below it'))
+            entries.append((BELOW_FLOOR, 'best fit falls below it'))
         key = QLabel(
             '&nbsp;&nbsp;&nbsp;&nbsp;'.join(
                 f'<span style="color: {colour};">●</span> {text}' for colour, text in entries
@@ -964,7 +1093,7 @@ class SensitivityWidget(QWidget):
         )
         key.setTextFormat(Qt.TextFormat.RichText)
         key.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        key.setStyleSheet(f'color: {_INK_SECONDARY}; font-size: {self._tick_font().pointSize()}pt;')
+        key.setStyleSheet(f'color: {INK_2}; font-size: {self._tick_font().pointSize()}pt;')
         return key
 
     def _make_ka_vs_input(
@@ -1003,8 +1132,8 @@ class SensitivityWidget(QWidget):
         placed = np.isfinite(ka) & (ka > 0) & np.isfinite(offsets)
         x, y, low = offsets[placed], ka[placed], below[placed]
         for mask, colour, z, name in (
-            (low, _BELOW_FLOOR, 0, 'below the threshold'),
-            (~low, _SERIES, 1, 'meets the threshold'),
+            (low, BELOW_FLOOR, 0, 'below the threshold'),
+            (~low, SERIES, 1, 'meets the threshold'),
         ):
             dots = pg.PlotDataItem(
                 x[mask],
@@ -1013,7 +1142,7 @@ class SensitivityWidget(QWidget):
                 symbol='o',
                 symbolSize=_MARKER_SIZE + 2,
                 symbolBrush=pg.mkBrush(colour),
-                symbolPen=pg.mkPen(_SURFACE, width=2),
+                symbolPen=pg.mkPen(SURFACE, width=2),
                 name=name,
             )
             dots.setZValue(z)
@@ -1022,7 +1151,7 @@ class SensitivityWidget(QWidget):
         self._apply_axis_style(plot)
         # pyqtgraph sizes tick text at paint time, too late for y-linked panels, which then
         # drop their labels; a fixed width that holds the widest label keeps every one in view.
-        widest = QFontMetrics(self._tick_font()).horizontalAdvance('8.88·10⁻¹⁰')
+        widest = QFontMetrics(self._tick_font()).horizontalAdvance('8.88×10⁻¹⁰')
         left_axis.setStyle(autoExpandTextSpace=False, tickTextWidth=widest)
         return pw
 
@@ -1040,7 +1169,7 @@ class SensitivityWidget(QWidget):
         y_offsets = np.asarray(result.y_offsets_pct, dtype=float)
 
         glw = pg.GraphicsLayoutWidget()
-        glw.setBackground(_SURFACE)
+        glw.setBackground(SURFACE)
         glw.setMinimumHeight(320)
         self._heatmap_glw = glw
         self._hover_targets = []
@@ -1068,6 +1197,8 @@ class SensitivityWidget(QWidget):
             plot.setLabel('left', f'Δ {y_input} [%]')
             self._set_title(plot, ka_label)
             plot.getViewBox().setDefaultPadding(0.02)
+            # Each tick names a cell, so it sits at that cell's centre.
+            _label_cells_in_view(plot, x_offsets, y_offsets)
 
             img = pg.ImageItem()
             img.setImage(rgba, axisOrder='row-major')
@@ -1087,29 +1218,29 @@ class SensitivityWidget(QWidget):
                 bar_label = 'R²'
             cbar = pg.ColorBarItem(values=(lo, hi), colorMap=cmap, interactive=False, width=14)
             for side in ('left', 'top', 'right', 'bottom'):
-                cbar.getAxis(side).setPen(pg.mkPen(_INK_MUTED, width=1))
+                cbar.getAxis(side).setPen(pg.mkPen(INK_3, width=1))
             cbar.axis.enableAutoSIPrefix(False)
             cbar.axis.setTicks([ticks])
             cbar.axis.setTickFont(tick_font)
-            cbar.axis.setTextPen(pg.mkPen(_INK_SECONDARY))
+            cbar.axis.setTextPen(pg.mkPen(INK_2))
             # Text space sized to the widest tick label, so none is cut off.
             widest = max(QFontMetrics(tick_font).horizontalAdvance(text) for _, text in ticks)
             cbar.axis.setStyle(autoExpandTextSpace=False, tickTextWidth=widest)
-            cbar.axis.setLabel(bar_label, color=_INK_SECONDARY, **{'font-size': f'{label_size}pt'})
+            cbar.axis.setLabel(bar_label, color=INK_2, **{'font-size': f'{label_size}pt'})
             cbar.axis.setWidth()
             # A label on an end tick overhangs the bar by half its height; margins that size keep it in view.
             overhang = QFontMetrics(tick_font).height() / 2
             cbar.layout.setContentsMargins(0, overhang, 0, overhang)
             glw.addItem(cbar, row=0, col=2 * i + 1)
 
-            pen = pg.mkPen(_INK, width=1, style=Qt.PenStyle.DashLine)
+            pen = pg.mkPen(INK, width=1, style=Qt.PenStyle.DashLine)
             vline = pg.InfiniteLine(angle=90, movable=False, pen=pen)
             hline = pg.InfiniteLine(angle=0, movable=False, pen=pen)
             vline.setVisible(False)
             hline.setVisible(False)
             plot.addItem(vline, ignoreBounds=True)
             plot.addItem(hline, ignoreBounds=True)
-            readout = pg.TextItem(anchor=(0, 1), color=_INK, fill=pg.mkBrush(252, 252, 251, 220))
+            readout = pg.TextItem(anchor=(0, 1), color=INK, fill=pg.mkBrush(252, 252, 251, 220))
             readout.setVisible(False)
             plot.addItem(readout, ignoreBounds=True)
 
@@ -1149,7 +1280,7 @@ class SensitivityWidget(QWidget):
         iy, ix = np.nonzero(mask)
         if iy.size == 0:
             return
-        for colour, width in ((_INK, 4), (_SURFACE, 2)):
+        for colour, width in ((INK, 4), (SURFACE, 2)):
             plot.addItem(
                 pg.ScatterPlotItem(
                     x=x_offsets[ix],
@@ -1224,9 +1355,10 @@ class SensitivityWidget(QWidget):
             f'{ka_label} change: {_signed_pct(100.0 * (ka / target["baseline"] - 1.0))}',
         ]
         if target['r2_grid'] is not None:
+            floor = target['floor']
             r2 = target['r2_grid'][iy, ix]
-            below = target['floor'] is not None and r2 < target['floor']
-            lines.append(f'R² = {r2:.4f}' + (' (below Min R²)' if below else ''))
+            below = floor is not None and r2 < floor
+            lines.append(f'R² = {fmt_r2(r2, floor)}' + (' (below Min R²)' if below else ''))
         return '<br>'.join(lines)
 
     # ------------------------------------------------------------------
@@ -1238,7 +1370,7 @@ class SensitivityWidget(QWidget):
 
     def _set_title(self, plot_item: pg.PlotItem, html: str) -> None:
         """Set a bold ink title; the title row grows to fit a two-line one."""
-        plot_item.setTitle(html, size=f'{self._title_size()}pt', bold=True, color=_INK)
+        plot_item.setTitle(html, size=f'{self._title_size()}pt', bold=True, color=INK)
         height = max(30.0, plot_item.titleLabel.itemRect().height())
         plot_item.titleLabel.setMaximumHeight(height)
         plot_item.layout.setRowFixedHeight(0, height)
@@ -1257,5 +1389,5 @@ class SensitivityWidget(QWidget):
             axis = plot_item.getAxis(axis_name)
             axis.label.setFont(label_font)
             axis.setTickFont(tick_font)
-            axis.setPen(pg.mkPen(_INK_MUTED, width=1))
-            axis.setTextPen(pg.mkPen(_INK_SECONDARY))
+            axis.setPen(pg.mkPen(INK_3, width=1))
+            axis.setTextPen(pg.mkPen(INK_2))

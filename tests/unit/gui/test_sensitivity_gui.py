@@ -185,13 +185,13 @@ def _sobol_result():
         assay_type='IDA',
         ka_keys=('Ka_guest',),
         baseline_ka={'Ka_guest': 2e8},
-        histograms={'sobol': {'Ka_guest': ka[np.isfinite(ka)]}},
         x_offsets_pct=None,
         y_offsets_pct=None,
         ka_grid=None,
         n_success=n - 1,
         n_total=n,
         config=SensitivityConfig(SensitivityMode.SOBOL, n // 2, {k: InputSpec.sigma_pct(5.0) for k in _INPUTS}, seed=0),
+        seed_used=0,
         sobol_s1={'Ka_guest': s1},
         sobol_st={'Ka_guest': st},
         sobol_s1_ci={'Ka_guest': {k: (v - 0.03, v + 0.1) for k, v in s1.items()}},
@@ -234,7 +234,6 @@ def _heatmap_result():
         assay_type='IDA',
         ka_keys=('Ka_guest',),
         baseline_ka={'Ka_guest': 2e6},
-        histograms=None,
         x_offsets_pct=x,
         y_offsets_pct=y,
         ka_grid={'Ka_guest': grid},
@@ -243,6 +242,7 @@ def _heatmap_result():
         config=SensitivityConfig(
             SensitivityMode.HEATMAP, 1, {TITRANT: 5.0, 'h0': 5.0}, x_key=TITRANT, y_key='h0', n_steps=3
         ),
+        seed_used=0,
         r2_grid=r2,
         floor=_FLOOR,
         n_below_floor=2,
@@ -529,28 +529,84 @@ def test_note_counts_design_rows_the_indices_leave_out(qapp, left_out, sentence)
 
 
 def test_note_states_below_floor_and_unfitted_counts(qapp):
+    """The below-floor count is out of the samples that have a fit, as Fit Quality counts them."""
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
-    result = _sobol_result()
+    result = _sobol_result()  # 40 samples, one of them unfitted
     w = SensitivityWidget()
     w.update_result(result)
     text = w._note.text()
-    assert f'{result.n_below_floor} of 40 samples' in text
+    assert f'{result.n_below_floor} of the 39 samples that have a fit' in text
     assert '1 of 40 samples could not be fitted' in text
 
-    # A result without quality data has nothing to report.
+    assert f'Seed {result.seed_used}' in text  # what repeats the run is on the tab, and in its picture
+
+    # A result without quality data has no counts to report, only its seed.
     result.floor = result.sample_r2 = result.sample_ka = None
     w.update_result(result)
-    assert w._note.isHidden()
+    assert w._note.text() == f'Seed {result.seed_used}: enter it under Fixed seed to repeat this analysis exactly.'
+
+
+@pytest.mark.parametrize(
+    'st_ci, expect, avoid',
+    [
+        ((0.30, 0.45), 'equal to within their whiskers', 'unreliable'),
+        ((0.10, 0.20), 'wider than the two whiskers span', 'equal to within'),
+    ],
+    ids=['whiskers-overlap', 'whiskers-apart'],
+)
+def test_a_total_order_drawn_below_its_first_order_is_explained_by_the_whiskers(qapp, st_ci, expect, avoid):
+    """A total order cannot really be below a first order, so the note says which of the two readings applies.
+
+    Equal to within the whiskers means the input acts on its own and either can
+    come out on top. A gap wider than the whiskers is not sampling noise of one
+    index, and must not be reported as if it were.
+    """
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    result = _sobol_result()
+    result.sobol_s1 = {'Ka_guest': {'h0': 0.40}}
+    result.sobol_st = {'Ka_guest': {'h0': 0.30}}
+    result.sobol_s1_ci = {'Ka_guest': {'h0': (0.35, 0.45)}}
+    result.sobol_st_ci = {'Ka_guest': {'h0': st_ci}}
+    w = SensitivityWidget()
+    w.update_result(result)
+
+    text = w._note.text()
+    assert expect in text
+    assert avoid not in text
+
+
+def test_below_floor_count_of_a_cancelled_run_leaves_out_the_samples_it_never_fitted(qapp):
+    """A run stopped part way counts its below-floor fits out of the samples it fitted, not of every planned one."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    result = _sobol_result()  # 40 samples, sample 5 unfitted
+    ka = np.asarray(result.sample_ka['Ka_guest'], dtype=float)
+    r2 = np.asarray(result.sample_r2, dtype=float)
+    ka[10:] = np.nan  # the run was cancelled after the tenth sample
+    r2[10:] = np.nan
+    r2[:10] = [0.95, 0.95, 0.95, *([0.995] * 7)]
+    result.sample_ka = {'Ka_guest': ka}
+    result.sample_r2 = r2
+    result.stopped = True
+    result.n_success = result.n_total = 9
+
+    w = SensitivityWidget()
+    w.update_result(result)
+    text = w._note.text()
+    assert 'The best fit of 3 of the 9 samples that have a fit falls below' in text
+    assert 'of the 40 samples' not in text
+    assert '31 of 40 samples' in text  # sample 5 plus the thirty the run never reached
 
 
 def test_log_ka_axis_labels_round_values_within_a_decade(qapp):
-    """A Ka spread under a factor of two still gets several readable ticks."""
+    """A Ka spread under a factor of two still gets several readable ticks, in the app's ×10ⁿ notation."""
     from gui.plotting.sensitivity_widget import _LogKaAxis
 
     axis = _LogKaAxis(orientation='left')
     ((_, values),) = axis.logTickValues(np.log10(2.5e8), np.log10(4e8), 200, [])
-    assert axis.logTickStrings(values, 1.0, None) == ['2.5·10⁸', '3·10⁸', '3.5·10⁸', '4·10⁸']
+    assert axis.logTickStrings(values, 1.0, None) == ['2.5×10⁸', '3×10⁸', '3.5×10⁸', '4×10⁸']
 
 
 def _drawn_labels(axis) -> list:
@@ -618,7 +674,8 @@ def test_histogram_title_reads_in_plain_numbers(qapp):
     w.update_result(result)
     (plot,) = [plot for plot in _plots(w) if 'median' in plot.titleLabel.text]
     title = plot.titleLabel.text
-    assert f'median {fmt_sci(float(np.median(result.histograms["sobol"]["Ka_guest"])), 3)} M' in title
+    ka = np.asarray(result.sample_ka['Ka_guest'], dtype=float)
+    assert f'median {fmt_sci(float(np.median(ka[np.isfinite(ka)])), 3)} M' in title
     assert '×10⁸' in title
     assert 'middle 90% within' in title and '-fold' in title
     assert 'e+' not in title and 'CV' not in title
@@ -630,6 +687,25 @@ def test_widget_renders_heatmap_result_with_nan_cell(qapp):
     w = SensitivityWidget()
     w.update_result(_heatmap_result())  # must not raise despite the NaN cell
     assert w._stack.currentWidget() is w._results_host
+
+
+def test_heatmap_axes_label_the_cells_and_label_themselves_again_when_zoomed_in(qapp):
+    """Cell ticks read the map's own steps; zoomed past them the axis must not go unlabelled."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_heatmap_result())
+    plot = w._hover_targets[0]['plot']
+    bottom = plot.getAxis('bottom')
+
+    assert [value for value, _label in bottom._tickLevels[0]] == [-5.0, 0.0, 5.0]
+
+    plot.getViewBox().setXRange(-3.0, -1.0, padding=0)
+    plot.getViewBox().setYRange(-3.0, -1.0, padding=0)
+    qapp.processEvents()
+
+    # No cell centre lies in view, so the axis falls back on ticks of its own.
+    assert bottom._tickLevels is None
 
 
 def _colour_by(widget, text: str) -> None:
@@ -651,7 +727,7 @@ def test_heatmap_rings_cells_below_the_floor(qapp, stat):
     for ring in rings:
         # r2_grid is [iy, ix] with iy along the y offsets: cells (x, y) = (-5 %, -5 %) and (+5 %, +5 %).
         assert sorted(zip(*ring.getData())) == [(-5.0, -5.0), (5.0, 5.0)]
-    assert 'The best fit of 2 of 9 grid cells' in w._note.text()
+    assert 'The best fit of 2 of the 8 grid cells that have a fit' in w._note.text()
     assert '1 of 9 grid cells could not be fitted' in w._note.text()
 
 
@@ -807,6 +883,32 @@ def test_heatmap_readout_names_both_inputs_with_ka_change_and_r2(qapp):
     assert w._readout_html(target, 1, 2) == 'Guest 0%, [Host]<sub>0</sub> +5%<br>no fit could be produced'
 
 
+def test_heatmap_readout_r2_never_reads_as_meeting_the_floor_it_misses(qapp):
+    """A cell a hair below the Min R² reads below it, from the one shared R² formatter."""
+    from gui.plotting.labels import fmt_r2
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    result = _heatmap_result()
+    result.r2_grid[0, 0] = 0.98999
+    w = SensitivityWidget()
+    w.update_result(result)
+    (target,) = w._hover_targets
+    assert f'R² = {fmt_r2(0.98999, _FLOOR)} (below Min R²)' in w._readout_html(target, 0, 0)
+    assert 'R² = 0.9900' not in w._readout_html(target, 0, 0)
+
+
+def test_heatmap_axis_ticks_sit_at_the_cell_centres(qapp):
+    """Each tick names a cell, so it stands at that cell's offset rather than on a round number between cells."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_heatmap_result())
+    plot = w._hover_targets[0]['plot']
+    for axis_name, offsets in (('bottom', _heatmap_result().x_offsets_pct), ('left', _heatmap_result().y_offsets_pct)):
+        ((ticks, *_),) = [plot.getAxis(axis_name)._tickLevels]
+        assert [value for value, _ in ticks] == [float(v) for v in offsets]
+
+
 def test_colour_selector_shows_only_for_heatmaps(qapp):
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
@@ -829,6 +931,123 @@ def test_widget_progress_and_clear(qapp):
     w.update_result(_sobol_result())
     w.clear()
     assert w._stack.currentWidget() is w._placeholder
+
+
+def test_a_run_in_progress_counts_its_fits_and_carries_its_own_cancel(qapp):
+    """The count and the Cancel button sit on the page the user is looking at, not in a panel off screen."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.show_running()
+    assert w._progress_bar.maximum() == 0  # nothing counted yet: an indeterminate bar
+    assert 'Ka Sensitivity panel' not in w._progress_label.text()
+
+    w.set_progress(1234, 6144)
+    assert w._progress_label.text() == '1,234 of 6,144 fits'
+    assert (w._progress_bar.value(), w._progress_bar.maximum()) == (1234, 6144)
+
+    asked = []
+    w.cancel_requested.connect(lambda: asked.append(True))
+    w._cancel_button.click()
+    assert asked == [True]
+
+    # The page takes the request: the fits already running still land, and a
+    # button that stays live with a rising count gives no sign it was pressed.
+    assert not w._cancel_button.isEnabled()
+    assert w._progress_label.text().startswith('Stopping')
+    w.set_progress(1300, 6144)
+    assert w._progress_label.text().startswith('Stopping')
+    w.show_running()
+    assert w._cancel_button.isEnabled()
+
+
+def test_export_image_writes_the_whole_tab(tmp_path, qapp):
+    """The picture carries the plots and the note below them; an empty tab says there is nothing to save.
+
+    Only PNG: Qt's SVG painter drops the clip each plot keeps its curves inside,
+    so a curve past its axes would be drawn across the key and the notes.
+    """
+    from PyQt6.QtCore import Qt
+
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    with pytest.raises(ValueError, match='Run one'):
+        w.export_image(str(tmp_path / 'empty.png'))
+
+    w.update_result(_sobol_result())
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.resize(1000, 800)
+    w.show()
+    qapp.processEvents()
+    path = tmp_path / 'sensitivity.png'
+    w.export_image(str(path))
+    assert path.stat().st_size > 0
+    for unsupported in ('sensitivity.svg', 'sensitivity.pdf'):
+        with pytest.raises(ValueError, match='cannot be written'):
+            w.export_image(str(tmp_path / unsupported))
+    w.close()
+
+
+def test_the_sobol_chart_leaves_the_same_room_beside_its_first_and_last_bar(qapp):
+    """The category axis pads both ends alike, so no group is drawn against the frame.
+
+    The first and last groups are the ones a reader compares against the axis,
+    and a bar touching the frame reads as one that ran off the scale.
+    """
+    from gui.plotting.sensitivity_widget import _BAR_HALF_WIDTH, _GROUP_OFFSET, SensitivityWidget
+
+    result = _sobol_result()
+    keys = list(result.sobol_s1['Ka_guest'])
+    values = {key: 0.1 * (index + 1) for index, key in enumerate(keys)}
+    result.sobol_s1 = result.sobol_st = {'Ka_guest': values}
+    result.sobol_s1_ci = result.sobol_st_ci = {'Ka_guest': {k: (v - 0.02, v + 0.02) for k, v in values.items()}}
+    w = SensitivityWidget()
+    w.update_result(result)
+
+    plot = next(p for p in _plots(w) if 'Sobol' in (p.titleLabel.text if p.titleLabel else ''))
+    lo, hi = plot.getViewBox().viewRange()[0]
+    first_bar = -_GROUP_OFFSET - _BAR_HALF_WIDTH
+    last_bar = (len(keys) - 1) + _GROUP_OFFSET + _BAR_HALF_WIDTH
+
+    assert first_bar - lo > 0
+    assert (first_bar - lo) == pytest.approx(hi - last_bar)
+
+
+def test_the_saved_heatmap_leaves_the_colour_selector_out(tmp_path, qapp):
+    """The drop-down that chooses what the colour shows is not painted into the file.
+
+    Each colour bar already names the statistic it carries, so the picture says
+    what it shows without the control that picked it — and on macOS Qt draws no
+    drop-down at all outside a window.
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QColor, QImage, QPalette
+
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    marker = QColor(255, 0, 255)
+    w = SensitivityWidget()
+    w.update_result(_heatmap_result())
+    palette = w._colour_controls.palette()
+    palette.setColor(QPalette.ColorRole.Window, marker)
+    w._colour_controls.setPalette(palette)
+    w._colour_controls.setAutoFillBackground(True)  # marks the strip the picture must not show
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.resize(1000, 800)
+    w.show()
+    qapp.processEvents()
+    assert not w._colour_controls.isHidden()
+
+    path = tmp_path / 'heatmap.png'
+    w.export_image(str(path))
+
+    image = QImage(str(path))
+    assert not image.isNull()
+    painted = {image.pixelColor(x, y).rgb() for y in range(image.height()) for x in range(0, image.width(), 40)}
+    assert marker.rgb() not in painted
+    assert not w._colour_controls.isHidden()  # still there for the next choice
+    w.close()
 
 
 def test_baseline_line_follows_its_own_style_not_the_median_line(qapp):
@@ -914,6 +1133,51 @@ def test_worker_reports_an_unexpected_failure_in_plain_words(qapp, monkeypatch):
     assert len(messages) == 1
     assert 'could not be completed' in messages[0]
     assert 'broadcast' not in messages[0] and '_jansen' not in messages[0]
+
+
+def test_a_baseline_that_failed_per_replicate_names_the_replicates(qapp, monkeypatch):
+    """The analysis tab explains a failed baseline the way the Fit Curve tab does."""
+    from core.data_processing.measurement_set import MeasurementSet
+    from core.pipeline.fit_pipeline import PerReplicaFitError
+    from gui import workers
+
+    def fail(*args, **kwargs):
+        raise PerReplicaFitError(
+            'None of the 2 replicates could be fitted on its own. There is no reference Ka for the '
+            'analysis to compare against.',
+            {'0': 'Its signal could not be fitted.', '1': 'Its signal could not be fitted.'},
+        )
+
+    monkeypatch.setattr(workers, 'run_sensitivity', fail)
+    ms = MeasurementSet(concentrations=np.arange(3.0), signals=np.ones((2, 3)), replica_ids=('0', '1'))
+    worker = workers.SensitivityWorker(ms, None, {}, None, None)
+    messages = []
+    worker.error.connect(messages.append)
+
+    worker.run()
+
+    assert len(messages) == 1
+    assert 'no reference Ka' in messages[0]
+    assert 'Replicate A: Its signal could not be fitted.' in messages[0]
+    assert 'Replicate B: Its signal could not be fitted.' in messages[0]
+
+
+def test_a_run_stopped_by_a_failed_refit_says_what_to_change(qapp, monkeypatch):
+    """The analysis writes this one for the user, so the worker shows it as it stands."""
+    from core.pipeline.sensitivity import SensitivityRunError
+    from gui import workers
+
+    def fail(*args, **kwargs):
+        raise SensitivityRunError('The analysis stopped because one of the re-fits could not be completed. Retry.')
+
+    monkeypatch.setattr(workers, 'run_sensitivity', fail)
+    worker = workers.SensitivityWorker(None, None, {}, None, None)
+    messages = []
+    worker.error.connect(messages.append)
+
+    worker.run()
+
+    assert messages == ['The analysis stopped because one of the re-fits could not be completed. Retry.']
 
 
 def _demo_session(monkeypatch):
@@ -1020,8 +1284,48 @@ def test_cancelled_run_says_it_stopped(qapp, monkeypatch):
     _wait_for_worker(session, qapp)
 
     assert warnings == []
-    assert messages[-1].startswith('Sensitivity stopped')
-    assert messages[-1].endswith('before you cancelled')
+    # A cancel is an outcome, not an error. This result's baseline records no
+    # data, so the tab hides it and the status bar says so in place of counts
+    # from a result no tab is showing.
+    assert messages[-1] == f'Sensitivity stopped but hidden — {session._state.sensitivity_note}'
+    assert session._state.sensitivity_note is not None
+
+
+def test_a_stopping_run_reads_the_same_on_the_page_and_in_the_status_bar(qapp, monkeypatch):
+    """While a run stops, the counts still arriving stay off the status bar.
+
+    The fits that were already running keep reporting until the analysis
+    returns. The page says it is stopping, so a status bar counting those fits
+    up beside it gives the window two answers at once.
+    """
+    from gui import workers
+    from gui.plotting.sensitivity_widget import STOPPING_TEXT
+
+    def run(*args, progress, should_cancel, **kwargs):
+        progress(1, 1000)
+        while not should_cancel():
+            time.sleep(0.005)
+        for done in (2, 3, 4):  # the fits that were already running
+            progress(done, 1000)
+        return _sobol_result()
+
+    monkeypatch.setattr(workers, 'run_sensitivity', run)
+    session, warnings = _demo_session(monkeypatch)
+    messages = []
+    session.status_message.connect(messages.append)
+
+    session.run_sensitivity()
+    session._sensitivity_widget._cancel_button.click()  # the button the user presses
+    page_while_stopping = session._sensitivity_widget._progress_label.text()
+    stopping_from = len(messages) - 1
+    _wait_for_worker(session, qapp)
+
+    assert warnings == []
+    assert page_while_stopping == STOPPING_TEXT
+    assert messages[stopping_from] == STOPPING_TEXT
+    # The held-back counts arrive as the page's own sentence, not as a count.
+    assert messages.count(STOPPING_TEXT) > 1
+    assert not [message for message in messages[stopping_from:] if message.startswith('Analysing')]
 
 
 def test_failed_run_takes_the_tab_off_the_progress_page(qapp, monkeypatch):
@@ -1116,8 +1420,8 @@ def test_samples_view_summarises_every_fitted_sample_around_the_baseline_fit(qap
     # The log₁₀ Ka row by hand: its estimate from the baseline fit, its range from the samples.
     (log_row,) = [row[1:] for row in cells if row[0].startswith('log₁₀')]
     log_ka = np.log10(result.sample_ka['Ka_guest'][fitted])
-    assert log_row[0] == f'{np.log10(2e8):.3g}'
-    assert log_row[4] == f'[{log_ka.min():.3g}, {log_ka.max():.3g}]'
+    assert log_row[0] == f'{np.log10(2e8):.3f}'
+    assert log_row[4] == f'[{log_ka.min():.3f}, {log_ka.max():.3f}]'
 
 
 def test_samples_view_counts_the_samples_below_the_floor(qapp):
@@ -1179,7 +1483,7 @@ def test_an_r2_just_below_one_never_reads_as_a_perfect_fit(qapp):
     assert widget._r2_range_label.text() == '[0.9950, 1.0000]'
     r2[1] = 0.99
     widget = _samples_summary(replace(_sobol_result(), sample_r2=r2))
-    assert widget._r2_range_label.text() == '[0.9900, 0.99999]'
+    assert widget._r2_range_label.text() == '[0.9900, 0.999987]'
 
 
 def test_an_r2_just_below_the_floor_never_reads_as_meeting_it(qapp):
@@ -1495,11 +1799,12 @@ def test_fit_summary_renders_a_normal_fit_cell_for_cell(qapp):
         ],
         [
             'log₁₀(<b>K<sub>a(G)</sub></b> / M<sup>−1</sup>)',
-            '6.04',
-            '6 ± 0.0414',
-            '6 ± 0.0436',
-            '[5.97, 6.03]',
-            '[5.95, 6.04]',
+            # Fixed decimals, so the value is never coarser than the spread beside it.
+            '6.041',
+            '6.000 ± 0.041',
+            '5.999 ± 0.044',
+            '[5.969, 6.028]',
+            '[5.954, 6.041]',
             '—',
         ],
         ['<b>I<sub>0</sub></b>', '90', '100 ± 10', '100 ± 10', '[93.2, 107]', '[90, 110]', 'a.u.'],
