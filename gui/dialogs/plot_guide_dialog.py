@@ -5,23 +5,18 @@ from __future__ import annotations
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QTextBrowser, QWidget
 
 from gui.plot_guide import DEMO_NOTE, PLOT_GUIDE
-
-_SURFACE = '#fcfcfb'
-_INK = '#0b0b0b'
-_INK_2 = '#52514e'
-_SERIES = '#2a78d6'
-_HAIRLINE = '#e4e3de'
+from gui.plotting.colors import HAIRLINE, INK, INK_2, SERIES, SURFACE
 
 _NAV_QSS = f"""
-QListWidget {{ border: none; outline: 0; background: {_SURFACE}; color: {_INK}; font-size: 14px; }}
+QListWidget {{ border: none; outline: 0; background: {SURFACE}; color: {INK}; font-size: 14px; }}
 QListWidget::item {{ padding: 7px 10px; border-left: 3px solid transparent; }}
-QListWidget::item:selected {{ background: #e8eef7; color: {_INK}; border-left: 3px solid {_SERIES}; }}
+QListWidget::item:selected {{ background: #e8eef7; color: {INK}; border-left: 3px solid {SERIES}; }}
 """
-_TEXT_QSS = f'QTextBrowser {{ border: none; border-left: 1px solid {_HAIRLINE}; background: {_SURFACE}; }}'
+_TEXT_QSS = f'QTextBrowser {{ border: none; border-left: 1px solid {HAIRLINE}; background: {SURFACE}; }}'
 _DOCUMENT_CSS = f"""
-body {{ color: {_INK}; font-size: 14px; }}
-h2 {{ color: {_INK}; }}
-p.demo {{ color: {_INK_2}; }}
+body {{ color: {INK}; font-size: 14px; }}
+h2 {{ color: {INK}; }}
+p.demo {{ color: {INK_2}; }}
 """
 
 
@@ -36,7 +31,7 @@ class PlotGuideDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('Reading the plots')
         self.setModal(False)
-        self.setStyleSheet(f'QDialog {{ background: {_SURFACE}; }}')
+        self.setStyleSheet(f'QDialog {{ background: {SURFACE}; }}')
         self.resize(900, 720)
         self._keys = list(PLOT_GUIDE)
 

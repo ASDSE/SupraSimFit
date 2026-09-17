@@ -16,65 +16,65 @@ _ZSCORE_HELP_HTML = """
 <h3>Z-Score Outlier Removal</h3>
 
 <p><b>What It Does</b></p>
-<p>At every concentration point the panel compares the replicas against each
-other. A replica whose signal looks <i>unusually far</i> from its siblings at
-any concentration is flagged as an outlier and deactivated. Dropped replicas
+<p>At every concentration point the panel compares the replicates against each
+other. A replicate whose signal looks <i>unusually far</i> from its siblings at
+any concentration is flagged as an outlier and deactivated. Dropped replicates
 are not deleted &mdash; only ignored while fitting.</p>
 
 <p><b>The Math (Robust / Modified Z-Score)</b></p>
 <p>For each concentration <i>j</i>, let
-<i>median<sub>j</sub></i> be the median of the active replicas at that point
+<i>median<sub>j</sub></i> be the median of the active replicates at that point
 and <i>MAD<sub>j</sub></i> their median absolute deviation. The modified
-z-score of replica <i>i</i> at point <i>j</i> is:</p>
+z-score of replicate <i>i</i> at point <i>j</i> is:</p>
 <p align="center"><i>z<sub>ij</sub> = 0.6745 &middot; |x<sub>ij</sub> &minus; median<sub>j</sub>| / MAD<sub>j</sub></i></p>
 <p>The 0.6745 factor rescales MAD so the threshold has roughly the same
-meaning as a classical Gaussian &sigma;. A replica is dropped when its
+meaning as a classical Gaussian &sigma;. A replicate is dropped when its
 <b>maximum</b> z-score across all concentrations exceeds the threshold.
 Median and MAD are robust to a few bad points, so one outlier does not mask
 another.</p>
 
 <p><b>Threshold (0.5&ndash;10, Default 3.5)</b></p>
 <ul>
-  <li><b>Lower threshold</b> (2.0&ndash;2.5) &rarr; aggressive: flags replicas
+  <li><b>Lower threshold</b> (2.0&ndash;2.5) &rarr; aggressive: flags replicates
       that are even slightly off. Use with very clean data.</li>
   <li><b>Default (3.5)</b> &rarr; conservative: only clearly inconsistent
-      replicas are removed.</li>
+      replicates are removed.</li>
   <li><b>Higher threshold</b> (&ge; 5) &rarr; almost nothing gets dropped.</li>
 </ul>
 
-<p><b>Min Replicas</b></p>
-<p>Safety floor &mdash; if fewer active replicas remain than this number, the
+<p><b>Min Replicates</b></p>
+<p>Safety floor &mdash; if fewer active replicates remain than this number, the
 filter is not applied and a warning dialog is shown. This prevents the filter
 from leaving you with one or zero curves to fit.</p>
 
 <p><b>Effect on the Fit</b></p>
 <p>Outlier removal shrinks the spread around the mean at each concentration,
 which improves parameter uncertainties and reduces bias from a single bad
-replica. If your fit looks poor, try tightening the threshold first
-(e.g. 3.5 &rarr; 2.5) and rerun &mdash; but inspect which replicas get dropped
+replicate. If your fit looks poor, try tightening the threshold first
+(e.g. 3.5 &rarr; 2.5) and rerun &mdash; but inspect which replicates get dropped
 before trusting the result.</p>
 
 <p><b>Applying Repeatedly: It's Iterative, Not Idempotent</b></p>
 <p>Each Apply recomputes median and MAD on the <i>currently active</i>
-replicas only &mdash; replicas you (or a previous Apply) already dropped are
+replicates only &mdash; replicates you (or a previous Apply) already dropped are
 excluded entirely from both the statistics and the candidate pool. This is
 <b>intentional</b>: one extreme outlier inflates MAD and can mask smaller
-outliers behind it, so the cleanest way to handle multiple bad replicas is
+outliers behind it, so the cleanest way to handle multiple bad replicates is
 to peel the worst one first, re-estimate median/MAD, and apply again. Each
-pass can therefore drop additional replicas.</p>
+pass can therefore drop additional replicates.</p>
 <p>The flip side: lowering the threshold and clicking Apply again does
 <b>not</b> reconsider anything that&rsquo;s already dropped &mdash; those
-replicas stay dropped. To run a new threshold against the full dataset,
-click <b>Reset</b> first to re-activate every replica, then Apply with the
+replicates stay dropped. To run a new threshold against the full dataset,
+click <b>Reset</b> first to switch every replicate back on, then Apply with the
 new value.</p>
 """
 
 
 _SECTION_HELP_HTML = """
 <h3>Outlier Removal</h3>
-<p>Automatically flag replica traces that deviate strongly from the
+<p>Automatically flag replicate traces that deviate strongly from the
 others, so they are excluded from the fit. Click <b>Apply</b> to run
-the filter; click <b>Reset</b> to re-activate all replicas.</p>
+the filter; click <b>Reset</b> to switch all replicates back on.</p>
 <p>See the <i>i</i> next to the Z-score threshold for details on the
 detection method.</p>
 """
@@ -83,7 +83,7 @@ detection method.</p>
 class PreprocessingPanel(InfoGroupBox):
     """Configure and apply outlier removal to a MeasurementSet.
 
-    Exposes the Z-Score replica filter.  If the configured minimum replica
+    Exposes the Z-Score replicate filter.  If the configured minimum replicate
     count cannot be met, the user is notified via a dialog — the filter is
     never silently skipped.
 
@@ -168,7 +168,7 @@ class PreprocessingPanel(InfoGroupBox):
         self._threshold_spin.setValue(3.5)
         self._threshold_spin.setDecimals(1)
         self._threshold_spin.setToolTip(
-            'Modified z-score threshold.  Replicas where any point exceeds this threshold are deactivated.  Typical range: 2.5–4.0.'
+            'Modified z-score threshold.  Replicates where any point exceeds this threshold are switched off.  Typical range: 2.5–4.0.'
         )
 
         thr_row = QWidget()
@@ -179,24 +179,24 @@ class PreprocessingPanel(InfoGroupBox):
         thr_lay.addWidget(InfoButton('Z-score outlier removal', _ZSCORE_HELP_HTML))
         form.addRow('Z-score threshold:', thr_row)
 
-        # Min replicas
+        # Min replicates
         self._min_rep_spin = NoScrollSpinBox()
         self._min_rep_spin.setLocale(_LOCALE_EN)
         self._min_rep_spin.setRange(2, 20)
         self._min_rep_spin.setValue(3)
-        self._min_rep_spin.setToolTip('Minimum number of active replicas required to apply the filter.')
-        form.addRow('Min replicas:', self._min_rep_spin)
+        self._min_rep_spin.setToolTip('Minimum number of active replicates required to apply the filter.')
+        form.addRow('Min replicates:', self._min_rep_spin)
 
         layout.addLayout(form)
 
         # Buttons — compact, centred within the group
         btn_row = QHBoxLayout()
         apply_btn = QPushButton('Apply')
-        apply_btn.setToolTip('Apply Z-score outlier filter to active replicas')
+        apply_btn.setToolTip('Apply Z-score outlier filter to active replicates')
         apply_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         apply_btn.clicked.connect(self._on_apply)
         reset_btn = QPushButton('Reset')
-        reset_btn.setToolTip('Re-activate all replicas')
+        reset_btn.setToolTip('Switch all replicates back on')
         reset_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         reset_btn.clicked.connect(self._on_reset)
         btn_row.addStretch(1)
@@ -219,10 +219,10 @@ class PreprocessingPanel(InfoGroupBox):
             QMessageBox.warning(
                 self,
                 'Cannot Apply Outlier Filter',
-                f'Outlier removal requires at least <b>{min_rep}</b> active replicas, '
+                f'Outlier removal requires at least <b>{min_rep}</b> active replicates, '
                 f'but only <b>{n_active}</b> are currently active.<br><br>'
-                f'To resolve this: lower <i>Min replicas</i> to {n_active} '
-                f'or re-activate replicas using <i>Reset</i>.',
+                f'To resolve this: lower <i>Min replicates</i> to {n_active} '
+                f'or switch replicates back on using <i>Reset</i>.',
             )
             return
 

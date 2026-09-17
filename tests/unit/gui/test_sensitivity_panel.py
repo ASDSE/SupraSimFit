@@ -10,8 +10,11 @@ Pins what reaches the analysis from what the user sets:
 - a range entered as −6 % .. +4 % is exactly that interval;
 - an input set so it cannot vary (σ = 0, "to" not above "from") shows a warning naming
   it and blocks the run with a message naming it; only *fixed* leaves an input out;
+- a range that would draw an input down to zero blocks the run, naming it;
 - a heatmap checks only its two axes: two different inputs, neither fixed, neither
   reaching zero over its sweep;
+- an assay the analysis cannot refit is closed with one sentence saying why;
+- every input the analysis varies is named as the panel shows it;
 - each assay's entries, kinds and units come back on switching back to it, and never
   reach another assay;
 - every control locks while a run is live;
@@ -102,7 +105,7 @@ def test_help_says_the_numbers_carry_over_and_the_spread_changes():
             TITRANT,
             InputSpec.sigma_pct(150.0),
             'range %',
-            'Guest (titrant): “from” would be −150 %; this box can only show −100 %.',
+            'Guest (titrant, whole series): “from” would be −150 %; this box can only show −100 %.',
         ),
         ('Ka_dye', InputSpec.sigma_abs(2e8), '± σ %', 'Ka,dye: σ would be 1190.5 %; this box can only show 1000 %.'),
         ('h0', InputSpec.sigma_pct(150.0), 'range', '[Host]₀: “from” would be −2.15 µM; this box can only show 0 µM.'),
@@ -312,6 +315,62 @@ def test_each_assays_entries_come_back_on_switching_back_and_reach_no_other_assa
     panel._rows['fixed_conc'].set_spec(InputSpec.interval_abs(143.45e-6, 158.55e-6))
     panel.set_assay_type(AssayType.DBA_HtoD)
     assert panel._rows['fixed_conc'].spec() == InputSpec.sigma_pct(5.0)
+
+
+@pytest.mark.parametrize(
+    ('assay_type', 'says'),
+    [
+        (AssayType.DYE_ALONE, 'no association constant'),
+        (AssayType.DBA_HG2, 'more than one association constant'),
+    ],
+)
+def test_an_assay_the_analysis_cannot_refit_is_unavailable_and_says_why(qapp, assay_type, says):
+    """The analysis refits through the exact Ka profile, so an assay without one is closed with a reason."""
+    from core.pipeline.profile import profile_supported
+    from gui.widgets.sensitivity_panel import SensitivityPanel
+
+    assert not profile_supported(assay_type)
+    panel = SensitivityPanel()
+
+    panel.set_assay_type(assay_type)
+    assert not panel.isEnabled()
+    assert not panel._unavailable.isHidden()
+    assert says in panel._unavailable.text()
+
+    panel.set_assay_type(AssayType.IDA)
+    assert panel.isEnabled()
+    assert panel._unavailable.isHidden()
+
+
+def test_input_labels_name_every_input_the_analysis_varies_as_the_panel_shows_it(qapp):
+    """The analysis reports a problem by name, so its names are the panel's, the titrant included."""
+    panel = _ida_panel()
+
+    labels = panel.input_labels()
+
+    assert set(labels) == set(panel._rows)
+    assert labels == {
+        TITRANT: 'Guest (titrant, whole series)',
+        'h0': '[Host]₀',
+        'd0': '[Dye]₀',
+        'Ka_dye': 'Ka,dye',
+    }
+
+
+def test_a_range_that_reaches_zero_blocks_the_run_naming_the_input(qapp):
+    """A range end at −100 % would fit the model with no host at all; a σ is truncated above zero and may stay."""
+    panel = _ida_panel()
+    row = panel._rows['h0']
+
+    row.set_spec(InputSpec.interval_pct(-100.0, 5.0))
+    assert panel.run_problems() == ['[Host]₀ would be drawn down to zero: set “from” above −100 %.']
+    assert not row._warning.isHidden()
+
+    row.set_spec(InputSpec.interval_abs(0.0, 5e-6))
+    assert panel.run_problems() == ['[Host]₀ would be drawn down to zero: set “from” above 0.']
+
+    row.set_spec(InputSpec.sigma_pct(80.0))
+    assert panel.run_problems() == []
 
 
 def test_every_control_locks_while_a_run_is_live(qapp):

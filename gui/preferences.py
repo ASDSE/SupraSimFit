@@ -1,8 +1,5 @@
 """Thin wrapper around :class:`QSettings` for persistent user preferences.
 
-The codebase previously had no persistent preferences mechanism; this
-module introduces one in a deliberately small, opinionated way.
-
 ``QSettings`` stores values per-user in the platform-appropriate
 location (``~/Library/Preferences`` on macOS, the registry on Windows,
 ``~/.config`` on Linux). The organisation and application names are

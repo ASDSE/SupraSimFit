@@ -39,7 +39,9 @@ attempt that reaches Min R&sup2;.</p>
 <p><b>How to read it</b></p>
 <p>Good: the points scatter on both sides of the curve everywhere. Worrying: a run of points on one
 side; a high R&sup2; does not rule that out. The (min, max) range shows how consistently the attempts
-converge, not how precisely the data fix K<sub>a</sub>: see Identifiability.</p>
+converge, not how precisely the data fix K<sub>a</sub>: see Identifiability. Each run starts from
+fresh random points and records the seed it used; tick <i>Fixed seed</i> in Fit Configuration to
+repeat one exactly.</p>
 
 <p><b>Example</b></p>
 <p>K<sub>a(G)</sub> = 3.14&times;10<sup>8</sup> M<sup>&minus;1</sup>, R&sup2; 0.9941, in every run.
@@ -97,8 +99,12 @@ them: a note says so). Scroll to zoom, drag to pan, right-click for View All.</p
 <p>Good: a clear peak and a narrow band. Worrying: a flat line over a wide K<sub>a</sub> range, or
 <i>open</i> at an end of the CI: the data cannot rule out K<sub>a</sub> up to your bound, so report
 a limit.</p>
-<p>The CI assumes the model and the inputs you entered are right. It uses the replicates&rsquo;
-average, because replicates that miss the model in the same way are not independent evidence.</p>
+<p>The CI holds if the model is right, the conditions you entered are right, the true
+K<sub>a</sub> lies inside the bounds it is searched in, and the scatter is independent from point to
+point and of the same size at every point. It uses the replicates&rsquo; average, because replicates
+that miss the model in the same way are not independent evidence. Where the points run to one side
+of the curve, as in the example below, the model is missing something the data contain &mdash; the
+scatter is not independent noise &mdash; and the interval is narrower than the data warrant.</p>
 <p>After a sensitivity run, a translucent blue cloud shows each sample&rsquo;s best fit. A sample
 can sit above the black line, as it fits with its own changed inputs; that does not make them right,
 since changed inputs can absorb a systematic miss. <i>Show sensitivity samples</i> hides the cloud;
@@ -119,6 +125,11 @@ _SENSITIVITY_HTML = """
 <p>This tab answers: <b>how much does K<sub>a</sub> change if the inputs you entered are slightly
 wrong?</b> Each sample refits your data with every input you did not fix moved at random: a &sigma;
 draws from a normal distribution, a range evenly between its ends.</p>
+<p>Each input is drawn on its own, so the result assumes their errors are unrelated. Inputs made
+from one stock, pipetted with one pipette or read against one calibration move together; for those
+the spread and the shares describe a different experiment from yours. The titrant moves as one
+factor over the whole series &mdash; a stock or dilution error &mdash; so scatter from
+point-to-point pipetting is not part of it.</p>
 
 <p><b>K<sub>a</sub> histogram</b>: every sample&rsquo;s best K<sub>a</sub>. The dashed
 <i>baseline</i> is the fit with the inputs as entered. The title gives the median and how many-fold
@@ -132,8 +143,20 @@ the middle 90&thinsp;% spans.</p>
 the chart; <i>n/a</i>, too few fits.</li>
 </ul>
 <p>S<sub>T</sub> close to S<sub>1</sub>: the input acts alone; well above: through combinations;
-near 0, whisker included: for the uncertainties you set, it could be treated as exact. If two
-inputs&rsquo; whiskers overlap, their order is not settled: use a larger sample size.</p>
+near 0, whisker included: for the uncertainties you set, its share is too small to measure here,
+which is not the same as none. S<sub>T</sub> drawn below S<sub>1</sub> &mdash; which cannot really
+happen, since S<sub>T</sub> covers S<sub>1</sub> &mdash; means the input acts almost entirely on its
+own: the two are equal to within sampling noise, and either can come out on top in any run, at any
+sample size. Where the gap is wider than the whiskers span, take that input&rsquo;s two indices as
+unreliable.</p>
+<p>Whiskers that clearly stand apart settle which input matters more. Overlapping whiskers are a
+conservative sign: two 95&thinsp;% intervals can overlap while the difference between the indices is
+still significant, so their order may hold &mdash; a larger sample size decides it.</p>
+<p>A run fits <i>sample size &times; (k + 2)</i> samples for <i>k</i> inputs that vary. The eight
+independent sample sets behind the whiskers cost accuracy: index by index, an index at 1024 carries
+up to about five times the error of one undivided set of the same size. What narrows a whisker is a
+larger sample size: at 4096 most indices are already at or below the error one undivided set of 1024
+reaches. Prefer 2048 or 4096 when a whisker is too wide to act on.</p>
 
 <p><b>K<sub>a</sub> vs each input</b>: each sample&rsquo;s K<sub>a</sub> against one input&rsquo;s
 change in percent. Blue dots meet Min R&sup2;; grey dots, drawn behind, fall below it. A clear slope
@@ -149,7 +172,8 @@ solution.</p>
 <p><b>Example</b></p>
 <p>&sigma; 5&thinsp;% on each input, sample size 1024, which draws two sets of 1024 (2048 samples): median
 3.06&times;10<sup>8</sup> M<sup>&minus;1</sup>, middle 90&thinsp;% within 1.9-fold; 488 samples below
-Min R&sup2;.</p>
+Min R&sup2;. The draws are fresh each run unless you tick <i>Fixed seed</i>, so a repeat run lands
+near these numbers rather than on them.</p>
 <p>S<sub>1</sub> / S<sub>T</sub>: Guest 0.57 / 0.61, [Host]<sub>0</sub> 0.16 / 0.23,
 [Dye]<sub>0</sub> 0.14 / 0.14, K<sub>a,dye</sub> 0.06 / 0.06, whiskers within &plusmn;0.04. For
 these uncertainties the titrant causes most of the spread, so a better titrant stock would narrow

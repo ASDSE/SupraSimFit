@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from PyQt6.QtCore import QLocale, Qt, QTimer, pyqtSignal
@@ -12,6 +11,7 @@ from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.units import Q_, Quantity
 from gui.assay_descriptions import ASSAY_DESCRIPTIONS
+from gui.plotting.labels import plain_label
 from gui.widgets.assay_conditions import ConditionField, assay_class, condition_fields
 from gui.widgets.info_button import InfoButton, InfoGroupBox
 from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, decimals_for_scale
@@ -27,7 +27,6 @@ _LOCALE_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
 # Pause in typing or stepping after which a conditions edit counts as finished.
 _EDIT_SETTLE_MS = 600
 
-_SUBSCRIPT_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
 _SUPERSCRIPT = str.maketrans('-0123456789', '⁻⁰¹²³⁴⁵⁶⁷⁸⁹')
 
 
@@ -111,8 +110,7 @@ class _UnitWidget(QWidget):
 
     def name(self) -> str:
         """This field's label in plain text: ``[Host]₀``."""
-        text = re.sub(r'<sub>(.*?)</sub>', lambda m: m.group(1).translate(_SUBSCRIPT_DIGITS), self._label)
-        return re.sub(r'<[^>]+>', '', text)
+        return plain_label(self._label)
 
     def format(self, value: Quantity) -> str:
         """*value* in plain text in the unit this field shows now: ``4.3 µM``."""

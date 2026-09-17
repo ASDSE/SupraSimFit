@@ -6,14 +6,14 @@ of every perturbable input (the titrant plus each concentration / binding-consta
 condition) as a σ or a range, in percent or in the input's own unit, the two heatmap
 axes, and an optional fixed seed. It emits :attr:`run_requested` /
 :attr:`cancel_requested`; the owning session runs the worker and calls
-:meth:`set_running` to flip the button. For ``DYE_ALONE`` (no Ka to analyse) the
-whole panel is disabled.
+:meth:`set_running` to flip the button. An assay without an exact Ka profile
+(:func:`core.pipeline.profile.profile_supported`) cannot be refitted reliably
+enough to be analysed, so the whole panel is disabled with a sentence saying why.
 """
 
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
@@ -34,6 +34,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
+from core.pipeline.fit_pipeline import MAX_SEED
+from core.pipeline.profile import profile_supported
 from core.pipeline.sensitivity import (
     _SOBOL_BLOCKS,
     _SOBOL_SAMPLE_SIZES,
@@ -47,6 +49,8 @@ from core.pipeline.sensitivity import (
     perturbable_inputs,
 )
 from core.units import Q_, Quantity
+from gui.plotting.colors import INK_2
+from gui.plotting.labels import plain_label
 from gui.widgets.assay_conditions import ASSAY_CONDITIONS, ConditionField
 from gui.widgets.assay_config_panel import _UNIT_TYPE_CHOICES
 from gui.widgets.info_button import InfoButton, InfoGroupBox
@@ -77,31 +81,44 @@ _MODE_HELP_HTML = """
   <li><b>Heatmap</b> — sweep two chosen inputs on a regular grid and fit at
       every cell, giving a 2-D K<sub>a</sub> surface.</li>
 </ul>
+<p>Each input is drawn on its own, so the shares assume the inputs' errors are
+unrelated. Inputs that share a stock, a pipette or a calibration move together, and
+the shares do not separate them.</p>
+<p>S<sub>T</sub> covers S<sub>1</sub>, so it cannot really be smaller. Drawn below
+S<sub>1</sub>, the input acts almost entirely on its own: the two are equal to within
+sampling noise, and either can come out on top in any run, at any sample size. Where
+the gap is wider than the whiskers span, take that input's two indices as unreliable.</p>
 """
 
 _SAMPLES_HELP_HTML = f"""
 <h3>Sample size</h3>
-<p>How thoroughly the input space is explored. Every step up doubles the work.</p>
+<p>How thoroughly the input space is explored. A run fits
+<i>sample size × (k + 2)</i> samples for <i>k</i> inputs that vary, so every step up
+doubles the work.</p>
 <p>The whisker on each index is its 95% confidence interval. It is built so that
 in about 95 of every 100 analyses it contains the index you would get with
 unlimited samples for the uncertainties you set. A repeat run with fresh samples
 usually lands inside it, but not always.
-It is worked out from {_SOBOL_BLOCKS} independent sample sets, and more samples narrow it.
+It is worked out from {_SOBOL_BLOCKS} independent sample sets, which costs accuracy:
+index by index, an index at {_SOBOL_SAMPLE_SIZES[0]} carries up to about five times the error
+of one undivided set of the same size. {_SOBOL_SAMPLE_SIZES[1]} and {_SOBOL_SAMPLE_SIZES[2]}
+narrow them.
 It does not account for errors in the input settings or in the model.</p>
-<p>The smallest size offered is {_SOBOL_SAMPLE_SIZES[0]}; choose more when a whisker is too wide
-to tell two inputs apart.</p>
+<p>Whiskers that clearly stand apart settle which of two inputs matters more.
+Overlapping whiskers are a conservative sign: two 95% intervals can overlap while the
+difference between the indices is still significant, so their order may hold —
+a larger sample size decides it.</p>
 """
 
 _REPLICATES_HELP_HTML = """
 <h3>Replicates &mdash; how each perturbed fit uses them</h3>
 <p><b>Follow fit setting</b> uses whatever the Fit panel is set to, so the analysis
 matches the fit you are studying.</p>
-<p><b>Per replica</b> fits each replicate the baseline fit used separately and pools
-the passing trials; a replicate the baseline fit leaves out enters no sample.
-Replicates carry the measured signal scatter, so this keeps that
-uncertainty in the result alongside the input error being sampled.</p>
-<p><b>Average replicas</b> fits a single averaged signal. Faster, but it removes the
-measured scatter before the analysis starts.</p>
+<p><b>Per replicate</b> fits each replicate the baseline fit used separately and reports
+the one that fits the replicates' average best, the way a per-replicate fit does;
+a replicate the baseline fit leaves out enters no sample. It takes about as many
+times longer as there are replicates.</p>
+<p><b>Average replicates</b> fits a single averaged signal, once per sample.</p>
 """
 
 _UNCERTAINTY_HELP_HTML = """
@@ -131,6 +148,13 @@ change the value or choose <b>fixed</b>. A heatmap checks only its two axes, sin
 holds every other input at its set value.</p>
 <p>Use realistic numbers: pipetting error is often a few percent, a stated
 literature K<sub>a,dye</sub> may be uncertain by 10–20%.</p>
+<p>Every input is drawn on its own, so the analysis takes their errors to be unrelated.
+Inputs made from one stock, pipetted with one pipette or read against one calibration
+move together; for those, the spread and the shares describe a different experiment
+from yours.</p>
+<p>The titrant moves as one factor over the whole series — a stock or dilution error
+that shifts every concentration by the same fraction. Scatter from point-to-point
+pipetting is not part of the analysis.</p>
 """
 
 _HEATMAP_HELP_HTML = """
@@ -159,13 +183,15 @@ _DEFAULT_SPEC = InputSpec.sigma_pct(5.0)
 _VALUE_INDENT = 12
 _INPUT_GAP = 8
 
-_SUBSCRIPT_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
 
-
-def _plain(html_label: str) -> str:
-    """A rich condition label as plain text: ``[Host]<sub>0</sub>`` reads ``[Host]₀``."""
-    text = re.sub(r'<sub>(.*?)</sub>', lambda m: m.group(1).translate(_SUBSCRIPT_DIGITS), html_label)
-    return re.sub(r'<[^>]+>', '', text)
+def _unavailable_reason(assay_type: AssayType) -> str:
+    """Why the analysis cannot be run for *assay_type*, in one plain sentence."""
+    if assay_type is AssayType.DYE_ALONE:
+        return 'Dye Alone has no association constant, so there is nothing to analyse here.'
+    return (
+        'This analysis is not available for an assay with more than one association constant: '
+        'its fits cannot yet be repeated reliably enough to measure how the inputs move Ka.'
+    )
 
 
 def _number(value: float, unit: str) -> str:
@@ -461,7 +487,22 @@ class _InputSpecRow(QWidget):
         self._show(state.index)
 
     def problem(self) -> str | None:
-        """Why the values shown cannot be used, as a sentence naming the input; ``None`` when they can."""
+        """Why the values shown cannot be used, as a sentence naming the input; ``None`` when they can.
+
+        A σ is drawn from a distribution truncated above zero, so only a range can
+        take the input down to zero, where the model has nothing to fit.
+        """
+        problem = self._entry_problem()
+        if problem is not None:
+            return problem
+        spec = self.spec()
+        if spec is not None and spec.kind is SpecKind.INTERVAL and axis_reaches_zero(spec, self._nominal, self.name):
+            end = '−100 %' if spec.relative else '0'
+            return f'{self.name} would be drawn down to zero: set “from” above {end}.'
+        return None
+
+    def _entry_problem(self) -> str | None:
+        """Why the values shown cannot be read or cannot vary the input; ``None`` when they can."""
         spec = self.spec()
         if spec is None:
             return None
@@ -494,7 +535,7 @@ class _InputSpecRow(QWidget):
         spec = self.spec()
         if spec is None:
             return f'{self.name} is a heatmap axis, so it cannot be fixed: choose a σ or a range.'
-        problem = self.problem()
+        problem = self._entry_problem()
         if problem is not None:
             return problem
         if not axis_reaches_zero(spec, self._nominal, self.name):
@@ -577,6 +618,8 @@ class SensitivityPanel(InfoGroupBox):
         self._running = False
         # input key -> its uncertainty row; rebuilt per assay type.
         self._rows: dict[str, _InputSpecRow] = {}
+        # input key -> the plain display name shown for it, the titrant included.
+        self._labels: dict[str, str] = {}
         self._rows_assay: AssayType | None = None
         # Each assay's rows as the user left them, restored on switching back. Keyed by
         # assay as well: one key can name another species, or another set value, in
@@ -593,12 +636,25 @@ class SensitivityPanel(InfoGroupBox):
     def set_assay_type(self, assay_type: AssayType) -> None:
         """Rebuild the uncertainty rows and heatmap axis combos for ``assay_type``.
 
-        Disables the whole panel for ``DYE_ALONE`` (no association constant to
-        analyse).
+        An assay the analysis cannot refit — one without an exact Ka profile, such
+        as Dye Alone or a stepwise two-constant assay — disables the whole panel and
+        shows a sentence saying why.
         """
         self._assay_type = assay_type
         self._rebuild_inputs(assay_type)
-        self.setEnabled(assay_type is not AssayType.DYE_ALONE and bool(self._rows))
+        available = profile_supported(assay_type) and bool(self._rows)
+        self.setEnabled(available)
+        self._unavailable.setVisible(not available)
+        if not available:
+            self._unavailable.setText(_unavailable_reason(assay_type))
+
+    def input_labels(self) -> dict[str, str]:
+        """Each input's key and the plain display name the panel shows for it.
+
+        The titrant is included. The analysis uses these names in the messages it
+        reports, so a problem names the input as the panel does.
+        """
+        return dict(self._labels)
 
     def set_nominal_values(self, conditions: dict[str, Quantity]) -> None:
         """Take the conditions' set values, which a percentage is read against when the kind changes."""
@@ -672,6 +728,13 @@ class SensitivityPanel(InfoGroupBox):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
+        # Shown in place of a usable panel for an assay the analysis cannot refit.
+        self._unavailable = QLabel()
+        self._unavailable.setWordWrap(True)
+        self._unavailable.setStyleSheet(f'color: {INK_2};')
+        self._unavailable.hide()
+        layout.addWidget(self._unavailable)
+
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
 
@@ -693,8 +756,8 @@ class SensitivityPanel(InfoGroupBox):
 
         self._replicates_combo = QComboBox()
         self._replicates_combo.addItem('Follow fit setting', ReplicateMode.FOLLOW)
-        self._replicates_combo.addItem('Per replica', ReplicateMode.PER_REPLICA)
-        self._replicates_combo.addItem('Average replicas', ReplicateMode.AVERAGE)
+        self._replicates_combo.addItem('Per replicate', ReplicateMode.PER_REPLICA)
+        self._replicates_combo.addItem('Average replicates', ReplicateMode.AVERAGE)
         self._replicates_combo.setToolTip(
             'How each perturbed fit uses the replicates. Averaging them removes the '
             'measured signal scatter from the analysis.'
@@ -729,7 +792,7 @@ class SensitivityPanel(InfoGroupBox):
         self._seed_check = QCheckBox('Fixed seed')
         self._seed_check.setToolTip('Reproducible draws — the same seed gives the same result.')
         self._seed_spin = NoScrollSpinBox()
-        self._seed_spin.setRange(0, 2_147_483_647)
+        self._seed_spin.setRange(0, MAX_SEED)
         self._seed_spin.setValue(0)
         self._seed_spin.setEnabled(False)
         self._seed_check.toggled.connect(self._seed_spin.setEnabled)
@@ -766,19 +829,21 @@ class SensitivityPanel(InfoGroupBox):
         while self._delta_form.rowCount():
             self._delta_form.removeRow(0)
 
-        fields = ASSAY_CONDITIONS[assay_type][1]
+        fields = ASSAY_CONDITIONS[assay_type]
         # Perturbable-input classification lives in the core layer; feed it the
         # condition Quantities so titrant/concentration/binding order is canonical.
         base = {f.key: Q_(f.default, f.unit) for f in fields if f.unit_type in ('concentration', 'binding_constant')}
         labels = {f.key: f.label for f in fields}
-        labels[TITRANT] = f'{ASSAY_REGISTRY[assay_type].x_label} (titrant)'
+        # The titrant is moved as one factor over the whole series, which its label says.
+        labels[TITRANT] = f'{ASSAY_REGISTRY[assay_type].x_label} (titrant, whole series)'
         inputs = perturbable_inputs(assay_type, base)
 
         by_key = {f.key: f for f in fields}
+        self._labels = {key: plain_label(labels[key]) for key, _kind in inputs}
         self._x_combo.clear()
         self._y_combo.clear()
         for key, _kind in inputs:
-            row = _InputSpecRow(_plain(labels[key]), by_key.get(key))
+            row = _InputSpecRow(self._labels[key], by_key.get(key))
             if (assay_type, key) in self._remembered:
                 row.restore(self._remembered[(assay_type, key)])
             if key in self._nominals:
@@ -789,8 +854,8 @@ class SensitivityPanel(InfoGroupBox):
             self._delta_form.addRow(row)
             self._rows[key] = row
 
-            self._x_combo.addItem(_plain(labels[key]), key)
-            self._y_combo.addItem(_plain(labels[key]), key)
+            self._x_combo.addItem(self._labels[key], key)
+            self._y_combo.addItem(self._labels[key], key)
 
         # Default heatmap axes: first two distinct perturbable inputs.
         if self._y_combo.count() > 1:

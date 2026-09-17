@@ -1,10 +1,19 @@
-"""Help ▸ Reading the plots: each entry point opens the window's one non-modal guide at the right section."""
+"""Help ▸ Reading the plots: each entry point opens the window's one non-modal guide at the right section.
+
+Also guards the Identifiability example: its numbers are recomputed from the demo
+data, so the guide cannot quietly drift away from what the app produces.
+"""
 
 from __future__ import annotations
+
+import re
+from pathlib import Path
 
 import pytest
 
 pytest.importorskip('PyQt6')
+
+_IDA_DATA = Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt'
 
 
 @pytest.fixture
@@ -97,3 +106,55 @@ def test_tab_bar_button_opens_the_section_of_the_tab_on_screen(qapp, guide_off_s
         assert guide.isVisible()
         assert guide.current_section() == key
         assert guide._text.toPlainText().startswith(plot_guide.PLOT_GUIDE[key][0])
+
+
+def test_the_identifiability_example_still_describes_the_demo_data():
+    """Recomputes the guide's quoted profile numbers from the demo data it names.
+
+    The example invites the user to reproduce it, so every figure in it — the best
+    fit and its R², the confidence interval and how far it reaches, the cut-off, and
+    the R² a doubled and a halved Ka still reach — is recomputed here and looked for
+    in the text. A change in the profile that the guide does not follow fails this.
+    """
+    import numpy as np
+
+    from core.assays import IDAAssay
+    from core.data_processing.measurement_set import MeasurementSet
+    from core.data_processing.preprocessing import get_step
+    from core.io import load_measurements
+    from core.pipeline import profile as profile_module
+    from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds
+    from core.pipeline.profile import fit_profile
+    from core.units import Q_
+    from gui.plot_guide import IDENTIFIABILITY, PLOT_GUIDE
+
+    # Demo IDA as the guide's note describes it: the bundled data through Outlier
+    # Removal at its defaults, the conditions the Demo IDA button sets, averaged.
+    ms = MeasurementSet.from_dataframe(load_measurements(str(_IDA_DATA)))
+    get_step('zscore_replica_filter', {'threshold': 3.5, 'min_replicas': 3})(ms)
+    conditions = {'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M'), 'Ka_dye': Q_(16.8e6, '1/M')}
+    profile = fit_profile(ms, IDAAssay, conditions, FitConfig(per_replica=False))
+
+    # The guide quotes the R² at exactly half and twice the best Ka, which the
+    # nearest drawn point misses by enough to move the fourth decimal.
+    assay = ms.to_assay(IDAAssay, conditions=conditions, use_average=True)
+    y_avg = ms.average_signal(active_only=True)[np.newaxis, :]
+    _, _, ssr_at = profile_module._profile_function(assay, _resolve_bounds(assay, None), y_avg)
+    ss_tot = float(profile_module._ss_tot(y_avg)[0])
+
+    def at(factor: float) -> float:
+        """The best R² the profile reaches at *factor* times the best Ka."""
+        return 1.0 - float(ssr_at(profile.best_ka * factor)[0]) / ss_tot
+
+    lo, hi = profile.ci
+    text = re.sub(r'\s+', ' ', PLOT_GUIDE[IDENTIFIABILITY][1])
+    quoted = [
+        f'Best fit {profile.best_ka / 1e8:.2f}&times;10<sup>8</sup>',
+        f'(R&sup2; {profile.best_r2:.4f})',
+        f'CI {lo / 1e8:.1f}&ndash;{hi / 1e8:.1f}&times;10<sup>8</sup>',
+        f'(&minus;{round(100 * (1 - lo / profile.best_ka))}&thinsp;% / +{round(100 * (hi / profile.best_ka - 1))}',
+        f'cut-off {profile.r2_threshold:.4f}.',
+        f'is {at(2.0):.4f} at twice the best K<sub>a</sub> and {at(0.5):.4f} at half',
+    ]
+    for phrase in quoted:
+        assert phrase in text

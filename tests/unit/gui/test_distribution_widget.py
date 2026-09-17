@@ -300,6 +300,33 @@ def test_histogram_legend_wraps_instead_of_widening_the_widget(qapp, per_replica
     w.close()
 
 
+def test_a_few_far_out_fits_do_not_press_the_pool_into_one_bar(qapp, pooled_result):
+    """The bins span the bulk of the pool, and the fits left outside are counted on the plot."""
+    import pyqtgraph as pg
+
+    from gui.plotting.distribution_widget import DistributionWidget
+
+    # 100 fits within 1 % of each other, and two that stopped a hundredfold away.
+    bulk = np.linspace(1.0e8, 1.01e8, 100)
+    ps = {'Ka_guest': np.r_[bulk, 1.0e10, 2.0e10]}
+    w = DistributionWidget()
+    w._hist_radio.setChecked(True)
+    w.update_result(replace(pooled_result, parameter_samples=ps, quality_samples=None))
+
+    counts = _counts(w, 'Ka_guest')
+    assert counts.sum() == len(bulk)  # the two far-out fits fall outside the bins
+    assert counts.max() <= 0.5 * len(bulk)  # and no longer squash the rest into one bar
+    lo, hi = _value_span(w, 'Ka_guest')
+    assert lo == pytest.approx(np.log10(bulk.min()), rel=1e-9)
+    assert hi < np.log10(1.02e8)  # the range stays on the bulk, nowhere near the far-out fits
+    (note,) = [it for it in w._plot_by_key['Ka_guest'].getPlotItem().items if isinstance(it, pg.TextItem)]
+    # The note has to place them, not just count them: two fits a hundredfold out
+    # and two just past the edge would read the same from a count alone.
+    text = note.toPlainText()
+    assert text.startswith('2 fits above ')
+    assert f'out to {np.log10(2.0e10):.4g}' in text
+
+
 def test_histogram_of_identical_values_is_one_bar_at_that_value(qapp, pooled_result):
     """With no spread to bin, no bar covers a band of values the pool never took."""
     import pyqtgraph as pg
@@ -440,12 +467,54 @@ def test_without_loaded_data_boxes_are_named_by_replicate_id(qapp, per_replica_r
     assert _replicate_boxes(w)[0] == per_replica_result.metadata['replica_ids_fit']
 
 
-def test_per_replicate_fit_without_a_replicate_record_is_refused(qapp, per_replica_result):
+def test_a_fit_that_cannot_be_drawn_says_so_in_place_of_the_plots(qapp, per_replica_result):
+    """Rendering runs from Qt slots: a refusal reaches the user here, not the console."""
     from gui.plotting.distribution_widget import DistributionWidget
 
     w = DistributionWidget()
-    with pytest.raises(ValueError, match='does not record'):
-        w.update_result(replace(per_replica_result, metadata={}))
+    w.update_result(replace(per_replica_result, metadata={}))
+
+    assert w._stack.currentWidget() is w._problem_label
+    assert 'does not record which replicate' in w._problem_label.text()
+    assert 'Run the fit again' in w._problem_label.text()
+    assert w._view_bar_host.isHidden() and w._toggle_bar_host.isHidden()
+
+    # A fit that can be drawn takes the plots back.
+    w.update_result(per_replica_result)
+    assert w._stack.currentWidget() is w._plot_container
+
+
+def test_a_log_scale_value_at_zero_is_reported_with_what_to_do(qapp, pooled_result):
+    """log₁₀ of a non-positive Ka has no value to draw; the panel says how to see the pool anyway."""
+    from gui.plotting.distribution_widget import DistributionWidget
+
+    ps = dict(pooled_result.parameter_samples)
+    ps['Ka_guest'] = np.r_[0.0, ps['Ka_guest'][1:]]
+    w = DistributionWidget()
+    w.update_result(replace(pooled_result, parameter_samples=ps))
+
+    assert w._stack.currentWidget() is w._problem_label
+    assert 'log₁₀' in w._problem_label.text() and 'linear' in w._problem_label.text()
+
+
+def test_rmse_stays_hidden_after_a_fit_that_carries_no_quality_samples(qapp, pooled_result):
+    """An imported fit without RMSE and R² must not leave RMSE shown for the next fit that has them."""
+    from gui.plotting.distribution_widget import DistributionWidget
+
+    w = DistributionWidget()
+    w.update_result(pooled_result)
+    assert w._plot_by_key['rmse'].isHidden()
+
+    w.update_result(replace(pooled_result, quality_samples=None))
+    w.update_result(pooled_result)
+    assert w._plot_by_key['rmse'].isHidden()
+    assert not w._checkboxes['rmse'].isChecked()
+
+    # Ticked on, it stays on across the same round trip.
+    w._checkboxes['rmse'].setChecked(True)
+    w.update_result(replace(pooled_result, quality_samples=None))
+    w.update_result(pooled_result)
+    assert not w._plot_by_key['rmse'].isHidden()
 
 
 def test_show_mismatch_puts_a_note_in_place_of_the_plots_until_cleared(qapp, pooled_result):
