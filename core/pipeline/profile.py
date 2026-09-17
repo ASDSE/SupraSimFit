@@ -4,9 +4,16 @@ When an assay has exactly one binding constant and every other parameter is a
 signal offset or coefficient, the model signal is linear in those other
 parameters once Ka is fixed. The best fit at a fixed Ka is then a bounded
 linear least-squares solve, so the best achievable R² at every Ka is exact.
-That curve is the profile: it bounds every fit the optimizer can find, locates
-the global best fit without a multi-start search, and gives a
-profile-likelihood confidence interval for Ka from an F test.
+That curve is the profile: it bounds every fit the optimizer can find, a grid
+search along it with a bounded refinement between the best grid point's
+neighbours locates the best fit without a multi-start search, and an F test on
+it gives a profile-likelihood confidence interval for Ka.
+
+The displacement assays' equilibrium solver does not reach a solution at every
+Ka: above roughly 1e19 to 1e20 1/M, depending on the concentrations, and at a
+total concentration of zero, its species are not a number. Such a Ka has no fit
+at all, so its residual sum of squares is infinite, it never enters the interval
+and no curve is drawn across it.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from scipy.stats import f as f_dist
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
 from core.data_processing.measurement_set import MeasurementSet
+from core.optimizer.multistart import FitCancelled
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds
 from core.units import Quantity
 
@@ -57,6 +65,12 @@ _LOG_KA_XTOL = 1e-7
 # columns stay above 1e-6 across the Ka range.
 _RANK_RTOL = 1e-8
 
+# Excess SSR above the interval's threshold that a Ka the model cannot solve
+# enters the edge search with. Root finding needs a finite value on each side of
+# an edge and only the sign of the excess decides which side of the interval a
+# Ka is on, so any positive value places such a Ka outside.
+_UNSOLVABLE_EXCESS = 1.0
+
 _LINEAR_KINDS = (ParamKind.SIGNAL_OFFSET, ParamKind.SIGNAL_COEFFICIENT)
 
 
@@ -74,7 +88,8 @@ class ProfileResult:
         where the curves bend, so straight lines between them follow the exact
         curves (see ``_CURVE_R2_TOL``).
     r2 : np.ndarray
-        Best R² of the averaged signal at each grid Ka.
+        Best R² of the averaged signal at each grid Ka; ``nan`` at a Ka the
+        equilibrium model cannot solve, which has no fit to draw.
     replica_r2 : dict[str, np.ndarray] | None
         Each active replicate's own best-R² curve on ``grid``; ``None`` unless
         the fit ran per replicate.
@@ -85,18 +100,32 @@ class ProfileResult:
     level : float
         Confidence level of ``ci``.
     ci : tuple[float, float]
-        ``(low, high)`` Ka in 1/M: the range of Ka whose residual sum of
-        squares stays within the F-test threshold.
+        ``(low, high)`` Ka in 1/M: the envelope of the Ka values whose residual
+        sum of squares stays within the F-test threshold. ``(best_ka, best_ka)``
+        when Ka is pinned.
     ci_open : tuple[bool, bool]
-        ``True`` on a side where the interval runs into the Ka bound, so the
-        data do not limit Ka there.
+        ``True`` on a side where the interval reaches as far as the profile
+        goes, so the data do not limit Ka there.
+    ci_unsolvable : tuple[bool, bool]
+        ``True`` on an open side where the profile stops because the
+        equilibrium model cannot be solved past the edge, rather than because
+        the Ka bound is reached. The edge is then the last Ka the model could
+        be evaluated at, which is below the bound in force.
+    ci_split : bool
+        ``True`` when the Ka values within the threshold do not form one
+        connected stretch of the grid, so ``ci`` spans a gap of Ka values the
+        data reject.
+    ka_pinned : bool
+        ``True`` when the Ka bounds are equal, which fixes Ka and leaves no
+        interval to estimate.
     r2_threshold : float
-        R² at which the interval is cut.
+        R² at which the interval is cut. With ``ka_pinned`` there is no interval
+        and the cut is the R² a one-parameter improvement would have to beat.
     n_points : int
         Number of points in the averaged signal.
     n_params : int
-        Parameter count ``p`` of the F test: one for Ka plus the numerical rank
-        of the coefficient design at the optimum.
+        Parameter count ``p`` of the F test: the numerical rank of the
+        coefficient design at the optimum, plus one for Ka unless Ka is pinned.
     per_replica : bool
         Whether the fit this profile belongs to ran each replicate separately.
     """
@@ -114,6 +143,9 @@ class ProfileResult:
     n_points: int
     n_params: int
     per_replica: bool
+    ka_pinned: bool = False
+    ci_split: bool = False
+    ci_unsolvable: tuple[bool, bool] = (False, False)
 
 
 def profile_supported(assay_type: AssayType) -> bool:
@@ -129,7 +161,13 @@ def profile_supported(assay_type: AssayType) -> bool:
 
 
 def best_fit_by_profile(assay: BaseAssay, bounds: dict[str, tuple[Quantity, Quantity]]) -> tuple[float, float]:
-    """Global best fit of one signal, found through its exact Ka profile.
+    """Best fit of one signal, searched along its exact Ka profile.
+
+    The profile is evaluated on a log-spaced grid across the Ka bounds and
+    refined between the best grid point's neighbours, so the result is the
+    profile's best point to within ``_LOG_KA_XTOL`` decades of Ka. A Ka the
+    equilibrium model cannot solve has no fit and is passed over; when that is
+    every Ka in the bounds, the R² is ``-inf``.
 
     Parameters
     ----------
@@ -153,7 +191,7 @@ def best_fit_by_profile(assay: BaseAssay, bounds: dict[str, tuple[Quantity, Quan
 
 
 def best_params_by_profile(assay: BaseAssay, bounds: dict[str, tuple[Quantity, Quantity]]) -> np.ndarray:
-    """Parameter vector of the global best fit of one signal.
+    """Parameter vector of the best fit of one signal.
 
     The Ka of :func:`best_fit_by_profile` together with the bounded
     least-squares coefficients at that Ka, in ``assay.parameter_keys`` order
@@ -186,6 +224,7 @@ def fit_profile(
     fit_config: FitConfig,
     *,
     level: float = 0.95,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> ProfileResult:
     """Exact Ka profile of the averaged signal and its confidence interval.
 
@@ -210,6 +249,8 @@ def fit_profile(
         Fitting configuration whose replicate handling and bounds apply.
     level : float
         Confidence level of the interval, between 0 and 1.
+    should_cancel : Callable[[], bool], optional
+        Asked before every Ka the profile evaluates whether to stop.
 
     Returns
     -------
@@ -219,8 +260,11 @@ def fit_profile(
     ------
     ValueError
         For an assay without a single binding constant, a level outside
-        (0, 1), invalid Ka bounds, or too few data points to leave any
-        degrees of freedom.
+        (0, 1), invalid Ka bounds, Ka bounds the equilibrium model cannot be
+        solved anywhere within, or too few data points to leave any degrees of
+        freedom.
+    FitCancelled
+        If *should_cancel* returns True.
     """
     if not 0.0 < level < 1.0:
         raise ValueError(f'The confidence level must lie between 0 and 1, got {level}.')
@@ -230,20 +274,31 @@ def fit_profile(
     bounds = _resolve_bounds(assay, fit_config.custom_bounds)
     y_avg = ms.average_signal(active_only=True)[np.newaxis, :]
     ka_key, (lo, hi), ssr_at = _profile_function(assay, bounds, y_avg)
+    ssr_at = _cancellable(ssr_at, should_cancel)
     ss_tot = float(_ss_tot(y_avg)[0])
 
     # Every plotted curve: the average first, then each active replicate's own.
     replica_ids = list(ms.active_replica_ids) if fit_config.per_replica else []
     y_curves = np.vstack([y_avg, *(ms.get_replica_signal(rid) for rid in replica_ids)])
     _, _, curves_ssr_at = _profile_function(assay, bounds, y_curves)
+    curves_ssr_at = _cancellable(curves_ssr_at, should_cancel)
     curves_ss_tot = _ss_tot(y_curves)
     grid = _ka_grid(lo, hi, _PROFILE_PER_DECADE)
     curves_ssr = np.array([curves_ssr_at(ka) for ka in grid])
     ssr = curves_ssr[:, 0]
     best_ka, best_ssr = _refine_best(lambda ka: ssr_at(ka)[0], grid, ssr)
+    if not np.isfinite(best_ssr):
+        raise ValueError(
+            f'The binding model has no solution at any association constant between {lo:g} and '
+            f'{hi:g} M⁻¹, so there is no curve to show. Lower its upper bound under Parameter '
+            'Bounds and fit again.'
+        )
 
+    # Equal Ka bounds fix Ka: nothing is estimated but the coefficients, and
+    # there is no interval for a value the fit was not free to move.
+    ka_pinned = lo == hi
     n_points = y_avg.size
-    n_params = 1 + _design_rank(assay, bounds, best_ka)
+    n_params = _design_rank(assay, bounds, best_ka) + (0 if ka_pinned else 1)
     dof = n_points - n_params
     if dof < 1:
         raise ValueError(
@@ -251,7 +306,12 @@ def fit_profile(
             'Add titration points to get a confidence interval for Ka.'
         )
     ssr_threshold = best_ssr * (1.0 + f_dist.ppf(level, 1, dof) / dof)
-    ci, ci_open = _interval(lambda ka: ssr_at(ka)[0] - ssr_threshold, grid, ssr - ssr_threshold, best_ka)
+    if ka_pinned:
+        ci, ci_open, ci_split, ci_unsolvable = (best_ka, best_ka), (False, False), False, (False, False)
+    else:
+        ci, ci_open, ci_split, ci_unsolvable = _interval(
+            lambda ka: ssr_at(ka)[0] - ssr_threshold, grid, ssr - ssr_threshold, best_ka
+        )
 
     # The curves as drawn: the best fit, the interval and the cut-off come from the
     # regular grid alone, whatever points drawing adds. The drawn curve peaks at
@@ -259,7 +319,7 @@ def fit_profile(
     grid, curves_ssr = _follow_curves(curves_ssr_at, curves_ss_tot, grid, curves_ssr)
     marks = [best_ka] + [edge for edge, is_open in zip(ci, ci_open) if not is_open]
     grid, curves_ssr = _with_points(curves_ssr_at, grid, curves_ssr, marks)
-    curves_r2 = 1.0 - curves_ssr / curves_ss_tot
+    curves_r2 = np.where(np.isfinite(curves_ssr), 1.0 - curves_ssr / curves_ss_tot, np.nan)
     replica_r2 = None
     if fit_config.per_replica:
         replica_r2 = {rid: curves_r2[:, i] for i, rid in enumerate(replica_ids, start=1)}
@@ -278,7 +338,28 @@ def fit_profile(
         n_points=n_points,
         n_params=n_params,
         per_replica=fit_config.per_replica,
+        ka_pinned=ka_pinned,
+        ci_split=ci_split,
+        ci_unsolvable=ci_unsolvable,
     )
+
+
+def _cancellable(ssr_at: Callable, should_cancel: Callable[[], bool] | None) -> Callable:
+    """*ssr_at* asking *should_cancel* first, so a profile stops at its next Ka.
+
+    Every Ka the profile evaluates — the grid, the drawn curves, the refinement
+    and the interval's root finding — goes through one of these functions, so
+    this is the only check the profile needs.
+    """
+    if should_cancel is None:
+        return ssr_at
+
+    def checked(ka: float):
+        if should_cancel():
+            raise FitCancelled('The Ka profile was stopped.')
+        return ssr_at(ka)
+
+    return checked
 
 
 def _require_supported(assay_type: AssayType) -> None:
@@ -312,7 +393,8 @@ def _follow_curves(
     the line by more than half its allowance (see ``_CURVE_R2_TOL``) on any curve
     at R² 0 or above is split, the worst first, until none is left or the
     evaluations reach ``_CURVE_MAX_EXTRA``. Curves below R² 0 across a stretch
-    are off every plot and do not split it.
+    are off every plot and do not split it, and neither does a curve the model
+    cannot solve somewhere on the stretch, which is not drawn across it.
 
     Returns
     -------
@@ -332,9 +414,12 @@ def _follow_curves(
         ssr_m = ssr_at(ka_m)
         kas.append(ka_m)
         ssrs.append(ssr_m)
-        r2_a, r2_m, r2_b = (1.0 - s / ss_tot for s in (ssr_a, ssr_m, ssr_b))
+        drawn = np.isfinite(ssr_a) & np.isfinite(ssr_m) & np.isfinite(ssr_b)
+        if not drawn.any():
+            return
+        r2_a, r2_m, r2_b = (1.0 - s[drawn] / ss_tot[drawn] for s in (ssr_a, ssr_m, ssr_b))
         top = np.maximum(np.maximum(r2_a, r2_b), r2_m)
-        allowance = _CURVE_R2_TOL + _CURVE_DEPTH_TOL * (peak - top)
+        allowance = _CURVE_R2_TOL + _CURVE_DEPTH_TOL * (peak[drawn] - top)
         miss = np.where(top >= 0.0, np.abs(r2_m - 0.5 * (r2_a + r2_b)) / (0.5 * allowance), 0.0)
         if miss.max() > 1.0:
             heapq.heappush(to_split, (-float(miss.max()), len(kas), ka_a, ssr_a, ka_m, ssr_m, ka_b, ssr_b))
@@ -422,15 +507,21 @@ def _solve(design: np.ndarray, lb: np.ndarray, ub: np.ndarray, y: np.ndarray) ->
     step beyond its bound, so each is clipped to its bounds after unscaling and
     the SSR is that of the clipped coefficients.
 
+    A design the equilibrium model could not fill in is not a model signal at
+    all, so it fits nothing: its SSR is infinite and its coefficients stay at
+    their lower bounds.
+
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         ``(SSR per row, coefficients per row)``, shapes ``(n_rows,)`` and
         ``(n_rows, n_coefficients)``.
     """
+    coef = np.tile(lb, (y.shape[0], 1))
+    if not np.isfinite(design).all():
+        return np.full(y.shape[0], np.inf), coef
     pinned = lb == ub
     target = y - design[:, pinned] @ lb[pinned]
-    coef = np.tile(lb, (y.shape[0], 1))
     free = design[:, ~pinned]
     if free.shape[1] == 0:
         return np.sum(target**2, axis=1), coef
@@ -459,12 +550,18 @@ def _design_rank(assay: BaseAssay, bounds: dict[str, tuple[Quantity, Quantity]],
 
 
 def _refine_best(ssr_fn: Callable[[float], float], grid: np.ndarray, ssr_grid: np.ndarray) -> tuple[float, float]:
-    """Minimum of *ssr_fn*, refined in log Ka between the best grid point's neighbours."""
+    """Minimum of *ssr_fn*, refined in log Ka between the best grid point's neighbours.
+
+    A neighbour the model cannot solve (infinite SSR) is no bracket, so the
+    refinement stops at the grid point on that side.
+    """
     i = int(np.argmin(ssr_grid))
-    if grid.size == 1:
-        return float(grid[0]), float(ssr_grid[0])
-    a = np.log10(grid[max(i - 1, 0)])
-    b = np.log10(grid[min(i + 1, grid.size - 1)])
+    lo_i = i - 1 if i > 0 and np.isfinite(ssr_grid[i - 1]) else i
+    hi_i = i + 1 if i + 1 < grid.size and np.isfinite(ssr_grid[i + 1]) else i
+    if lo_i == hi_i:
+        return float(grid[i]), float(ssr_grid[i])
+    a = np.log10(grid[lo_i])
+    b = np.log10(grid[hi_i])
     res = minimize_scalar(lambda t: ssr_fn(10.0**t), bounds=(a, b), method='bounded', options={'xatol': _LOG_KA_XTOL})
     if res.fun < ssr_grid[i]:
         return float(10.0**res.x), float(res.fun)
@@ -473,20 +570,50 @@ def _refine_best(ssr_fn: Callable[[float], float], grid: np.ndarray, ssr_grid: n
 
 def _interval(
     excess_fn: Callable[[float], float], grid: np.ndarray, excess_grid: np.ndarray, best_ka: float
-) -> tuple[tuple[float, float], tuple[bool, bool]]:
+) -> tuple[tuple[float, float], tuple[bool, bool], bool, tuple[bool, bool]]:
     """Envelope of the Ka values with non-positive excess, edges refined by root finding.
 
     *excess_fn* is the combined SSR minus the threshold, which *best_ka* always
-    clears. An edge with no grid point beyond it is open at the Ka bound.
+    clears. An edge with no grid point beyond it is open at the Ka bound. So is
+    an edge whose next grid point is a Ka the model cannot be solved at: the
+    data reject nothing there, the profile simply stops, and the edge is the
+    last Ka it could be evaluated at. A grid point inside the envelope that the
+    excess rejects means the accepted Ka values are not one connected stretch;
+    the envelope then spans a gap.
+
+    Returns
+    -------
+    tuple[tuple[float, float], tuple[bool, bool], bool, tuple[bool, bool]]
+        ``((low, high), (low open, high open), split, (low unsolvable, high unsolvable))``.
     """
-    inside = np.append(grid[excess_grid <= 0], best_ka)
+    accepted = excess_grid <= 0
+    inside = np.append(grid[accepted], best_ka)
     low_in, high_in = float(inside.min()), float(inside.max())
-    below, above = grid[grid < low_in], grid[grid > high_in]
+    below_of, above_of = grid < low_in, grid > high_in
+    below, above = grid[below_of], grid[above_of]
+    low_unsolvable = bool(below.size and not np.isfinite(excess_grid[below_of][-1]))
+    high_unsolvable = bool(above.size and not np.isfinite(excess_grid[above_of][0]))
 
     def edge(outside: float, within: float) -> float:
-        t = brentq(lambda s: excess_fn(10.0**s), np.log10(outside), np.log10(within), xtol=_LOG_KA_XTOL)
+        def excess(s: float) -> float:
+            value = excess_fn(10.0**s)
+            return float(value) if np.isfinite(value) else _UNSOLVABLE_EXCESS
+
+        t = brentq(excess, np.log10(outside), np.log10(within), xtol=_LOG_KA_XTOL)
         return float(10.0**t)
 
-    low = edge(below[-1], low_in) if below.size else float(grid[0])
-    high = edge(above[0], high_in) if above.size else float(grid[-1])
-    return (low, high), (below.size == 0, above.size == 0)
+    if not below.size:
+        low = float(grid[0])
+    elif low_unsolvable:
+        low = low_in
+    else:
+        low = edge(below[-1], low_in)
+    if not above.size:
+        high = float(grid[-1])
+    elif high_unsolvable:
+        high = high_in
+    else:
+        high = edge(above[0], high_in)
+    split = bool(np.any(~accepted & (grid >= low_in) & (grid <= high_in)))
+    open_at = (below.size == 0 or low_unsolvable, above.size == 0 or high_unsolvable)
+    return (low, high), open_at, split, (low_unsolvable, high_unsolvable)

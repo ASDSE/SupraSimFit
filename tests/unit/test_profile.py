@@ -6,11 +6,14 @@ trustworthy:
 
 - it bounds every multistart attempt from above at that attempt's own Ka;
 - its maximum is the multistart best fit, on GDA, IDA, DBA and the IDA demo;
-- its F-test interval reproduces the IDA demo anchor and covers the true Ka at
-  about the stated rate on noisy synthetic data;
+- its F-test interval reproduces the IDA demo anchor, is cut at exactly one and
+  n − p degrees of freedom, and covers the true Ka at about the stated rate and
+  at about the right width on noisy synthetic data;
 - per-replicate mode adds each replicate's own best residuals;
 - custom bounds (a pinned coefficient, narrowed Ka bounds) are honoured;
-- an interval the data cannot close is reported open on that side;
+- an interval the data cannot close is reported open on that side, one that
+  spans a gap of rejected Ka is reported split, and a pinned Ka has none;
+- a Ka the equilibrium model cannot be solved at counts as no fit;
 - assays without a single binding constant are rejected.
 """
 
@@ -18,15 +21,17 @@ import pathlib
 
 import numpy as np
 import pytest
+from scipy.stats import f as f_dist
 
 from core.assays.dba import DBAAssay
 from core.assays.gda import GDAAssay
 from core.assays.hg2 import HG2Assay
 from core.assays.ida import IDAAssay
-from core.assays.registry import AssayType
+from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.io import load_measurements
 from core.optimizer.filters import calculate_fit_metrics
+from core.optimizer.multistart import FitCancelled
 from core.pipeline import profile as profile_module
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_assay
 from core.pipeline.profile import best_fit_by_profile, fit_profile, profile_supported
@@ -38,6 +43,7 @@ from tests.conftest import (
     GDA_TRUE,
     HG2_TRUE,
     IDA_TRUE,
+    _make_dba_data,
     _make_hg2_data,
     _make_ida_data,
 )
@@ -184,26 +190,63 @@ def test_ida_demo_interval_matches_the_reference():
     assert profile.n_params == 3
     assert profile.best_ka == pytest.approx(3.257e8, rel=0.03)
     assert profile.best_r2 == pytest.approx(0.99341, abs=1e-4)
-    assert profile.r2_threshold == pytest.approx(0.98967, abs=1e-4)
     assert profile.ci[0] == pytest.approx(1.708e8, rel=0.03)
     assert profile.ci[1] == pytest.approx(9.847e8, rel=0.03)
     assert profile.ci_open == (False, False)
+    assert not profile.ci_split
+    assert not profile.ka_pinned
+
+    # The cut is the F test at exactly 1 and n - p degrees of freedom. Counting
+    # the replicates' points as n, or Ka's four nominal parameters as p, or
+    # dropping the /(n - p) scaling all move it well beyond this tolerance.
+    dof = profile.n_points - profile.n_params
+    assert dof == 9
+    assert 1.0 - profile.r2_threshold == pytest.approx(
+        (1.0 - profile.best_r2) * (1.0 + f_dist.ppf(profile.level, 1, dof) / dof), rel=1e-10
+    )
 
 
-def test_interval_covers_the_true_ka_at_about_the_stated_rate():
+def test_interval_covers_the_true_ka_at_about_the_stated_rate_and_is_no_wider_than_that_takes():
     # Homoscedastic Gaussian noise meets the F test's assumptions, so the 95 %
     # interval should cover the truth in close to 95 % of noise draws. 40 draws
     # leave sampling slack; 85 % still catches an interval that is too narrow.
     # Ka bounds a few decades either side of the truth keep the grid short.
+    #
+    # Coverage alone cannot catch the opposite failure: an interval stretched to
+    # the Ka bounds covers every draw. So each interval is measured against the
+    # width the same threshold implies through the curvature of the profile,
+    # which here is close to quadratic in log Ka. For SSR ≈ SSR_min + H·t²/2 in
+    # t = log10(Ka), the cut sits sqrt(2·SSR_min·F/((n - p)·H)) either side of
+    # the best fit -- a route to the width that uses no root finding.
     x, y = _make_ida_data(IDA_TRUE, n_points=12)
-    config = FitConfig(per_replica=False, custom_bounds={'Ka_guest': (Q_(1e3, '1/M'), Q_(1e10, '1/M'))})
+    bounds = {'Ka_guest': (Q_(1e5, '1/M'), Q_(1e8, '1/M'))}
+    config = FitConfig(per_replica=False, custom_bounds=bounds)
+    step = 0.02  # decades of Ka, for the second difference
     n_seeds = 40
     covered = 0
+    width_ratios = []
     for seed in range(n_seeds):
-        profile = fit_profile(_single(x, _homoscedastic(y, 0.02, seed)), IDAAssay, _IDA_CONDITIONS, config)
+        ms = _single(x, _homoscedastic(y, 0.02, seed))
+        profile = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, config)
         covered += profile.ci[0] <= IDA_TRUE['Ka_guest'] <= profile.ci[1]
-    print(f'95% interval coverage of the true Ka: {covered}/{n_seeds}')
+
+        assay = ms.to_assay(IDAAssay, conditions=_IDA_CONDITIONS, use_average=True)
+        _, _, ssr_at = profile_module._profile_function(
+            assay, _resolve_bounds(assay, bounds), assay.y_data.magnitude[None, :]
+        )
+        t = np.log10(profile.best_ka)
+        ssr = [float(ssr_at(10.0 ** (t + d * step))[0]) for d in (-1, 0, 1)]
+        curvature = (ssr[0] - 2.0 * ssr[1] + ssr[2]) / step**2
+        dof = profile.n_points - profile.n_params
+        half = np.sqrt(2.0 * ssr[1] * f_dist.ppf(profile.level, 1, dof) / (dof * curvature))
+        width_ratios.append(np.log10(profile.ci[1] / profile.ci[0]) / (2.0 * half))
+
+    median_ratio = float(np.median(width_ratios))
+    print(
+        f'95% interval coverage of the true Ka: {covered}/{n_seeds}; median width / curvature width: {median_ratio:.3f}'
+    )
     assert covered / n_seeds >= 0.85
+    assert 0.8 <= median_ratio <= 1.25
 
 
 def test_interval_the_data_cannot_close_is_open_on_that_side():
@@ -214,10 +257,175 @@ def test_interval_the_data_cannot_close_is_open_on_that_side():
     x, y = _make_ida_data(strong)
     profile = fit_profile(_single(x, _homoscedastic(y, 0.01, 1)), IDAAssay, _IDA_CONDITIONS, _AVERAGE)
 
-    ka_lo, ka_hi = (b.magnitude for b in GDA_IDA_RECOVERY_BOUNDS['Ka_guest'])
+    # No custom bounds, so the interval runs into the registry defaults the fit used.
+    ka_lo, ka_hi = (b.magnitude for b in ASSAY_REGISTRY[AssayType.IDA].default_bounds['Ka_guest'])
     assert profile.ci_open == (False, True)
     assert profile.ci[1] == pytest.approx(ka_hi)
     assert ka_lo < profile.ci[0] < strong['Ka_guest']
+
+
+def test_an_edge_the_model_cannot_be_solved_past_is_open_not_a_limit_from_the_data():
+    # Same data as the open-interval case, fitted with a Ka upper bound above
+    # the range the equilibrium solver can reach. The profile stops at the wall,
+    # but the data have not ruled out a larger Ka: the edge has to read open
+    # rather than as an upper limit the measurements established.
+    strong = dict(IDA_TRUE, Ka_guest=1e11)
+    x, y = _make_ida_data(strong)
+    ms = _single(x, _homoscedastic(y, 0.01, 1))
+    profile = fit_profile(
+        ms,
+        IDAAssay,
+        _IDA_CONDITIONS,
+        FitConfig(per_replica=False, custom_bounds={'Ka_guest': (Q_(1e5, '1/M'), Q_(1e30, '1/M'))}),
+    )
+
+    unsolved = np.isnan(profile.r2)
+    assert unsolved.any()  # the bound does reach Ka the model cannot be solved at
+    assert profile.ci_open == (False, True)
+    assert profile.ci[1] < profile.grid[unsolved].min()
+    # Why that side is open is carried with the interval: the edge is where the
+    # model stops being solvable, well below the bound, and reading it as the
+    # bound would name a number the fit was never given.
+    assert profile.ci_unsolvable == (False, True)
+    assert profile.ci[1] < 1e30
+
+
+def test_a_dba_edge_the_data_cannot_close_stays_open_however_high_the_bound_reaches():
+    # Dye bound so strongly that the titration is stoichiometric: raising Ka
+    # further leaves the curve as it is, so the data set a lower limit and no
+    # upper one, whatever upper bound the fit is given. The equilibrium solve
+    # has to hold its accuracy that far up — speciation that is rounding error
+    # fits the measurement scatter better than the true plateau does, which
+    # closes the interval around a Ka the data say nothing about.
+    strong = dict(DBA_TRUE, Ka_dye=1e9)
+    x, y = _make_dba_data(strong)
+    ms = _single(x, _homoscedastic(y, 0.01, 1))
+
+    profiles = [
+        fit_profile(
+            ms,
+            DBAAssay,
+            _DBA_CONDITIONS,
+            FitConfig(per_replica=False, custom_bounds={'Ka_dye': (Q_(1e3, '1/M'), Q_(hi, '1/M'))}),
+        )
+        for hi in (1e15, 1e20)
+    ]
+    modest, far = profiles
+
+    for profile, hi in zip(profiles, (1e15, 1e20)):
+        assert profile.ci_open == (False, True)
+        assert profile.ci[1] == pytest.approx(hi)
+        assert not profile.ci_split
+    # The lower edge is set by the data, so the higher bound does not move it,
+    # and the plateau above the best fit stays one flat stretch.
+    assert far.ci[0] == pytest.approx(modest.ci[0], rel=1e-3)
+    assert far.best_ka == pytest.approx(modest.best_ka, rel=1e-3)
+    plateau = far.r2[far.grid > 1e12]
+    assert np.ptp(plateau) < 1e-6
+
+
+def test_a_profile_asked_to_stop_ends_at_its_next_ka():
+    """Closing the tab must not wait out a whole profile on the interface thread."""
+    x, y = _make_ida_data(IDA_TRUE, n_points=12)
+    ms = _single(x, _homoscedastic(y, 0.02, 0))
+    evaluated = []
+
+    def stop_after_two() -> bool:
+        evaluated.append(None)
+        return len(evaluated) > 2
+
+    with pytest.raises(FitCancelled):
+        fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE, should_cancel=stop_after_two)
+
+    assert len(evaluated) == 3  # it stops at the check, not at the end of the grid
+
+
+def test_a_gap_in_the_accepted_ka_values_is_reported_as_a_split_interval():
+    # Two separated stretches of Ka clear the threshold and the Ka between them
+    # do not. The reported interval is the envelope, so it has to say that it
+    # spans Ka the data reject.
+    def two_wells(ka: float) -> float:
+        """Excess SSR accepting Ka within 0.3 decades of 1e1 and of 1e3, rejecting the stretch between."""
+        t = np.log10(ka)
+        return min((t - 1.0) ** 2, (t - 3.0) ** 2) - 0.09
+
+    def one_well(ka: float) -> float:
+        """Excess SSR accepting Ka within 0.3 decades of 1e2."""
+        return (np.log10(ka) - 2.0) ** 2 - 0.09
+
+    grid = np.logspace(0, 4, 81)
+    split_ci, split_open, is_split, _ = profile_module._interval(
+        two_wells, grid, np.array([two_wells(ka) for ka in grid]), 10.0
+    )
+    assert is_split
+    assert split_open == (False, False)
+    assert split_ci == pytest.approx((10**0.7, 10**3.3), rel=1e-6)
+
+    joined_ci, _, joined_split, _ = profile_module._interval(
+        one_well, grid, np.array([one_well(ka) for ka in grid]), 100.0
+    )
+    assert not joined_split
+    assert joined_ci == pytest.approx((10**1.7, 10**2.3), rel=1e-6)
+
+
+def test_a_ka_the_model_cannot_be_solved_at_is_no_fit_rather_than_an_error():
+    # Above about 1e19 1/M the equilibrium solver's bracket degenerates and it
+    # returns no species at all. Such a Ka fits nothing, so it drops out of the
+    # profile; raising the Ka upper bound into that range must leave the best
+    # fit and the interval exactly where the solvable range already put them.
+    x, y = _make_ida_data(IDA_TRUE, n_points=12)
+    ms = _single(x, _homoscedastic(y, 0.02, 0))
+
+    def profile_up_to(ka_max: float):
+        bounds = {'Ka_guest': (Q_(1e5, '1/M'), Q_(ka_max, '1/M'))}
+        return fit_profile(ms, IDAAssay, _IDA_CONDITIONS, FitConfig(per_replica=False, custom_bounds=bounds))
+
+    solvable = profile_up_to(1e15)
+    assert not np.isnan(solvable.r2).any()
+
+    for ka_max in (1e20, 1e30):
+        profile = profile_up_to(ka_max)
+        unsolved = np.isnan(profile.r2)
+        assert unsolved.any()  # the grid does reach Ka the model cannot solve
+        assert profile.grid[unsolved].min() > 1e19
+        assert profile.best_ka == pytest.approx(solvable.best_ka, rel=1e-6)
+        assert profile.ci == pytest.approx(solvable.ci, rel=1e-6)
+        assert profile.ci_open == (False, False)
+        assert not profile.ci_split
+
+
+def test_pinned_ka_is_not_fitted_and_has_no_interval():
+    # Equal Ka bounds take Ka out of the fit: only the coefficients are
+    # estimated, and there is no range to report for a value nothing moved.
+    x, y = _make_ida_data(IDA_TRUE, n_points=12)
+    ms = _single(x, _homoscedastic(y, 0.02, 0))
+    ka = IDA_TRUE['Ka_guest']
+    pinned = fit_profile(
+        ms,
+        IDAAssay,
+        _IDA_CONDITIONS,
+        FitConfig(per_replica=False, custom_bounds={'Ka_guest': (Q_(ka, '1/M'), Q_(ka, '1/M'))}),
+    )
+    free = fit_profile(
+        ms,
+        IDAAssay,
+        _IDA_CONDITIONS,
+        FitConfig(per_replica=False, custom_bounds={'Ka_guest': (Q_(1e5, '1/M'), Q_(1e8, '1/M'))}),
+    )
+
+    assert pinned.ka_pinned and not free.ka_pinned
+    assert pinned.grid.size == 1
+    assert pinned.best_ka == ka
+    assert pinned.ci == (ka, ka)
+    assert pinned.ci_open == (False, False)
+    assert not pinned.ci_split
+    # Ka is fixed, so the F test judges the coefficients alone: p is the design
+    # rank without Ka's extra parameter.
+    assert pinned.n_params == 2
+    assert free.n_params == pinned.n_params + 1
+    # Fixing Ka cannot beat the curve that is the best fit at every Ka.
+    assert pinned.best_r2 == pytest.approx(np.interp(np.log10(ka), np.log10(free.grid), free.r2), abs=1e-6)
+    assert pinned.best_r2 <= free.best_r2
 
 
 # ---------------------------------------------------------------------------
