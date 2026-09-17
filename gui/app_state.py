@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 from core.assays.registry import AssayType
 from core.data_processing.measurement_set import MeasurementSet
@@ -27,7 +27,6 @@ class SessionState:
 
     # Assay configuration
     assay_type: AssayType = AssayType.GDA
-    conditions: dict[str, Any] = field(default_factory=dict)
 
     # Fit configuration
     fit_config: FitConfig = field(default_factory=FitConfig)

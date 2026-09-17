@@ -22,6 +22,9 @@ from tests.unit.gui.test_sensitivity_gui import _sobol_result  # noqa: E402
 
 TAB_ORDER = ['Fit Curve', 'Distributions', 'Identifiability', 'Ka Sensitivity']
 
+#: Fit seed every session here runs with, so each fit is the same one each time.
+_FIT_SEED = 42
+
 
 def _ida_set(noise_seed: int = 0) -> MeasurementSet:
     """Three IDA replicates with 1% multiplicative noise around the shared ground truth."""
@@ -72,7 +75,10 @@ def make_session(qapp):
         session._assay_panel.set_assay_type(assay_type)
         for key, value in (conditions or {}).items():
             session._assay_panel._field_widgets[key].setValue(value)
-        session._fit_panel.set_config(FitConfig(per_replica=per_replica))
+        # A fixed seed in the panel: Run Fit draws its own seed otherwise, so the
+        # starting points — and with them whether a trial clears the quality
+        # floor — would differ from run to run.
+        session._fit_panel.set_config(FitConfig(per_replica=per_replica, seed=_FIT_SEED))
         session._data_panel.data_loaded.emit(ms)
         sessions.append(session)
         return session

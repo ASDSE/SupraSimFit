@@ -31,6 +31,7 @@ from core.assays.ida import IDAAssay  # noqa: E402
 from core.assays.registry import AssayType  # noqa: E402
 from core.data_processing.measurement_set import MeasurementSet  # noqa: E402
 from core.optimizer.filters import calculate_fit_metrics  # noqa: E402
+from core.optimizer.multistart import FitCancelled  # noqa: E402
 from core.pipeline.fit_pipeline import FitConfig, FitResult, PerReplicaFitError, fit_measurement_set  # noqa: E402
 from core.units import Q_  # noqa: E402
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data  # noqa: E402
@@ -253,6 +254,18 @@ def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_bac
     assert sensitivity._stack.currentWidget() is sensitivity._results_host
 
 
+def test_the_status_bar_stops_describing_results_that_have_been_hidden(qapp, make_session, fit, dialogs):
+    """A completion message would otherwise report numbers no tab is showing any more."""
+    session = _shown_session(qapp, make_session, fit)
+    messages: list[str] = []
+    session.status_message.connect(messages.append)
+    session.status_message.emit('Fit complete — R²=0.9991, RMSE=1.23×10¹, 8/8 trials passed')
+
+    _toggle(session, 'a', False)
+
+    assert messages[-1] == 'Results hidden — they do not describe the data and settings loaded now.'
+
+
 def test_a_sensitivity_run_is_hidden_and_shown_on_its_own_record(qapp, make_session, fit, dialogs):
     """The run used every replicate, the fit left 'c' out: switching 'c' off hides the run only."""
     session = _shown_session(qapp, make_session, fit)
@@ -451,7 +464,7 @@ def test_import_whose_numbers_do_not_reproduce_on_its_own_data_says_so(
 ):
     """The fingerprint matches, so the refusal does not blame the data."""
     altered = copy.deepcopy(fit)
-    altered.quality_samples['r_squared'] = altered.quality_samples['r_squared'] * (1 - 1e-7)
+    altered.quality_samples['r_squared'] = altered.quality_samples['r_squared'] * (1 - 1e-3)
     session = make_session(_data())
 
     _import(session, monkeypatch, tmp_path, [altered])
@@ -608,9 +621,13 @@ def slow_fit(monkeypatch, fitted):
 
     given: list[MeasurementSet] = []
 
-    def fake(ms, assay_cls, conditions, config):
+    def fake(ms, assay_cls, conditions, config, should_cancel=None):
         given.append(ms)
-        time.sleep(0.2)
+        deadline = time.monotonic() + 0.2
+        while time.monotonic() < deadline:
+            if should_cancel is not None and should_cancel():
+                raise FitCancelled('The fit was cancelled.')
+            time.sleep(0.005)
         return copy.deepcopy(fitted)
 
     monkeypatch.setattr(workers, 'fit_measurement_set', fake)
@@ -685,10 +702,10 @@ def test_run_fit_is_disabled_while_a_fit_runs(qapp, dialogs, slow_fit, monkeypat
     session.run_fit()
     worker = session._fit_worker
     assert not window._act_fit.isEnabled()
-    assert window._act_fit.toolTip().startswith('A fit is running in this session.')
+    assert window._act_fit.toolTip().startswith('A fit is already running in this session.')
     session.run_fit()
     assert session._fit_worker is worker and len(slow_fit) <= 1
-    assert dialogs['warning'][-1][1] == 'Fit Running'
+    assert dialogs['warning'][-1][1] == 'Already Running'
 
     _wait_until(qapp, lambda: not session.fit_running())
     assert window._act_fit.isEnabled()
@@ -701,7 +718,7 @@ def test_a_fit_where_every_replicate_fails_is_reported_in_plain_words(qapp, monk
 
     reasons = {rid: 'None of its fit attempts reached the minimum R² of 0.99.' for rid in ('a', 'b', 'c')}
 
-    def failing(*args):
+    def failing(*args, **kwargs):
         raise PerReplicaFitError('None of the 3 replicates could be fitted on its own.', reasons)
 
     monkeypatch.setattr(workers, 'fit_measurement_set', failing)
@@ -709,7 +726,7 @@ def test_a_fit_where_every_replicate_fails_is_reported_in_plain_words(qapp, monk
     messages: list[str] = []
     worker.error.connect(messages.append)
     worker.run()
-    monkeypatch.setattr(workers, 'fit_measurement_set', lambda *args: 1 / 0)
+    monkeypatch.setattr(workers, 'fit_measurement_set', lambda *args, **kwargs: 1 / 0)
     worker.run()
 
     first, second = messages

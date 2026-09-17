@@ -7,6 +7,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 from PyQt6.QtCore import QEvent, QObject, QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
@@ -26,6 +27,7 @@ from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.pipeline.fit_pipeline import (
+    MAX_SEED,
     FitConfig,
     FitResult,
     fit_replica_ids,
@@ -39,12 +41,14 @@ from core.pipeline.sensitivity import estimated_fit_count, estimated_optimizer_r
 from gui import plot_guide, preferences
 from gui.app_state import SessionState
 from gui.dialogs.plot_guide_dialog import show_plot_guide
+from gui.plotting.colors import INK, INK_2, INK_3
 from gui.plotting.distribution_widget import DistributionWidget
 from gui.plotting.fit_summary_widget import FitSummaryWidget, and_join, same_inputs
 from gui.plotting.identifiability_widget import IdentifiabilityWidget
+from gui.plotting.labels import fmt_r2, fmt_sci
 from gui.plotting.plot_style import PlotStyleWidget
 from gui.plotting.plot_widget import PlotWidget
-from gui.plotting.sensitivity_widget import SensitivityWidget
+from gui.plotting.sensitivity_widget import STOPPING_TEXT, SensitivityWidget
 from gui.widgets.assay_config_panel import AssayConfigPanel
 from gui.widgets.bounds_panel import BoundsPanel
 from gui.widgets.data_panel import DataPanel
@@ -54,27 +58,27 @@ from gui.widgets.info_button import InfoGroupBox
 from gui.widgets.preprocessing_panel import PreprocessingPanel
 from gui.widgets.replica_panel import ReplicaPanel, describe_replicates
 from gui.widgets.sensitivity_panel import SensitivityPanel
-from gui.workers import FitWorker, ProfileWorker, SensitivityWorker
+from gui.workers import FitWorker, ProfileWorker, SensitivityWorker, retire
 
 # Height a plot tab's page keeps however far the summary below is dragged up: the
 # Fit Curve plot keeps its axis labels apart, the Distributions panels their titles.
 _PLOT_PAGE_MIN_HEIGHT = 250
 
 # The plot tab bar's "?" button: secondary ink on a hairline pill, darker on hover.
-_GUIDE_BUTTON_QSS = """
-QToolButton {
-    color: #52514e;
+_GUIDE_BUTTON_QSS = f"""
+QToolButton {{
+    color: {INK_2};
     background: transparent;
     border: 1px solid #d6d5cf;
     border-radius: 10px;
     padding: 2px 9px;
     margin: 4px 8px 4px 0;
     font-size: 13px;
-}
-QToolButton:hover {
-    color: #0b0b0b;
-    border-color: #898781;
-}
+}}
+QToolButton:hover {{
+    color: {INK};
+    border-color: {INK_3};
+}}
 """
 
 
@@ -164,7 +168,7 @@ _PLOT_STYLE_HELP_HTML = """
 
 <p><b>What This Section Is For</b></p>
 <p>Controls for the interactive plot on the right: which series are
-visible (replicas, average, error bars, fit curves), axis/tick/legend
+visible (replicates, average, error bars, fit curves), axis/tick/legend
 font sizes, marker shapes and palette, line widths and colors, and the
 x-axis display unit. Changes apply live &mdash; no need to re-run the
 fit.</p>
@@ -176,7 +180,7 @@ fit.</p>
   <li><b>Axes</b> &mdash; font sizes for labels/ticks and the x-axis
       unit (nM / &micro;M / mM / M). Data is stored in M internally and
       rescaled at render time.</li>
-  <li><b>Replicas, Dropped Replicas, Average Line, Fit Curves, Error
+  <li><b>Replicates, Dropped replicates, Average Line, Fit Curves, Error
       Bars</b> &mdash; per-series style groups.</li>
   <li><b>Legend, Annotations</b> &mdash; toggle the legend and the
       draggable fit-results overlay.</li>
@@ -211,6 +215,17 @@ _UNCHECKED_NOTE = (
     'the data. To check them, and to pick another fit, load the data first and import the results again.'
 )
 _FIT_RUNNING_NOTE = 'A fit is already running in this session. Wait for it to finish, then run the fit again.'
+_SENSITIVITY_RUNNING_NOTE = (
+    'A sensitivity analysis is running in this session. Wait for it to finish, or stop it, then run the fit.'
+)
+_FIT_RUNNING_ANALYSIS_NOTE = (
+    'A fit is running in this session. Wait for it to finish, then run the sensitivity analysis.'
+)
+_SENSITIVITY_RUNNING_ANALYSIS_NOTE = (
+    'A sensitivity analysis is already running in this session. Wait for it to finish, or stop it, '
+    'then run the analysis again.'
+)
+_RESULTS_HIDDEN_NOTE = 'Results hidden — they do not describe the data and settings loaded now.'
 
 #: Why imported results were refused, by :func:`_refusal_reason`; formatted with
 #: ``which`` ("The results" or "2 of the 3 results"), ``name`` and ``imported``.
@@ -255,6 +270,16 @@ def _refusal_reason(result: FitResult, ms: MeasurementSet) -> str:
 
 def _capitalized(text: str) -> str:
     return f'{text[0].upper()}{text[1:]}'
+
+
+def _draw_seed() -> int:
+    """A fresh seed for one fit, drawn from the operating system's entropy.
+
+    Recorded on the fit it starts, so the run can be repeated by entering it
+    under Fixed seed — which is why it is drawn within the range that box
+    accepts rather than the full 32 bits.
+    """
+    return int(np.random.SeedSequence().generate_state(1)[0] % (MAX_SEED + 1))
 
 
 class FittingSession(QWidget):
@@ -321,6 +346,42 @@ class FittingSession(QWidget):
         """Whether a fit started in this session is still running."""
         return self._fit_worker is not None
 
+    def sensitivity_running(self) -> bool:
+        """Whether a sensitivity analysis started in this session is still running."""
+        return self._sensitivity_worker is not None
+
+    def busy_note(self) -> str | None:
+        """Why the fit cannot start now — the work already running here — or ``None`` when it can.
+
+        One analysis at a time per session: the two share the machine's
+        processors, and each is reported against the inputs set while it ran.
+        """
+        if self.fit_running():
+            return _FIT_RUNNING_NOTE
+        if self.sensitivity_running():
+            return _SENSITIVITY_RUNNING_NOTE
+        return None
+
+    def plot_export_note(self) -> str | None:
+        """Why the plot on the tab on screen cannot be saved — or ``None`` when it can."""
+        widget = self._plot_tabs.currentWidget()
+        state = self._state
+        if widget is self._plot_widget:
+            if state.measurement_set is None and not state.fit_results:
+                return 'There is nothing on the Fit Curve tab yet. Load a measurement file, then save it.'
+            return None
+        if widget is self._distribution_widget:
+            if not self._distribution_widget.param_keys():
+                return 'There are no distributions to save yet. Run a fit, then save them.'
+            return None
+        if widget is self._identifiability_widget:
+            if not self._identifiability_widget.has_chart():
+                return 'There is no identifiability chart to save yet. Run a fit, then save it.'
+            return self._fit_view()[1]
+        if state.sensitivity_result is None:
+            return 'There is no sensitivity analysis to save yet. Run one, then save it.'
+        return state.sensitivity_note
+
     def hidden_results_note(self) -> str | None:
         """Why result exports and picks are unavailable: the note of the latest fit when every held fit is hidden.
 
@@ -329,14 +390,41 @@ class FittingSession(QWidget):
         """
         return self._fit_view()[1]
 
+    def cancel_running(self) -> None:
+        """Ask every background run this session started to stop, without waiting for any of it.
+
+        Each run ends at its next cancel check, so asking all of them first
+        lets them stop side by side; waiting for one before asking the next
+        would add up their stopping times on the interface thread.
+        """
+        for worker in (self._fit_worker, self._profile_worker, self._sensitivity_worker):
+            if worker is not None:
+                worker.cancel()
+
+    def shutdown(self) -> None:
+        """Stop every background run this session started and wait for its thread to end.
+
+        Called before the tab or the window closes.
+        """
+        self.cancel_running()
+        self._stop_fit()
+        self._stop_profile()
+        self._stop_sensitivity()
+
     def run_fit(self) -> None:
-        """Start a background fitting run on a copy of the loaded data, so later changes never reach it."""
+        """Start a background fitting run on a copy of the loaded data, so later changes never reach it.
+
+        The fit runs with the seed entered under Fixed seed, or with one drawn
+        here when the box is unticked, so every result records the seed that
+        repeats it.
+        """
         ms = self._state.measurement_set
         if ms is None:
             QMessageBox.warning(self, 'No Data', 'Load a measurement file first.')
             return
-        if self.fit_running():
-            QMessageBox.warning(self, 'Fit Running', _FIT_RUNNING_NOTE)
+        busy = self.busy_note()
+        if busy is not None:
+            QMessageBox.warning(self, 'Already Running', busy)
             return
 
         # Placeholder guard — fitting with column indices 1..N as
@@ -353,16 +441,28 @@ class FittingSession(QWidget):
             self._data_panel.focus_concentration_table()
             return
 
+        bound_problems = self._bounds_panel.problems()
+        if bound_problems:
+            QMessageBox.warning(
+                self,
+                'Parameter Bounds',
+                'The fit cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in bound_problems),
+            )
+            return
+
         assay_cls = self._assay_panel.get_assay_class()
         conditions = self._assay_panel.current_conditions()
         config = self._fit_panel.current_config()
+        if config.seed is None:
+            config = replace(config, seed=_draw_seed())
         custom_bounds = self._bounds_panel.current_bounds()
         if custom_bounds:
             config = replace(config, custom_bounds=custom_bounds)
 
         if config.per_replica and ms.n_active < 3:
             self.status_message.emit(
-                f'Per-replica fit on {ms.n_active} replica(s) — uncertainty estimate may not be meaningful (<3 active).'
+                f'Per-replicate fit on {ms.n_active} replicate(s) — uncertainty estimate may not be '
+                'meaningful (<3 active).'
             )
 
         self._fit_worker = FitWorker(
@@ -382,11 +482,17 @@ class FittingSession(QWidget):
     def load_demo_ida(self) -> None:
         """Load the bundled IDA demo dataset and run a fit with default settings.
 
-        Resets all panels to defaults first so every click produces an
-        identical, reproducible result regardless of prior session state.
+        Resets the panels to the IDA defaults first, so the run starts from the
+        same settings whatever the session held before. The fit draws a fresh
+        seed like any other, so its numbers repeat exactly only when a seed is
+        entered under Fixed seed in Fit Configuration.
         """
         if not _DEMO_IDA_PATH.exists():
             QMessageBox.warning(self, 'Demo Data Missing', f'Could not find:\n{_DEMO_IDA_PATH}')
+            return
+        busy = self.busy_note()
+        if busy is not None:
+            QMessageBox.warning(self, 'Already Running', busy)
             return
 
         # 1. Reset all panels to IDA defaults
@@ -669,18 +775,42 @@ class FittingSession(QWidget):
             QMessageBox.information(self, 'Imported Results', '\n\n'.join(notices))
 
     def export_plot(self) -> None:
-        """Save the current plot as PNG or SVG."""
+        """Save the plot on the tab that is showing.
+
+        The Fit Curve tab offers PNG or SVG. The Identifiability and Ka
+        Sensitivity tabs are saved whole, as one picture, which only PNG can
+        carry: see :func:`~gui.plotting.export.export_widget`. The Distributions
+        tab goes through its own layout picker, which chooses how its panels are
+        arranged on the page and which of the two formats to write.
+        """
+        note = self.plot_export_note()
+        if note is not None:
+            QMessageBox.warning(self, 'Save Plot', note)
+            return
+        widget = self._plot_tabs.currentWidget()
+        if widget is self._distribution_widget:
+            self.save_distributions_plot()
+            return
+        # A whole tab is saved as one picture, which rules out SVG; see
+        # gui.plotting.export.export_widget.
+        tag, formats = {
+            self._plot_widget: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
+            self._identifiability_widget: ('identifiability', 'PNG image (*.png)'),
+            self._sensitivity_widget: ('sensitivity', 'PNG image (*.png)'),
+        }[widget]
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Save Plot',
-            self._default_save_name('.png'),
-            'PNG image (*.png);;SVG vector (*.svg)',
+            self._default_save_name('.png', tag),
+            formats,
         )
         if not path:
             return
         try:
-            self._plot_widget.export_image(path)
-            self.status_message.emit(f'Plot saved to {path}')
+            widget.export_image(path)
+        except ValueError as exc:
+            QMessageBox.warning(self, 'Save Plot', str(exc))
+            return
         except Exception:
             QMessageBox.warning(
                 self,
@@ -688,6 +818,8 @@ class FittingSession(QWidget):
                 'Could not save the plot. Check that the destination folder exists and you '
                 'have permission to write there.',
             )
+            return
+        self.status_message.emit(f'Plot saved to {path}')
 
     def open_export_multiple_dialog(self, *, select_all_default: bool) -> None:
         """Show the consolidated multi-artefact export dialog."""
@@ -702,7 +834,7 @@ class FittingSession(QWidget):
                 self.status_message.emit(f'Exported {successes}/{len(outcomes)} artefact(s) to {folder}')
 
     def save_distributions_plot(self) -> None:
-        """Save the distributions plot as a composite PNG with a layout picker."""
+        """Save the distributions plot through its layout picker, as PNG or SVG."""
         keys = self._distribution_widget.param_keys()
         if not keys:
             QMessageBox.warning(
@@ -918,7 +1050,6 @@ class FittingSession(QWidget):
 
         self._assay_panel.assay_type_changed.connect(self._on_assay_type_changed)
         self._assay_panel.assay_type_changed.connect(self._sensitivity_panel.set_assay_type)
-        self._assay_panel.conditions_changed.connect(self._on_conditions_changed)
         self._assay_panel.conditions_changed.connect(
             lambda: self._sensitivity_panel.set_nominal_values(self._assay_panel.current_conditions())
         )
@@ -929,7 +1060,9 @@ class FittingSession(QWidget):
         self._bounds_panel.bounds_changed.connect(self._on_bounds_changed)
 
         self._sensitivity_panel.run_requested.connect(self.run_sensitivity)
+        # Cancel is offered in two places: the sidebar panel and the running tab.
         self._sensitivity_panel.cancel_requested.connect(self._cancel_sensitivity)
+        self._sensitivity_widget.cancel_requested.connect(self._cancel_sensitivity)
 
         # Direct widget-to-widget: style → every plot tab
         self._style_widget.widget.style_changed.connect(self._plot_widget.apply_style)
@@ -941,6 +1074,8 @@ class FittingSession(QWidget):
         self._plot_tabs.currentChanged.connect(
             lambda _: self._summary_widget.show_samples(self._plot_tabs.currentWidget() is self._sensitivity_widget)
         )
+        # Save Plot saves the tab on screen, so what it can do changes with the tab.
+        self._plot_tabs.currentChanged.connect(lambda _: self.actions_changed.emit())
 
         # Ensemble interaction: pick a different representative fit.
         self._summary_widget.representative_selected.connect(self._on_representative_selected)
@@ -950,7 +1085,14 @@ class FittingSession(QWidget):
     # Slots
     # ------------------------------------------------------------------
 
+    def _running_work(self) -> str:
+        """What this session has running, named for a message, or ``''`` when nothing is."""
+        running = ('fit', self.fit_running()), ('sensitivity analysis', self.sensitivity_running())
+        return ' and '.join(name for name, is_running in running if is_running)
+
     def _on_data_loaded(self, ms: MeasurementSet) -> None:
+        # Both describe the data being replaced, so neither can be left running.
+        stopped = self._running_work()
         self._stop_fit()
         self._state.measurement_set = ms
         self._state.source_file = self._data_panel.current_path()
@@ -965,9 +1107,11 @@ class FittingSession(QWidget):
         self._show_results(force=True)
         active = ms.n_active
         total = ms.n_replicas
-        self.status_message.emit(f'Loaded: {ms.n_points} pts × {total} replicas — {active}/{total} active')
+        loaded = f'Loaded: {ms.n_points} pts × {total} replicates — {active}/{total} active'
+        self.status_message.emit(f'{loaded} — the running {stopped} was stopped' if stopped else loaded)
 
     def _on_data_cleared(self) -> None:
+        stopped = self._running_work()
         self._stop_fit()
         self._state.measurement_set = None
         self._state.source_file = None
@@ -979,18 +1123,20 @@ class FittingSession(QWidget):
         self._clear_identifiability()
         self._clear_sensitivity()
         self._show_results(force=True)
+        if stopped:
+            self.status_message.emit(f'Data cleared — the running {stopped} was stopped')
 
     def _on_preprocessing_applied(self) -> None:
         self._replica_panel.refresh()
         self._show_results(redraw=True)
         ms = self._state.measurement_set
         if ms:
-            self.status_message.emit(f'Preprocessing applied — {ms.n_active}/{ms.n_replicas} replicas active')
+            self.status_message.emit(f'Outlier removal applied — {ms.n_active}/{ms.n_replicas} replicates active')
 
     def _on_preprocessing_reset(self) -> None:
         self._replica_panel.refresh()
         self._show_results(redraw=True)
-        self.status_message.emit('Replicas reset — all active')
+        self.status_message.emit('Replicates reset — all active')
 
     def _on_replicas_changed(self) -> None:
         self._show_results(redraw=True)
@@ -1000,9 +1146,6 @@ class FittingSession(QWidget):
         self._bounds_panel.set_assay_type(assay_type)
         meta = ASSAY_REGISTRY[assay_type]
         self._update_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
-
-    def _on_conditions_changed(self) -> None:
-        self._state.conditions = self._assay_panel.current_conditions()
 
     def _on_config_changed(self) -> None:
         self._state.fit_config = self._fit_panel.current_config()
@@ -1020,6 +1163,7 @@ class FittingSession(QWidget):
         if self.sender() is not worker:
             return  # a fit whose data were replaced while it ran
         self._fit_worker = None
+        retire(worker)
         self.actions_changed.emit()
         if not result.success:
             self._report_no_passing_fit(result)
@@ -1029,6 +1173,10 @@ class FittingSession(QWidget):
         self._state.held_fit_results = [result]
         self._state.profile_result = None
         self._show_results(force=True)
+        # The previous fit's profile describes data this one replaces, and only
+        # one profile worker is reachable at a time: drop it through the one
+        # path that sees its thread out.
+        self._stop_profile()
         if profile_supported(AssayType[result.assay_type]):
             # Profile the replicates the fit used, so the tab describes the same data.
             ms = worker.ms.with_active(fit_replica_ids(result))
@@ -1039,7 +1187,6 @@ class FittingSession(QWidget):
             self._profile_worker.error.connect(self._on_profile_error)
             self._profile_worker.start()
         else:
-            self._profile_worker = None
             self._identifiability_widget.update_fit(result, None, result.assay_type)
 
         per_replica = result.uncertainty_source == 'replicate'  # JSON-compat magic value
@@ -1050,12 +1197,12 @@ class FittingSession(QWidget):
             self.status_message.emit(f'Fit complete but hidden — {hidden}')
         elif per_replica:
             self.status_message.emit(
-                f'Per-replica fit complete — R²={result.r_squared:.4f}, '
-                f'RMSE={result.rmse:.4e}, {n_fit}/{n_total} replicas fit'
+                f'Per-replicate fit complete — R²={fmt_r2(result.r_squared)}, '
+                f'RMSE={fmt_sci(result.rmse)}, {n_fit}/{n_total} replicates fit'
             )
         else:
             self.status_message.emit(
-                f'Fit complete — R²={result.r_squared:.4f}, RMSE={result.rmse:.4e}, '
+                f'Fit complete — R²={fmt_r2(result.r_squared)}, RMSE={fmt_sci(result.rmse)}, '
                 f'{result.n_passing}/{result.n_total} trials passed'
             )
 
@@ -1094,24 +1241,43 @@ class FittingSession(QWidget):
         self.status_message.emit('Fit failed — no trial met the quality threshold')
 
     def _on_fit_error(self, msg: str) -> None:
-        if self.sender() is not self._fit_worker:
+        worker = self._fit_worker
+        if self.sender() is not worker:
             return
         self._fit_worker = None
+        retire(worker)
         self.actions_changed.emit()
         QMessageBox.warning(self, 'Fit Error', msg)
         self.status_message.emit(f'Fit failed: {msg}')
 
     def _stop_fit(self) -> None:
-        """Discard a fit still running: its signals are disconnected, so its result is never shown."""
+        """Stop a fit still running and wait for it, so its result is never shown and its thread is gone."""
         worker = self._fit_worker
         if worker is None:
             return
-        for signal in (worker.finished, worker.error):
-            try:
-                signal.disconnect()
-            except TypeError:
-                pass
         self._fit_worker = None
+        worker.cancel()
+        retire(worker)
+        self.actions_changed.emit()
+
+    def _stop_profile(self) -> None:
+        """Stop the Ka profile still being computed and see its thread out."""
+        worker = self._profile_worker
+        if worker is None:
+            return
+        self._profile_worker = None
+        worker.cancel()
+        retire(worker)
+
+    def _stop_sensitivity(self) -> None:
+        """Stop a sensitivity run still going and wait for it, which also ends its worker processes."""
+        worker = self._sensitivity_worker
+        if worker is None:
+            return
+        self._sensitivity_worker = None
+        worker.cancel()
+        retire(worker)
+        self._sensitivity_panel.set_running(False)
         self.actions_changed.emit()
 
     # ------------------------------------------------------------------
@@ -1119,15 +1285,21 @@ class FittingSession(QWidget):
     # ------------------------------------------------------------------
 
     def _on_profile_complete(self, profile: ProfileResult) -> None:
-        if self.sender() is not self._profile_worker:
+        worker = self._profile_worker
+        if self.sender() is not worker:
             return  # the fit this profile belongs to has been replaced
+        self._profile_worker = None
+        retire(worker)
         self._state.profile_result = profile
         result = self._state.held_fit_results[-1]
         self._identifiability_widget.update_fit(result, profile, result.assay_type)
 
     def _on_profile_error(self, msg: str) -> None:
-        if self.sender() is not self._profile_worker:
+        worker = self._profile_worker
+        if self.sender() is not worker:
             return
+        self._profile_worker = None
+        retire(worker)
         result = self._state.held_fit_results[-1]
         self._identifiability_widget.update_fit(result, None, result.assay_type)
         QMessageBox.warning(
@@ -1135,15 +1307,8 @@ class FittingSession(QWidget):
         )
 
     def _clear_identifiability(self) -> None:
-        """Empty the Identifiability tab and discard any Ka profile still being computed."""
-        worker = self._profile_worker
-        if worker is not None:
-            for signal in (worker.finished, worker.error):
-                try:
-                    signal.disconnect()
-                except TypeError:
-                    pass
-        self._profile_worker = None
+        """Empty the Identifiability tab and stop any Ka profile still being computed."""
+        self._stop_profile()
         self._state.profile_result = None
         self._identifiability_widget.clear()
 
@@ -1167,13 +1332,19 @@ class FittingSession(QWidget):
         if ms is None:
             QMessageBox.warning(self, 'No Data', 'Load a measurement file first.')
             return
+        if self.fit_running():
+            QMessageBox.warning(self, 'Already Running', _FIT_RUNNING_ANALYSIS_NOTE)
+            return
+        if self.sensitivity_running():
+            QMessageBox.warning(self, 'Already Running', _SENSITIVITY_RUNNING_ANALYSIS_NOTE)
+            return
 
-        if self._state.assay_type is AssayType.DYE_ALONE:
+        if not profile_supported(self._state.assay_type):
             QMessageBox.warning(
                 self,
                 'Sensitivity Analysis',
-                'Dye-only measurements have no association constant to analyse. '
-                'Pick a binding assay (GDA, IDA, or DBA) to run a sensitivity analysis.',
+                'The selected assay has no single association constant for the analysis to follow. '
+                'Pick GDA, IDA or DBA to run a sensitivity analysis.',
             )
             return
 
@@ -1205,13 +1376,15 @@ class FittingSession(QWidget):
         resolved = resolve_fit_config(fit_config, sens_config)
         n_replicas = ms.n_active if resolved.per_replica else 1
         curve_fits = (estimated_fit_count(sens_config) + 1) * n_replicas
-        if estimated_optimizer_runs(sens_config, resolved, n_replicas, assay_type=self._state.assay_type) > 20_000:
+        worker_count = preferences.worker_count()
+        if estimated_optimizer_runs(sens_config, resolved, n_replicas) > 20_000:
+            spread = 'one at a time' if worker_count == 1 else f'{worker_count} at a time'
             reply = QMessageBox.question(
                 self,
                 'This Will Take a While',
                 f'Your data will be re-fitted about {curve_fits:,} times to measure how much '
-                f'the result moves.\n\nThat can take several minutes. You can stop it at any '
-                f'point once it starts, and the progress bar will estimate the time left.\n\n'
+                f'the result moves, {spread}.\n\nYou can stop it at any point once it starts, '
+                f'and the progress bar will estimate the time left.\n\n'
                 f'Start the analysis?',
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -1223,11 +1396,13 @@ class FittingSession(QWidget):
             conditions,
             fit_config,
             sens_config,
-            max_workers=preferences.worker_count(),
+            max_workers=worker_count,
+            input_labels=self._sensitivity_panel.input_labels(),
             parent=self,
         )
         self._sensitivity_worker.progress.connect(self._on_sensitivity_progress)
         self._sensitivity_worker.finished.connect(self._on_sensitivity_complete)
+        self._sensitivity_worker.stopped.connect(self._on_sensitivity_stopped)
         self._sensitivity_worker.error.connect(self._on_sensitivity_error)
 
         self._sensitivity_started = time.monotonic()
@@ -1236,11 +1411,21 @@ class FittingSession(QWidget):
         self._sensitivity_panel.set_running(True)
         self._plot_tabs.setCurrentWidget(self._sensitivity_widget)
         self._sensitivity_worker.start()
+        self.actions_changed.emit()
         self.status_message.emit('Running sensitivity analysis…')
 
     def _on_sensitivity_progress(self, done: int, total: int) -> None:
-        """Report progress, with a time estimate once there is enough to judge."""
+        """Report progress, with a time estimate once there is enough to judge.
+
+        A run that has been asked to stop reports that instead: the counts still
+        arrive from the fits that were already running, and a rising count in
+        the status bar beside a page that says it is stopping reads as two
+        contradictory answers.
+        """
         self._sensitivity_widget.set_progress(done, total)
+        if self._sensitivity_worker is not None and self._sensitivity_worker.cancelled:
+            self.status_message.emit(STOPPING_TEXT)
+            return
         elapsed = time.monotonic() - self._sensitivity_started
         if 3 <= done < total and elapsed > 0:
             remaining = elapsed / done * (total - done)
@@ -1249,6 +1434,12 @@ class FittingSession(QWidget):
             self.status_message.emit(f'Analysing — {done} of {total}')
 
     def _on_sensitivity_complete(self, result) -> None:
+        worker = self._sensitivity_worker
+        if self.sender() is not worker:
+            return  # a run whose data were replaced while it went
+        self._sensitivity_worker = None
+        cancelled = worker is not None and worker.cancelled
+        retire(worker)
         self._state.sensitivity_result = result
         # Shown or hidden by the selection as it is now, before any tab draws it.
         self._show_results()
@@ -1256,40 +1447,58 @@ class FittingSession(QWidget):
         self._summary_widget.set_sensitivity(result)
         self._identifiability_widget.update_sensitivity(result)
         self._sensitivity_panel.set_running(False)
-        if self._sensitivity_worker is not None and self._sensitivity_worker.cancelled:
+        self.actions_changed.emit()
+        hidden = self._state.sensitivity_note
+        if hidden is not None:
+            # The counts describe a result no tab is showing, so the note takes their place.
+            self.status_message.emit(f'Sensitivity {"stopped" if cancelled else "complete"} but hidden — {hidden}')
+        elif cancelled:
             self.status_message.emit(
                 f'Sensitivity stopped — {result.n_success}/{result.n_total} fits succeeded before you cancelled'
             )
         else:
             self.status_message.emit(f'Sensitivity complete — {result.n_success}/{result.n_total} fits succeeded')
 
+    def _on_sensitivity_stopped(self) -> None:
+        """A run cancelled before it had a single finished fit: there is nothing to show for it."""
+        worker = self._sensitivity_worker
+        if self.sender() is not worker:
+            return  # a run whose data were replaced while it went
+        self._sensitivity_worker = None
+        retire(worker)
+        self._show_previous_sensitivity()
+        self._sensitivity_panel.set_running(False)
+        self.actions_changed.emit()
+        self.status_message.emit('Sensitivity stopped — no fits had finished')
+
     def _on_sensitivity_error(self, msg: str) -> None:
-        # Take the tab off the progress page: back to what it showed before the run.
+        worker = self._sensitivity_worker
+        if self.sender() is not worker:
+            return  # a run whose data were replaced while it went
+        self._sensitivity_worker = None
+        retire(worker)
+        self.actions_changed.emit()
+        self._show_previous_sensitivity()
+        QMessageBox.warning(self, 'Sensitivity Analysis', msg)
+        self._sensitivity_panel.set_running(False)
+        self.status_message.emit(f'Sensitivity failed: {msg}')
+
+    def _show_previous_sensitivity(self) -> None:
+        """Take the Ka Sensitivity tab off the progress page: back to what it showed before the run."""
         previous = self._state.sensitivity_result
         if previous is None:
             self._sensitivity_widget.clear()
         else:
             self._sensitivity_widget.update_result(previous)
         self._summary_widget.set_sensitivity(previous)
-        QMessageBox.warning(self, 'Sensitivity Analysis', msg)
-        self._sensitivity_panel.set_running(False)
-        self.status_message.emit(f'Sensitivity failed: {msg}')
 
     def _clear_sensitivity(self) -> None:
         """Drop the sensitivity result from the Ka Sensitivity tab and the summary, and stop a run still going.
 
-        The stopped run's signals are disconnected first, so its result never
-        reaches data it was not computed on.
+        The stopped run's signals reach nothing, so its result never describes
+        data it was not computed on.
         """
-        worker = self._sensitivity_worker
-        if worker is not None:
-            for signal in (worker.progress, worker.finished, worker.error):
-                try:
-                    signal.disconnect()
-                except TypeError:
-                    pass
-            worker.cancel()
-        self._sensitivity_worker = None
+        self._stop_sensitivity()
         self._state.sensitivity_result = None
         self._state.sensitivity_note = None
         self._sync_notes()
@@ -1300,7 +1509,7 @@ class FittingSession(QWidget):
     def _cancel_sensitivity(self) -> None:
         if self._sensitivity_worker is not None:
             self._sensitivity_worker.cancel()
-            self.status_message.emit('Cancelling…')
+            self.status_message.emit(STOPPING_TEXT)
 
     def _on_plot_fit_selected(self, index: int) -> None:
         """A fit picked by clicking a distribution point: remember it as the
@@ -1344,7 +1553,10 @@ class FittingSession(QWidget):
         selected. The note names what differs and how to undo it. *what* names
         the result ("fit") and *redo* how to make a new one ("run the fit
         again"). With no data loaded only the assay type and the conditions
-        can be compared.
+        can be compared. The fit configuration is not part of the test: a
+        sensitivity analysis is run from its own settings and carries its own
+        baseline fit, and every configuration difference that changes what it
+        means is named where it is shown.
         """
         ms = self._state.measurement_set
         made = f'This {what} was made'
@@ -1418,7 +1630,9 @@ class FittingSession(QWidget):
         type. No number is recomputed: a hidden result is shown again exactly
         as it was. The tabs are redrawn only when a result is shown or hidden;
         *redraw* also redraws the Fit Curve, for a change to its points, and
-        *force* redraws every tab, for new results.
+        *force* redraws every tab, for new results. A change that hides a
+        result replaces the status bar's message about it, which described
+        results the tabs no longer show.
         """
         state = self._state
         notes: dict[str, str] = {}
@@ -1435,6 +1649,8 @@ class FittingSession(QWidget):
         state.hidden_fit_notes = notes
         state.sensitivity_note = sensitivity_note
         self._sync_notes()
+        if changed and (notes or sensitivity_note):
+            self.status_message.emit(_RESULTS_HIDDEN_NOTE)
         if changed or force:
             self._render_results(force=force)
         elif redraw:

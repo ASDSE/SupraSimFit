@@ -22,6 +22,7 @@ from gui.preferences import APP_NAME, ORG_NAME
 from gui.update_check import UpdateCheckWorker, is_newer
 from gui.update_dialog import UpdateAvailableDialog
 from gui.widgets.flat_tabs import FlatTabWidget
+from gui.workers import retire
 
 
 class _SpinBoxWheelRedirect(QObject):
@@ -218,11 +219,14 @@ class FittingMainWindow(QMainWindow):
         self._act_export_csv.triggered.connect(self._on_export_csv)
 
         self._act_export_raw = QAction('Export Raw Data\u2026', self)
-        self._act_export_raw.setToolTip('Export the currently loaded replicas and concentrations to TXT or CSV')
+        self._act_export_raw.setToolTip('Export the currently loaded replicates and concentrations to TXT or CSV')
         self._act_export_raw.triggered.connect(self._on_export_raw)
 
         self._act_save_plot = QAction('Save Plot', self)
-        self._act_save_plot.setToolTip('Export the current plot as PNG or SVG')
+        self._act_save_plot.setToolTip(
+            'Save the plot on the tab that is showing — the Fit Curve and Distributions tabs as PNG or SVG, '
+            'the Identifiability and Ka Sensitivity tabs as PNG'
+        )
         self._act_save_plot.triggered.connect(self._on_save_plot)
 
         self._act_export_dists = QAction('Save Distributions Plot\u2026', self)
@@ -248,6 +252,7 @@ class FittingMainWindow(QMainWindow):
                 self._act_export_txt,
                 self._act_export_csv,
                 self._act_export_dists,
+                self._act_save_plot,
             )
         }
 
@@ -371,33 +376,39 @@ class FittingMainWindow(QMainWindow):
         self._sync_actions()
 
     def _sync_actions(self) -> None:
-        """Enable Run Fit and the result exports for what the active session can do now.
+        """Enable Run Fit, Save Plot and the result exports for what the active session can do now.
 
-        Run Fit is unavailable while a fit is running, and the result exports
-        while every fit the session holds is hidden; the tooltip then says why.
+        Run Fit is unavailable while a fit or a sensitivity analysis is running
+        there, Save Plot while the plot tab on screen has nothing to save, and
+        the result exports while every fit the session holds is hidden; each
+        tooltip then says why.
         """
         session = self.active_session()
-        running = session is not None and session.fit_running()
-        self._act_fit.setEnabled(not running)
-        self._act_fit.setToolTip(
-            'A fit is running in this session. Run Fit is available again once it finishes.'
-            if running
-            else self._action_tips[self._act_fit]
-        )
+        busy = None if session is None else session.busy_note()
+        self._act_fit.setEnabled(busy is None)
+        self._act_fit.setToolTip(busy or self._action_tips[self._act_fit])
+
+        plot_note = None if session is None else session.plot_export_note()
+        self._act_save_plot.setEnabled(plot_note is None)
+        self._act_save_plot.setToolTip(plot_note or self._action_tips[self._act_save_plot])
+
         note = None if session is None else session.hidden_results_note()
         for action in (self._act_export, self._act_export_txt, self._act_export_csv, self._act_export_dists):
             action.setEnabled(note is None)
             action.setToolTip(note or self._action_tips[action])
 
     def _close_tab(self, idx: int) -> None:
+        """Close one session tab, stopping the work it started before its widgets go."""
         if self._tabs.count() == 1:
             # Keep at least one tab
             QMessageBox.information(self, 'Cannot Close', 'At least one session must remain open.')
             return
-        widget = self._tabs.widget(idx)
+        session = self._tabs.widget(idx)
         self._tabs.removeTab(idx)
-        if widget:
-            widget.deleteLater()
+        if session is not None:
+            if isinstance(session, FittingSession):
+                session.shutdown()
+            session.deleteLater()
 
     def _rename_tab(self, session: FittingSession, title: str) -> None:
         idx = self._tabs.indexOf(session)
@@ -501,13 +512,18 @@ class FittingMainWindow(QMainWindow):
             ``True`` for the background startup check — errors are swallowed,
             and the dialog is not opened (only the title-bar hint appears).
             ``False`` for the user-triggered menu action — errors raise a
-            :class:`QMessageBox.warning` and the dialog opens when a newer
-            release is found.
+            :class:`QMessageBox.warning`, the dialog opens when a newer release
+            is found, and a check already in flight is said to be so.
         """
-        # Refuse to start a second check while one is in flight.
-        # Note: completion slots null this out *before* the worker is
-        # deleteLater'd, so isRunning() is never called on a deleted QObject.
+        # One check at a time: the startup check is already on its way when the
+        # window opens, and the menu item says so rather than doing nothing.
         if self._update_worker is not None and self._update_worker.isRunning():
+            if not silent:
+                QMessageBox.information(
+                    self,
+                    'Already checking',
+                    'A check for updates is already running. Give it a moment, then try again.',
+                )
             return
         if not silent:
             self._act_check_updates.setEnabled(False)
@@ -515,12 +531,12 @@ class FittingMainWindow(QMainWindow):
 
         worker = UpdateCheckWorker(self)
         self._update_worker = worker
-        worker.finished.connect(lambda info: self._on_update_check_done(info, silent=silent))
-        worker.error.connect(lambda msg: self._on_update_check_error(msg, silent=silent))
+        worker.finished.connect(lambda info, w=worker: self._on_update_check_done(w, info, silent=silent))
+        worker.error.connect(lambda msg, w=worker: self._on_update_check_error(w, msg, silent=silent))
         worker.start()
 
-    def _on_update_check_done(self, info: dict, *, silent: bool) -> None:
-        self._discard_update_worker()
+    def _on_update_check_done(self, worker: UpdateCheckWorker, info: dict, *, silent: bool) -> None:
+        self._discard_update_worker(worker)
         if not silent:
             self._act_check_updates.setEnabled(True)
             self._statusbar.showMessage('Ready')
@@ -535,38 +551,49 @@ class FittingMainWindow(QMainWindow):
                 f"You're on the latest version ({__version__}).",
             )
 
-    def _on_update_check_error(self, msg: str, *, silent: bool) -> None:
-        self._discard_update_worker()
+    def _on_update_check_error(self, worker: UpdateCheckWorker, msg: str, *, silent: bool) -> None:
+        self._discard_update_worker(worker)
         if silent:
             return  # Offline / rate-limited / etc. — stay quiet.
         self._act_check_updates.setEnabled(True)
         self._statusbar.showMessage('Ready')
         QMessageBox.warning(self, 'Could not check for updates', msg)
 
-    def _discard_update_worker(self) -> None:
-        """Clear the worker reference and schedule the QObject for deletion.
+    def _discard_update_worker(self, worker: UpdateCheckWorker) -> None:
+        """Let go of the check that just reported, and clear the reference when it is the one held.
 
-        Must run before ``deleteLater()`` so a later call to
-        :meth:`_run_update_check` doesn't try to invoke ``isRunning()`` on
-        an already-deleted C++ object.
+        A check whose thread has ended reports on the interface thread, which
+        can be busy long enough for the user to start a second check first.
+        Only the check that reported is deleted; a newer one has the reference
+        by then and runs on.
         """
-        worker = self._update_worker
-        self._update_worker = None
-        if worker is not None:
-            worker.deleteLater()
+        worker.deleteLater()
+        if self._update_worker is worker:
+            self._update_worker = None
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        """Block until any in-flight update check finishes before closing.
+        """Stop the work every session started, and any update check, before closing.
 
-        The startup check can still be running when the window closes (e.g.
-        the GitHub request is waiting on its 5 s socket timeout). Destroying
-        a running ``QThread`` aborts the app with
-        ``QThread: Destroyed while thread is still running``. ``wait()`` is
-        bounded by the worker's own 5 s timeout, so this is a short pause.
+        Destroying a running ``QThread`` aborts the app with ``QThread:
+        Destroyed while thread is still running``, so every run is seen out
+        before the window goes; a sensitivity run's worker processes end with
+        it. Every session is asked to stop first and waited for afterwards, so
+        the runs stop side by side rather than one tab's stopping time after
+        another's. A run still going when its wait runs out is seen out in the
+        background, which is how quitting stays quick even on the update check,
+        which has no cancel of its own.
         """
-        worker = self._update_worker
-        if worker is not None and worker.isRunning():
-            worker.wait()
+        sessions = [
+            self._tabs.widget(index)
+            for index in range(self._tabs.count())
+            if isinstance(self._tabs.widget(index), FittingSession)
+        ]
+        for session in sessions:
+            session.cancel_running()
+        for session in sessions:
+            session.shutdown()
+        retire(self._update_worker)
+        self._update_worker = None
         super().closeEvent(event)
 
 

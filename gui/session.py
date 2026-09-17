@@ -18,7 +18,7 @@ from core.pipeline.fit_pipeline import (
     summarize_parameters,
 )
 from core.units import Quantity
-from gui.plotting.labels import fmt_unit_pretty
+from gui.plotting.labels import fmt_log10, fmt_unit_pretty
 from gui.widgets.replica_panel import _display_label
 
 if TYPE_CHECKING:
@@ -116,6 +116,17 @@ def _row_unit(spec: ParameterSummary) -> str:
         return '—'
     pretty = fmt_unit_pretty(spec.unit)
     return f'log10({pretty})' if spec.is_log else pretty
+
+
+def _fmt_report(spec: ParameterSummary, value: float) -> str:
+    """One number of *spec*'s row as the text report writes it.
+
+    A log₁₀ row goes through :func:`~gui.plotting.labels.fmt_log10`, the same
+    rule the summary table on screen follows, so a value is never written
+    coarser than the spread printed beside it: four significant figures would
+    turn 8.496983 ± 0.000096 into 8.497 ± 9.6e-05.
+    """
+    return fmt_log10(value, spec.stats) if spec.is_log else f'{value:.4g}'
 
 
 def _fixed_width_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> list[str]:
@@ -268,8 +279,10 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 [
                     (
                         _row_label(spec),
-                        f'{spec.estimate:.4g}',
-                        f'({spec.stats["min"]:.4g}, {spec.stats["max"]:.4g})' if spec.stats else '—',
+                        _fmt_report(spec, spec.estimate),
+                        f'({_fmt_report(spec, spec.stats["min"])}, {_fmt_report(spec, spec.stats["max"])})'
+                        if spec.stats
+                        else '—',
                         _row_unit(spec),
                     )
                     for spec in specs
@@ -287,9 +300,9 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                     [
                         (
                             _row_label(spec),
-                            f'{spec.stats["median"]:.4g} ± {spec.stats["mad"]:.4g}',
-                            f'{spec.stats["mean"]:.4g} ± {spec.stats["std"]:.4g}',
-                            f'[{spec.stats["p16"]:.4g}, {spec.stats["p84"]:.4g}]',
+                            f'{_fmt_report(spec, spec.stats["median"])} ± {_fmt_report(spec, spec.stats["mad"])}',
+                            f'{_fmt_report(spec, spec.stats["mean"])} ± {_fmt_report(spec, spec.stats["std"])}',
+                            f'[{_fmt_report(spec, spec.stats["p16"])}, {_fmt_report(spec, spec.stats["p84"])}]',
                             _row_unit(spec),
                         )
                         for spec in specs
@@ -377,8 +390,9 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
 
     Preconditions:
     - Raw data / fit curve plot: a measurement set is loaded.
-    - Distribution plot: a result is shown (uses fit_results).
+    - Distribution plot, identifiability plot: a result is shown (uses fit_results).
     - Fit results (JSON/TXT/CSV): a result is shown; exported are the shown results.
+    - Ka sensitivity plot: a sensitivity analysis is shown.
     - Style template: always available (style widget is always present).
 
     While every held result is hidden, the result artefacts give the note
@@ -387,9 +401,15 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     state = session._state
     ms_loaded = state.measurement_set is not None
     has_results = bool(state.fit_results)
+    has_sensitivity = state.sensitivity_result is not None and state.sensitivity_note is None
+    # The Identifiability tab is cleared by an import of results fitted elsewhere,
+    # so what it has to save is a question for the tab, not for the held results.
+    has_identifiability = session._identifiability_widget.has_chart()
 
     no_data_msg = 'Load a measurement file first.'
     no_fit_msg = session.hidden_results_note() or 'Run a fit first.'
+    no_identifiability_msg = session.hidden_results_note() or 'Run a fit in this session first.'
+    no_sensitivity_msg = state.sensitivity_note or 'Run a sensitivity analysis first.'
 
     from core.io.formats.measurement_writer import (
         write_measurements_csv,
@@ -414,10 +434,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     def _write_results_csv(path: Path) -> None:
         export_results_csv(state.fit_results, path, replica_ids=replica_ids)
 
-    def _write_fit_png(path: Path) -> None:
-        session._plot_widget.export_image(str(path))
-
-    def _write_fit_svg(path: Path) -> None:
+    def _write_fit_plot(path: Path) -> None:
         session._plot_widget.export_image(str(path))
 
     def _write_distributions(path: Path) -> None:
@@ -430,6 +447,12 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
             dpi=cfg.dpi,
             path=str(path),
         )
+
+    def _write_identifiability(path: Path) -> None:
+        session._identifiability_widget.export_image(str(path))
+
+    def _write_sensitivity(path: Path) -> None:
+        session._sensitivity_widget.export_image(str(path))
 
     def _write_style(path: Path) -> None:
         style = session._style_widget.widget.current_style()
@@ -482,7 +505,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
             suffix='_fit.png',
             available=ms_loaded,
             unavailable_reason=no_data_msg,
-            writer=_write_fit_png,
+            writer=_write_fit_plot,
         ),
         ExportableArtefact(
             key='fit_svg',
@@ -490,7 +513,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
             suffix='_fit.svg',
             available=ms_loaded,
             unavailable_reason=no_data_msg,
-            writer=_write_fit_svg,
+            writer=_write_fit_plot,
         ),
         ExportableArtefact(
             key='distributions_png',
@@ -499,6 +522,22 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
             available=has_results,
             unavailable_reason=no_fit_msg,
             writer=_write_distributions,
+        ),
+        ExportableArtefact(
+            key='identifiability_png',
+            label='Identifiability plot (PNG)',
+            suffix='_identifiability.png',
+            available=has_identifiability,
+            unavailable_reason=no_identifiability_msg,
+            writer=_write_identifiability,
+        ),
+        ExportableArtefact(
+            key='sensitivity_png',
+            label='Ka sensitivity plot (PNG)',
+            suffix='_sensitivity.png',
+            available=has_sensitivity,
+            unavailable_reason=no_sensitivity_msg,
+            writer=_write_sensitivity,
         ),
         ExportableArtefact(
             key='style_json',
