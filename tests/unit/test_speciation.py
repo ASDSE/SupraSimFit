@@ -14,6 +14,8 @@ Numeric regression of the signal itself is already covered by ``test_models`` an
 ``test_pipeline_e2e``; here the focus is the newly exposed species.
 """
 
+from decimal import Decimal, getcontext
+
 import numpy as np
 import pytest
 
@@ -59,6 +61,39 @@ def test_dba_species_close_mass_balance_and_rebuild_signal(mode):
 
     rebuilt = params['I0'] + params['I_dye_free'] * sp['D'] + params['I_dye_bound'] * sp['HD']
     np.testing.assert_allclose(_sig(assay, params), rebuilt, rtol=0, atol=0)
+
+
+def _free_fixed_exactly(Ka_dye: float, x: float, y_fixed: float) -> float:
+    """Free concentration of the fixed species, solved in 50-digit arithmetic.
+
+    The same quadratic, far enough from double precision that no digit of the
+    answer depends on how its root is written.
+    """
+    getcontext().prec = 50
+    a, delta = Decimal(Ka_dye), Decimal(x) - Decimal(y_fixed)
+    b = a * delta + 1
+    return float((-b + (b * b + 4 * a * Decimal(y_fixed)).sqrt()) / (2 * a))
+
+
+@pytest.mark.parametrize('Ka_dye', [1e6, 1e12, 1e18])
+def test_dba_species_hold_their_digits_where_the_fixed_species_is_all_but_used_up(Ka_dye):
+    """Strong binding leaves a free concentration many orders below the totals, and it is solved exactly.
+
+    Written as ``(−b + √(b² + 4ac)) / 2a``, that concentration is the
+    difference of two numbers agreeing to every digit double precision has
+    once ``Ka·c`` passes about 1e12, so the speciation comes out as rounding
+    error. Fitting measurement scatter, that noise beats the true plateau and
+    closes a confidence interval around a Ka the data say nothing about.
+    """
+    fixed = 6e-6
+    x = np.array([9e-6, 30e-6])  # titrant in excess: the fixed species is the one nearly used up
+    assay = DBAAssay(x_data=Q_(x, 'M'), y_data=Q_(np.zeros_like(x), 'au'), fixed_conc=Q_(fixed, 'M'), mode='DtoH')
+    sp = _sp(assay, {'Ka_dye': Ka_dye, 'I0': 0.0, 'I_dye_free': 5e7, 'I_dye_bound': 3e8})
+
+    np.testing.assert_allclose(sp['H'] + sp['HD'], fixed, **TOL)
+    np.testing.assert_allclose(sp['D'] + sp['HD'], x, **TOL)
+    exact = [_free_fixed_exactly(Ka_dye, float(xi), fixed) for xi in x]
+    np.testing.assert_allclose(sp['H'], exact, rtol=1e-12)
 
 
 # ---------------------------------------------------------------------------

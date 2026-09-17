@@ -48,6 +48,37 @@ from scipy.optimize import brentq
 # =============================================================================
 
 
+def _positive_root(a: float, b: float, total: float, sqrt_disc: float) -> float:
+    """Non-negative root of ``a·z² + b·z − total = 0``, taken without cancellation.
+
+    *sqrt_disc* is the square root of the discriminant ``b² + 4·a·total``. For
+    ``b ≥ 0`` the usual numerator ``−b + sqrt_disc`` subtracts two numbers that
+    agree to as many digits as ``a·total`` is small against ``b²``, so at a
+    binding constant above about 1e17 M⁻¹ the root is rounding error rather
+    than a concentration; ``2·total / (b + sqrt_disc)`` is the same root with
+    its two terms added instead.
+
+    Parameters
+    ----------
+    a, b : float
+        Quadratic and linear coefficients, ``a ≥ 0``.
+    total : float
+        The total concentration the root belongs to (M), ``≥ 0``.
+    sqrt_disc : float
+        ``sqrt(b² + 4·a·total)``, shared by both species of the equilibrium.
+
+    Returns
+    -------
+    float
+        The root, in the unit of *total*.
+    """
+    if total == 0.0:
+        return 0.0
+    if b >= 0.0:
+        return 2.0 * total / (b + sqrt_disc)
+    return (-b + sqrt_disc) / (2.0 * a)
+
+
 def dba_species(
     Ka_dye: float,
     x_titrant: np.ndarray,
@@ -64,11 +95,15 @@ def dba_species(
 
         Ka_dye · y_free² + (Ka_dye · (x - y_fixed) + 1) · y_free - y_fixed = 0
 
-    where ``y_free`` is the free conc. of the fixed species; the
-    physically meaningful (non-negative) root is selected.  The free
-    titrant concentration is ``x_free = y_free + (x - y_fixed)`` and
-    ``[HD] = Ka_dye · y_free · x_free``.  ``mode`` only decides which of
-    the two frees is the host and which is the dye.
+    where ``y_free`` is the free conc. of the fixed species.  The titrant's
+    free concentration solves the same quadratic with ``x`` and ``y_fixed``
+    exchanged, which has the same discriminant, and ``[HD] = Ka_dye · [H] · [D]``
+    follows from the two.  Each free concentration is taken from the form of
+    the quadratic root that adds its two terms rather than subtracting them:
+    the subtracting form loses every significant digit to cancellation once
+    ``Ka_dye · c`` passes about 1e12, and returns speciation that is finite
+    noise rather than a solution.  ``mode`` only decides which of the two
+    frees is the host and which is the dye.
 
     Returning the full speciation (not just the signal) keeps one solve
     shared by both the signal model (:func:`dba_signal`) and species-level
@@ -105,28 +140,25 @@ def dba_species(
 
         # Quadratic coefficients for y_free (free concentration of fixed species)
         # Ka_dye * y_free^2 + (Ka_dye * delta + 1) * y_free - y_fixed = 0
+        # and, with the two species exchanged, for x_free.
         a = Ka_dye
-        b = Ka_dye * delta + 1
-        c = -y_fixed
+        b_y = Ka_dye * delta + 1
+        b_x = 1 - Ka_dye * delta
 
-        discriminant = b**2 - 4 * a * c
+        discriminant = b_y**2 + 4 * a * y_fixed
 
         if discriminant < 0:
             H[i] = D[i] = HD[i] = np.nan
             continue
 
         sqrt_disc = np.sqrt(discriminant)
-        y1 = (-b + sqrt_disc) / (2 * a)
-        y2 = (-b - sqrt_disc) / (2 * a)
+        y_free = _positive_root(a, b_y, y_fixed, sqrt_disc)
+        x_free = _positive_root(a, b_x, x, sqrt_disc)
 
-        # Choose physically meaningful (non-negative) root
-        y_free = y1 if y1 >= 0 else (y2 if y2 >= 0 else np.nan)
-
-        if np.isnan(y_free):
+        if not np.isfinite(y_free) or not np.isfinite(x_free):
             H[i] = D[i] = HD[i] = np.nan
             continue
 
-        x_free = y_free + delta
         hd_complex = Ka_dye * y_free * x_free
 
         # Which free is host vs dye depends on the titrant.
