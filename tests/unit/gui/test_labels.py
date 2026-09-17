@@ -1,6 +1,6 @@
 """Tests for gui.plotting.labels — HTML and Unicode formatting."""
 
-from gui.plotting.labels import fmt_param, fmt_unit_html, fmt_unit_pretty
+from gui.plotting.labels import fmt_param, fmt_r2, fmt_unit_html, fmt_unit_pretty, plain_label
 
 
 class TestFmtParam:
@@ -65,3 +65,52 @@ def test_fmt_sci_reads_plainly_at_every_magnitude():
     assert fmt_sci(0.0123) == '0.012'
     assert fmt_sci(1.7e8) == '1.7×10⁸'
     assert fmt_sci(3.3e-6) == '3.3×10⁻⁶'
+
+
+class TestFmtR2:
+    def test_below_the_floor_reads_below_it(self):
+        """A fit short of the Min R² must not read as the floor it misses."""
+        text = fmt_r2(0.98996, 0.99)
+        assert float(text) < 0.99
+
+    def test_at_or_above_the_floor_reads_so(self):
+        """The same guard the other way: a fit that clears the floor keeps reading cleared."""
+        text = fmt_r2(0.990004, 0.99)
+        assert float(text) >= 0.99
+
+    def test_near_one_never_reads_as_one(self):
+        """An imperfect fit must not be shown as a perfect one, however close it gets."""
+        assert float(fmt_r2(0.999999)) < 1.0
+        assert float(fmt_r2(1.0 - 1e-13)) < 1.0
+
+    def test_distance_below_one_stays_visible(self):
+        """Two decimals of the gap to 1 survive, so 0.999984 does not flatten to 0.99998."""
+        assert fmt_r2(0.999984) == '0.999984'
+        assert fmt_r2(0.9908) == '0.9908'
+
+    def test_exactly_one_reads_as_one(self):
+        assert fmt_r2(1.0) == '1.0000'
+
+
+class TestPlainLabel:
+    def test_condition_labels_of_every_assay_flatten(self):
+        """Every condition label in the GUI reads as plain text with no markup left."""
+        from core.assays.registry import AssayType
+        from gui.widgets.assay_conditions import condition_fields
+
+        for assay_type in AssayType:
+            for field in condition_fields(assay_type):
+                text = plain_label(field.label)
+                assert '<' not in text and '>' not in text
+                assert not any(ch in '0123456789' for ch in text), f'{field.label} kept a baseline digit'
+
+    def test_real_labels(self):
+        assert plain_label('[Host]<sub>0</sub>') == '[Host]₀'
+        assert plain_label('[Dye]<sub>0</sub>') == '[Dye]₀'
+        assert plain_label('K<sub>a,dye</sub>') == 'Ka,dye'
+
+    def test_superscript_units(self):
+        assert plain_label('M<sup>−1</sup>') == 'M⁻¹'
+
+    def test_plain_text_passes_through(self):
+        assert plain_label('Guest') == 'Guest'
