@@ -2,10 +2,12 @@
 
 This module defines the abstract base class for all assay types. Each assay
 holds experimental data and knows how to compute predicted signals via its
-forward model.
+forward model, and the speciation that signal is built from.
 
-The BaseAssay class is a data container, not a fitter. Fitting is handled
-by the optimizer module.
+The BaseAssay class is a data container: it evaluates the model, and
+:mod:`core.pipeline` fits it. The fit reads the species of :meth:`BaseAssay.species`
+as the columns its signal parameters multiply, which the registry's
+``signal_species`` names, so both methods must come from one equilibrium solve.
 """
 
 from abc import ABC, abstractmethod
@@ -131,7 +133,10 @@ class BaseAssay(ABC):
         ``{'H', 'D', 'G', 'HD', 'HG'}`` for competitive assays.  Insertion order
         is the intended plotting/legend order.  Implementations MUST reuse the
         model's own ``*_species`` solve (the one the signal is built from) so the
-        speciation and the plotted signal can never disagree.
+        speciation and the plotted signal can never disagree.  The fit builds its
+        design matrix from these arrays — one column per signal coefficient, named
+        by the registry's ``signal_species`` — so ``forward_model`` and this method
+        describe the same state of the solution or the fit describes neither.
 
         Parameters
         ----------
@@ -164,7 +169,7 @@ class BaseAssay(ABC):
         Parameters
         ----------
         params : np.ndarray
-            Parameter values (bare floats from optimizer).
+            Parameter values as bare floats, in ``parameter_keys`` order.
 
         Returns
         -------
@@ -179,7 +184,7 @@ class BaseAssay(ABC):
         Parameters
         ----------
         params : np.ndarray
-            Parameter values (bare floats from optimizer).
+            Parameter values as bare floats, in ``parameter_keys`` order.
 
         Returns
         -------

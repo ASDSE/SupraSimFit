@@ -11,7 +11,9 @@ Target:  Ka_HG, Ka_H2G (stepwise association constants)
 
 This is the 2:1 mirror of :class:`~core.assays.hg2.HG2Assay` and shares its
 mass-balance solver.  Like the 1:2 case, the two stepwise constants are not
-generally identifiable independently; the fit reports their spread honestly.
+generally identifiable independently; what the data fix is reported as a
+confidence interval per constant, each with the other refitted, together with
+the joint confidence region of the pair.
 """
 
 from dataclasses import dataclass, field
@@ -66,7 +68,7 @@ class H2GAssay(BaseAssay):
         ----------
         params : np.ndarray
             ``[Ka_HG, Ka_H2G, I0, I_G, I_H, I_HG, I_H2G]`` as bare floats
-            from the optimizer, in canonical units.
+            in canonical units, in ``parameter_keys`` order.
 
         Returns
         -------

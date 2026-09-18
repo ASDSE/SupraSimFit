@@ -10,8 +10,9 @@ Fixed:   Host (h0)
 Target:  Ka_HG, Ka_HG2 (stepwise association constants)
 
 The two stepwise constants are, in general, not independently identifiable.
-The fit does not hide this — it reports the spread of acceptable solutions
-rather than implying a unique pair.
+What the data fix is reported as such: a confidence interval per constant,
+each with the other constant refitted, and the joint confidence region of the
+pair, which is the wider statement wherever the two trade off.
 """
 
 from dataclasses import dataclass, field
@@ -66,7 +67,7 @@ class HG2Assay(BaseAssay):
         ----------
         params : np.ndarray
             ``[Ka_HG, Ka_HG2, I0, I_G, I_H, I_HG, I_HG2]`` as bare floats
-            from the optimizer, in canonical units.
+            in canonical units, in ``parameter_keys`` order.
 
         Returns
         -------

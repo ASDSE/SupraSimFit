@@ -83,7 +83,7 @@ class IDAAssay(BaseAssay):
         ----------
         params : np.ndarray
             [Ka_guest, I0, I_dye_free, I_dye_bound] as bare floats
-            from the optimizer, in canonical units.
+            in canonical units, in ``parameter_keys`` order.
 
         Returns
         -------

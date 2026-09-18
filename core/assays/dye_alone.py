@@ -51,7 +51,7 @@ class DyeAloneAssay(BaseAssay):
         Parameters
         ----------
         params : np.ndarray
-            [slope, intercept] as bare floats from optimizer.
+            [slope, intercept], in ``parameter_keys`` order.
 
         Returns
         -------
