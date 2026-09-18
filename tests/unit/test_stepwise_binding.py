@@ -1,8 +1,9 @@
 """Forward-model and mass-balance solver tests for the stepwise 1:2 / 2:1
 host-guest binding models (HG2 and H2G).
 
-The models solve the speciation with Brent's method on a monotonic mass
-balance.  These tests validate that algebra against *independent* references:
+The models solve the speciation with a safeguarded Newton iteration on a
+monotonic mass balance.  These tests validate that algebra against
+*independent* references:
 
 - a full 4-species ``fsolve`` of the coupled equilibria (a different solver),
 - conservation laws written with explicit stoichiometry (catches a wrong
@@ -45,7 +46,7 @@ class TestHG2MassBalance:
         np.testing.assert_allclose(guest_total, g0, rtol=1e-7)
 
     def test_matches_independent_full_system(self):
-        """Brent speciation agrees with an fsolve of the coupled equilibria.
+        """The speciation agrees with an fsolve of the coupled equilibria.
 
         Solved in µM units for conditioning; the four unknowns are the free
         and bound species, constrained by two mass balances and the two
@@ -193,8 +194,8 @@ class TestZeroGuestBaseline:
 
 
 class TestSolverRobustness:
-    """The Brent speciation must stay finite and physical across a wide range
-    of association-constant magnitudes (guards bracket-collapse failures)."""
+    """The speciation must stay finite and physical across a wide range of
+    association-constant magnitudes."""
 
     @pytest.mark.parametrize('Ka1, Ka2', [(1.0, 1.0), (1e8, 1.0), (1.0, 1e8), (1e8, 1e8), (1e6, 2e5)])
     def test_hg2_species_physical(self, Ka1, Ka2):

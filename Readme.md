@@ -157,6 +157,10 @@ Mechanistically, GDA shares the same coupled equilibria as IDA, but the *dye* is
 
 Linear calibration fitting for indicator dyes — establishes baseline fluorescence properties and helps correct for inner-filter effects in competitive binding assays. Concretely, a linear fit of dye-only fluorescence against dye concentration yields the free-dye response (`I_dye_free`) and baseline (`I0`), which can then be used as priors or fixed values for subsequent DBA/IDA/GDA fits.
 
+#### Solving the equilibrium
+
+Every predicted signal needs the free concentrations at that titration point. DBA has a closed form. The competitive assays (IDA, GDA) and the stepwise 1:2 models (HG2, H2G) need a numerical solve of the mass balance: a Newton iteration started from a guaranteed lower bound on the root and stopped on a **relative** step of 4 machine epsilons — monotone for the competitive balance, which is increasing and concave in the free host, and safeguarded by a bracket for the stepwise balance, which need not be. Where binding is tight the free concentration lies ten or more decades below the totals, so the balance is evaluated in a form that adds only the minority species of each binding partner. The solved concentration is accurate to a few epsilons *relative*, at any Ka and any ratio of the totals whose product with that Ka a double can still represent — certified against exact rational arithmetic — which is what keeps the Ka profile smooth enough that its minimum and its interval edges are the data's. Inputs there is no speciation for, such as a negative constant, a product of a constant with a total or a stepwise product beyond the range of a double, or a free concentration the solve drives below the smallest normal double, give *not a number*: that point has no fit rather than a wrong one.
+
 ### Why forward modelling
 
 Historical fitting methods (Scatchard, Hill, double-reciprocal) rearrange the binding isotherm so it can be fit with linear regression. Those transforms:
@@ -212,7 +216,7 @@ The confidence interval takes the entered conditions as exact. The **Ka Sensitiv
 
 ### Reproducibility
 
-Every fit records the seed that produced it, and the JSON export carries it, so a result can be reproduced from its file. Tick **Fixed seed** in Fit Configuration to hold one seed across runs; otherwise a seed is drawn per run and recorded. A sensitivity run has its own root seed, which fixes both the Sobol' scrambles and every perturbed fit's optimiser seed; it is printed under the run's plots and so is carried in the saved picture of the tab. Exported results also carry a fingerprint of the measured values, which is what lets *Import Results* refuse numbers that were fitted to other data.
+Every fit records the seed that produced it, and the JSON export carries it, so a result can be reproduced from its file. Tick **Fixed seed** in Fit Configuration to hold one seed across runs; otherwise a seed is drawn per run and recorded. A sensitivity run has its own root seed, which fixes both the Sobol' scrambles and every perturbed fit's optimiser seed; it is printed under the run's plots and so is carried in the saved picture of the tab. Exported results also carry a fingerprint of the measured values, which is what lets *Import Results* refuse numbers that were fitted to other data, and which equilibrium arithmetic scored them, so a file written by an earlier version is checked with the arithmetic that wrote it and its R², RMSE and fit curve are recomputed with the present one where the two differ.
 
 ### Identifiability note
 

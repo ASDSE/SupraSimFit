@@ -13,7 +13,10 @@ trustworthy:
 - custom bounds (a pinned coefficient, narrowed Ka bounds) are honoured;
 - an interval the data cannot close is reported open on that side, one that
   spans a gap of rejected Ka is reported split, and a pinned Ka has none;
-- a Ka the equilibrium model cannot be solved at counts as no fit;
+- a Ka the equilibrium model cannot be solved at counts as no fit, while a Ka
+  bound far above any real affinity still has a curve at every point;
+- the profiled residuals stay smooth in Ka, so the minimum the profile reports
+  is the data's and not the solve's;
 - assays without a single binding constant are rejected.
 """
 
@@ -30,6 +33,7 @@ from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.io import load_measurements
+from core.models.equilibrium import legacy_arithmetic
 from core.optimizer.filters import calculate_fit_metrics
 from core.optimizer.multistart import FitCancelled
 from core.pipeline import profile as profile_module
@@ -44,6 +48,7 @@ from tests.conftest import (
     HG2_TRUE,
     IDA_TRUE,
     _make_dba_data,
+    _make_gda_data,
     _make_hg2_data,
     _make_ida_data,
 )
@@ -83,6 +88,30 @@ def _regular_grid_size(profile) -> int:
 def _homoscedastic(y: np.ndarray, frac: float, seed: int) -> np.ndarray:
     """*y* plus Gaussian noise of constant sigma, *frac* of the largest signal."""
     return y + np.random.default_rng(seed).normal(0.0, frac * np.abs(y).max(), y.size)
+
+
+def _no_number_above(ka_wall: float):
+    """``IDAAssay.forward_model`` with no number above *ka_wall*, as a model without speciation there.
+
+    An equilibrium model reports a Ka it has no speciation for as species that
+    are not a number. Which Ka those are is the model's business, so the tests
+    that pin what the profile does with such a Ka put the wall where they can
+    see it instead of hunting for one in the arithmetic.
+    """
+    real = IDAAssay.forward_model
+
+    def forward_model(self, params):
+        signal = real(self, params)
+        if params[self.parameter_keys.index('Ka_guest')] > ka_wall:
+            return Q_(np.full(signal.magnitude.shape, np.nan), signal.units)
+        return signal
+
+    return forward_model
+
+
+def _strict_local_minima(values: np.ndarray) -> int:
+    """Interior points of *values* below both of their neighbours."""
+    return int(np.sum((values[1:-1] < values[:-2]) & (values[1:-1] < values[2:])))
 
 
 # ---------------------------------------------------------------------------
@@ -264,14 +293,15 @@ def test_interval_the_data_cannot_close_is_open_on_that_side():
     assert ka_lo < profile.ci[0] < strong['Ka_guest']
 
 
-def test_an_edge_the_model_cannot_be_solved_past_is_open_not_a_limit_from_the_data():
-    # Same data as the open-interval case, fitted with a Ka upper bound above
-    # the range the equilibrium solver can reach. The profile stops at the wall,
-    # but the data have not ruled out a larger Ka: the edge has to read open
-    # rather than as an upper limit the measurements established.
+def test_an_edge_the_model_cannot_be_solved_past_is_open_not_a_limit_from_the_data(monkeypatch):
+    # Same data as the open-interval case, fitted with a Ka upper bound above a
+    # Ka the model has no speciation for. The profile stops at that wall, but
+    # the data have not ruled out a larger Ka: the edge has to read open rather
+    # than as an upper limit the measurements established.
     strong = dict(IDA_TRUE, Ka_guest=1e11)
     x, y = _make_ida_data(strong)
     ms = _single(x, _homoscedastic(y, 0.01, 1))
+    monkeypatch.setattr(IDAAssay, 'forward_model', _no_number_above(1e13))
     profile = fit_profile(
         ms,
         IDAAssay,
@@ -368,9 +398,8 @@ def test_a_gap_in_the_accepted_ka_values_is_reported_as_a_split_interval():
     assert joined_ci == pytest.approx((10**1.7, 10**2.3), rel=1e-6)
 
 
-def test_a_ka_the_model_cannot_be_solved_at_is_no_fit_rather_than_an_error():
-    # Above about 1e19 1/M the equilibrium solver's bracket degenerates and it
-    # returns no species at all. Such a Ka fits nothing, so it drops out of the
+def test_a_ka_the_model_cannot_be_solved_at_is_no_fit_rather_than_an_error(monkeypatch):
+    # A Ka whose species are not a number fits nothing, so it drops out of the
     # profile; raising the Ka upper bound into that range must leave the best
     # fit and the interval exactly where the solvable range already put them.
     x, y = _make_ida_data(IDA_TRUE, n_points=12)
@@ -383,15 +412,73 @@ def test_a_ka_the_model_cannot_be_solved_at_is_no_fit_rather_than_an_error():
     solvable = profile_up_to(1e15)
     assert not np.isnan(solvable.r2).any()
 
+    monkeypatch.setattr(IDAAssay, 'forward_model', _no_number_above(1e15))
     for ka_max in (1e20, 1e30):
         profile = profile_up_to(ka_max)
         unsolved = np.isnan(profile.r2)
         assert unsolved.any()  # the grid does reach Ka the model cannot solve
-        assert profile.grid[unsolved].min() > 1e19
+        assert profile.grid[unsolved].min() > 1e15
         assert profile.best_ka == pytest.approx(solvable.best_ka, rel=1e-6)
         assert profile.ci == pytest.approx(solvable.ci, rel=1e-6)
         assert profile.ci_open == (False, False)
         assert not profile.ci_split
+
+
+def test_a_ka_bound_far_above_any_real_affinity_still_has_a_curve_at_every_point():
+    # The profile is drawn wherever the user's Ka bounds reach. An equilibrium
+    # solve whose accuracy fell away with Ka would break the curve there, or
+    # close the interval around speciation that is rounding error; the data
+    # alone decide, and here they leave the upper side open at the bound.
+    strong = dict(IDA_TRUE, Ka_guest=1e11)
+    x, y = _make_ida_data(strong)
+    ms = _single(x, _homoscedastic(y, 0.01, 1))
+    profile = fit_profile(
+        ms,
+        IDAAssay,
+        _IDA_CONDITIONS,
+        FitConfig(per_replica=False, custom_bounds={'Ka_guest': (Q_(1e5, '1/M'), Q_(1e30, '1/M'))}),
+    )
+
+    assert not np.isnan(profile.r2).any()
+    assert profile.ci_open == (False, True)
+    assert profile.ci[1] == pytest.approx(1e30)
+    assert profile.ci_unsolvable == (False, False)
+    assert not profile.ci_split
+
+
+def test_the_ka_grid_spans_bounds_whose_ratio_no_double_holds():
+    """Parameter Bounds takes any number a double can hold, and the widest pair of them span
+    316 decades while their ratio is no number at all; the grid is counted in decades."""
+    grid = profile_module._ka_grid(1e-8, 1.7e308, profile_module._PROFILE_PER_DECADE)
+
+    assert grid[0] == 1e-8
+    assert grid[-1] == pytest.approx(1.7e308)
+    assert np.all(np.diff(grid) > 0)
+    assert grid.size > 316 * profile_module._PROFILE_PER_DECADE
+
+
+def test_the_profiled_residuals_fall_and_rise_once_across_the_tight_binding_decades():
+    # The best SSR at a fixed Ka is a smooth function of Ka: the data make it
+    # fall and rise, and it has one minimum over a range where nothing else
+    # happens. A speciation whose relative accuracy decays with Ka roughens it
+    # into dozens of minima that the profile's refinement and its interval edges
+    # would then find and report as structure in the data.
+    true = dict(GDA_TRUE, Ka_guest=1e10)
+    x, y = _make_gda_data(true, n_points=15)
+    y = _homoscedastic(y, 0.01, 1)
+    assay = _single(x, y).to_assay(GDAAssay, conditions=_GDA_CONDITIONS, use_average=True)
+    _, _, ssr_at = profile_module._profile_function(assay, _resolve_bounds(assay, None), y[np.newaxis, :])
+
+    grid = np.geomspace(1e9, 1e12, 151)  # 50 points per decade
+    ssr = np.array([float(ssr_at(ka)[0]) for ka in grid])
+    assert _strict_local_minima(ssr) <= 1
+
+    # The same curve solved with the arithmetic that results files of earlier
+    # versions were written with, which is kept to re-score them: it is the
+    # solve, not the data, that these minima come from.
+    with legacy_arithmetic():
+        rough = np.array([float(ssr_at(ka)[0]) for ka in grid])
+    assert _strict_local_minima(rough) > 10
 
 
 def test_pinned_ka_is_not_fitted_and_has_no_interval():

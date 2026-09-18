@@ -164,7 +164,7 @@ class TestCompetitiveModels:
 class TestModelVsIndependentEquilibrium:
     """Verify the forward models against equilibrium solutions computed by a
     different numerical method.  The models solve a quadratic (DBA) or a
-    Brent root-find on the host balance (competitive); here the same systems
+    Newton iteration on the host balance (competitive); here the same systems
     are solved via Brent on the *dye* balance and via a 3-species ``fsolve``,
     so agreement validates the model algebra rather than restating it.
     """
@@ -271,13 +271,13 @@ class TestCompetitiveBoundaries:
             y_fixed=h0,
             mode='DtoH',
         )
-        # Different solvers (Brent vs quadratic) -> tolerance set tight
-        # enough to catch a regression in the signal model itself.
+        # Different solvers (iterative host balance vs quadratic) -> tolerance
+        # set tight enough to catch a regression in the signal model itself.
         np.testing.assert_allclose(gda_result, dba_result, rtol=1e-6)
 
     def test_ida_g0_zero_matches_dba(self):
         """IDA's titration start (g0=0) numerically matches the DBA quadratic
-        for the same (h0, d0) — cross-validates Brent vs quadratic solvers."""
+        for the same (h0, d0) — cross-validates the iterative and quadratic solvers."""
         Ka_dye = 5e5
         h0, d0 = 10e-6, 5e-6
         I0, I_dye_free, I_dye_bound = 50.0, 1000.0, 5000.0
@@ -356,16 +356,15 @@ class TestCompetitiveBoundaries:
 
 
 # ---------------------------------------------------------------------------
-# GAP-4: Brent solver failure propagation
+# Extreme constants and totals
 # ---------------------------------------------------------------------------
 
 
-class TestSolverFailure:
-    """Verify graceful NaN on solver failure."""
+class TestExtremeInputs:
+    """Inputs far outside any experiment give an array, never an exception."""
 
-    def test_gda_nan_point_does_not_crash(self):
-        """An array with extreme values propagates NaN but doesn't crash."""
-        # h0 near-zero with huge binding constants → Brent bracket may fail
+    def test_gda_extreme_values_do_not_crash(self):
+        """Free host near 1e-80 M: one value per titration point and nothing raised."""
         d0_values = np.array([1e-6, 10e-6])
         result = gda_signal(
             I0=0,
@@ -378,22 +377,23 @@ class TestSolverFailure:
             g0=1.0,
         )
         assert len(result) == 2  # no crash, correct length
+        # Both dye coefficients are 1, so the signal is [D] + [HD] = d0 (dye mass balance).
+        np.testing.assert_allclose(result, d0_values, rtol=1e-12)
 
 
 # ---------------------------------------------------------------------------
-# Brent-bracket robustness across Ka magnitudes
+# Root robustness across Ka magnitudes
 # ---------------------------------------------------------------------------
 
 
-class TestBrentBracketRobustness:
-    """Verify the competitive Brent solver finds a physical root across
-    several decades of Ka.  Guards against bracket-collapse failures at the
-    weak-binding limit (root near h0) and the strong-binding limit (root
-    near 1e-20).
+class TestRootRobustness:
+    """Verify the competitive solve finds a physical root across several
+    decades of Ka: at the weak-binding limit (root near h0) and the
+    strong-binding limit (root many decades below h0).
     """
 
-    # Corner cases probe bracket collapse at the weak/strong-binding limits
-    # of each constant; the asymmetric mid case guards the generic path.
+    # Corner cases probe the weak/strong-binding limits of each constant;
+    # the asymmetric mid case guards the generic path.
     @pytest.mark.parametrize(
         'Ka_dye, Ka_guest',
         [

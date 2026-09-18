@@ -9,11 +9,17 @@ search along it with a bounded refinement between the best grid point's
 neighbours locates the best fit without a multi-start search, and an F test on
 it gives a profile-likelihood confidence interval for Ka.
 
-The displacement assays' equilibrium solver does not reach a solution at every
-Ka: above roughly 1e19 to 1e20 1/M, depending on the concentrations, and at a
-total concentration of zero, its species are not a number. Such a Ka has no fit
-at all, so its residual sum of squares is infinite, it never enters the interval
-and no curve is drawn across it.
+The equilibrium models report a Ka they have no speciation for as species that
+are not a number, rather than by raising. Such a Ka has no fit at all, so its
+residual sum of squares is infinite, it never enters the interval and no curve
+is drawn across it. The models profiled here — the two displacement assays and
+both directions of the direct binding assay — have a solution at every
+association constant and every set of totals the app's bounds allow and far
+beyond them; they report no number where the free concentration they solve for
+falls below the smallest normal double, which takes a constant near 1e300 1/M
+against a binding partner in large excess, or where a constant times a total
+passes the range of a double, which no sub-molar total reaches. This is a
+contract the profile keeps with the models, not a range of Ka it runs into.
 """
 
 from __future__ import annotations
@@ -45,11 +51,16 @@ _PROFILE_PER_DECADE = 20
 # stretch's highest R²); a stretch that bends one way then stays within the
 # allowance of the exact curve. At the peak that is 1e-6 R². Below it, the
 # allowance is 0.1 % of the depth, so in any view that shows a stretch together
-# with the peak the line is off by less than 0.1 % of the view's height. Where
-# a species barely forms, rounding makes the curve jitter, so the stretches with
-# the worst miss for their allowance are split first, _CURVE_MAX_EXTRA extra
-# evaluations bound the work, and _CURVE_MIN_STEP, in decades of Ka, stops the
-# splitting at a sharp corner or a jump.
+# with the peak the line is off by less than 0.1 % of the view's height. The
+# curve has corners where a coefficient reaches its bound and jumps where a Ka
+# the model has no speciation for interrupts it, so the stretches with the worst
+# miss for their allowance are split first, _CURVE_MAX_EXTRA extra evaluations
+# bound the work, and _CURVE_MIN_STEP, in decades of Ka, stops the splitting at
+# a corner or a jump. The budget is a bound on the work, not a limit the curves
+# meet: over 96 profiles of synthetic GDA, IDA and DBA titrations (host 1e-7 to
+# 1e-4 M, Ka·h0 0.1 to 1e5, 8 to 30 points, noise 0.1 to 5 %, across the default
+# Ka bounds and across 1e2 to 1e16 1/M) the largest number of extra evaluations
+# is 796, the median 510.
 _CURVE_R2_TOL = 1e-6
 _CURVE_DEPTH_TOL = 1e-3
 _CURVE_MAX_EXTRA = 2000
@@ -59,10 +70,15 @@ _CURVE_MIN_STEP = 1e-6
 _LOG_KA_XTOL = 1e-7
 
 # Relative singular-value cut-off for the rank of the norm-scaled coefficient
-# design. The equilibrium solve is iterative, so an exact linear dependence
-# between species columns (free plus bound dye summing to a fixed total, say)
-# leaves a singular value of order 1e-11 rather than zero, while independent
-# columns stay above 1e-6 across the Ka range.
+# design. Columns the mass balance ties together — free plus bound dye summing
+# to a fixed total in IDA and in DBA host-to-dye, bound dye proportional to free
+# dye wherever binding is too weak to deplete the host, every column constant
+# where the titrant changes no species — carry a relative singular value of
+# 2e-17 to 2e-15, while a direction the signal does separate stays above 7e-7
+# anywhere in the default Ka bounds and above 2e-2 at the best fit. Nothing
+# measured falls between the two (synthetic GDA, IDA and DBA titrations, host
+# 1e-7 to 1e-4 M, Ka·h0 0.1 to 1e5, Ka swept over 1e-8 to 1e12 1/M), and 1e-8
+# sits in the gap.
 _RANK_RTOL = 1e-8
 
 # Excess SSR above the interval's threshold that a Ka the model cannot solve
@@ -379,7 +395,8 @@ def _ka_grid(lo: float, hi: float, per_decade: int) -> np.ndarray:
     """Log-spaced Ka grid with at least *per_decade* points per decade; one point when Ka is pinned."""
     if lo == hi:
         return np.array([lo])
-    return np.geomspace(lo, hi, int(np.ceil(np.log10(hi / lo) * per_decade)) + 1)
+    # Decades as a difference of logarithms: a bound far above the other overflows their ratio.
+    return np.geomspace(lo, hi, int(np.ceil((np.log10(hi) - np.log10(lo)) * per_decade)) + 1)
 
 
 def _follow_curves(

@@ -1242,7 +1242,7 @@ def test_a_perturbation_that_cannot_be_solved_is_one_missing_sample(monkeypatch,
     """
     setup = _noisy_ida_setup(1, per_replica=False)
     real = sens.best_params_by_profile
-    unsolvable_ka = 1e25  # above the range the equilibrium solver reaches
+    unsolvable_ka = np.inf  # no association constant the model can be evaluated at
 
     def no_solution_for_a_shrunken_host(assay, bounds):
         if assay.h0.magnitude >= IDA_TRUE['h0']:
