@@ -112,9 +112,11 @@ boundary (the fit loop, the model math) everything is a validated float.
 
 ## 3. Float-only core, and why (the benchmark)
 
-`core/models/` and `core/optimizer/` operate on plain floats. Forward models
-(`dba_signal`, `ida_signal`, …) take float params + a float `x` array and return
-`Q_(result, 'au')`. The optimizer (`multistart_minimize`) never sees a Quantity.
+`core/models/` and `core/pipeline/varpro.py` operate on plain floats. Forward
+models (`dba_signal`, `ida_signal`, …) take float params + a float `x` array and
+return `Q_(result, 'au')`. The fit engine converts every bound to its
+parameter's canonical unit once, in `Projection.__init__`, and the search, the
+linear solve and the profile never see a Quantity.
 
 This is not just style — it is required for speed, and it is *safe* because the
 boundary already validated the units. Measured (10 000 calls, 20-point arrays):
@@ -180,11 +182,11 @@ Dimensional analysis alone cannot name a quantity ("dimensionless" covers ratios
 percentages, and — historically — `au`). We use two mutually-reinforcing
 mechanisms, cross-checked by a test so neither drifts:
 
-- **`au = [signal]`** gives signal quantities a distinct dimension, so
-  `_scale_factor` (`core/optimizer/scaling.py`) classifies a unit component by
-  *dimension* (`[signal]` → `s_max`, `[concentration]` → `c_max`, genuine
-  dimensionless → left at 1.0) — no `.dimensionless` guesswork, no private-API
-  fragility of intent.
+- **`au = [signal]`** gives signal quantities a distinct dimension, so a
+  quantity is classified by *dimension* rather than by `.dimensionless`
+  guesswork or private-API poking at its unit components: a signal coefficient
+  in `au/M` is dimensionally distinct from a binding constant in `1/M`, and
+  converting one to the other raises.
 - **`ParamKind`** (`core/assays/registry.py`: `BINDING_CONSTANT`,
   `SIGNAL_OFFSET`, `SIGNAL_COEFFICIENT`) is the explicit label. Each registry
   entry declares `param_kinds`; `KIND_UNIT` maps a kind to its canonical unit.

@@ -17,7 +17,7 @@ Rules:
 
 ## Project Overview
 
-SupraSimFit — a desktop toolkit that fits equilibrium binding models to fluorescence titration data using multi-start L-BFGS-B optimization, extracting association constants (Ka) via rigorous forward-modelling rather than linearised transforms. Assay types: `GDA`, `IDA`, `DBA_HtoD`, `DBA_DtoH`, `DBA_HG2`, `DBA_H2G`, `DYE_ALONE`.
+SupraSimFit — a desktop toolkit that fits equilibrium binding models to fluorescence titration data by variable projection, extracting association constants (Ka) with a profile-likelihood confidence interval via rigorous forward-modelling rather than linearised transforms. Assay types: `GDA`, `IDA`, `DBA_HtoD`, `DBA_DtoH`, `DBA_HG2`, `DBA_H2G`, `DYE_ALONE`.
 
 PyQt6 GUI + PyQtGraph plots, packaged as a standalone PyInstaller binary (no Python required by end users). Single-developer research codebase — backwards compatibility and GUI stability are **not** constraints. Python **3.13+**, package manager is **uv** (not pip/poetry).
 
@@ -77,7 +77,7 @@ If architecture is flawed, state is duplicated, or patterns are inconsistent —
 
 ### Enum-Keyed Registry Pattern (central design)
 
-All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY: dict[AssayType, AssayMetadata]`. The `AssayType` enum drives dispatch throughout — **no isinstance checks**. Each `AssayMetadata` defines parameter keys, default bounds, log-scale keys, units, labels, and the `category` + `subtype_label` strings that drive the GUI's two-level (category → subtype) assay selector.
+All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY: dict[AssayType, AssayMetadata]`. The `AssayType` enum drives dispatch throughout — **no isinstance checks**. Each `AssayMetadata` defines parameter keys, default bounds, log-scale keys, units, labels, `param_kinds` + `signal_species` (which the fit engine reads to build its design matrix), and the `category` + `subtype_label` strings that drive the GUI's two-level (category → subtype) assay selector.
 
 ### Module Layers
 
@@ -85,9 +85,10 @@ All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY:
 |-------|------|----------------|
 | **Assays** | `core/assays/` | `BaseAssay` ABC + subclasses; each wraps a forward model reference |
 | **Models** | `core/models/` | Pure, unit-free math: `equilibrium.py`, `linear.py` |
-| **Optimizer** | `core/optimizer/` | Stateless multi-start L-BFGS-B: `multistart`, result filtering, ensemble collapse + `describe()` summary stats, scaling, linear fit |
-| **Pipeline** | `core/pipeline/` | Orchestration: `fit_assay()`, `FitConfig`, `FitResult` (`fit_pipeline.py`) |
-| **Ka profile** | `core/pipeline/profile.py` | Exact Ka profile by variable projection (linear coefficients solved at each fixed Ka): `fit_profile()` → `ProfileResult` with the F-test interval, `profile_supported()`, `best_fit_by_profile()` |
+| **Optimizer** | `core/optimizer/` | Numerical helpers around the fit: `calculate_fit_metrics` (filters.py), `describe`/`describe_log10` summary stats (ensemble.py), `linear_regression` (linear_fit.py) |
+| **Fit engine** | `core/pipeline/varpro.py` | Variable projection: `Projection` (bounded linear solve of the signal parameters at a fixed Ka, log-grid search + refinement over the Ka, profile, `KaInterval`), `replicate_outliers()`, `projectable()`. Pure numerics on an assay, its bounds and one or more signal rows |
+| **Pipeline** | `core/pipeline/` | Orchestration: `fit_assay()`, `fit_measurement_set()`, `FitConfig`, `FitResult`, `summarize_parameters()` (`fit_pipeline.py`) |
+| **Ka profile** | `core/pipeline/profile.py` | Curves for the Identifiability tab, built on the engine: `fit_profile()` → `ProfileSet` (one `ProfileResult` per Ka plus the two-Ka `JointRegion`) |
 | **Ka sensitivity** | `core/pipeline/sensitivity.py` | `run_sensitivity()` → `SensitivityResult`: Sobol' (`sobol_design`, `sobol_indices_with_ci`) and heatmap runs over perturbed inputs; `perturbable_inputs()`, `InputSpec`, worker-process fan-out |
 | **Data Processing** | `core/data_processing/` | `MeasurementSet` (immutable 2D container), Z-score replica filter, concentration helpers, `prepare_plot_data()` (`plotting.py`) |
 | **I/O** | `core/io/` | Strategy pattern with explicit dict registries (no decorators); readers per format under `io/formats/` (BMG/csv/ensight/jasco/txt/xlsx) + measurement writer |
@@ -97,22 +98,27 @@ All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY:
 | **GUI state** | `gui/app_state.py` | `AppState` dataclass — mutable session state (`ms`, `fit_results`, …) |
 | **GUI workers** | `gui/workers.py` | `FitWorker`, `ProfileWorker`, `SensitivityWorker` QThreads — run the fit, the Ka profile and the sensitivity analysis off the main thread; each emits `finished`/`error`, and `SensitivityWorker` also emits `progress(done, total)` and `stopped()` (a cancel that lands before the baseline fit) |
 | **GUI widgets** | `gui/widgets/` | `AssayConfigPanel`, `BoundsPanel`, `DataPanel`, `FitConfigPanel`, `PreprocessingPanel`, `ReplicaPanel`, `SensitivityPanel` (per-input uncertainties, mode and sample size) + shared inputs (`numeric_inputs.py`, `info_button.py`) |
-| **GUI plotting** | `gui/plotting/` | `PlotWidget`, `FitSummaryWidget`, `PlotStyleWidget`, `DistributionWidget`, `IdentifiabilityWidget` (Ka profile tab), `SensitivityWidget` (Ka Sensitivity tab); labels in `labels.py`, colors in `colors.py`, image export in `export.py` (PyQtGraph native) |
-| **GUI dialogs** | `gui/dialogs/` | `ExportMultipleDialog`, `SaveDistributionsDialog` — modal dialogs invoked from the toolbar |
+| **GUI plotting** | `gui/plotting/` | `PlotWidget`, `FitSummaryWidget`, `PlotStyleWidget`, `IdentifiabilityWidget` (Ka profiles and the joint region), `SensitivityWidget` (Ka Sensitivity tab); labels and interval formatters in `labels.py`, colors in `colors.py`, image export in `export.py` (PyQtGraph native) |
+| **GUI dialogs** | `gui/dialogs/` | `ExportMultipleDialog`, `PreferencesDialog`, `PlotGuideDialog` — modal dialogs invoked from the toolbar and menus |
 | **GUI help** | `gui/plot_guide.py`, `gui/dialogs/plot_guide_dialog.py` | "Reading the plots" guide: one HTML section per plot tab, opened from the Help menu |
 | **Calibration scripts** | `scripts/` | Standalone coverage checks of the profile interval and the Sobol' index intervals; see `scripts/README.md` |
 | **Auto-update** | `gui/update_check.py`, `gui/update_dialog.py`, `gui/download_worker.py` | Compares latest GitHub release against `_version.py`; prompts and downloads if newer |
 
 ### Fitting Pipeline Flow
 
-`load_measurements()` → `MeasurementSet` → `.to_assay()` → `BaseAssay` → `fit_assay(assay, FitConfig)` → multi-start L-BFGS-B → filter by RMSE/R² → `collapse()` to a representative fit + retained pool → `FitResult`
+`load_measurements()` → `MeasurementSet` → `.to_assay()` → `BaseAssay` → `fit_assay(assay, FitConfig)` → `Projection` (signal parameters by bounded linear least squares, Ka by log-grid search + refinement) → profile-likelihood interval per Ka → `FitResult`
 
-**Reporting is derived, never stored.** `FitResult` keeps the representative fit's
-`parameters` and the full `parameter_samples` pool; every reported interval comes from
+A per-replicate fit (`fit_measurement_set_per_replica`) builds one `Projection` over all
+replicate rows, runs `replicate_outliers()` to decide which replicates share a Ka, and
+reports the fit of the average of the ones kept, with each replicate's own fit in
+`replica_fits`.
+
+**Reporting is derived, never stored.** `FitResult` keeps the fit's `parameters` and the
+`KaInterval` of each binding constant; every reported row comes from
 `summarize_parameters(result)` (`core/pipeline/fit_pipeline.py`), which the plot
 annotation, the summary table and the TXT/CSV exports all render from. The headline form
-is **`Estimate (min, max)`** — a real best fit plus the range its accepted pool spans.
-Report a real fit's value together with an interval derived from that same pool; a
+is **`Estimate [low, high]`** — the fit, and the range of values the same data do not
+reject at the stated level. Both come from one projection of one set of replicates; a
 centre from one estimator paired with a spread from another describes no distribution.
 
 ### GUI Plotting Flow
@@ -124,7 +130,7 @@ centre from one estimator paired with a spread from another describes no distrib
 
 ### Named Parameter Handling
 
-Parameters use **string keys**, not positional indices. `FitConfig.custom_bounds` is `Dict[str, Tuple[float, float]]`, merged with registry defaults via `_resolve_bounds()`. Log-scale params resolve the same way.
+Parameters use **string keys**, not positional indices. `FitConfig.custom_bounds` is `Dict[str, Tuple[Quantity, Quantity]]`, merged with registry defaults via `_resolve_bounds()`.
 
 ## Scientific Conventions
 
@@ -141,10 +147,14 @@ Tests verify **scientific correctness first** — reproduce a bug as a failing t
 ## Adding a New Assay Type
 
 1. Add an enum value to `AssayType` in `core/assays/registry.py`.
-2. Create a `BaseAssay` subclass with a `forward_model()` implementation.
-3. Add an `ASSAY_REGISTRY` entry with metadata (keys, bounds, log-scale, units, labels, and `category` + `subtype_label` — the latter two slot it into the two-level assay menu; no widget code changes needed).
+2. Create a `BaseAssay` subclass with `forward_model()` and `species()` implementations — the engine builds its design from `species()`, so the two must come from the same solve.
+3. Add an `ASSAY_REGISTRY` entry with metadata (keys, bounds, log-scale, units, labels, `param_kinds`, `signal_species`, and `category` + `subtype_label` — the latter two slot it into the two-level assay menu; no widget code changes needed).
 4. Add the forward-model math in `core/models/`.
 5. Add tests (parameter recovery + fail-fast).
+
+A model with one or two binding constants whose other parameters are all signal
+offset or signal coefficient fits with no engine change: `projectable()` reads that
+off the registry. Anything else it refuses by name.
 
 ## GUI Conventions
 

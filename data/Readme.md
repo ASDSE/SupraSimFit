@@ -16,7 +16,7 @@
 - $I_{dye, free}$ = $3.52 \times 10^6$ $M^{-1}$
 - Dye type: TNS
 
-Note: The values of $I_0$ and $I_{dye, free}$ can be passed to the optimizer as bounds (value ± tolerance) to constrain the fit. This is useful because of the inherent degeneracy in the parameters, which can lead to multiple sets of parameters that fit the data equally well. By constraining the fit with known values, we can reduce the parameter space and improve the reliability of the fitted parameters.
+Note: The values of $I_0$ and $I_{dye, free}$ can be entered as bounds (value ± tolerance) in the Parameter Bounds panel, which constrains the fit to them. This is useful because of the inherent degeneracy in the signal parameters, which lets several sets of them fit the data equally well — the fit stars such parameters to say so. Constraining them with known values makes each one a result on its own and narrows the confidence interval of the association constant.
 
 ## IDA System Information
 - $K_{a(Dye)}$ = $1.68 \times 10^7$ $M^{-1}$

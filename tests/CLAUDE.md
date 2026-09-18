@@ -34,9 +34,9 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
   method, hand-compute a small case, or use a closed-form limit.
 - **Prefer analytical / direct checks over fit-then-compare.** A direct model
   call with an independently-computed expected value is faster and stronger than
-  running the optimizer and inspecting its output. Reserve full multi-start fits
-  for genuine end-to-end recovery tests — one or two representative cases, not
-  every parameter combination.
+  running a fit and inspecting its output. Reserve full fits for genuine
+  end-to-end recovery tests — one or two representative cases, not every
+  parameter combination.
 - **For fits, assert recovery within a tolerance band, not bit-equality.**
   Convention: ~10 % for clean synthetic data, ~25 % for ~5 % Gaussian noise.
 - **One test, one property.** Each test pins a single invariant or behavior. If
@@ -63,11 +63,18 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
 - **Reuse the synthetic ground truth.** `tests/conftest.py` is the single source
   of known-truth parameters, data generators, recovery bounds, and the tolerance
   helper. Build on it; don't re-roll constants or synthetic data per file.
-- **Fits are deterministic by seeding** (the global RNG is seeded per test), so
-  treat fit results as reproducible — but assert the recovered *physics*, never
-  exact optimizer output. A fit started through `FittingSession.run_fit()` is the
-  exception: it draws its own seed when the panel gives none, so a GUI test that
-  runs a real fit must hand it a `FitConfig` carrying a `seed`.
+- **Fits are deterministic.** A fit draws no random numbers: the same data,
+  conditions and bounds give the same parameters every run, so a test may compare
+  two fits of the same input exactly. Still assert the recovered *physics* against
+  independent ground truth, not a number copied from a previous run — a pinned
+  number passes a fit that is wrong in the same way twice. Only the sensitivity
+  analysis samples, and it takes a `seed`.
+- **Intervals are a claim to check, not a field to echo.** A test of a confidence
+  interval either verifies the property that defines it — the endpoint is where
+  the profile crosses the F threshold, the interval contains the fit, coverage
+  over many synthetic datasets is near the nominal level — or it is testing
+  nothing. Asserting that the reported interval equals what the same call returns
+  is a tautology.
 - **Signal coefficients are degenerate.** In DBA/IDA only `Ka` is identifiable
   (`I0`, `I_dye_free`, `I_dye_bound` trade off). Test `Ka` recovery and signal
   reconstruction — never the individual signal coefficients.
