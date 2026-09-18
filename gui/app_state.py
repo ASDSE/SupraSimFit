@@ -8,7 +8,7 @@ from typing import Optional
 from core.assays.registry import AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, FitResult
-from core.pipeline.profile import ProfileResult
+from core.pipeline.profile import ProfileSet
 from core.pipeline.sensitivity import SensitivityResult
 from core.units import Quantity
 
@@ -42,7 +42,7 @@ class SessionState:
     held_fit_results: list[FitResult] = field(default_factory=list)
     hidden_fit_notes: dict[str, str] = field(default_factory=dict)  # FitResult.id -> why it is hidden
     dye_alone_result: Optional[FitResult] = None
-    profile_result: Optional[ProfileResult] = None  # Ka profile of the fit run in this session
+    profile_result: Optional[ProfileSet] = None  # Ka profiles of the fit run in this session
     sensitivity_result: Optional[SensitivityResult] = None
     sensitivity_note: Optional[str] = None  # why the sensitivity result is hidden, None while it is shown
 

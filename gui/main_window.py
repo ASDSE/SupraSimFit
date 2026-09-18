@@ -198,7 +198,7 @@ class FittingMainWindow(QMainWindow):
 
         self._act_fit = QAction('Run Fit', self)
         self._act_fit.setShortcut(QKeySequence('Ctrl+R'))
-        self._act_fit.setToolTip('Run multi-start fitting in the active session (Ctrl+R)')
+        self._act_fit.setToolTip('Fit the active session\u2019s data (Ctrl+R)')
         self._act_fit.triggered.connect(self._on_run_fit)
         tb.addAction(self._act_fit)
 
@@ -224,14 +224,10 @@ class FittingMainWindow(QMainWindow):
 
         self._act_save_plot = QAction('Save Plot', self)
         self._act_save_plot.setToolTip(
-            'Save the plot on the tab that is showing — the Fit Curve and Distributions tabs as PNG or SVG, '
+            'Save the plot on the tab that is showing — the Fit Curve tab as PNG or SVG, '
             'the Identifiability and Ka Sensitivity tabs as PNG'
         )
         self._act_save_plot.triggered.connect(self._on_save_plot)
-
-        self._act_export_dists = QAction('Save Distributions Plot\u2026', self)
-        self._act_export_dists.setToolTip('Save the distributions plot (with layout + size options) as PNG')
-        self._act_export_dists.triggered.connect(self._on_save_distributions_plot)
 
         self._act_save_style = QAction('Save Style Template', self)
         self._act_save_style.setToolTip('Save current plot style settings to a JSON file')
@@ -251,7 +247,6 @@ class FittingMainWindow(QMainWindow):
                 self._act_export,
                 self._act_export_txt,
                 self._act_export_csv,
-                self._act_export_dists,
                 self._act_save_plot,
             )
         }
@@ -266,7 +261,6 @@ class FittingMainWindow(QMainWindow):
         export_menu.addAction(self._act_export_raw)
         export_menu.addSeparator()
         export_menu.addAction(self._act_save_plot)
-        export_menu.addAction(self._act_export_dists)
         export_menu.addSeparator()
         export_menu.addAction(self._act_save_style)
 
@@ -322,7 +316,6 @@ class FittingMainWindow(QMainWindow):
         file_menu.addAction(self._act_export_raw)
         file_menu.addAction(self._act_import)
         file_menu.addAction(self._act_save_plot)
-        file_menu.addAction(self._act_export_dists)
         file_menu.addSeparator()
         file_menu.addAction(self._act_save_style)
         file_menu.addAction(self._act_load_style)
@@ -393,7 +386,7 @@ class FittingMainWindow(QMainWindow):
         self._act_save_plot.setToolTip(plot_note or self._action_tips[self._act_save_plot])
 
         note = None if session is None else session.hidden_results_note()
-        for action in (self._act_export, self._act_export_txt, self._act_export_csv, self._act_export_dists):
+        for action in (self._act_export, self._act_export_txt, self._act_export_csv):
             action.setEnabled(note is None)
             action.setToolTip(note or self._action_tips[action])
 
@@ -478,11 +471,6 @@ class FittingMainWindow(QMainWindow):
         session = self.active_session()
         if session:
             session.export_plot()
-
-    def _on_save_distributions_plot(self) -> None:
-        session = self.active_session()
-        if session:
-            session.save_distributions_plot()
 
     def _on_export_all(self) -> None:
         session = self.active_session()

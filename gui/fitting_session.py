@@ -7,7 +7,6 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-import numpy as np
 from PyQt6.QtCore import QEvent, QObject, QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
@@ -27,25 +26,23 @@ from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.pipeline.fit_pipeline import (
-    MAX_SEED,
     FitConfig,
     FitResult,
     fit_replica_ids,
     input_replica_ids,
-    scoring_assay,
-    select_representative,
+    parameters_on_bound,
     verify_imported_result,
 )
-from core.pipeline.profile import ProfileResult, profile_supported
-from core.pipeline.sensitivity import estimated_fit_count, estimated_optimizer_runs, resolve_fit_config
+from core.pipeline.profile import ProfileSet
+from core.pipeline.sensitivity import LONG_RUN_SOLVES, estimated_fit_count, estimated_model_solves
+from core.pipeline.varpro import projectable
 from gui import plot_guide, preferences
 from gui.app_state import SessionState
 from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.plotting.colors import INK, INK_2, INK_3
-from gui.plotting.distribution_widget import DistributionWidget
 from gui.plotting.fit_summary_widget import FitSummaryWidget, and_join, same_inputs
 from gui.plotting.identifiability_widget import IdentifiabilityWidget
-from gui.plotting.labels import fmt_r2, fmt_sci
+from gui.plotting.labels import fmt_bound_note, fmt_r2, fmt_sci
 from gui.plotting.plot_style import PlotStyleWidget
 from gui.plotting.plot_widget import PlotWidget
 from gui.plotting.sensitivity_widget import STOPPING_TEXT, SensitivityWidget
@@ -60,8 +57,8 @@ from gui.widgets.replica_panel import ReplicaPanel, describe_replicates
 from gui.widgets.sensitivity_panel import SensitivityPanel
 from gui.workers import FitWorker, ProfileWorker, SensitivityWorker, retire
 
-# Height a plot tab's page keeps however far the summary below is dragged up: the
-# Fit Curve plot keeps its axis labels apart, the Distributions panels their titles.
+# Height a plot tab's page keeps however far the summary below is dragged up, so
+# the Fit Curve plot keeps its axis labels apart.
 _PLOT_PAGE_MIN_HEIGHT = 250
 
 # The plot tab bar's "?" button: secondary ink on a hairline pill, darker on hover.
@@ -212,7 +209,7 @@ _DEMO_IDA_PATH = Path(__file__).parent.parent / 'data' / 'IDA_system.txt'
 
 _UNCHECKED_NOTE = (
     'No data are loaded, so these numbers are shown as stored in the file and could not be checked against '
-    'the data. To check them, and to pick another fit, load the data first and import the results again.'
+    'the data. To check them, load the data first and import the results again.'
 )
 _FIT_RUNNING_NOTE = 'A fit is already running in this session. Wait for it to finish, then run the fit again.'
 _SENSITIVITY_RUNNING_NOTE = (
@@ -270,16 +267,6 @@ def _refusal_reason(result: FitResult, ms: MeasurementSet) -> str:
 
 def _capitalized(text: str) -> str:
     return f'{text[0].upper()}{text[1:]}'
-
-
-def _draw_seed() -> int:
-    """A fresh seed for one fit, drawn from the operating system's entropy.
-
-    Recorded on the fit it starts, so the run can be repeated by entering it
-    under Fixed seed — which is why it is drawn within the range that box
-    accepts rather than the full 32 bits.
-    """
-    return int(np.random.SeedSequence().generate_state(1)[0] % (MAX_SEED + 1))
 
 
 class FittingSession(QWidget):
@@ -370,10 +357,6 @@ class FittingSession(QWidget):
             if state.measurement_set is None and not state.fit_results:
                 return 'There is nothing on the Fit Curve tab yet. Load a measurement file, then save it.'
             return None
-        if widget is self._distribution_widget:
-            if not self._distribution_widget.param_keys():
-                return 'There are no distributions to save yet. Run a fit, then save them.'
-            return None
         if widget is self._identifiability_widget:
             if not self._identifiability_widget.has_chart():
                 return 'There is no identifiability chart to save yet. Run a fit, then save it.'
@@ -412,12 +395,7 @@ class FittingSession(QWidget):
         self._stop_sensitivity()
 
     def run_fit(self) -> None:
-        """Start a background fitting run on a copy of the loaded data, so later changes never reach it.
-
-        The fit runs with the seed entered under Fixed seed, or with one drawn
-        here when the box is unticked, so every result records the seed that
-        repeats it.
-        """
+        """Start a background fitting run on a copy of the loaded data, so later changes never reach it."""
         ms = self._state.measurement_set
         if ms is None:
             QMessageBox.warning(self, 'No Data', 'Load a measurement file first.')
@@ -453,16 +431,16 @@ class FittingSession(QWidget):
         assay_cls = self._assay_panel.get_assay_class()
         conditions = self._assay_panel.current_conditions()
         config = self._fit_panel.current_config()
-        if config.seed is None:
-            config = replace(config, seed=_draw_seed())
         custom_bounds = self._bounds_panel.current_bounds()
         if custom_bounds:
             config = replace(config, custom_bounds=custom_bounds)
 
         if config.per_replica and ms.n_active < 3:
+            # The shared-Ka test needs three replicates to name one of them as
+            # the odd one out; with fewer, every active replicate is averaged.
             self.status_message.emit(
-                f'Per-replicate fit on {ms.n_active} replicate(s) — uncertainty estimate may not be '
-                'meaningful (<3 active).'
+                f'Fitting {ms.n_active} replicate(s) — the replicates cannot be tested against each other '
+                'with fewer than three, so all of them are used.'
             )
 
         self._fit_worker = FitWorker(
@@ -483,9 +461,7 @@ class FittingSession(QWidget):
         """Load the bundled IDA demo dataset and run a fit with default settings.
 
         Resets the panels to the IDA defaults first, so the run starts from the
-        same settings whatever the session held before. The fit draws a fresh
-        seed like any other, so its numbers repeat exactly only when a seed is
-        entered under Fixed seed in Fit Configuration.
+        same settings whatever the session held before.
         """
         if not _DEMO_IDA_PATH.exists():
             QMessageBox.warning(self, 'Demo Data Missing', f'Could not find:\n{_DEMO_IDA_PATH}')
@@ -530,65 +506,6 @@ class FittingSession(QWidget):
         if not src and self._state.fit_results:
             src = self._state.fit_results[-1].source_file
         return Path(src).stem if src else 'output'
-
-    def _distributions_export_config(self):
-        """Build a DistributionsExportConfig from persisted QSettings.
-
-        Used by the multi-artefact export when there's no opportunity to
-        show the layout picker inline. Defaults match the standalone
-        dialog: Auto layout, per-panel dimensions, 300 DPI, all subplots
-        selected.
-        """
-        from gui.dialogs.save_distributions_dialog import (
-            _PER_PANEL_IN,
-            DistributionsExportConfig,
-            SaveDistributionsPlotDialog,
-        )
-        from gui.plotting.distribution_widget import DistributionWidget
-        from gui.preferences import _settings
-
-        keys = self._distribution_widget.param_keys()
-        s = _settings()
-        s.beginGroup(SaveDistributionsPlotDialog.SETTINGS_GROUP)
-        try:
-            mode = s.value('layout_mode', 'auto', type=str)
-            custom_rows = int(s.value('custom_rows', 2))
-            custom_cols = int(s.value('custom_cols', 2))
-            saved_w = float(s.value('width_in', 0.0))
-            saved_h = float(s.value('height_in', 0.0))
-            dpi = int(s.value('dpi', 300))
-            sel = s.value('selected_keys', None)
-        finally:
-            s.endGroup()
-
-        selected = [k for k in keys if k in set(sel)] if isinstance(sel, list) and sel else list(keys)
-        n = max(1, len(selected))
-        if mode == 'row':
-            rows, cols = 1, n
-        elif mode == 'col':
-            rows, cols = n, 1
-        elif mode == 'grid':
-            rows, cols = (2, 2) if n <= 4 else DistributionWidget.auto_layout(n)
-        elif mode == 'custom':
-            rows, cols = custom_rows, custom_cols
-            if rows * cols < n:
-                rows, cols = DistributionWidget.auto_layout(n)
-        else:
-            rows, cols = DistributionWidget.auto_layout(n)
-
-        if saved_w > 0 and saved_h > 0:
-            width_in, height_in = saved_w, saved_h
-        else:
-            width_in, height_in = cols * _PER_PANEL_IN, rows * _PER_PANEL_IN
-
-        return DistributionsExportConfig(
-            keys=selected,
-            rows=rows,
-            cols=cols,
-            width_in=width_in,
-            height_in=height_in,
-            dpi=dpi,
-        )
 
     def _can_export_results(self) -> bool:
         """Whether there are shown results to export; says why not otherwise."""
@@ -698,7 +615,7 @@ class FittingSession(QWidget):
         with the reason (:func:`_refusal_reason`); the others replace the held
         results and are shown or hidden like a fit made here. The replicate
         selection is never changed. Without data the stored numbers are shown
-        with a note that they could not be checked, and picks are disabled.
+        with a note that they could not be checked.
         """
         path, _ = QFileDialog.getOpenFileName(self, 'Import Fit Results', '', 'JSON (*.json);;All files (*)')
         if not path:
@@ -723,7 +640,7 @@ class FittingSession(QWidget):
 
         accepted: list[FitResult] = []
         refused: dict[str, int] = {}  # reason -> how many results it refuses
-        rescored = repicked = recomputed = False
+        rescored = recomputed = False
         for result in results:
             try:
                 status, checked = verify_imported_result(result, ms)
@@ -736,7 +653,6 @@ class FittingSession(QWidget):
                 continue
             if status == 'rescored_legacy':
                 rescored = True
-                repicked = repicked or checked.representative_index != result.representative_index
             # A file that records no arithmetic and had its numbers rebuilt was measured again
             # with the present equilibrium solution, whichever reason named the status.
             recomputed = recomputed or (
@@ -761,25 +677,14 @@ class FittingSession(QWidget):
 
         notices = []
         if rescored:
-            text = (
+            notices.append(
                 f'Some numbers stored in {name} did not describe the replicates each fit used, so the R², RMSE and '
                 'curve were recomputed on those replicates.'
             )
-            if repicked:
-                text += ' The reported fit is now the one the fit chose itself, so an earlier pick is not kept.'
-            notices.append(text)
         if recomputed:
             notices.append(
                 f'{name} was written by an earlier version of SupraSimFit. Its R², RMSE and fit curve were '
                 'computed again with the equilibrium solution this version uses. The fitted values are unchanged.'
-            )
-        # Ranges and spread come from the stored pool of accepted fits. Files
-        # without one cannot show them, so say so rather than leaving the user
-        # to wonder why those columns are dashes.
-        if any(not r.parameter_samples for r in accepted):
-            notices.append(
-                f'{name} does not store the individual fits behind its results, so the plot and the table can only '
-                'show each best-fit value — no range or spread statistics. Re-run the fit to get them.'
             )
         if notices:
             QMessageBox.information(self, 'Imported Results', '\n\n'.join(notices))
@@ -789,18 +694,13 @@ class FittingSession(QWidget):
 
         The Fit Curve tab offers PNG or SVG. The Identifiability and Ka
         Sensitivity tabs are saved whole, as one picture, which only PNG can
-        carry: see :func:`~gui.plotting.export.export_widget`. The Distributions
-        tab goes through its own layout picker, which chooses how its panels are
-        arranged on the page and which of the two formats to write.
+        carry: see :func:`~gui.plotting.export.export_widget`.
         """
         note = self.plot_export_note()
         if note is not None:
             QMessageBox.warning(self, 'Save Plot', note)
             return
         widget = self._plot_tabs.currentWidget()
-        if widget is self._distribution_widget:
-            self.save_distributions_plot()
-            return
         # A whole tab is saved as one picture, which rules out SVG; see
         # gui.plotting.export.export_widget.
         tag, formats = {
@@ -842,51 +742,6 @@ class FittingSession(QWidget):
             if successes:
                 folder = outcomes[0][1].parent
                 self.status_message.emit(f'Exported {successes}/{len(outcomes)} artefact(s) to {folder}')
-
-    def save_distributions_plot(self) -> None:
-        """Save the distributions plot through its layout picker, as PNG or SVG."""
-        keys = self._distribution_widget.param_keys()
-        if not keys:
-            QMessageBox.warning(
-                self,
-                'Save Error',
-                'No distributions to save. Run a fit first.',
-            )
-            return
-        from gui.dialogs.save_distributions_dialog import SaveDistributionsPlotDialog
-
-        dlg = SaveDistributionsPlotDialog(self._distribution_widget, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted or dlg.config is None:
-            return
-        cfg = dlg.config
-        ext = f'.{cfg.format}'
-        filter_str = 'PNG image (*.png)' if cfg.format == 'png' else 'SVG vector (*.svg)'
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            'Save Distributions Plot',
-            self._default_save_name(ext, 'distributions'),
-            filter_str,
-        )
-        if not path:
-            return
-        try:
-            self._distribution_widget.save_plot(
-                keys=cfg.keys,
-                rows=cfg.rows,
-                cols=cfg.cols,
-                width_in=cfg.width_in,
-                dpi=cfg.dpi,
-                path=path,
-                format=cfg.format,
-            )
-            self.status_message.emit(f'Distributions plot saved to {path}')
-        except Exception:
-            QMessageBox.warning(
-                self,
-                'Save Error',
-                'Could not save the distributions plot. Check that the destination folder '
-                'exists and you have permission to write there.',
-            )
 
     def save_style_template(self) -> None:
         """Save current plot style settings to a JSON file."""
@@ -997,14 +852,12 @@ class FittingSession(QWidget):
         right_splitter.setChildrenCollapsible(False)
 
         # Tabbed plot area (flat/minimal, white pane):
-        # Fit Curve | Distributions | Identifiability | Ka Sensitivity.
+        # Fit Curve | Identifiability | Ka Sensitivity.
         self._plot_widget = PlotWidget()
-        self._distribution_widget = DistributionWidget()
         self._identifiability_widget = IdentifiabilityWidget()
         self._sensitivity_widget = SensitivityWidget()
         self._plot_tabs = FlatTabWidget(white_pane=True)
         self._plot_tabs.addTab(self._plot_widget, 'Fit Curve')
-        self._plot_tabs.addTab(self._distribution_widget, 'Distributions')
         self._plot_tabs.addTab(self._identifiability_widget, 'Identifiability')
         self._plot_tabs.addTab(self._sensitivity_widget, 'Ka Sensitivity')
         guide_button = QToolButton()
@@ -1076,7 +929,6 @@ class FittingSession(QWidget):
 
         # Direct widget-to-widget: style → every plot tab
         self._style_widget.widget.style_changed.connect(self._plot_widget.apply_style)
-        self._style_widget.widget.style_changed.connect(self._distribution_widget.apply_style)
         self._style_widget.widget.style_changed.connect(self._identifiability_widget.apply_style)
         self._style_widget.widget.style_changed.connect(self._sensitivity_widget.apply_style)
 
@@ -1086,10 +938,6 @@ class FittingSession(QWidget):
         )
         # Save Plot saves the tab on screen, so what it can do changes with the tab.
         self._plot_tabs.currentChanged.connect(lambda _: self.actions_changed.emit())
-
-        # Ensemble interaction: pick a different representative fit.
-        self._summary_widget.representative_selected.connect(self._on_representative_selected)
-        self._distribution_widget.representative_selected.connect(self._on_plot_fit_selected)
 
     # ------------------------------------------------------------------
     # Slots
@@ -1175,9 +1023,6 @@ class FittingSession(QWidget):
         self._fit_worker = None
         retire(worker)
         self.actions_changed.emit()
-        if not result.success:
-            self._report_no_passing_fit(result)
-            return
 
         # The fit is held, then shown or hidden by the selection as it is now.
         self._state.held_fit_results = [result]
@@ -1187,10 +1032,10 @@ class FittingSession(QWidget):
         # one profile worker is reachable at a time: drop it through the one
         # path that sees its thread out.
         self._stop_profile()
-        if profile_supported(AssayType[result.assay_type]):
+        if projectable(AssayType[result.assay_type]):
             # Profile the replicates the fit used, so the tab describes the same data.
             ms = worker.ms.with_active(fit_replica_ids(result))
-            # Until the profile arrives (well under a second) the tab says it is being computed.
+            # Until the profiles arrive the tab says they are being computed.
             self._identifiability_widget.show_profile_pending(result, result.assay_type)
             self._profile_worker = ProfileWorker(ms, worker.assay_cls, worker.conditions, worker.config, parent=self)
             self._profile_worker.finished.connect(self._on_profile_complete)
@@ -1199,56 +1044,30 @@ class FittingSession(QWidget):
         else:
             self._identifiability_widget.update_fit(result, None, result.assay_type)
 
-        per_replica = result.uncertainty_source == 'replicate'  # JSON-compat magic value
-        n_fit = result.metadata.get('n_replicas_fit', result.n_passing)
-        n_total = result.metadata.get('n_replicas_total', result.n_total)
+        left_out = self._left_out_text(result, worker.ms.replica_ids)
         hidden = self._state.hidden_fit_notes.get(result.id)
         if hidden is not None:
             self.status_message.emit(f'Fit complete but hidden — {hidden}')
-        elif per_replica:
-            self.status_message.emit(
-                f'Per-replicate fit complete — R²={fmt_r2(result.r_squared)}, '
-                f'RMSE={fmt_sci(result.rmse)}, {n_fit}/{n_total} replicates fit'
-            )
         else:
+            used = fit_replica_ids(result) or []
+            given = input_replica_ids(result) or used
+            counted = f', {len(used)} of {len(given)} replicates used' if given else ''
+            on_bound = fmt_bound_note(parameters_on_bound(result))
             self.status_message.emit(
-                f'Fit complete — R²={fmt_r2(result.r_squared)}, RMSE={fmt_sci(result.rmse)}, '
-                f'{result.n_passing}/{result.n_total} trials passed'
+                f'Fit complete — R²={fmt_r2(result.r_squared)}, RMSE={fmt_sci(result.rmse)}{counted}'
+                f'{f" ({left_out})" if left_out else ""}{f" — {on_bound}" if on_bound else ""}'
             )
 
-        failures = (result.metadata.get('replica_failures') or {}) if per_replica else {}
-        if failures:
-            names = {rid: describe_replicates([rid], worker.ms.replica_ids) for rid in failures}
-            details = '\n'.join(f'  • {_capitalized(names[rid])}: {reason}' for rid, reason in failures.items())
-            QMessageBox.warning(
-                self,
-                'Some Replicates Were Left Out',
-                f'{len(failures)} of the {n_total} replicates could not be fitted, so the fit leaves them out:\n\n'
-                f'{details}\n\nThe results describe the {n_fit} replicates that were fitted, and their R² and '
-                'RMSE are measured against the average of those replicates.',
-            )
-
-    def _report_no_passing_fit(self, result: FitResult) -> None:
-        """Report a fit where no trial cleared the quality floor it ran with.
-
-        Clears the previous result so a stale curve is never left on screen
-        looking like the outcome of this run.
-        """
-        self._state.held_fit_results = []
-        self._clear_identifiability()
-        self._show_results(force=True)
-
-        floor = result.fit_config['min_r_squared']
-        best = result.metadata.get('best_attempt_r_squared')
-        closest = f'The closest attempt reached R² = {best:.4f}. ' if isinstance(best, float) else ''
-        QMessageBox.warning(
-            self,
-            'No Fit Met the Quality Threshold',
-            f'None of the {result.n_total} attempts reached the minimum R² of {floor:.2f}, '
-            f'so there is no result to show. {closest}'
-            'Try lowering Min R², increasing Trials, or widening the parameter bounds.',
+    @staticmethod
+    def _left_out_text(result: FitResult, replica_ids) -> str:
+        """The replicates the fit left out and why, named as the sidebar names them; ``''`` when it used every one."""
+        failures = result.metadata.get('replica_failures') or {}
+        if not failures:
+            return ''
+        return '; '.join(
+            f'{_capitalized(describe_replicates([rid], replica_ids))} left out: {reason}'
+            for rid, reason in failures.items()
         )
-        self.status_message.emit('Fit failed — no trial met the quality threshold')
 
     def _on_fit_error(self, msg: str) -> None:
         worker = self._fit_worker
@@ -1294,7 +1113,7 @@ class FittingSession(QWidget):
     # Identifiability (Ka profile)
     # ------------------------------------------------------------------
 
-    def _on_profile_complete(self, profile: ProfileResult) -> None:
+    def _on_profile_complete(self, profile: ProfileSet) -> None:
         worker = self._profile_worker
         if self.sender() is not worker:
             return  # the fit this profile belongs to has been replaced
@@ -1312,9 +1131,7 @@ class FittingSession(QWidget):
         retire(worker)
         result = self._state.held_fit_results[-1]
         self._identifiability_widget.update_fit(result, None, result.assay_type)
-        QMessageBox.warning(
-            self, 'Identifiability', f'{msg}\n\nThe Identifiability tab shows the individual fit attempts only.'
-        )
+        QMessageBox.warning(self, 'Identifiability', f'{msg}\n\nThe fit itself is unaffected and is still shown.')
 
     def _clear_identifiability(self) -> None:
         """Empty the Identifiability tab and stop any Ka profile still being computed."""
@@ -1326,7 +1143,6 @@ class FittingSession(QWidget):
         """Open Help ▸ Reading the plots at the section for the plot tab on screen."""
         sections = {
             self._plot_widget: plot_guide.FIT_CURVE,
-            self._distribution_widget: plot_guide.DISTRIBUTIONS,
             self._identifiability_widget: plot_guide.IDENTIFIABILITY,
             self._sensitivity_widget: plot_guide.SENSITIVITY,
         }
@@ -1349,12 +1165,12 @@ class FittingSession(QWidget):
             QMessageBox.warning(self, 'Already Running', _SENSITIVITY_RUNNING_ANALYSIS_NOTE)
             return
 
-        if not profile_supported(self._state.assay_type):
+        if not projectable(self._state.assay_type):
             QMessageBox.warning(
                 self,
                 'Sensitivity Analysis',
-                'The selected assay has no single association constant for the analysis to follow. '
-                'Pick GDA, IDA or DBA to run a sensitivity analysis.',
+                'The selected assay has no association constant for the analysis to follow. '
+                'Pick a binding assay to run a sensitivity analysis.',
             )
             return
 
@@ -1383,11 +1199,9 @@ class FittingSession(QWidget):
         if custom_bounds:
             fit_config = replace(fit_config, custom_bounds=custom_bounds)
 
-        resolved = resolve_fit_config(fit_config, sens_config)
-        n_replicas = ms.n_active if resolved.per_replica else 1
-        curve_fits = (estimated_fit_count(sens_config) + 1) * n_replicas
+        curve_fits = estimated_fit_count(sens_config) + 1
         worker_count = preferences.worker_count()
-        if estimated_optimizer_runs(sens_config, resolved, n_replicas) > 20_000:
+        if estimated_model_solves(sens_config, fit_config, self._state.assay_type) > LONG_RUN_SOLVES:
             spread = 'one at a time' if worker_count == 1 else f'{worker_count} at a time'
             reply = QMessageBox.question(
                 self,
@@ -1439,9 +1253,9 @@ class FittingSession(QWidget):
         elapsed = time.monotonic() - self._sensitivity_started
         if 3 <= done < total and elapsed > 0:
             remaining = elapsed / done * (total - done)
-            self.status_message.emit(f'Analysing — {done} of {total}, about {_format_remaining(remaining)} left')
+            self.status_message.emit(f'Analysing — {done:,} of {total:,}, about {_format_remaining(remaining)} left')
         else:
-            self.status_message.emit(f'Analysing — {done} of {total}')
+            self.status_message.emit(f'Analysing — {done:,} of {total:,}')
 
     def _on_sensitivity_complete(self, result) -> None:
         worker = self._sensitivity_worker
@@ -1462,12 +1276,18 @@ class FittingSession(QWidget):
         if hidden is not None:
             # The counts describe a result no tab is showing, so the note takes their place.
             self.status_message.emit(f'Sensitivity {"stopped" if cancelled else "complete"} but hidden — {hidden}')
-        elif cancelled:
+            return
+        # Counted as the cost dialog and the progress bar count: every fit the
+        # run makes, the baseline included. The baseline is this result, so it
+        # succeeded; only the perturbed fits could have failed.
+        planned = estimated_fit_count(result.config) + 1
+        succeeded = result.n_success + 1
+        if cancelled:
             self.status_message.emit(
-                f'Sensitivity stopped — {result.n_success}/{result.n_total} fits succeeded before you cancelled'
+                f'Sensitivity stopped — {succeeded:,} of {planned:,} fits succeeded before you cancelled'
             )
         else:
-            self.status_message.emit(f'Sensitivity complete — {result.n_success}/{result.n_total} fits succeeded')
+            self.status_message.emit(f'Sensitivity complete — {succeeded:,} of {planned:,} fits succeeded')
 
     def _on_sensitivity_stopped(self) -> None:
         """A run cancelled before it had a single finished fit: there is nothing to show for it."""
@@ -1520,33 +1340,6 @@ class FittingSession(QWidget):
         if self._sensitivity_worker is not None:
             self._sensitivity_worker.cancel()
             self.status_message.emit(STOPPING_TEXT)
-
-    def _on_plot_fit_selected(self, index: int) -> None:
-        """A fit picked by clicking a distribution point: remember it as the
-        sticky 'Selected' choice, then report it as the representative."""
-        if self._state.measurement_set is None or not self._state.fit_results:
-            return  # picks need the data the fit was made on, and a shown fit
-        self._summary_widget.note_plot_selection(index)
-        self._on_representative_selected(index)
-
-    def _on_representative_selected(self, index: int) -> None:
-        """Report a different valid fit as the representative (from the
-        Representative selector or a distribution-plot click).
-
-        The pick is scored on the fit's own record, so its RMSE and R² are the
-        ones its pool records, whatever is active or entered now.
-        """
-        ms = self._state.measurement_set
-        results = self._state.fit_results
-        if ms is None or not results:
-            return
-        result = results[-1]
-        if result.parameter_samples is None:
-            return
-        select_representative(result, scoring_assay(ms, result), index)
-        self._refresh_plot()
-        self._summary_widget.update_result(result)
-        self._distribution_widget.update_result(result, self._replica_order())
 
     # ------------------------------------------------------------------
     # Showing and hiding results
@@ -1662,12 +1455,12 @@ class FittingSession(QWidget):
         if changed and (notes or sensitivity_note):
             self.status_message.emit(_RESULTS_HIDDEN_NOTE)
         if changed or force:
-            self._render_results(force=force)
+            self._render_results()
         elif redraw:
             self._refresh_plot()
 
     def _fit_view(self) -> tuple[FitResult | None, str | None]:
-        """The fit the summary and Distributions describe, and the note hiding it (``None`` while it is shown).
+        """The fit the summary describes, and the note hiding it (``None`` while it is shown).
 
         The latest shown fit, or the latest held fit when every one is hidden.
         """
@@ -1687,23 +1480,15 @@ class FittingSession(QWidget):
         self._identifiability_widget.show_mismatch(profiled_note, state.sensitivity_note)
         self._sensitivity_widget.show_mismatch(state.sensitivity_note)
 
-    def _render_results(self, *, force: bool = False) -> None:
-        """Put the held fit results on the Fit Curve, the summary and Distributions, shown or hidden.
-
-        *force* redraws Distributions even for a hidden fit, for new results.
-        """
-        fit, note = self._fit_view()
+    def _render_results(self) -> None:
+        """Put the held fit results on the Fit Curve and the summary, shown or hidden."""
+        fit, _note = self._fit_view()
         self._refresh_plot()
         if fit is None:
             self._summary_widget.clear()
-            self._distribution_widget.clear()
         else:
             unchecked = _UNCHECKED_NOTE if self._state.measurement_set is None else None
             self._summary_widget.update_result(fit, unchecked=unchecked)
-            # A hidden fit's plots are redrawn from the stored result when it is shown again.
-            self._distribution_widget.show_mismatch(note)
-            if force or note is None:
-                self._distribution_widget.update_result(fit, self._replica_order())
         self.actions_changed.emit()
 
     def _refresh_plot(self) -> None:

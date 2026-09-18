@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,12 +14,12 @@ from core.pipeline.fit_pipeline import (
     FitResult,
     ParameterSummary,
     fit_replica_ids,
-    fitted_representative_index,
     input_replica_ids,
+    parameters_on_bound,
     summarize_parameters,
 )
 from core.units import Quantity
-from gui.plotting.labels import fmt_log10, fmt_unit_pretty
+from gui.plotting.labels import SPLIT_NOTE, fmt_bound_note, fmt_interval_plain, fmt_log10, fmt_r2, fmt_unit_pretty
 from gui.widgets.replica_panel import _display_label
 
 if TYPE_CHECKING:
@@ -60,20 +61,44 @@ def import_results(path: str | Path) -> list[FitResult]:
     return [FitResult.from_dict(d) for d in raw]
 
 
-def _estimate_origin(result: FitResult) -> str:
-    """Which accepted fit the Estimate column reports, as one sentence."""
-    n = result.n_passing
-    fitted = fitted_representative_index(result)
-    if fitted != result.representative_index:
-        if fitted is None:
-            return f'one of the {n} accepted fits; the file does not record which one the fit chose.'
-        return f'one of the {n} accepted fits, picked by hand in the app.'
-    if result.uncertainty_source == 'replicate':
-        return (
-            f"one of the {n} accepted fits: of each replicate's best fit, "
-            'the one with the highest R² against the average of the replicates it used.'
-        )
-    return f'the single best fit (highest R²) of {n} accepted fits.'
+#: Said of a result that carries no interval for a binding constant it reports.
+_NO_INTERVAL_NOTE = (
+    'This result comes from a file written by an earlier version of SupraSimFit, which reported an estimate '
+    'without a confidence interval. Fit the data again to get the interval.'
+)
+
+#: What a starred row means, in the words the summary table on screen uses.
+_DEGENERATE_NOTE = (
+    'The data fix only a combination of the starred values, not each one on its own: many different sets of '
+    'them draw the same curve. Each starred value is one member of that family. It reconstructs the fitted '
+    'curve correctly and is not a measurement of that one coefficient.'
+)
+
+#: What to do about an interval the data leave open, per side, in the words the
+#: Identifiability tab uses.
+_OPEN_ADVICE = {
+    'low': ('the data cannot rule out a lower Ka. Points at a higher titrant concentration would pin it down.'),
+    'high': (
+        'the data cannot rule out a higher Ka. Points taken before the signal levels off, or a lower fixed '
+        'concentration, would pin it down.'
+    ),
+}
+
+#: Said of a side the binding model cannot be solved past. The edge is where the
+#: arithmetic stops, not where the data stop, so more points cannot move it.
+_UNSOLVABLE_NOTE = (
+    'the binding model has no solution past this value, so the profile stops there rather than at a limit the '
+    'data set. More measurements cannot close this side.'
+)
+
+#: Said of a side that closes only because the other binding constant has
+#: reached its bound. The limit is a property of that bound, so it is named with
+#: the value it produces and not reported as one.
+_LIMITED_BY_NOTE = (
+    'the fit is rejected beyond {edge} only because {other} cannot go past its bound there; the data alone set no '
+    'limit on this side. If you know {other}, hold it at that value under Parameter Bounds (equal lower and upper '
+    'bound); otherwise only data that determine it close this side.'
+)
 
 
 def _replicate_record(
@@ -100,6 +125,15 @@ def _replicate_record(
     return [name[rid] for rid in used], [(name[rid], reasons.get(rid, '')) for rid in left_out]
 
 
+def _replicate_names(result: FitResult, replica_ids: Sequence[str] | None) -> dict[str, str]:
+    """Every replicate *result* names, mapped to the name the user reads for it."""
+    given = input_replica_ids(result) or fit_replica_ids(result) or []
+    order = list(replica_ids or ())
+    if given and all(rid in order for rid in given):
+        return {rid: _display_label(order.index(rid)) for rid in given}
+    return {rid: rid for rid in given}
+
+
 def _row_label(spec: ParameterSummary) -> str:
     """Plain-text row label; log twins are named ``log10(<key>)``."""
     return f'log10({spec.key})' if spec.is_log else spec.key
@@ -123,17 +157,36 @@ def _fmt_report(spec: ParameterSummary, value: float) -> str:
 
     A log₁₀ row goes through :func:`~gui.plotting.labels.fmt_log10`, the same
     rule the summary table on screen follows, so a value is never written
-    coarser than the spread printed beside it: four significant figures would
-    turn 8.496983 ± 0.000096 into 8.497 ± 9.6e-05.
+    coarser than the interval or the replicate spread printed beside it: four
+    significant figures would turn 8.496983 ± 0.000096 into 8.497 ± 9.6e-05.
     """
-    return fmt_log10(value, spec.stats) if spec.is_log else f'{value:.4g}'
+    return fmt_log10(value, spec.replicates) if spec.is_log else f'{value:.4g}'
+
+
+def _ka_keys(specs: list[ParameterSummary]) -> set[str]:
+    """Keys of the binding constants among *specs*: the rows that carry a log₁₀ twin."""
+    return {spec.key for spec in specs if spec.is_log}
+
+
+def _interval_cell(spec: ParameterSummary, result: FitResult, ka_keys: set[str]) -> str:
+    """The interval column of one row: the interval, ``fixed`` for a pinned Ka, ``—`` for anything else."""
+    if spec.interval is not None:
+        low, high = spec.interval
+        return fmt_interval_plain(
+            _fmt_report(spec, low), _fmt_report(spec, high), spec.interval_open[0], spec.interval_open[1]
+        )
+    if spec.key in ka_keys and result.intervals is not None:
+        # The fit was given equal bounds for this constant, so it was held at
+        # one value and there is nothing for the data to bracket.
+        return 'fixed'
+    return '—'
 
 
 def _fixed_width_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> list[str]:
     """Render *rows* as space-padded columns sized to their widest entry.
 
     The first column is left-aligned (names), the numeric middle columns are
-    right-aligned, and the trailing Units column reads better left-aligned.
+    right-aligned, and the trailing column reads better left-aligned.
     """
     if not rows:
         return []
@@ -151,16 +204,25 @@ def _fixed_width_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) ->
     return [header, rule, *body]
 
 
+def _wrapped(text: str, width: int = 74) -> list[str]:
+    """*text* broken into lines of at most *width* characters, indented two spaces."""
+    return [f'  {line}' for line in textwrap.wrap(text, width=width)]
+
+
 def export_results_csv(results: list[FitResult], path: str | Path, *, replica_ids: Sequence[str] | None = None) -> None:
     """Export fit results as a tidy CSV — one row per reported parameter.
 
     Complements the TXT report: same numbers, but machine-readable so the
     values can go straight into a spreadsheet or a plotting script. Magnitudes
-    are in the stored base units, named per row in the ``unit`` column. Pool
-    statistics are left blank when the result carries no fit pool. RMSE and R²
-    are measured against the average of the replicates the fit used, listed
-    (``;``-separated) with the ones it left out; both are blank when the result
-    does not record its replicates.
+    are in the stored base units, named per row in the ``unit`` column. The
+    interval columns are filled for every binding constant the fit was free to
+    move — its endpoints, whether each side is open, whether an open side is
+    open because the binding model has no solution past it, and whether the
+    accepted values come in separate stretches — and the replicate columns for
+    every parameter whose own fits at least
+    two replicates contributed. RMSE and R² are measured against the average of
+    the replicates the fit used, listed (``;``-separated) with the ones it left
+    out; both are blank when the result does not record its replicates.
 
     Parameters
     ----------
@@ -180,22 +242,30 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'parameter',
         'unit',
         'estimate',
-        'min',
-        'max',
-        'median',
-        'mad',
-        'mean',
-        'std',
-        'p16',
-        'p84',
-        'n_passing',
-        'n_total',
+        'ci_low',
+        'ci_high',
+        'ci_open_low',
+        'ci_open_high',
+        'ci_unsolvable_low',
+        'ci_unsolvable_high',
+        'ci_limited_by_low',
+        'ci_limited_by_high',
+        'ci_split',
+        'ci_level',
+        'ci_dof',
+        'degenerate',
+        'replicate_median',
+        'replicate_min',
+        'replicate_max',
+        'n_replicates',
         'rmse',
         'r_squared',
         'replicates_used',
         'replicates_left_out',
     )
-    stat_keys = ('min', 'max', 'median', 'mad', 'mean', 'std', 'p16', 'p84')
+
+    def flag(value: bool) -> str:
+        return 'true' if value else 'false'
 
     with path.open('w', encoding='utf-8', newline='') as handle:
         writer = csv.writer(handle)
@@ -203,8 +273,12 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         for index, result in enumerate(results):
             record = _replicate_record(result, replica_ids)
             used, left_out = ('', '') if record is None else (';'.join(record[0]), ';'.join(n for n, _ in record[1]))
+            n_used = len(fit_replica_ids(result) or ())
+            intervals = result.intervals or {}
             for spec in summarize_parameters(result):
-                stats = spec.stats or {}
+                ci = spec.interval
+                dof = intervals[spec.key].dof if spec.key in intervals else None
+                across = spec.replicates
                 writer.writerow(
                     [
                         index,
@@ -215,15 +289,94 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
                         # the same file, so its unit is one lookup away.
                         '' if spec.is_log else spec.unit,
                         f'{spec.estimate:.6e}',
-                        *(f'{stats[k]:.6e}' if k in stats else '' for k in stat_keys),
-                        result.n_passing,
-                        result.n_total,
+                        *(
+                            ('',) * 9
+                            if ci is None
+                            else (
+                                f'{ci[0]:.6e}',
+                                f'{ci[1]:.6e}',
+                                *map(flag, spec.interval_open),
+                                *map(flag, spec.interval_unsolvable),
+                                *spec.interval_limited_by,
+                                flag(spec.interval_split),
+                            )
+                        ),
+                        '' if spec.level is None else f'{spec.level:g}',
+                        '' if dof is None else dof,
+                        flag(spec.degenerate),
+                        *(
+                            ('', '', '', '')
+                            if across is None
+                            else (f'{across["median"]:.6e}', f'{across["min"]:.6e}', f'{across["max"]:.6e}', n_used)
+                        ),
                         f'{result.rmse:.6e}',
                         f'{result.r_squared:.6f}',
                         used,
                         left_out,
                     ]
                 )
+
+
+def _replicates_block(result: FitResult, replica_ids: Sequence[str] | None) -> list[str]:
+    """The REPLICATES table: each replicate's own fit, its p-value in the shared-Ka test, and whether it was used.
+
+    Empty unless the fit ran per replicate and recorded the replicates' own
+    fits; a fit of one averaged signal has nothing to compare.
+    """
+    fits = {rf.metadata.get('replica_id'): rf for rf in result.replica_fits or ()}
+    if not fits:
+        return []
+    names = _replicate_names(result, replica_ids)
+    given = input_replica_ids(result) or list(fits)
+    used = set(fit_replica_ids(result) or ())
+    reasons = result.metadata.get('replica_failures') or {}
+    test = result.metadata.get('replicate_test') or {}
+    p_values = test.get('p_values') or {}
+    ka_keys = [spec.key for spec in summarize_parameters(result) if spec.is_log]
+
+    headers = ('Replicate', *(f'own {key}' for key in ka_keys), 'own R²', 'p-value', 'In the fit')
+    rows: list[tuple[str, ...]] = []
+    for rid in given:
+        own = fits.get(rid)
+        if own is None:
+            continue
+        values = [f'{float(own.parameters[key].magnitude):.4g}' if key in own.parameters else '—' for key in ka_keys]
+        p = p_values.get(rid)
+        rows.append(
+            (
+                names.get(rid, rid),
+                *values,
+                fmt_r2(own.r_squared),
+                '—' if p is None else f'{p:.2g}',
+                'used' if rid in used else 'left out',
+            )
+        )
+    if not rows:
+        return []
+
+    lines = ['REPLICATES', '-' * 60]
+    lines.extend(
+        _wrapped(
+            'Each replicate fitted on its own. The reported fit is the fit of the average of the replicates '
+            'marked used.'
+        )
+    )
+    if test:
+        lines.extend(
+            _wrapped(
+                f'A replicate is left out when its own fit needs a different Ka than the others share, at a '
+                f'{test.get("level", 0.01):g} level shared across the {len(given)} replicates given.'
+            )
+        )
+    lines.append('')
+    lines.extend(_fixed_width_table(headers, rows))
+    for rid in given:
+        if rid in used or rid not in reasons:
+            continue
+        lines.append('')
+        lines.extend(_wrapped(f'{names.get(rid, rid)} left out: {reasons[rid]}'))
+    lines.append('')
+    return lines
 
 
 def export_results_txt(results: list[FitResult], path: str | Path, *, replica_ids: Sequence[str] | None = None) -> None:
@@ -261,74 +414,86 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
         lines.append(f'Timestamp:   {result.timestamp}')
         lines.append('')
 
-        # Parameters — the headline block, then the pool it came from.
         specs = summarize_parameters(result)
-        pooled = any(spec.stats is not None for spec in specs)
+        ka_keys = _ka_keys(specs)
+        level = next((spec.level for spec in specs if spec.level is not None), None)
+        heading = 'Interval' if level is None else f'{level:.0%} interval'
 
         lines.append('FITTED PARAMETERS')
         lines.append('-' * 60)
-        lines.append(f'Estimate = {_estimate_origin(result)}')
-        if pooled:
-            lines.append(f'Range    = (min, max) across those {result.n_passing} fits.')
-        else:
-            lines.append('Range    = unavailable: no fit pool is stored for this result.')
+        lines.extend(
+            _wrapped(
+                'Estimate = the least-squares fit of the data. Interval = the range of a binding constant the '
+                'data cannot tell apart from that fit, cut from the fit’s own profile by an F test.'
+            )
+        )
+        if ka_keys and result.intervals is None:
+            lines.extend(_wrapped(_NO_INTERVAL_NOTE))
         lines.append('')
         lines.extend(
             _fixed_width_table(
-                ('Parameter', 'Estimate', 'Range (min, max)', 'Units'),
+                ('Parameter', 'Estimate', heading, 'Units'),
                 [
                     (
-                        _row_label(spec),
+                        f'{_row_label(spec)}{" *" if spec.degenerate else ""}',
                         _fmt_report(spec, spec.estimate),
-                        f'({_fmt_report(spec, spec.stats["min"])}, {_fmt_report(spec, spec.stats["max"])})'
-                        if spec.stats
-                        else '—',
+                        _interval_cell(spec, result, ka_keys),
                         _row_unit(spec),
                     )
                     for spec in specs
                 ],
             )
         )
+        if any(spec.degenerate for spec in specs):
+            lines.append('')
+            lines.extend(_wrapped(f'* {_DEGENERATE_NOTE}'))
+        for spec in specs:
+            if spec.is_log or spec.interval is None:
+                continue
+            if spec.interval_split:
+                lines.append('')
+                lines.extend(_wrapped(f'{spec.key}: {SPLIT_NOTE}'))
+            sides = zip(
+                ('low', 'high'), spec.interval, spec.interval_open, spec.interval_unsolvable, spec.interval_limited_by
+            )
+            for side, edge, is_open, unsolvable, limited_by in sides:
+                if not is_open:
+                    continue
+                lines.append('')
+                if limited_by:
+                    note = _LIMITED_BY_NOTE.format(
+                        edge=f'{_fmt_report(spec, edge)} {_row_unit(spec)}'.strip(), other=limited_by
+                    )
+                else:
+                    note = _UNSOLVABLE_NOTE if unsolvable else _OPEN_ADVICE[side]
+                lines.extend(_wrapped(f'{spec.key}: open at the {side} end — {note}'))
+        bound_note = fmt_bound_note(parameters_on_bound(result))
+        if bound_note:
+            lines.append('')
+            lines.extend(_wrapped(bound_note))
         lines.append('')
 
-        if pooled:
-            lines.append(f'SPREAD ACROSS THE ACCEPTED-FIT POOL (n = {result.n_passing})')
-            lines.append('-' * 60)
-            lines.extend(
-                _fixed_width_table(
-                    ('Parameter', 'Median ± MAD', 'Mean ± SD', '68% Range [p16, p84]', 'Units'),
-                    [
-                        (
-                            _row_label(spec),
-                            f'{_fmt_report(spec, spec.stats["median"])} ± {_fmt_report(spec, spec.stats["mad"])}',
-                            f'{_fmt_report(spec, spec.stats["mean"])} ± {_fmt_report(spec, spec.stats["std"])}',
-                            f'[{_fmt_report(spec, spec.stats["p16"])}, {_fmt_report(spec, spec.stats["p84"])}]',
-                            _row_unit(spec),
-                        )
-                        for spec in specs
-                        if spec.stats is not None
-                    ],
-                )
-            )
-            lines.append('')
+        replicates_block = _replicates_block(result, replica_ids)
+        lines.extend(replicates_block)
 
         # Fit quality
         lines.append('FIT QUALITY')
         lines.append('-' * 60)
         lines.append(f'  RMSE:          {result.rmse:.4g} {fmt_unit_pretty("au")}')
-        lines.append(f'  R²:            {result.r_squared:.6f}')
-        lines.append(f'  Fits passing:  {result.n_passing} / {result.n_total}')
+        lines.append(f'  R²:            {fmt_r2(result.r_squared)}')
         record = _replicate_record(result, replica_ids)
         if record is None:
             lines.append('  Replicates:    not recorded in this result.')
         else:
             used, left_out = record
             lines.append(f'  Replicates used:      {", ".join(used)}')
-            if not left_out:
-                lines.append('  Left out of the fit:  none')
-            for i_out, (name, reason) in enumerate(left_out):
-                lead = '  Left out of the fit:  ' if i_out == 0 else ' ' * 24
-                lines.append(f'{lead}{name}: {reason}' if reason else f'{lead}{name}')
+            lines.append(f'  Left out of the fit:  {", ".join(name for name, _ in left_out) or "none"}')
+            if not replicates_block:
+                # The REPLICATES table gives each reason in full; without that
+                # table this is the only place they can be read.
+                for name, reason in left_out:
+                    if reason:
+                        lines.extend(_wrapped(f'{name} left out: {reason}'))
             lines.append('  RMSE and R² are measured against the average of the replicates used.')
         lines.append('')
 
@@ -390,7 +555,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
 
     Preconditions:
     - Raw data / fit curve plot: a measurement set is loaded.
-    - Distribution plot, identifiability plot: a result is shown (uses fit_results).
+    - Identifiability plot: the tab holds a chart.
     - Fit results (JSON/TXT/CSV): a result is shown; exported are the shown results.
     - Ka sensitivity plot: a sensitivity analysis is shown.
     - Style template: always available (style widget is always present).
@@ -436,17 +601,6 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
 
     def _write_fit_plot(path: Path) -> None:
         session._plot_widget.export_image(str(path))
-
-    def _write_distributions(path: Path) -> None:
-        cfg = session._distributions_export_config()
-        session._distribution_widget.save_plot(
-            keys=cfg.keys,
-            rows=cfg.rows,
-            cols=cfg.cols,
-            width_in=cfg.width_in,
-            dpi=cfg.dpi,
-            path=str(path),
-        )
 
     def _write_identifiability(path: Path) -> None:
         session._identifiability_widget.export_image(str(path))
@@ -514,14 +668,6 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
             available=ms_loaded,
             unavailable_reason=no_data_msg,
             writer=_write_fit_plot,
-        ),
-        ExportableArtefact(
-            key='distributions_png',
-            label='Distributions plot (PNG)',
-            suffix='_distributions.png',
-            available=has_results,
-            unavailable_reason=no_fit_msg,
-            writer=_write_distributions,
         ),
         ExportableArtefact(
             key='identifiability_png',
