@@ -1,27 +1,34 @@
-"""Pipeline helpers: resolving bounds and log-scale keys, and stopping a running fit."""
+"""Pipeline helpers: resolving bounds, which fit a dataset is dispatched to, and stopping a running fit."""
 
 import numpy as np
 import pytest
 
+from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
-from core.optimizer.multistart import FitCancelled
 from core.pipeline.fit_pipeline import (
     FitConfig,
     _resolve_bounds,
-    _resolve_log_scale,
     fit_assay,
     fit_measurement_set,
 )
+from core.pipeline.varpro import FitCancelled
 from core.units import Q_
-from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
+from tests.conftest import (
+    DYE_ALONE_TRUE,
+    GDA_IDA_RECOVERY_BOUNDS,
+    IDA_TRUE,
+    _make_dye_alone_data,
+    _make_ida_data,
+)
 
 
 def _gda_assay():
     return GDAAssay(
         x_data=Q_(np.linspace(1e-7, 50e-6, 5), 'M'),
-        y_data=Q_(np.ones(5), 'au'),
+        # A projection needs a signal that changes; what it is does not matter here.
+        y_data=Q_(np.linspace(1.0, 2.0, 5), 'au'),
         Ka_dye=Q_(5e5, '1/M'),
         h0=Q_(10e-6, 'M'),
         g0=Q_(20e-6, 'M'),
@@ -56,43 +63,6 @@ class TestResolveBounds:
         assert set(merged.keys()) == set(assay.parameter_keys)
 
 
-class TestResolveLogScale:
-    def test_none_uses_registry(self):
-        assay = _gda_assay()
-        indices = _resolve_log_scale(assay, None)
-        # Ka_guest is index 0 in GDA parameter_keys and is in log_scale_keys
-        assert 0 in indices
-
-    def test_empty_list_overrides(self):
-        assay = _gda_assay()
-        indices = _resolve_log_scale(assay, [])
-        assert indices == []
-
-    def test_unknown_raises(self):
-        assay = _gda_assay()
-        with pytest.raises(ValueError, match='Unknown log-scale parameter'):
-            _resolve_log_scale(assay, ['nonexistent'])
-
-    def test_a_bound_at_zero_on_a_log_scale_parameter_is_refused_by_name(self):
-        """Log space cannot hold zero, and linear starts would search only the top decade."""
-        config = FitConfig(n_trials=2, custom_bounds={'Ka_guest': (Q_(0.0, '1/M'), Q_(1e12, '1/M'))})
-
-        with pytest.raises(ValueError, match='Ka_guest'):
-            fit_assay(_gda_assay(), config)
-
-    def test_the_same_bound_is_refused_by_name_on_the_per_replicate_path(self):
-        """The bound is a setting, not one replicate's data, so it is named rather than
-        recorded as every replicate failing to fit — which would send the user to Min R²."""
-        config = FitConfig(
-            n_trials=2,
-            per_replica=True,
-            custom_bounds={'Ka_guest': (Q_(0.0, '1/M'), Q_(1e12, '1/M'))},
-        )
-
-        with pytest.raises(ValueError, match='Ka_guest'):
-            fit_measurement_set(_ida_measurement_set(), IDAAssay, _IDA_CONDITIONS, config)
-
-
 def _ida_measurement_set() -> MeasurementSet:
     """Three replicates of the IDA ground truth, each with slight noise."""
     x, y = _make_ida_data(IDA_TRUE, n_points=15)
@@ -108,10 +78,45 @@ _IDA_CONDITIONS = {
 }
 
 
-class TestCancellation:
-    """A cancelled fit stops within one optimizer run and produces no result."""
+class TestDispatch:
+    """Which fit :func:`fit_measurement_set` runs for the data and the configuration it is given."""
 
-    def test_fit_assay_stops_at_the_next_optimizer_run(self):
+    def test_a_dye_alone_calibration_is_a_linear_fit_in_either_replicate_mode(self):
+        # A calibration line has no binding constant, so the shared-Ka test has
+        # nothing to judge and the per-replicate path cannot fit it at all: both
+        # modes have to reach the linear regression, and neither reports an
+        # interval for a parameter the model does not have.
+        x, y = _make_dye_alone_data(DYE_ALONE_TRUE)
+        rng = np.random.default_rng(3)
+        signals = np.vstack([y + rng.normal(0.0, 0.5, y.size) for _ in range(3)])
+        ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c'))
+
+        for config in (FitConfig(), FitConfig(per_replica=False)):
+            result = fit_measurement_set(ms, DyeAloneAssay, {}, config)
+            assert result.model_name == 'linear'
+            assert result.intervals is None
+            assert result.parameters['slope'].to('au/M').magnitude == pytest.approx(DYE_ALONE_TRUE['slope'], rel=0.05)
+
+    def test_a_fit_of_one_signal_does_not_claim_to_have_tested_replicates(self):
+        # ``per_replica`` on a result says what the fit did, and the panels read
+        # it to decide whether to show replicate columns. A fit of one averaged
+        # signal holds no replicate fits, whatever the configuration asked for.
+        ms = _ida_measurement_set()
+        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True)
+
+        averaged = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, config, replica_id='a')
+        assert averaged.replica_fits is None
+        assert not averaged.per_replica
+
+        tested = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, config)
+        assert tested.per_replica
+        assert tested.replica_fits is not None
+
+
+class TestCancellation:
+    """A cancelled fit stops at the next equilibrium solve and produces no result."""
+
+    def test_fit_assay_stops_at_the_next_model_solve(self):
         polls: list[bool] = []
 
         def should_cancel() -> bool:
@@ -119,11 +124,11 @@ class TestCancellation:
             return polls[-1]
 
         with pytest.raises(FitCancelled):
-            fit_assay(_gda_assay(), FitConfig(n_trials=500), should_cancel=should_cancel)
+            fit_assay(_gda_assay(), FitConfig(), should_cancel=should_cancel)
 
-        assert len(polls) == 3, 'two runs were made, and the third was refused'
+        assert len(polls) == 3, 'two search nodes were solved, and the third was refused'
 
-    def test_a_cancelled_per_replicate_fit_is_not_reported_as_a_failed_replicate(self):
+    def test_a_cancelled_per_replicate_fit_raises_rather_than_leaving_a_replicate_out(self):
         """Cancellation is the caller's decision, so it is raised rather than recorded as a bad replicate."""
         ms = _ida_measurement_set()
         polls: list[bool] = []
@@ -132,8 +137,8 @@ class TestCancellation:
             polls.append(len(polls) >= 5)
             return polls[-1]
 
-        config = FitConfig(n_trials=4, custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True, seed=5)
+        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True)
         with pytest.raises(FitCancelled):
             fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, config, should_cancel=should_cancel)
 
-        assert len(polls) == 6, 'the second replicate stopped rather than running its four trials'
+        assert len(polls) == 6, 'the search stopped at the sixth node rather than running the whole grid'

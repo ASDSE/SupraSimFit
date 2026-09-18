@@ -21,6 +21,30 @@ Every one fits `data/IDA_system.txt` with the demo IDA conditions
 To add a file, check out the release, run its own `fit_measurement_set` on a
 dataset in `data/`, and write `FitResult.to_dict()` as JSON.
 
+## Files written before the fit reported confidence intervals
+
+Both fit `pr42_data.txt` with the conditions below at 40 trials, a minimum R² of
+0.95 and seed 20260918:
+
+| File | Written by | Fit |
+|---|---|---|
+| `pr42_avg.json` | commit `ccba0f1` | average of the three replicates |
+| `pr42_pr.json` | commit `ccba0f1` | per replicate, all three fitted |
+
+They carry a pool, an attempt record and an `uncertainty_source` entry, and no
+`format` key — the layout the explicit legacy reader handles — so an import
+keeps their reported fit and shows it without an interval.
+
+`pr42_data.txt` beside them holds the data they were fitted on: a synthetic IDA
+titration of 30 guest concentrations up to 50 µM into `[Host]₀` = 10 µM and
+`[Dye]₀` = 5 µM, with `Ka_dye` = 0.5 MM⁻¹, a true `Ka_guest` of 2 MM⁻¹, signal
+coefficients `I0` = 0, `I_dye_free` = 5·10⁷ au/M and `I_dye_bound` = 3·10⁸ au/M
+(the `tests/conftest.py` IDA ground truth), and three replicates carrying 2 %
+proportional Gaussian noise (NumPy seed 20260918). With that tree on
+`PYTHONPATH`, the signals are generated from `ida_signal`, written with
+`write_measurements_txt`, loaded again and fitted by `fit_measurement_set`;
+`FitResult.to_dict()` is written as JSON.
+
 ## A file that records no equilibrium arithmetic
 
 `unmarked_gda.json` carries no `model_arithmetic` entry, so its stored scores

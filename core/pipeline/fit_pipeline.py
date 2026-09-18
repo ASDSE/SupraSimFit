@@ -1,18 +1,20 @@
 """Fitting pipeline orchestration.
 
-This module provides the main entry point for fitting assay data. The
-pipeline orchestrates:
-1. Loading/preparing data
-2. Running multi-start optimization
-3. Filtering to the valid-fit pool by quality metrics
-4. Collapsing the pool to a representative real fit (see
-   :mod:`core.optimizer.ensemble`)
-5. Summarising the pool for reporting (see :func:`summarize_parameters`)
+One fit of one dataset: build the assay, project out the signal parameters and
+search the Ka box (:mod:`core.pipeline.varpro`), cut a profile-likelihood
+interval per binding constant, and record what the fit was made on. A dataset
+of several replicates is fitted through their average, with an explicit test of
+the assumption that average rests on — that every replicate shares its binding
+constants — deciding which of them enter it.
+
+:func:`summarize_parameters` is the single source of every reported row: the
+estimate, its interval and, in per-replicate mode, the spread of the
+replicates' own fits.
 """
 
 from __future__ import annotations
 
-import logging
+import math
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -23,20 +25,23 @@ import numpy as np
 from core.assays import ASSAY_CLASSES
 from core.assays.base import BaseAssay
 from core.assays.dye_alone import DyeAloneAssay
-from core.assays.registry import ASSAY_REGISTRY, AssayType
+from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
 from core.data_processing.measurement_set import MeasurementSet
 from core.models.equilibrium import MODEL_ARITHMETIC, legacy_arithmetic
-from core.optimizer.ensemble import collapse, describe, describe_log10, select_representative_index
-from core.optimizer.filters import calculate_fit_metrics, select_valid_fits
-from core.optimizer.multistart import FitCancelled, multistart_minimize
-from core.optimizer.scaling import ParamScaler
+from core.optimizer.ensemble import describe, describe_log10
+from core.optimizer.filters import calculate_fit_metrics
+from core.pipeline.varpro import LEVEL, FitRefused, KaInterval, ProjectedFit, Projection, replicate_outliers
 from core.units import Q_, Quantity
-
-logger = logging.getLogger(__name__)
 
 # The fit uses the measured concentrations; the plotted/exported curve is
 # evaluated on this denser grid so the line is smooth between data points.
 _FIT_CURVE_POINTS = 300
+
+#: Version of the results-file layout :meth:`FitResult.to_dict` writes. A file
+#: without the entry was written before intervals were reported and is read by
+#: :meth:`FitResult._from_legacy_dict`; a larger number is a file this version
+#: cannot read.
+RESULT_FORMAT = 2
 
 #: Unit of each condition a results file stores as a bare number, with no
 #: ``condition_units`` entry: the unit its assay holds that condition in.
@@ -54,39 +59,21 @@ def _dense_fit_curve(assay: BaseAssay, params: np.ndarray) -> tuple[Quantity, Qu
     return Q_(x_dense, 'M'), assay.forward_model(params, x=x_dense)
 
 
-def _samples_to_json(samples: Optional[Dict[str, np.ndarray]]) -> Optional[Dict[str, List[float]]]:
-    """JSON-safe copy of a per-key sample dict; ``None`` stays ``None``."""
-    return None if samples is None else {k: [float(v) for v in arr] for k, arr in samples.items()}
-
-
-def _samples_from_json(samples: Optional[Dict[str, List[float]]]) -> Optional[Dict[str, np.ndarray]]:
-    """Per-key float arrays rebuilt from their JSON lists; ``None`` stays ``None``."""
-    return None if samples is None else {k: np.asarray(v, dtype=float) for k, v in samples.items()}
-
-
 @dataclass
 class FitResult:
-    """Serializable container for fitting results.
+    """Serializable container for one fit.
 
     All fitted parameter values are stored as ``pint.Quantity`` objects with
-    proper units. Spread is not stored: every reported interval is derived
-    on demand from ``parameter_samples`` by :func:`summarize_parameters`.
+    proper units.
 
     Attributes
     ----------
     parameters : dict[str, Quantity]
-        Representative-fit parameter name → Quantity value. This is an
-        *actual* fit from the valid pool (the one with the highest R²),
-        not a synthetic per-parameter aggregate — so it lies on the
-        model's degenerate manifold and reconstructs ``y_fit`` exactly.
+        Parameter name → the least-squares fit's value.
     rmse : float
-        RMSE of the representative fit.
+        RMSE of the fit against the signal it was fitted to.
     r_squared : float
-        R² of the representative fit.
-    n_passing : int
-        Number of fits in the valid pool.
-    n_total : int
-        Total number of fit attempts.
+        R² of the fit against the signal it was fitted to.
     x_fit : Quantity
         Dense concentration grid spanning the data range, for plotting a
         smooth fit curve (not the fitting grid).
@@ -114,6 +101,8 @@ class FitResult:
         ``active_replica_ids`` (the replicates it was given),
         ``replica_ids_fit`` and ``replica_failures`` for a per-replicate fit
         (the replicates it used and those it left out, with the reason),
+        ``replicate_test`` (the level and each replicate's p-value in the
+        shared-Ka test, when the replicates were tested),
         ``data_fingerprint`` (:meth:`MeasurementSet.fingerprint`),
         ``quality_scored_on`` (``'fitted_replicates'``: every RMSE and R² was
         measured against the replicates the fit used) and ``model_arithmetic``
@@ -123,62 +112,24 @@ class FitResult:
         one for a checked copy of a file that records none). Read the
         replicates through :func:`fit_replica_ids` and
         :func:`input_replica_ids`.
-    uncertainty_source : str
-        What the pool in ``parameter_samples`` spans. ``"optimizer"``
-        (default): the multistart passing trials on a single signal.
-        ``"replicate"``: the passing trials pooled across every active
-        replica (populated by :func:`fit_measurement_set_per_replica`). The
-        string literal ``"replicate"`` is the on-disk value in exported
-        fit-result JSON, so it is part of that file format.
+    intervals : dict[str, KaInterval] | None
+        Profile-likelihood confidence interval of every binding constant the
+        fit was free to move. ``None`` when the result carries no interval: a
+        dye-alone calibration, or a result imported from a file written before
+        intervals were reported.
+    degenerate_keys : tuple[str, ...]
+        Signal parameters the data determine only in combination at the fitted
+        binding constants, so each of their values is one member of a family
+        that reconstructs the same curve.
     replica_fits : list[FitResult] | None
-        Per-replica fit results when this is an aggregate from
-        :func:`fit_measurement_set_per_replica`; ``None`` for single-signal
-        fits.  Retained for diagnostic inspection only.
-    parameter_samples : dict[str, np.ndarray] | None
-        One flat array per parameter key holding every valid trial's
-        parameter value (length == ``n_passing``), aligned by index.  In
-        average mode this is the multistart pool on the single averaged
-        signal; in per-replica mode it is the concatenation of valid
-        trials across every replicate the fit used.  Every reported spread — the
-        annotation's range, the table's columns, the exports — is computed
-        from this pool via :func:`summarize_parameters`.
-    quality_samples : dict[str, np.ndarray] | None
-        ``{"rmse": ..., "r_squared": ...}`` — per-trial fit quality for the
-        pool, aligned to ``parameter_samples`` by index, measured against the
-        average of the replicates the fit used (the averaged signal it was
-        fitted to, for a fit of the average).  Drives the RMSE/R² distribution
-        plots and representative selection.
-    representative_index : int | None
-        Index (into the ``parameter_samples``/``quality_samples`` arrays)
-        of the representative fit reported in ``parameters``/``rmse``/
-        ``r_squared``/``y_fit``.
-    attempt_samples : dict[str, np.ndarray] | None
-        One flat array per parameter key holding every completed multistart
-        attempt's value, accepted or rejected, aligned by index with
-        ``attempt_quality``. It includes the attempts below ``min_r_squared``
-        (and any the optional RMSE trim removed), so it shows where the
-        accepted pool sits among everything the optimizer found. An attempt
-        whose optimizer call raised is dropped, so there can be fewer
-        entries than ``n_trials``. In per-replica mode it is the
-        concatenation of every fitted replica's attempts. Nothing reported
-        is derived from it: ``parameter_samples`` stays the sole basis of
-        every reported value and interval. ``None`` for fits without a
-        multistart search (dye-alone linear fits) and for imported results
-        whose file records no attempts.
-    attempt_quality : dict[str, np.ndarray] | None
-        ``{"rmse": ..., "r_squared": ...}`` for the same attempts, aligned
-        to ``attempt_samples`` by index. Each value is measured against the
-        signal the attempt was fitted to — the one the ``min_r_squared``
-        floor was applied to — so in per-replica mode it is the replica's
-        own signal, whereas ``quality_samples`` is recomputed against the
-        average of the replicates the fit used.
+        In per-replicate mode, the fit of every replicate the fit was given on
+        its own, each recording its replicate in ``metadata['replica_id']`` and
+        carrying no interval. ``None`` for a fit of one signal.
     """
 
     parameters: Dict[str, Quantity]
     rmse: float
     r_squared: float
-    n_passing: int
-    n_total: int
     x_fit: Quantity
     y_fit: Quantity
     assay_type: str
@@ -190,18 +141,14 @@ class FitResult:
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     metadata: Dict[str, Any] = field(default_factory=dict)
-    uncertainty_source: str = 'optimizer'
+    intervals: Optional[Dict[str, KaInterval]] = None
+    degenerate_keys: Tuple[str, ...] = ()
     replica_fits: Optional[List['FitResult']] = None
-    parameter_samples: Optional[Dict[str, np.ndarray]] = None
-    quality_samples: Optional[Dict[str, np.ndarray]] = None
-    representative_index: Optional[int] = None
-    attempt_samples: Optional[Dict[str, np.ndarray]] = None
-    attempt_quality: Optional[Dict[str, np.ndarray]] = None
 
     @property
-    def success(self) -> bool:
-        """Whether the fit was successful (at least one passing fit)."""
-        return self.n_passing > 0
+    def per_replica(self) -> bool:
+        """Whether the fit tested its replicates and reports their own fits."""
+        return bool(self.fit_config.get('per_replicate'))
 
     # ------------------------------------------------------------------
     # Serialization
@@ -239,15 +186,8 @@ class FitResult:
             else:
                 cond_serial[k] = v
 
-        # Serialize x_fit / y_fit
-        x_list = self.x_fit.magnitude.tolist()
-        y_list = self.y_fit.magnitude.tolist()
-
-        replica_fits_serial: Optional[List[Dict[str, Any]]] = None
-        if self.replica_fits is not None:
-            replica_fits_serial = [rf.to_dict() for rf in self.replica_fits]
-
         return {
+            'format': RESULT_FORMAT,
             'id': self.id,
             'timestamp': self.timestamp,
             'measurement_set_id': self.measurement_set_id,
@@ -261,185 +201,166 @@ class FitResult:
             'condition_units': cond_units,
             'rmse': self.rmse,
             'r_squared': self.r_squared,
-            'n_passing': self.n_passing,
-            'n_total': self.n_total,
-            'x_fit': x_list,
-            'y_fit': y_list,
+            'x_fit': self.x_fit.magnitude.tolist(),
+            'y_fit': self.y_fit.magnitude.tolist(),
             'x_fit_unit': str(self.x_fit.units),
             'y_fit_unit': str(self.y_fit.units),
             'metadata': self.metadata,
-            'uncertainty_source': self.uncertainty_source,
-            'replica_fits': replica_fits_serial,
-            'parameter_samples': _samples_to_json(self.parameter_samples),
-            'quality_samples': _samples_to_json(self.quality_samples),
-            'representative_index': self.representative_index,
-            'attempt_samples': _samples_to_json(self.attempt_samples),
-            'attempt_quality': _samples_to_json(self.attempt_quality),
+            'intervals': None if self.intervals is None else {k: v.to_dict() for k, v in self.intervals.items()},
+            'degenerate_keys': list(self.degenerate_keys),
+            'replica_fits': None if self.replica_fits is None else [rf.to_dict() for rf in self.replica_fits],
         }
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'FitResult':
-        """Reconstruct a ``FitResult`` from a dictionary.
+        """Reconstruct a ``FitResult`` from a results file's dictionary.
 
-        Parameters
-        ----------
-        d : dict
-            As produced by :meth:`to_dict`.
+        The ``format`` entry decides how it is read: the current layout, or —
+        with no entry at all — a file written before intervals were reported.
 
-        Returns
-        -------
-        FitResult
+        Raises
+        ------
+        ValueError
+            When the file names a layout this version does not know.
         """
-        # Look up units from the file's own tokens first, then the registry.
-        param_units = d.get('parameter_units') or {}
-        if not param_units:
-            try:
-                at = AssayType[d['assay_type']]
-                param_units = dict(ASSAY_REGISTRY[at].units)
-            except KeyError:
-                param_units = {}
-
-        def _unit_for(key: str) -> str:
-            unit = param_units.get(key)
-            if unit is None:
-                # Fail loud rather than silently loading a real unit (e.g. 1/M)
-                # as dimensionless, which would drop it from the result with no
-                # signal. The GUI import path turns this into a user warning.
-                raise ValueError(
-                    f"FitResult.from_dict: no unit for parameter '{key}' "
-                    f'(assay_type={d.get("assay_type")!r}). The file predates '
-                    'parameter_units or uses an unknown assay type, so it cannot '
-                    'be loaded without corrupting units.'
-                )
-            return unit
-
-        # Reconstruct Quantity parameters
-        parameters = {k: Q_(v, _unit_for(k)) for k, v in d['parameters'].items()}
-
-        # Reconstruct x_fit / y_fit as Quantities from their own stored unit
-        # tokens (older files without them fall back to the M/au convention).
-        x_fit = Q_(np.asarray(d['x_fit']), d.get('x_fit_unit', 'M'))
-        y_fit = Q_(np.asarray(d['y_fit']), d.get('y_fit_unit', 'au'))
-
-        replica_fits_data = d.get('replica_fits')
-        replica_fits: Optional[List['FitResult']] = None
-        if replica_fits_data is not None:
-            replica_fits = [cls.from_dict(rf) for rf in replica_fits_data]
-
-        parameter_samples = _samples_from_json(d.get('parameter_samples'))
-
-        # Normalise the pool index so a malformed/legacy JSON can't crash the
-        # GUI later on an out-of-range lookup.
-        representative_index = d.get('representative_index')
-        if representative_index is not None:
-            pool_size = len(next(iter(parameter_samples.values()))) if parameter_samples else 0
-            if not 0 <= representative_index < pool_size:
-                representative_index = None
-
-        # Re-wrap conditions into Quantities from the file's unit tokens. A file
-        # without them stores each numeric condition as its magnitude in the
-        # unit the assay holds it in; other values (the DBA ``mode``) stay as
-        # they are.
-        condition_units = d.get('condition_units') or {}
-        conditions = {}
-        for k, v in d.get('conditions', {}).items():
-            unit = condition_units.get(k)
-            if unit is None and isinstance(v, (int, float)) and not isinstance(v, bool):
-                unit = _BARE_CONDITION_UNITS.get(k)
-                if unit is None:
-                    raise ValueError(
-                        f"FitResult.from_dict: no unit for condition '{k}' "
-                        f'(assay_type={d.get("assay_type")!r}), so it cannot be loaded without corrupting units.'
-                    )
-            conditions[k] = Q_(v, unit) if unit is not None else v
-
+        fmt = d.get('format')
+        if fmt is None:
+            return cls._from_legacy_dict(d)
+        if fmt != RESULT_FORMAT:
+            raise ValueError(
+                f'This results file was written by a newer version of SupraSimFit (file layout {fmt}; this '
+                f'version reads {RESULT_FORMAT}). Update SupraSimFit and open the file again.'
+            )
+        intervals = d.get('intervals')
+        replica_fits = d.get('replica_fits')
         return cls(
-            parameters=parameters,
-            rmse=d['rmse'],
-            r_squared=d['r_squared'],
-            n_passing=d['n_passing'],
-            n_total=d['n_total'],
-            x_fit=x_fit,
-            y_fit=y_fit,
-            assay_type=d['assay_type'],
-            model_name=d['model_name'],
-            conditions=conditions,
-            fit_config=d.get('fit_config', {}),
-            measurement_set_id=d.get('measurement_set_id'),
-            source_file=d.get('source_file'),
-            id=d.get('id', uuid.uuid4().hex),
-            timestamp=d.get('timestamp', datetime.now(timezone.utc).isoformat()),
-            metadata=d.get('metadata', {}),
-            uncertainty_source=d.get('uncertainty_source', 'optimizer'),
-            replica_fits=replica_fits,
-            parameter_samples=parameter_samples,
-            quality_samples=_samples_from_json(d.get('quality_samples')),
-            representative_index=representative_index,
-            attempt_samples=_samples_from_json(d.get('attempt_samples')),
-            attempt_quality=_samples_from_json(d.get('attempt_quality')),
+            **_common_fields(d),
+            intervals=None if intervals is None else {k: KaInterval.from_dict(v) for k, v in intervals.items()},
+            degenerate_keys=tuple(d.get('degenerate_keys') or ()),
+            replica_fits=None if replica_fits is None else [cls.from_dict(rf) for rf in replica_fits],
         )
 
+    @classmethod
+    def _from_legacy_dict(cls, d: Dict[str, Any]) -> 'FitResult':
+        """A results file written before intervals were reported.
 
-#: Largest seed the application draws and accepts. A recorded seed is meant to be
-#: typed back in, and the interface's Fixed seed boxes are 32-bit signed integers,
-#: so every seed drawn anywhere stays inside that range.
-MAX_SEED = 2**31 - 1
+        Such a file holds a multi-start estimate: the fit it reports, and the
+        pool of accepted attempts, the attempt record and the statistics mode
+        that estimate was summarised through. The fit is kept — its parameters,
+        RMSE, R², curve, conditions, replicate record and configuration
+        snapshot — and the rest is read past. The result carries no interval,
+        and :func:`verify_imported_result` checks its numbers against the data
+        as it does for any other file.
+        """
+        return cls(**_common_fields(d))
+
+
+def _common_fields(d: Dict[str, Any]) -> Dict[str, Any]:
+    """The fields every results file holds, as :class:`FitResult` keyword arguments."""
+    # Look up units from the file's own tokens first, then the registry.
+    param_units = d.get('parameter_units') or {}
+    if not param_units:
+        try:
+            at = AssayType[d['assay_type']]
+            param_units = dict(ASSAY_REGISTRY[at].units)
+        except KeyError:
+            param_units = {}
+
+    def _unit_for(key: str) -> str:
+        unit = param_units.get(key)
+        if unit is None:
+            # Fail loud rather than silently loading a real unit (e.g. 1/M)
+            # as dimensionless, which would drop it from the result with no
+            # signal. The GUI import path turns this into a user warning.
+            raise ValueError(
+                f"FitResult.from_dict: no unit for parameter '{key}' "
+                f'(assay_type={d.get("assay_type")!r}). The file predates '
+                'parameter_units or uses an unknown assay type, so it cannot '
+                'be loaded without corrupting units.'
+            )
+        return unit
+
+    # Re-wrap conditions into Quantities from the file's unit tokens. A file
+    # without them stores each numeric condition as its magnitude in the
+    # unit the assay holds it in; other values (the DBA ``mode``) stay as
+    # they are.
+    condition_units = d.get('condition_units') or {}
+    conditions = {}
+    for k, v in d.get('conditions', {}).items():
+        unit = condition_units.get(k)
+        if unit is None and isinstance(v, (int, float)) and not isinstance(v, bool):
+            unit = _BARE_CONDITION_UNITS.get(k)
+            if unit is None:
+                raise ValueError(
+                    f"FitResult.from_dict: no unit for condition '{k}' "
+                    f'(assay_type={d.get("assay_type")!r}), so it cannot be loaded without corrupting units.'
+                )
+        conditions[k] = Q_(v, unit) if unit is not None else v
+
+    return dict(
+        parameters={k: Q_(v, _unit_for(k)) for k, v in d['parameters'].items()},
+        rmse=d['rmse'],
+        r_squared=d['r_squared'],
+        # x_fit / y_fit carry their own unit tokens; a file without them holds
+        # the M / au the app has always stored them in.
+        x_fit=Q_(np.asarray(d['x_fit']), d.get('x_fit_unit', 'M')),
+        y_fit=Q_(np.asarray(d['y_fit']), d.get('y_fit_unit', 'au')),
+        assay_type=d['assay_type'],
+        model_name=d['model_name'],
+        conditions=conditions,
+        fit_config=d.get('fit_config', {}),
+        measurement_set_id=d.get('measurement_set_id'),
+        source_file=d.get('source_file'),
+        id=d.get('id', uuid.uuid4().hex),
+        timestamp=d.get('timestamp', datetime.now(timezone.utc).isoformat()),
+        metadata=d.get('metadata', {}),
+    )
 
 
 @dataclass
 class FitConfig:
     """Configuration for the fitting pipeline.
 
-    ``rmse_threshold_factor`` is an *optional* extra trim on top of the
-    absolute R² floor (``min_r_squared``), and is off by default
-    (``None``). When set, fits with ``RMSE > best_valid_RMSE * factor`` are
-    also dropped from the valid pool.
-
-    ``seed`` fixes the multi-start starting points, which is what makes a fit
-    reproducible: the same seed on the same data returns the same pool. Leave
-    it ``None`` to draw from the global NumPy random state.
+    ``custom_bounds`` overrides the registry's default bounds per parameter;
+    ``per_replica`` decides whether the replicates are fitted and tested
+    individually beside the fit of their average.
     """
 
-    n_trials: int = 100
-    rmse_threshold_factor: Optional[float] = None
-    min_r_squared: float = 0.99
-    log_scale_params: Optional[List[str]] = None
     custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
-    rescale_parameters: bool = True
     per_replica: bool = True
-    seed: Optional[int] = None
-
-
-def _model_name_for_assay(assay: BaseAssay) -> str:
-    """Derive a model name string from an assay instance.
-
-    Each assay family declares its own ``model_name`` class attribute; the
-    base default (``'equilibrium_4param'``) covers the 1:1 models.
-    """
-    return assay.model_name
 
 
 def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
-    """Serialize a FitConfig to a plain dict."""
+    """Serialize a FitConfig to a plain dict.
+
+    ``per_replicate`` records what the fit did, not what the configuration
+    asked for: it is written ``False`` here and set to ``True`` by
+    :func:`fit_measurement_set_per_replica`, the one path that fits and tests
+    the replicates individually. A fit of one signal therefore never reports
+    replicate fits it does not hold.
+    """
     # Provenance only (never deserialized back): keep the unit token so a bound
-    # entered in µM / MM⁻¹ is not stored as a unit-ambiguous bare number.
+    # entered in µM / MM⁻¹ is not stored as a unit-ambiguous bare number. A
+    # bound with no limit — the empty upper box of a signal parameter — is
+    # written as null, which is what JSON has for it; a results file is read by
+    # other programs too, and none of them accepts a float outside the format.
     custom_bounds: Optional[Dict[str, list]] = None
     if config.custom_bounds is not None:
         custom_bounds = {}
         for key, (lo, hi) in config.custom_bounds.items():
-            custom_bounds[key] = [float(lo.magnitude), float(hi.magnitude), str(lo.units)]
+            custom_bounds[key] = [_finite_or_none(lo), _finite_or_none(hi), str(lo.units)]
     return {
-        'n_trials': config.n_trials,
-        'rmse_threshold_factor': config.rmse_threshold_factor,
-        'min_r_squared': config.min_r_squared,
-        'log_scale_params': config.log_scale_params,
         'custom_bounds': custom_bounds,
-        'rescale_parameters': config.rescale_parameters,
-        'seed': config.seed,
-        # JSON key kept as 'per_replicate' for backward compat with
-        # previously exported fit-result files.
-        'per_replicate': config.per_replica,
+        # The on-disk key of the per-replicate mode in exported results files.
+        'per_replicate': False,
+        'level': LEVEL,
     }
+
+
+def _finite_or_none(bound: Quantity) -> Optional[float]:
+    """The magnitude of *bound* as a results file holds it: the number, or ``None`` for no limit."""
+    value = float(bound.magnitude)
+    return value if math.isfinite(value) else None
 
 
 def _resolve_bounds(
@@ -458,56 +379,11 @@ def _resolve_bounds(
     return bounds_dict
 
 
-def _resolve_log_scale(
-    assay: BaseAssay,
-    log_scale_params: Optional[List[str]],
-) -> List[int]:
-    """Convert parameter names -> positional indices for the optimizer."""
-    if log_scale_params is None:
-        names = list(assay.registry_metadata.log_scale_keys)
-    else:
-        names = list(log_scale_params)
-
-    keys = assay.parameter_keys
-    indices: List[int] = []
-    for name in names:
-        if name not in keys:
-            raise ValueError(f"Unknown log-scale parameter '{name}'. Valid keys: {list(keys)}")
-        indices.append(keys.index(name))
-    return indices
-
-
-def _check_log_scale_bounds(assay: BaseAssay, config: FitConfig) -> None:
-    """Refuse bounds a log-scale parameter's starting values cannot be drawn from.
-
-    Starting values for a log-scale parameter are spread across orders of
-    magnitude, which needs both of its bounds above zero. The refusal names the
-    parameter and the numbers, so the caller can say which field to change.
-
-    Raises
-    ------
-    ValueError
-        If a log-scale parameter's lower or upper bound is zero or negative.
-    """
-    bounds_dict = _resolve_bounds(assay, config.custom_bounds)
-    canonical_units = ASSAY_REGISTRY[assay.assay_type].units
-    for index in _resolve_log_scale(assay, config.log_scale_params):
-        key = assay.parameter_keys[index]
-        lower = float(bounds_dict[key][0].to(canonical_units[key]).magnitude)
-        upper = float(bounds_dict[key][1].to(canonical_units[key]).magnitude)
-        if lower <= 0 or upper <= 0:
-            raise ValueError(
-                f'The starting values for {key} are drawn across orders of magnitude, so both of its '
-                f'bounds must be above zero. They are {lower:g} and {upper:g}: raise the lower bound to '
-                'a small positive value and run the fit again.'
-            )
-
-
 def _wrap_params_as_quantities(
     params: np.ndarray,
     assay: BaseAssay,
 ) -> Dict[str, Quantity]:
-    """Wrap optimizer float params into named Quantity dict."""
+    """Wrap the fit's float params into a named Quantity dict."""
     units = ASSAY_REGISTRY[assay.assay_type].units
     result = {}
     for key, value in zip(assay.parameter_keys, params):
@@ -521,17 +397,15 @@ def _wrap_params_as_quantities(
     return result
 
 
-def representative_view(
+def fit_view(
     assay: BaseAssay,
     params: np.ndarray,
 ) -> Tuple[float, float, Quantity, Quantity]:
-    """Self-consistent reported fields for one real parameter vector.
+    """Reported fields of one parameter vector against *assay*'s signal.
 
     The single source for "a parameter vector → its RMSE/R² and plotted
-    curve against *assay*'s data", used both when first reporting a fit and
-    when the user re-selects a different representative. Because *params* is
-    a real fit (on the model's degenerate manifold), the curve and metrics
-    reconstruct correctly — unlike a synthetic per-parameter aggregate.
+    curve", used both when a fit is made and when an imported fit is measured
+    again on the data loaded now.
 
     Returns
     -------
@@ -553,172 +427,173 @@ class ParameterSummary:
     key : str
         Parameter key (e.g. ``"Ka_dye"``). A log twin repeats its source key.
     is_log : bool
-        ``True`` for a log₁₀ twin row. ``estimate`` and ``stats`` are then
-        statistics of ``log10(parameter)`` and carry no unit — but ``unit``
-        still names the underlying parameter's unit, so a label can read
-        ``log₁₀(Ka / M⁻¹)``.
+        ``True`` for a log₁₀ twin row. ``estimate``, ``interval`` and
+        ``replicates`` are then in log₁₀ of the parameter and carry no unit —
+        but ``unit`` still names the underlying parameter's unit, so a label
+        can read ``log₁₀(Ka / M⁻¹)``.
     estimate : float
-        The representative fit's value for this row.
+        The fit's value for this row.
     unit : str
         Unit of the underlying parameter (``""`` when it has none).
-    stats : dict[str, float] | None
-        :func:`core.optimizer.ensemble.describe` output over the valid-fit
-        pool, or ``None`` when the result carries no pool (dye-alone linear
-        fits, and imports of results exported before pools were stored).
+    interval : tuple[float, float] | None
+        Confidence interval of this row, in the row's own scale: the interval
+        of a log twin is the endpoints of the parameter's interval
+        transformed, which is exact because log₁₀ is monotone. ``None`` for a
+        parameter with no interval — every signal parameter, a binding
+        constant held fixed, and every row of an imported result written
+        before intervals were reported.
+    interval_open : tuple[bool, bool]
+        Per endpoint, whether the interval reaches as far as the profile goes
+        rather than being closed by the data.
+    interval_unsolvable : tuple[bool, bool]
+        Per endpoint, whether an open side is open because the equilibrium
+        model cannot be solved past it, rather than because the data leave it
+        open. More data cannot close such a side.
+    interval_limited_by : tuple[str, str]
+        Per endpoint, the other binding constant whose bound — rather than the
+        data — is what ends the profile on an open side (``''`` otherwise):
+        the data would accept values further out if that constant could go
+        past its bound.
+    interval_split : bool
+        Whether the values the data accept come in separate stretches, so the
+        interval spans a gap of values they reject.
+    level : float | None
+        Confidence level of ``interval``; ``None`` when there is none.
+    degenerate : bool
+        Whether the data determine this parameter only in combination with
+        others.
+    replicates : dict[str, float] | None
+        :func:`~core.optimizer.ensemble.describe` (or ``describe_log10`` for a
+        log twin) over the values the replicates the fit used give this
+        parameter in their own fits. ``None`` below two such replicates.
     """
 
     key: str
     is_log: bool
     estimate: float
     unit: str
-    stats: Optional[Dict[str, float]]
+    interval: Optional[Tuple[float, float]]
+    interval_open: Tuple[bool, bool]
+    interval_unsolvable: Tuple[bool, bool]
+    interval_limited_by: Tuple[str, str]
+    interval_split: bool
+    level: Optional[float]
+    degenerate: bool
+    replicates: Optional[Dict[str, float]]
+
+
+def _binding_constant_keys(result: FitResult) -> set[str]:
+    """The binding constants of the result's assay; none for an assay type the registry does not know."""
+    try:
+        kinds = ASSAY_REGISTRY[AssayType[result.assay_type]].param_kinds
+    except KeyError:
+        return set()
+    return {k for k, kind in kinds.items() if kind is ParamKind.BINDING_CONSTANT}
+
+
+def parameters_on_bound(result: FitResult) -> Dict[str, Quantity]:
+    """Signal parameters the fit ended on a bound the user entered, each with that bound.
+
+    A signal parameter is solved inside its bounds, so one that ends on a
+    bound may be held there against the data and the curve with it. Zero, the
+    physical lower limit of every signal parameter, is not reported, and
+    neither is a parameter held fixed by equal bounds. A binding constant on a
+    bound shows as an open side of its interval instead. Read from the
+    parameters and the bounds the result records — a number, or ``None`` for
+    a bound with no limit — so it holds for an imported result too.
+    """
+    ka_keys = _binding_constant_keys(result)
+    hits: Dict[str, Quantity] = {}
+    for key, (lo, hi, unit) in (result.fit_config.get('custom_bounds') or {}).items():
+        if key in ka_keys or key not in result.parameters or lo == hi:
+            continue
+        value = float(result.parameters[key].to(unit).magnitude)
+        for bound in (lo, hi):
+            if bound is not None and bound != 0.0 and np.isclose(value, bound, rtol=1e-12, atol=0.0):
+                hits[key] = Q_(bound, unit)
+    return hits
 
 
 def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
     """Reported rows for *result* — the single source for every display.
 
     The fit summary table, the plot annotation and the TXT/CSV exports all
-    render from this, so they cannot drift apart. A log₁₀ twin row follows
-    each association constant (the assay's ``log_scale_keys``); its statistics
-    come from :func:`~core.optimizer.ensemble.describe_log10`, which transforms
-    the pool *first* — never ``log10`` of a spread.
+    render from this, so they cannot drift apart. A log₁₀ twin row follows each
+    binding constant; its interval is the parameter's interval transformed, and
+    its replicate statistics come from
+    :func:`~core.optimizer.ensemble.describe_log10`, which transforms the
+    replicates' values *first* — statistics of log₁₀(Ka) must come from the
+    per-fit log values, because log₁₀ of a Ka spread is meaningless.
 
     Each unit comes from the parameter's own ``Quantity``, which stays correct
-    even when the assay type is missing from the registry; only the choice of
-    which parameters are log-scale is registry metadata.
+    even when the assay type is missing from the registry; only which
+    parameters are binding constants is registry metadata.
     """
-    try:
-        log_keys = set(ASSAY_REGISTRY[AssayType[result.assay_type]].log_scale_keys)
-    except KeyError:
-        log_keys = set()
-
-    samples = result.parameter_samples or {}
+    ka_keys = _binding_constant_keys(result)
+    replicates = _replicate_values(result)
+    intervals = result.intervals or {}
     rows: List[ParameterSummary] = []
     for key, value in result.parameters.items():
         unit = str(value.units) if isinstance(value, Quantity) else ''
         magnitude = float(value.magnitude) if isinstance(value, Quantity) else float(value)
-        raw_pool = samples.get(key)
-        pool = np.asarray(raw_pool, dtype=float) if raw_pool is not None else None
-
+        ci = intervals.get(key)
+        pool = replicates.get(key)
+        shared = dict(
+            key=key,
+            unit=unit,
+            interval_open=(False, False) if ci is None else (ci.open_low, ci.open_high),
+            interval_unsolvable=(False, False) if ci is None else (ci.unsolvable_low, ci.unsolvable_high),
+            interval_limited_by=('', '') if ci is None else (ci.limited_by_low, ci.limited_by_high),
+            interval_split=False if ci is None else ci.split,
+            level=None if ci is None else ci.level,
+            degenerate=key in result.degenerate_keys,
+        )
         rows.append(
             ParameterSummary(
-                key=key,
                 is_log=False,
                 estimate=magnitude,
-                unit=unit,
-                stats=describe(pool) if pool is not None else None,
+                interval=None if ci is None else (ci.low, ci.high),
+                replicates=None if pool is None else describe(pool),
+                **shared,
             )
         )
-        if key in log_keys and pool is not None:
+        if key in ka_keys:
             rows.append(
                 ParameterSummary(
-                    key=key,
                     is_log=True,
                     estimate=float(np.log10(magnitude)),
-                    unit=unit,
-                    stats=describe_log10(pool),
+                    interval=None if ci is None else (float(np.log10(ci.low)), float(np.log10(ci.high))),
+                    replicates=None if pool is None else describe_log10(pool),
+                    **shared,
                 )
             )
     return rows
 
 
-def select_representative(result: FitResult, assay: BaseAssay, index: int) -> None:
-    """Re-point *result* at a different valid fit from its pool.
+def _replicate_values(result: FitResult) -> Dict[str, np.ndarray]:
+    """Each parameter's values across the own fits of the replicates *result* used.
 
-    Mutates *result* in place: sets ``representative_index`` to *index* and
-    rebuilds ``parameters``/``rmse``/``r_squared``/``x_fit``/``y_fit`` from
-    that pooled trial via :func:`representative_view`. The pool is unchanged —
-    only which real fit is reported. The representative the fit itself chose
-    is kept in ``metadata['fitted_representative_index']``, so a report can
-    tell a picked representative from the fit's own. Used by the GUI when the
-    user picks a fit from the distribution plot or the selector.
-
-    Parameters
-    ----------
-    result : FitResult
-        A successful fit carrying a ``parameter_samples`` pool.
-    assay : BaseAssay
-        The assay the pool was scored against, built from *result*'s own record
-        by :func:`scoring_assay`. The reported RMSE and R² then equal
-        ``quality_samples[...][index]``, and re-selecting the fit's own attempt
-        restores its reported fields exactly.
-    index : int
-        Index into the pooled samples of the fit to report.
+    Empty unless at least two of the replicates the fit was given entered its
+    average: one value is the fit itself seen again, and a replicate the fit
+    left out describes data the fit does not.
     """
-    if not result.parameter_samples:
-        raise ValueError('Cannot select a representative: result has no parameter_samples pool.')
-
-    pool_size = len(next(iter(result.parameter_samples.values())))
-    if not 0 <= index < pool_size:
-        raise ValueError(f'Representative index {index} out of range for pool of size {pool_size}.')
-
-    rep_params = np.array([result.parameter_samples[k][index] for k in assay.parameter_keys], dtype=float)
-    rmse, r_squared, x_fit, y_fit = representative_view(assay, rep_params)
-    result.metadata.setdefault('fitted_representative_index', result.representative_index)
-    result.representative_index = index
-    result.parameters = _wrap_params_as_quantities(rep_params, assay)
-    result.rmse = rmse
-    result.r_squared = r_squared
-    result.x_fit = x_fit
-    result.y_fit = y_fit
-
-
-def fitted_representative_index(result: FitResult) -> Optional[int]:
-    """Pool index of the attempt the fit itself chose to report.
-
-    :func:`select_representative` records it in
-    ``metadata['fitted_representative_index']`` when it re-points *result*.
-    Without that entry it is derived from the stored pool by the fit's own
-    rule, so a result exported without the entry still tells a picked attempt
-    from the fit's choice: the highest-R² attempt of a single fit, and for a
-    per-replicate fit the replicate best attempt with the highest R² against
-    the average of the replicates it used. A result with no pool cannot be
-    re-pointed and returns its ``representative_index``.
-
-    Returns
-    -------
-    int | None
-        The fit's own choice, or None when the stored data cannot tell: a pool
-        without per-attempt quality, or a per-replicate pool without each
-        replicate's fit.
-    """
-    fitted = result.metadata.get('fitted_representative_index')
-    if fitted is not None:
-        return int(fitted)
-    if not result.parameter_samples:
-        return result.representative_index
-    quality = result.quality_samples
-    if not quality or not {'rmse', 'r_squared'} <= quality.keys():
-        return None
-    if result.uncertainty_source != 'replicate':
-        return select_representative_index(quality)
-    fits = result.replica_fits
-    if not fits or any(rf.representative_index is None or not rf.parameter_samples for rf in fits):
-        return None
-    if sum(len(next(iter(rf.parameter_samples.values()))) for rf in fits) != len(quality['r_squared']):
-        return None
-    return _replica_representative_index(fits, quality)
-
-
-def _replica_representative_index(replica_fits: List[FitResult], quality: Dict[str, np.ndarray]) -> int:
-    """Pool index of a per-replicate fit's representative.
-
-    Each replicate's best attempt sits in the pool at that replicate's offset;
-    among those, the one whose *quality* (measured against the average of the
-    replicates the fit used) is best is the representative.
-    """
-    sizes = [len(next(iter(rf.parameter_samples.values()))) for rf in replica_fits]
-    bests = np.cumsum([0] + sizes[:-1]) + np.array([rf.representative_index for rf in replica_fits])
-    chosen = select_representative_index({k: np.asarray(quality[k], dtype=float)[bests] for k in ('rmse', 'r_squared')})
-    return int(bests[chosen])
+    used = set(result.metadata.get('replica_ids_fit') or ())
+    fits = [rf for rf in result.replica_fits or () if rf.metadata.get('replica_id') in used]
+    if len(fits) < 2:
+        return {}
+    return {
+        key: np.array([float(rf.parameters[key].magnitude) for rf in fits])
+        for key in result.parameters
+        if all(key in rf.parameters for rf in fits)
+    }
 
 
 def fit_replica_ids(result: FitResult) -> Optional[List[str]]:
     """Replicates *result* was fitted on, whose average its quality is measured against.
 
-    A per-replicate fit's ``replica_ids_fit`` (the replicates that produced
-    accepted fits), otherwise the ``active_replica_ids`` a fit of the average
-    was given.
+    A per-replicate fit's ``replica_ids_fit`` (the replicates that entered the
+    average), otherwise the ``active_replica_ids`` a fit of the average was
+    given.
 
     Returns
     -------
@@ -749,46 +624,10 @@ def input_replica_ids(result: FitResult) -> Optional[List[str]]:
     return list(used) + [rid for rid in result.metadata.get('replica_failures') or {} if rid not in used]
 
 
-def scoring_assay(ms: MeasurementSet, result: FitResult) -> BaseAssay:
-    """The assay *result*'s quality is measured against, built from its record alone.
-
-    The average of the replicates the fit used (:func:`fit_replica_ids`), with
-    the fit's own conditions and assay type. The replicates active in *ms* now
-    and any conditions entered since play no part, so a representative picked
-    through :func:`select_representative` on this assay reports the RMSE and R²
-    the pool records for it.
-
-    Parameters
-    ----------
-    ms : MeasurementSet
-        The data the fit was made on.
-    result : FitResult
-        A fit recording its replicates, conditions and assay type.
-
-    Raises
-    ------
-    ValueError
-        If *result* does not record the replicates it used, or *ms* lacks one
-        of them.
-    """
-    used = fit_replica_ids(result)
-    if used is None:
-        raise ValueError('This fit does not record which replicates it was made on.')
-    return _record_assay(ms, result, used)
-
-
 def _record_assay(ms: MeasurementSet, result: FitResult, replica_ids: List[str]) -> BaseAssay:
     """Average of *replica_ids* in *ms*, with *result*'s conditions and assay type."""
     assay_cls = ASSAY_CLASSES[AssayType[result.assay_type]]
     return ms.with_active(replica_ids).to_assay(assay_cls, conditions=result.conditions, use_average=True)
-
-
-def _score_pool(assay: BaseAssay, parameter_samples: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-    """RMSE and R² of every pooled attempt against *assay*'s signal, aligned with the pool."""
-    matrix = np.column_stack([np.asarray(parameter_samples[k], dtype=float) for k in assay.parameter_keys])
-    y = assay.y_data.magnitude
-    scores = np.array([calculate_fit_metrics(y, assay.forward_model(row).magnitude) for row in matrix], dtype=float)
-    return {'rmse': scores[:, 0].copy(), 'r_squared': scores[:, 1].copy()}
 
 
 def fit_assay(
@@ -799,7 +638,13 @@ def fit_assay(
     source_file: Optional[str] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> FitResult:
-    """Fit an assay using multi-start optimisation.
+    """Fit an assay by variable projection.
+
+    The signal parameters are solved exactly inside their bounds at every set
+    of binding constants, so the search runs over the one or two binding
+    constants alone and its minimum is the least-squares fit of the whole
+    model. Each binding constant the search was free to move gets a
+    profile-likelihood interval.
 
     Parameters
     ----------
@@ -812,170 +657,47 @@ def fit_assay(
     source_file : str, optional
         Original filename, if known.
     should_cancel : Callable[[], bool], optional
-        Asked between optimizer runs whether to stop.
+        Asked before every equilibrium solve whether to stop.
 
     Returns
     -------
     FitResult
-        With Quantity parameters, x_fit, y_fit, the valid-fit pool, and every
-        completed attempt — the attempts are kept when none passes the filter.
+        The fit, its intervals and the signal parameters the data determine
+        only in combination.
 
     Raises
     ------
     ValueError
-        If a parameter sampled across orders of magnitude has a bound at or
-        below zero.
+        When the binding model has no solution anywhere in the Ka bounds, when
+        the Ka bounds are not positive, when a signal the fit is measured
+        against does not change across the titration, or when the data hold too
+        few points to judge the fitted parameters.
     FitCancelled
         If *should_cancel* returns True.
     """
     if config is None:
         config = FitConfig()
-
-    # Resolve bounds (Quantity dicts)
-    bounds_dict = _resolve_bounds(assay, config.custom_bounds)
-
-    # Extract float bounds for scipy, converting each bound to the parameter's
-    # canonical unit first. This keeps the Quantity->float boundary unit-safe: a
-    # custom bound supplied in a compatible-but-non-canonical unit (e.g. a Ka in
-    # 'MM^-1' or a concentration in 'µM') is converted correctly instead of
-    # having its face magnitude taken, and a dimensionally wrong bound fails fast.
-    canonical_units = ASSAY_REGISTRY[assay.assay_type].units
-    float_bounds = [
-        (
-            float(bounds_dict[k][0].to(canonical_units[k]).magnitude),
-            float(bounds_dict[k][1].to(canonical_units[k]).magnitude),
-        )
-        for k in assay.parameter_keys
-    ]
-
-    # Resolve log-scale parameters (names -> indices)
-    log_scale = _resolve_log_scale(assay, config.log_scale_params)
-    _check_log_scale_bounds(assay, config)
-
-    # y_data magnitude for metrics
-    y_data_mag = assay.y_data.magnitude
-
-    # Define objective function
-    def objective(params: np.ndarray) -> float:
-        return assay.sum_squared_residuals(params)
-
-    # Define metrics function
-    def compute_metrics(params: np.ndarray) -> Tuple[float, float]:
-        y_pred = assay.forward_model(params)
-        return calculate_fit_metrics(y_data_mag, y_pred.magnitude)
-
-    scaler: Optional[ParamScaler] = None
-    if config.rescale_parameters:
-        scaler = ParamScaler.from_assay(assay)
-
-    # Run multi-start optimization
-    all_attempts = multistart_minimize(
-        objective=objective,
-        bounds=float_bounds,
-        n_trials=config.n_trials,
-        log_scale_params=log_scale,
-        compute_metrics=compute_metrics,
-        scaler=scaler,
-        rng=np.random.default_rng(config.seed) if config.seed is not None else None,
-        should_cancel=should_cancel,
-    )
-
-    # Every completed attempt, accepted or rejected, aligned by index.
-    keys = list(assay.parameter_keys)
-    attempt_samples = {k: np.array([a.params[i] for a in all_attempts], dtype=float) for i, k in enumerate(keys)}
-    attempt_quality = {
-        'rmse': np.array([a.rmse for a in all_attempts], dtype=float),
-        'r_squared': np.array([a.r_squared for a in all_attempts], dtype=float),
-    }
-
-    # Select the valid pool: absolute R² floor (primary) + optional RMSE trim.
-    valid_attempts = select_valid_fits(
-        all_attempts,
-        min_r_squared=config.min_r_squared,
-        rmse_threshold_factor=config.rmse_threshold_factor,
-    )
-
-    # Handle case where no fits pass
-    if not valid_attempts:
-        if all_attempts:
-            best = all_attempts[0]
-            logger.warning(
-                'No fits passed filtering (n_trials=%d, min_r2=%.2f, rmse_factor=%s). Best attempt: RMSE=%.4e, R2=%.4f.',
-                config.n_trials,
-                config.min_r_squared,
-                config.rmse_threshold_factor,
-                best.rmse,
-                best.r_squared,
-            )
-            hint = (
-                'All fit attempts were rejected by the quality filter. Try: (1) lowering min_r_squared, '
-                '(2) increasing n_trials, or (3) reviewing parameter bounds.'
-            )
-            if config.rmse_threshold_factor is not None:
-                hint += ' The optional RMSE-factor trim is also active — disabling it may help.'
-            diag = {
-                'error': 'No fits passed filtering criteria',
-                'best_attempt_rmse': best.rmse,
-                'best_attempt_r_squared': best.r_squared,
-                'best_attempt_params': assay.params_to_dict(best.params),
-                'hint': hint,
-            }
-        else:
-            logger.warning(
-                'All %d fit attempts failed (optimizer did not converge).',
-                config.n_trials,
-            )
-            diag = {'error': 'All fit attempts failed to converge'}
-
-        return FitResult(
-            parameters={},
-            rmse=np.inf,
-            r_squared=0.0,
-            n_passing=0,
-            n_total=len(all_attempts) if all_attempts else config.n_trials,
-            x_fit=assay.x_data,
-            y_fit=Q_(np.full(len(assay.x_data), np.nan), 'au'),
-            assay_type=assay.assay_type.name,
-            model_name=_model_name_for_assay(assay),
-            conditions=assay.get_conditions(),
-            fit_config=_config_to_dict(config),
-            measurement_set_id=measurement_set_id,
-            source_file=source_file,
-            metadata=diag,
-            attempt_samples=attempt_samples,
-            attempt_quality=attempt_quality,
-        )
-
-    # Collapse the pool: keep every valid trial, report a real representative fit.
-    param_matrix = np.array([a.params for a in valid_attempts], dtype=float)
-    rmse_pool = np.array([a.rmse for a in valid_attempts], dtype=float)
-    r2_pool = np.array([a.r_squared for a in valid_attempts], dtype=float)
-    ens = collapse(param_matrix, rmse_pool, r2_pool, keys)
-
-    # Reported result = the representative real fit (on-manifold, self-consistent).
-    rep_params = ens.representative_params
-    rmse, r_squared, x_fit, y_fit = representative_view(assay, rep_params)
-    params_q = _wrap_params_as_quantities(rep_params, assay)
-
+    projection = Projection(assay, _resolve_bounds(assay, config.custom_bounds), should_cancel=should_cancel)
+    fit = projection.fit()
+    params = projection.params(fit)
+    rmse, r_squared, x_fit, y_fit = fit_view(assay, params)
+    found = {key: projection.interval(key, fit) for key in projection.ka_keys}
+    intervals = {key: ci for key, ci in found.items() if ci is not None}
     return FitResult(
-        parameters=params_q,
+        parameters=_wrap_params_as_quantities(params, assay),
         rmse=rmse,
         r_squared=r_squared,
-        n_passing=len(valid_attempts),
-        n_total=len(all_attempts),
         x_fit=x_fit,
         y_fit=y_fit,
         assay_type=assay.assay_type.name,
-        model_name=_model_name_for_assay(assay),
+        model_name=assay.model_name,
         conditions=assay.get_conditions(),
         fit_config=_config_to_dict(config),
         measurement_set_id=measurement_set_id,
         source_file=source_file,
-        parameter_samples=ens.parameter_samples,
-        quality_samples=ens.quality_samples,
-        representative_index=ens.representative_index,
-        attempt_samples=attempt_samples,
-        attempt_quality=attempt_quality,
+        metadata={'method': 'variable_projection'},
+        intervals=intervals,
+        degenerate_keys=projection.degenerate_keys(fit),
     )
 
 
@@ -1010,8 +732,6 @@ def fit_linear_assay(
         },
         rmse=float(rmse.magnitude),
         r_squared=r_squared,
-        n_passing=1,
-        n_total=1,
         x_fit=assay.x_data,
         y_fit=y_fit,
         assay_type=assay.assay_type.name,
@@ -1035,7 +755,7 @@ def bounds_from_dye_alone(
     Parameters
     ----------
     result : FitResult
-        A *successful* dye-alone fit (``model_name == "linear"``).
+        A dye-alone fit (``model_name == "linear"``).
     margin : float
         Fractional margin (default 0.2 = +/-20%).
 
@@ -1045,8 +765,6 @@ def bounds_from_dye_alone(
     """
     if result.model_name != 'linear':
         raise ValueError(f"Expected a dye-alone (linear) FitResult, got model_name='{result.model_name}'")
-    if not result.success:
-        raise ValueError('Cannot derive bounds from a failed fit')
 
     slope_q = result.parameters['slope']
     intercept_q = result.parameters['intercept']
@@ -1074,12 +792,14 @@ def fit_measurement_set(
     replica_id: Optional[str] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> FitResult:
-    """Convenience: build an assay from a MeasurementSet and fit it.
+    """Build an assay from a MeasurementSet and fit it.
 
     When ``config.per_replica`` is ``True`` and neither ``use_average=False``
     nor an explicit ``replica_id`` is provided, dispatches to
-    :func:`fit_measurement_set_per_replica`, which fits each active replica
-    independently and aggregates parameters across replicas.
+    :func:`fit_measurement_set_per_replica`, which fits every active replicate
+    on its own and tests whether they share their binding constants before
+    averaging. A dye-alone calibration carries no binding constant for that test
+    to judge and goes to :func:`fit_linear_assay` in either replicate mode.
 
     Parameters
     ----------
@@ -1096,8 +816,8 @@ def fit_measurement_set(
     replica_id : str, optional
         Fit a specific replica instead of the average.
     should_cancel : Callable[[], bool], optional
-        Asked between optimizer runs whether to stop; a linear dye-alone fit
-        is a single solve and never asks.
+        Asked before every equilibrium solve whether to stop; a linear
+        dye-alone fit is a single solve and never asks.
 
     Returns
     -------
@@ -1114,7 +834,11 @@ def fit_measurement_set(
     FitCancelled
         If *should_cancel* returns True.
     """
-    if config is not None and config.per_replica and replica_id is None and use_average:
+    # A dye-alone calibration is a straight line with no binding constant, so the
+    # shared-Ka test has nothing to judge: it is fitted from the average of the
+    # active replicates whichever replicate mode is set.
+    linear = issubclass(assay_cls, DyeAloneAssay)
+    if not linear and config is not None and config.per_replica and replica_id is None and use_average:
         return fit_measurement_set_per_replica(ms, assay_cls, conditions, config, should_cancel=should_cancel)
 
     assay = ms.to_assay(
@@ -1124,7 +848,7 @@ def fit_measurement_set(
         replica_id=replica_id,
     )
 
-    if isinstance(assay, DyeAloneAssay):
+    if linear:
         result = fit_linear_assay(
             assay,
             measurement_set_id=ms.id,
@@ -1149,27 +873,14 @@ def _record_data(result: FitResult, ms: MeasurementSet) -> None:
     ``data_fingerprint`` identifies the measured values of *ms*, so an imported
     result can be matched to loaded data. ``quality_scored_on`` states that
     every RMSE and R² was measured against the replicates the fit used; a
-    per-replicate file without it may have scored its pool against every
-    replicate it was given, which :func:`verify_imported_result` checks.
+    per-replicate file without it may have scored against every replicate it
+    was given, which :func:`verify_imported_result` checks.
     ``model_arithmetic`` names the equilibrium arithmetic every score was
     computed with, which the same function needs to reproduce them.
     """
     result.metadata['data_fingerprint'] = ms.fingerprint()
     result.metadata['quality_scored_on'] = 'fitted_replicates'
     result.metadata['model_arithmetic'] = MODEL_ARITHMETIC
-
-
-class PerReplicaFitError(RuntimeError):
-    """Raised when per-replica fitting cannot produce any surviving fit.
-
-    Carries a ``failures`` mapping of ``replica_id -> reason`` so the GUI
-    layer can surface a no-silent-fallbacks warning listing every failed
-    replica.
-    """
-
-    def __init__(self, message: str, failures: Dict[str, str]):
-        super().__init__(message)
-        self.failures = dict(failures)
 
 
 def fit_measurement_set_per_replica(
@@ -1180,208 +891,167 @@ def fit_measurement_set_per_replica(
     *,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> FitResult:
-    """Fit every active replica independently and pool passing trials.
+    """Fit every active replicate on its own, test the ones that disagree out, and fit the rest together.
 
-    Each active replica is fit with its own multistart run (the same
-    ``config`` — including ``rescale_parameters`` — is forwarded unchanged
-    to every per-replica call).  Because the parameter rescaler is an
-    exact affine bijection [core/optimizer/scaling.py:20-23], every
-    per-replica ``FitResult`` emerges in physical units regardless of
-    its per-replica scaler, so parameter values from every replica
-    live in the same raw-unit space.
+    For replicates of equal scatter the joint least-squares fit of every
+    replicate is the fit of their average, and the average of replicates that
+    share their binding constants is itself a model signal. The reported fit is
+    therefore the fit of the average of the replicates used, and what this
+    function adds is the evidence behind it: every replicate's own fit, and an
+    explicit test of the one assumption the average rests on
+    (:func:`~core.pipeline.varpro.replicate_outliers`). A replicate whose own
+    signal needs a different binding constant than the others share is left out
+    of the average and reported by name.
 
-    **Aggregation semantics (pooled):** every replica's valid trials are
-    concatenated into a single flat pool (per parameter key) stored on the
-    returned ``FitResult.parameter_samples``, aligned with a pooled
-    ``quality_samples`` whose RMSE/R² are recomputed against the average of
-    the replicates the fit used, those with accepted fits.  A replica with
-    more valid trials contributes proportionally more samples to the pool.  Every fitted replica's
-    completed attempts, accepted or rejected, are concatenated the same way
-    into ``attempt_samples``/``attempt_quality``, each keeping its RMSE/R²
-    against its own replica's signal — the values that replica's quality
-    filter judged.  A replica recorded as a failure contributes no attempts,
-    matching ``n_total``.
-
-    The reported ``parameters``/``rmse``/``r_squared``/``y_fit`` come from
-    the **representative**: each fitted replica's own best trial is a
-    candidate, and the one with the highest R² against the average of the
-    replicates used is reported.  Every candidate is therefore the best fit
-    of a measured replicate, which is what the reported parameters describe.
-    The pooled trials from every replica are kept in ``parameter_samples``,
-    which every reported spread derives from.
-
-    Failure handling: a replica that raises (degenerate scaler input,
-    convergence failure, …) or whose attempts all miss the R² floor is left
-    out and recorded, with a plain-language reason, in
-    ``metadata['replica_failures']``.  If no replica survives, a
-    :class:`PerReplicaFitError` is raised with the full failure map so
-    the GUI can report every bad replica.
+    The replicates' own fits and the rounds of the test are searches over one
+    :class:`~core.pipeline.varpro.Projection`, whose per-row residuals on the
+    search grid are cached, so each of them costs only its refinement and not
+    another grid, and each replicate's own fit is searched once and used twice —
+    as that replicate's reported fit and as the residual the test weights it by.
+    Measured at 30 points on the default Ka box with four replicates, they add
+    0.05 s to a one-Ka fit and 3 s to a two-Ka fit, on top of the reported fit
+    and its intervals.
 
     Parameters
     ----------
     ms : MeasurementSet
-        Source data with one or more active replicas.
+        Source data with one or more active replicates.
     assay_cls : Type[BaseAssay]
         Concrete assay class.
     conditions : dict
         Assay-specific conditions as Quantity values.
     config : FitConfig, optional
-        Fitting configuration.  ``per_replica`` is ignored (this function
-        *is* the per-replica path) but every other field — including
-        ``rescale_parameters`` — is forwarded to each per-replica fit.
+        Fitting configuration.
     should_cancel : Callable[[], bool], optional
-        Asked between optimizer runs whether to stop, the replicates already
-        fitted included: a cancelled run returns no result.
+        Asked before every equilibrium solve whether to stop.
 
     Returns
     -------
     FitResult
-        Aggregate result whose ``parameters``/``rmse``/``r_squared`` are
-        the representative pooled trial,
-        ``uncertainty_source == "replicate"`` (the on-disk value in exported
-        JSON), ``parameter_samples``/``quality_samples`` hold the pool,
-        ``replica_fits`` holds the per-replica successful fits for
-        diagnostic inspection, and the metadata records the replicates given
-        (``active_replica_ids``), used (``replica_ids_fit``) and left out
-        (``replica_failures``).
+        The fit of the average of the replicates used, with ``replica_fits``
+        holding every given replicate's own fit and the metadata recording the
+        replicates given (``active_replica_ids``), used (``replica_ids_fit``),
+        left out (``replica_failures``) and the test that decided
+        (``replicate_test``).
 
     Raises
     ------
-    PerReplicaFitError
-        If no replicate produced an accepted fit.
+    ValueError
+        When no replicate is active, when a replicate's signal does not change
+        across the titration, or when the fit itself cannot be made.
     FitCancelled
         If *should_cancel* returns True.
     """
     if config is None:
         config = FitConfig()
+    given = ms.active_replica_ids
+    if not given:
+        raise FitRefused('No replicate is switched on, so there is nothing to fit. Switch at least one on.')
 
-    active_ids = ms.active_replica_ids
-    if not active_ids:
-        raise ValueError('No active replicas to fit.')
+    rows = [ms.replica_ids.index(rid) for rid in given]
 
-    per_call_config = replace(config, per_replica=False)
-
-    # A bound the search cannot draw starting values from is a setting, not a
-    # property of one replicate: check it once, so its named reason reaches the
-    # caller instead of being recorded as every replicate failing to fit.
-    _check_log_scale_bounds(ms.to_assay(assay_cls, conditions=conditions, use_average=True), per_call_config)
-
-    replica_fits: List[FitResult] = []
-    succeeded_ids: List[str] = []
-    failures: Dict[str, str] = {}
-    for rid in active_ids:
-        try:
-            rr = fit_measurement_set(
-                ms,
-                assay_cls,
-                conditions,
-                per_call_config,
-                use_average=False,
-                replica_id=rid,
-                should_cancel=should_cancel,
-            )
-        except FitCancelled:
-            raise
-        except Exception as exc:
-            failures[rid] = 'Its signal could not be fitted.'
-            logger.warning('Per-replica fit failed for replica %s: %s', rid, exc)
-            continue
-
-        if not rr.success:
-            failures[rid] = _no_passing_reason(rr, config.min_r_squared)
-            continue
-
-        if rr.parameter_samples is None:
-            failures[rid] = 'Its fit gives a single result, with no set of accepted fits to pool.'
-            continue
-
-        rr.metadata.setdefault('replica_id', rid)
-        replica_fits.append(rr)
-        succeeded_ids.append(rid)
-
-    if not replica_fits:
-        raise PerReplicaFitError(
-            f'None of the {len(active_ids)} replicates could be fitted on its own.',
-            failures,
+    # Each replicate's misfit is weighted by its own scatter, so a replicate
+    # that has no scatter because it has no signal at all would outweigh every
+    # other one. Such a row also says nothing about Ka — every binding constant
+    # reproduces a constant signal equally well. The engine refuses it too; here
+    # the replicates are known by name, so the refusal names them.
+    flat = [rid for row, rid in zip(rows, given) if np.ptp(ms.signals[row]) == 0.0]
+    if flat:
+        raise FitRefused(
+            f'The signal of replicate(s) {", ".join(flat)} is the same at every titration point, so nothing in '
+            'them tells what Ka is. Switch them off under Replicates and fit again.'
         )
 
-    # Pool every replica's valid trials (per parameter key), aligned by index.
-    param_keys = tuple(replica_fits[0].parameter_samples.keys())
-    for rr in replica_fits[1:]:
-        if tuple(rr.parameter_samples.keys()) != param_keys:
-            raise ValueError(f'Replicate parameter keys differ: {param_keys} vs {tuple(rr.parameter_samples.keys())}.')
-    pool: Dict[str, np.ndarray] = {
-        k: np.concatenate([rr.parameter_samples[k] for rr in replica_fits]) for k in param_keys
-    }
-    pool_size = len(next(iter(pool.values())))
-    attempt_samples = {k: np.concatenate([rr.attempt_samples[k] for rr in replica_fits]) for k in param_keys}
-    attempt_quality = {k: np.concatenate([rr.attempt_quality[k] for rr in replica_fits]) for k in ('rmse', 'r_squared')}
+    grid_assay = ms.to_assay(assay_cls, conditions=conditions, use_average=True)
+    projection = Projection(
+        grid_assay,
+        _resolve_bounds(grid_assay, config.custom_bounds),
+        signals=ms.signals[rows],
+        should_cancel=should_cancel,
+    )
+    # Each row's own fit is both the replicate's reported fit and the residual
+    # the shared-Ka test weights it by, so it is searched once and used twice.
+    own_fits = [projection.fit(np.eye(len(given))[row]) for row in range(len(given))]
+    replica_fits = [
+        _replica_fit(ms, assay_cls, conditions, projection, config, rid, row, own_fits[row])
+        for row, rid in enumerate(given)
+    ]
+    test = replicate_outliers(projection, own_fits)
+    excluded = {given[row] for row in test.excluded}
+    used = [rid for rid in given if rid not in excluded]
 
-    # Every pooled trial, the representative and the reported RMSE/R² are
-    # measured against the average of the replicates used, so a replicate left
-    # out of the fit never enters the numbers reported for it.
-    template_assay = ms.with_active(succeeded_ids).to_assay(assay_cls, conditions=conditions, use_average=True)
-    quality = _score_pool(template_assay, pool)
-    representative_index = _replica_representative_index(replica_fits, quality)
+    result = fit_assay(
+        ms.with_active(used).to_assay(assay_cls, conditions=conditions, use_average=True),
+        config=config,
+        measurement_set_id=ms.id,
+        source_file=ms.metadata.get('source_file'),
+        should_cancel=should_cancel,
+    )
+    result.replica_fits = replica_fits
+    result.fit_config['per_replicate'] = True
+    result.metadata['active_replica_ids'] = list(given)
+    result.metadata['replica_ids_fit'] = used
+    if excluded:
+        result.metadata['replica_failures'] = {
+            rid: _excluded_reason(test.p_values[row], test.level, len(given))
+            for row, rid in enumerate(given)
+            if rid in excluded
+        }
+    if test.tested:
+        result.metadata['replicate_test'] = {
+            'level': test.level,
+            'p_values': {given[row]: p for row, p in test.p_values.items()},
+        }
+    _record_data(result, ms)
+    return result
 
-    # Reported result = the representative trial (a real, on-manifold fit).
-    rep_params = np.array([pool[k][representative_index] for k in template_assay.parameter_keys], dtype=float)
-    rmse, r_squared, x_fit, y_fit = representative_view(template_assay, rep_params)
-    params_q = _wrap_params_as_quantities(rep_params, template_assay)
 
-    n_total_pool = sum(rr.n_total for rr in replica_fits)
+def _replica_fit(
+    ms: MeasurementSet,
+    assay_cls: Type[BaseAssay],
+    conditions: Dict[str, Any],
+    projection: Projection,
+    config: FitConfig,
+    replica_id: str,
+    row: int,
+    fit: ProjectedFit,
+) -> FitResult:
+    """The fit of one replicate's own signal, at the binding constants that signal alone asks for.
 
-    metadata: Dict[str, Any] = {
-        'active_replica_ids': list(active_ids),
-        'n_replicas_total': len(active_ids),
-        'n_replicas_fit': len(replica_fits),
-        'replica_ids_fit': list(succeeded_ids),
-        'pool_size': pool_size,
-        'per_replica_n_passing': {rid: rf.n_passing for rid, rf in zip(succeeded_ids, replica_fits)},
-    }
-    if failures:
-        metadata['replica_failures'] = failures
-
+    *fit* is ``projection.fit`` weighting *row* alone, so the search is steered
+    by that replicate's signal, while its signal parameters are solved exactly
+    as in any other fit.
+    """
+    params = projection.params(fit, row=row)
+    assay = ms.with_active([replica_id]).to_assay(assay_cls, conditions=conditions, use_average=True)
+    rmse, r_squared, x_fit, y_fit = fit_view(assay, params)
     result = FitResult(
-        parameters=params_q,
+        parameters=_wrap_params_as_quantities(params, assay),
         rmse=rmse,
         r_squared=r_squared,
-        n_passing=pool_size,
-        n_total=n_total_pool,
         x_fit=x_fit,
         y_fit=y_fit,
-        assay_type=template_assay.assay_type.name,
-        model_name=_model_name_for_assay(template_assay),
-        conditions=template_assay.get_conditions(),
+        assay_type=assay.assay_type.name,
+        model_name=assay.model_name,
+        conditions=assay.get_conditions(),
         fit_config=_config_to_dict(config),
         measurement_set_id=ms.id,
         source_file=ms.metadata.get('source_file'),
-        metadata=metadata,
-        uncertainty_source='replicate',
-        replica_fits=replica_fits,
-        parameter_samples=pool,
-        quality_samples=quality,
-        representative_index=representative_index,
-        attempt_samples=attempt_samples,
-        attempt_quality=attempt_quality,
+        metadata={
+            'method': 'variable_projection',
+            'replica_id': replica_id,
+            'active_replica_ids': [replica_id],
+        },
     )
     _record_data(result, ms)
     return result
 
 
-def _no_passing_reason(result: FitResult, floor: float) -> str:
-    """Why a replicate's own fit produced no accepted attempt, in plain words.
-
-    Names the signal the R² was measured against: each replicate is judged on
-    its own, so the number here is not comparable with the R² reported for the
-    whole fit, which is measured against the average of the replicates used.
-    """
-    best = result.metadata.get('best_attempt_r_squared')
-    if best is None:
-        return 'None of its fit attempts could be completed.'
+def _excluded_reason(p_value: float, level: float, n_replicates: int) -> str:
+    """Why a replicate was left out of the average, in plain words."""
     return (
-        f"None of its fit attempts reached the minimum R² of {floor:g} against this replicate's own signal, "
-        f'which is noisier than the average of the replicates (the closest reached {best:.4f}).'
+        f'Its own best fit needs a different Ka than the other replicates share '
+        f'(p = {p_value:.2g}; limit {level:g} shared across {n_replicates} replicates).'
     )
 
 
@@ -1394,7 +1064,7 @@ def _no_passing_reason(result: FitResult, floor: float) -> str:
 #: that stores the scores of the earlier absolute-tolerance arithmetic moves them
 #: as far as its binding is tight: 1e-14 or less wherever Ka·c is of order one,
 #: and, over a sweep of GDA, IDA, DBA and the stepwise models at sub-micromolar
-#: totals with pools reaching 1e12 M⁻¹, up to 2e-2 (GDA), 2e-3 (IDA) and 6e-5
+#: totals with fits reaching 1e12 M⁻¹, up to 2e-2 (GDA), 2e-3 (IDA) and 6e-5
 #: (stepwise). Such a file is checked with the arithmetic that wrote it, and what
 #: moves by more than this tolerance is re-scored and shown, not refused. 1e-6
 #: sits far above the spread of one model evaluated two ways and far below the
@@ -1429,26 +1099,19 @@ def verify_imported_result(result: FitResult, ms: Optional[MeasurementSet]) -> T
         A file without a ``model_arithmetic`` entry whose stored numbers
         reproduce under the arithmetic that wrote them but move by more than
         1e-6 under the present one — its scores or its curve. The copy keeps
-        the fit — its parameters, its pool and the attempt it reports — and
-        shows the pool's scores, the RMSE, the R² and the curve of the present
-        arithmetic.
+        the fit's parameters and shows the RMSE, the R² and the curve of the
+        present arithmetic.
     ``'rescored_legacy'``
         A per-replicate file without the ``quality_scored_on`` marker whose
-        pool reproduces when scored against every replicate it was given,
-        left-out ones included. The copy re-scores the pool against the
-        replicates the fit used and reports the fit's own representative
-        (re-derived by the fit's rule, so a pick made in the app is not kept)
-        with its parameters, RMSE, R² and curve. Such a file with no pool
-        qualifies when its reported RMSE and R² reproduce that way; the copy
-        keeps its parameters and measures RMSE, R² and curve again on the
-        replicates used. A file whose pool reproduces but whose reported fit
-        differs from its pool entry gets the same status: its reported fields
-        are rebuilt for that entry.
+        reported RMSE and R² reproduce when scored against every replicate it
+        was given, left-out ones included. The copy keeps its parameters and
+        measures RMSE, R² and curve again on the replicates the fit used.
     ``'different_data'``
         The fingerprints differ, the data lack a replicate the fit names, or
-        no score reproduces the stored quality. *result* is returned unchanged.
-        A recorded ``data_fingerprint`` equal to the data's tells numbers that
-        do not reproduce on these data from a fit made on other data.
+        the stored quality reproduces neither way. *result* is returned
+        unchanged. A recorded ``data_fingerprint`` equal to the data's tells
+        numbers that do not reproduce on these data from a fit made on other
+        data.
     ``'unverifiable'``
         No data are loaded, the result holds no fitted parameters to score, or
         it names an equilibrium arithmetic this version cannot compute with, so
@@ -1489,56 +1152,31 @@ def _rescore_with_present_arithmetic(
 ) -> Tuple[ImportStatus, FitResult]:
     """Numbers of the present arithmetic for a file that stores an earlier one's.
 
-    The fit stays the file's: its parameters, its pool and the attempt it
-    reports are untouched, and only what is measured from them is computed
-    again. The attempt the fit itself chose is derived from the file's own
-    scores and pinned before the pool's scores are replaced, so a near-tie in
-    the pool cannot make that choice look like a pick made in the app.
-
-    A ``'verified'`` file whose every number the present arithmetic reproduces
-    within ``_REPRODUCE_RTOL`` keeps the numbers it stores, so importing it
-    twice shows the same values; the ``model_arithmetic`` marker on the copy
-    then says of them what the gate asked, that the present arithmetic
-    reproduces them to within that tolerance. A ``'rescored_legacy'`` file's
-    reported numbers are rebuilt in any case, and are rebuilt here. A
-    per-replicate file's individual fits are measured again against the
-    replicate each of them was fitted on, so the marker speaks for every number
-    in the copy; a file that does not name those replicates keeps them as they
-    stand, there being nothing to measure them against.
+    The fit stays the file's — its parameters are untouched — and only what is
+    measured from them is computed again. A ``'verified'`` file whose every
+    number the present arithmetic reproduces within ``_REPRODUCE_RTOL`` keeps
+    the numbers it stores, so importing it twice shows the same values; the
+    ``model_arithmetic`` marker on the copy then says of them what the gate
+    asked, that the present arithmetic reproduces them to within that
+    tolerance. A ``'rescored_legacy'`` file's reported numbers are rebuilt in
+    any case, and are rebuilt here.
     """
-    shown, moved = _present_numbers(checked, scoring_assay(ms, checked))
-    used = fit_replica_ids(checked)  # the individual fits stand in this order
-    if checked.replica_fits is not None and used is not None and len(used) == len(checked.replica_fits):
-        subs = [_present_numbers(rf, _record_assay(ms, rf, [rid]))[0] for rid, rf in zip(used, checked.replica_fits)]
-        checked, shown = replace(checked, replica_fits=subs), replace(shown, replica_fits=subs)
+    shown, moved = _present_numbers(checked, _record_assay(ms, checked, fit_replica_ids(checked)))
     if status == 'verified' and not moved:
         return status, checked
-
-    metadata = dict(shown.metadata)
-    own = fitted_representative_index(checked)
-    if own is not None:
-        metadata.setdefault('fitted_representative_index', own)
-    return status if status == 'rescored_legacy' else 'rescored_precision', replace(shown, metadata=metadata)
+    return status if status == 'rescored_legacy' else 'rescored_precision', shown
 
 
 def _present_numbers(result: FitResult, assay: BaseAssay) -> Tuple[FitResult, bool]:
     """*result* with what the present arithmetic measures from its fit, and whether that moved.
 
-    The fit itself is untouched: its parameters, its pool and the attempt it
-    reports stay the file's, and the RMSE, the R², the curve and the pool's
-    scores are measured again from them. The flag says whether any of those
-    numbers moved by more than ``_REPRODUCE_RTOL``, the same gate the check
-    itself applies — the curve included, so a copy that keeps stored numbers
-    keeps a curve the present arithmetic draws the same way.
+    The fit itself is untouched: its parameters stay the file's, and the RMSE,
+    the R² and the curve are measured again from them. The flag says whether
+    any of those numbers moved by more than ``_REPRODUCE_RTOL``, the same gate
+    the check itself applies — the curve included, so a copy that keeps stored
+    numbers keeps a curve the present arithmetic draws the same way.
     """
-    index = result.representative_index
-    if index is None:
-        vector = _parameter_vector(result, assay)
-    else:
-        vector = np.array([result.parameter_samples[k][index] for k in assay.parameter_keys], dtype=float)
-    rmse, r_squared, x_fit, y_fit = representative_view(assay, vector)
-    pooled = bool(result.parameter_samples) and bool(result.quality_samples)
-    quality = _score_pool(assay, result.parameter_samples) if pooled else result.quality_samples
+    rmse, r_squared, x_fit, y_fit = fit_view(assay, _parameter_vector(result, assay))
     # Early releases drew the curve on the measured points; such a curve stands on another
     # grid than the one drawn now and there is nothing in it to compare, so it is left alone.
     stored_x, stored_y = result.x_fit.to('M').magnitude, result.y_fit.to('au').magnitude
@@ -1546,19 +1184,10 @@ def _present_numbers(result: FitResult, assay: BaseAssay) -> Tuple[FitResult, bo
     moved = not (
         _reproduces((result.rmse, result.r_squared), (rmse, r_squared))
         and (not on_same_grid or (_reproduces(stored_x, x_fit.magnitude) and _reproduces(stored_y, y_fit.magnitude)))
-        and (not pooled or all(_reproduces(quality[k], result.quality_samples[k]) for k in quality))
     )
     metadata = dict(result.metadata)
     metadata['model_arithmetic'] = MODEL_ARITHMETIC
-    rebuilt = replace(
-        result,
-        rmse=rmse,
-        r_squared=r_squared,
-        x_fit=x_fit,
-        y_fit=y_fit,
-        quality_samples=quality,
-        metadata=metadata,
-    )
+    rebuilt = replace(result, rmse=rmse, r_squared=r_squared, x_fit=x_fit, y_fit=y_fit, metadata=metadata)
     return rebuilt, moved
 
 
@@ -1583,52 +1212,18 @@ def _verify(result: FitResult, ms: Optional[MeasurementSet]) -> Tuple[ImportStat
     metadata['model_arithmetic'] = MODEL_ARITHMETIC
     assay = _record_assay(ms, result, used)
 
+    vector = _parameter_vector(result, assay)
+    stored = (result.rmse, result.r_squared)
+    if _reproduces(_score(assay, vector), stored):
+        return 'verified', replace(result, metadata=metadata)
+
     given = _legacy_input_ids(result, used, ms)
-    pooled = bool(result.parameter_samples) and bool(result.quality_samples)
-    if not pooled:
-        vector = _parameter_vector(result, assay)
-        stored = (result.rmse, result.r_squared)
-        if _reproduces(_score(assay, vector), stored):
-            return 'verified', replace(result, metadata=metadata)
-        if given is None or not _reproduces(_score(_record_assay(ms, result, given), vector), stored):
-            return 'different_data', result
-        rmse, r_squared, x_fit, y_fit = representative_view(assay, vector)
-        return 'rescored_legacy', replace(
-            result, rmse=rmse, r_squared=r_squared, x_fit=x_fit, y_fit=y_fit, metadata=metadata
-        )
-
-    quality = _score_pool(assay, result.parameter_samples)
-    status: ImportStatus = 'verified'
-    index = result.representative_index
-    if not all(_reproduces(quality[k], result.quality_samples.get(k, ())) for k in quality):
-        if given is None:
-            return 'different_data', result
-        as_given = _score_pool(_record_assay(ms, result, given), result.parameter_samples)
-        if not all(_reproduces(as_given[k], result.quality_samples.get(k, ())) for k in as_given):
-            return 'different_data', result
-        status = 'rescored_legacy'
-        metadata.pop('fitted_representative_index', None)
-        own = fitted_representative_index(replace(result, quality_samples=quality, metadata=metadata))
-        index = index if own is None else own
-
-    if index is None:
-        vector = _parameter_vector(result, assay)
-    else:
-        vector = np.array([result.parameter_samples[k][index] for k in assay.parameter_keys], dtype=float)
-    rmse, r_squared, x_fit, y_fit = representative_view(assay, vector)
-    updated = replace(result, quality_samples=quality, metadata=metadata)
-    reported = (
-        _reproduces(_parameter_vector(result, assay), vector)
-        and _reproduces((result.rmse, result.r_squared), (rmse, r_squared))
-        and _reproduces(result.x_fit.to('M').magnitude, x_fit.magnitude)
-        and _reproduces(result.y_fit.to('au').magnitude, y_fit.magnitude)
+    if given is None or not _reproduces(_score(_record_assay(ms, result, given), vector), stored):
+        return 'different_data', result
+    rmse, r_squared, x_fit, y_fit = fit_view(assay, vector)
+    return 'rescored_legacy', replace(
+        result, rmse=rmse, r_squared=r_squared, x_fit=x_fit, y_fit=y_fit, metadata=metadata
     )
-    if status == 'verified' and reported:
-        return status, updated
-    updated.parameters = _wrap_params_as_quantities(vector, assay)
-    updated.rmse, updated.r_squared, updated.x_fit, updated.y_fit = rmse, r_squared, x_fit, y_fit
-    updated.representative_index = index
-    return 'rescored_legacy', updated
 
 
 def _legacy_input_ids(result: FitResult, used: List[str], ms: MeasurementSet) -> Optional[List[str]]:
@@ -1637,7 +1232,7 @@ def _legacy_input_ids(result: FitResult, used: List[str], ms: MeasurementSet) ->
     Every replicate it was given, left-out ones included, when that differs
     from the replicates it used and *ms* holds them all; otherwise None.
     """
-    if result.uncertainty_source != 'replicate' or 'quality_scored_on' in result.metadata:
+    if not result.per_replica or 'quality_scored_on' in result.metadata:
         return None
     given = input_replica_ids(result)
     if given is None or set(given) == set(used) or not set(given) <= set(ms.replica_ids):

@@ -8,7 +8,6 @@ from core.pipeline.fit_pipeline import (
     fit_assay,
     fit_linear_assay,
     fit_measurement_set,
-    select_representative,
     summarize_parameters,
 )
 
@@ -20,6 +19,5 @@ __all__ = [
     'fit_assay',
     'fit_linear_assay',
     'fit_measurement_set',
-    'select_representative',
     'summarize_parameters',
 ]

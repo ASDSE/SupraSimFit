@@ -1,9 +1,15 @@
 """Tests for the TXT report and CSV table exports in gui.session (no Qt required).
 
 These guard the *reported* numbers, which are the point of the exports: the
-estimate is a real fit, the range is the pool's own extent, and log₁₀ rows are
-computed in log space. They also pin that a result with no pool says so rather
-than emitting a fabricated range.
+estimate is a real fit and the interval beside it is that fit's own confidence
+interval, an open side is written in words rather than as a number, a binding
+constant that was held fixed says so instead of showing a made-up range, a file
+that carries no interval says why, and log₁₀ rows are computed in log space.
+
+The results are hand-built rather than fitted: each one pins one shape the
+writers have to render (closed interval, open side, pinned Ka, no interval at
+all, replicates with one left out), and building them directly is what lets a
+single test hold exactly one of those shapes.
 """
 
 from __future__ import annotations
@@ -16,31 +22,84 @@ import numpy as np
 import pytest
 
 from core.pipeline.fit_pipeline import FitResult
+from core.pipeline.varpro import KaInterval
 from core.units import Q_
 from gui.session import export_results_csv, export_results_txt
 
+_X = np.linspace(1e-6, 5e-5, 10)
 
-def _result(*, pool: bool = True) -> FitResult:
-    rng = np.random.default_rng(0)
-    x = np.linspace(1e-6, 5e-5, 10)
-    samples = None
-    if pool:
-        samples = {
-            'Ka_guest': rng.normal(1.24e6, 9e4, 60).clip(1e5),
-            'I_0': rng.normal(1000.0, 20.0, 60),
-        }
+#: The fit every result below reports: one association constant and two signal
+#: coefficients the IDA model determines only in combination.
+_PARAMS = {'Ka_guest': Q_(1.24e6, '1/M'), 'I0': Q_(1000.0, 'au'), 'I_dye_free': Q_(5.0e4, 'au/M')}
+
+
+def _result(
+    *,
+    interval: KaInterval | None = KaInterval(
+        low=1.10e6, high=1.40e6, open_low=False, open_high=False, level=0.95, dof=7
+    ),
+    intervals_reported: bool = True,
+    per_replicate: bool = False,
+    metadata: dict | None = None,
+    replica_fits: list[FitResult] | None = None,
+) -> FitResult:
+    """One reported fit.
+
+    ``interval=None`` with ``intervals_reported`` leaves the binding constant
+    pinned by equal bounds; ``intervals_reported=False`` is a result imported
+    from a file written before intervals were reported.
+    """
+    intervals = None
+    if intervals_reported:
+        intervals = {} if interval is None else {'Ka_guest': interval}
     return FitResult(
-        parameters={'Ka_guest': Q_(1.24e6, '1/M'), 'I_0': Q_(1000.0, 'au')},
+        parameters=dict(_PARAMS),
         rmse=12.3,
         r_squared=0.9962,
-        n_passing=60 if pool else 1,
-        n_total=100,
-        x_fit=Q_(x, 'M'),
-        y_fit=Q_(x, 'au'),
+        x_fit=Q_(_X, 'M'),
+        y_fit=Q_(_X, 'au'),
         assay_type='IDA',
         model_name='equilibrium_4param',
         source_file='IDA_system.txt',
-        parameter_samples=samples,
+        fit_config={'per_replicate': per_replicate, 'level': 0.95},
+        intervals=intervals,
+        degenerate_keys=('I0', 'I_dye_free'),
+        metadata=metadata or {},
+        replica_fits=replica_fits,
+    )
+
+
+def _replica(rid: str, ka: float, r_squared: float) -> FitResult:
+    """One replicate's own fit, as the pipeline records it under ``replica_fits``."""
+    return FitResult(
+        parameters={**_PARAMS, 'Ka_guest': Q_(ka, '1/M')},
+        rmse=11.0,
+        r_squared=r_squared,
+        x_fit=Q_(_X, 'M'),
+        y_fit=Q_(_X, 'au'),
+        assay_type='IDA',
+        model_name='equilibrium_4param',
+        metadata={'replica_id': rid, 'active_replica_ids': [rid]},
+    )
+
+
+_EXCLUDED = (
+    'Its own best fit needs a different Ka than the other replicates share '
+    '(p = 0.0012; limit 0.01 shared across 3 replicates).'
+)
+
+
+def _per_replicate_result() -> FitResult:
+    """A per-replicate fit of three replicates that left the third one out."""
+    return _result(
+        per_replicate=True,
+        metadata={
+            'active_replica_ids': ['a', 'b', 'c'],
+            'replica_ids_fit': ['a', 'b'],
+            'replica_failures': {'c': _EXCLUDED},
+            'replicate_test': {'level': 0.01, 'p_values': {'a': 0.71, 'b': 0.44, 'c': 0.0012}},
+        },
+        replica_fits=[_replica('a', 1.20e6, 0.997), _replica('b', 1.30e6, 0.996), _replica('c', 4.00e6, 0.950)],
     )
 
 
@@ -49,207 +108,272 @@ def _csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def test_txt_report_states_what_it_reports(tmp_path: Path) -> None:
-    """The old report printed '± Uncert.' without saying what the ± was."""
+def _txt(tmp_path: Path, results: list[FitResult], **kwargs) -> str:
     path = tmp_path / 'r.txt'
-    export_results_txt([_result()], path)
-    text = path.read_text(encoding='utf-8')
+    export_results_txt(results, path, **kwargs)
+    return path.read_text(encoding='utf-8')
 
-    assert 'Estimate = the single best fit (highest R²) of 60 accepted fits.' in text
-    assert 'Range    = (min, max) across those 60 fits.' in text
-    assert '± Uncert.' not in text
-    # Every column of the summary table is carried, across the two blocks.
-    for header in ('Estimate', 'Range (min, max)', 'Median ± MAD', 'Mean ± SD', '68% Range [p16, p84]', 'Units'):
+
+def _prose(text: str) -> str:
+    """*text* with every run of whitespace collapsed, so a wrapped sentence reads as one."""
+    return ' '.join(text.split())
+
+
+def _table_rows(text: str, section: str) -> dict[str, str]:
+    """The rows of the fixed-width table under *section*, keyed by their first cell."""
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(section))
+    body = lines[start:]
+    rule = next(i for i, line in enumerate(body) if set(line.strip()) == {'-'} and i >= 1)
+    rows = {}
+    for line in body[rule + 1 :]:
+        if not line.startswith('  ') or not line.strip():
+            break
+        rows[line.split()[0]] = line
+    return rows
+
+
+def test_txt_report_puts_the_interval_beside_the_estimate(tmp_path: Path) -> None:
+    """The headline table is estimate and interval; nothing claims a spread the fit does not have."""
+    text = _txt(tmp_path, [_result()])
+
+    for header in ('Parameter', 'Estimate', '95% interval', 'Units'):
         assert header in text
+    line = next(ln for ln in text.splitlines() if ln.strip().startswith('Ka_guest'))
+    assert '1.24e+06' in line
+    assert '[1.1e+06, 1.4e+06]' in line
 
 
-def _with_attempts(
-    result: FitResult, shown: int, *, per_replicate: bool = True, replica_fits: bool = True
-) -> FitResult:
-    """*result* with a 60-attempt pool, showing attempt *shown*.
+def test_txt_report_writes_an_open_side_in_words_and_says_what_would_close_it(tmp_path: Path) -> None:
+    """A number at an open end would claim a bound the data do not give."""
+    open_high = KaInterval(low=1.10e6, high=9.9e9, open_low=False, open_high=True, level=0.95, dof=7)
+    text = _txt(tmp_path, [_result(interval=open_high)])
 
-    Attempt 0 has the pool's highest R². As a per-replicate fit its replicates
-    hold attempts 0-29 and 30-59, led by attempts 7 and 30; attempt 7 fits the
-    average of the replicates used better, so the fit chose attempt 7.
+    assert '[1.1e+06, no upper limit]' in text
+    assert '9.9e+09' not in text  # the bound the profile reached is not the interval's end
+    assert 'the data cannot rule out a higher Ka' in text
+    assert 'signal levels off' in text
+
+
+def test_txt_report_does_not_ask_for_more_data_where_the_model_has_no_solution(tmp_path: Path) -> None:
+    """An edge the arithmetic stops at cannot be moved by measuring more, so the advice would be wrong."""
+    unsolvable = KaInterval(
+        low=1.10e6, high=9.9e9, open_low=False, open_high=True, level=0.95, dof=7, unsolvable_high=True
+    )
+    text = _prose(_txt(tmp_path, [_result(interval=unsolvable)]))
+
+    assert 'the binding model has no solution past this value' in text
+    assert 'More measurements cannot close this side.' in text
+    assert 'signal levels off' not in text
+
+
+def test_txt_report_names_the_bound_a_side_rests_on_instead_of_reporting_a_limit(tmp_path: Path) -> None:
+    """A crossing the other constant's bound produces is not a limit from the data, so it is not printed as one."""
+    limited = KaInterval(
+        low=2.3e2, high=1.40e6, open_low=True, open_high=False, level=0.95, dof=7, limited_by_low='Ka_HG2'
+    )
+    text = _prose(_txt(tmp_path, [_result(interval=limited)]))
+
+    assert '[no lower limit, 1.4e+06]' in text
+    assert 'only because Ka_HG2 cannot go past its bound' in text
+    assert 'the data alone set no limit on this side' in text
+    assert 'higher titrant concentration' not in text  # the advice for a side the data leave open does not apply
+
+
+def test_txt_report_says_when_a_signal_parameter_ended_on_an_entered_bound(tmp_path: Path) -> None:
+    """A curve held by a bound must not read as a plain fit; zero, the physical limit, is not a finding."""
+    held = _result()
+    held.fit_config['custom_bounds'] = {'I0': [0.0, 1000.0, 'au'], 'I_dye_free': [0.0, 1.0e9, 'au/M']}
+    text = _prose(_txt(tmp_path, [held]))
+
+    assert 'The fit ended on a bound entered under Parameter Bounds (I₀ at 1.0×10³ a.u.)' in text
+    assert 'widen it and fit again' in text
+    assert 'ended on a bound' not in _prose(_txt(tmp_path, [_result()]))
+
+
+def test_txt_report_says_when_the_accepted_values_are_not_one_stretch(tmp_path: Path) -> None:
+    """An interval that spans values the data reject must not read as a plain range."""
+    split = KaInterval(low=1.10e6, high=1.40e6, open_low=False, open_high=False, level=0.95, dof=7, split=True)
+    text = _prose(_txt(tmp_path, [_result(interval=split)]))
+
+    assert 'come in separate stretches' in text
+    assert 'come in separate stretches' not in _prose(_txt(tmp_path, [_result()]))
+
+
+def test_txt_report_says_a_binding_constant_was_held_fixed(tmp_path: Path) -> None:
+    """A pinned Ka has no interval to report, and an em dash would read as one that is missing."""
+    text = _txt(tmp_path, [_result(interval=None)])
+
+    line = next(ln for ln in text.splitlines() if ln.strip().startswith('Ka_guest'))
+    assert 'fixed' in line
+
+
+def test_txt_report_of_a_file_without_intervals_says_why_there_are_none(tmp_path: Path) -> None:
+    text = _txt(tmp_path, [_result(intervals_reported=False)])
+
+    assert 'without a confidence interval' in _prose(text)
+    assert 'Fit the data again to get the interval.' in _prose(text)
+    assert 'no upper limit' not in text
+
+
+def test_txt_report_stars_the_parameters_the_data_fix_only_together(tmp_path: Path) -> None:
+    text = _txt(tmp_path, [_result()])
+
+    rows = _table_rows(text, '  Parameter')
+    starred = [name for name, line in rows.items() if ' *' in line]
+    assert starred == ['I0', 'I_dye_free']
+    assert 'The data fix only a combination of the starred values' in _prose(text)
+
+
+def test_txt_report_log_row_is_the_interval_read_on_a_log_scale(tmp_path: Path) -> None:
+    """log₁₀ endpoints are the parameter's endpoints transformed, which is exact for a monotone map."""
+    text = _txt(tmp_path, [_result()])
+    line = next(ln for ln in text.splitlines() if ln.strip().startswith('log10(Ka_guest)'))
+
+    lo, hi = np.log10([1.10e6, 1.40e6])
+    assert f'{lo:.4g}' in line.replace('[', ' ').replace(',', ' ')
+    assert f'{hi:.4g}' in line.replace(']', ' ')
+    assert f'{np.log10(1.24e6):.4g}' in line
+
+
+def test_txt_report_lists_every_replicate_with_its_own_fit_and_its_verdict(tmp_path: Path) -> None:
+    """The replicate table is the between-replicate evidence; a left-out replicate is named with its reason."""
+    text = _txt(tmp_path, [_per_replicate_result()], replica_ids=('a', 'b', 'c'))
+
+    assert 'REPLICATES' in text
+    rows = _table_rows(text, '  Replicate ')
+    assert set(rows) == {'A', 'B', 'C'}
+    assert '1.2e+06' in rows['A'] and rows['A'].endswith('used')
+    assert '4e+06' in rows['C'] and rows['C'].endswith('left out')
+    assert '0.0012' in rows['C']
+    assert _EXCLUDED in _prose(text)
+    assert 'Replicates used:      A, B' in text
+
+
+def test_the_report_wraps_to_one_width_and_gives_each_reason_once(tmp_path: Path) -> None:
+    """One text file, one right margin — and no sentence printed twice.
+
+    Fit Quality names the replicates left out; REPLICATES above it is where each
+    reason is written out, so repeating it there only widened the file.
     """
-    r2 = np.linspace(0.99, 0.98, 60)
-    r2[0], r2[7] = 0.999, 0.995
-    replicas = [
-        replace(
-            result, parameter_samples={k: v[s] for k, v in result.parameter_samples.items()}, representative_index=i
-        )
-        for s, i in ((slice(0, 30), 7), (slice(30, 60), 0))
-    ]
-    return replace(
-        result,
-        uncertainty_source='replicate' if per_replicate else 'optimizer',
-        quality_samples={'r_squared': r2, 'rmse': 1.0 - r2},
-        replica_fits=replicas if per_replicate and replica_fits else None,
-        representative_index=shown,
+    from gui.session import _wrapped
+
+    text = _txt(tmp_path, [_per_replicate_result()], replica_ids=('a', 'b', 'c'))
+    margin = max(len(line) for line in _wrapped('word ' * 200))
+
+    assert 'Left out of the fit:  C' in text
+    # The reason is written once, where the replicate table explains it.
+    assert _prose(text).count(_EXCLUDED) == 1
+    over = [line for line in text.splitlines() if len(line) > margin]
+    assert over == []
+
+
+def test_txt_report_of_a_fit_of_one_signal_has_no_replicate_table(tmp_path: Path) -> None:
+    """Nothing was fitted separately, so there is nothing to compare — and no empty table to read."""
+    text = _txt(tmp_path, [_result(metadata={'active_replica_ids': ['a', 'b']})], replica_ids=('a', 'b'))
+
+    assert 'REPLICATES' not in text
+    assert 'Replicates used:      A, B' in text
+    assert 'Left out of the fit:  none' in text
+
+
+def test_csv_is_one_row_per_reported_parameter(tmp_path: Path) -> None:
+    path = tmp_path / 'r.csv'
+    export_results_csv([_result()], path)
+    rows = _csv_rows(path)
+
+    assert [r['parameter'] for r in rows] == ['Ka_guest', 'log10(Ka_guest)', 'I0', 'I_dye_free']
+    assert {r['unit'] for r in rows} == {'1 / molar', '', 'au', 'au / molar'}
+    assert all(r['assay_type'] == 'IDA' for r in rows)
+
+
+def test_csv_carries_the_interval_and_its_test(tmp_path: Path) -> None:
+    """A reader must be able to tell a closed end from an open one, and at which level and dof."""
+    open_high = KaInterval(low=1.10e6, high=9.9e9, open_low=False, open_high=True, level=0.95, dof=7)
+    path = tmp_path / 'r.csv'
+    export_results_csv([_result(), _result(interval=open_high)], path)
+    closed, opened = (
+        next(r for r in _csv_rows(path) if r['parameter'] == 'Ka_guest' and r['result_index'] == i) for i in ('0', '1')
+    )
+
+    assert float(closed['ci_low']) == pytest.approx(1.10e6)
+    assert float(closed['ci_high']) == pytest.approx(1.40e6)
+    assert (closed['ci_open_low'], closed['ci_open_high']) == ('false', 'false')
+    assert (closed['ci_level'], closed['ci_dof']) == ('0.95', '7')
+    assert opened['ci_open_high'] == 'true'
+    # The estimate lies inside its own interval, whichever end is open.
+    assert float(closed['ci_low']) <= float(closed['estimate']) <= float(closed['ci_high'])
+    assert (closed['ci_unsolvable_low'], closed['ci_unsolvable_high'], closed['ci_split']) == (
+        'false',
+        'false',
+        'false',
     )
 
 
-PICKED = 'Estimate = one of the 60 accepted fits, picked by hand in the app.'
+def test_csv_says_which_open_sides_the_model_stops_at_and_which_intervals_have_gaps(tmp_path: Path) -> None:
+    """The flags the engine computes reach the machine-readable table too, not only the tab."""
+    awkward = KaInterval(
+        low=1.10e6,
+        high=9.9e9,
+        open_low=False,
+        open_high=True,
+        level=0.95,
+        dof=7,
+        split=True,
+        unsolvable_high=True,
+    )
+    path = tmp_path / 'r.csv'
+    export_results_csv([_result(interval=awkward)], path)
+    row = next(r for r in _csv_rows(path) if r['parameter'] == 'Ka_guest')
+
+    assert (row['ci_open_high'], row['ci_unsolvable_high'], row['ci_split']) == ('true', 'true', 'true')
+    assert (row['ci_open_low'], row['ci_unsolvable_low']) == ('false', 'false')
+    assert (row['ci_limited_by_low'], row['ci_limited_by_high']) == ('', '')
+
+    limited = KaInterval(
+        low=2.3e2, high=1.4e6, open_low=True, open_high=False, level=0.95, dof=7, limited_by_low='Ka_HG2'
+    )
+    export_results_csv([_result(interval=limited)], path)
+    row = next(r for r in _csv_rows(path) if r['parameter'] == 'Ka_guest')
+    assert (row['ci_open_low'], row['ci_limited_by_low'], row['ci_limited_by_high']) == ('true', 'Ka_HG2', '')
 
 
-@pytest.mark.parametrize(
-    ('make', 'sentence'),
-    [
-        (
-            lambda r: _with_attempts(r, 7),
-            "Estimate = one of the 60 accepted fits: of each replicate's best fit, "
-            'the one with the highest R² against the average of the replicates it used.',
-        ),
-        (lambda r: _with_attempts(r, 40), PICKED),
-        (lambda r: _with_attempts(r, 7, per_replicate=False), PICKED),
-        (lambda r: replace(r, representative_index=7, metadata={'fitted_representative_index': 3}), PICKED),
-        (
-            lambda r: _with_attempts(r, 7, replica_fits=False),
-            'Estimate = one of the 60 accepted fits; the file does not record which one the fit chose.',
-        ),
-    ],
-    ids=['per-replicate-choice', 'per-replicate-pick', 'single-fit-pick', 'recorded-pick', 'choice-unknown'],
-)
-def test_txt_report_names_the_fit_the_estimate_reports(tmp_path: Path, make, sentence) -> None:
-    """Only a single fit left on its own choice reports the pool's highest-R² fit."""
-    path = tmp_path / 'r.txt'
-    export_results_txt([make(_result())], path)
-    text = path.read_text(encoding='utf-8')
+def test_csv_leaves_the_interval_columns_blank_where_there_is_none(tmp_path: Path) -> None:
+    path = tmp_path / 'r.csv'
+    export_results_csv([_result(intervals_reported=False)], path)
+    rows = _csv_rows(path)
 
-    assert sentence in text
-    assert 'highest R²) of' not in text
+    for row in rows:
+        assert row['estimate']
+        assert row['ci_low'] == row['ci_high'] == row['ci_level'] == row['ci_dof'] == ''
+        assert row['ci_unsolvable_low'] == row['ci_unsolvable_high'] == row['ci_split'] == ''
+    assert {r['degenerate'] for r in rows} == {'true', 'false'}
 
 
-def _left_out_fit() -> FitResult:
-    """*_result* as a per-replicate fit given replicates '0'-'3' that left out '2'."""
-    metadata = {
-        'active_replica_ids': ['0', '1', '2', '3'],
-        'replica_ids_fit': ['0', '1', '3'],
-        'replica_failures': {'2': 'None of its fit attempts reached the minimum R² of 0.99.'},
-    }
-    return replace(_result(), uncertainty_source='replicate', metadata=metadata)
+def test_csv_replicate_columns_come_from_the_replicates_own_fits(tmp_path: Path) -> None:
+    """Median and extent are over the replicates the fit used, and log rows are computed in log space."""
+    path = tmp_path / 'r.csv'
+    export_results_csv([_per_replicate_result()], path, replica_ids=('a', 'b', 'c'))
+    rows = {r['parameter']: r for r in _csv_rows(path)}
 
-
-def test_txt_report_names_the_replicates_the_fit_used_and_left_out(tmp_path: Path) -> None:
-    """The report names replicates as the app does, so a reader knows which data its R² describes."""
-    path = tmp_path / 'r.txt'
-    export_results_txt([_left_out_fit()], path, replica_ids=('0', '1', '2', '3'))
-    text = path.read_text(encoding='utf-8')
-
-    assert 'Replicates used:      A, B, D' in text
-    assert 'Left out of the fit:  C: None of its fit attempts reached the minimum R² of 0.99.' in text
-    assert 'RMSE and R² are measured against the average of the replicates used.' in text
+    used = np.array([1.20e6, 1.30e6])  # 'c' was left out, so its 4e6 must not appear
+    assert float(rows['Ka_guest']['replicate_median']) == pytest.approx(np.median(used))
+    assert float(rows['Ka_guest']['replicate_min']) == pytest.approx(1.20e6)
+    assert float(rows['Ka_guest']['replicate_max']) == pytest.approx(1.30e6)
+    assert rows['Ka_guest']['n_replicates'] == '2'
+    assert float(rows['log10(Ka_guest)']['replicate_median']) == pytest.approx(np.median(np.log10(used)))
+    assert (rows['Ka_guest']['replicates_used'], rows['Ka_guest']['replicates_left_out']) == ('A;B', 'C')
 
 
 def test_csv_names_the_replicates_by_id_without_the_loaded_order(tmp_path: Path) -> None:
     path = tmp_path / 'r.csv'
-    export_results_csv([_left_out_fit(), _result()], path)
+    export_results_csv([_per_replicate_result(), _result()], path)
     rows = _csv_rows(path)
 
     assert {(r['result_index'], r['replicates_used'], r['replicates_left_out']) for r in rows} == {
-        ('0', '0;1;3', '2'),
+        ('0', 'a;b', 'c'),
         ('1', '', ''),  # the second result does not record its replicates
     }
-
-
-def test_txt_report_range_is_the_pool_extent(tmp_path: Path) -> None:
-    result = _result()
-    path = tmp_path / 'r.txt'
-    export_results_txt([result], path)
-    line = next(ln for ln in path.read_text(encoding='utf-8').splitlines() if ln.strip().startswith('Ka_guest'))
-
-    pool = result.parameter_samples['Ka_guest']
-    assert f'{np.min(pool):.4g}' in line
-    assert f'{np.max(pool):.4g}' in line
-
-
-def test_txt_report_writes_a_log_value_no_coarser_than_its_own_spread(tmp_path: Path) -> None:
-    """A log₁₀ row reads to the decimals its spread needs, as the summary table on screen does.
-
-    Four significant figures put 8.496983 ± 0.000096 in the file as
-    '8.497 ± 9.6e-05', where the value is a hundred times coarser than the
-    spread it is quoted with and two fits a reader can tell apart on screen
-    become one number.
-    """
-    rng = np.random.default_rng(3)
-    tight = 10 ** rng.normal(8.496983, 1e-4, 60)  # a pool that agrees to four decimals of log₁₀
-    result = replace(
-        _result(),
-        parameters={'Ka_guest': Q_(float(10**8.496983), '1/M'), 'I_0': Q_(1000.0, 'au')},
-        parameter_samples={'Ka_guest': tight, 'I_0': rng.normal(1000.0, 20.0, 60)},
-    )
-    path = tmp_path / 'r.txt'
-    export_results_txt([result], path)
-
-    logs = np.log10(tight)
-    lines = [ln for ln in path.read_text(encoding='utf-8').splitlines() if ln.strip().startswith('log10(Ka_guest)')]
-    estimate_line, spread_line = lines
-    assert f'{np.log10(result.parameters["Ka_guest"].magnitude):.6f}'[:-1] in estimate_line
-    assert '8.497 ' not in estimate_line  # not rounded past the spread beside it
-    assert f'{np.median(logs):.5f}'[:-1] in spread_line
-    assert 'e-0' not in spread_line  # a spread in the same fixed notation as its value
-
-
-def test_txt_report_without_pool_says_so(tmp_path: Path) -> None:
-    path = tmp_path / 'r.txt'
-    export_results_txt([_result(pool=False)], path)
-    text = path.read_text(encoding='utf-8')
-
-    assert 'Range    = unavailable: no fit pool is stored for this result.' in text
-    assert 'SPREAD ACROSS THE ACCEPTED-FIT POOL' not in text
-
-
-def test_csv_is_one_row_per_reported_parameter(tmp_path: Path) -> None:
-    result = _result()
-    path = tmp_path / 'r.csv'
-    export_results_csv([result], path)
-    rows = _csv_rows(path)
-
-    # Two parameters, plus the log₁₀ twin of the association constant.
-    assert [r['parameter'] for r in rows] == ['Ka_guest', 'log10(Ka_guest)', 'I_0']
-    assert {r['unit'] for r in rows} == {'1 / molar', '', 'au'}
-    assert all(r['n_passing'] == '60' and r['assay_type'] == 'IDA' for r in rows)
-
-
-def test_csv_values_match_the_pool(tmp_path: Path) -> None:
-    result = _result()
-    path = tmp_path / 'r.csv'
-    export_results_csv([result], path)
-    row = next(r for r in _csv_rows(path) if r['parameter'] == 'Ka_guest')
-
-    pool = result.parameter_samples['Ka_guest']
-    assert float(row['estimate']) == pytest.approx(1.24e6)
-    assert float(row['min']) == pytest.approx(np.min(pool))
-    assert float(row['max']) == pytest.approx(np.max(pool))
-    assert float(row['median']) == pytest.approx(np.median(pool))
-    # The reported estimate is a real fit, so it lies inside the pool's extent.
-    assert float(row['min']) <= float(row['estimate']) <= float(row['max'])
-
-
-def test_csv_log_row_is_computed_in_log_space(tmp_path: Path) -> None:
-    """log₁₀ statistics come from the per-fit log values, never log of a spread."""
-    result = _result()
-    path = tmp_path / 'r.csv'
-    export_results_csv([result], path)
-    row = next(r for r in _csv_rows(path) if r['parameter'] == 'log10(Ka_guest)')
-
-    logs = np.log10(result.parameter_samples['Ka_guest'])
-    assert float(row['median']) == pytest.approx(np.median(logs))
-    assert float(row['std']) == pytest.approx(np.std(logs, ddof=1))
-    # Independent check that this is not log10 of the linear-space spread.
-    linear_std = np.std(result.parameter_samples['Ka_guest'], ddof=1)
-    assert float(row['std']) != pytest.approx(np.log10(linear_std))
-
-
-def test_csv_leaves_pool_columns_blank_without_a_pool(tmp_path: Path) -> None:
-    path = tmp_path / 'r.csv'
-    export_results_csv([_result(pool=False)], path)
-    rows = _csv_rows(path)
-
-    assert [r['parameter'] for r in rows] == ['Ka_guest', 'I_0']  # no log twin without a pool
-    for row in rows:
-        assert row['estimate']
-        assert row['min'] == row['max'] == row['median'] == ''
 
 
 def test_exports_handle_an_empty_result_list(tmp_path: Path) -> None:
@@ -270,7 +394,7 @@ def test_exports_handle_an_empty_result_list(tmp_path: Path) -> None:
 
 def test_csv_indexes_multiple_results(tmp_path: Path) -> None:
     path = tmp_path / 'r.csv'
-    export_results_csv([_result(), _result()], path)
+    export_results_csv([_result(), replace(_result(), id='second')], path)
     rows = _csv_rows(path)
 
     assert {r['result_index'] for r in rows} == {'0', '1'}

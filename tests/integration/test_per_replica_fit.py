@@ -1,20 +1,15 @@
-"""End-to-end tests for per-replica fitting.
+"""End-to-end tests of per-replicate fitting.
 
-Verifies:
-- parameter recovery on a multi-replica synthetic IDA dataset;
-- outlier-replica robustness (cross-replica median absorbs one bad trace);
-- rescaling invariance (per-replica results are indifferent to the
-  rescale_parameters flag, since the scaler is an exact bijection);
-- degenerate-replica handling (flat signal → ParamScaler.from_assay raises
-  ValueError; that replica is skipped with a failure record, others survive);
-- all-failure propagation via PerReplicaFitError;
-- pool aggregation semantics (median/MAD over the flat pool of passing trials).
+Verifies, on synthetic IDA replicates with known ground truth:
+- Ka recovery from clean and from noisy replicates;
+- that a replicate needing another binding constant is left out and named,
+  and that the remaining replicates still recover the truth;
+- what the replicate columns report and what they are measured on;
+- the refusals a replicate set can run into.
 
-Per-replica fits are expensive (5 replicas × 60 trials), so the clean and
-noisy reference fits are module-scoped fixtures shared by every test that
-only *reads* the result.  Tests that need a different MeasurementSet
-(outliers, degenerate replicas, rescale comparison) run their own fits, each
-with the smallest budget that still answers its question.
+A closing check runs the whole path on the measured demo dataset, where the
+expected numbers are computed from the replicate rows directly rather than
+through the pipeline's masking.
 """
 
 from __future__ import annotations
@@ -27,26 +22,24 @@ import pytest
 
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
+from core.io import load_measurements
 from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline.fit_pipeline import (
     FitConfig,
     FitResult,
-    PerReplicaFitError,
     fit_measurement_set,
     fit_measurement_set_per_replica,
+    fit_replica_ids,
+    summarize_parameters,
 )
 from core.units import Q_
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data, assert_within_tolerance
 
 N_REPLICAS = 5
-N_TRIALS = 60  # Smaller than default; 5 replicas * 60 still fast enough for CI.
 CLEAN_TOL = 0.10
 NOISY_TOL = 0.25
 
-# 5% Gaussian noise caps the achievable R² near 0.98, under the app's default
-# quality floor. A recovery test pins a floor its own noise level can reach, so
-# it measures Ka recovery rather than the default acceptance policy.
-NOISY_R2_FLOOR = 0.90
+_DEMO_PATH = Path(__file__).resolve().parents[2] / 'data' / 'IDA_system.txt'
 
 
 # ---------------------------------------------------------------------------
@@ -62,12 +55,8 @@ def _ida_conditions() -> Dict[str, Any]:
     }
 
 
-def _ida_ms(
-    n_replicas: int = N_REPLICAS,
-    noise_frac: float = 0.05,
-    seed: int = 2026,
-) -> MeasurementSet:
-    """Build a MeasurementSet with N independent noisy IDA replicas."""
+def _ida_ms(n_replicas: int = N_REPLICAS, noise_frac: float = 0.05, seed: int = 2026) -> MeasurementSet:
+    """A MeasurementSet with N independent noisy IDA replicates."""
     rng = np.random.default_rng(seed)
     x_ref, _ = _make_ida_data(IDA_TRUE, noise_frac=0.0)
     signals = np.stack(
@@ -84,46 +73,33 @@ def _ida_ms(
     )
 
 
-def _per_replica_config(min_r_squared: float | None = None) -> FitConfig:
-    """Per-replica config; *min_r_squared* pins a floor for noise levels that
-    cannot reach the app default."""
-    floor = {} if min_r_squared is None else {'min_r_squared': min_r_squared}
-    return FitConfig(
-        n_trials=N_TRIALS,
-        custom_bounds=GDA_IDA_RECOVERY_BOUNDS,
-        per_replica=True,
-        **floor,
+def _config() -> FitConfig:
+    return FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True)
+
+
+def _replaced(ms: MeasurementSet, row: int, signal: np.ndarray) -> MeasurementSet:
+    """*ms* with one replicate's signal replaced."""
+    signals = np.array(ms.signals, dtype=np.float64)
+    signals[row] = signal
+    return MeasurementSet(
+        concentrations=ms.concentrations,
+        signals=signals,
+        replica_ids=ms.replica_ids,
+        metadata=dict(ms.metadata),
     )
-
-
-# ---------------------------------------------------------------------------
-# Shared reference fits (module-scoped: each runs exactly once)
-# ---------------------------------------------------------------------------
-
-
-def _seeded_per_replica_fit(noise_frac: float, seed: int, min_r_squared: float | None = None) -> FitResult:
-    """Run a per-replica fit under a deterministic global RNG seed, restoring
-    the prior RNG state afterwards (module fixtures run before the autouse
-    per-test seeder, so leaked state could affect other module fixtures)."""
-    ms = _ida_ms(noise_frac=noise_frac, seed=seed)
-    state = np.random.get_state()
-    np.random.seed(42)
-    try:
-        return fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config(min_r_squared))
-    finally:
-        np.random.set_state(state)
 
 
 @pytest.fixture(scope='module')
 def clean_pr_result() -> FitResult:
-    """Per-replica fit of 5 noise-free replicas."""
-    return _seeded_per_replica_fit(noise_frac=0.0, seed=1)
+    """Per-replicate fit of 5 noise-free replicates."""
+    return fit_measurement_set_per_replica(_ida_ms(noise_frac=0.0, seed=1), IDAAssay, _ida_conditions(), _config())
 
 
 @pytest.fixture(scope='module')
-def noisy_pr_result() -> FitResult:
-    """Per-replica fit of 5 replicas with 5% Gaussian noise."""
-    return _seeded_per_replica_fit(noise_frac=0.05, seed=7, min_r_squared=NOISY_R2_FLOOR)
+def noisy_pr_result() -> tuple[MeasurementSet, FitResult]:
+    """Per-replicate fit of 5 replicates with 5 % Gaussian noise."""
+    ms = _ida_ms(noise_frac=0.05, seed=7)
+    return ms, fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _config())
 
 
 # ---------------------------------------------------------------------------
@@ -135,329 +111,176 @@ class TestPerReplicateRecovery:
     def test_ka_recovered_from_clean_replicas(self, clean_pr_result):
         result = clean_pr_result
 
-        assert result.success
-        assert result.uncertainty_source == 'replicate'
-        assert result.replica_fits is not None
         assert len(result.replica_fits) == N_REPLICAS
-        assert result.metadata['n_replicas_fit'] == N_REPLICAS
-        assert result.metadata['n_replicas_total'] == N_REPLICAS
+        assert fit_replica_ids(result) == list(result.metadata['active_replica_ids'])
         assert_within_tolerance(result.parameters['Ka_guest'], IDA_TRUE['Ka_guest'], CLEAN_TOL, 'Ka_guest')
 
     def test_ka_recovered_from_noisy_replicas(self, noisy_pr_result):
-        result = noisy_pr_result
+        _, result = noisy_pr_result
 
-        assert result.success
         assert len(result.replica_fits) == N_REPLICAS
         assert_within_tolerance(result.parameters['Ka_guest'], IDA_TRUE['Ka_guest'], NOISY_TOL, 'Ka_guest')
 
-    def test_replica_spread_is_nonzero_on_noisy_data(self, noisy_pr_result):
-        """Cross-replica spread should capture real noise — not collapse to ~0."""
-        from core.pipeline.fit_pipeline import summarize_parameters
-
-        result = noisy_pr_result
-        ka_mag = float(result.parameters['Ka_guest'].magnitude)
-        stats = next(s.stats for s in summarize_parameters(result) if s.key == 'Ka_guest' and not s.is_log)
-
-        assert stats['mad'] > 0.0
-        assert stats['max'] > stats['min']
-        # The spread should be at most comparable to Ka itself; anything vastly
-        # larger indicates aggregation broke.
-        assert stats['mad'] / ka_mag < 2.0
-
-    def test_per_replica_fits_are_in_physical_units(self, clean_pr_result):
-        """Each replica fit must already be in physical units (M^-1 etc)."""
-        for rr in clean_pr_result.replica_fits:
-            assert str(rr.parameters['Ka_guest'].units) == '1 / molar'
-            assert rr.uncertainty_source == 'optimizer'  # each replica is a single-signal fit
+    def test_every_replicate_fit_is_in_physical_units_and_names_its_replicate(self, clean_pr_result):
+        for rid, rf in zip(clean_pr_result.metadata['active_replica_ids'], clean_pr_result.replica_fits):
+            assert str(rf.parameters['Ka_guest'].units) == '1 / molar'
+            assert rf.metadata['replica_id'] == rid
+            assert rf.intervals is None  # a single replicate's own fit states no interval
 
     def test_dispatch_via_fit_measurement_set(self):
         """fit_measurement_set honors config.per_replica and dispatches."""
-        ms = _ida_ms(noise_frac=0.0, seed=3)
-        # Dispatch-only check: a few trials is plenty to produce a result.
-        config = FitConfig(n_trials=3, custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True)
-        result = fit_measurement_set(ms, IDAAssay, _ida_conditions(), config)
+        ms = _ida_ms(n_replicas=3, noise_frac=0.0, seed=3)
 
-        assert result.uncertainty_source == 'replicate'
+        result = fit_measurement_set(ms, IDAAssay, _ida_conditions(), _config())
+
         assert result.replica_fits is not None
+        assert result.metadata['replicate_test']['p_values'].keys() == set(ms.replica_ids)
 
 
 # ---------------------------------------------------------------------------
-# Outlier-replica robustness
+# What the replicate columns report
 # ---------------------------------------------------------------------------
 
 
-class TestOutlierReplicateRobustness:
-    def test_one_bad_replica_does_not_wreck_median(self):
-        """Replace one replica trace with pure noise. The cross-replica
-        median of Ka should still recover ground truth within noisy tolerance,
-        because the bad replica's Ka is an outlier absorbed by the median."""
-        ms_good = _ida_ms(noise_frac=0.02, seed=101)
+class TestReplicateColumns:
+    def test_the_replicate_spread_is_the_replicates_own_fits(self, noisy_pr_result):
+        """The columns describe real between-replicate variation, computed here from the sub-fits."""
+        _, result = noisy_pr_result
+        used = fit_replica_ids(result)
+        own = np.array(
+            [
+                float(rf.parameters['Ka_guest'].magnitude)
+                for rf in result.replica_fits
+                if rf.metadata['replica_id'] in used
+            ]
+        )
+        stats = next(s.replicates for s in summarize_parameters(result) if s.key == 'Ka_guest' and not s.is_log)
 
-        # Inject one garbage replica into a fresh MeasurementSet at idx 2
-        signals = np.array(ms_good.signals, dtype=np.float64)
+        assert stats['median'] == pytest.approx(float(np.median(own)))
+        assert (stats['min'], stats['max']) == (float(own.min()), float(own.max()))
+        assert stats['max'] > stats['min'], 'noisy replicates must not give one and the same Ka'
+        # Each replicate is a measurement of the same system, so the reported fit
+        # of their average lies within the spread of their own fits.
+        assert stats['min'] <= float(result.parameters['Ka_guest'].magnitude) <= stats['max']
+
+    def test_the_interval_and_the_spread_are_two_different_statements(self, noisy_pr_result):
+        """The interval is what the averaged data leave open for Ka; the spread is what the
+        replicates each measured. Both bracket the truth, and neither is derived from the other."""
+        _, result = noisy_pr_result
+        row = next(s for s in summarize_parameters(result) if s.key == 'Ka_guest' and not s.is_log)
+
+        assert row.interval[0] < IDA_TRUE['Ka_guest'] < row.interval[1]
+        assert row.replicates['min'] < IDA_TRUE['Ka_guest'] < row.replicates['max']
+        assert row.level == 0.95
+
+
+# ---------------------------------------------------------------------------
+# A replicate that does not share the binding constant
+# ---------------------------------------------------------------------------
+
+
+class TestReplicateExclusion:
+    def test_a_replicate_of_another_ka_is_left_out_and_the_rest_recover_the_truth(self):
+        """Replicate 'r2' is a titration of a guest binding three times as tightly."""
+        ms = _ida_ms(noise_frac=0.01, seed=101)
+        _, odd = _make_ida_data({**IDA_TRUE, 'Ka_guest': 3 * IDA_TRUE['Ka_guest']}, noise_frac=0.01)
+        ms = _replaced(ms, 2, odd)
+
+        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _config())
+
+        assert fit_replica_ids(result) == ['r0', 'r1', 'r3', 'r4']
+        assert list(result.metadata['replica_failures']) == ['r2']
+        assert_within_tolerance(result.parameters['Ka_guest'], IDA_TRUE['Ka_guest'], CLEAN_TOL, 'Ka_guest')
+        # The replicate columns follow the exclusion: the odd replicate's own Ka
+        # is outside the range they report.
+        stats = next(s.replicates for s in summarize_parameters(result) if s.key == 'Ka_guest' and not s.is_log)
+        odd_ka = float(
+            next(rf for rf in result.replica_fits if rf.metadata['replica_id'] == 'r2').parameters['Ka_guest'].magnitude
+        )
+        assert odd_ka > stats['max']
+
+    def test_a_replicate_of_pure_noise_is_kept_and_shows_itself_in_the_replicates_table(self):
+        """The test asks whether a replicate needs another Ka, not how noisy it is.
+
+        A replicate of pure noise contradicts no binding constant — it says
+        nothing about any — so its misfit, measured in units of its own large
+        scatter, is unremarkable and the test keeps it. It is its row of the
+        Replicates table that shows what it is: an R² at zero and an own Ka
+        pinned to the edge of the search range.
+        """
+        ms = _ida_ms(noise_frac=0.02, seed=37)
         rng = np.random.default_rng(999)
-        peak = float(np.max(np.abs(signals)))
-        signals[2] = rng.normal(0.0, peak * 0.5, size=signals.shape[1])
-        ms = MeasurementSet(
-            concentrations=ms_good.concentrations,
-            signals=signals,
-            replica_ids=ms_good.replica_ids,
-            metadata=dict(ms_good.metadata),
+        peak = float(np.max(np.abs(ms.signals)))
+        ms = _replaced(ms, 1, rng.normal(0.0, peak * 0.5, ms.signals.shape[1]))
+
+        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _config())
+
+        assert fit_replica_ids(result) == list(ms.replica_ids)
+        assert result.metadata['replicate_test']['p_values']['r1'] > 0.01 / len(ms.replica_ids)
+        noise_fit = next(rf for rf in result.replica_fits if rf.metadata['replica_id'] == 'r1')
+        assert noise_fit.r_squared < 0.1
+        assert float(noise_fit.parameters['Ka_guest'].magnitude) == pytest.approx(
+            GDA_IDA_RECOVERY_BOUNDS['Ka_guest'][1].magnitude
         )
+        # Its scatter is 25 times the others', which the unweighted average of the
+        # replicates used carries into the reported fit.
+        assert not np.isclose(float(result.parameters['Ka_guest'].magnitude), IDA_TRUE['Ka_guest'], rtol=NOISY_TOL)
 
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
+    def test_a_majority_is_never_removed(self):
+        """Three of five replicates disagree with the other two: the test cannot call the majority wrong."""
+        ms = _ida_ms(noise_frac=0.01, seed=55)
+        _, odd = _make_ida_data({**IDA_TRUE, 'Ka_guest': 5 * IDA_TRUE['Ka_guest']}, noise_frac=0.01)
+        for row in (0, 1):
+            ms = _replaced(ms, row, odd)
 
-        assert result.success
-        # Most replicas should survive (the bad one may or may not converge)
-        assert len(result.replica_fits) >= N_REPLICAS - 2
-        assert_within_tolerance(
-            result.parameters['Ka_guest'],
-            IDA_TRUE['Ka_guest'],
-            NOISY_TOL,
-            'Ka_guest (outlier-injected)',
-        )
+        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _config())
 
+        assert len(fit_replica_ids(result)) >= 3
 
-# ---------------------------------------------------------------------------
-# Rescaling invariance
-# ---------------------------------------------------------------------------
+    def test_a_replicate_with_no_signal_variation_is_refused_by_name(self):
+        """It says nothing about Ka, and its scatter is the weight of every other replicate."""
+        ms = _replaced(_ida_ms(n_replicas=3, noise_frac=0.02, seed=41), 1, np.zeros(30))
 
+        with pytest.raises(ValueError, match='r1'):
+            fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _config())
 
-class TestRescalingInvariance:
-    """Parameter rescaling is an exact affine bijection
-    [core/optimizer/scaling.py:20-23]. Per-replica fits must produce the
-    same physical-unit parameters whether rescaling is on or off, up to a
-    loose tolerance to absorb basin-selection jitter on noisy data.
+    def test_no_active_replicate_is_refused(self):
+        ms = _ida_ms(n_replicas=2, noise_frac=0.0, seed=5)
+        for rid in ms.replica_ids:
+            ms.set_active(rid, False)
 
-    The bijection itself is pinned exactly by ``test_scaling.py``
-    (``test_round_trip`` at rtol=1e-12, ``test_bounds_preserve_ordering_and_width``),
-    so what is left to check here is that the pipeline threads the flag
-    through per-replica at all — a wiring question. Two replicas and a small
-    trial budget answer it; clean data keeps both runs in the same basin."""
-
-    def test_per_replica_result_matches_with_and_without_rescale(self):
-        ms = _ida_ms(n_replicas=2, noise_frac=0.0, seed=17)
-
-        cfg_on = FitConfig(
-            n_trials=25,
-            custom_bounds=GDA_IDA_RECOVERY_BOUNDS,
-            per_replica=True,
-            rescale_parameters=True,
-        )
-        cfg_off = FitConfig(
-            n_trials=25,
-            custom_bounds=GDA_IDA_RECOVERY_BOUNDS,
-            per_replica=True,
-            rescale_parameters=False,
-        )
-
-        r_on = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), cfg_on)
-        r_off = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), cfg_off)
-
-        ka_on = float(r_on.parameters['Ka_guest'].magnitude)
-        ka_off = float(r_off.parameters['Ka_guest'].magnitude)
-        # Both must recover ground truth (clean data, 10% tolerance);
-        # that already pins them to the same physical value much tighter
-        # than the bijection's first-order equivalence alone.
-        assert_within_tolerance(ka_on, IDA_TRUE['Ka_guest'], CLEAN_TOL, 'Ka_guest (rescale on)')
-        assert_within_tolerance(ka_off, IDA_TRUE['Ka_guest'], CLEAN_TOL, 'Ka_guest (rescale off)')
-        # And they must agree with each other within the same tolerance.
-        assert abs(ka_on - ka_off) / max(abs(ka_on), abs(ka_off)) <= CLEAN_TOL
+        with pytest.raises(ValueError, match='Switch at least one on'):
+            fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _config())
 
 
 # ---------------------------------------------------------------------------
-# Failure handling
+# Measured data
 # ---------------------------------------------------------------------------
-
-
-class TestFailureHandling:
-    def test_degenerate_replica_is_skipped(self):
-        """A flat (zero-variance) replica makes ParamScaler.from_assay raise
-        ValueError; that replica must be skipped with a failure record,
-        surviving replicas fit normally, and the aggregate result is
-        produced."""
-        ms_good = _ida_ms(noise_frac=0.02, seed=37)
-        signals = np.array(ms_good.signals, dtype=np.float64)
-        signals[1] = 0.0  # flat signal, violates s_max > 0
-        ms = MeasurementSet(
-            concentrations=ms_good.concentrations,
-            signals=signals,
-            replica_ids=ms_good.replica_ids,
-            metadata=dict(ms_good.metadata),
-        )
-
-        # Asserts skip-and-continue, not fit quality — a small budget suffices.
-        config = FitConfig(n_trials=10, custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True)
-        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), config)
-
-        assert result.success
-        assert 'replica_failures' in result.metadata
-        assert 'r1' in result.metadata['replica_failures']
-        assert result.metadata['n_replicas_fit'] == N_REPLICAS - 1
-
-    def test_all_failures_raise_per_replica_fit_error(self):
-        """Every replica is degenerate → PerReplicaFitError with full failure map."""
-        ms_good = _ida_ms(n_replicas=3, noise_frac=0.0, seed=51)
-        signals = np.zeros_like(ms_good.signals)
-        ms = MeasurementSet(
-            concentrations=ms_good.concentrations,
-            signals=signals,
-            replica_ids=ms_good.replica_ids,
-            metadata=dict(ms_good.metadata),
-        )
-
-        with pytest.raises(PerReplicaFitError) as exc_info:
-            fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _per_replica_config())
-
-        err = exc_info.value
-        assert len(err.failures) == 3
-        assert all(rid in err.failures for rid in ms.replica_ids)
-
-
-# ---------------------------------------------------------------------------
-# Pool aggregation semantics (approach (b))
-# ---------------------------------------------------------------------------
-
-
-class TestPoolAggregation:
-    """The per-replica aggregate must carry the flat pool of every valid
-    trial from every replica in `parameter_samples`. The reported value is
-    the representative real trial (a row of the pool, not a per-parameter
-    aggregate), and the default-mode uncertainty is the pool's MAD."""
-
-    def test_aggregate_has_parameter_samples_pool(self, noisy_pr_result):
-        result = noisy_pr_result
-
-        assert result.parameter_samples is not None
-        # One entry per parameter key, same length across keys.
-        lengths = {k: len(arr) for k, arr in result.parameter_samples.items()}
-        assert len(set(lengths.values())) == 1
-        pool_size = next(iter(lengths.values()))
-        # Pool size equals the sum of per-replica n_passing
-        expected = sum(rf.n_passing for rf in result.replica_fits)
-        assert pool_size == expected
-        # And equals n_passing on the aggregate, and metadata pool_size
-        assert result.n_passing == pool_size
-        assert result.metadata['pool_size'] == pool_size
-        # Pool is strictly larger than the number of replicas (many trials each)
-        assert pool_size > len(result.replica_fits)
-
-    def test_per_replica_fits_carry_parameter_samples(self, noisy_pr_result):
-        for rf in noisy_pr_result.replica_fits:
-            assert rf.parameter_samples is not None
-            for k in rf.parameters.keys():
-                assert len(rf.parameter_samples[k]) == rf.n_passing
-
-    def test_aggregate_attempts_hold_every_fitted_replicas_attempts(self, noisy_pr_result):
-        result = noisy_pr_result
-        replicas = result.replica_fits
-        r2 = result.attempt_quality['r_squared']
-
-        assert len(r2) == sum(len(rf.attempt_quality['r_squared']) for rf in replicas)
-        for k, attempts in result.attempt_samples.items():
-            from_replicas = np.concatenate([rf.attempt_samples[k] for rf in replicas])
-            np.testing.assert_array_equal(np.sort(attempts), np.sort(from_replicas))
-        # Each attempt keeps the R² its own replica's filter judged, so the floor
-        # splits the pooled attempts into exactly the pooled accepted trials.
-        assert np.count_nonzero(r2 >= NOISY_R2_FLOOR) == result.n_passing
-
-    def test_reported_value_is_representative_and_range_is_pool_extent(self, noisy_pr_result):
-        from core.pipeline.fit_pipeline import summarize_parameters
-
-        result = noisy_pr_result
-        ridx = result.representative_index
-        summaries = {s.key: s for s in summarize_parameters(result) if not s.is_log}
-        for k, q in result.parameters.items():
-            pool = result.parameter_samples[k]
-            # Reported value = the representative real trial (a row of the pool),
-            # NOT a per-parameter median that could land off the manifold.
-            assert float(q.magnitude) == pytest.approx(float(pool[ridx]), rel=1e-12)
-            # The quoted range is the full extent of the accepted pool, so the
-            # representative must lie inside it.
-            stats = summaries[k].stats
-            assert stats['min'] == pytest.approx(float(np.min(pool)), rel=1e-12)
-            assert stats['max'] == pytest.approx(float(np.max(pool)), rel=1e-12)
-            assert stats['min'] <= float(q.magnitude) <= stats['max']
-
-    def test_serialization_round_trip_of_parameter_samples(self, noisy_pr_result):
-        result = noisy_pr_result
-        d = result.to_dict()
-        restored = FitResult.from_dict(d)
-
-        assert restored.parameter_samples is not None
-        for k, arr in result.parameter_samples.items():
-            np.testing.assert_array_equal(restored.parameter_samples[k], arr)
-        assert restored.n_passing == result.n_passing
-
-    def test_average_mode_also_populates_parameter_samples(self):
-        """`fit_assay` in average mode must also retain the passing-trial
-        pool so box-whisker plots work in both modes."""
-        from core.pipeline.fit_pipeline import fit_assay
-
-        ms = _ida_ms(n_replicas=3, noise_frac=0.02, seed=206)
-        assay = ms.to_assay(IDAAssay, conditions=_ida_conditions(), use_average=True)
-        result = fit_assay(
-            assay,
-            FitConfig(n_trials=N_TRIALS, custom_bounds=GDA_IDA_RECOVERY_BOUNDS),
-        )
-
-        assert result.parameter_samples is not None
-        for k, arr in result.parameter_samples.items():
-            assert len(arr) == result.n_passing
-        # Reported value = the representative real trial, not a per-param median.
-        ridx = result.representative_index
-        for k, q in result.parameters.items():
-            assert float(q.magnitude) == pytest.approx(float(result.parameter_samples[k][ridx]), rel=1e-12)
-
-
-# ---------------------------------------------------------------------------
-# Quality measured on the replicates the fit used (IDA demo data)
-# ---------------------------------------------------------------------------
-
-_DEMO_PATH = Path(__file__).resolve().parents[2] / 'data' / 'IDA_system.txt'
-
-
-@pytest.fixture(scope='module')
-def demo_fit() -> tuple[MeasurementSet, FitResult]:
-    """The app's demo IDA fit: eight measured replicates, 100 trials each, a fixed seed."""
-    from core.io import load_measurements
-
-    ms = MeasurementSet.from_dataframe(load_measurements(_DEMO_PATH))
-    conditions = {'Ka_dye': Q_(16.8e6, '1/M'), 'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M')}
-    config = FitConfig(n_trials=100, min_r_squared=0.99, per_replica=True, seed=20260915)
-    return ms, fit_measurement_set(ms, IDAAssay, conditions, config)
 
 
 class TestDemoQualityOnFittedReplicates:
-    """Replicate '0' of the demo fits no better than R² 0.976, so the fit leaves it out.
+    """The whole path on the app's demo IDA dataset: eight measured replicates.
 
-    Every reported quality number must then describe the average of the seven
-    replicates the fit used: the eight-replicate average scores the same fits
-    about 0.0008 lower in R².
+    Whatever the replicate test decides there, every reported quality number
+    must describe the average of the replicates the fit used — computed here
+    from the replicate rows directly.
     """
 
-    def test_replicate_zero_is_left_out(self, demo_fit):
-        _, result = demo_fit
+    def test_every_quality_number_is_scored_against_the_used_replicates(self):
+        ms = MeasurementSet.from_dataframe(load_measurements(_DEMO_PATH))
+        conditions = {'Ka_dye': Q_(16.8e6, '1/M'), 'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M')}
 
-        assert list(result.metadata['replica_failures']) == ['0']
-        assert result.metadata['replica_ids_fit'] == ['1', '2', '3', '4', '5', '6', '7']
+        result = fit_measurement_set(ms, IDAAssay, conditions, FitConfig(per_replica=True))
 
-    def test_every_quality_number_is_scored_against_the_used_replicates(self, demo_fit):
-        ms, result = demo_fit
-        used = [ms.replica_ids.index(rid) for rid in result.metadata['replica_ids_fit']]
-        assay = ms.to_assay(IDAAssay, conditions=result.conditions)
-        keys = assay.parameter_keys
-        models = [
-            assay.forward_model(np.array([result.parameter_samples[k][i] for k in keys])).magnitude
-            for i in range(result.n_passing)
-        ]
-        on_used = np.array([calculate_fit_metrics(ms.signals[used].mean(axis=0), m) for m in models])
-        on_all = np.array([calculate_fit_metrics(ms.signals.mean(axis=0), m) for m in models])
+        used = fit_replica_ids(result)
+        assert set(used) <= set(ms.replica_ids) and used
+        assay = ms.to_assay(IDAAssay, conditions=conditions)
+        vector = np.array([result.parameters[k].magnitude for k in assay.parameter_keys], dtype=float)
+        model = assay.forward_model(vector).magnitude
+        rows = [ms.replica_ids.index(rid) for rid in used]
+        rmse, r_squared = calculate_fit_metrics(ms.signals[rows].mean(axis=0), model)
 
-        np.testing.assert_allclose(result.quality_samples['rmse'], on_used[:, 0], rtol=1e-12, atol=0)
-        np.testing.assert_allclose(result.quality_samples['r_squared'], on_used[:, 1], rtol=1e-12, atol=0)
-        rep = result.representative_index
-        assert result.rmse == pytest.approx(on_used[rep, 0], rel=1e-12)
-        assert result.r_squared == pytest.approx(on_used[rep, 1], rel=1e-12)
-        assert abs(on_all[rep, 1] - result.r_squared) > 5e-4
-        assert result.r_squared == pytest.approx(0.99414, abs=1e-4)
+        assert result.rmse == pytest.approx(rmse, rel=1e-12)
+        assert result.r_squared == pytest.approx(r_squared, rel=1e-12)
+        low, high = next(s.interval for s in summarize_parameters(result) if s.key == 'Ka_guest' and not s.is_log)
+        assert low < float(result.parameters['Ka_guest'].magnitude) < high
