@@ -1,4 +1,4 @@
-"""High-quality image export for PyQtGraph plots and scenes.
+"""High-quality image export for PyQtGraph plots and whole tabs.
 
 This module owns every export-time concern in one place:
 
@@ -6,14 +6,11 @@ This module owns every export-time concern in one place:
 * Screen-space items (the legend) participate in the painter transform
   during export so they scale up with the rest of the figure instead of
   staying tiny at high resolutions.
-* Pixel-exact sizing for composite scenes: resize the source widget,
-  then export.
 
-PyQtGraph provides ``ImageExporter`` and ``SVGExporter`` natively. They
-both accept either a ``PlotItem`` or a ``QGraphicsScene`` — the latter
-is what allows multi-subplot composite export of a
-``GraphicsLayoutWidget`` in a single native call, without any manual
-``QImage``/``QPainter`` stitching.
+PyQtGraph provides ``ImageExporter`` and ``SVGExporter`` natively, and
+both accept a ``PlotItem``, so a single plot is written through the
+library's own exporters. A whole tab — text, controls and several plots
+— is painted by Qt itself in :func:`export_widget`.
 
 The only piece of "manual plumbing" that remains is
 :func:`_screen_space_items_to_scene_space`. This addresses a real
@@ -114,47 +111,6 @@ def export_plot_item(
         raise ValueError(f"A plot is saved as a picture or a drawing, so '{ext}' cannot be written. Use .png or .svg.")
 
 
-def export_scene(
-    scene: 'QGraphicsScene',
-    path: str | Path,
-    *,
-    width_px: int | None = None,
-) -> None:
-    """Export an entire scene (e.g. a ``GraphicsLayoutWidget.scene()``).
-
-    Parameters
-    ----------
-    scene
-        The Qt graphics scene to export. Typical use: pass
-        ``glw.scene()`` where ``glw`` is a
-        :class:`pyqtgraph.GraphicsLayoutWidget` holding several
-        PlotItems in a grid.
-    path
-        Output path. ``.png`` → rasterised PNG, ``.svg`` → vector SVG.
-    width_px
-        Output width in pixels for PNG. The scene's aspect ratio
-        determines the height — resize the source widget beforehand if
-        you need an exact (width × height) result.
-
-    Raises
-    ------
-    ValueError
-        If the file extension is not ``.png`` or ``.svg``.
-    """
-    ext = _ext(path)
-    if ext == '.png':
-        exporter = pg.exporters.ImageExporter(scene)
-        if width_px is not None:
-            exporter.parameters()['width'] = int(width_px)
-        with _screen_space_items_to_scene_space(scene):
-            exporter.export(str(path))
-    elif ext == '.svg':
-        exporter = pg.exporters.SVGExporter(scene)
-        exporter.export(str(path))
-    else:
-        raise ValueError(f"A plot is saved as a picture or a drawing, so '{ext}' cannot be written. Use .png or .svg.")
-
-
 @contextmanager
 def _left_out(parent: 'QWidget', widgets: 'Sequence[QWidget]'):
     """Hide *widgets* and lay *parent* out without them, putting both back on exit.
@@ -190,8 +146,8 @@ def export_widget(
     A tab that mixes labels with several plots is one picture to the reader, so
     it is painted as one: ``QWidget.render`` walks the tree and every child
     paints itself through the same painter. Screen-space items are flipped into
-    scene space for the duration, as in :func:`export_scene`, so a legend scales
-    with the rest.
+    scene space for the duration, as in :func:`export_plot_item`, so a legend
+    scales with the rest.
 
     Parameters
     ----------
@@ -204,7 +160,7 @@ def export_widget(
         that keeps each plot's curves inside its axes, so a whole tab drawn as
         SVG puts a curve that runs past its axes across the legend and the text
         beside it. A single plot still exports to SVG through
-        :func:`export_scene`, which draws through pyqtgraph's own exporter.
+        :func:`export_plot_item`, which draws through pyqtgraph's own exporter.
     width_px
         Output width in pixels; the height follows the widget's aspect ratio.
     without
@@ -246,56 +202,3 @@ def export_widget(
         painter.end()
         if not image.save(str(path)):
             raise ValueError(f'The image could not be written to {path}.')
-
-
-def render_scene_to_qimage(
-    scene: 'QGraphicsScene',
-    width_px: int,
-) -> QImage:
-    """Render a scene to an in-memory ``QImage`` (for previews).
-
-    Uses the same export pipeline as :func:`export_scene` so the
-    preview cannot drift from what the saved PNG would contain.
-
-    Parameters
-    ----------
-    scene
-        The Qt graphics scene to render.
-    width_px
-        Output width in pixels. Height is derived from scene aspect.
-
-    Returns
-    -------
-    QImage
-        The rendered image, sized by PyQtGraph's ``ImageExporter``.
-    """
-    exporter = pg.exporters.ImageExporter(scene)
-    exporter.parameters()['width'] = int(width_px)
-    with _screen_space_items_to_scene_space(scene):
-        img = exporter.export(toBytes=True)
-    if not isinstance(img, QImage):
-        raise RuntimeError('ImageExporter did not return a QImage.')
-    return img
-
-
-def prepare_widget_for_offscreen_render(widget: 'QWidget', width_px: int, height_px: int) -> None:
-    """Resize a widget to a target pixel size and force its layout to apply.
-
-    PyQtGraph's ``GraphicsLayoutWidget`` lays out its cells (and the
-    underlying scene bounding rect) in response to the widget's size.
-    For pixel-exact composite export the widget must be resized to the
-    target dimensions before ``ImageExporter`` reads its scene.
-
-    The widget is configured with ``WA_DontShowOnScreen`` so calling
-    ``show()`` triggers layout without putting anything on screen, and
-    pending Qt events are processed so the resize propagates to the
-    scene before the caller reads it. Callers must keep a reference
-    until export is complete and then drop or delete the widget.
-    """
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QApplication
-
-    widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-    widget.resize(int(width_px), int(height_px))
-    widget.show()
-    QApplication.processEvents()

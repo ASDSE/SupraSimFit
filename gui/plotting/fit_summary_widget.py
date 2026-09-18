@@ -3,90 +3,101 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import replace
 
 import numpy as np
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtWidgets import (
-    QComboBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from core.optimizer.ensemble import describe, describe_log10
 from core.pipeline.fit_pipeline import (
     FitResult,
     ParameterSummary,
     fit_replica_ids,
-    fitted_representative_index,
     input_replica_ids,
+    parameters_on_bound,
     summarize_parameters,
 )
 from core.pipeline.sensitivity import SensitivityMode, SensitivityResult
+from core.pipeline.varpro import LEVEL
 from core.units import Q_
 from gui.plotting.colors import INK_2
-from gui.plotting.labels import fmt_log10, fmt_param, fmt_r2, fmt_unit_html
+from gui.plotting.labels import (
+    SPLIT_MARK,
+    SPLIT_NOTE,
+    UNSOLVABLE_NOTE,
+    fmt_bound_note,
+    fmt_interval_html,
+    fmt_log10,
+    fmt_param,
+    fmt_r2,
+    fmt_unit_html,
+    plain_label,
+)
 from gui.widgets.info_button import InfoGroupBox
-from gui.widgets.replica_panel import describe_replicates
+from gui.widgets.replica_panel import _display_label, describe_replicates
+
+_LEVEL_TEXT = f'{LEVEL * 100:g} %'
 
 _PARAMS_TITLE = 'Fitted Parameters'
-_PARAMS_HELP_HTML = """
+_PARAMS_HELP_HTML = f"""
 <h3>Fitted Parameters &mdash; columns</h3>
 
-<p><b>Estimate</b> &mdash; the representative fit: one actual fit from the
-valid pool, the one drawn on the plot and named in the Representative selector.
-A fit of the averaged signal chooses its highest-R&sup2; attempt; a
-per-replicate fit chooses, among each replicate&rsquo;s best attempt, the one
-with the highest R&sup2; against the average of the replicates it used.
-Replicates left out of the fit play no part in its R&sup2; or RMSE. It is a
-point estimate among a distribution, not a proven optimum.</p>
+<p><b>Estimate</b> &mdash; the least-squares fit: the parameter values that
+bring the model closest to the data you fitted, and the ones the curve on the
+plot is drawn from. For a fit of several replicates, that is the fit of the
+average of the replicates it used.</p>
 
-<p><b>Median &plusmn; MAD</b> and <b>Mean &plusmn; SD</b> &mdash; the centre and
-spread of each parameter across <i>all</i> valid fits. <b>MAD</b> is the median
-absolute deviation, median(|x<sub>i</sub> &minus; median|): a robust spread that
-ignores outlier fits (reported unscaled). <b>SD</b> is the sample standard
-deviation (N&minus;1) &mdash; the ordinary spread, pulled by outliers and
-assuming a roughly symmetric distribution. (The <i>median</i> absolute deviation
-is not the <i>mean</i> absolute deviation mean(|x<sub>i</sub> &minus; mean|); we
-use the median form because it pairs with the robust median.) None of these
-change the Estimate or the curve.</p>
+<p><b>{_LEVEL_TEXT} interval</b> &mdash; for each association constant, the
+K<sub>a</sub> values that still describe your data. Every K<sub>a</sub> in the
+interval is refitted with all other parameters free, and kept when the resulting
+misfit is not significantly worse than the best fit&rsquo;s (an F test at
+{_LEVEL_TEXT}). It is a statement about K<sub>a</sub> given this model and the
+inputs you entered &mdash; the <b>Ka Sensitivity</b> tab shows how far errors in
+those inputs move it. The signal parameters get no interval: only K<sub>a</sub>
+is being tested.</p>
 
-<p><b>68% Range</b> &mdash; the interval [P16, P84] holding the central 68% of
-the fits. For a bell-shaped distribution this equals mean&nbsp;&plusmn;&nbsp;1
-SD, but it is read straight from the fits, so it stays correct &mdash; and
-reveals any skew &mdash; even when they are not bell-shaped. <b>Min-Max Range</b>
-is the full extent of the fitted values &mdash; this is the range quoted beside
-the Estimate in the plot annotation and the exported reports.</p>
+<p><b>A marked interval</b> &mdash; {SPLIT_MARK} means the K<sub>a</sub> the test
+keeps come in separate stretches, and the bracket spans all of them, so values
+inside it are rejected. The <b>Identifiability</b> tab draws where the accepted
+stretches are.</p>
 
-<p><b>log<sub>10</sub>(K<sub>a</sub>) row</b> &mdash; for each association
-constant, a second row reports log<sub>10</sub>(K<sub>a</sub>). Its statistics
-come from the per-fit log<sub>10</sub> values directly &mdash; never from the
-log of a K<sub>a</sub> spread, which would be meaningless.</p>
+<p><b>An open side</b> &mdash; <i>no upper limit</i> means the data stay
+consistent with every larger K<sub>a</sub> up to the bound you set: the
+titration saturates too early to tell them apart. Add points below saturation,
+or lower the fixed concentration, and fit again. <i>No lower limit</i> means the
+same downwards: add points at higher titrant concentration. <i>Not limited by
+the data</i> means neither end is closed, so the fit does not determine
+K<sub>a</sub> at all. A K<sub>a</sub> you held fixed reads <i>fixed</i> and has
+no interval, because it was not fitted.</p>
 
-<p><b>What the spread means (and doesn&rsquo;t).</b> These numbers describe how
-<i>reproducibly the optimiser converges</i> across its many starting points on
-the same data &mdash; not the experimental uncertainty of your measurement. A
-tight spread means the fit reliably lands on the same value; it does <b>not</b>
-by itself mean the parameter is known to that precision. With per-replica
-fitting the pool holds each replicate&rsquo;s own fits, so the spread also
-reflects how far the replicates&rsquo; fits differ; it is still not a confidence
-interval. The wide spread on the signal coefficients (I<sub>0</sub>,
-I<sub>D</sub>, I<sub>HD</sub>) is the clearest case: it is not uncertainty, it
-is the model telling you those coefficients are not individually determined
-&mdash; only K<sub>a</sub> is.</p>
+<p><b>log<sub>10</sub>(K<sub>a</sub>) row</b> &mdash; each association constant
+is repeated as its log<sub>10</sub>. Its estimate and interval are the row above
+read on a log scale, which is exact.</p>
 
-<p><b>How precisely K<sub>a</sub> is known.</b> The <b>Identifiability</b> tab
-gives the 95% confidence interval: the K<sub>a</sub> values whose best fit to
-your data is not significantly worse than the best one. On the demo data the
-68% Range lies within 0.1% of the estimate, while that interval reaches &minus;44%
-to +182%. The
-interval assumes the model and the inputs you entered are right; the <b>Ka
-Sensitivity</b> tab shows how far errors in those inputs move K<sub>a</sub>.
-Help &#9656; Reading the plots explains both tabs.</p>
+<p><b>Replicates: median</b> and <b>Replicates: min - max</b> &mdash; shown when
+each replicate was fitted separately and at least two entered the fit: the
+middle, lowest and highest value across those replicates&rsquo; <i>own</i> fits.
+They say how far the replicates disagree, which is a different question from the
+interval: the interval says how well the fitted data pin K<sub>a</sub> down.
+Replicates left out of the fit are not counted here; the Replicates table below
+lists every replicate.</p>
+
+<p><b>Rows marked *</b> &mdash; at the fitted K<sub>a</sub>, the data fix only a
+combination of these signal parameters, not each one on its own: many different
+sets of their values draw exactly the same curve. The value shown is one member
+of that family. It reconstructs the curve correctly and must not be read as a
+measurement of that one coefficient.</p>
 """
 
 
@@ -99,17 +110,17 @@ Compare it to the noise level in your data: if RMSE is similar to the
 noise floor, the fit is explaining the data about as well as possible.</p>
 
 <p><b>R&sup2;</b> (coefficient of determination) &mdash; fraction of the
-data variance explained by the fit, from 0 to 1. Close to 1, small
-differences still matter: on the demo data the 95% confidence interval for
-K<sub>a</sub> on the Identifiability tab ends where the best R&sup2; drops from
-0.9941 to 0.9908. A high R&sup2; does not show that the model describes the
-data: check the Fit Curve for runs of points on one side of the curve.</p>
+data variance explained by the fit, from 0 to 1. A high R&sup2; does not show
+that the model describes the data: check the Fit Curve for runs of points on one
+side of the curve. How precisely K<sub>a</sub> is determined is the interval in
+the table, not R&sup2;.</p>
 
-<p><b>Fits passing</b> &mdash; how many of the multi-start trials cleared
-the minimum&nbsp;R&sup2; floor (plus the optional RMSE trim, if enabled) and
-form the valid pool. A low ratio (e.g. 5/100) means most starting points led
-the optimiser to poor solutions &mdash; consider widening bounds or
-increasing the trial budget.</p>
+<p><b>Replicates used</b> &mdash; how many of the replicates you switched on
+entered the fit. A replicate is left out when its own best fit needs a
+K<sub>a</sub> the others do not share; the tooltip names each one and why. The
+test can only notice a replicate whose own data pin K<sub>a</sub> down &mdash;
+if the replicates&rsquo; own K<sub>a</sub> values spread over decades, one that
+disagrees will not stand out.</p>
 """
 
 
@@ -117,14 +128,10 @@ _SAMPLES_QUALITY_HELP_HTML = """
 <h3>Fit Quality &mdash; across the samples</h3>
 
 <p><b>Samples with a fit</b> &mdash; how many of the analysis&rsquo;s samples
-produced a fit, out of all its samples. Only these enter the table.</p>
-
-<p><b>Below Min&nbsp;R&sup2;</b> &mdash; how many of those samples have a best fit
-below the Min&nbsp;R&sup2; the analysis used: the one set in the Fit panel when it
-started. They stay in every column of the table.</p>
+produced a fit. Only these enter the table.</p>
 
 <p><b>Median R&sup2;</b> and <b>R&sup2; range</b> &mdash; the middle value and the
-lowest and highest R&sup2; of the samples&rsquo; best fits.</p>
+lowest and highest R&sup2; of the samples&rsquo; fits.</p>
 """
 
 
@@ -137,12 +144,14 @@ exactly as you entered them, the same way it fits each sample. The text above th
 table says whether it matches the fit on the Fit Curve tab, and why not when it
 can differ.</p>
 
-<p>The other columns summarise the best fit of every sample in the analysis,
-including fits below the Min&nbsp;R&sup2;. Each sample refits your data with the
-inputs moved within the uncertainty you set, so these columns show how far each
-parameter moves when the inputs are uncertain. <b>Median &plusmn; MAD</b>,
-<b>Mean &plusmn; SD</b>, <b>68% Range</b> and <b>Min-Max Range</b> are the same
-statistics as in the fit&rsquo;s own table on the other tabs.</p>
+<p>The other columns summarise the fit of every sample in the analysis. Each
+sample refits your data with the inputs moved within the uncertainty you set, so
+these columns show how far each parameter moves when the inputs are uncertain.
+<b>Median &plusmn; MAD</b> is the median and the median absolute deviation
+around it, a spread a single far-off sample does not carry away;
+<b>Mean &plusmn; SD</b> is the ordinary mean and sample standard deviation;
+<b>68% Range</b> is the interval [P16, P84] holding the central 68 % of the
+samples; <b>Min-Max Range</b> is their full extent.</p>
 
 <p><b>Rows marked *</b> &mdash; the data fix only a combination of these signal
 parameters, not each one on its own: many different sets of their values draw
@@ -153,17 +162,31 @@ here, even 0&nbsp;&plusmn;&nbsp;0, does not mean the value is well determined.</
 """
 
 
-# Merged stat columns: (header, (central_key, spread_key)) from ensemble.describe().
-# Rendered as a single "central ± spread" cell; the active pair is bold-emphasised.
+#: The summary table's columns in the fit view. The two replicate columns are
+#: dropped when no row has replicate statistics — a fit of one signal, or a
+#: per-replicate fit that used a single replicate.
+_FIT_HEADERS = ('Parameter', 'Estimate', f'{_LEVEL_TEXT} interval', 'Units')
+_REPLICATE_HEADERS = ('Replicates: median', 'Replicates: min - max')
+#: Where the interval sits in a fit table row; the replicate columns follow it.
+_INTERVAL_COLUMN = _FIT_HEADERS.index(f'{_LEVEL_TEXT} interval')
+
+# Merged stat columns of the samples view: (header, (central_key, spread_key))
+# from ensemble.describe(). Rendered as a single "central ± spread" cell.
 _STAT_COLUMNS = (('Median ± MAD', ('median', 'mad')), ('Mean ± SD', ('mean', 'std')))
 _P68_HEADER = '68% Range'  # central 68% interval [P16, P84]
 _RANGE_HEADER = 'Min-Max Range'
-_COLUMN_HEADERS = ('Parameter', 'Estimate') + tuple(h for h, _ in _STAT_COLUMNS) + (_P68_HEADER, _RANGE_HEADER, 'Units')
-# Columns: 0 Parameter | 1 Estimate | 2 Median±MAD | 3 Mean±SD | 4 68% Range | 5 Min-Max Range | 6 Units.
-_STAT_COL0 = 2
-_P68_COL = _STAT_COL0 + len(_STAT_COLUMNS)
-_RANGE_COL = _P68_COL + 1
-_UNITS_COL = _RANGE_COL + 1
+_SAMPLE_HEADERS = ('Parameter', 'Estimate') + tuple(h for h, _ in _STAT_COLUMNS) + (_P68_HEADER, _RANGE_HEADER, 'Units')
+
+#: Columns of the Replicates table, before the one column each binding constant
+#: adds after "Replicate".
+_REPLICATE_TABLE_HEADERS = ('Replicate', 'R²', 'p-value', 'In the fit')
+
+_LEGACY_NOTE = (
+    'Imported from a file written by an earlier version: a multi-start estimate without a confidence interval. '
+    'Fit the data again to get the interval.'
+)
+
+_NO_VALUE = '—'
 
 
 def _fmt(magnitude: float, unit_str: str) -> str:
@@ -173,24 +196,19 @@ def _fmt(magnitude: float, unit_str: str) -> str:
     return f'{magnitude:.3g}'
 
 
-def _distinct_r2_texts(indices: list[int], values: list[float]) -> list[str]:
-    """R² texts for the attempts *indices*, with the fewest decimals (four to six) that tell them apart.
+def _row_formatter(spec: ParameterSummary, stats: dict | None) -> Callable[[float], str]:
+    """How every number of one row is written: a log₁₀ reading, or a value in the row's unit."""
+    if spec.is_log:
+        return lambda value: fmt_log10(value, stats)
+    return lambda value: _fmt(value, spec.unit)
 
-    Attempts whose R² differs at the sixth decimal read differently, so an item
-    does not look identical to another attempt it would switch to. Attempts
-    closer than that fit the data equally well for any practical purpose and
-    read the same.
-    """
-    for digits in range(4, 7):
-        texts = [f'{v:.{digits}f}' for v in values]
-        if all(
-            texts[i] != texts[j]
-            for i in range(len(values))
-            for j in range(i)
-            if indices[i] != indices[j] and values[i] != values[j]
-        ):
-            break
-    return texts
+
+def _row_label(spec: ParameterSummary) -> str:
+    """The row's name: the parameter, or its log₁₀ twin labelled with the unit it is a log of."""
+    if not spec.is_log:
+        return fmt_param(spec.key)
+    unit_html = fmt_unit_html(spec.unit) if spec.unit else ''
+    return f'log₁₀({fmt_param(spec.key)} / {unit_html})' if unit_html else f'log₁₀({fmt_param(spec.key)})'
 
 
 def _fmt_pair(central: float, spread: float, fmt: Callable[[float], str]) -> str:
@@ -203,110 +221,208 @@ def _fmt_range(lo: float, hi: float, fmt: Callable[[float], str]) -> str:
     return f'[{fmt(lo)}, {fmt(hi)}]'
 
 
-class ParameterTable(QTableWidget):
-    """Read-only table of :func:`~core.pipeline.fit_pipeline.summarize_parameters` rows.
+def _interval_cell(spec: ParameterSummary, fmt: Callable[[float], str], ka_keys: set[str], reported: bool) -> str:
+    """What the interval column says for one row.
 
-    Columns: Parameter | Estimate | Median \u00b1 MAD | Mean \u00b1 SD | 68% Range |
-    Min-Max Range | Units.
+    A binding constant the fit was free to move carries its interval; one held
+    fixed says so, because it was not fitted; a signal parameter has none to
+    report, and neither has any row of a result that carries no interval at all.
+
+    An interval whose accepted values come in separate stretches is marked, so
+    the bracket is not read as one connected range of values the data accept.
+    """
+    if spec.interval is not None:
+        low, high = spec.interval
+        text = fmt_interval_html(fmt(low), fmt(high), *spec.interval_open)
+        return f'{text} {SPLIT_MARK}' if spec.interval_split else text
+    if spec.key in ka_keys and reported:
+        return '<i>fixed</i>'
+    return _NO_VALUE
+
+
+def _sentence(note: str) -> str:
+    """One of the shared notes as a sentence of its own; they are written to follow a parameter name."""
+    return f'{note[0].upper()}{note[1:]}'
+
+
+#: What the mark on a split interval means, wherever that mark is shown.
+_SPLIT_FOOTNOTE = f'{SPLIT_MARK} {_sentence(SPLIT_NOTE)}'
+
+
+def _interval_tooltip(spec: ParameterSummary) -> str:
+    """What the bracket of one row does not show: separate stretches, and an open side no data can close."""
+    notes = []
+    if spec.interval_split:
+        notes.append(_SPLIT_FOOTNOTE)
+    if any(spec.interval_unsolvable):
+        notes.append(_sentence(UNSOLVABLE_NOTE))
+    return ' '.join(notes)
+
+
+def _fit_table(rows: list[ParameterSummary], ka_keys: set[str], reported: bool) -> tuple[list[str], list[list[str]]]:
+    """Headers and cell texts of the fit view's table.
+
+    The replicate columns appear only where a row fills them, so a fit of one
+    signal is not shown two empty columns.
+    """
+    with_replicates = any(spec.replicates is not None for spec in rows)
+    headers = [*_FIT_HEADERS[:-1]]
+    if with_replicates:
+        headers += list(_REPLICATE_HEADERS)
+    headers.append(_FIT_HEADERS[-1])
+
+    cells = []
+    for spec in rows:
+        fmt = _row_formatter(spec, spec.replicates)
+        row = [_row_label(spec), fmt(spec.estimate), _interval_cell(spec, fmt, ka_keys, reported)]
+        if with_replicates:
+            d = spec.replicates
+            row += [_NO_VALUE, _NO_VALUE] if d is None else [fmt(d['median']), _fmt_range(d['min'], d['max'], fmt)]
+        # A log₁₀ row is dimensionless; its source unit only labels it.
+        row.append(fmt_unit_html(spec.unit) if spec.unit and not spec.is_log else _NO_VALUE)
+        cells.append(row)
+    return headers, cells
+
+
+def _sample_table(rows: list[ParameterSummary], samples: dict[str, np.ndarray]) -> list[list[str]]:
+    """Cell texts of the samples view's table: each row's statistics over the fitted samples.
+
+    A log₁₀ row is summarised through :func:`~core.optimizer.ensemble.describe_log10`,
+    which transforms every sample first — statistics of log₁₀(Ka) must come from
+    the per-sample log values, because log₁₀ of a Ka spread is meaningless.
+    """
+    cells = []
+    for spec in rows:
+        values = samples.get(spec.key)
+        d = None if values is None else (describe_log10(values) if spec.is_log else describe(values))
+        fmt = _row_formatter(spec, d)
+        row = [_row_label(spec), fmt(spec.estimate)]
+        if d is None:
+            row += [_NO_VALUE] * (len(_STAT_COLUMNS) + 2)
+        else:
+            row += [_fmt_pair(d[ck], d[sk], fmt) for _, (ck, sk) in _STAT_COLUMNS]
+            row += [_fmt_range(d['p16'], d['p84'], fmt), _fmt_range(d['min'], d['max'], fmt)]
+        row.append(fmt_unit_html(spec.unit) if spec.unit and not spec.is_log else _NO_VALUE)
+        cells.append(row)
+    return cells
+
+
+class ParameterTable(QTableWidget):
+    """Read-only table of HTML cells, sized to its contents.
+
+    The headers come with the rows, so the same table renders the fit view, the
+    samples view and the per-replicate Replicates table.
+
+    The table is as tall as its header and all of its rows, and the pane around
+    it scrolls: a table that scrolled inside a scrolling pane would put a row
+    behind a scrollbar of its own.
     """
 
     def __init__(self, parent=None):
-        super().__init__(0, len(_COLUMN_HEADERS), parent)
-        self.setHorizontalHeaderLabels(list(_COLUMN_HEADERS))
+        super().__init__(0, 0, parent)
         header = self.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Panning by pixel, not by column: a column wider than the table can
+        # still be read from end to end.
+        self.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-    def show_rows(self, rows: list[ParameterSummary]) -> None:
-        """Render *rows*, one table row each, and size the columns to their contents.
+    def sizeHint(self) -> QSize:
+        """The header and every row, plus a horizontal scrollbar where the columns need one."""
+        frame = 2 * self.frameWidth()
+        columns = sum(self.columnWidth(col) for col in range(self.columnCount()))
+        height = frame + self.horizontalHeader().height()
+        height += sum(self.rowHeight(row) for row in range(self.rowCount()))
+        if columns > self.viewport().width():
+            height += self.horizontalScrollBar().sizeHint().height()
+        return QSize(columns + frame + self.verticalHeader().width(), height)
 
-        A log₁₀ row is written through :func:`~gui.plotting.labels.fmt_log10`,
-        which matches its decimals to the spread beside it; every other row to
-        three significant figures with its unit.
-        """
+    def resizeEvent(self, event) -> None:
+        """Share the columns out again over the width the table now has."""
+        super().resizeEvent(event)
+        self.autosize_columns()
+
+    def show_rows(self, headers: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
+        """Render *rows* under *headers*, one table row each, and size the columns to their contents."""
         # Removing the rows hides their cell widgets at once; a replaced cell
         # widget would stay on screen until its deferred deletion.
         self.setRowCount(0)
+        self.setColumnCount(len(headers))
+        self.setHorizontalHeaderLabels(list(headers))
         self.setRowCount(len(rows))
-        for row, spec in enumerate(rows):
-            # Log rows are dimensionless; their source unit only labels them.
-            unit_html = fmt_unit_html(spec.unit) if spec.unit else ''
-            d = spec.stats
-            if spec.is_log:
-                label = f'log₁₀({fmt_param(spec.key)} / {unit_html})' if unit_html else f'log₁₀({fmt_param(spec.key)})'
-
-                def fmt(value: float, stats: dict | None = d) -> str:
-                    return fmt_log10(value, stats)
-            else:
-                label = fmt_param(spec.key)
-
-                def fmt(value: float, unit: str = spec.unit) -> str:
-                    return _fmt(value, unit)
-
-            self._set_cell(row, 0, label)
-            self._set_cell(row, 1, fmt(spec.estimate))
-            if d is None:
-                for col in range(_STAT_COL0, _RANGE_COL + 1):
-                    self._set_cell(row, col, '—', tooltip='No fit pool stored for this result (e.g. a legacy import).')
-            else:
-                for offset, (_, (ck, sk)) in enumerate(_STAT_COLUMNS):
-                    self._set_cell(row, _STAT_COL0 + offset, _fmt_pair(d[ck], d[sk], fmt))
-                self._set_cell(row, _P68_COL, _fmt_range(d['p16'], d['p84'], fmt))
-                self._set_cell(row, _RANGE_COL, _fmt_range(d['min'], d['max'], fmt))
-            self._set_cell(row, _UNITS_COL, unit_html if not spec.is_log and spec.unit else '—')
+        for row, texts in enumerate(rows):
+            for col, text in enumerate(texts):
+                self.set_cell(row, col, text)
         self.autosize_columns()
 
-    def _set_cell(self, row: int, col: int, html: str, *, tooltip: str | None = None) -> None:
+    def set_cell(self, row: int, col: int, html: str) -> None:
+        """Put *html* in one cell, as a centred rich-text label."""
         lbl = QLabel(html)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setTextFormat(Qt.TextFormat.RichText)
-        if tooltip:
-            lbl.setToolTip(tooltip)
         self.setCellWidget(row, col, lbl)
 
     def autosize_columns(self) -> None:
-        """Size each column to its widest cell, sharing out spare width or a shortfall evenly.
+        """Give each column the width its own widest cell needs, and share out any width left over.
 
-        Where the table is too narrow for its contents, the columns give back
-        the difference between them down to their header width, so the last one
-        — the units — stays readable instead of falling off the right edge.
-        When even that is not enough, the horizontal scrollbar stays on screen,
-        so there is a visible way to reach the rest.
+        A column is never narrower than its contents. A number cut off mid-digit
+        still reads as a number, and the horizontal scrollbar pans between whole
+        columns rather than widening one, so there would be no way back to the
+        rest of the value. Where the columns together outgrow the table, that
+        scrollbar reaches them.
+
+        The spare width is measured against the width the table has now, so it
+        is shared out again whenever the table is resized.
         """
         # resizeColumnsToContents() ignores widgets set via setCellWidget(),
         # so we measure each QLabel's sizeHint() directly.
         n_cols = self.columnCount()
         n_rows = self.rowCount()
+        if not n_cols:
+            return
         fm = self.horizontalHeader().fontMetrics()
-        widths, floors = [], []
+        widths = []
         for col in range(n_cols):
             item = self.horizontalHeaderItem(col)
-            header_text = item.text() if item is not None else ''
-            floor = fm.horizontalAdvance(header_text) + 24
-            w = floor
+            w = fm.horizontalAdvance(item.text() if item is not None else '') + 24
             for row in range(n_rows):
                 widget = self.cellWidget(row, col)
                 if widget is not None:
                     w = max(w, widget.sizeHint().width() + 16)
             widths.append(w)
-            floors.append(floor)
 
-        share = (self.viewport().width() - sum(widths)) // n_cols
-        widths = [max(w + share, floor) for w, floor in zip(widths, floors)]
+        spare = max((self.viewport().width() - sum(widths)) // n_cols, 0)
         for col, w in enumerate(widths):
-            self.setColumnWidth(col, w)
-        policy = (
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
-            if sum(widths) > self.viewport().width()
-            else Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self.setHorizontalScrollBarPolicy(policy)
+            self.setColumnWidth(col, w + spare)
+        self.updateGeometry()
 
 
 def and_join(items: list[str]) -> str:
     """``a``, ``a and b``, ``a, b and c``."""
     return items[0] if len(items) == 1 else f'{", ".join(items[:-1])} and {items[-1]}'
+
+
+def _degenerate_note(keys: list[str], tail: str) -> str:
+    """Why the starred rows are starred: the shared fact, then what it means for this view."""
+    return (
+        f'The data fix only a combination of {and_join([fmt_param(k) for k in keys])}, not each one on its own: '
+        f'many different sets of their values draw the same curve. {tail}'
+    )
+
+
+_FIT_DEGENERATE_TAIL = (
+    'Each starred value is one member of that family. It reconstructs the fitted curve correctly and is not a '
+    'measurement of that one coefficient.'
+)
+
+_SAMPLES_DEGENERATE_TAIL = (
+    'Each starred row is a marginal summary: it shows how that one value spread across the samples, not how '
+    'precisely the data determine it, so even a spread of 0 ± 0 does not mean the value is well determined, and '
+    'its estimate can differ widely from the fit on the Fit Curve tab.'
+)
 
 
 _HEATMAP_WHY = (
@@ -381,10 +497,9 @@ def _differences(baseline: FitResult, fit: FitResult) -> list[str]:
     if baseline.assay_type != fit.assay_type:
         return ['the two are for different assay types']
     reasons = []
-    per_replica = baseline.uncertainty_source == 'replicate'
-    if per_replica != (fit.uncertainty_source == 'replicate'):
+    if baseline.per_replica != fit.per_replica:
         ways = ('each replicate separately', 'the average of the replicates')
-        ours, theirs = ways if per_replica else ways[::-1]
+        ours, theirs = ways if baseline.per_replica else ways[::-1]
         reasons.append(f'this analysis fits {ours}, while that fit uses {theirs}')
     if baseline.metadata.get('data_fingerprint') != fit.metadata.get('data_fingerprint'):
         reasons.append('that fit was not made on the data as loaded now')
@@ -396,9 +511,6 @@ def _differences(baseline: FitResult, fit: FitResult) -> list[str]:
         reasons.append('the two use different inputs')
     if baseline.fit_config.get('custom_bounds') != fit.fit_config.get('custom_bounds'):
         reasons.append('the two use different parameter bounds')
-    fitted_index = fitted_representative_index(fit)
-    if fitted_index is not None and fitted_index != fit.representative_index:
-        reasons.append('that fit shows an attempt you picked instead of the one the fit chose')
     return reasons
 
 
@@ -414,8 +526,9 @@ def _shared_left_out(baseline: FitResult, fit: FitResult, replica_ids: Sequence[
     if not left_out[1] or set(left_out[0]) != set(left_out[1]):
         return ''
     names = describe_replicates(left_out[1], replica_ids)
+    own = 'its own fit needs' if len(left_out[1]) == 1 else 'their own fits need'
     failed = all(set(left_out[1]) <= set(r.metadata.get('replica_failures') or {}) for r in (baseline, fit))
-    why = f', as neither found an acceptable fit for {"it" if len(left_out[1]) == 1 else "them"}' if failed else ''
+    why = f', as {own} a different Ka than the other replicates share' if failed else ''
     return f'Both leave out {names}{why}.'
 
 
@@ -449,7 +562,7 @@ def _relation(rows: list[ParameterSummary], baseline: FitResult, fit: FitResult,
         return f'Its {which} match the fit on the Fit Curve tab to the digits shown.'
     return (
         f'Its estimate of {and_join(differing)} differs from the fit on the Fit Curve tab although the two use the '
-        'same data, inputs, bounds and replicate handling: each is its own search for the best fit.'
+        'same data, inputs, bounds and replicate handling.'
     )
 
 
@@ -463,17 +576,11 @@ def _report_caption(
 ) -> str:
     """Plain-language account of what the samples table's columns cover; *fitted* marks the samples used."""
     n, total = int(fitted.sum()), fitted.size
-    spread = f'The other columns cover {f"all {n}" if n == total else f"the {n}"} samples'
-    spread += '' if n == total else ' that have a fit'
-    if result.sample_r2 is not None and result.floor is not None and np.isfinite(result.floor):
-        below = int(np.sum(np.asarray(result.sample_r2, dtype=float)[fitted] < result.floor))
-        threshold = f'the Min R² this analysis used ({result.floor:g})'
-        if below:
-            spread += f', including the {below} whose best fit falls below {threshold}.'
-        else:
-            spread += f', and the best fit of every one meets {threshold}.'
+    if n == 1:
+        spread = 'The other columns cover the one sample' + ('.' if n == total else ' that has a fit.')
     else:
-        spread += '.'
+        spread = f'The other columns cover {f"all {n}" if n == total else f"the {n}"} samples'
+        spread += '.' if n == total else ' that have a fit.'
     parts = [
         'The estimate is the fit this analysis makes with the inputs as you entered them, the same way it fits '
         'each sample.',
@@ -485,52 +592,44 @@ def _report_caption(
     return ' '.join(part for part in parts if part)
 
 
-_REP_TOOLTIP = (
-    "<qt>Which valid fit is reported and drawn. Starts at the fit's own choice.<br>"
-    'Pick another, or click a point in the Distributions tab.</qt>'
-)
-
-
 class FitSummaryWidget(QWidget):
     """Read-only summary under the plot tabs: the fitted parameters and their quality.
 
     Layout
     ------
-    - ``InfoGroupBox`` with a Representative selector, a caption, a
-      :class:`ParameterTable` and a footnote.
+    - ``InfoGroupBox`` with a caption, a :class:`ParameterTable`, a footnote and
+      — for a per-replicate fit — a Replicates table.
     - ``InfoGroupBox("Fit Quality")``.
 
-    Two views share the layout. The *fit view* shows the fit: ``Estimate`` is
-    its representative, the other columns summarise its valid-fit pool, and
-    Fit Quality gives RMSE, R² and the passing count. The *samples view*
+    Both sit on a page that scrolls. The pane shares the height of the window
+    with the plot tabs above it, and a nine-row table with its footnote is
+    taller than the share it gets: the page scrolls so every row and the whole
+    footnote can be read, at any height the pane is dragged to.
+
+    Two views share the layout. The *fit view* shows the fit: its estimate per
+    parameter, the confidence interval of every binding constant it was free to
+    move, the spread of the replicates' own fits where there are several, and
+    Fit Quality gives RMSE, R² and the replicates used. The *samples view*
     (:meth:`show_samples` on, with a SOBOL result from :meth:`set_sensitivity`
     that holds fitted samples) shows the fitted parameters across that run's
     samples: ``Estimate`` is the run's own fit with the inputs as entered, the
-    other columns cover every fitted sample (those below the R² floor
-    included), the rows of ``degenerate_keys`` are starred as marginal
-    summaries, and Fit Quality describes the samples. The selector chooses
-    among one fit's attempts, so it is hidden there. With the samples view
-    requested but nothing to summarise (no run, a run still going, a heatmap,
-    or no fitted samples), the fit view shows with a caption saying why. Rows always come from
+    other columns summarise every fitted sample, the rows of ``degenerate_keys``
+    are starred as marginal summaries, and Fit Quality describes the samples.
+    With the samples view requested but nothing to summarise (no run, a run
+    still going, a heatmap, or no fitted samples), the fit view shows with a
+    caption saying why. Rows always come from
     :func:`~core.pipeline.fit_pipeline.summarize_parameters`, shared with the
     plot annotation and the exports.
 
     A fit or a sensitivity run that no longer matches the loaded selection is
     hidden with :meth:`show_mismatch`: its view shows the note in place of its
-    numbers, and the selector is disabled. The result is kept and shown again,
-    unchanged, once the note is removed.
+    numbers. The result is kept and shown again, unchanged, once the note is
+    removed.
     """
-
-    representative_selected = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Sticky "Selected" representative: the last fit picked from a
-        # distribution-plot click, kept across Best/Median/Worst switches so the
-        # user can compare and switch back. Reset when a new fit is displayed.
-        self._plot_selected_index: int | None = None
-        self._last_result_id: str | None = None
         self._fit: FitResult | None = None
         self._sensitivity: SensitivityResult | None = None
         self._running: SensitivityMode | None = None
@@ -542,21 +641,6 @@ class FitSummaryWidget(QWidget):
 
         self._params_group = InfoGroupBox(_PARAMS_TITLE, 'Fitted Parameters — columns', _PARAMS_HELP_HTML)
 
-        # Representative selector: which actual fit is reported (drives the curve).
-        self._rep_combo = QComboBox()
-        # Size to the widest item so no label is ever truncated.
-        self._rep_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-        self._rep_combo.setMinimumContentsLength(14)
-        self._rep_combo.setToolTip(_REP_TOOLTIP)
-        self._rep_combo.currentIndexChanged.connect(self._on_rep_combo_changed)
-
-        self._rep_row = QWidget()
-        stats_row = QHBoxLayout(self._rep_row)
-        stats_row.setContentsMargins(0, 0, 0, 0)
-        stats_row.addWidget(QLabel('Representative:'))
-        stats_row.addWidget(self._rep_combo)
-        stats_row.addStretch(1)
-
         self._caption = QLabel()
         self._caption.setWordWrap(True)
         self._caption.setTextFormat(Qt.TextFormat.RichText)
@@ -564,33 +648,53 @@ class FitSummaryWidget(QWidget):
         self._footnote = QLabel()
         self._footnote.setWordWrap(True)
         self._footnote.setTextFormat(Qt.TextFormat.RichText)
-        for label in (self._caption, self._footnote):
+        self._replicates_heading = QLabel('Replicates')
+        self._replicates_table = ParameterTable()
+        for label in (self._caption, self._footnote, self._replicates_heading):
             label.setStyleSheet(f'color: {INK_2}; font-size: 13px;')
         params_layout = QVBoxLayout(self._params_group)
-        for widget in (self._rep_row, self._caption, self._table, self._footnote):
+        for widget in (
+            self._caption,
+            self._table,
+            self._footnote,
+            self._replicates_heading,
+            self._replicates_table,
+        ):
             params_layout.addWidget(widget)
 
         self._quality_group = InfoGroupBox('Fit Quality', 'Fit Quality', _FIT_QUALITY_HELP_HTML)
         self._quality_form = QFormLayout(self._quality_group)
-        self._rmse_label = QLabel('—')
+        self._rmse_label = QLabel(_NO_VALUE)
         self._rmse_label.setTextFormat(Qt.TextFormat.RichText)
-        self._r2_label = QLabel('—')
-        self._passing_label = QLabel('—')
+        self._r2_label = QLabel(_NO_VALUE)
+        self._replicates_label = QLabel(_NO_VALUE)
         self._fitted_label = QLabel()
-        self._below_label = QLabel()
         self._median_r2_label = QLabel()
         self._r2_range_label = QLabel()
-        self._fit_rows = (self._rmse_label, self._r2_label, self._passing_label)
-        self._sample_rows = (self._fitted_label, self._below_label, self._median_r2_label, self._r2_range_label)
+        self._fit_rows = (self._rmse_label, self._r2_label, self._replicates_label)
+        self._sample_rows = (self._fitted_label, self._median_r2_label, self._r2_range_label)
         for text, label in zip(
-            ('RMSE:', 'R²:', 'Fits passing:', 'Samples with a fit:', 'Below Min R²:', 'Median R²:', 'R² range:'),
+            ('RMSE:', 'R²:', 'Replicates used:', 'Samples with a fit:', 'Median R²:', 'R² range:'),
             self._fit_rows + self._sample_rows,
         ):
             self._quality_form.addRow(text, label)
 
-        main_layout = QHBoxLayout(self)
-        main_layout.addWidget(self._params_group, stretch=3)
-        main_layout.addWidget(self._quality_group, stretch=1)
+        page = QWidget()
+        page_layout = QHBoxLayout(page)
+        # The groups keep the inset they had beside the pane's edges, and give up
+        # the one above and below: the splitter shares the window's height by
+        # what each pane prefers, and the plot tabs above have none to spare.
+        inset = page_layout.contentsMargins().left()
+        page_layout.setContentsMargins(inset, 0, inset, 0)
+        page_layout.addWidget(self._params_group, stretch=3)
+        page_layout.addWidget(self._quality_group, stretch=1)
+        self._page = QScrollArea()
+        self._page.setWidgetResizable(True)
+        self._page.setFrameShape(QFrame.Shape.NoFrame)
+        self._page.setWidget(page)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self._page)
         self._render()
 
     # ------------------------------------------------------------------
@@ -601,13 +705,8 @@ class FitSummaryWidget(QWidget):
         """Show *result* as the fit, in the fit view and in the samples view's comparison.
 
         *unchecked* says why its numbers could not be checked against data: it
-        is shown with them, and the selector is disabled.
+        is shown with them.
         """
-        # A new fit clears the sticky plot-selection; refreshes of the same
-        # result (e.g. a re-selection) keep it.
-        if result.id != self._last_result_id:
-            self._plot_selected_index = None
-            self._last_result_id = result.id
         self._fit = result
         self._unchecked = unchecked
         self._render()
@@ -624,7 +723,7 @@ class FitSummaryWidget(QWidget):
         self._render()
 
     def set_replica_ids(self, replica_ids: Sequence[str] | None) -> None:
-        """The loaded data's replicate ids in order, so captions name replicates as the Replicates panel does."""
+        """The loaded data's replicate ids in order, so replicates are named as the Replicates panel names them."""
         self._replica_ids = None if replica_ids is None else list(replica_ids)
         self._render()
 
@@ -649,17 +748,7 @@ class FitSummaryWidget(QWidget):
         """Drop the fit; the fit view then shows empty fields."""
         self._fit = None
         self._unchecked = None
-        self._last_result_id = None
-        self._plot_selected_index = None
         self._render()
-
-    def note_plot_selection(self, index: int) -> None:
-        """Remember *index* as the sticky 'Selected' representative.
-
-        Called when the user clicks a fit in the distribution plots, so the
-        choice survives Best/Median/Worst switches until the next fit.
-        """
-        self._plot_selected_index = int(index)
 
     # ------------------------------------------------------------------
     # Rendering
@@ -685,7 +774,6 @@ class FitSummaryWidget(QWidget):
         self._params_group.setTitle(title)
         self._params_group.set_info(*info)
         self._quality_group.set_info('Fit Quality', quality_help)
-        self._rep_row.setVisible(not samples)
         for label in self._fit_rows:
             self._quality_form.setRowVisible(label, not samples)
         for label in self._sample_rows:
@@ -697,138 +785,188 @@ class FitSummaryWidget(QWidget):
         result = self._fit
         hidden = self._fit_note if result is not None else None
         block = hidden or (self._unchecked if result is not None else None)
-        caption = ' '.join(part for part in (block, note) if part)
+        self._footnote.hide()
+        self._hide_replicates_table()
+        if result is None or hidden:
+            # With no numbers to show, *note* is the only thing that says why
+            # the samples view is not the one on screen.
+            caption = ' '.join(part for part in (block, note) if part)
+            self._caption.setText(caption)
+            self._caption.setVisible(bool(caption))
+            self._table.setRowCount(0)
+            self._table.setColumnCount(0)
+            for label in self._fit_rows:
+                label.setText(_NO_VALUE)
+            return
+
+        rows = summarize_parameters(result)
+        # summarize_parameters gives every binding constant a log₁₀ twin, and
+        # only a binding constant: the twins name the keys an interval is
+        # reported for.
+        ka_keys = {spec.key for spec in rows if spec.is_log}
+        headers, cells = _fit_table(rows, ka_keys, result.intervals is not None)
+        self._table.show_rows(headers, cells)
+        self._set_footnote(
+            self._star_rows(
+                rows, [spec.key for spec in rows if spec.degenerate and not spec.is_log], _FIT_DEGENERATE_TAIL
+            ),
+            self._note_intervals(rows),
+        )
+
+        legacy = _LEGACY_NOTE if ka_keys and result.intervals is None else ''
+        on_bound = fmt_bound_note(parameters_on_bound(result))
+        caption = ' '.join(part for part in (block, legacy, on_bound, note) if part)
         self._caption.setText(caption)
         self._caption.setVisible(bool(caption))
-        self._footnote.hide()
-        self._populate_rep_combo(None if hidden else result)
-        if block:
-            self._rep_combo.setEnabled(False)
-        self._rep_combo.setToolTip(block or _REP_TOOLTIP)
-        if result is None or hidden:
-            self._table.setRowCount(0)
-            for label in self._fit_rows:
-                label.setText('—')
-            return
-        self._table.show_rows(summarize_parameters(result))
+
         self._rmse_label.setText(f'{Q_(result.rmse, "au"):.3g~H}')
-        self._r2_label.setText(fmt_r2(result.r_squared, result.fit_config.get('min_r_squared')))
-        passing = f'{result.n_passing} / {result.n_total}'
-        if not result.parameter_samples:
-            passing += '  (pool unavailable)'
-        self._passing_label.setText(passing)
+        self._r2_label.setText(fmt_r2(result.r_squared))
+        self._show_replicates_used(result)
+        self._show_replicates_table(result)
+
+    def _star_rows(self, rows: list[ParameterSummary], keys: Sequence[str], tail: str) -> str:
+        """Star every row of *keys* — the parameters the data determine only in combination — and say what the star means."""
+        keys = list(dict.fromkeys(keys))
+        if not keys:
+            return ''
+        explanation = _degenerate_note(keys, tail)
+        for row, spec in enumerate(rows):
+            if spec.key in keys:
+                cell = self._table.cellWidget(row, 0)
+                cell.setText(f'{cell.text()}*')
+                cell.setToolTip(explanation)
+        return f'* {explanation}'
+
+    def _note_intervals(self, rows: list[ParameterSummary]) -> str:
+        """Put what a bracket does not show in its own cell's tooltip, and say what the split mark means."""
+        split = False
+        for row, spec in enumerate(rows):
+            tooltip = _interval_tooltip(spec)
+            if tooltip:
+                self._table.cellWidget(row, _INTERVAL_COLUMN).setToolTip(tooltip)
+            split = split or spec.interval_split
+        return _SPLIT_FOOTNOTE if split else ''
+
+    def _set_footnote(self, *parts: str) -> None:
+        """Show the notes the table's marks need, one per line, or hide the footnote when there are none."""
+        text = '<br>'.join(part for part in parts if part)
+        self._footnote.setText(text)
+        self._footnote.setVisible(bool(text))
+
+    def _show_replicates_used(self, result: FitResult) -> None:
+        """ "n of m", with the replicates left out and why named in the tooltip."""
+        used, given = fit_replica_ids(result), input_replica_ids(result)
+        if used is None or given is None:
+            self._replicates_label.setText(_NO_VALUE)
+            self._replicates_label.setToolTip('')
+            return
+        self._replicates_label.setText(f'{len(used)} of {len(given)}')
+        left_out = [rid for rid in given if rid not in used]
+        failures = result.metadata.get('replica_failures') or {}
+        self._replicates_label.setToolTip(
+            ''
+            if not left_out
+            else 'Left out: '
+            + ' '.join(
+                f'{_replica_name(rid, self._replica_ids)} — {failures.get(rid, "left out of the fit.")}'
+                for rid in left_out
+            )
+        )
+
+    def _hide_replicates_table(self) -> None:
+        self._replicates_heading.hide()
+        self._replicates_table.hide()
+
+    def _show_replicates_table(self, result: FitResult) -> None:
+        """One row per replicate the fit was given: its own fit's binding constants, R², p-value and whether it was used.
+
+        The p-value is the replicate's own share of the test that decides
+        whether every replicate needs the same binding constants; a set too
+        small to test shows none.
+        """
+        fits = result.replica_fits
+        if not fits:
+            self._hide_replicates_table()
+            return
+        used = set(fit_replica_ids(result) or ())
+        p_values = (result.metadata.get('replicate_test') or {}).get('p_values') or {}
+        failures = result.metadata.get('replica_failures') or {}
+        # The log₁₀ twins name the binding constants and the unit each is held in.
+        ka = [(spec.key, spec.unit) for spec in summarize_parameters(result) if spec.is_log]
+
+        headers = [_REPLICATE_TABLE_HEADERS[0]]
+        # A header is painted as plain text, so the display labels are flattened.
+        headers += [
+            plain_label(f'{fmt_param(key)} [{fmt_unit_html(unit)}]' if unit else fmt_param(key)) for key, unit in ka
+        ]
+        headers += list(_REPLICATE_TABLE_HEADERS[1:])
+        rows, tooltips = [], []
+        for rf in fits:
+            rid = rf.metadata.get('replica_id')
+            p = p_values.get(rid)
+            row = [_replica_name(rid, self._replica_ids)]
+            row += [_fmt_own(rf, key, unit) for key, unit in ka]
+            row += [
+                fmt_r2(rf.r_squared),
+                _NO_VALUE if p is None else f'{p:.2g}',
+                'used' if rid in used else 'left out',
+            ]
+            rows.append(row)
+            tooltips.append(None if rid in used else failures.get(rid))
+        self._replicates_table.show_rows(headers, rows)
+        for row, tooltip in enumerate(tooltips):
+            if tooltip:
+                self._replicates_table.cellWidget(row, len(headers) - 1).setToolTip(tooltip)
+        self._replicates_heading.show()
+        self._replicates_table.show()
 
     def _render_hidden_samples(self) -> None:
         """The samples view of a sensitivity run that no longer matches: its note instead of its numbers."""
         self._set_view(_REPORT_TITLE, (_REPORT_TITLE, _REPORT_HELP_HTML), _SAMPLES_QUALITY_HELP_HTML, True)
         self._table.setRowCount(0)
         self._footnote.hide()
+        self._hide_replicates_table()
         self._caption.setText(self._sensitivity_note)
         self._caption.show()
         for label in self._sample_rows:
-            label.setText('—')
+            label.setText(_NO_VALUE)
 
     def _render_samples(self, result: SensitivityResult, values: dict[str, np.ndarray], fitted: np.ndarray) -> None:
         """The samples view of *result*, over the samples *fitted* marks."""
         self._set_view(_REPORT_TITLE, (_REPORT_TITLE, _REPORT_HELP_HTML), _SAMPLES_QUALITY_HELP_HTML, True)
+        self._hide_replicates_table()
         samples = {key: v[fitted] for key, v in values.items()}
-        rows = summarize_parameters(replace(result.baseline_fit, parameter_samples=samples))
-        self._table.show_rows(rows)
+        rows = summarize_parameters(result.baseline_fit)
+        self._table.show_rows(_SAMPLE_HEADERS, _sample_table(rows, samples))
         starred = [key for key in result.degenerate_keys if key in samples]
-        if starred:
-            explanation = (
-                f'Marginal summary. The data fix only a combination of {and_join([fmt_param(k) for k in starred])}, '
-                'not each one on its own: many different sets of their values draw the same curve. Each starred '
-                'row shows how that one value spread across the samples, not how precisely the data determine it, '
-                'so even a spread of 0 ± 0 does not mean the value is well determined, and its estimate can differ '
-                'widely from the fit on the Fit Curve tab.'
-            )
-            for row, spec in enumerate(rows):
-                if spec.key in starred:
-                    cell = self._table.cellWidget(row, 0)
-                    cell.setText(f'{cell.text()}*')
-                    cell.setToolTip(explanation)
-            self._footnote.setText(f'* {explanation}')
-        self._footnote.setVisible(bool(starred))
+        self._set_footnote(self._star_rows(rows, starred, _SAMPLES_DEGENERATE_TAIL))
         fit = None if self._fit_note else self._fit
         self._caption.setText(_report_caption(result, fitted, rows, fit, starred, self._replica_ids))
         self._caption.show()
 
         n = int(fitted.sum())
-        self._fitted_label.setText(f'{n} / {fitted.size}')
+        self._fitted_label.setText(f'{n:,} / {fitted.size:,}')
         r2 = None if result.sample_r2 is None else np.asarray(result.sample_r2, dtype=float)[fitted]
         if r2 is None:
             for label in self._sample_rows[1:]:
                 label.setText('not recorded')
             return
-        floor = result.floor if result.floor is not None and np.isfinite(result.floor) else None
-        if floor is None:
-            self._below_label.setText('no Min R² set')
-        else:
-            self._below_label.setText(f'{int(np.sum(r2 < floor))} of {n}  (Min R² used: {floor:g})')
-        self._median_r2_label.setText(fmt_r2(float(np.median(r2)), floor))
-        self._r2_range_label.setText(f'[{fmt_r2(r2.min(), floor)}, {fmt_r2(r2.max(), floor)}]')
+        self._median_r2_label.setText(fmt_r2(float(np.median(r2))))
+        self._r2_range_label.setText(f'[{fmt_r2(r2.min())}, {fmt_r2(r2.max())}]')
 
-    # ------------------------------------------------------------------
-    # Selector helpers
-    # ------------------------------------------------------------------
 
-    def _populate_rep_combo(self, result: FitResult | None) -> None:
-        """Offer the fit's own choice, Best, Median, Worst, and the sticky Selected attempt.
+def _replica_name(replica_id: str | None, order: Sequence[str] | None) -> str:
+    """One replicate's display label — its letter in the Replicates panel, or its id when unknown."""
+    order = list(order or ())
+    if replica_id in order:
+        return _display_label(order.index(replica_id))
+    return _NO_VALUE if replica_id is None else str(replica_id)
 
-        *Fit's choice* is the attempt the fit itself reported
-        (:func:`fitted_representative_index`). A per-replicate fit reports one
-        replicate's best attempt, which need not be the pool's highest R², so it
-        comes first; when it is the top-R² attempt it appears once, as Best.
-        Best/Worst are the highest/lowest R² attempts; Median is the attempt
-        nearest the pool's median R². Selected is the last attempt clicked in
-        the distribution plots, kept across switches so the user can compare and
-        switch back to it. Each R² carries as many decimals as it takes to tell
-        the listed attempts apart.
 
-        The current item always names the attempt shown
-        (``representative_index``). When no listed item does, a *Picked* item
-        naming it is added, or a *Shown fit* item when the result does not say
-        which attempt it shows or which attempt the fit chose. Without a fit or
-        its pool the selector is empty and disabled.
-        """
-        self._rep_combo.blockSignals(True)
-        self._rep_combo.clear()
-        quality = None if result is None else result.quality_samples
-        if quality and 'r_squared' in quality:
-            r2 = np.asarray(quality['r_squared'], dtype=float)
-
-            def in_pool(idx: int | None) -> bool:
-                return idx is not None and 0 <= idx < r2.size
-
-            cur = result.representative_index
-            own = fitted_representative_index(result)
-            best = int(np.argmax(r2))
-            items = [] if not in_pool(own) or own == best else [("Fit's choice", int(own))]
-            items += [
-                ('Best', best),
-                ('Median', int(np.argmin(np.abs(r2 - np.median(r2))))),
-                ('Worst', int(np.argmin(r2))),
-            ]
-            sel = self._plot_selected_index
-            if in_pool(sel):
-                items.append(('Selected', int(sel)))
-            if not in_pool(cur):
-                items.insert(0, ('Shown fit', -1))
-            elif all(idx != cur for _, idx in items):
-                items.append(('Picked' if own is not None else 'Shown fit', int(cur)))
-            values = [result.r_squared if idx < 0 else float(r2[idx]) for _, idx in items]
-            for (label, idx), text in zip(items, _distinct_r2_texts([idx for _, idx in items], values)):
-                self._rep_combo.addItem(f'{label} · R²={text}', idx)
-            shown = cur if in_pool(cur) else -1
-            self._rep_combo.setCurrentIndex(next(i for i, (_, idx) in enumerate(items) if idx == shown))
-            self._rep_combo.setEnabled(True)
-        else:
-            self._rep_combo.addItem('—', -1)
-            self._rep_combo.setEnabled(False)
-        self._rep_combo.blockSignals(False)
-
-    def _on_rep_combo_changed(self, _index: int) -> None:
-        idx = self._rep_combo.currentData()
-        if idx is not None and idx >= 0:
-            self.representative_selected.emit(int(idx))
+def _fmt_own(result: FitResult, key: str, unit: str) -> str:
+    """One replicate's own value of a parameter, with the unit stripped (the header names it)."""
+    value = result.parameters.get(key)
+    if value is None:
+        return _NO_VALUE
+    magnitude = float(value.magnitude) if hasattr(value, 'magnitude') else float(value)
+    return _fmt(magnitude, unit)

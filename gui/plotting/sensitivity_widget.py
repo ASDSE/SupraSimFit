@@ -22,19 +22,18 @@ Renders the output of :func:`core.pipeline.sensitivity.run_sensitivity`:
   input offsets and reading out its Ka, Ka change and R²; cells where no fit
   could be produced are transparent.
 
-Fits below the configured R² floor are kept everywhere: they are drawn in light
-grey behind the others (ringed on the heatmap) and a note under the plots states
-how many there are.
+A model with two binding constants gets one row of panels, and one map, per
+constant: the widget draws whatever keys the run reports.
 
 The fitted parameters across a SOBOL run's samples are tabled under the plot
 tabs, by :class:`gui.plotting.fit_summary_widget.FitSummaryWidget`, while this
 tab is the current one.
 
-The widget mirrors :class:`gui.plotting.distribution_widget.DistributionWidget`:
-a :class:`QStackedLayout` with a placeholder page, a progress page, and a
-scrollable results page; ``apply_style`` stores the style dict and re-renders
-(honouring ``style['distribution']['ka_scale']`` for the histogram's Ka axis and
-the heatmap's Ka colours, and ``style['sensitivity']`` for the baseline line).
+The page is a :class:`QStackedLayout` with a placeholder page, a progress page,
+and a scrollable results page; ``apply_style`` stores the style dict and
+re-renders (honouring ``style['distribution']['ka_scale']`` for the histogram's
+Ka axis and the heatmap's Ka colours, and ``style['sensitivity']`` for the
+baseline line).
 """
 
 from __future__ import annotations
@@ -69,8 +68,7 @@ from core.pipeline.sensitivity import (
     nominal_value,
     spec_bounds,
 )
-from gui.plotting.colors import BELOW_FLOOR, INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
-from gui.plotting.distribution_widget import draw_histogram
+from gui.plotting.colors import INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
 from gui.plotting.fit_summary_widget import unfitted_sentence
 from gui.plotting.labels import fmt_param, fmt_r2, fmt_sci, fmt_unit_html, plain_label
 from gui.plotting.plot_style import DEFAULT_STYLE
@@ -85,10 +83,20 @@ _OFFSET_VIEW_MARGIN = 0.03
 _GROUP_OFFSET = 0.2
 _BAR_HALF_WIDTH = 0.18
 _MARKER_SIZE = 8
+# Histogram bar geometry, in pixels: the line drawn along each inner bin edge to
+# part neighbouring bars, the shortest stroke a non-empty bin gets so a bin
+# holding one sample stays visible beside a tall one, and the width of the single
+# bar drawn for samples that are all equal.
+_BAR_GAP_PX = 2
+_MIN_BAR_PX = 3
+_FLAT_BAR_PX = 8
 # Index range the bar chart shows. Sobol' indices lie between 0 and 1; estimates
 # from few samples stray outside, and past these limits they are drawn to the
 # edge with an arrow rather than stretching the axis until every bar is flat.
 _INDEX_LIMITS = (-0.5, 1.5)
+# Width, in pixels, the reason for an index panel with no bars in it wraps to.
+# Narrower than the panel's own minimum width, so it stays clear of the axes.
+_NO_INDEX_TEXT_WIDTH = 210
 # Least clear space between neighbouring tick labels, in pixels.
 _LABEL_GAP = 6
 # Heatmap colour scales: diverging for a change about the baseline (lower blue,
@@ -135,6 +143,44 @@ def _wire_x_exponent(plot_item: pg.PlotItem, axis: ScientificAxisItem, base_labe
             plot_item.setLabel('bottom', base_label)
 
     axis.on_exponent_changed = _on_exp
+
+
+def _draw_histogram(plot_item: pg.PlotItem, values: np.ndarray, bins: int) -> int:
+    """Draw a histogram of *values* in *bins* bins on *plot_item* and return its tallest count.
+
+    Bars grow upwards from a count of zero, which the caller starts the count
+    axis at. Neighbouring bars touch, parted by a ``_BAR_GAP_PX`` line in the
+    surface colour along each inner bin edge, so the gap never shortens a bar.
+    Every non-empty bin is drawn at least ``_MIN_BAR_PX`` tall, so a bin holding
+    one sample stays visible however many the tallest bin holds: that stroke is
+    centred on the zero line, and the plot clips the half below it. Values that
+    are all equal have no spread to bin, so they are drawn as one bar
+    ``_FLAT_BAR_PX`` wide at that value.
+    """
+    values = np.asarray(values, dtype=float)
+
+    def lines(counts, positions, width: float, pen_color: str) -> None:
+        # One straight line per (start, end) pair; the pen width is in pixels.
+        pen = pg.mkPen(pen_color, width=width)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        plot_item.addItem(pg.PlotCurveItem(x=np.ravel(positions), y=np.ravel(counts), pen=pen, connect='pairs'))
+
+    if np.ptp(values) == 0:
+        lines([0, values.size], [values[0], values[0]], _FLAT_BAR_PX, SERIES)
+        return int(values.size)
+
+    counts, edges = np.histogram(values, bins=bins)
+    lo, hi = edges[:-1], edges[1:]
+    bars = pg.BarGraphItem(x0=lo, y0=np.zeros(len(counts)), width=hi - lo, height=counts)
+    bars.setOpts(brush=pg.mkBrush(SERIES), pen=pg.mkPen(None))
+    plot_item.addItem(bars)
+
+    filled = counts > 0
+    lines(np.zeros((filled.sum(), 2)), np.column_stack([lo[filled], hi[filled]]), 2 * _MIN_BAR_PX, SERIES)
+    tallest = int(counts.max())
+    inner = edges[1:-1]
+    lines(np.tile([0, tallest], (inner.size, 1)), np.column_stack([inner, inner]), _BAR_GAP_PX, SURFACE)
+    return tallest
 
 
 def _nice_steps(start: float):
@@ -412,18 +458,22 @@ def _label_cells_in_view(plot, x_offsets: np.ndarray, y_offsets: np.ndarray) -> 
     plot.getViewBox().sigRangeChanged.connect(on_range_changed)
 
 
-def _quality_note(result: SensitivityResult) -> str:
-    """The notes under the plots: what the run's fits were worth, and the seed that repeats it.
+def _fitted_mask(kas) -> np.ndarray | None:
+    """Which of the rows in *kas* — a run's Ka values per key — come from a fit; ``None`` when it holds none."""
+    rows = [np.ravel(ka) for ka in kas]
+    return np.all(np.isfinite(np.vstack(rows)), axis=0) if rows else None
 
-    Counts the fits below the Min R² floor, the samples with no fit and the rows
-    the indices leave out, then names the run's root seed.
+
+def _quality_note(result: SensitivityResult) -> str:
+    """The notes under the plots: what the run could not fit, and the seed that repeats it.
+
+    Counts the samples with no fit and the design rows the indices leave out,
+    then names the run's root seed.
     """
     if result.mode is SensitivityMode.HEATMAP:
-        r2, kas, noun = result.r2_grid, (result.ka_grid or {}).values(), 'grid cells'
-        kept = 'These fits stay in the map, each cell marked with a ring.'
+        kas, noun = (result.ka_grid or {}).values(), 'grid cells'
     else:
-        r2, kas, noun = result.sample_r2, (result.sample_ka or {}).values(), 'samples'
-        kept = 'These fits stay in every result; the Ka vs each input panels draw them in light grey.'
+        kas, noun = (result.sample_ka or {}).values(), 'samples'
     parts = []
     if _indices_off_scale(result):
         lo, hi = _INDEX_LIMITS
@@ -436,20 +486,7 @@ def _quality_note(result: SensitivityResult) -> str:
         parts.append(inverted)
     # The counts describe the fits there are, which after a cancelled or partly
     # failed run is fewer than the run planned, so they agree with Fit Quality.
-    ka_rows = [np.ravel(ka) for ka in kas]
-    fitted = np.all(np.isfinite(np.vstack(ka_rows)), axis=0) if ka_rows else None
-    if r2 is not None and result.floor is not None and np.isfinite(result.floor):
-        values = np.ravel(np.asarray(r2, dtype=float))
-        values = values if fitted is None else values[fitted]
-        total = int(values.size)
-        below = int(np.sum(values < result.floor))
-        partial = fitted is not None and total < fitted.size
-        made = f'the {total} {noun}' + (' that have a fit' if partial else '')
-        threshold = f'the Min R² this analysis used ({result.floor:g})'
-        if below:
-            parts.append(f'The best fit of {below} of {made} falls below {threshold}. {kept}')
-        elif total:
-            parts.append(f'The best fit of every one of {made} meets {threshold}.')
+    fitted = _fitted_mask(kas)
     if fitted is not None and not fitted.all():
         parts.append(unfitted_sentence(result, int((~fitted).sum()), fitted.size, noun))
     counts = result.sobol_rows_left_out or {}
@@ -459,7 +496,7 @@ def _quality_note(result: SensitivityResult) -> str:
         if n:
             indices = 'The Sobol indices' if key is None else f'The Sobol indices for {plain_label(fmt_param(key))}'
             parts.append(
-                f'{indices} leave out {n} of the {result.config.n_samples} sample groups set by the sample size: '
+                f'{indices} leave out {n:,} of the {result.config.n_samples:,} sample groups set by the sample size: '
                 f'at least one fit in {"that group" if n == 1 else "each of those groups"} '
                 f'{"is missing" if result.stopped else "could not be made"}.'
             )
@@ -507,6 +544,38 @@ def _total_below_first_order(result: SensitivityResult) -> str | None:
     )
 
 
+def _no_index_reason(result: SensitivityResult) -> str:
+    """Why an index panel has no bars in it, and what to do about it.
+
+    The indices need every fit of a sample group; a group missing one is left
+    out, and with every group left out there is nothing to rank the inputs by.
+    A run stopped before the first group finished is the common way there.
+
+    Samples and sample groups are counted together here. A run can hold a fit
+    for every sample these plots and Fit Quality count and still have no
+    finished group, and the two counts read as contradicting each other unless
+    they are given side by side.
+    """
+    groups = result.config.n_samples
+    left_out = max((result.sobol_rows_left_out or {}).values(), default=groups)
+    mask = _fitted_mask((result.sample_ka or {}).values())
+    fitted = 0 if mask is None else int(mask.sum())
+    counts = f'{groups - left_out:,} of {groups:,} sample groups finished'
+    if fitted:
+        counts += f', although {fitted:,} sample{"" if fitted == 1 else "s"} {"was" if fitted == 1 else "were"} fitted'
+    if result.stopped:
+        return (
+            f'No index: {counts}. A group needs all of its fits, and the analysis was stopped before any group '
+            'had them, so there is nothing yet to rank the inputs by. Run it again and let it finish, or set a '
+            'smaller sample size.'
+        )
+    return (
+        f'No index: {counts}. A group needs all of its fits, and none has them, so there is nothing to rank the '
+        'inputs by. Narrow the uncertainties under Input uncertainty, or widen the bounds under Parameter '
+        'Bounds, and run it again.'
+    )
+
+
 def _indices_off_scale(result: SensitivityResult) -> bool:
     """Whether any Sobol' index or interval end lies beyond ``_INDEX_LIMITS``."""
     values = [
@@ -524,11 +593,10 @@ def _indices_off_scale(result: SensitivityResult) -> bool:
 class SensitivityWidget(QWidget):
     """Visualise a :class:`SensitivityResult` (Sobol analysis or a Ka heatmap).
 
-    Public API mirrors :class:`DistributionWidget`: :meth:`update_result`
-    dispatches on the result mode, :meth:`apply_style` restyles in place,
-    :meth:`clear` resets to the placeholder, and :meth:`show_running` /
-    :meth:`set_progress` drive the progress page during a run.
-    :meth:`show_mismatch` hides the result behind a note while it no longer
+    :meth:`update_result` dispatches on the result mode, :meth:`apply_style`
+    restyles in place, :meth:`clear` resets to the placeholder, and
+    :meth:`show_running` / :meth:`set_progress` drive the progress page during a
+    run. :meth:`show_mismatch` hides the result behind a note while it no longer
     matches the loaded selection; the result is kept and drawn again once the
     note is removed. :meth:`export_image` saves the whole tab as a picture.
 
@@ -547,7 +615,8 @@ class SensitivityWidget(QWidget):
             'concentrations (and any known K<sub>a</sub>) are perturbed within '
             'the uncertainty you set.<br>Sobol indices rank each input by how much '
             'of that spread it explains; the heatmap maps Ka over two swept '
-            'inputs.</qt>'
+            'inputs.<br>Every sample is one exact fit of the averaged signal of the '
+            'replicates the fit used, so the spread comes from the inputs alone.</qt>'
         )
         self._style: dict = dict(DEFAULT_STYLE)
         self._result: SensitivityResult | None = None
@@ -803,12 +872,6 @@ class SensitivityWidget(QWidget):
                     return field.label
         return fmt_param(key)
 
-    def _below_floor(self, r2: Optional[np.ndarray], floor: Optional[float], shape: tuple) -> np.ndarray:
-        """Boolean mask of fits below *floor*; all ``False`` when either is unknown."""
-        if r2 is None or floor is None:
-            return np.zeros(shape, dtype=bool)
-        return np.asarray(r2, dtype=float) < floor
-
     def _new_plot(self, min_width: int, min_height: int, **kwargs) -> tuple[pg.PlotWidget, pg.PlotItem]:
         """A plot on the chart surface with the given minimum size."""
         pw = pg.PlotWidget(background=SURFACE, **kwargs)
@@ -855,6 +918,7 @@ class SensitivityWidget(QWidget):
                     s1_ci=(result.sobol_s1_ci or {}).get(ka_key, {}),
                     st_ci=(result.sobol_st_ci or {}).get(ka_key, {}),
                     assay_type=assay_type,
+                    no_index_reason=_no_index_reason(result),
                 )
                 grid.addWidget(bars, r, 1)
         for c in range(grid.columnCount()):
@@ -865,8 +929,6 @@ class SensitivityWidget(QWidget):
         ka_by_key = result.sample_ka or {}
         if not offsets_by_input or not ka_by_key:
             return
-        n = len(next(iter(offsets_by_input.values())))
-        below = self._below_floor(result.sample_r2, result.floor, (n,))
         panels = QWidget()
         grid = QGridLayout(panels)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -876,10 +938,7 @@ class SensitivityWidget(QWidget):
             heading.setTextFormat(Qt.TextFormat.RichText)
             heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
             heading.setStyleSheet(f'color: {INK}; font-weight: bold; font-size: {self._title_size()}pt;')
-            grid.addWidget(heading, 3 * r, 0, 1, len(offsets_by_input))
-            key = self._floor_key(result.floor, bool(below.any()))
-            if key is not None:
-                grid.addWidget(key, 3 * r + 1, 0, 1, len(offsets_by_input))
+            grid.addWidget(heading, 2 * r, 0, 1, len(offsets_by_input))
             first: pg.PlotWidget | None = None
             for c, input_key in enumerate(offsets_by_input):
                 x_view = _offset_view(result, input_key)
@@ -891,7 +950,6 @@ class SensitivityWidget(QWidget):
                     x_view=x_view,
                     range_ends=x_view if ranged else (),
                     ka=np.asarray(ka_by_key[ka_key], dtype=float),
-                    below=below,
                     unit_html=self._ka_unit_html(assay_type, ka_key),
                     show_y_label=c == 0,
                 )
@@ -899,7 +957,7 @@ class SensitivityWidget(QWidget):
                     first = pw
                 else:
                     pw.setYLink(first)
-                grid.addWidget(pw, 3 * r + 2, c)
+                grid.addWidget(pw, 2 * r + 1, c)
                 grid.setColumnStretch(c, 1)
         self._results_layout.addWidget(panels)
 
@@ -939,7 +997,7 @@ class SensitivityWidget(QWidget):
         disp = np.log10(positive) if use_log else positive
         if disp.size:
             nbins = int(np.clip(round(np.sqrt(disp.size)), 10, 40))
-            tallest = draw_histogram(plot, disp, nbins, color=SERIES, gap_color=SURFACE, horizontal=False)
+            tallest = _draw_histogram(plot, disp, nbins)
             plot.setYRange(0.0, tallest * 1.08, padding=0)
 
         if baseline is not None and (not use_log or baseline > 0):
@@ -977,6 +1035,7 @@ class SensitivityWidget(QWidget):
         s1_ci: dict[str, tuple[float, float]],
         st_ci: dict[str, tuple[float, float]],
         assay_type: Optional[AssayType],
+        no_index_reason: str,
     ) -> pg.PlotWidget:
         """Build the paired S₁ (first order) / S_T (total) index panel for one Ka key.
 
@@ -986,7 +1045,8 @@ class SensitivityWidget(QWidget):
         ``n/a`` at its slot instead of being flattened to a zero bar. The
         y-range spans at least ``[0, 1]`` and widens to cover indices and
         intervals up to ``_INDEX_LIMITS``; a bar or whisker running past those
-        is cut at the edge and marked with an arrow there.
+        is cut at the edge and marked with an arrow there. Where no index at all
+        could be worked out, *no_index_reason* stands where the bars would be.
         """
         pw, plot = self._new_plot(260, 220)
         pw.setToolTip(
@@ -1016,6 +1076,19 @@ class SensitivityWidget(QWidget):
         everything = everything[np.isfinite(everything)]
         lo = max(float(everything.min(initial=0.0)), _INDEX_LIMITS[0])
         hi = min(float(everything.max(initial=1.0)), _INDEX_LIMITS[1])
+        if not everything.size:
+            # A panel of nothing but axes says only that the indices are missing,
+            # never why, so the reason stands in the middle of the empty chart.
+            note = pg.TextItem(
+                html=(
+                    f'<div style="color: {INK_2}; font-size: {tick_size}pt; text-align: center;">'
+                    f'{no_index_reason}</div>'
+                ),
+                anchor=(0.5, 0.5),
+            )
+            note.textItem.setTextWidth(_NO_INDEX_TEXT_WIDTH)
+            note.setPos(float(centres.mean()) if centres.size else 0.0, 0.5 * (lo + hi))
+            plot.addItem(note, ignoreBounds=True)
 
         whisker_pen = pg.mkPen(INK, width=1.5)
         whiskers = None
@@ -1076,26 +1149,6 @@ class SensitivityWidget(QWidget):
         self._apply_axis_style(plot)
         return pw
 
-    def _floor_key(self, floor: Optional[float], any_below: bool) -> Optional[QLabel]:
-        """One-line key to the dot colours of the "Ka vs input" panels; ``None`` without a floor to compare against.
-
-        The grey entry appears only when some sample falls below the floor.
-        """
-        if floor is None or not np.isfinite(floor):
-            return None
-        entries = [(SERIES, f'best fit meets the Min R² ({floor:g})')]
-        if any_below:
-            entries.append((BELOW_FLOOR, 'best fit falls below it'))
-        key = QLabel(
-            '&nbsp;&nbsp;&nbsp;&nbsp;'.join(
-                f'<span style="color: {colour};">●</span> {text}' for colour, text in entries
-            )
-        )
-        key.setTextFormat(Qt.TextFormat.RichText)
-        key.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        key.setStyleSheet(f'color: {INK_2}; font-size: {self._tick_font().pointSize()}pt;')
-        return key
-
     def _make_ka_vs_input(
         self,
         *,
@@ -1105,19 +1158,17 @@ class SensitivityWidget(QWidget):
         x_view: tuple[float, float],
         range_ends: tuple[float, ...],
         ka: np.ndarray,
-        below: np.ndarray,
         unit_html: str,
         show_y_label: bool,
     ) -> pg.PlotWidget:
         """Each sample's best Ka against one input's offset, on a log Ka axis.
 
         The panel has no title: the heading above its row names the Ka and the
-        x-axis label names the input. Fits that meet the floor are blue dots;
-        fits below it are the same dots in light grey, drawn behind the blue.
-        Samples without a fit have no Ka to place and are left out. The panel
-        opens on the offsets *x_view* with a margin of ``_OFFSET_VIEW_MARGIN``
-        at each end; zoom, pan and View All work from there. The x axis labels
-        *range_ends*, the ends of an entered range, wherever they are in view.
+        x-axis label names the input. Samples without a fit have no Ka to place
+        and are left out. The panel opens on the offsets *x_view* with a margin
+        of ``_OFFSET_VIEW_MARGIN`` at each end; zoom, pan and View All work from
+        there. The x axis labels *range_ends*, the ends of an entered range,
+        wherever they are in view.
         """
         left_axis = _LogKaAxis(orientation='left')
         left_axis.enableAutoSIPrefix(False)
@@ -1130,23 +1181,18 @@ class SensitivityWidget(QWidget):
             plot.setLabel('left', f'{ka_label} [{unit_html}]' if unit_html else ka_label)
 
         placed = np.isfinite(ka) & (ka > 0) & np.isfinite(offsets)
-        x, y, low = offsets[placed], ka[placed], below[placed]
-        for mask, colour, z, name in (
-            (low, BELOW_FLOOR, 0, 'below the threshold'),
-            (~low, SERIES, 1, 'meets the threshold'),
-        ):
-            dots = pg.PlotDataItem(
-                x[mask],
-                y[mask],
+        plot.addItem(
+            pg.PlotDataItem(
+                offsets[placed],
+                ka[placed],
                 pen=None,
                 symbol='o',
                 symbolSize=_MARKER_SIZE + 2,
-                symbolBrush=pg.mkBrush(colour),
+                symbolBrush=pg.mkBrush(SERIES),
                 symbolPen=pg.mkPen(SURFACE, width=2),
-                name=name,
+                name='fitted sample',
             )
-            dots.setZValue(z)
-            plot.addItem(dots)
+        )
         plot.setXRange(*x_view, padding=_OFFSET_VIEW_MARGIN)
         self._apply_axis_style(plot)
         # pyqtgraph sizes tick text at paint time, too late for y-linked panels, which then
@@ -1204,8 +1250,6 @@ class SensitivityWidget(QWidget):
             img.setImage(rgba, axisOrder='row-major')
             img.setRect(QRectF(x0, y0, x_w, y_h))
             plot.addItem(img)
-            below = np.isfinite(grid) & self._below_floor(r2_grid, result.floor, grid.shape)
-            self._ring_below_floor(plot, below, x_offsets, y_offsets)
             self._apply_axis_style(plot)
 
             if stat == 'change':
@@ -1253,7 +1297,6 @@ class SensitivityWidget(QWidget):
                     'values': values,
                     'colour_bar': cbar,
                     'baseline': baseline,
-                    'floor': result.floor,
                     'x_label': x_input,
                     'y_label': y_input,
                     'x_offsets': x_offsets,
@@ -1270,28 +1313,6 @@ class SensitivityWidget(QWidget):
 
         glw.scene().sigMouseMoved.connect(self._on_heatmap_hover)
         self._results_layout.addWidget(glw, stretch=1)
-
-    @staticmethod
-    def _ring_below_floor(plot: pg.PlotItem, mask: np.ndarray, x_offsets: np.ndarray, y_offsets: np.ndarray) -> None:
-        """Ring every heatmap cell in *mask* (a fit below the floor).
-
-        A light ring over a dark halo reads on both ends of the colour map.
-        """
-        iy, ix = np.nonzero(mask)
-        if iy.size == 0:
-            return
-        for colour, width in ((INK, 4), (SURFACE, 2)):
-            plot.addItem(
-                pg.ScatterPlotItem(
-                    x=x_offsets[ix],
-                    y=y_offsets[iy],
-                    symbol='o',
-                    size=_MARKER_SIZE,
-                    brush=None,
-                    pen=pg.mkPen(colour, width=width),
-                    name='below the threshold',
-                )
-            )
 
     @staticmethod
     def _axis_extent(offsets: np.ndarray) -> tuple[float, float, float]:
@@ -1355,10 +1376,7 @@ class SensitivityWidget(QWidget):
             f'{ka_label} change: {_signed_pct(100.0 * (ka / target["baseline"] - 1.0))}',
         ]
         if target['r2_grid'] is not None:
-            floor = target['floor']
-            r2 = target['r2_grid'][iy, ix]
-            below = floor is not None and r2 < floor
-            lines.append(f'R² = {fmt_r2(r2, floor)}' + (' (below Min R²)' if below else ''))
+            lines.append(f'R² = {fmt_r2(target["r2_grid"][iy, ix])}')
         return '<br>'.join(lines)
 
     # ------------------------------------------------------------------

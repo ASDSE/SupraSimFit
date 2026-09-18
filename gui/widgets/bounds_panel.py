@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
@@ -37,11 +39,11 @@ result &plusmn;&nbsp;20&nbsp;%.</p>
 <p><b>Why It Helps the Fit</b></p>
 <p>In IDA, DBA and GDA the three signal coefficients
 (I<sub>0</sub>, I<sub>dye,free</sub>, I<sub>dye,bound</sub>) are partially
-degenerate &mdash; many combinations give nearly the same curve. Fixing two
-of them from the dye-alone experiment breaks that degeneracy and lets the
-optimiser concentrate its budget on K<sub>a,guest</sub> (or
-K<sub>a,dye</sub>). In practice this substantially improves both
-convergence speed and the uncertainty on the association constant.</p>
+degenerate &mdash; many combinations give nearly the same curve, so the fit
+reports them starred: only their combination is determined. Confining two of
+them to what the dye-alone experiment measured breaks that degeneracy, which
+makes all three coefficients meaningful on their own and narrows the
+confidence interval of the association constant.</p>
 
 <p><b>The Math</b></p>
 <p>A dye-alone fit gives
@@ -73,16 +75,25 @@ the calibration itself.</p>
 
 
 def _parse_sci(text: str) -> float | None:
+    """The finite number *text* holds, or ``None``."""
     try:
-        return float(text)
+        value = float(text)
     except (ValueError, TypeError):
         return None
+    return value if math.isfinite(value) else None
+
+
+def _bound_text(value: float) -> str:
+    """What a bound box shows: the number, or nothing for no limit."""
+    return f'{value:.3e}' if math.isfinite(value) else ''
 
 
 class _BoundRow(QWidget):
     """A single row: lower QLineEdit | '—' | upper QLineEdit | info ⓘ.
 
     Both boxes take a number in plain or scientific notation and nothing else.
+    A parameter whose default upper bound is infinite — a signal parameter — has
+    no upper limit while its upper box is empty, and the box says so.
     :meth:`problem` says in one sentence why what they hold cannot be used, naming
     the parameter and the box, so no entry is quietly replaced by a default.
     """
@@ -91,10 +102,13 @@ class _BoundRow(QWidget):
         super().__init__(parent)
         self.key = key
         self.name = plain_label(fmt_param(key))
+        self._may_be_unbounded = math.isinf(hi)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         self._lo = self._edit(lo)
         self._hi = self._edit(hi)
+        if self._may_be_unbounded:
+            self._hi.setPlaceholderText('no limit')
         row.addWidget(self._lo)
         row.addWidget(QLabel('—'))
         row.addWidget(self._hi)
@@ -109,24 +123,30 @@ class _BoundRow(QWidget):
     @staticmethod
     def _edit(value: float) -> QLineEdit:
         """A bound box showing *value*, accepting only a number as it is typed."""
-        edit = QLineEdit(f'{value:.3e}')
+        edit = QLineEdit(_bound_text(value))
         edit.setFixedWidth(90)
         validator = QDoubleValidator(edit)
         validator.setNotation(QDoubleValidator.Notation.ScientificNotation)
         edit.setValidator(validator)
         return edit
 
+    def _upper(self) -> float | None:
+        """The upper bound entered; infinite for an empty box of a parameter that may have no upper limit."""
+        if self._may_be_unbounded and not self._hi.text().strip():
+            return math.inf
+        return _parse_sci(self._hi.text())
+
     def values(self) -> tuple[float, float] | None:
         lo = _parse_sci(self._lo.text())
-        hi = _parse_sci(self._hi.text())
+        hi = self._upper()
         if lo is None or hi is None:
             return None
         return lo, hi
 
     def problem(self) -> str | None:
         """Why this row's bounds cannot be used, naming the parameter; ``None`` when they can."""
-        for box, edge in ((self._lo, 'lower'), (self._hi, 'upper')):
-            if _parse_sci(box.text()) is None:
+        for box, edge, value in ((self._lo, 'lower', _parse_sci(self._lo.text())), (self._hi, 'upper', self._upper())):
+            if value is None:
                 shown = box.text().strip()
                 says = f'“{shown}” is not a number' if shown else 'is empty'
                 return f'{self.name}: the {edge} bound {says}. Enter a number, such as 1e3.'
@@ -138,24 +158,34 @@ class _BoundRow(QWidget):
         return None
 
     def set_values(self, lo: float, hi: float) -> None:
-        self._lo.setText(f'{lo:.3e}')
-        self._hi.setText(f'{hi:.3e}')
+        self._lo.setText(_bound_text(lo))
+        self._hi.setText(_bound_text(hi))
 
 
 _BOUNDS_SECTION_HELP_HTML = """
 <h3>Parameter Bounds</h3>
-<p>Lower and upper limits for each fitted parameter. The optimiser
-searches only within these bounds. Defaults come from the assay
-registry; edit them to constrain the search if you have prior
+<p>Lower and upper limits for each fitted parameter. Defaults come from the
+assay registry; edit them to constrain the fit if you have prior
 knowledge.</p>
+<p>A signal parameter cannot be negative and has no upper limit unless you
+enter one: leave its upper box empty for none.</p>
+<p>The two kinds of parameter use their bounds differently. An association
+constant is searched across its bounds, so they set the range the fit and the
+confidence interval are looked for in. A signal parameter is not searched at
+all: its value is solved exactly at each association constant, subject to
+these bounds, so a bound the best value lies outside of holds it at that bound
+&mdash; and equal lower and upper bounds pin the parameter at that value and
+take it out of the fit.</p>
 <p>See the <i>i</i> next to each parameter for its physical meaning.
 See the <i>i</i> next to &ldquo;Use dye-alone priors&rdquo; for how
 calibration data can tighten signal-coefficient bounds
 automatically.</p>
-<p>These bounds also limit the confidence interval on the Identifiability tab,
-which is searched inside them. That interval holds if the model is right, the
-conditions you entered are right, and the scatter is independent from point to point
-and of the same size at every point; it says nothing about an error in any of those.</p>
+<p>The confidence interval on the Identifiability tab is read inside these
+bounds, and an end that reaches one is reported as open rather than as a
+measured limit. The interval holds if the model is right, the conditions you
+entered are right, and the scatter is independent from point to point and of
+the same size at every point; it says nothing about an error in any of
+those.</p>
 """
 
 
@@ -210,19 +240,16 @@ class BoundsPanel(InfoGroupBox):
         return [problem for row in self._rows.values() if (problem := row.problem())]
 
     def current_bounds(self) -> dict[str, tuple[Quantity, Quantity]] | None:
-        """Return custom Quantity bounds or None if all match defaults.
+        """The bounds that differ from the registry defaults, as Quantities; ``None`` when none does.
 
         A row :meth:`problems` names is left out; the panel shows why.
         """
         result_floats = {}
         for key, row in self._rows.items():
             vals = row.values()
-            if vals is None or row.problem() is not None:
+            if vals is None or row.problem() is not None or vals == self._defaults[key]:
                 continue
             result_floats[key] = vals
-        # If all values equal defaults, return None (use registry defaults)
-        if result_floats == self._defaults:
-            return None
         if not result_floats:
             return None
         # Wrap floats as Quantities

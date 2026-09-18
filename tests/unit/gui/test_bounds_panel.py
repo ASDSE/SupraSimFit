@@ -74,6 +74,30 @@ def test_equal_bounds_pin_the_parameter_and_are_passed_on(qapp):
     assert (lo.magnitude, hi.magnitude) == (3.14e8, 3.14e8)
 
 
+def test_a_signal_parameter_has_no_upper_limit_until_one_is_entered(qapp):
+    """The size of a signal coefficient follows the instrument's gain, so no finite default suits every
+    titration: its upper box is empty, an empty box means no limit, and only an entered bound is passed on."""
+    import math
+
+    panel = _ida_panel()
+    row = panel._rows['I_dye_bound']
+
+    assert row._hi.text() == '' and row._hi.placeholderText() == 'no limit'
+    assert row.values() == (0.0, math.inf)
+
+    row._hi.setText('5e9')
+    assert panel.problems() == []
+    assert set(panel.current_bounds()) == {'I_dye_bound'}  # the rows left at their defaults are not passed on
+    assert panel.current_bounds()['I_dye_bound'][1].magnitude == 5e9
+
+    row._hi.setText('')
+    assert panel.problems() == [] and panel.current_bounds() is None
+
+    # A binding constant is searched across its bounds, so it needs both.
+    panel._rows['Ka_guest']._hi.setText('')
+    assert panel.problems() == ['Ka(G): the upper bound is empty. Enter a number, such as 1e3.']
+
+
 def test_a_bound_box_takes_only_a_number_as_it_is_typed(qapp):
     """The validator keeps letters out of the box, so a typo cannot become a silent default."""
     from PyQt6.QtTest import QTest

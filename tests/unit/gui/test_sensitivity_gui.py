@@ -8,25 +8,19 @@ Pins the wiring the compute-layer tests can't reach:
   disables itself for ``DYE_ALONE``.
 - :class:`SensitivityWidget` draws each Sobol index with a whisker spanning
   its confidence interval, the legend naming it, one Ka vs input panel per varied
-  input with the below-floor samples light grey behind the others, a key to the
-  two colours and the unfitted ones left out, each panel opening on the input's
-  range as entered (± the farthest sampled offset for a σ input), rings
-  below-floor heatmap cells, states those counts in a note, names the indices one
-  way, and restyles/clears cleanly.
+  input with the samples that have no fit left out, each panel opening on the
+  input's range as entered (± the farthest sampled offset for a σ input), counts
+  the samples with no fit in a note, names the indices one way, gives a model
+  with two binding constants a row of panels and a map per constant, and
+  restyles/clears cleanly.
 - The heatmap colours each cell by the chosen statistic (Ka change by default,
   symmetric in the log ratio to the baseline Ka; Ka on the Plot Style's Ka
   scale; R²), labels its colour bar in the style's tick font, keeps the choice
   across new results and restyles, and names both inputs in its hover readout.
-- The summary under the plot tabs follows the tab. On Ka Sensitivity, after a
-  Sobol run, it gives every parameter the fit table's statistics over all fitted
-  samples (below-floor ones included) around the run's baseline fit, counts the
-  samples below the floor and describes their R² under Fit Quality, hides the
-  Representative selector, stars the degenerate signal parameters, says whether
-  the estimate matches the fit on the other tabs and names why it can differ,
-  and does not call samples a stopped run never reached unfittable. Without a
-  Sobol run to summarise (none yet, a heatmap, no sample fits) it shows the fit
-  with a note. Every other tab shows the fit cell for cell, and a new run, a
-  failed run, a heatmap and new or cleared data never leave it stale.
+- The summary under the plot tabs follows the tab: the samples view on Ka
+  Sensitivity, the fit on every other tab, and a new run, a failed run, a
+  heatmap and new or cleared data never leave it stale. What that view shows is
+  pinned by ``test_fit_summary_widget.py``.
 - :class:`SensitivityWorker` sends at most about ten progress updates a second
   and always delivers the latest count at a cancel and at the end, so the bar
   still ends full; the status bar drops the time estimate at the last count and
@@ -48,7 +42,7 @@ pytest.importorskip('PyQt6')
 import pyqtgraph as pg  # noqa: E402
 
 from core.assays.registry import AssayType  # noqa: E402
-from core.pipeline.fit_pipeline import FitResult, summarize_parameters  # noqa: E402
+from core.pipeline.fit_pipeline import FitResult  # noqa: E402
 from core.pipeline.sensitivity import (  # noqa: E402
     _SOBOL_BLOCKS,
     TITRANT,
@@ -132,12 +126,11 @@ def test_panel_disabled_for_dye_alone(qapp):
 # ---------------------------------------------------------------------------
 
 
-_FLOOR = 0.99
 _INPUTS = ('Ka_dye', 'h0', TITRANT)
 
 
 def _baseline_fit():
-    """The IDA fit with the inputs as entered, carrying its own multistart pool, far wider than the samples."""
+    """The IDA fit with the inputs as entered, which every sample is compared against."""
     x = np.linspace(0.0, 1e-4, 5)
     return FitResult(
         parameters={
@@ -148,23 +141,16 @@ def _baseline_fit():
         },
         rmse=10.0,
         r_squared=0.998,
-        n_passing=3,
-        n_total=100,
         x_fit=x,
         y_fit=x,
         assay_type='IDA',
         model_name='equilibrium_4param',
-        parameter_samples={
-            'Ka_guest': np.array([1e8, 2e8, 4e8]),
-            'I0': np.array([0.0, 100.0, 900.0]),
-            'I_dye_free': np.array([1e9, 5e9, 9e9]),
-            'I_dye_bound': np.array([6e10, 7e10, 8e10]),
-        },
+        degenerate_keys=('I0', 'I_dye_free', 'I_dye_bound'),
     )
 
 
 def _sobol_result():
-    """Three varied inputs, 40 A+B samples: every third below the floor, sample 5 unfitted."""
+    """Three varied inputs, 40 A+B samples, sample 5 unfitted."""
     rng = np.random.default_rng(0)
     n = 40
     offsets = {key: rng.normal(0.0, 5.0, n) for key in _INPUTS}
@@ -199,8 +185,6 @@ def _sobol_result():
         sample_offsets_pct=offsets,
         sample_ka={'Ka_guest': ka},
         sample_r2=r2,
-        floor=_FLOOR,
-        n_below_floor=int(np.sum(r2 < _FLOOR)),
         baseline_fit=_baseline_fit(),
         sample_params={'Ka_guest': ka, **signal},
         degenerate_keys=('I0', 'I_dye_free', 'I_dye_bound'),
@@ -244,8 +228,6 @@ def _heatmap_result():
         ),
         seed_used=0,
         r2_grid=r2,
-        floor=_FLOOR,
-        n_below_floor=2,
     )
 
 
@@ -260,6 +242,97 @@ def test_widget_renders_sobol_result(qapp):
     # Restyling with a linear Ka axis must also render cleanly.
     w.apply_style({'distribution': {'ka_scale': 'linear'}})
     assert w._stack.currentWidget() is w._results_host
+
+
+_TWO_KA_INPUTS = ('h0', TITRANT)
+
+
+def _two_ka_result(mode: SensitivityMode = SensitivityMode.SOBOL) -> SensitivityResult:
+    """A host–guest 1:2 run: the analysis reports both binding constants of the model."""
+    rng = np.random.default_rng(2)
+    n = 20
+    keys = ('Ka_HG', 'Ka_HG2')
+    baseline = {'Ka_HG': 1e6, 'Ka_HG2': 3e4}
+    fit = replace(
+        _baseline_fit(),
+        assay_type='DBA_HG2',
+        parameters={'Ka_HG': Q_(1e6, '1/M'), 'Ka_HG2': Q_(3e4, '1/M'), 'I0': Q_(100.0, 'au')},
+        degenerate_keys=(),
+    )
+    if mode is SensitivityMode.HEATMAP:
+        offsets = np.linspace(-5.0, 5.0, 3)
+        return SensitivityResult(
+            mode=mode,
+            assay_type='DBA_HG2',
+            ka_keys=keys,
+            baseline_ka=baseline,
+            x_offsets_pct=offsets,
+            y_offsets_pct=offsets,
+            ka_grid={key: value * (1 + 0.01 * rng.normal(size=(3, 3))) for key, value in baseline.items()},
+            n_success=9,
+            n_total=9,
+            config=SensitivityConfig(
+                mode, 1, {key: InputSpec.sigma_pct(5.0) for key in _TWO_KA_INPUTS}, x_key=TITRANT, y_key='h0', n_steps=3
+            ),
+            seed_used=7,
+            r2_grid=np.full((3, 3), 0.99),
+            baseline_fit=fit,
+        )
+    offsets = {key: rng.normal(0.0, 5.0, n) for key in _TWO_KA_INPUTS}
+    indices = {key: {input_key: 0.4 for input_key in _TWO_KA_INPUTS} for key in keys}
+    return SensitivityResult(
+        mode=mode,
+        assay_type='DBA_HG2',
+        ka_keys=keys,
+        baseline_ka=baseline,
+        x_offsets_pct=None,
+        y_offsets_pct=None,
+        ka_grid=None,
+        n_success=n,
+        n_total=n,
+        config=SensitivityConfig(mode, n // 2, {key: InputSpec.sigma_pct(5.0) for key in _TWO_KA_INPUTS}, seed=7),
+        seed_used=7,
+        sobol_s1=indices,
+        sobol_st=indices,
+        sobol_s1_ci={key: {k: (0.3, 0.5) for k in _TWO_KA_INPUTS} for key in keys},
+        sobol_st_ci={key: {k: (0.3, 0.5) for k in _TWO_KA_INPUTS} for key in keys},
+        sample_offsets_pct=offsets,
+        sample_ka={key: value * (1 + 0.01 * offsets[TITRANT]) for key, value in baseline.items()},
+        sample_r2=np.full(n, 0.99),
+        baseline_fit=fit,
+        sample_params={key: value * (1 + 0.01 * offsets[TITRANT]) for key, value in baseline.items()},
+    )
+
+
+def test_a_two_constant_model_is_reported_per_binding_constant(qapp):
+    """Both constants of a 1:2 model get their own histogram, index chart, panel row and map."""
+    from PyQt6.QtWidgets import QLabel
+
+    from gui.plotting.labels import fmt_param
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_two_ka_result())
+    assert w._stack.currentWidget() is w._results_host
+
+    titles = [plot.titleLabel.text for plot in _plots(w)]
+    for ka_key in ('Ka_HG', 'Ka_HG2'):
+        label = fmt_param(ka_key)
+        assert sum(title.startswith(label) and 'median' in title for title in titles) == 1
+        assert titles.count(f'{label} — Sobol indices') == 1
+    # One row of "Ka vs input" panels per constant, one panel per varied input.
+    headings = [
+        label.text()
+        for label in w._results_host.widget().findChildren(QLabel)
+        if label.text().endswith('vs each input')
+    ]
+    assert headings == [f'{fmt_param(key)} vs each input' for key in ('Ka_HG', 'Ka_HG2')]
+    x_labels = [plot.getAxis('bottom').labelText for plot in _plots(w)]
+    assert sum(label.startswith('Δ ') for label in x_labels) == 2 * len(_TWO_KA_INPUTS)
+
+    w.update_result(_two_ka_result(SensitivityMode.HEATMAP))
+    assert [target['ka_key'] for target in w._hover_targets] == ['Ka_HG', 'Ka_HG2']
+    assert fmt_param('Ka_HG2') in w._readout_html(w._hover_targets[1], 0, 0)
 
 
 def test_index_whiskers_span_the_confidence_interval(qapp):
@@ -311,54 +384,27 @@ def _ka_vs_input_panels(widget) -> dict:
     }
 
 
-def _floor_keys(widget) -> list[str]:
-    """Text of every dot-colour key on the results page, once the pages of earlier results are deleted."""
-    from PyQt6.QtCore import QCoreApplication, QEvent
-    from PyQt6.QtWidgets import QLabel
-
-    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    return [label.text() for label in widget._results_host.widget().findChildren(QLabel) if '●' in label.text()]
-
-
-def test_ka_vs_input_panels_draw_below_floor_samples_grey_behind_the_blue(qapp):
-    """Below-floor fits are the same dots in light grey behind the blue, with a key; no line; the unfitted left out."""
+def test_ka_vs_input_panels_draw_every_fitted_sample_as_a_dot(qapp):
+    """One dot per sample that has a fit, no line through them, and the samples without one left out."""
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
     result = _sobol_result()
-    ka, r2 = result.sample_ka['Ka_guest'], result.sample_r2
+    ka = result.sample_ka['Ka_guest']
     fitted = np.isfinite(ka)
-    below = fitted & (r2 < _FLOOR)
+    assert not fitted.all()
     w = SensitivityWidget()
     w.update_result(result)
 
     panels = _ka_vs_input_panels(w)
     assert len(panels) == len(_INPUTS)
     for plot in panels.values():
-        items = [item for item in plot.items if isinstance(item, pg.PlotDataItem)]
-        by_name = {item.name(): item for item in items}
-        assert len(items) == 2 and all(item.opts['pen'] is None for item in items)
-        grey, blue = by_name['below the threshold'], by_name['meets the threshold']
-        np.testing.assert_array_equal(np.sort(grey.getOriginalDataset()[1]), np.sort(ka[below]))
-        np.testing.assert_array_equal(np.sort(blue.getOriginalDataset()[1]), np.sort(ka[fitted & ~below]))
-        assert (grey.opts['symbolBrush'].color().name(), blue.opts['symbolBrush'].color().name()) == (
-            '#c3c2b7',
-            '#2a78d6',
-        )
-        assert grey.opts['symbol'] == blue.opts['symbol'] == 'o'
-        assert grey.opts['symbolSize'] == blue.opts['symbolSize'] >= 8
-        for dots in (grey, blue):
-            assert (dots.opts['symbolPen'].color().name(), dots.opts['symbolPen'].widthF()) == ('#fcfcfb', 2.0)
-        assert grey.zValue() < blue.zValue()
-
-    (key,) = _floor_keys(w)
-    assert 'color: #2a78d6;">●</span> best fit meets the Min R² (0.99)' in key
-    assert 'color: #c3c2b7;">●</span> best fit falls below it' in key
-    assert 'the Ka vs each input panels draw them in light grey' in w._note.text() and 'hollow' not in w._note.text()
-
-    # With no fit below the floor the key has no grey entry.
-    w.update_result(replace(result, sample_r2=np.where(fitted, 0.995, np.nan), n_below_floor=0))
-    (key,) = _floor_keys(w)
-    assert '#c3c2b7' not in key and 'below' not in key
+        (dots,) = [item for item in plot.items if isinstance(item, pg.PlotDataItem)]
+        assert dots.opts['pen'] is None
+        np.testing.assert_array_equal(np.sort(dots.getOriginalDataset()[1]), np.sort(ka[fitted]))
+        assert dots.opts['symbol'] == 'o'
+        assert dots.opts['symbolSize'] >= 8
+        assert dots.opts['symbolBrush'].color().name() == '#2a78d6'
+        assert (dots.opts['symbolPen'].color().name(), dots.opts['symbolPen'].widthF()) == ('#fcfcfb', 2.0)
 
 
 _H0_RANGE_PCT = (100 * (4.1e-6 / 4.3e-6 - 1), 100 * (4.4e-6 / 4.3e-6 - 1))
@@ -528,21 +574,20 @@ def test_note_counts_design_rows_the_indices_leave_out(qapp, left_out, sentence)
         assert sentence in text
 
 
-def test_note_states_below_floor_and_unfitted_counts(qapp):
-    """The below-floor count is out of the samples that have a fit, as Fit Quality counts them."""
+def test_note_states_the_unfitted_count_and_the_seed(qapp):
+    """The samples with no fit are counted out of every sample the run planned, and the seed repeats the run."""
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
     result = _sobol_result()  # 40 samples, one of them unfitted
     w = SensitivityWidget()
     w.update_result(result)
     text = w._note.text()
-    assert f'{result.n_below_floor} of the 39 samples that have a fit' in text
-    assert '1 of 40 samples could not be fitted' in text
+    assert '1 of 40 samples could not be fitted and is left out.' in text
 
     assert f'Seed {result.seed_used}' in text  # what repeats the run is on the tab, and in its picture
 
-    # A result without quality data has no counts to report, only its seed.
-    result.floor = result.sample_r2 = result.sample_ka = None
+    # A result with no Ka per sample has no count to report, only its seed.
+    result.sample_r2 = result.sample_ka = None
     w.update_result(result)
     assert w._note.text() == f'Seed {result.seed_used}: enter it under Fixed seed to repeat this analysis exactly.'
 
@@ -577,8 +622,8 @@ def test_a_total_order_drawn_below_its_first_order_is_explained_by_the_whiskers(
     assert avoid not in text
 
 
-def test_below_floor_count_of_a_cancelled_run_leaves_out_the_samples_it_never_fitted(qapp):
-    """A run stopped part way counts its below-floor fits out of the samples it fitted, not of every planned one."""
+def test_a_cancelled_run_does_not_call_the_samples_it_never_reached_unfittable(qapp):
+    """A run stopped part way has samples with no fit for two reasons, and the note does not pick one."""
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
     result = _sobol_result()  # 40 samples, sample 5 unfitted
@@ -586,18 +631,17 @@ def test_below_floor_count_of_a_cancelled_run_leaves_out_the_samples_it_never_fi
     r2 = np.asarray(result.sample_r2, dtype=float)
     ka[10:] = np.nan  # the run was cancelled after the tenth sample
     r2[10:] = np.nan
-    r2[:10] = [0.95, 0.95, 0.95, *([0.995] * 7)]
     result.sample_ka = {'Ka_guest': ka}
     result.sample_r2 = r2
     result.stopped = True
-    result.n_success = result.n_total = 9
+    result.n_success = 9
+    result.n_total = 10
 
     w = SensitivityWidget()
     w.update_result(result)
     text = w._note.text()
-    assert 'The best fit of 3 of the 9 samples that have a fit falls below' in text
-    assert 'of the 40 samples' not in text
-    assert '31 of 40 samples' in text  # sample 5 plus the thirty the run never reached
+    # Sample 5 plus the thirty the run never reached.
+    assert '31 of 40 samples have no fit, either because the analysis was stopped' in text
 
 
 def test_log_ka_axis_labels_round_values_within_a_decade(qapp):
@@ -712,23 +756,13 @@ def _colour_by(widget, text: str) -> None:
     widget._colour_combo.setCurrentIndex(widget._colour_combo.findText(text))
 
 
-@pytest.mark.parametrize('stat', ['Ka change', 'Ka', 'R²'])
-def test_heatmap_rings_cells_below_the_floor(qapp, stat):
+def test_heatmap_note_counts_the_cells_with_no_fit(qapp):
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
     w = SensitivityWidget()
     w.update_result(_heatmap_result())
-    _colour_by(w, stat)
-    plot = w._hover_targets[0]['plot']
-    rings = [
-        item for item in plot.items if isinstance(item, pg.ScatterPlotItem) and item.name() == 'below the threshold'
-    ]
-    assert rings
-    for ring in rings:
-        # r2_grid is [iy, ix] with iy along the y offsets: cells (x, y) = (-5 %, -5 %) and (+5 %, +5 %).
-        assert sorted(zip(*ring.getData())) == [(-5.0, -5.0), (5.0, 5.0)]
-    assert 'The best fit of 2 of the 8 grid cells that have a fit' in w._note.text()
-    assert '1 of 9 grid cells could not be fitted' in w._note.text()
+
+    assert '1 of 9 grid cells could not be fitted and is left out.' in w._note.text()
 
 
 def _pct_of(label: str) -> float:
@@ -872,29 +906,29 @@ def test_heatmap_readout_names_both_inputs_with_ka_change_and_r2(qapp):
     w.update_result(_heatmap_result())
     (target,) = w._hover_targets
 
-    # Cell (x, y) = (-5 %, -5 %): Ka 1.8×10⁶ against a baseline of 2×10⁶, R² 0.95 under the floor.
+    # Cell (x, y) = (-5 %, -5 %): Ka 1.8×10⁶ against a baseline of 2×10⁶, R² 0.95.
     text = w._readout_html(target, 0, 0)
     assert 'Guest −5%, [Host]<sub>0</sub> −5%' in text
     assert '1.80×10⁶' in text
     assert 'change: −10%' in text
-    assert 'R² = 0.9500 (below Min R²)' in text
+    assert 'R² = 0.9500' in text
 
     # The failed cell still names where it is.
     assert w._readout_html(target, 1, 2) == 'Guest 0%, [Host]<sub>0</sub> +5%<br>no fit could be produced'
 
 
-def test_heatmap_readout_r2_never_reads_as_meeting_the_floor_it_misses(qapp):
-    """A cell a hair below the Min R² reads below it, from the one shared R² formatter."""
+def test_heatmap_readout_r2_reads_as_far_from_one_as_it_is(qapp):
+    """A cell a hair below 1 reads below it, from the one shared R² formatter."""
     from gui.plotting.labels import fmt_r2
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
     result = _heatmap_result()
-    result.r2_grid[0, 0] = 0.98999
+    result.r2_grid[0, 0] = 0.9999870
     w = SensitivityWidget()
     w.update_result(result)
     (target,) = w._hover_targets
-    assert f'R² = {fmt_r2(0.98999, _FLOOR)} (below Min R²)' in w._readout_html(target, 0, 0)
-    assert 'R² = 0.9900' not in w._readout_html(target, 0, 0)
+    assert f'R² = {fmt_r2(0.9999870)}' in w._readout_html(target, 0, 0)
+    assert 'R² = 1.0000' not in w._readout_html(target, 0, 0)
 
 
 def test_heatmap_axis_ticks_sit_at_the_cell_centres(qapp):
@@ -1050,8 +1084,8 @@ def test_the_saved_heatmap_leaves_the_colour_selector_out(tmp_path, qapp):
     w.close()
 
 
-def test_baseline_line_follows_its_own_style_not_the_median_line(qapp):
-    """The histogram's baseline line takes the Ka Sensitivity style; the Distributions median style leaves it alone."""
+def test_baseline_line_follows_its_own_style_and_no_other(qapp):
+    """The histogram's baseline line takes the Ka Sensitivity style; the shared Analysis plots style leaves it alone."""
     from PyQt6.QtGui import QColor
 
     from gui.plotting.plot_style import PlotStyleWidget
@@ -1069,8 +1103,8 @@ def test_baseline_line_follows_its_own_style_not_the_median_line(qapp):
     default_pen = baseline_pen()
     assert default_pen == ((220, 0, 0, 255), 2.5)
 
-    style_widget._params['Distribution', 'Median line color'] = QColor(0, 0, 255, 255)
-    style_widget._params['Distribution', 'Median line width'] = 6.0
+    style_widget._params['Analysis plots', 'Tick font size'] = 20
+    style_widget._params['Analysis plots', 'Label font size'] = 20
     assert baseline_pen() == default_pen
 
     style_widget._params['Ka Sensitivity', 'Baseline line color'] = QColor(10, 120, 30, 255)
@@ -1133,33 +1167,6 @@ def test_worker_reports_an_unexpected_failure_in_plain_words(qapp, monkeypatch):
     assert len(messages) == 1
     assert 'could not be completed' in messages[0]
     assert 'broadcast' not in messages[0] and '_jansen' not in messages[0]
-
-
-def test_a_baseline_that_failed_per_replicate_names_the_replicates(qapp, monkeypatch):
-    """The analysis tab explains a failed baseline the way the Fit Curve tab does."""
-    from core.data_processing.measurement_set import MeasurementSet
-    from core.pipeline.fit_pipeline import PerReplicaFitError
-    from gui import workers
-
-    def fail(*args, **kwargs):
-        raise PerReplicaFitError(
-            'None of the 2 replicates could be fitted on its own. There is no reference Ka for the '
-            'analysis to compare against.',
-            {'0': 'Its signal could not be fitted.', '1': 'Its signal could not be fitted.'},
-        )
-
-    monkeypatch.setattr(workers, 'run_sensitivity', fail)
-    ms = MeasurementSet(concentrations=np.arange(3.0), signals=np.ones((2, 3)), replica_ids=('0', '1'))
-    worker = workers.SensitivityWorker(ms, None, {}, None, None)
-    messages = []
-    worker.error.connect(messages.append)
-
-    worker.run()
-
-    assert len(messages) == 1
-    assert 'no reference Ka' in messages[0]
-    assert 'Replicate A: Its signal could not be fitted.' in messages[0]
-    assert 'Replicate B: Its signal could not be fitted.' in messages[0]
 
 
 def test_a_run_stopped_by_a_failed_refit_says_what_to_change(qapp, monkeypatch):
@@ -1358,289 +1365,19 @@ def test_failed_run_takes_the_tab_off_the_progress_page(qapp, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Fitted parameters across the samples (the summary under the plot tabs)
+# The summary under the plot tabs
 # ---------------------------------------------------------------------------
-
-
-def _cell_texts(table) -> list[list[str]]:
-    return [[table.cellWidget(r, c).text() for c in range(table.columnCount())] for r in range(table.rowCount())]
-
-
-def _samples_summary(result, fit=None):
-    """A summary widget in the samples view of *result*, with *fit* as the fit on the other tabs."""
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    if fit is not None:
-        widget.update_result(fit)
-    widget.set_sensitivity(result)
-    widget.show_samples(True)
-    return widget
-
-
-def _caption_of(result, fit=None) -> str:
-    widget = _samples_summary(result, fit)
-    return widget._caption.text()
-
-
-def _value_cells(rows) -> list[list[str]]:
-    """Every column but the label, as the shared parameter table renders *rows*."""
-    from gui.plotting.fit_summary_widget import ParameterTable
-
-    table = ParameterTable()
-    table.show_rows(rows)
-    return [row[1:] for row in _cell_texts(table)]
-
-
-def _over_samples(result, mask) -> list[list[str]]:
-    samples = {key: values[mask] for key, values in result.sample_params.items()}
-    return _value_cells(summarize_parameters(replace(result.baseline_fit, parameter_samples=samples)))
+#
+# What the samples view shows — the statistics over the samples, the caption and
+# Fit Quality — is pinned by tests/unit/gui/test_fit_summary_widget.py. Here only
+# the wiring is checked: which view the session shows, and that no run reaches a
+# tab it does not belong to.
 
 
 def _in_samples_view(widget) -> bool:
     from gui.plotting.fit_summary_widget import _REPORT_TITLE
 
     return widget._params_group.title() == _REPORT_TITLE
-
-
-def test_samples_view_summarises_every_fitted_sample_around_the_baseline_fit(qapp):
-    """The estimate is the baseline fit; the spread covers all fitted samples, never the baseline's own pool."""
-    result = _sobol_result()
-    widget = _samples_summary(result)
-    fitted = np.isfinite(result.sample_ka['Ka_guest'])
-    passing = fitted & (result.sample_r2 >= _FLOOR)
-
-    cells = _cell_texts(widget._table)
-    shown = [row[1:] for row in cells]
-    assert _in_samples_view(widget)
-    assert shown == _over_samples(result, fitted)
-    assert shown != _over_samples(result, passing)
-    assert shown != _value_cells(summarize_parameters(result.baseline_fit))
-
-    # The log₁₀ Ka row by hand: its estimate from the baseline fit, its range from the samples.
-    (log_row,) = [row[1:] for row in cells if row[0].startswith('log₁₀')]
-    log_ka = np.log10(result.sample_ka['Ka_guest'][fitted])
-    assert log_row[0] == f'{np.log10(2e8):.3f}'
-    assert log_row[4] == f'[{log_ka.min():.3f}, {log_ka.max():.3f}]'
-
-
-def test_samples_view_counts_the_samples_below_the_floor(qapp):
-    result = _sobol_result()
-    text = _caption_of(result)
-    assert text.startswith('The estimate is the fit this analysis makes with the inputs as you entered them')
-    assert (
-        f'the 39 samples that have a fit, including the {result.n_below_floor} whose best fit falls below '
-        'the Min R² this analysis used (0.99)'
-    ) in text
-    assert text.endswith('1 of 40 samples could not be fitted and is left out.')
-
-    every_fit_passes = replace(
-        result,
-        sample_params={key: np.nan_to_num(values, nan=1.0) for key, values in result.sample_params.items()},
-        sample_r2=np.full(40, 0.999),
-        n_below_floor=0,
-    )
-    text = _caption_of(every_fit_passes)
-    assert 'all 40 samples, and the best fit of every one meets the Min R² this analysis used (0.99)' in text
-    assert 'left out' not in text
-
-
-def test_samples_view_does_not_call_the_samples_a_stopped_run_never_reached_unfittable(qapp):
-    result = replace(_sobol_result(), stopped=True)
-    assert result.n_success < result.n_total
-    assert (
-        '1 of 40 samples have no fit, either because the analysis was stopped before reaching them or because '
-        'they could not be fitted'
-    ) in _caption_of(result)
-
-    every_finished_fit_succeeded = replace(result, n_success=result.n_total)
-    text = _caption_of(every_finished_fit_succeeded)
-    assert '1 of 40 samples was not fitted before the analysis was stopped and is left out.' in text
-    assert 'could not be fitted' not in text
-
-
-def test_samples_view_describes_the_samples_under_fit_quality(qapp):
-    """Fit Quality counts the fitted samples and those below the floor, and gives their R² median and range."""
-    result = _sobol_result()
-    widget = _samples_summary(result, fit=_summary_fit())
-    fitted = np.isfinite(result.sample_r2)
-    r2 = result.sample_r2[fitted]
-    form = widget._quality_form
-
-    assert widget._rep_row.isHidden()
-    assert widget._fitted_label.text() == '39 / 40'
-    assert widget._below_label.text() == f'{int(np.sum(r2 < _FLOOR))} of 39  (Min R² used: 0.99)'
-    assert widget._median_r2_label.text() == f'{np.median(r2):.4f}'
-    assert widget._r2_range_label.text() == f'[{r2.min():.4f}, {r2.max():.4f}]'
-    assert all(form.isRowVisible(label) for label in widget._sample_rows)
-    assert not any(form.isRowVisible(label) for label in widget._fit_rows)
-
-
-def test_an_r2_just_below_one_never_reads_as_a_perfect_fit(qapp):
-    r2 = np.full(40, 0.995)
-    r2[[0, 1]] = 0.9999870, 1.0
-    widget = _samples_summary(replace(_sobol_result(), sample_r2=r2))
-    assert widget._r2_range_label.text() == '[0.9950, 1.0000]'
-    r2[1] = 0.99
-    widget = _samples_summary(replace(_sobol_result(), sample_r2=r2))
-    assert widget._r2_range_label.text() == '[0.9900, 0.999987]'
-
-
-def test_an_r2_just_below_the_floor_never_reads_as_meeting_it(qapp):
-    """A sample counted below Min R² shows digits enough to read below it, in the range and the median."""
-    r2 = np.full(40, 0.98996)
-    r2[:10] = 0.995
-    widget = _samples_summary(replace(_sobol_result(), sample_r2=r2))
-    assert widget._below_label.text().startswith('30 of 39')
-    assert widget._r2_range_label.text() == '[0.98996, 0.9950]'
-    assert widget._median_r2_label.text() == '0.98996'
-
-
-def test_the_floor_named_is_the_one_the_analysis_ran_with(qapp):
-    """The run's floor is never attributed to the Fit panel, whose Min R² can change after the run."""
-    widget = _samples_summary(_sobol_result())
-    assert 'Fit panel' not in widget._caption.text()
-    assert 'Fit panel' not in widget._below_label.text()
-
-
-@pytest.mark.parametrize('degenerate', [(), ('I0',), ('I0', 'I_dye_free', 'I_dye_bound')])
-def test_samples_view_stars_the_degenerate_signal_parameters(qapp, degenerate):
-    from gui.plotting.labels import fmt_param
-
-    result = replace(_sobol_result(), degenerate_keys=degenerate)
-    widget = _samples_summary(result)
-    keys = [row.key for row in summarize_parameters(result.baseline_fit)]
-    labels = [widget._table.cellWidget(r, 0) for r in range(widget._table.rowCount())]
-
-    assert [label.text().endswith('*') for label in labels] == [key in degenerate for key in keys]
-    assert [label.toolTip().startswith('Marginal summary') for label in labels] == [key in degenerate for key in keys]
-    assert widget._footnote.isHidden() == (not degenerate)
-    if degenerate:
-        assert widget._footnote.text().startswith('* Marginal summary. The data fix only a combination of')
-        assert all(fmt_param(key) in widget._footnote.text() for key in degenerate)
-
-
-def _fit_like_the_baseline(**changes):
-    """The baseline fit re-made as a normal fit: same data, inputs, bounds and replicate handling, its own pool."""
-    return replace(_baseline_fit(), id='normal-fit', **changes)
-
-
-def test_samples_view_says_the_estimate_matches_the_fit_on_the_other_tabs(qapp):
-    text = _caption_of(_sobol_result(), fit=_fit_like_the_baseline())
-    assert 'Its unstarred estimates match the fit on the Fit Curve tab to the digits shown.' in text
-
-
-def test_samples_view_names_the_estimate_that_differs_from_a_like_for_like_fit(qapp):
-    fit = _fit_like_the_baseline(parameters={**_baseline_fit().parameters, 'Ka_guest': Q_(2.1e8, '1/M')})
-    text = _caption_of(_sobol_result(), fit=fit)
-    assert (
-        'Its estimate of <b>K<sub>a(G)</sub></b> differs from the fit on the Fit Curve tab although the two use the '
-        'same data, inputs, bounds and replicate handling'
-    ) in text
-
-
-@pytest.mark.parametrize(
-    ('ours', 'theirs', 'reason'),
-    [
-        (
-            {},
-            {'uncertainty_source': 'replicate'},
-            'because this analysis fits the average of the replicates, while that fit uses each replicate separately.',
-        ),
-        (
-            {'uncertainty_source': 'replicate'},
-            {},
-            'because this analysis fits each replicate separately, while that fit uses the average of the replicates.',
-        ),
-        ({}, {'metadata': {'data_fingerprint': 'another'}}, 'because that fit was not made on the data as loaded now.'),
-        (
-            {'metadata': {'active_replica_ids': ['A', 'B']}},
-            {'metadata': {'active_replica_ids': ['A', 'B', 'C']}},
-            'because the two use different replicates.',
-        ),
-        ({}, {'conditions': {'h0': Q_(4.3, 'µM')}}, 'because the two use different inputs.'),
-        (
-            {},
-            {'fit_config': {'custom_bounds': {'Ka_guest': [1.0, 1e9, '1 / molar']}}},
-            'because the two use different parameter bounds.',
-        ),
-        ({}, {'assay_type': 'GDA'}, 'because the two are for different assay types.'),
-        (
-            {'metadata': {'active_replica_ids': ['A', 'B']}},
-            {'metadata': {'active_replica_ids': ['A', 'B'], 'replica_ids_fit': ['B'], 'replica_failures': {'A': 'x'}}},
-            'because the two use different replicates.',
-        ),
-        (
-            {},
-            {'representative_index': 2, 'metadata': {'fitted_representative_index': 1}},
-            'because that fit shows an attempt you picked instead of the one the fit chose.',
-        ),
-    ],
-    ids=[
-        'average-vs-per-replica',
-        'per-replica-vs-average',
-        'data',
-        'replicates',
-        'inputs',
-        'bounds',
-        'assay',
-        'fit-left-out-a-replicate-the-analysis-used',
-        'picked-representative',
-    ],
-)
-def test_samples_view_names_why_the_estimate_can_differ_from_the_fit_on_the_other_tabs(qapp, ours, theirs, reason):
-    result = replace(_sobol_result(), baseline_fit=replace(_baseline_fit(), **ours))
-    text = _caption_of(result, fit=_fit_like_the_baseline(**theirs))
-    assert f'It can differ from the fit on the Fit Curve tab {reason}' in text
-    assert 'match the fit' not in text
-    assert 'own search for the best fit' not in text
-
-
-def test_both_leaving_out_the_same_replicate_is_named_once(qapp):
-    """Replicates the analysis and the fit both leave out are no difference between them: named once, never per fit."""
-    record = {
-        'active_replica_ids': ['A', 'B', 'C'],
-        'replica_ids_fit': ['B', 'C'],
-        'replica_failures': {'A': 'None of its fit attempts reached the minimum R² of 0.99.'},
-    }
-    per_replica = {'uncertainty_source': 'replicate', 'metadata': record}
-    result = replace(_sobol_result(), baseline_fit=replace(_baseline_fit(), **per_replica))
-    text = _caption_of(result, fit=_fit_like_the_baseline(**per_replica))
-    assert 'Its unstarred estimates match the fit on the Fit Curve tab to the digits shown.' in text
-    assert text.count('Both leave out replicate A, as neither found an acceptable fit for it.') == 1
-    assert 'leaves out' not in text
-
-
-def test_picking_another_representative_is_named_as_why_the_estimate_differs(qapp, monkeypatch):
-    """A representative picked on the Fit Curve tab is named, never passed off as a separate search for the best fit."""
-    from gui import workers
-
-    monkeypatch.setattr(workers, 'run_sensitivity', _fake_run(3))
-    session, warnings = _demo_session(monkeypatch)
-    ms = session._state.measurement_set
-    fit = _fit_like_the_baseline(
-        representative_index=1,
-        x_fit=Q_(_baseline_fit().x_fit, 'M'),
-        y_fit=Q_(_baseline_fit().y_fit, 'au'),
-        conditions=session._assay_panel.current_conditions(),
-        metadata={'data_fingerprint': ms.fingerprint(), 'active_replica_ids': ms.active_replica_ids},
-    )
-    session._state.held_fit_results = [fit]
-    session._show_results(force=True)
-    session.run_sensitivity()
-    _wait_for_worker(session, qapp)
-    summary = session._summary_widget
-    assert 'match the fit on the Fit Curve tab' in summary._caption.text()
-
-    session._on_representative_selected(2)
-    assert fit.metadata['fitted_representative_index'] == 1
-    text = summary._caption.text()
-    assert 'because that fit shows an attempt you picked instead of the one the fit chose.' in text
-    assert 'own search for the best fit' not in text
-
-    session._on_representative_selected(1)
-    assert 'match the fit on the Fit Curve tab' in summary._caption.text()
-    assert warnings == []
 
 
 def test_sensitivity_run_uses_the_bounds_set_in_the_bounds_panel(qapp, monkeypatch):
@@ -1667,202 +1404,30 @@ def test_sensitivity_run_uses_the_bounds_set_in_the_bounds_panel(qapp, monkeypat
     assert seen['bounds'] == bounds
 
 
-def test_same_inputs_in_other_display_units_are_the_same_inputs(qapp):
-    result = replace(_sobol_result(), baseline_fit=replace(_baseline_fit(), conditions={'h0': Q_(4.3e-6, 'M')}))
-    fit = _fit_like_the_baseline(conditions={'h0': Q_(4.3, 'µM')})
-    assert 'It can differ' not in _caption_of(result, fit=fit)
-
-
-@pytest.mark.parametrize(
-    ('result', 'why'),
-    [
-        (None, 'Run a sensitivity analysis with Sensitivity indices to see the fitted parameters across its samples'),
-        (replace(_heatmap_result(), baseline_fit=_baseline_fit()), 'The last analysis is a heatmap.'),
-        (replace(_sobol_result(), baseline_fit=None), 'does not include the fitted parameters of each sample'),
-        (replace(_sobol_result(), sample_params=None), 'does not include the fitted parameters of each sample'),
-    ],
-    ids=['no-run', 'heatmap', 'no-baseline', 'no-sample-fits'],
-)
-def test_without_samples_to_summarise_the_fit_shows_with_a_note(qapp, result, why):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    fit_view = FitSummaryWidget()
-    fit_view.update_result(_summary_fit())
-    widget = _samples_summary(result, fit=_summary_fit())
-
-    assert not _in_samples_view(widget)
-    assert _cell_texts(widget._table) == _cell_texts(fit_view._table)
-    assert not widget._rep_row.isHidden()
-    assert widget._footnote.isHidden()
-    assert why in widget._caption.text()
-    assert widget._caption.text().endswith('The table shows the fit from the Fit Curve tab instead.')
-
-    empty = _samples_summary(result)
-    assert empty._table.rowCount() == 0
-    assert 'instead' not in empty._caption.text()
-
-
-def test_a_heatmap_still_running_is_named_as_why_there_is_no_summary(qapp):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(_summary_fit())
-    widget.show_samples(True)
-    widget.show_running(SensitivityMode.HEATMAP)
-    assert not _in_samples_view(widget)
-    assert widget._caption.text().startswith('The analysis now running is a heatmap.')
-    widget.set_sensitivity(_sobol_result())
-    assert _in_samples_view(widget)
-
-
-def test_switching_views_restores_the_fit_cell_for_cell(qapp):
-    """Out of the samples view every trace of it is gone: title, caption, footnote, stars, Fit Quality rows."""
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    fit_view = FitSummaryWidget()
-    fit_view.update_result(_summary_fit())
-    widget = _samples_summary(_sobol_result(), fit=_summary_fit())
-
-    for _ in range(2):
-        widget.show_samples(False)
-        assert _cell_texts(widget._table) == _cell_texts(fit_view._table)
-        assert widget._params_group.title() == 'Fitted Parameters'
-        assert not widget._rep_row.isHidden() and widget._rep_combo.count() == 3
-        assert widget._caption.isHidden() and widget._footnote.isHidden()
-        assert all(widget._quality_form.isRowVisible(label) for label in widget._fit_rows)
-        assert widget._r2_label.text() == '0.9980'
-        widget.show_samples(True)
-        assert _in_samples_view(widget)
-        assert widget._rep_row.isHidden()
-
-    # A new fit arriving in the samples view keeps the view and is what the caption compares against.
-    widget.update_result(_fit_like_the_baseline())
-    assert _in_samples_view(widget)
-    assert 'match the fit on the Fit Curve tab' in widget._caption.text()
-
-
-def test_clearing_the_fit_empties_the_selector(qapp):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(_summary_fit())
-    widget.clear()
-    assert widget._table.rowCount() == 0
-    assert (widget._rep_combo.count(), widget._rep_combo.isEnabled()) == (1, False)
-    assert widget._r2_label.text() == '—'
-
-
-def _summary_fit():
-    """A normal GDA fit with a three-fit multistart pool, the second of them reported."""
-    x = np.linspace(0.0, 1e-4, 20)
-    return FitResult(
-        parameters={
-            'Ka_guest': Q_(1.1e6, '1/M'),
-            'I0': Q_(90.0, 'au'),
-            'I_dye_free': Q_(5.1e4, 'au/M'),
-            'I_dye_bound': Q_(8.1e4, 'au/M'),
-        },
-        rmse=0.005,
-        r_squared=0.998,
-        n_passing=3,
-        n_total=10,
-        x_fit=x,
-        y_fit=x * 1.05,
-        assay_type='GDA',
-        model_name='equilibrium_4param',
-        parameter_samples={
-            'Ka_guest': np.array([1.0e6, 1.1e6, 0.9e6]),
-            'I0': np.array([100.0, 90.0, 110.0]),
-            'I_dye_free': np.array([5.0e4, 5.1e4, 4.9e4]),
-            'I_dye_bound': np.array([8.0e4, 8.1e4, 7.9e4]),
-        },
-        quality_samples={'rmse': np.array([0.006, 0.005, 0.007]), 'r_squared': np.array([0.997, 0.998, 0.996])},
-        representative_index=1,
-    )
-
-
-def test_fit_summary_renders_a_normal_fit_cell_for_cell(qapp):
-    """The shared Fit Summary shows the representative fit and its own pool's statistics, with units."""
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(_summary_fit())
-    assert _cell_texts(widget._table) == [
-        [
-            '<b>K<sub>a(G)</sub></b>',
-            '1.1×10<sup>6</sup>',
-            '1×10<sup>6</sup> ± 1×10<sup>5</sup>',
-            '1×10<sup>6</sup> ± 1×10<sup>5</sup>',
-            '[9.32×10<sup>5</sup>, 1.07×10<sup>6</sup>]',
-            '[9×10<sup>5</sup>, 1.1×10<sup>6</sup>]',
-            'M<sup>−1</sup>',
-        ],
-        [
-            'log₁₀(<b>K<sub>a(G)</sub></b> / M<sup>−1</sup>)',
-            # Fixed decimals, so the value is never coarser than the spread beside it.
-            '6.041',
-            '6.000 ± 0.041',
-            '5.999 ± 0.044',
-            '[5.969, 6.028]',
-            '[5.954, 6.041]',
-            '—',
-        ],
-        ['<b>I<sub>0</sub></b>', '90', '100 ± 10', '100 ± 10', '[93.2, 107]', '[90, 110]', 'a.u.'],
-        [
-            '<b>I<sub>D</sub></b>',
-            '5.1×10<sup>4</sup>',
-            '5×10<sup>4</sup> ± 1×10<sup>3</sup>',
-            '5×10<sup>4</sup> ± 1×10<sup>3</sup>',
-            '[4.93×10<sup>4</sup>, 5.07×10<sup>4</sup>]',
-            '[4.9×10<sup>4</sup>, 5.1×10<sup>4</sup>]',
-            'a.u./M',
-        ],
-        [
-            '<b>I<sub>HD</sub></b>',
-            '8.1×10<sup>4</sup>',
-            '8×10<sup>4</sup> ± 1×10<sup>3</sup>',
-            '8×10<sup>4</sup> ± 1×10<sup>3</sup>',
-            '[7.93×10<sup>4</sup>, 8.07×10<sup>4</sup>]',
-            '[7.9×10<sup>4</sup>, 8.1×10<sup>4</sup>]',
-            'a.u./M',
-        ],
-    ]
-
-
 def _on_tab(session, name: str) -> None:
     tabs = session._plot_tabs
     tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == name))
 
 
 def test_summary_follows_the_plot_tab(qapp, monkeypatch):
-    """On Ka Sensitivity the summary shows the run's samples; on every other tab the fit, cell for cell."""
+    """On Ka Sensitivity the summary shows the run's samples; every other tab brings the fit back."""
     from gui import workers
 
     monkeypatch.setattr(workers, 'run_sensitivity', _fake_run(3))
     session, warnings = _demo_session(monkeypatch)
     summary = session._summary_widget
-    summary.update_result(_summary_fit())
-    before = _cell_texts(summary._table)
 
     session.run_sensitivity()
     _wait_for_worker(session, qapp)
 
-    result = session._state.sensitivity_result
     assert warnings == []
-    assert not hasattr(session._sensitivity_widget, '_report')
     assert session._plot_tabs.currentWidget() is session._sensitivity_widget
     assert _in_samples_view(summary)
-    assert [row[1:] for row in _cell_texts(summary._table)] == _over_samples(
-        result, np.isfinite(result.sample_ka['Ka_guest'])
-    )
-    for name in ('Fit Curve', 'Distributions', 'Identifiability'):
+    for name in ('Fit Curve', 'Identifiability'):
         _on_tab(session, name)
         assert not _in_samples_view(summary)
-        assert _cell_texts(summary._table) == before
-        assert not summary._rep_row.isHidden()
         _on_tab(session, 'Ka Sensitivity')
         assert _in_samples_view(summary)
-        assert summary._rep_row.isHidden()
 
 
 def test_summary_never_shows_a_run_that_is_not_the_tabs(qapp, monkeypatch):
@@ -1941,3 +1506,124 @@ def test_new_data_discards_a_run_still_going(qapp, monkeypatch):
     assert session._state.sensitivity_result is None
     assert session._summary_widget._sensitivity is None
     assert session._sensitivity_widget._stack.currentWidget() is session._sensitivity_widget._placeholder
+
+
+# ---------------------------------------------------------------------------
+# A run with no indices to show, and the size one run is quoted
+# ---------------------------------------------------------------------------
+
+
+def _no_index_result(*, stopped: bool):
+    """A Sobol result whose every index is NaN: no sample group was ever completed."""
+    inputs = list(_sobol_result().sobol_s1['Ka_guest'])
+    missing = {'Ka_guest': {key: np.nan for key in inputs}}
+    missing_ci = {'Ka_guest': {key: (np.nan, np.nan) for key in inputs}}
+    ka = np.array(_sobol_result().sample_ka['Ka_guest'])
+    ka[6:] = np.nan  # only the first fits of the first matrix were made
+    return replace(
+        _sobol_result(),
+        sobol_s1=missing,
+        sobol_st=missing,
+        sobol_s1_ci=missing_ci,
+        sobol_st_ci=missing_ci,
+        sample_ka={'Ka_guest': ka},
+        sobol_rows_left_out={'Ka_guest': _sobol_result().config.n_samples},
+        stopped=stopped,
+        n_success=6,
+        n_total=6,
+    )
+
+
+@pytest.mark.parametrize(
+    ('stopped', 'fix'),
+    [(True, 'let it finish'), (False, 'Input uncertainty')],
+    ids=['stopped', 'failed'],
+)
+def test_an_index_panel_with_no_bars_says_why_it_is_empty(qapp, stopped, fix):
+    """Axes, a title and a legend with nothing drawn between them state only that something is missing.
+
+    The reason belongs where the bars would be: the panel is what the user is
+    looking at, and it is the picture the tab saves.
+    """
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_no_index_result(stopped=stopped))
+    (plot,) = [plot for plot in _plots(w) if 'Sobol indices' in plot.titleLabel.text]
+
+    bars = [item for item in plot.items if isinstance(item, pg.BarGraphItem)]
+    assert all(len(item.opts['x0']) == 0 for item in bars)  # nothing is drawn
+    texts = [item.textItem.toPlainText() for item in plot.items if isinstance(item, pg.TextItem)]
+    (reason,) = [text for text in texts if text != 'n/a']
+    assert reason.startswith('No index')
+    assert fix in reason
+    w.close()
+
+
+def test_an_empty_index_panel_counts_the_samples_that_did_get_a_fit(qapp):
+    """A run can hold a fit for every sample it reports and still have finished no sample group.
+
+    The design is run one matrix at a time, so Fit Quality can count samples
+    with a fit while the index panels have nothing to rank. The two readings sit
+    in different panes and read as contradicting each other unless the panel
+    with no bars gives both counts.
+    """
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    result = _no_index_result(stopped=True)
+    fitted = int(np.isfinite(result.sample_ka['Ka_guest']).sum())
+    groups = result.config.n_samples
+    finished = groups - result.sobol_rows_left_out['Ka_guest']
+    assert fitted and not finished  # samples were fitted; no group of them is complete
+
+    w = SensitivityWidget()
+    w.update_result(result)
+    (plot,) = [plot for plot in _plots(w) if 'Sobol indices' in plot.titleLabel.text]
+    texts = [item.textItem.toPlainText() for item in plot.items if isinstance(item, pg.TextItem)]
+    (reason,) = [text for text in texts if text != 'n/a']
+
+    assert f'{finished:,} of {groups:,} sample groups' in reason
+    assert f'{fitted:,} samples were fitted' in reason
+    w.close()
+
+
+def test_one_run_is_quoted_the_same_number_of_fits_wherever_it_is_counted(qapp, monkeypatch):
+    """The cost dialog, the progress line and the message at the end all size the same run, written the same way.
+
+    The run makes one fit per perturbed sample and one baseline fit. Quoting two
+    of those numbers reads as two different runs, and so does quoting one of
+    them as 5121 where the others say 5,121.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+
+    from core.pipeline.sensitivity import estimated_fit_count
+    from gui import workers
+
+    def run(ms, assay_cls, conditions, fit_config, sens_config, *, progress, **kwargs):
+        # What run_sensitivity itself counts to: the perturbed fits and the baseline.
+        total = estimated_fit_count(sens_config) + 1
+        progress(total, total)
+        result = _made_on(_sobol_result(), ms, conditions)
+        return replace(result, config=sens_config, n_success=total - 1, n_total=total - 1)
+
+    monkeypatch.setattr(workers, 'run_sensitivity', run)
+    session, warnings = _demo_session(monkeypatch)
+    asked = []
+    monkeypatch.setattr('gui.fitting_session.LONG_RUN_SOLVES', 0)  # so the cost dialog is offered
+    monkeypatch.setattr(
+        'gui.fitting_session.QMessageBox.question',
+        lambda parent, title, text, *args: (asked.append(text), QMessageBox.StandardButton.Yes)[1],
+    )
+    messages = []
+    session.status_message.connect(messages.append)
+
+    session.run_sensitivity()
+    _wait_for_worker(session, qapp)
+
+    counted = session._sensitivity_widget._progress_bar.maximum()
+    assert warnings == []
+    assert counted > 1
+    assert counted >= 1000  # so the thousands separator is visible at all
+    assert f'{counted:,} times' in asked[0]
+    assert f'Analysing — {counted:,} of {counted:,}' in messages
+    assert messages[-1] == f'Sensitivity complete — {counted:,} of {counted:,} fits succeeded'

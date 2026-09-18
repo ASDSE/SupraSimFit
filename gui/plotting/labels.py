@@ -3,7 +3,9 @@
 Used by FitSummaryWidget and plot annotations to render math-style names
 in Qt widgets that support HTML (QLabel, QFormLayout, pg.TextItem).
 :func:`plain_label` flattens such a label for widgets that paint plain text,
-and :func:`fmt_r2` renders a coefficient of determination for either.
+:func:`fmt_r2` renders a coefficient of determination for either, and
+:func:`fmt_interval_html` / :func:`fmt_interval_plain` write a confidence
+interval the same way wherever one is reported.
 
 Value and unit formatting is handled by Pint's built-in formatters:
   - ``f"{Q_(value, unit):.3g~H}"`` for HTML values+units
@@ -64,22 +66,18 @@ def plain_label(html: str) -> str:
     return _ANY_TAG_RE.sub('', text)
 
 
-def fmt_r2(value: float, floor: float | None = None) -> str:
+def fmt_r2(value: float) -> str:
     """*value* as an R², with enough decimals that it reads for what it is.
 
     Four decimals at least, and more where four would hide how far below 1 the
-    value lies, round it up to 1, or carry it across *floor*. A value below 1 or
-    below *floor* then always reads below it, so a shown R² never appears to
-    meet a mark it misses: ``0.9908``, ``0.999984``, and ``0.98996`` against a
-    floor of 0.99.
+    value lies or round it up to 1. A value below 1 then always reads below 1,
+    so a fit that does not describe the data exactly is never shown as one that
+    does: ``0.9908``, ``0.999984``.
 
     Parameters
     ----------
     value : float
         The coefficient of determination to render.
-    floor : float or None
-        A mark the reading must stay on its own side of, such as the Min R² a
-        fit has to clear. ``None`` leaves only the distance to 1 to satisfy.
 
     Returns
     -------
@@ -91,10 +89,74 @@ def fmt_r2(value: float, floor: float | None = None) -> str:
     start = 4 if not math.isfinite(gap) or gap <= 0 else max(4, math.ceil(-math.log10(gap)) + 1)
     for digits in range(min(start, _R2_MAX_DECIMALS), _R2_MAX_DECIMALS + 1):
         text = f'{value:.{digits}f}'
-        shown = float(text)
-        if (value >= 1.0 or shown < 1.0) and (floor is None or (value < floor) == (shown < floor)):
+        if value >= 1.0 or float(text) < 1.0:
             break
     return text
+
+
+#: What an interval endpoint reads where the data do not close it, and what the
+#: whole interval reads where they close neither end. A side is open when the
+#: profile stays inside the F-test threshold as far as it goes, so no number
+#: would be the limit; words say that, where a number would claim a bound.
+_NO_UPPER = 'no upper limit'
+_NO_LOWER = 'no lower limit'
+_UNLIMITED = 'not limited by the data'
+
+#: Marks a reported interval whose accepted values come in separate stretches,
+#: wherever the bracket alone would read as one connected range.
+SPLIT_MARK = '†'
+
+#: What that mark means, in one sentence, wherever a split interval is reported.
+SPLIT_NOTE = (
+    'not every value inside this interval explains the data well enough: the ones that do come in separate '
+    'stretches and the interval spans all of them. The Identifiability tab shows where they are.'
+)
+
+#: Said of an open side the binding model cannot be solved past: the edge is
+#: where the arithmetic stops, not where the data stop, so more points cannot
+#: move it. The bracket reads the same as a side more points would close.
+UNSOLVABLE_NOTE = (
+    'the open side is where the binding model stops having a solution, not where the data stop, so more '
+    'measurements cannot close it.'
+)
+
+
+def fmt_interval_html(low: str, high: str, open_low: bool, open_high: bool) -> str:
+    """A confidence interval as HTML, from endpoints already formatted.
+
+    ``[1.3×10⁸, 1.9×10⁸]`` where the data close both ends, and the open side in
+    words — italic, so prose is not read as a number — where they do not:
+    ``[1.3×10⁸, <i>no upper limit</i>]``, ``[<i>no lower limit</i>, 1.9×10⁸]``,
+    ``[<i>not limited by the data</i>]``.
+
+    Parameters
+    ----------
+    low, high : str
+        The endpoints, formatted by the caller so every reported number of one
+        parameter reads the same way.
+    open_low, open_high : bool
+        Per endpoint, whether the interval reaches as far as the profile goes
+        rather than being closed by the data.
+    """
+    return _interval_text(low, high, open_low, open_high, '<i>{}</i>')
+
+
+def fmt_interval_plain(low: str, high: str, open_low: bool, open_high: bool) -> str:
+    """A confidence interval as plain text; see :func:`fmt_interval_html`.
+
+    ``[1.3×10⁸, no upper limit]`` — the same wording, for a file or a widget
+    that paints plain text.
+    """
+    return _interval_text(low, high, open_low, open_high, '{}')
+
+
+def _interval_text(low: str, high: str, open_low: bool, open_high: bool, words: str) -> str:
+    """The shared interval wording, with the prose phrases wrapped in *words*."""
+    if open_low and open_high:
+        return f'[{words.format(_UNLIMITED)}]'
+    lo = words.format(_NO_LOWER) if open_low else low
+    hi = words.format(_NO_UPPER) if open_high else high
+    return f'[{lo}, {hi}]'
 
 
 def log10_decimals(stats: dict | None) -> int:
@@ -103,14 +165,14 @@ def log10_decimals(stats: dict | None) -> int:
     A log₁₀ value sits between about 0 and 12 while its spread can be a few
     thousandths, and three or four significant figures would then round 8.9974
     to 9. Fixed decimals, enough for two figures of the tightest spread the row
-    reports, keep the value and its spread on the same scale. A row whose pool
-    reports no spread at all — a pool of one fit — has nothing to match, so it
-    is written to the finest reading rather than the coarsest.
+    reports, keep the value and its spread on the same scale. A row whose
+    statistics report no spread at all has nothing to match, so it is written to
+    the finest reading rather than the coarsest.
 
     Parameters
     ----------
     stats : dict or None
-        The row's ``describe()`` statistics, or ``None`` when it has no pool.
+        The row's ``describe()`` statistics, or ``None`` when it reports none.
 
     Returns
     -------
@@ -130,8 +192,9 @@ def log10_decimals(stats: dict | None) -> int:
 def fmt_log10(value: float, stats: dict | None) -> str:
     """*value* as a log₁₀ reading, to the decimals :func:`log10_decimals` gives *stats*.
 
-    The summary table and the text report write a log₁₀ value and its spread
-    through this, so the same fit reads the same on screen and in the file. A
+    The summary table and the text report write a log₁₀ value, its interval and
+    its spread through this, so the same fit reads the same on screen and in the
+    file. A
     spread too tight for those decimals is written to four significant figures
     instead, so a number that is not zero never reads as zero.
     """
@@ -268,3 +331,21 @@ def fmt_unit_pretty(unit_str: str) -> str:
         base = formatted[2:].strip()
         return f'{base}⁻¹'
     return formatted
+
+
+def fmt_bound_note(on_bound: dict) -> str:
+    """What to tell the user about signal parameters a fit ended on an entered bound; ``''`` for none.
+
+    *on_bound* maps each such parameter to the bound it sits on, as
+    :func:`core.pipeline.fit_pipeline.parameters_on_bound` returns it.
+    """
+    if not on_bound:
+        return ''
+    held = '; '.join(
+        f'{fmt_param_plain(key)} at {fmt_sci(float(bound.magnitude))} {fmt_unit_pretty(str(bound.units))}'.strip()
+        for key, bound in on_bound.items()
+    )
+    return (
+        f'The fit ended on a bound entered under Parameter Bounds ({held}), which may hold the curve away from '
+        'the data. Unless that bound is something you know about the system, widen it and fit again.'
+    )

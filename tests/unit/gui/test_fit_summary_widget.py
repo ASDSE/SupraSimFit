@@ -1,4 +1,9 @@
-"""Widget tests for FitSummaryWidget — requires a QApplication."""
+"""Widget tests for FitSummaryWidget — requires a QApplication.
+
+Every fixture here is a hand-built :class:`FitResult`, so what the table shows
+is checked against numbers written in the test rather than against whatever a
+fit happened to produce.
+"""
 
 import numpy as np
 import pytest
@@ -6,482 +11,686 @@ import pytest
 pytest.importorskip('PyQt6')
 
 
-@pytest.fixture
-def minimal_fit_result():
+def _result(**overrides):
+    """A GDA fit of one signal: Ka with a closed interval, the signal parameters without one."""
     from core.pipeline.fit_pipeline import FitResult
+    from core.pipeline.varpro import KaInterval
+    from core.units import Q_
 
     x = np.linspace(0, 1e-4, 20)
-    return FitResult(
-        parameters={'Ka_guest': 1e6, 'I0': 100.0, 'I_dye_free': 5e4, 'I_dye_bound': 8e4},
+    fields = dict(
+        parameters={
+            'Ka_guest': Q_(1.24e6, '1/M'),
+            'I0': Q_(100.0, 'au'),
+            'I_dye_free': Q_(5e4, 'au/M'),
+            'I_dye_bound': Q_(8e4, 'au/M'),
+        },
         rmse=0.005,
         r_squared=0.998,
-        n_passing=87,
-        n_total=100,
-        x_fit=x,
-        y_fit=x * 1.05 + 0.01,
+        x_fit=Q_(x, 'M'),
+        y_fit=Q_(x * 1.05 + 0.01, 'au'),
         assay_type='GDA',
         model_name='equilibrium_4param',
+        fit_config={'per_replicate': False, 'level': 0.95},
+        intervals={'Ka_guest': KaInterval(0.7e6, 2.2e6, False, False, 0.95, 16)},
     )
+    fields.update(overrides)
+    return FitResult(**fields)
 
 
-def test_update_result_metric_labels_nonempty(qapp, minimal_fit_result):
+def _widget(result=None, **overrides):
     from gui.plotting.fit_summary_widget import FitSummaryWidget
 
     widget = FitSummaryWidget()
-    widget.update_result(minimal_fit_result)
+    widget.update_result(_result(**overrides) if result is None else result)
+    return widget
+
+
+def _headers(table):
+    return [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+
+
+def _row(table, row):
+    return [table.cellWidget(row, c).text() for c in range(table.columnCount())]
+
+
+def _ka_row(table):
+    """The Ka row: the first one whose label is not a log₁₀ twin and names a binding constant."""
+    for r in range(table.rowCount()):
+        label = table.cellWidget(r, 0).text()
+        if 'K<sub>a' in label and not label.startswith('log₁₀'):
+            return _row(table, r)
+    raise AssertionError('no Ka row in the table')
+
+
+def _log_row(table):
+    for r in range(table.rowCount()):
+        if table.cellWidget(r, 0).text().startswith('log₁₀'):
+            return _row(table, r)
+    raise AssertionError('no log₁₀ row in the table')
+
+
+# ---------------------------------------------------------------------------
+# The interval column
+# ---------------------------------------------------------------------------
+
+
+def test_the_table_reports_an_estimate_and_its_interval_per_binding_constant(qapp):
+    from gui.plotting.fit_summary_widget import _LEVEL_TEXT
+
+    widget = _widget()
+    table = widget._table
+
+    assert f'{_LEVEL_TEXT} interval' in _headers(table)
+    _, estimate, interval, _ = _ka_row(table)
+    assert estimate.startswith('1.24×10')
+    # Both endpoints are the interval's own, written like the estimate.
+    assert interval.startswith('[7×10') and '2.2×10' in interval
+    assert 'limit' not in interval
+
+
+def test_the_log10_row_is_the_ka_row_read_on_a_log_scale(qapp):
+    """log₁₀ of a monotone interval is the interval of the log₁₀, endpoint by endpoint."""
+    widget = _widget()
+    _, estimate, interval, _ = _log_row(widget._table)
+
+    assert float(estimate) == pytest.approx(np.log10(1.24e6), abs=5e-5)
+    low, high = (float(v) for v in interval.strip('[]').split(', '))
+    assert (low, high) == (pytest.approx(np.log10(0.7e6), abs=5e-5), pytest.approx(np.log10(2.2e6), abs=5e-5))
+
+
+@pytest.mark.parametrize(
+    ('open_low', 'open_high', 'expected'),
+    [
+        (False, True, 'no upper limit'),
+        (True, False, 'no lower limit'),
+        (True, True, 'not limited by the data'),
+    ],
+    ids=['upper-open', 'lower-open', 'both-open'],
+)
+def test_an_open_side_is_written_in_words_not_as_the_bound_the_search_stopped_at(qapp, open_low, open_high, expected):
+    """A side the data do not close has no limit to show; printing the bound would claim one."""
+    from core.pipeline.varpro import KaInterval
+
+    widget = _widget(intervals={'Ka_guest': KaInterval(1e-8, 1e12, open_low, open_high, 0.95, 16)})
+    interval = _ka_row(widget._table)[2]
+
+    assert expected in interval
+    assert '10¹²' not in interval and '10⁻⁸' not in interval
+
+
+def test_an_interval_that_spans_rejected_values_is_marked_and_says_why(qapp):
+    """A split interval's bracket covers Ka the F test rejects, so read as a plain range it overstates the data.
+
+    The flag reaches the text report and the Identifiability tab; it has to
+    reach the two places the headline is actually read as well.
+    """
+    from core.pipeline.varpro import KaInterval
+    from gui.plotting.labels import SPLIT_MARK
+
+    plain = _widget(intervals={'Ka_guest': KaInterval(1e5, 1e7, False, False, 0.95, 16, split=False)})
+    widget = _widget(intervals={'Ka_guest': KaInterval(1e5, 1e7, False, False, 0.95, 16, split=True)})
+    row = _ka_row(widget._table)
+
+    assert SPLIT_MARK not in _ka_row(plain._table)[2]
+    assert SPLIT_MARK in row[2]
+    assert row[1] == _ka_row(plain._table)[1]  # only the interval is marked, not the estimate
+    assert not widget._footnote.isHidden()
+    assert 'separate stretches' in widget._footnote.text()
+    assert 'Identifiability' in widget._footnote.text()
+
+
+def test_an_open_side_no_more_data_could_close_says_so_where_the_bracket_cannot(qapp):
+    """'no upper limit' covers a side more points would close and one the model's arithmetic ends at."""
+    from core.pipeline.varpro import KaInterval
+
+    closable = _widget(intervals={'Ka_guest': KaInterval(1e5, 1e12, False, True, 0.95, 16)})
+    unsolvable = _widget(intervals={'Ka_guest': KaInterval(1e5, 1e12, False, True, 0.95, 16, unsolvable_high=True)})
+    column = _headers(unsolvable._table).index('95 % interval')
+    row = next(r for r in range(unsolvable._table.rowCount()) if 'K<sub>a' in unsolvable._table.cellWidget(r, 0).text())
+
+    assert closable._table.cellWidget(row, column).toolTip() == ''
+    assert 'more measurements cannot close it' in unsolvable._table.cellWidget(row, column).toolTip().lower()
+
+
+def test_a_binding_constant_held_fixed_says_so_instead_of_an_interval(qapp):
+    """A Ka that was not fitted has no interval to report, and 'fixed' is why — not 'unknown'."""
+    widget = _widget(intervals={})
+    label, _, interval, _ = _ka_row(widget._table)
+
+    assert 'fixed' in interval
+    assert widget._caption.text() == ''
+
+
+def test_a_signal_parameter_carries_no_interval(qapp):
+    """Only the binding constants are tested; a signal coefficient's row must not invent one."""
+    widget = _widget()
+    table = widget._table
+    rows = [_row(table, r) for r in range(table.rowCount())]
+    signal_rows = [r for r in rows if 'I<sub>' in r[0]]
+
+    assert len(signal_rows) == 3
+    assert all(r[2] == '—' for r in signal_rows)
+
+
+def test_a_file_written_before_intervals_says_so_and_shows_none(qapp):
+    """An imported legacy fit keeps its parameters; claiming an interval it never carried would be a fabrication."""
+    from gui.plotting.fit_summary_widget import _LEGACY_NOTE
+
+    widget = _widget(intervals=None)
+
+    assert _ka_row(widget._table)[2] == '—'
+    assert widget._caption.text() == _LEGACY_NOTE
+    assert widget._caption.isVisible() or not widget._caption.isHidden()
+
+
+def test_a_dye_alone_fit_has_no_binding_constant_and_no_legacy_note(qapp):
+    """The note is about a missing interval, and a linear calibration was never going to have one."""
+    from core.pipeline.fit_pipeline import FitResult
+    from core.units import Q_
+
+    x = np.linspace(0, 1e-4, 5)
+    result = FitResult(
+        parameters={'slope': Q_(1.5, 'au/M'), 'intercept': Q_(0.2, 'au')},
+        rmse=0.01,
+        r_squared=0.99,
+        x_fit=Q_(x, 'M'),
+        y_fit=Q_(x * 1.5, 'au'),
+        assay_type='DYE_ALONE',
+        model_name='linear',
+    )
+    widget = _widget(result)
+
+    assert widget._table.rowCount() == 2
+    assert widget._caption.text() == ''
+
+
+def test_an_unknown_assay_type_still_renders_its_parameters(qapp):
+    from core.pipeline.fit_pipeline import FitResult
+    from core.units import Q_
+
+    x = np.linspace(0, 1e-4, 5)
+    result = FitResult(
+        parameters={'slope': Q_(1.5, 'au/M')},
+        rmse=0.01,
+        r_squared=0.99,
+        x_fit=Q_(x, 'M'),
+        y_fit=Q_(x * 1.5, 'au'),
+        assay_type='UNKNOWN_TYPE',
+        model_name='linear',
+    )
+    widget = _widget(result)  # must not raise
+
+    assert widget._table.rowCount() == 1
+
+
+# ---------------------------------------------------------------------------
+# Degenerate rows
+# ---------------------------------------------------------------------------
+
+
+def test_a_fit_that_ended_on_an_entered_bound_says_so_above_the_table(qapp):
+    """A curve a bound may be holding away from the data must not look like any other fit."""
+    config = {'per_replicate': False, 'level': 0.95, 'custom_bounds': {'I_dye_bound': [0.0, 8e4, 'au/M']}}
+    widget = _widget(fit_config=config)
+
+    assert 'ended on a bound entered under Parameter Bounds (' in widget._caption.text()
+    assert '8.0×10⁴' in widget._caption.text()
+    assert not widget._caption.isHidden()
+
+
+def test_degenerate_rows_are_starred_and_explained_once(qapp):
+    """The value is one member of a family that draws the same curve, and the table has to say so."""
+    widget = _widget(degenerate_keys=('I0', 'I_dye_free', 'I_dye_bound'))
+    table = widget._table
+    starred = [r for r in range(table.rowCount()) if table.cellWidget(r, 0).text().endswith('*')]
+
+    assert len(starred) == 3
+    assert not _ka_row(table)[0].endswith('*')
+    assert not widget._footnote.isHidden()
+    assert 'only a combination' in widget._footnote.text()
+    assert table.cellWidget(starred[0], 0).toolTip() == widget._footnote.text().removeprefix('* ')
+
+
+def test_a_fit_with_nothing_degenerate_shows_no_footnote(qapp):
+    widget = _widget()
+
+    assert widget._footnote.isHidden()
+
+
+# ---------------------------------------------------------------------------
+# Replicates: the two columns, the quality row, and the table
+# ---------------------------------------------------------------------------
+
+
+def _per_replica_result(p_values=None, excluded=(), ka_by_replicate=None):
+    """A per-replicate GDA fit of four replicates, each with its own fit."""
+    from dataclasses import replace
+
+    from core.units import Q_
+
+    ka_by_replicate = ka_by_replicate or {'0': 1.0e6, '1': 1.2e6, '2': 1.4e6, '3': 9.0e6}
+    given = ['0', '1', '2', '3']
+    used = [rid for rid in given if rid not in excluded]
+    base = _result(fit_config={'per_replicate': True, 'level': 0.95})
+    replica_fits = [
+        replace(
+            base,
+            parameters={**base.parameters, 'Ka_guest': Q_(ka_by_replicate[rid], '1/M')},
+            r_squared=0.99 + 0.001 * i,
+            intervals=None,
+            metadata={'replica_id': rid, 'active_replica_ids': [rid]},
+        )
+        for i, rid in enumerate(given)
+    ]
+    metadata = {'active_replica_ids': given, 'replica_ids_fit': used}
+    if excluded:
+        metadata['replica_failures'] = {rid: f'Replicate {rid} needs a different Ka.' for rid in excluded}
+    if p_values:
+        metadata['replicate_test'] = {'level': 0.01, 'p_values': p_values}
+    return replace(base, replica_fits=replica_fits, metadata=metadata)
+
+
+def test_the_replicate_columns_summarise_the_replicates_that_entered_the_fit(qapp):
+    """Median and min–max come from the used replicates' own fits — a left-out one describes data the fit does not."""
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.set_replica_ids(['0', '1', '2', '3'])
+    widget.update_result(_per_replica_result(excluded=('3',)))
+    table = widget._table
+
+    assert _headers(table)[3:5] == ['Replicates: median', 'Replicates: min - max']
+    _, _, _, median, span, _ = _ka_row(table)
+    # Used replicates hold 1.0, 1.2 and 1.4 ×10⁶ — the excluded 9.0×10⁶ is out.
+    assert median.startswith('1.2×10')
+    assert span == '[1×10<sup>6</sup>, 1.4×10<sup>6</sup>]'
+
+
+def test_a_fit_of_one_signal_is_not_shown_two_empty_replicate_columns(qapp):
+    widget = _widget()
+
+    assert _headers(widget._table) == ['Parameter', 'Estimate', '95 % interval', 'Units']
+
+
+def test_replicates_used_counts_the_ones_that_entered_and_names_the_rest(qapp):
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.set_replica_ids(['0', '1', '2', '3'])
+    widget.update_result(_per_replica_result(excluded=('3',)))
+
+    assert widget._replicates_label.text() == '3 of 4'
+    tooltip = widget._replicates_label.toolTip()
+    assert tooltip.startswith('Left out: D')  # the fourth replicate's panel label
+    assert 'needs a different Ka' in tooltip
+
+
+def test_the_replicates_table_lists_every_replicate_with_its_own_fit_and_verdict(qapp):
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.set_replica_ids(['0', '1', '2', '3'])
+    widget.update_result(_per_replica_result(p_values={'0': 0.8, '1': 0.6, '2': 0.4, '3': 0.0004}, excluded=('3',)))
+    table = widget._replicates_table
+
+    assert not table.isHidden()
+    # A header is painted as plain text, so the binding constant is named in plain text.
+    assert _headers(table) == ['Replicate', 'Ka(G) [M⁻¹]', 'R²', 'p-value', 'In the fit']
+    assert not any('<' in header for header in _headers(table))
+    assert [_row(table, r)[0] for r in range(4)] == ['A', 'B', 'C', 'D']
+    assert [_row(table, r)[-1] for r in range(4)] == ['used', 'used', 'used', 'left out']
+    assert _row(table, 3)[1].startswith('9×10')
+    assert _row(table, 3)[3] == '0.0004'
+    assert 'needs a different Ka' in table.cellWidget(3, 4).toolTip()
+
+
+def test_a_fit_of_the_average_shows_no_replicates_table(qapp):
+    widget = _widget()
+
+    assert widget._replicates_table.isHidden()
+    assert widget._replicates_heading.isHidden()
+
+
+def test_replicates_too_few_to_test_show_no_p_value_rather_than_a_made_up_one(qapp):
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.set_replica_ids(['0', '1', '2', '3'])
+    widget.update_result(_per_replica_result())  # no replicate_test recorded
+    table = widget._replicates_table
+
+    assert [_row(table, r)[3] for r in range(4)] == ['—', '—', '—', '—']
+
+
+# ---------------------------------------------------------------------------
+# Quality, clearing and hiding
+# ---------------------------------------------------------------------------
+
+
+def test_the_quality_panel_reports_rmse_and_r2(qapp):
+    widget = _widget()
 
     assert widget._rmse_label.text() not in ('', '—')
-    assert widget._r2_label.text() not in ('', '—')
-    assert widget._passing_label.text() not in ('', '—')
+    assert widget._r2_label.text() == '0.9980'
 
 
-def test_clear_resets_state(qapp, minimal_fit_result):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(minimal_fit_result)
+def test_clear_resets_state(qapp):
+    widget = _widget()
     widget.clear()
 
     assert widget._table.rowCount() == 0
     assert widget._rmse_label.text() == '—'
     assert widget._r2_label.text() == '—'
-    assert widget._passing_label.text() == '—'
+    assert widget._replicates_label.text() == '—'
+    assert widget._replicates_table.isHidden()
 
 
-def test_unknown_assay_type_does_not_crash(qapp):
-    from core.pipeline.fit_pipeline import FitResult
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
+def test_a_hidden_fit_shows_its_note_instead_of_numbers_and_comes_back(qapp):
+    widget = _widget()
+    shown = _ka_row(widget._table)
 
-    x = np.linspace(0, 1e-4, 5)
-    result = FitResult(
-        parameters={'slope': 1.5},
-        rmse=0.01,
-        r_squared=0.99,
-        n_passing=1,
-        n_total=1,
-        x_fit=x,
-        y_fit=x * 1.5,
-        assay_type='UNKNOWN_TYPE',
-        model_name='linear',
-    )
-    widget = FitSummaryWidget()
-    widget.update_result(result)  # must not raise
+    note = 'This fit was made on replicates B–D. Replicate B is now off.'
+    widget.show_mismatch(note)
+    assert widget._table.rowCount() == 0
+    assert widget._caption.text() == note
 
-    assert widget._table.rowCount() == 1
+    widget.show_mismatch(None)
+    assert _ka_row(widget._table) == shown
 
 
-@pytest.fixture
-def full_fit_result():
-    """A FitResult carrying the ensemble pool (parameter + quality samples)."""
-    from core.pipeline.fit_pipeline import FitResult
-
-    x = np.linspace(0, 1e-4, 20)
-    samples = {
-        'Ka_guest': np.array([1.0e6, 1.1e6, 0.9e6]),
-        'I0': np.array([100.0, 90.0, 110.0]),
-        'I_dye_free': np.array([5.0e4, 5.1e4, 4.9e4]),
-        'I_dye_bound': np.array([8.0e4, 8.1e4, 7.9e4]),
-    }
-    quality = {
-        'rmse': np.array([0.006, 0.005, 0.007]),
-        'r_squared': np.array([0.997, 0.998, 0.996]),
-    }
-    return FitResult(
-        # Representative = index 1 (best RMSE / R²).
-        parameters={'Ka_guest': 1.1e6, 'I0': 90.0, 'I_dye_free': 5.1e4, 'I_dye_bound': 8.1e4},
-        rmse=0.005,
-        r_squared=0.998,
-        n_passing=3,
-        n_total=10,
-        x_fit=x,
-        y_fit=x * 1.05,
-        assay_type='GDA',
-        model_name='equilibrium_4param',
-        parameter_samples=samples,
-        quality_samples=quality,
-        representative_index=1,
-    )
-
-
-def test_seven_columns_merged_stats_and_ranges(qapp, full_fit_result):
-    from gui.plotting.fit_summary_widget import _COLUMN_HEADERS, FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(full_fit_result)
-
-    assert widget._table.columnCount() == 7
-    headers = [widget._table.horizontalHeaderItem(c).text() for c in range(7)]
-    assert headers == list(_COLUMN_HEADERS)
-    # Merged 'central ± spread' cells (Median ± MAD, Mean ± SD) render one '±'.
-    for col in (2, 3):
-        assert '±' in widget._table.cellWidget(0, col).text()
-    # 68% Range (col 4) and Min-Max Range (col 5) both render '[lo, hi]'.
-    for col in (4, 5):
-        t = widget._table.cellWidget(0, col).text()
-        assert t.startswith('[') and t.endswith(']') and ',' in t
-
-
-def test_log10_ka_row_computed_in_log_space(qapp, full_fit_result):
-    """A log₁₀(Ka) row follows the Ka row; its Estimate is log₁₀ of the
-    representative Ka (checked independently), not derived from a Ka spread."""
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(full_fit_result)
-
-    # GDA has one log-scale key (Ka_guest) -> 4 params + 1 log row = 5 rows.
-    assert widget._table.rowCount() == 5
-    labels = [widget._table.cellWidget(r, 0).text() for r in range(5)]
-    log_rows = [i for i, t in enumerate(labels) if t.startswith('log₁₀')]
-    assert len(log_rows) == 1
-    est = widget._table.cellWidget(log_rows[0], 1).text()
-    assert abs(float(est) - np.log10(1.1e6)) < 0.05  # representative Ka = 1.1e6
-
-
-def test_log10_row_is_never_written_coarser_than_its_own_spread(qapp, full_fit_result):
-    """8.9974 must not read as '9': the log₁₀ row's decimals follow the spread it reports beside it."""
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    # A pool whose log₁₀(Ka) values sit a few thousandths apart around 8.9974.
-    full_fit_result.parameter_samples['Ka_guest'] = 10 ** np.array([8.9940, 8.9974, 9.0008])
-    full_fit_result.parameters['Ka_guest'] = 10**8.9974
-
-    widget = FitSummaryWidget()
-    widget.update_result(full_fit_result)
-    (row,) = [r for r in range(widget._table.rowCount()) if widget._table.cellWidget(r, 0).text().startswith('log₁₀')]
-    cells = [widget._table.cellWidget(row, c).text() for c in range(widget._table.columnCount())]
-
-    assert cells[1] == '8.9974'
-    # Every statistic beside it is written to the same decimals, so they compare.
-    assert cells[2].startswith('8.9974 ± 0.00')
-    assert cells[5] == '[8.9940, 9.0008]'
-
-
-def test_a_log10_row_whose_pool_has_no_spread_keeps_the_figures_the_fit_knows(qapp, full_fit_result):
-    """A pool of one fit reports a spread of zero, which is no reason to round the value.
-
-    Written to the coarsest reading, the log₁₀ row would throw away three
-    figures the Ka row directly above it still carries.
-    """
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    full_fit_result.parameter_samples['Ka_guest'] = np.array([3.14e8])
-    full_fit_result.parameters['Ka_guest'] = 3.14e8
-
-    widget = FitSummaryWidget()
-    widget.update_result(full_fit_result)
-    (row,) = [r for r in range(widget._table.rowCount()) if widget._table.cellWidget(r, 0).text().startswith('log₁₀')]
-    estimate = widget._table.cellWidget(row, 1).text()
-
-    assert abs(float(estimate) - np.log10(3.14e8)) < 1e-6
-    assert estimate.startswith('8.4969')
-
-
-def test_a_log10_spread_too_tight_for_its_decimals_is_not_written_as_zero(qapp, full_fit_result):
-    """A pool agreeing to a billionth of a decade has a spread, and reading '± 0.000000' denies it."""
-    from gui.plotting.labels import fmt_log10
-
-    stats = {'mad': 5.09e-9, 'std': 6e-9, 'p16': 8.496983, 'p84': 8.496983, 'min': 8.496983, 'max': 8.496983}
-
-    assert fmt_log10(8.496983, stats) == '8.496983'
-    assert float(fmt_log10(5.09e-9, stats)) == pytest.approx(5.09e-9)
-
-
-def test_the_units_column_stays_readable_when_the_table_is_too_narrow(qapp, full_fit_result):
-    """Squeezed, the columns give back width down to their headers; short of that, a scrollbar stays on screen."""
+def _shown_tables(qapp, widget, size):
+    """*widget* laid out at *size* without a window on screen, and the tables it is showing."""
     from PyQt6.QtCore import Qt
 
-    from gui.plotting.fit_summary_widget import _UNITS_COL, FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(full_fit_result)
-    table = widget._table
-    table.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-    table.resize(420, 300)
-    table.show()
-    qapp.processEvents()
-    table.autosize_columns()
-
-    header_width = table.horizontalHeader().fontMetrics().horizontalAdvance('Units')
-    assert table.columnWidth(_UNITS_COL) >= header_width
-    right_edge = sum(table.columnWidth(c) for c in range(table.columnCount()))
-    assert (
-        right_edge <= table.viewport().width()
-        or table.horizontalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOn
-    )
-    table.close()
+    widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    widget.resize(*size)
+    widget.show()
+    for _ in range(4):
+        qapp.processEvents()
+    return [table for table in (widget._table, widget._replicates_table) if not table.isHidden()]
 
 
-def test_rep_combo_offers_named_choices_before_plot_selection(qapp, full_fit_result):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(full_fit_result)
-
-    # Fresh fit, no plot pick yet: Best / Median / Worst only (no 'Selected').
-    names = [widget._rep_combo.itemText(i).split(' ·')[0] for i in range(widget._rep_combo.count())]
-    assert names == ['Best', 'Median', 'Worst']
-
-
-def test_representative_selector_emits_pool_index(qapp, full_fit_result):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(full_fit_result)
-    captured = []
-    widget.representative_selected.connect(captured.append)
-
-    # 'Worst' = lowest R² = pool index 2 (r² = [0.997, 0.998, 0.996]).
-    widget._rep_combo.setCurrentIndex(2)
-    assert captured == [2]
+def _too_narrow(table):
+    """Columns of *table* holding a cell wider than the column, as (column, needed, width)."""
+    clipped = []
+    for col in range(table.columnCount()):
+        needed = max((table.cellWidget(row, col).sizeHint().width() for row in range(table.rowCount())), default=0)
+        if needed > table.columnWidth(col):
+            clipped.append((table.horizontalHeaderItem(col).text(), needed, table.columnWidth(col)))
+    return clipped
 
 
-def test_selected_item_is_sticky_across_switches(qapp, full_fit_result):
-    """The plot-picked fit becomes a sticky 'Selected' item that survives
-    switching the representative to Best, so the user can compare and go back."""
-    from dataclasses import replace
+@pytest.mark.parametrize('view', ['one-ka', 'two-ka', 'samples'])
+def test_no_column_is_narrower_than_the_widest_value_it_shows(qapp, view):
+    """A value cut off mid-number still reads as a number, so a user can copy a wrong one.
 
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(full_fit_result)
-
-    # Pick pool index 2 from the plot -> a 'Selected' item appears, and the
-    # combo reflects the reported representative.
-    widget.note_plot_selection(2)
-    widget.update_result(replace(full_fit_result, representative_index=2))
-    assert any(widget._rep_combo.itemText(i).startswith('Selected') for i in range(widget._rep_combo.count()))
-    assert widget._rep_combo.currentData() == 2
-
-    # Switch the representative to Best (index 1): 'Selected' (2) must remain.
-    widget.update_result(replace(full_fit_result, representative_index=1))
-    sel = [i for i in range(widget._rep_combo.count()) if widget._rep_combo.itemText(i).startswith('Selected')]
-    assert len(sel) == 1
-    assert widget._rep_combo.itemData(sel[0]) == 2  # still points at the plot pick
-
-
-def test_new_fit_clears_sticky_selection(qapp, full_fit_result):
-    """A different fit (new id) resets the sticky 'Selected' choice."""
-    from dataclasses import replace
-
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(full_fit_result)
-    widget.note_plot_selection(2)
-    widget.update_result(replace(full_fit_result, representative_index=2))
-    assert any(widget._rep_combo.itemText(i).startswith('Selected') for i in range(widget._rep_combo.count()))
-
-    fresh = replace(full_fit_result, id='different-fit-id', representative_index=1)
-    widget.update_result(fresh)
-    names = [widget._rep_combo.itemText(i).split(' ·')[0] for i in range(widget._rep_combo.count())]
-    assert 'Selected' not in names
-
-
-@pytest.fixture
-def pool_result():
-    """A five-attempt pool: Best = 1, Median = 0, Worst = 4, and attempt 3 in between.
-
-    By default it is a per-replicate fit whose replicates hold attempts 0-2 and
-    3-4, each led by its first attempt; against the averaged signal attempt 3
-    beats attempt 0, so the fit chose attempt 3. With ``per_replicate=False``
-    it is a single fit, which chose its top-R² attempt 1.
+    The cells carry no ellipsis and no tooltip, and the scrollbar pans the table
+    rather than widening a column, so digits lost to a narrow column are lost
+    for good. Squeezed, the columns keep the width their contents need and the
+    overflow goes to the scrollbar.
     """
+    if view == 'samples':
+        widget = _samples_widget(_sobol_run({'Ka_guest': [1e6, 1.2e6, 1.4e6], 'I0': [1.0, 2.0, 3.0]}))
+    else:
+        widget = _widget() if view == 'one-ka' else _widget(_two_ka_per_replica_result())
+        widget.set_replica_ids(['0', '1', '2', '3'])
+
+    for table in _shown_tables(qapp, widget, (360, 400)):
+        assert _too_narrow(table) == []
+        # What the columns overflow by is what the scrollbar pans over, so the
+        # far end of the last column can be brought into view.
+        bar = table.horizontalScrollBar()
+        bar.setValue(bar.maximum())
+        qapp.processEvents()
+        last = table.columnCount() - 1
+        assert table.columnViewportPosition(last) + table.columnWidth(last) <= table.viewport().width()
+    widget.close()
+
+
+def test_a_log10_row_is_never_written_coarser_than_the_replicate_spread_beside_it(qapp):
+    """8.9974 must not read as '9': the log₁₀ row's decimals follow the spread it reports beside it."""
+    from core.units import Q_
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    ka = {rid: float(10**v) for rid, v in zip('0123', (8.9940, 8.9974, 9.0008, 8.9960))}
+    result = _per_replica_result(ka_by_replicate=ka)
+    result.parameters['Ka_guest'] = Q_(10**8.9974, '1/M')
+
+    widget = FitSummaryWidget()
+    widget.set_replica_ids(['0', '1', '2', '3'])
+    widget.update_result(result)
+    _, estimate, _, median, span, _ = _log_row(widget._table)
+
+    assert estimate == '8.9974'
+    assert span == '[8.9940, 9.0008]'
+    assert float(median) == pytest.approx(8.9967, abs=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# The samples view of a sensitivity run
+# ---------------------------------------------------------------------------
+
+
+def _sobol_run(samples, *, sample_r2=None, degenerate_keys=()):
+    """A finished Sobol' run whose baseline is :func:`_result` and whose samples are *samples*."""
+    from core.pipeline.sensitivity import InputSpec, SensitivityConfig, SensitivityMode, SensitivityResult
+
+    n = len(next(iter(samples.values())))
+    return SensitivityResult(
+        mode=SensitivityMode.SOBOL,
+        assay_type='GDA',
+        ka_keys=('Ka_guest',),
+        baseline_ka={'Ka_guest': 1.24e6},
+        x_offsets_pct=None,
+        y_offsets_pct=None,
+        ka_grid=None,
+        n_success=n,
+        n_total=n,
+        config=SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.sigma_pct(5.0)}, seed=0),
+        seed_used=0,
+        sample_r2=None if sample_r2 is None else np.asarray(sample_r2, dtype=float),
+        baseline_fit=_result(),
+        sample_params={key: np.asarray(v, dtype=float) for key, v in samples.items()},
+        degenerate_keys=degenerate_keys,
+    )
+
+
+def _samples_widget(run):
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.update_result(_result())
+    widget.set_sensitivity(run)
+    widget.show_samples(True)
+    return widget
+
+
+def _named_row(table, label_html):
+    for r in range(table.rowCount()):
+        if table.cellWidget(r, 0).text().startswith(label_html):
+            return _row(table, r)
+    raise AssertionError(f'no row labelled {label_html}')
+
+
+def test_the_samples_view_summarises_the_fitted_samples_around_the_run_s_own_fit(qapp):
+    """Each column is the stated statistic of the samples — hand-computed here, not read back from the widget."""
+    from gui.plotting.fit_summary_widget import _SAMPLE_HEADERS
+
+    # I0 over four samples, the last one unfitted: median 2, MAD 1, min 1,
+    # max 3, and [P16, P84] = [1.32, 2.68] by linear interpolation.
+    run = _sobol_run(
+        {
+            'Ka_guest': [1e6, 1.2e6, 1.4e6, np.nan],
+            'I0': [1.0, 2.0, 3.0, np.nan],
+            'I_dye_free': [5e4, 5e4, 5e4, np.nan],
+            'I_dye_bound': [8e4, 8e4, 8e4, np.nan],
+        }
+    )
+    widget = _samples_widget(run)
+
+    assert _headers(widget._table) == list(_SAMPLE_HEADERS)
+    _, estimate, median_mad, _, p68, span, _ = _named_row(widget._table, '<b>I<sub>0</sub>')
+    assert estimate == '100'  # the run's own fit, not a statistic of the samples
+    assert median_mad == '2 ± 1'
+    assert p68 == '[1.32, 2.68]'
+    assert span == '[1, 3]'
+
+
+def test_the_samples_view_reports_how_many_samples_it_summarises(qapp):
+    """A sample with no fit is left out of the statistics and counted, never quietly folded in."""
+    run = _sobol_run({'I0': [1.0, 2.0, 3.0, np.nan]}, sample_r2=[0.99, 0.98, 0.97, np.nan])
+    widget = _samples_widget(run)
+
+    assert widget._fitted_label.text() == '3 / 4'
+    assert widget._r2_range_label.text() == '[0.9700, 0.9900]'
+    assert 'could not be fitted' in widget._caption.text()
+
+
+def test_the_samples_caption_counts_a_single_sample_as_one_sample(qapp):
+    """A count reads as a sentence, not as a slot: one sample is 'the one sample', never 'the 1 samples'."""
+    one_of_three = _samples_widget(_sobol_run({'I0': [1.0, np.nan, np.nan]}))
+    one_of_one = _samples_widget(_sobol_run({'I0': [1.0]}))
+
+    assert 'the one sample that has a fit' in one_of_three._caption.text()
+    assert 'the one sample.' in one_of_one._caption.text()
+    assert '1 samples' not in one_of_three._caption.text() + one_of_one._caption.text()
+
+
+def test_a_degenerate_row_of_the_samples_view_is_starred_as_a_marginal_summary(qapp):
+    """Its spread says how one member of a tied family moved, not how well the data fix it."""
+    run = _sobol_run({'I0': [1.0, 1.0, 1.0]}, degenerate_keys=('I0',))
+    widget = _samples_widget(run)
+
+    assert _named_row(widget._table, '<b>I<sub>0</sub>')[0].endswith('*')
+    assert 'marginal summary' in widget._footnote.text()
+
+
+def test_the_fit_view_says_why_it_is_showing_when_the_samples_view_has_nothing(qapp):
+    """Switching to Ka Sensitivity with no run must explain itself rather than show the fit table unannounced."""
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.show_samples(True)
+
+    assert widget._caption.text().startswith('Run a sensitivity analysis')
+    assert widget._caption.isVisibleTo(widget)
+
+
+# ---------------------------------------------------------------------------
+# The pane's own size: what the splitter leaves it, and what it does with that
+# ---------------------------------------------------------------------------
+
+
+def _two_ka_per_replica_result():
+    """A 1:2 fit of four replicates: nine reported rows, five of them starred, and a Replicates table."""
     from dataclasses import replace
 
-    from core.pipeline.fit_pipeline import FitResult
+    from core.pipeline.varpro import KaInterval
+    from core.units import Q_
 
-    def make(representative_index, metadata=None, *, per_replicate=True):
-        x = np.linspace(0, 1e-4, 20)
-        result = FitResult(
-            parameters={'Ka_guest': 1e6, 'I0': 100.0, 'I_dye_free': 5e4, 'I_dye_bound': 8e4},
-            rmse=0.005,
-            r_squared=0.9985,
-            n_passing=5,
-            n_total=10,
-            x_fit=x,
-            y_fit=x,
-            assay_type='GDA',
-            model_name='equilibrium_4param',
-            parameter_samples={
-                'Ka_guest': np.array([1.0e6, 1.1e6, 0.9e6, 1.05e6, 0.8e6]),
-                'I0': np.full(5, 100.0),
-                'I_dye_free': np.full(5, 5e4),
-                'I_dye_bound': np.full(5, 8e4),
-            },
-            quality_samples={
-                'rmse': np.array([0.007, 0.005, 0.008, 0.006, 0.009]),
-                'r_squared': np.array([0.9970, 0.9990, 0.9960, 0.9980, 0.9950]),
-            },
-            representative_index=representative_index,
-            metadata=metadata or {},
-        )
-        if per_replicate:
-            result.uncertainty_source = 'replicate'
-            result.replica_fits = [
-                replace(
-                    result,
-                    parameter_samples={k: v[s] for k, v in result.parameter_samples.items()},
-                    quality_samples=None,
-                    representative_index=0,
-                    metadata={},
-                )
-                for s in (slice(0, 3), slice(3, 5))
-            ]
-        return result
-
-    return make
+    signal = {'I0': 100.0, 'I_G': 5e4, 'I_H': 1e4, 'I_HG': 8e4, 'I_HG2': 2e4}
+    base = _result(
+        parameters={
+            'Ka_HG': Q_(1.24e6, '1/M'),
+            'Ka_HG2': Q_(3.1e4, '1/M'),
+            **{key: Q_(value, 'au' if key == 'I0' else 'au/M') for key, value in signal.items()},
+        },
+        assay_type='DBA_HG2',
+        model_name='stepwise_hg2',
+        fit_config={'per_replicate': True, 'level': 0.95},
+        intervals={
+            'Ka_HG': KaInterval(0.7e6, 2.2e6, False, False, 0.95, 16),
+            'Ka_HG2': KaInterval(1.0e4, 9.0e4, False, False, 0.95, 16),
+        },
+        degenerate_keys=tuple(signal),
+    )
+    given = ['0', '1', '2', '3']
+    fits = [replace(base, intervals=None, metadata={'replica_id': rid, 'active_replica_ids': [rid]}) for rid in given]
+    return replace(base, replica_fits=fits, metadata={'active_replica_ids': given, 'replica_ids_fit': given})
 
 
-def _items(widget):
-    combo = widget._rep_combo
-    return [(combo.itemText(i).split(' ·')[0], combo.itemData(i)) for i in range(combo.count())]
+def _shown_summary(qapp, monkeypatch, result, size):
+    """The summary pane of a main window opened at *size*, showing *result*."""
+    from PyQt6.QtCore import Qt
 
+    from gui.main_window import FittingMainWindow
 
-def _current(widget):
-    return widget._rep_combo.currentText().split(' ·')[0], widget._rep_combo.currentData()
-
-
-def _repoint_like_session(widget, result):
-    """Re-point *result* the way ``select_representative`` does, then redisplay it."""
-
-    def pick(index):
-        result.metadata.setdefault('fitted_representative_index', result.representative_index)
-        result.representative_index = index
-        widget.update_result(result)
-
-    widget.representative_selected.connect(pick)
-
-
-def test_fit_choice_listed_first_when_not_the_top_r2_attempt(qapp, pool_result):
-    """A per-replicate fit reporting attempt 3 must not be shown as 'Best' (attempt 1)."""
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(pool_result(3))
-
-    assert _items(widget) == [("Fit's choice", 3), ('Best', 1), ('Median', 0), ('Worst', 4)]
-    assert _current(widget) == ("Fit's choice", 3)
-    assert widget._rep_combo.currentText() == "Fit's choice · R²=0.9980"
-
-
-def test_top_r2_fit_choice_appears_once_as_best(qapp, pool_result):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    widget.update_result(pool_result(1, per_replicate=False))
-
-    assert _items(widget) == [('Best', 1), ('Median', 0), ('Worst', 4)]
-    assert _current(widget) == ('Best', 1)
-
-
-def test_fit_choice_stays_offered_after_picking_another_and_restores_it(qapp, pool_result):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    result = pool_result(3)
+    monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
+    window = FittingMainWindow()
+    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    session = window.active_session()
+    widget = session._summary_widget
+    widget.set_replica_ids(['0', '1', '2', '3'])
     widget.update_result(result)
-    _repoint_like_session(widget, result)
-
-    widget._rep_combo.setCurrentIndex(3)  # Worst
-    assert result.representative_index == 4
-    assert _current(widget) == ('Worst', 4)
-    assert ("Fit's choice", 3) in _items(widget)
-
-    widget._rep_combo.setCurrentIndex(0)  # Fit's choice
-    assert result.representative_index == 3
-    assert _current(widget) == ("Fit's choice", 3)
+    window.resize(*size)
+    window.show()
+    for _ in range(8):
+        qapp.processEvents()
+    return window, widget
 
 
-def test_plot_clicked_attempt_is_shown_as_selected(qapp, pool_result):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
+@pytest.mark.parametrize('size', [(1100, 700), (1600, 1000)], ids=['small', 'large'])
+@pytest.mark.parametrize('rows', ['five', 'nine'])
+def test_every_row_and_the_whole_footnote_can_be_read_at_the_sizes_the_window_opens_at(qapp, monkeypatch, size, rows):
+    """The pane gets about a third of the window's height, which a nine-row table and its footnote outgrow.
 
-    widget = FitSummaryWidget()
-    result = pool_result(3)
-    widget.update_result(result)
-    widget.note_plot_selection(2)
-    result.metadata['fitted_representative_index'] = 3
-    result.representative_index = 2
-    widget.update_result(result)
+    Nothing may be cut off with no way to reach it: the table shows all of its
+    rows, and scrolling the pane to the bottom brings the last of them and the
+    whole footnote into view.
+    """
+    result = _result() if rows == 'five' else _two_ka_per_replica_result()
+    window, widget = _shown_summary(qapp, monkeypatch, result, size)
+    table = widget._table
 
-    assert _items(widget)[-1] == ('Selected', 2)
-    assert _current(widget) == ('Selected', 2)
+    # No row is hidden inside the table itself.
+    needed = table.horizontalHeader().height() + sum(table.rowHeight(r) for r in range(table.rowCount()))
+    assert table.rowCount() == (5 if rows == 'five' else 9)
+    assert table.viewport().height() >= sum(table.rowHeight(r) for r in range(table.rowCount()))
+    assert table.height() >= needed
 
-
-@pytest.mark.parametrize(
-    ('representative_index', 'metadata', 'expected'),
-    [
-        (3, {}, ("Fit's choice", 3)),
-        (1, {}, ('Best', 1)),
-        (0, {'fitted_representative_index': 1}, ('Median', 0)),
-        (4, {'fitted_representative_index': 3}, ('Worst', 4)),
-        (2, {'fitted_representative_index': 3}, ('Picked', 2)),
-        (2, {}, ('Picked', 2)),
-        (None, {}, ('Shown fit', -1)),
-    ],
-)
-def test_current_item_always_names_the_shown_attempt(qapp, pool_result, representative_index, metadata, expected):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    widget = FitSummaryWidget()
-    emitted = []
-    widget.representative_selected.connect(emitted.append)
-    widget.update_result(pool_result(representative_index, metadata))
-
-    assert _current(widget) == expected
-    assert emitted == []
+    bar = widget._page.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    for _ in range(4):
+        qapp.processEvents()
+    viewport = widget._page.viewport()
+    last = widget._replicates_table if not widget._replicates_table.isHidden() else table
+    assert last.mapTo(viewport, last.rect().bottomLeft()).y() <= viewport.height()
+    if not widget._footnote.isHidden():
+        footnote = widget._footnote
+        assert footnote.height() >= footnote.heightForWidth(footnote.width())
+        assert footnote.mapTo(viewport, footnote.rect().bottomLeft()).y() <= viewport.height()
+    window.close()
 
 
-@pytest.mark.parametrize(
-    ('per_replicate', 'fit_choice'),
-    [(True, [("Fit's choice", 3)]), (False, [])],
-)
-def test_a_pick_from_a_file_without_the_recorded_choice_is_not_called_the_fit_s_choice(
-    qapp, pool_result, per_replicate, fit_choice
-):
-    """A file can store a picked attempt without recording the fit's own choice; the pool still tells them apart."""
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
+def test_the_columns_are_shared_out_again_over_the_width_the_table_ends_up_with(qapp, monkeypatch):
+    """Columns measured once against a width the table no longer has leave a scrollbar over a table that fits.
 
-    widget = FitSummaryWidget()
-    widget.update_result(pool_result(4, per_replicate=per_replicate))
+    Widening the window gives the table spare width, which the columns share out
+    between them; narrowing it takes that spare back, down to the width their
+    contents need. Below that the table scrolls sideways.
+    """
+    window, widget = _shown_summary(qapp, monkeypatch, _two_ka_per_replica_result(), (1600, 1000))
+    table = widget._table
+    wide = sum(table.columnWidth(c) for c in range(table.columnCount()))
+    assert wide <= table.viewport().width()
 
-    assert _items(widget) == [*fit_choice, ('Best', 1), ('Median', 0), ('Worst', 4)]
-    assert _current(widget) == ('Worst', 4)
+    assert not table.horizontalScrollBar().isVisible()
 
+    window.resize(1100, 700)
+    for _ in range(8):
+        qapp.processEvents()
+    narrow = sum(table.columnWidth(c) for c in range(table.columnCount()))
 
-@pytest.mark.parametrize('shown', [2, 3])
-def test_shown_attempt_is_named_only_as_shown_when_the_fit_s_choice_cannot_be_told(qapp, pool_result, shown):
-    """A per-replicate pool without its replicates' fits cannot say which attempt the fit chose."""
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
+    assert narrow < wide  # the spare width went back
+    assert _too_narrow(table) == []  # but never below what the cells need
+    # The scrollbar is there when the columns need it and gone when they do not,
+    # rather than staying on over a row once it has been shown.
+    assert table.horizontalScrollBar().isVisible() == (narrow > table.viewport().width())
 
-    result = pool_result(shown)
-    result.replica_fits = None
-    widget = FitSummaryWidget()
-    widget.update_result(result)
-
-    assert _items(widget) == [('Best', 1), ('Median', 0), ('Worst', 4), ('Shown fit', shown)]
-    assert _current(widget) == ('Shown fit', shown)
-
-
-def test_listed_r2_values_carry_the_decimals_that_tell_attempts_apart(qapp, pool_result):
-    from gui.plotting.fit_summary_widget import FitSummaryWidget
-
-    result = pool_result(3)
-    result.quality_samples['r_squared'] = np.array([0.9970, 0.999004, 0.9960, 0.999001, 0.9950])
-    widget = FitSummaryWidget()
-    widget.update_result(result)
-
-    combo = widget._rep_combo
-    assert [combo.itemText(i) for i in range(combo.count())] == [
-        "Fit's choice · R²=0.999001",
-        'Best · R²=0.999004',
-        'Median · R²=0.997000',
-        'Worst · R²=0.995000',
-    ]
-
-
-def test_listed_r2_values_stop_at_six_decimals():
-    """Attempts that agree to six decimals fit equally well and read the same."""
-    from gui.plotting.fit_summary_widget import _distinct_r2_texts
-
-    assert _distinct_r2_texts([0, 1], [0.9934149172, 0.9934149167]) == ['0.993415', '0.993415']
+    window.resize(1600, 1000)
+    for _ in range(8):
+        qapp.processEvents()
+    assert sum(table.columnWidth(c) for c in range(table.columnCount())) == wide
+    assert not table.horizontalScrollBar().isVisible()
+    window.close()

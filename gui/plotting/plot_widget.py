@@ -25,7 +25,14 @@ from gui.plotting.colors import (
     REPLICA_PALETTE,
     rgba,
 )
-from gui.plotting.labels import _format_exponent_unicode, fmt_param, fmt_r2, fmt_unit_html
+from gui.plotting.labels import (
+    SPLIT_MARK,
+    _format_exponent_unicode,
+    fmt_interval_html,
+    fmt_param,
+    fmt_r2,
+    fmt_unit_html,
+)
 from gui.plotting.plot_style import DEFAULT_STYLE, line_style_to_qt
 from gui.widgets.replica_panel import _display_label, describe_replicates
 
@@ -1073,39 +1080,32 @@ class PlotWidget(QWidget):
     def _annotation_html(self) -> str:
         """Body of the fit-summary overlay.
 
-        Reports each parameter as ``Estimate (min, max)``: the representative
-        fit — one real fit from the accepted pool — followed by the full range
-        that pool spans. Rows come from
+        Each binding constant reads ``estimate [low, high]``: the least-squares
+        fit and the confidence interval of that same fit. Every other parameter
+        is its fitted value alone, starred where the data determine it only in
+        combination with others. Rows come from
         :func:`~core.pipeline.fit_pipeline.summarize_parameters`, so the plot,
         the summary table and the exports quote the same numbers. RMSE is
         omitted: it is already in the Fit Quality panel and is monotone in the
         R² shown here. The log₁₀ twin rows stay in the table — repeating them
         here would double the box height for no new information.
         """
-        from core.pipeline.fit_pipeline import fitted_representative_index, summarize_parameters
+        from core.pipeline.fit_pipeline import fit_replica_ids, summarize_parameters
 
         lines: list[str] = []
         for idx, result in enumerate(self._fit_results):
             rows = [spec for spec in summarize_parameters(result) if not spec.is_log]
-            pooled = any(spec.stats is not None for spec in rows)
 
             if len(self._fit_results) > 1:
                 title = self._fit_labels[idx] if idx < len(self._fit_labels) else f'fit {idx}'
             else:
                 title = 'Fit Summary'
-            # Name the fit the numbers come from: a picked attempt or one replicate's best fit is not the
-            # highest-R² fit of the pool, and a fit whose own choice cannot be told is named only as shown.
-            fitted = fitted_representative_index(result)
-            if fitted != result.representative_index:
-                shown = 'picked fit' if fitted is not None else 'shown fit'
-            elif result.uncertainty_source == 'replicate':
-                shown = "one replicate's best fit"
-            else:
-                shown = 'best fit'
-            if pooled:
-                lines.append(f'<b>{title}</b> — {shown} (range over {result.n_passing} accepted fits)')
-            else:
-                lines.append(f'<b>{title}</b> — {shown} (no fit pool stored, so no range)')
+            # A per-replicate fit is the fit of the average of the replicates it
+            # used, so the heading says how many signals that average holds.
+            used = fit_replica_ids(result) if result.per_replica else None
+            if used:
+                title += f' (average of {len(used)} replicate{"" if len(used) == 1 else "s"})'
+            lines.append(f'<b>{title}</b>')
 
             for spec in rows:
                 # Pint's HTML formatter gives proper superscripts; the unit is
@@ -1116,12 +1116,18 @@ class PlotWidget(QWidget):
                     return f'{magnitude:.3g}'
 
                 unit_html = f' {fmt_unit_html(spec.unit)}' if spec.unit else ''
-                text = f'{fmt_param(spec.key)} = {fmt(spec.estimate)}'
-                if spec.stats is not None:
-                    text += f' ({fmt(spec.stats["min"])}, {fmt(spec.stats["max"])})'
+                star = '*' if spec.degenerate else ''
+                text = f'{fmt_param(spec.key)}{star} = {fmt(spec.estimate)}'
+                if spec.interval is not None:
+                    low, high = spec.interval
+                    text += f' {fmt_interval_html(fmt(low), fmt(high), *spec.interval_open)}'
+                    # A bracket that spans values the data reject must not read
+                    # as one connected range; the Fit Summary explains the mark.
+                    if spec.interval_split:
+                        text += f' {SPLIT_MARK}'
                 lines.append(f'{text}{unit_html}')
 
-            lines.append(f'<b>R\u00b2:</b> {fmt_r2(result.r_squared, result.fit_config.get("min_r_squared"))}')
+            lines.append(f'<b>R\u00b2:</b> {fmt_r2(result.r_squared)}')
 
             if idx < len(self._fit_results) - 1:
                 lines.append('')

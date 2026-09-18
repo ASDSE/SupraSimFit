@@ -16,21 +16,21 @@ from PyQt6.QtCore import QThread  # noqa: E402
 from core.assays.registry import AssayType  # noqa: E402
 from core.data_processing.measurement_set import MeasurementSet  # noqa: E402
 from core.pipeline.fit_pipeline import FitConfig  # noqa: E402
-from core.pipeline.profile import ProfileResult  # noqa: E402
+from core.pipeline.profile import ProfileSet  # noqa: E402
 from tests.conftest import DYE_ALONE_TRUE, IDA_TRUE, _make_dye_alone_data, _make_ida_data  # noqa: E402
 from tests.unit.gui.test_sensitivity_gui import _sobol_result  # noqa: E402
 
-TAB_ORDER = ['Fit Curve', 'Distributions', 'Identifiability', 'Ka Sensitivity']
 
-#: Fit seed every session here runs with, so each fit is the same one each time.
-_FIT_SEED = 42
+def _ida_signals(true: dict, noise_seed: int, n_replicates: int) -> tuple[np.ndarray, np.ndarray]:
+    """Replicates of one IDA ground truth with 1 % multiplicative noise."""
+    rng = np.random.default_rng(noise_seed)
+    x, y = _make_ida_data(true, n_points=20)
+    return x, np.vstack([y * (1 + 0.01 * rng.standard_normal(y.size)) for _ in range(n_replicates)])
 
 
 def _ida_set(noise_seed: int = 0) -> MeasurementSet:
-    """Three IDA replicates with 1% multiplicative noise around the shared ground truth."""
-    rng = np.random.default_rng(noise_seed)
-    x, y = _make_ida_data(IDA_TRUE, n_points=20)
-    signals = np.vstack([y * (1 + 0.01 * rng.standard_normal(y.size)) for _ in range(3)])
+    """Three IDA replicates with 1 % multiplicative noise around the shared ground truth."""
+    x, signals = _ida_signals(IDA_TRUE, noise_seed, 3)
     return MeasurementSet(concentrations=x, signals=signals, replica_ids=('A', 'B', 'C'))
 
 
@@ -75,10 +75,7 @@ def make_session(qapp):
         session._assay_panel.set_assay_type(assay_type)
         for key, value in (conditions or {}).items():
             session._assay_panel._field_widgets[key].setValue(value)
-        # A fixed seed in the panel: Run Fit draws its own seed otherwise, so the
-        # starting points — and with them whether a trial clears the quality
-        # floor — would differ from run to run.
-        session._fit_panel.set_config(FitConfig(per_replica=per_replica, seed=_FIT_SEED))
+        session._fit_panel.set_config(FitConfig(per_replica=per_replica))
         session._data_panel.data_loaded.emit(ms)
         sessions.append(session)
         return session
@@ -95,13 +92,14 @@ def _ida_session(make_session, *, per_replica=False):
     return make_session(AssayType.IDA, _ida_set(), conditions, per_replica=per_replica)
 
 
-def test_plot_tabs_in_contract_order(make_session):
+def test_the_identifiability_tab_is_one_of_the_plot_tabs(make_session):
+    """The tab is offered under its own name, so the wiring below has somewhere to reach."""
     from gui.plotting.identifiability_widget import IdentifiabilityWidget
 
     session = _ida_session(make_session)
     tabs = session._plot_tabs
-    assert [tabs.tabText(i) for i in range(tabs.count())] == TAB_ORDER
-    assert isinstance(tabs.widget(2), IdentifiabilityWidget)
+    names = [tabs.tabText(i) for i in range(tabs.count())]
+    assert isinstance(tabs.widget(names.index('Identifiability')), IdentifiabilityWidget)
 
 
 def test_style_changes_reach_identifiability_tab(make_session):
@@ -113,7 +111,7 @@ def test_style_changes_reach_identifiability_tab(make_session):
 
 @pytest.mark.parametrize('per_replica', [False, True])
 def test_fit_then_profile_reach_identifiability_tab(qapp, make_session, warnings, per_replica):
-    """The tab gets the fit together with the Ka profile of exactly that fit's inputs."""
+    """The tab gets the fit together with the Ka profiles of exactly that fit's inputs."""
     session = _ida_session(make_session, per_replica=per_replica)
     calls = _spy(session._identifiability_widget, 'update_fit')
 
@@ -121,17 +119,20 @@ def test_fit_then_profile_reach_identifiability_tab(qapp, make_session, warnings
     _wait_until(qapp, lambda: calls or warnings)
 
     assert warnings == []
-    ((result, profile, assay_type_name),) = calls
+    ((result, profile_set, assay_type_name),) = calls
     assert result is session._state.fit_results[-1]
     assert assay_type_name == 'IDA'
-    assert isinstance(profile, ProfileResult)
-    assert profile is session._state.profile_result
+    assert isinstance(profile_set, ProfileSet)
+    assert profile_set is session._state.profile_result
+    profile = profile_set.profiles['Ka_guest']
     assert profile.per_replica is per_replica
-    # The profile was computed from the fit's own inputs: its interval holds both
-    # the fitted Ka and the ground truth the data were simulated with.
-    fitted_ka = result.parameters['Ka_guest'].to('1/M').magnitude
-    assert profile.ci[0] <= fitted_ka <= profile.ci[1]
-    assert profile.ci[0] < IDA_TRUE['Ka_guest'] < profile.ci[1]
+    # The profile was computed from the fit's own inputs: its interval is the
+    # one the fit reports, and it holds the ground truth the data were simulated
+    # with.
+    reported = result.intervals['Ka_guest']
+    assert (profile.interval.low, profile.interval.high) == (reported.low, reported.high)
+    assert profile.best_ka == pytest.approx(result.parameters['Ka_guest'].to('1/M').magnitude)
+    assert profile.interval.low < IDA_TRUE['Ka_guest'] < profile.interval.high
     widget = session._identifiability_widget
     assert widget._stack.currentWidget() is widget._content
 
@@ -139,29 +140,30 @@ def test_fit_then_profile_reach_identifiability_tab(qapp, make_session, warnings
 def test_profile_leaves_out_the_replicates_the_fit_skipped(qapp, make_session, warnings):
     """A replicate the per-replicate fit excluded is left out of its Ka profile too.
 
-    Replicate C is pure noise, so none of its fits reaches the quality floor and
-    the fit skips it. The profile covers A and B, and the session's own data
-    keep C active.
+    Replicate C follows a binding constant three times the one A and B share, so
+    the shared-Ka test drops it from the average. The profile covers A and B,
+    and the session's own data keep C active.
     """
-    clean = _ida_set()
-    signals = clean.signals.copy()
-    signals[2] = np.random.default_rng(1).normal(signals[2].mean(), signals[2].std(), signals[2].size)
-    ms = MeasurementSet(concentrations=clean.concentrations, signals=signals, replica_ids=clean.replica_ids)
+    x, signals = _ida_signals(IDA_TRUE, 0, 2)
+    _, odd = _ida_signals({**IDA_TRUE, 'Ka_guest': 3 * IDA_TRUE['Ka_guest']}, 1, 1)
+    ms = MeasurementSet(concentrations=x, signals=np.vstack([signals, odd]), replica_ids=('A', 'B', 'C'))
     conditions = {k: IDA_TRUE[k] for k in ('Ka_dye', 'h0', 'd0')}
     session = make_session(AssayType.IDA, ms, conditions, per_replica=True)
     calls = _spy(session._identifiability_widget, 'update_fit')
 
     session.run_fit()
-    _wait_until(qapp, lambda: calls)
+    _wait_until(qapp, lambda: calls or warnings)
 
-    ((result, profile, _),) = calls
+    assert warnings == []
+    ((result, profile_set, _),) = calls
     assert list(result.metadata['replica_failures']) == ['C']
-    assert set(profile.replica_r2) == {'A', 'B'}
+    assert set(profile_set.profiles['Ka_guest'].replica_r2) == {'A', 'B'}
     assert session._state.measurement_set.is_active('C')
+    assert 'Replicate C is left out' in session._identifiability_widget._notes.text()
 
 
-def test_unsupported_assay_gets_fit_without_profile(qapp, make_session, warnings):
-    """An assay without a single binding constant is shown at once, with no profile computed."""
+def test_an_assay_without_a_binding_constant_gets_no_profile(qapp, make_session, warnings):
+    """A dye-alone fit is shown at once, with no profile computed."""
     x, y = _make_dye_alone_data(DYE_ALONE_TRUE)
     ms = MeasurementSet(concentrations=x, signals=np.vstack([y, y * 1.001]), replica_ids=('A', 'B'))
     session = make_session(AssayType.DYE_ALONE, ms)
@@ -171,9 +173,9 @@ def test_unsupported_assay_gets_fit_without_profile(qapp, make_session, warnings
     _wait_until(qapp, lambda: calls or warnings)
 
     assert warnings == []
-    ((result, profile, assay_type_name),) = calls
+    ((result, profile_set, assay_type_name),) = calls
     assert result is session._state.fit_results[-1]
-    assert profile is None
+    assert profile_set is None
     assert assay_type_name == 'DYE_ALONE'
     assert session._profile_worker is None
     assert session._state.profile_result is None
@@ -199,7 +201,7 @@ def test_loading_data_clears_tab_and_discards_pending_profile(qapp, make_session
     session.run_fit()
     _wait_until(qapp, lambda: session._profile_worker is not None or warnings)
     pending = session._profile_worker
-    assert fits == []  # the profile of the finished fit is still being computed
+    assert fits == []  # the profiles of the finished fit are still being computed
 
     session._data_panel.data_loaded.emit(_ida_set(noise_seed=1))
     pending.wait()

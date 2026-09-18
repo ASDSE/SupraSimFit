@@ -92,11 +92,11 @@ def test_never_zero_tabs_hides_the_sole_close_button(qapp):
 
 
 def test_plot_style_widget_has_no_add_button_and_is_fixed(qapp):
-    # The plot tabs (Fit Curve / Distributions) are fixed: no "+", not closable,
-    # not movable.
+    # The plot tabs (Fit Curve / Identifiability / Ka Sensitivity) are fixed:
+    # no "+", not closable, not movable.
     tabs = FlatTabWidget(white_pane=True)
     tabs.addTab(QWidget(), 'Fit Curve')
-    tabs.addTab(QWidget(), 'Distributions')
+    tabs.addTab(QWidget(), 'Identifiability')
     assert tabs.tabBar()._add_button is None
     assert not tabs.tabsClosable()
     assert not tabs.isMovable()

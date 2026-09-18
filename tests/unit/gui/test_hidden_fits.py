@@ -3,14 +3,15 @@
 The session holds each result with its record: the replicates it used and was
 given, its conditions, its assay type and a fingerprint of the data. A change
 to the replicates, the conditions or the assay type that breaks the match hides
-the result on every tab behind a note naming what changed, and disables picks
-and result exports; undoing the change shows it again with identical numbers.
+the result on every tab behind a note naming what changed, and disables the
+result exports; undoing the change shows it again with identical numbers.
 Imports are checked against the loaded data, and work still running never
 reaches data it was not given.
 
-The data hold two replicates that follow the IDA ground truth and one of pure
-noise, which the per-replicate fit leaves out. One fit is made per module and
-handed to each session the way the fit worker hands over its result.
+The data hold two replicates that follow the IDA ground truth and one that
+follows the same model at three times its Ka, which the replicate test leaves
+out of the fit. One fit is made per module and handed to each session the way
+the fit worker hands over its result.
 """
 
 from __future__ import annotations
@@ -32,33 +33,31 @@ from core.assays.ida import IDAAssay  # noqa: E402
 from core.assays.registry import AssayType  # noqa: E402
 from core.data_processing.measurement_set import MeasurementSet  # noqa: E402
 from core.io import load_measurements  # noqa: E402
-from core.optimizer.filters import calculate_fit_metrics  # noqa: E402
-from core.optimizer.multistart import FitCancelled  # noqa: E402
-from core.pipeline.fit_pipeline import FitConfig, FitResult, PerReplicaFitError, fit_measurement_set  # noqa: E402
+from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set, fit_view  # noqa: E402
+from core.pipeline.varpro import FitCancelled, FitRefused  # noqa: E402
 from core.units import Q_  # noqa: E402
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data  # noqa: E402
-from tests.unit.gui.test_sensitivity_gui import _cell_texts, _made_on, _sobol_result  # noqa: E402
+from tests.unit.gui.test_sensitivity_gui import _made_on, _sobol_result  # noqa: E402
 
 _CONDITIONS = {
     'Ka_dye': Q_(IDA_TRUE['Ka_dye'], '1/M'),
     'h0': Q_(IDA_TRUE['h0'], 'M'),
     'd0': Q_(IDA_TRUE['d0'], 'M'),
 }
-_KEYS = ('Ka_guest', 'I0', 'I_dye_free', 'I_dye_bound')
 
 
 def _data() -> MeasurementSet:
-    """'a' and 'b' carry 1% noise around the IDA ground truth; 'c' holds no titration curve."""
+    """'a' and 'b' carry 1 % noise around the IDA ground truth; 'c' follows the same model at 3× its Ka."""
     rng = np.random.default_rng(0)
     x, y = _make_ida_data(IDA_TRUE, n_points=20)
-    signals = np.vstack([y * (1 + 0.01 * rng.standard_normal(y.size)) for _ in range(3)])
-    signals[2] = np.random.default_rng(1).normal(signals[2].mean(), signals[2].std(), signals[2].size)
+    _, y_off = _make_ida_data({**IDA_TRUE, 'Ka_guest': 3 * IDA_TRUE['Ka_guest']}, n_points=20)
+    signals = np.vstack([row * (1 + 0.01 * rng.standard_normal(row.size)) for row in (y, y, y_off)])
     return MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c'))
 
 
 @pytest.fixture(scope='module')
 def fitted() -> FitResult:
-    config = FitConfig(n_trials=8, per_replica=True, seed=11, custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
+    config = FitConfig(per_replica=True, custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
     result = fit_measurement_set(_data(), IDAAssay, _CONDITIONS, config)
     assert result.metadata['replica_ids_fit'] == ['a', 'b']
     assert list(result.metadata['replica_failures']) == ['c']
@@ -67,16 +66,15 @@ def fitted() -> FitResult:
 
 @pytest.fixture
 def fit(fitted) -> FitResult:
-    """A fresh copy of the module's fit: picks change the result they are made on."""
+    """A fresh copy of the module's fit: a session records its own checks on the result it is given."""
     return copy.deepcopy(fitted)
 
 
 @pytest.fixture(scope='module')
 def average_fit() -> FitResult:
-    """A fit of the average of every replicate, 'c' included, with a floor its noise lets it reach."""
-    config = FitConfig(n_trials=6, per_replica=False, seed=11, min_r_squared=0.5, custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
+    """A fit of the average of every replicate, 'c' included."""
+    config = FitConfig(per_replica=False, custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
     result = fit_measurement_set(_data(), IDAAssay, _CONDITIONS, config)
-    assert result.success and result.uncertainty_source == 'optimizer'
     assert result.metadata['active_replica_ids'] == ['a', 'b', 'c']
     return result
 
@@ -149,22 +147,18 @@ def _toggle(session, rid: str, on: bool) -> None:
     session._replica_panel._checkboxes[rid].setChecked(on)
 
 
-def _pick(session, label: str) -> int:
-    """Choose the selector item starting with *label*; returns the pool index it names."""
-    combo = session._summary_widget._rep_combo
-    index = next(i for i in range(combo.count()) if combo.itemText(i).startswith(label))
-    assert index != combo.currentIndex()
-    combo.setCurrentIndex(index)
-    return combo.itemData(index)
+def _cell_texts(table) -> list[list[str]]:
+    """Every cell of a summary table, as the user reads it."""
+    return [
+        [table.cellWidget(row, col).text() for col in range(table.columnCount())] for row in range(table.rowCount())
+    ]
 
 
 def _numbers(session) -> tuple:
-    """Every fit number the summary shows, with the selector's items."""
+    """Every fit number the summary shows."""
     summary = session._summary_widget
-    combo = summary._rep_combo
-    items = [combo.itemText(i) for i in range(combo.count())]
-    labels = (summary._rmse_label, summary._r2_label, summary._passing_label)
-    return _cell_texts(summary._table), [label.text() for label in labels], items, combo.currentText()
+    labels = (summary._rmse_label, summary._r2_label, summary._replicates_label)
+    return _cell_texts(summary._table), [label.text() for label in labels]
 
 
 def _type_into(session, key: str, text: str, *, finish: bool = True) -> None:
@@ -177,7 +171,7 @@ def _type_into(session, key: str, text: str, *, finish: bool = True) -> None:
 
 
 def _assert_hidden(session, note: str, *, profiled: bool = True) -> None:
-    """The fit's numbers are gone from every tab, with *note* in their place, and picks and exports are off.
+    """The fit's numbers are gone from every tab, with *note* in their place, and the exports are off.
 
     *profiled* says whether Identifiability holds the fit: an imported fit has no Ka profile to hide.
     """
@@ -187,9 +181,7 @@ def _assert_hidden(session, note: str, *, profiled: bool = True) -> None:
     assert summary._table.rowCount() == 0
     assert summary._r2_label.text() == '—'
     assert summary._caption.text() == note
-    assert not summary._rep_combo.isEnabled() and summary._rep_combo.toolTip() == note
     assert session._plot_widget._fit_results == [] and session._plot_widget._mismatch_note == note
-    assert session._distribution_widget._mismatch_note == note
     identifiability = session._identifiability_widget
     assert identifiability._stack.currentWidget() is identifiability._message
     assert (identifiability._message.text() == note) is profiled
@@ -200,27 +192,16 @@ def _assert_hidden(session, note: str, *, profiled: bool = True) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_switching_the_left_out_replicate_keeps_the_fit_and_every_pick_reports_its_pool(
-    qapp, make_session, fit, dialogs
-):
-    """'c' was left out of the fit, so switching it off or on changes nothing the fit describes.
-
-    A pick is scored on the fit's own replicates: the selector, Fit Quality and
-    the stored pool agree whether 'c' is on or off.
-    """
+def test_switching_the_left_out_replicate_keeps_the_fit_and_its_numbers(qapp, make_session, fit, dialogs):
+    """'c' was left out of the fit, so switching it off or on changes nothing the fit describes."""
     session = _shown_session(qapp, make_session, fit)
-    summary = session._summary_widget
-    quality = fit.quality_samples['r_squared']
+    before = _numbers(session)
 
-    for on, label in ((False, 'Worst'), (True, 'Best')):
+    for on in (False, True):
         _toggle(session, 'c', on)
         assert session._state.fit_results == [fit]
         assert session.hidden_results_note() is None
-        index = _pick(session, label)
-        assert fit.representative_index == index
-        assert fit.r_squared == quality[index]
-        assert float(summary._rep_combo.currentText().split('R²=')[1]) == pytest.approx(quality[index], abs=5e-5)
-        assert float(summary._r2_label.text()) == pytest.approx(quality[index], abs=5e-5)
+        assert _numbers(session) == before
 
 
 def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_back_on(qapp, make_session, fit, dialogs):
@@ -249,9 +230,7 @@ def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_bac
 
     assert session._state.fit_results == [fit] and session.hidden_results_note() is None
     assert _numbers(session) == before
-    assert session._summary_widget._rep_combo.isEnabled()
     assert session._plot_widget._fit_results == [fit] and session._plot_widget._mismatch_note is None
-    assert session._distribution_widget._mismatch_note is None
     assert session._identifiability_widget._stack.currentWidget() is session._identifiability_widget._content
     assert sensitivity._stack.currentWidget() is sensitivity._results_host
 
@@ -261,7 +240,7 @@ def test_the_status_bar_stops_describing_results_that_have_been_hidden(qapp, mak
     session = _shown_session(qapp, make_session, fit)
     messages: list[str] = []
     session.status_message.connect(messages.append)
-    session.status_message.emit('Fit complete — R²=0.9991, RMSE=1.23×10¹, 8/8 trials passed')
+    session.status_message.emit('Fit complete — R²=0.9991, RMSE=1.23×10¹, 2 of 3 replicates used')
 
     _toggle(session, 'a', False)
 
@@ -352,7 +331,7 @@ def test_window_disables_result_exports_while_the_fit_is_hidden(qapp, make_sessi
         session._assay_panel._field_widgets[key].setValue(value.magnitude)
     session._data_panel.data_loaded.emit(_data())
     _deliver(session, fit)
-    exports = (window._act_export, window._act_export_txt, window._act_export_csv, window._act_export_dists)
+    exports = (window._act_export, window._act_export_txt, window._act_export_csv)
     assert all(action.isEnabled() for action in exports)
 
     _toggle(session, 'b', False)
@@ -360,7 +339,7 @@ def test_window_disables_result_exports_while_the_fit_is_hidden(qapp, make_sessi
     assert note.startswith('This fit was made on replicates A and B. Replicate B is now off.')
     assert all(not action.isEnabled() and action.toolTip() == note for action in exports)
     artefacts = {artefact.key: artefact for artefact in build_artefacts(session)}
-    for key in ('results_json', 'results_txt', 'results_csv', 'distributions_png'):
+    for key in ('results_json', 'results_txt', 'results_csv'):
         assert not artefacts[key].available and artefacts[key].unavailable_reason == note
 
     _toggle(session, 'b', True)
@@ -392,14 +371,11 @@ def test_import_of_a_fit_made_on_the_loaded_data_is_shown_unchanged(
 
     assert dialogs == {'warning': [], 'information': []}
     (shown,) = session._state.fit_results
-    assert (shown.r_squared, shown.rmse, shown.representative_index) == (
-        fit.r_squared,
-        fit.rmse,
-        fit.representative_index,
-    )
-    assert np.array_equal(shown.quality_samples['r_squared'], fit.quality_samples['r_squared'])
+    assert (shown.r_squared, shown.rmse) == (fit.r_squared, fit.rmse)
+    assert shown.intervals['Ka_guest'].low == fit.intervals['Ka_guest'].low
+    assert shown.degenerate_keys == fit.degenerate_keys
+    assert [rf.metadata['replica_id'] for rf in shown.replica_fits] == ['a', 'b', 'c']
     assert session._summary_widget._r2_label.text() != '—'
-    assert session._distribution_widget._result is shown
 
 
 def test_import_keeps_the_replicate_selection_and_hides_a_fit_it_does_not_match(
@@ -422,29 +398,23 @@ def test_import_keeps_the_replicate_selection_and_hides_a_fit_it_does_not_match(
 def test_import_of_an_older_per_replicate_file_recomputes_its_quality_on_the_used_replicates(
     qapp, make_session, fit, dialogs, monkeypatch, tmp_path
 ):
-    """A file that scored its pool against every replicate it was given is re-scored on the replicates it used."""
+    """A file that scored its fit against every replicate it was given is re-scored on the replicates it used."""
     ms = _data()
-    legacy = FitResult.from_dict(json.loads(json.dumps(fit.to_dict())))
+    legacy = copy.deepcopy(fit)
     assay = ms.to_assay(IDAAssay, conditions=_CONDITIONS, use_average=True)
-    rows = np.column_stack([legacy.parameter_samples[k] for k in _KEYS])
-    scores = np.array(
-        [calculate_fit_metrics(assay.y_data.magnitude, assay.forward_model(row).magnitude) for row in rows]
-    )
-    legacy.quality_samples = {'rmse': scores[:, 0], 'r_squared': scores[:, 1]}
-    for key in ('quality_scored_on', 'data_fingerprint', 'active_replica_ids'):
+    params = np.array([float(legacy.parameters[key].magnitude) for key in assay.parameter_keys])
+    legacy.rmse, legacy.r_squared, legacy.x_fit, legacy.y_fit = fit_view(assay, params)
+    for key in ('quality_scored_on', 'data_fingerprint'):
         del legacy.metadata[key]
     session = make_session(_data())
 
     _import(session, monkeypatch, tmp_path, [legacy])
 
     (shown,) = session._state.fit_results
-    for key in ('rmse', 'r_squared'):
-        np.testing.assert_allclose(shown.quality_samples[key], fit.quality_samples[key], rtol=1e-12, atol=0)
     assert shown.r_squared == pytest.approx(fit.r_squared, rel=1e-12)
     assert shown.rmse == pytest.approx(fit.rmse, rel=1e-12)
     ((_, _, text),) = dialogs['information']
     assert 'did not describe the replicates each fit used, so the R², RMSE and curve were recomputed' in text
-    assert 'pick' not in text, 'the reported fit is the one the file reported'
     assert dialogs['warning'] == []
 
 
@@ -466,7 +436,7 @@ def test_import_whose_numbers_do_not_reproduce_on_its_own_data_says_so(
 ):
     """The fingerprint matches, so the refusal does not blame the data."""
     altered = copy.deepcopy(fit)
-    altered.quality_samples['r_squared'] = altered.quality_samples['r_squared'] * (1 - 1e-3)
+    altered.r_squared *= 1 - 1e-3
     session = make_session(_data())
 
     _import(session, monkeypatch, tmp_path, [altered])
@@ -570,13 +540,14 @@ def test_import_of_a_file_written_before_the_arithmetic_marker_says_its_numbers_
     )
     (shown,) = session._state.fit_results
     assert shown.parameters['Ka_guest'].magnitude > 0
+    assert shown.intervals is None, 'a file written before intervals were reported carries none'
 
 
 def test_import_of_a_released_per_replicate_file_gives_both_reasons_its_numbers_changed(
     qapp, make_session, dialogs, monkeypatch
 ):
-    """``v150_pr_drop.json`` scored its pool against a replicate the fit left out *and* records no
-    arithmetic, so the app rebuilt its numbers twice over and owes the user both reasons."""
+    """``v150_pr_drop.json`` scored its numbers against a replicate the fit left out *and* records no
+    arithmetic, so the app rebuilt them twice over and owes the user both reasons."""
     root = Path(__file__).resolve().parents[3]
     fixtures = root / 'tests' / 'fixtures' / 'results'
     session = make_session()
@@ -601,7 +572,7 @@ def test_import_of_a_released_per_replicate_file_gives_both_reasons_its_numbers_
     )
 
 
-def test_import_without_data_shows_the_stored_numbers_unchecked_with_picks_disabled(
+def test_import_without_data_shows_the_stored_numbers_unchecked(
     qapp, make_session, fit, dialogs, monkeypatch, tmp_path
 ):
     from gui.fitting_session import _UNCHECKED_NOTE
@@ -612,12 +583,9 @@ def test_import_without_data_shows_the_stored_numbers_unchecked_with_picks_disab
 
     (shown,) = session._state.fit_results
     summary = session._summary_widget
-    assert float(summary._r2_label.text()) == pytest.approx(fit.r_squared, abs=5e-5)
-    assert summary._caption.text() == _UNCHECKED_NOTE
-    assert not summary._rep_combo.isEnabled() and summary._rep_combo.toolTip() == _UNCHECKED_NOTE
-    worst = int(np.argmin(fit.quality_samples['r_squared']))
-    session._on_plot_fit_selected(worst)
-    assert shown.representative_index == fit.representative_index
+    assert shown.r_squared == fit.r_squared
+    assert summary._r2_label.text() != '—'
+    assert _UNCHECKED_NOTE in summary._caption.text()
 
 
 def test_import_without_data_hides_a_fit_of_another_assay_type_and_labels_the_axes_for_the_fit(
@@ -667,7 +635,6 @@ def test_one_hidden_result_leaves_the_shown_one_drawn_and_exportable(
     )
     artefacts = {artefact.key: artefact for artefact in build_artefacts(session)}
     assert all(artefacts[key].available for key in ('results_json', 'results_txt', 'results_csv'))
-    assert session._summary_widget._rep_combo.isEnabled()
 
     _toggle(session, 'c', True)
     assert len(session._state.fit_results) == 2 and len(plot._fit_items) == 2
@@ -730,8 +697,25 @@ def test_a_fit_finishing_after_a_used_replicate_was_switched_off_is_held_hidden_
     (held,) = session._state.held_fit_results
     assert session._state.fit_results == []
     assert session.hidden_results_note().startswith('This fit was made on replicates A and B. Replicate B is now off.')
-    assert set(session._state.profile_result.replica_r2) == set(held.metadata['replica_ids_fit'])
+    profile = session._state.profile_result.profiles['Ka_guest']
+    assert set(profile.replica_r2) == set(held.metadata['replica_ids_fit'])
     assert messages == [f'Fit complete but hidden — {session.hidden_results_note()}']
+
+
+def test_a_finished_fit_names_the_replicates_it_left_out_and_why(qapp, make_session, dialogs, slow_fit):
+    """Minutes of data must not be dropped without a word — the no-silent-fallbacks rule."""
+    session = make_session(_data())
+    messages: list[str] = []
+    session.status_message.connect(lambda text: messages.append(text) if text.startswith('Fit complete') else None)
+
+    session.run_fit()
+    _wait_until(qapp, lambda: session._state.profile_result is not None)
+
+    (message,) = messages
+    assert '2 of 3 replicates used' in message
+    assert 'Replicate C left out:' in message
+    assert 'needs a different Ka' in message
+    assert dialogs['warning'] == []
 
 
 def test_a_new_fit_replaces_the_previous_one_on_identifiability_before_its_profile_arrives(
@@ -778,23 +762,35 @@ def test_run_fit_is_disabled_while_a_fit_runs(qapp, dialogs, slow_fit, monkeypat
         thread.wait()
 
 
-def test_a_fit_where_every_replicate_fails_is_reported_in_plain_words(qapp, monkeypatch):
+def test_a_fit_the_pipeline_refuses_is_reported_in_its_own_words(qapp, monkeypatch):
+    """A refusal written for the user is shown as it is; every other failure is translated.
+
+    The pipeline raises :class:`~core.pipeline.varpro.FitRefused` where it has a
+    sentence that names the input and the fix. A plain ``ValueError`` is not
+    that sentence — numpy and pint raise them with their own jargon — so it is
+    logged and reported like any other unexpected failure.
+    """
     from gui import workers
 
-    reasons = {rid: 'None of its fit attempts reached the minimum R² of 0.99.' for rid in ('a', 'b', 'c')}
+    refusal = (
+        'The signal of replicate(s) c is the same at every titration point, so nothing in them tells what Ka is. '
+        'Switch them off under Replicates and fit again.'
+    )
 
-    def failing(*args, **kwargs):
-        raise PerReplicaFitError('None of the 3 replicates could be fitted on its own.', reasons)
+    def raising(exc):
+        def run(*args, **kwargs):
+            raise exc
 
-    monkeypatch.setattr(workers, 'fit_measurement_set', failing)
+        return run
+
     worker = workers.FitWorker(_data(), IDAAssay, _CONDITIONS, FitConfig())
     messages: list[str] = []
     worker.error.connect(messages.append)
-    worker.run()
-    monkeypatch.setattr(workers, 'fit_measurement_set', lambda *args, **kwargs: 1 / 0)
-    worker.run()
+    for failure in (FitRefused(refusal), ValueError('operands could not be broadcast together'), ZeroDivisionError()):
+        monkeypatch.setattr(workers, 'fit_measurement_set', raising(failure))
+        worker.run()
 
-    first, second = messages
-    assert first.startswith('None of the 3 replicates could be fitted on its own.')
-    assert '  • Replicate C: None of its fit attempts reached the minimum R² of 0.99.' in first
-    assert 'division' not in second and second.startswith('The fit could not be completed.')
+    shown, library, unexpected = messages
+    assert shown == refusal
+    for message in (library, unexpected):
+        assert 'broadcast' not in message and message.startswith('The fit could not be completed.')

@@ -62,7 +62,7 @@ def test_template_without_baseline_keys_keeps_the_default_baseline_style(qapp):
 
     sw = PlotStyleWidget()
     old_template = {k: v for k, v in sw.current_style().items() if k != 'sensitivity'}
-    old_template['distribution']['median_line_color'] = (0, 0, 255, 255)
+    old_template['distribution']['tick_font_size'] = 19
     sw.load_style(old_template)
     assert sw.current_style()['sensitivity'] == DEFAULT_STYLE['sensitivity']
-    assert sw.current_style()['distribution']['median_line_color'] == (0, 0, 255, 255)
+    assert sw.current_style()['distribution']['tick_font_size'] == 19

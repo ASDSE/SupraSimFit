@@ -122,12 +122,6 @@ class ExportMultipleDialog(QDialog):
         target_form.addRow('Filename base', self._base_edit)
         root.addWidget(target_box)
 
-        # --- distributions config summary --------------------------------
-        self._dist_summary = QLabel('')
-        self._dist_summary.setStyleSheet('color: #444;')
-        self._dist_summary.setWordWrap(True)
-        root.addWidget(self._dist_summary)
-
         # --- buttons -----------------------------------------------------
         self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self._export_btn = QPushButton('Export')
@@ -164,18 +158,6 @@ class ExportMultipleDialog(QDialog):
         base = self._base_edit.text().strip() or 'output'
         for row in self._rows:
             row.filename_label.setText(f'→ {base}{row.art.suffix}')
-        # Refresh distributions summary if that artefact is checked.
-        dist_checked = any(r.checkbox.isChecked() and r.art.key == 'distributions_png' for r in self._rows)
-        if dist_checked:
-            cfg = self._session._distributions_export_config()
-            self._dist_summary.setText(
-                f'Distributions layout: {cfg.rows}×{cfg.cols}, '
-                f'{cfg.width_in:.1f}×{cfg.height_in:.1f} in @ {cfg.dpi} DPI '
-                f'(change via "Save Distributions Plot…")'
-            )
-            self._dist_summary.setVisible(True)
-        else:
-            self._dist_summary.setVisible(False)
 
     # ------------------------------------------------------------------
     # Persistence

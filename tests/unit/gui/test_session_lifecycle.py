@@ -6,8 +6,7 @@ and its sensitivity run, waits for each thread and deletes each worker before
 its widgets go. The long runs are stood in for by functions that do nothing but
 watch their cancel flag: what these tests pin is the stopping, not the science.
 
-One analysis at a time is checked here too, and that every fit records the seed
-that repeats it.
+One analysis at a time is checked here too.
 """
 
 from __future__ import annotations
@@ -22,14 +21,11 @@ pytest.importorskip('PyQt6')
 from PyQt6.QtCore import QEvent, QThread  # noqa: E402
 
 from core.assays.registry import AssayType  # noqa: E402
-from core.optimizer.multistart import FitCancelled  # noqa: E402
 from core.pipeline.fit_pipeline import FitConfig  # noqa: E402
+from core.pipeline.varpro import FitCancelled  # noqa: E402
 from tests.unit.gui.test_sensitivity_gui import _fake_run, _made_on, _sobol_result  # noqa: E402
 
 _IDA_DATA = Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt'
-
-#: Fit seed the real fit here runs with, so it is the same fit every time.
-_FIT_SEED = 42
 
 
 def _wait_until(qapp, condition, timeout: float = 60.0) -> None:
@@ -92,13 +88,13 @@ def watchful_sensitivity(monkeypatch):
     monkeypatch.setattr(workers, 'run_sensitivity', run)
 
 
-def _session(dialogs, *, seed: int | None = None):
+def _session(dialogs):
     """A session on the bundled IDA dataset, ready to fit and to analyse."""
     from gui.fitting_session import FittingSession
 
     session = FittingSession()
     session._assay_panel.set_assay_type(AssayType.IDA)
-    session._fit_panel.set_config(FitConfig(per_replica=False, seed=seed))
+    session._fit_panel.set_config(FitConfig(per_replica=False))
     session._data_panel.load_file(str(_IDA_DATA))
     return session
 
@@ -283,36 +279,9 @@ def test_a_fit_and_an_analysis_never_run_at_the_same_time(qapp, dialogs, watchfu
     session.shutdown()
 
 
-def test_every_fit_records_the_seed_that_repeats_it(qapp, dialogs, watchful_fit):
-    session = _session(dialogs)
-
-    session.run_fit()
-    _wait_until(qapp, lambda: len(watchful_fit) == 1)
-    session._stop_fit()
-    session.run_fit()
-    _wait_until(qapp, lambda: len(watchful_fit) == 2)
-    session.shutdown()
-
-    first, second = (config.seed for config in watchful_fit)
-    assert isinstance(first, int) and isinstance(second, int)
-    assert first != second  # each run is a fresh draw, and each records it
-    # The drawn seed is not written back into the panel: the next run draws again.
-    assert session._fit_panel.current_config().seed is None
-
-
-def test_a_fixed_seed_is_the_seed_the_fit_runs_with(qapp, dialogs, watchful_fit):
-    session = _session(dialogs, seed=7)
-
-    session.run_fit()
-    _wait_until(qapp, lambda: len(watchful_fit) == 1)
-    session.shutdown()
-
-    assert watchful_fit[0].seed == 7
-
-
 def test_a_finished_fit_leaves_neither_its_worker_nor_its_profile_worker_behind(qapp, dialogs):
     """The fit and the Ka profile it starts are deleted once they end, not kept until the tab closes."""
-    session = _session(dialogs, seed=_FIT_SEED)
+    session = _session(dialogs)
 
     session.run_fit()
     fit_worker = session._fit_worker
@@ -341,7 +310,7 @@ def test_a_second_fit_does_not_leave_the_first_fits_profile_running(qapp, dialog
             time.sleep(0.005)
 
     monkeypatch.setattr(workers.ProfileWorker, 'run', watch)
-    session = _session(dialogs, seed=_FIT_SEED)
+    session = _session(dialogs)
 
     session.run_fit()
     _wait_until(qapp, lambda: len(started) == 1)
@@ -367,7 +336,7 @@ def test_a_fit_that_fails_leaves_no_worker_behind(qapp, dialogs, monkeypatch):
         raise RuntimeError('synthetic fit failure')
 
     monkeypatch.setattr(workers, 'fit_measurement_set', boom)
-    session = _session(dialogs, seed=_FIT_SEED)
+    session = _session(dialogs)
 
     session.run_fit()
     worker = session._fit_worker
@@ -507,8 +476,6 @@ def test_save_plot_says_what_the_tab_on_screen_has_to_save(qapp, dialogs):
     assert session.plot_export_note() == 'There is no identifiability chart to save yet. Run a fit, then save it.'
     session._plot_tabs.setCurrentWidget(session._sensitivity_widget)
     assert session.plot_export_note() == 'There is no sensitivity analysis to save yet. Run one, then save it.'
-    session._plot_tabs.setCurrentWidget(session._distribution_widget)
-    assert session.plot_export_note() == 'There are no distributions to save yet. Run a fit, then save them.'
     session._plot_tabs.setCurrentWidget(session._plot_widget)
     assert session.plot_export_note().startswith('There is nothing on the Fit Curve tab yet.')
 

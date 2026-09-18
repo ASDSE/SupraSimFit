@@ -1,7 +1,5 @@
 """Widget tests for PlotWidget — requires a QApplication."""
 
-from dataclasses import replace
-
 import pytest
 
 pytest.importorskip('PyQt6')
@@ -13,8 +11,8 @@ def test_building_the_fit_curve_plot_leaves_the_library_defaults_alone(qapp):
 
     Those defaults reach every plot the application builds afterwards. With
     antialiasing switched on for the whole process, the one-pixel stroke that
-    keeps a histogram bin of a single fit visible on the Distributions tab is
-    drawn blended into the background and vanishes.
+    keeps a thin histogram bin visible on the Ka Sensitivity tab is drawn
+    blended into the background and vanishes.
     """
     import pyqtgraph as pg
 
@@ -244,8 +242,8 @@ def test_whitespace_only_override_falls_back_to_default(qapp):
 # ---------------------------------------------------------------------------
 
 
-def _binding_plot(qapp, *, x_max=5e-5, pool=True):
-    """A shown PlotWidget with a saturating titration and one fit annotated.
+def _binding_plot(qapp, *, x_max=5e-5, **fit_overrides):
+    """A shown PlotWidget with a saturating titration and one annotated fit, overridden by *fit_overrides*.
 
     The curve runs lower-left to upper-right, so the top-left and bottom-right
     regions are genuinely empty — placement has somewhere correct to go.
@@ -255,13 +253,13 @@ def _binding_plot(qapp, *, x_max=5e-5, pool=True):
     from PyQt6.QtWidgets import QApplication
 
     from core.pipeline.fit_pipeline import FitResult
+    from core.pipeline.varpro import KaInterval
     from core.units import Q_
     from gui.plotting.plot_widget import PlotWidget
 
     def curve(c):
         return 1000 + 4000 * c / (c + x_max / 5)
 
-    rng = np.random.default_rng(0)
     x = np.linspace(x_max / 25, x_max, 25)
     y = curve(x)
     # The pipeline reports a dense (300-point) display curve; use the same here
@@ -281,25 +279,19 @@ def _binding_plot(qapp, *, x_max=5e-5, pool=True):
         x_label='Guest',
         y_label='Signal',
     )
-    samples = None
-    if pool:
-        samples = {
-            'Ka_guest': rng.normal(1.24e6, 9e4, 60).clip(1e5),
-            'I_0': rng.normal(1000.0, 20.0, 60),
-        }
-    result = FitResult(
+    fields = dict(
         parameters={'Ka_guest': Q_(1.24e6, '1/M'), 'I_0': Q_(1000.0, 'au')},
         rmse=12.3,
         r_squared=0.9962,
-        n_passing=60 if pool else 1,
-        n_total=100,
         x_fit=Q_(x_dense, 'M'),
         y_fit=Q_(y_dense, 'au'),
         assay_type='IDA',
         model_name='equilibrium_4param',
-        parameter_samples=samples,
+        fit_config={'per_replicate': False, 'level': 0.95},
+        intervals={'Ka_guest': KaInterval(9.0e5, 2.1e6, False, False, 0.95, 21)},
     )
-    pw.set_fit_results([result])
+    fields.update(fit_overrides)
+    pw.set_fit_results([FitResult(**fields)])
     pw.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
     pw.resize(900, 600)
     pw.show()
@@ -319,108 +311,76 @@ def _ka_line(text):
     return next(line for line in text.split('\n') if line.startswith('Ka'))
 
 
-def _with_attempts(result, shown, *, per_replicate=True, replica_fits=True):
-    """*result* with a 60-attempt pool, showing attempt *shown*.
-
-    Attempt 0 has the pool's highest R². As a per-replicate fit its replicates
-    hold attempts 0-29 and 30-59, led by attempts 7 and 30; attempt 7 fits the
-    averaged signal better, so the fit chose attempt 7.
-    """
-    import numpy as np
-
-    r2 = np.linspace(0.99, 0.98, 60)
-    r2[0], r2[7] = 0.999, 0.995
-    replicas = [
-        replace(
-            result, parameter_samples={k: v[s] for k, v in result.parameter_samples.items()}, representative_index=i
-        )
-        for s, i in ((slice(0, 30), 7), (slice(30, 60), 0))
-    ]
-    return replace(
-        result,
-        uncertainty_source='replicate' if per_replicate else 'optimizer',
-        quality_samples={'r_squared': r2, 'rmse': 1.0 - r2},
-        replica_fits=replicas if per_replicate and replica_fits else None,
-        representative_index=shown,
-    )
-
-
-@pytest.mark.parametrize(
-    ('make', 'heading'),
-    [
-        (lambda r: _with_attempts(r, 7), "one replicate's best fit (range over 60"),
-        (lambda r: _with_attempts(r, 40), 'picked fit (range over 60'),
-        (lambda r: _with_attempts(r, 7, per_replicate=False), 'picked fit (range over 60'),
-        (lambda r: _with_attempts(r, 7, replica_fits=False), 'shown fit (range over 60'),
-        (
-            lambda r: replace(r, representative_index=7, metadata={'fitted_representative_index': 3}),
-            'picked fit (range over 60',
-        ),
-    ],
-    ids=['per-replicate-choice', 'per-replicate-pick', 'single-fit-pick', 'choice-unknown', 'recorded-pick'],
-)
-def test_annotation_names_a_fit_that_is_not_the_pool_best(qapp, make, heading):
-    pw = _binding_plot(qapp)
-    pw.set_fit_results([make(pw._fit_results[0])])
-    text = pw._annotation_item.textItem.toPlainText()
-
-    assert heading in text
-    assert '— best fit' not in text
-
-
-def test_annotation_calls_a_single_fit_s_own_choice_the_best_fit(qapp):
-    pw = _binding_plot(qapp)
-    pw.set_fit_results([_with_attempts(pw._fit_results[0], 0, per_replicate=False)])
-
-    assert '— best fit (range over 60' in pw._annotation_item.textItem.toPlainText()
-
-
-def test_annotation_reports_estimate_and_range(qapp):
-    """Each parameter reads 'Estimate (min, max)' over the accepted pool."""
+def test_annotation_reports_the_estimate_and_its_interval(qapp):
+    """The binding constant reads 'estimate [low, high]' — the fit, and the interval of that same fit."""
     import re
 
-    import numpy as np
-
     pw = _binding_plot(qapp)
     text = pw._annotation_item.textItem.toPlainText()
-    pool = pw._fit_results[0].parameter_samples['Ka_guest']
 
-    assert 'best fit (range over 60 accepted fits)' in text
-    assert '±' not in text, 'the ± spread should be gone'
+    assert text.startswith('Fit Summary')
+    assert '±' not in text, 'the fit reports an interval, not a spread'
     assert 'RMSE' not in text, 'RMSE duplicates the Fit Quality panel'
     assert 'R²: 0.9962' in text
 
-    # The bracketed pair is the pool's own extremes, not a symmetric spread:
-    # parse the two numbers back out and compare to numpy.
-    lo, hi = re.search(r'\(([\d.]+)×10(\d+), ([\d.]+)×10(\d+)\)', _ka_line(text)).group(1, 3)
-    assert float(lo) == pytest.approx(np.min(pool) / 1e6, abs=0.01)
-    assert float(hi) == pytest.approx(np.max(pool) / 1e6, abs=0.01)
+    # Parse the pair back out and compare to the interval the result carries.
+    line = _ka_line(text)
+    lo, hi = re.search(r'\[([\d.]+)×10(\d+), ([\d.]+)×10(\d+)\]', line).group(1, 3)
+    assert (float(lo), float(hi)) == (9.0, 2.1)
+    # The overlay paints rich text; read as plain text the superscripts flatten.
+    assert line.startswith('Ka(G) = 1.24×106')
 
 
-def test_annotation_r2_never_reads_as_meeting_the_floor_it_misses(qapp):
-    """A fit a hair below its own Min R² reads below it, from the one shared R² formatter."""
-    from dataclasses import replace
+def test_annotation_writes_an_open_side_in_words(qapp):
+    """A side the data do not close has no limit to print; the bound the search stopped at is not one."""
+    from core.pipeline.varpro import KaInterval
 
-    from gui.plotting.labels import fmt_r2
+    pw = _binding_plot(qapp, intervals={'Ka_guest': KaInterval(9.0e5, 1e12, False, True, 0.95, 21)})
+    line = _ka_line(pw._annotation_item.textItem.toPlainText())
 
-    pw = _binding_plot(qapp)
-    below = replace(pw._fit_results[0], r_squared=0.98999, fit_config={'min_r_squared': 0.99})
-    pw.set_fit_results([below])
+    assert 'no upper limit' in line
+    assert '1012' not in line, 'the bound the profile ran to is not an upper limit'
+
+
+def test_annotation_marks_an_interval_that_spans_values_the_data_reject(qapp):
+    """The bracket of a split interval covers Ka the F test rejects; unmarked it reads as one accepted range."""
+    from core.pipeline.varpro import KaInterval
+    from gui.plotting.labels import SPLIT_MARK
+
+    plain = _binding_plot(qapp, intervals={'Ka_guest': KaInterval(9.0e5, 2.1e6, False, False, 0.95, 21)})
+    pw = _binding_plot(qapp, intervals={'Ka_guest': KaInterval(9.0e5, 2.1e6, False, False, 0.95, 21, split=True)})
+
+    assert SPLIT_MARK not in _ka_line(plain._annotation_item.textItem.toPlainText())
+    assert SPLIT_MARK in _ka_line(pw._annotation_item.textItem.toPlainText())
+
+
+def test_annotation_stars_a_parameter_the_data_fix_only_in_combination(qapp):
+    pw = _binding_plot(qapp, degenerate_keys=('I_0',))
     text = pw._annotation_item.textItem.toPlainText()
-    assert f'R²: {fmt_r2(0.98999, 0.99)}' in text
-    assert 'R²: 0.9900' not in text
+
+    assert 'I_0* =' in text
+    assert not _ka_line(text).startswith('Ka(G)* ')
 
 
-def test_annotation_without_pool_states_no_range(qapp):
-    """A result with no stored pool shows the estimate and says why, not a fake range."""
-    pw = _binding_plot(qapp, pool=False)
+def test_an_imported_legacy_fit_shows_its_estimate_and_no_interval(qapp):
+    """A file written before intervals were reported carries none; the annotation must not invent brackets."""
+    pw = _binding_plot(qapp, intervals=None)
+    line = _ka_line(pw._annotation_item.textItem.toPlainText())
+
+    assert line.startswith('Ka(G) = 1.24×106')
+    assert '[' not in line
+
+
+def test_a_per_replicate_fit_says_how_many_replicates_its_average_holds(qapp):
+    """The headline fit is the fit of an average, and the heading has to name what was averaged."""
+    pw = _binding_plot(
+        qapp,
+        fit_config={'per_replicate': True, 'level': 0.95},
+        metadata={'active_replica_ids': ['0', '1', '2'], 'replica_ids_fit': ['0', '1']},
+    )
     text = pw._annotation_item.textItem.toPlainText()
 
-    assert 'no fit pool stored' in text
-    # A range would render as "(lo, hi)" — the comma is the tell (the parameter
-    # label itself contains parentheses).
-    assert ',' not in _ka_line(text)
-    assert '±' not in text
+    assert text.startswith('Fit Summary (average of 2 replicates)')
 
 
 def test_annotation_is_placed_clear_of_data_and_legend(qapp):
@@ -645,16 +605,17 @@ def _fit_leaving_out(ms, left_out):
         parameters={'Ka_guest': Q_(3.1e5, '1/M'), 'I_0': Q_(100.0, 'au')},
         rmse=41.0,
         r_squared=0.9921,
-        n_passing=1,
-        n_total=1,
         x_fit=Q_(x, 'M'),
         y_fit=Q_(np.interp(x, ms.concentrations, ms.signals[rows].mean(axis=0)), 'au'),
         assay_type='IDA',
         model_name='equilibrium_4param',
+        fit_config={'per_replicate': True, 'level': 0.95},
         metadata={
             'active_replica_ids': given,
             'replica_ids_fit': used,
-            'replica_failures': {rid: 'None of its fit attempts reached the minimum R².' for rid in left_out},
+            'replica_failures': {
+                rid: 'Its own best fit needs a different Ka than the other replicates share.' for rid in left_out
+            },
         },
     )
 

@@ -6,9 +6,9 @@ of every perturbable input (the titrant plus each concentration / binding-consta
 condition) as a σ or a range, in percent or in the input's own unit, the two heatmap
 axes, and an optional fixed seed. It emits :attr:`run_requested` /
 :attr:`cancel_requested`; the owning session runs the worker and calls
-:meth:`set_running` to flip the button. An assay without an exact Ka profile
-(:func:`core.pipeline.profile.profile_supported`) cannot be refitted reliably
-enough to be analysed, so the whole panel is disabled with a sentence saying why.
+:meth:`set_running` to flip the button. An assay whose signal the analysis cannot
+refit (:func:`core.pipeline.varpro.projectable`) has no association constant to
+report, so the whole panel is disabled with a sentence saying why.
 """
 
 from __future__ import annotations
@@ -34,20 +34,19 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.pipeline.fit_pipeline import MAX_SEED
-from core.pipeline.profile import profile_supported
 from core.pipeline.sensitivity import (
     _SOBOL_BLOCKS,
     _SOBOL_SAMPLE_SIZES,
+    MAX_SEED,
     TITRANT,
     InputSpec,
-    ReplicateMode,
     SensitivityConfig,
     SensitivityMode,
     SpecKind,
     axis_reaches_zero,
     perturbable_inputs,
 )
+from core.pipeline.varpro import projectable
 from core.units import Q_, Quantity
 from gui.plotting.colors import INK_2
 from gui.plotting.labels import plain_label
@@ -67,6 +66,9 @@ shifting the reported K<sub>a</sub>.</p>
 uncertainty you set under <i>Input uncertainty</i>, and shows the resulting spread
 of K<sub>a</sub> — so you can see how much of your uncertainty comes from the inputs
 rather than the fit itself.</p>
+<p>Every sample is one exact fit of the averaged signal of the replicates your fit
+used, so the same inputs always give the same K<sub>a</sub> and the spread you see
+comes from the inputs alone.</p>
 """
 
 _MODE_HELP_HTML = """
@@ -108,17 +110,6 @@ It does not account for errors in the input settings or in the model.</p>
 Overlapping whiskers are a conservative sign: two 95% intervals can overlap while the
 difference between the indices is still significant, so their order may hold —
 a larger sample size decides it.</p>
-"""
-
-_REPLICATES_HELP_HTML = """
-<h3>Replicates &mdash; how each perturbed fit uses them</h3>
-<p><b>Follow fit setting</b> uses whatever the Fit panel is set to, so the analysis
-matches the fit you are studying.</p>
-<p><b>Per replicate</b> fits each replicate the baseline fit used separately and reports
-the one that fits the replicates' average best, the way a per-replicate fit does;
-a replicate the baseline fit leaves out enters no sample. It takes about as many
-times longer as there are replicates.</p>
-<p><b>Average replicates</b> fits a single averaged signal, once per sample.</p>
 """
 
 _UNCERTAINTY_HELP_HTML = """
@@ -186,11 +177,8 @@ _INPUT_GAP = 8
 
 def _unavailable_reason(assay_type: AssayType) -> str:
     """Why the analysis cannot be run for *assay_type*, in one plain sentence."""
-    if assay_type is AssayType.DYE_ALONE:
-        return 'Dye Alone has no association constant, so there is nothing to analyse here.'
     return (
-        'This analysis is not available for an assay with more than one association constant: '
-        'its fits cannot yet be repeated reliably enough to measure how the inputs move Ka.'
+        f'{ASSAY_REGISTRY[assay_type].subtype_label} has no association constant, so there is nothing to analyse here.'
     )
 
 
@@ -636,13 +624,13 @@ class SensitivityPanel(InfoGroupBox):
     def set_assay_type(self, assay_type: AssayType) -> None:
         """Rebuild the uncertainty rows and heatmap axis combos for ``assay_type``.
 
-        An assay the analysis cannot refit — one without an exact Ka profile, such
-        as Dye Alone or a stepwise two-constant assay — disables the whole panel and
-        shows a sentence saying why.
+        An assay the analysis cannot refit — one whose signal the engine cannot
+        project onto binding constants, such as Dye Alone — disables the whole
+        panel and shows a sentence saying why.
         """
         self._assay_type = assay_type
         self._rebuild_inputs(assay_type)
-        available = profile_supported(assay_type) and bool(self._rows)
+        available = projectable(assay_type) and bool(self._rows)
         self.setEnabled(available)
         self._unavailable.setVisible(not available)
         if not available:
@@ -708,7 +696,6 @@ class SensitivityPanel(InfoGroupBox):
             x_key=x_key,
             y_key=y_key,
             n_steps=self._steps_spin.value(),
-            replicate_mode=self._replicates_combo.currentData(),
         )
 
     def set_running(self, running: bool) -> None:
@@ -753,16 +740,6 @@ class SensitivityPanel(InfoGroupBox):
             self._samples_combo, 'Sample size', _SAMPLES_HELP_HTML, label='Sample size:'
         )
         form.addRow(self._samples_row)
-
-        self._replicates_combo = QComboBox()
-        self._replicates_combo.addItem('Follow fit setting', ReplicateMode.FOLLOW)
-        self._replicates_combo.addItem('Per replicate', ReplicateMode.PER_REPLICA)
-        self._replicates_combo.addItem('Average replicates', ReplicateMode.AVERAGE)
-        self._replicates_combo.setToolTip(
-            'How each perturbed fit uses the replicates. Averaging them removes the '
-            'measured signal scatter from the analysis.'
-        )
-        form.addRow('Replicates:', self._with_info(self._replicates_combo, 'Replicates', _REPLICATES_HELP_HTML))
         layout.addLayout(form)
 
         # Uncertainty rows — rebuilt per assay type.
@@ -881,7 +858,6 @@ class SensitivityPanel(InfoGroupBox):
         return [
             self._mode_combo,
             self._samples_combo,
-            self._replicates_combo,
             self._seed_check,
             self._seed_spin,
             self._x_combo,

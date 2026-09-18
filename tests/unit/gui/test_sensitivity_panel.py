@@ -13,7 +13,9 @@ Pins what reaches the analysis from what the user sets:
 - a range that would draw an input down to zero blocks the run, naming it;
 - a heatmap checks only its two axes: two different inputs, neither fixed, neither
   reaching zero over its sweep;
-- an assay the analysis cannot refit is closed with one sentence saying why;
+- an assay that fits no association constant is closed with one sentence saying why,
+  while every assay the engine can project — one binding constant or two — is open;
+- the help says what one sample is: an exact fit of one averaged signal;
 - every input the analysis varies is named as the panel shows it;
 - each assay's entries, kinds and units come back on switching back to it, and never
   reach another assay;
@@ -96,6 +98,18 @@ def test_help_says_the_numbers_carry_over_and_the_spread_changes():
     assert 'keeps the uncertainty' not in text and 'uncertainty over' not in text
     assert 'carries the numbers over' in text
     assert 'an even draw between −5 % and +5 % varies less than a σ of 5 %' in text
+
+
+def test_the_help_says_what_one_sample_is():
+    """Every sample is one exact fit of one signal, so the help promises no spread from the fitting itself."""
+    from gui.widgets import sensitivity_panel
+
+    text = ' '.join(sensitivity_panel._SECTION_HELP_HTML.split())
+    assert 'one exact fit of the averaged signal of the replicates your fit used' in text
+    assert 'the same inputs always give the same K<sub>a</sub>' in text
+    # The replicates each sample uses follow the fit; the panel offers no choice of its own.
+    helps = [value for name, value in vars(sensitivity_panel).items() if name.endswith('_HELP_HTML')]
+    assert not any('Per replicate' in help_text or 'Average replicates' in help_text for help_text in helps)
 
 
 @pytest.mark.parametrize(
@@ -317,29 +331,25 @@ def test_each_assays_entries_come_back_on_switching_back_and_reach_no_other_assa
     assert panel._rows['fixed_conc'].spec() == InputSpec.sigma_pct(5.0)
 
 
-@pytest.mark.parametrize(
-    ('assay_type', 'says'),
-    [
-        (AssayType.DYE_ALONE, 'no association constant'),
-        (AssayType.DBA_HG2, 'more than one association constant'),
-    ],
-)
-def test_an_assay_the_analysis_cannot_refit_is_unavailable_and_says_why(qapp, assay_type, says):
-    """The analysis refits through the exact Ka profile, so an assay without one is closed with a reason."""
-    from core.pipeline.profile import profile_supported
+def test_an_assay_with_no_association_constant_is_unavailable_and_says_why(qapp):
+    """The analysis reports association constants, so an assay that fits none is closed with a reason."""
+    from core.pipeline.varpro import projectable
     from gui.widgets.sensitivity_panel import SensitivityPanel
 
-    assert not profile_supported(assay_type)
+    closed = [assay_type for assay_type in AssayType if not projectable(assay_type)]
+    assert closed == [AssayType.DYE_ALONE]
     panel = SensitivityPanel()
 
-    panel.set_assay_type(assay_type)
+    panel.set_assay_type(AssayType.DYE_ALONE)
     assert not panel.isEnabled()
     assert not panel._unavailable.isHidden()
-    assert says in panel._unavailable.text()
+    assert panel._unavailable.text() == 'Dye Alone has no association constant, so there is nothing to analyse here.'
 
-    panel.set_assay_type(AssayType.IDA)
-    assert panel.isEnabled()
-    assert panel._unavailable.isHidden()
+    # Every assay whose signal the engine can project is open, the two-constant ones included.
+    for assay_type in (AssayType.IDA, AssayType.DBA_HG2, AssayType.DBA_H2G):
+        panel.set_assay_type(assay_type)
+        assert panel.isEnabled()
+        assert panel._unavailable.isHidden()
 
 
 def test_input_labels_name_every_input_the_analysis_varies_as_the_panel_shows_it(qapp):
@@ -379,7 +389,6 @@ def test_every_control_locks_while_a_run_is_live(qapp):
     controls = [
         panel._mode_combo,
         panel._samples_combo,
-        panel._replicates_combo,
         panel._seed_check,
         panel._x_combo,
         panel._y_combo,

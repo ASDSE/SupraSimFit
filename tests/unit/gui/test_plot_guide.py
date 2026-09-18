@@ -96,7 +96,6 @@ def test_tab_bar_button_opens_the_section_of_the_tab_on_screen(qapp, guide_off_s
         session._sensitivity_widget: plot_guide.SENSITIVITY,
         session._plot_widget: plot_guide.FIT_CURVE,
         session._identifiability_widget: plot_guide.IDENTIFIABILITY,
-        session._distribution_widget: plot_guide.DISTRIBUTIONS,
     }
     for page, key in expected.items():
         tabs.setCurrentWidget(page)
@@ -108,13 +107,14 @@ def test_tab_bar_button_opens_the_section_of_the_tab_on_screen(qapp, guide_off_s
         assert guide._text.toPlainText().startswith(plot_guide.PLOT_GUIDE[key][0])
 
 
-def test_the_identifiability_example_still_describes_the_demo_data():
-    """Recomputes the guide's quoted profile numbers from the demo data it names.
+def test_the_examples_still_describe_the_demo_data():
+    """Recomputes the guide's quoted numbers from the demo data it names.
 
-    The example invites the user to reproduce it, so every figure in it — the best
-    fit and its R², the confidence interval and how far it reaches, the cut-off, and
-    the R² a doubled and a halved Ka still reach — is recomputed here and looked for
-    in the text. A change in the profile that the guide does not follow fails this.
+    The examples invite the user to reproduce them, so every figure in them — the
+    fit and its interval, R², RMSE, the cut-off and the parameter count behind it,
+    and the R² a doubled and a halved Ka still reach — is recomputed here and
+    looked for in the text. A change in the fit that the guide does not follow
+    fails this.
     """
     import numpy as np
 
@@ -122,39 +122,64 @@ def test_the_identifiability_example_still_describes_the_demo_data():
     from core.data_processing.measurement_set import MeasurementSet
     from core.data_processing.preprocessing import get_step
     from core.io import load_measurements
-    from core.pipeline import profile as profile_module
-    from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds
+    from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measurement_set
     from core.pipeline.profile import fit_profile
+    from core.pipeline.varpro import Projection
     from core.units import Q_
-    from gui.plot_guide import IDENTIFIABILITY, PLOT_GUIDE
+    from gui.plot_guide import FIT_CURVE, IDENTIFIABILITY, PLOT_GUIDE, SUMMARY
 
     # Demo IDA as the guide's note describes it: the bundled data through Outlier
     # Removal at its defaults, the conditions the Demo IDA button sets, averaged.
     ms = MeasurementSet.from_dataframe(load_measurements(str(_IDA_DATA)))
     get_step('zscore_replica_filter', {'threshold': 3.5, 'min_replicas': 3})(ms)
     conditions = {'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M'), 'Ka_dye': Q_(16.8e6, '1/M')}
-    profile = fit_profile(ms, IDAAssay, conditions, FitConfig(per_replica=False))
+    config = FitConfig(per_replica=False)
+    result = fit_measurement_set(ms, IDAAssay, conditions, config)
+    profile = fit_profile(ms, IDAAssay, conditions, config).profiles['Ka_guest']
 
     # The guide quotes the R² at exactly half and twice the best Ka, which the
     # nearest drawn point misses by enough to move the fourth decimal.
     assay = ms.to_assay(IDAAssay, conditions=conditions, use_average=True)
-    y_avg = ms.average_signal(active_only=True)[np.newaxis, :]
-    _, _, ssr_at = profile_module._profile_function(assay, _resolve_bounds(assay, None), y_avg)
-    ss_tot = float(profile_module._ss_tot(y_avg)[0])
+    projection = Projection(assay, _resolve_bounds(assay, None))
+    ss_tot = float(projection.ss_tot[0])
 
     def at(factor: float) -> float:
         """The best R² the profile reaches at *factor* times the best Ka."""
-        return 1.0 - float(ssr_at(profile.best_ka * factor)[0]) / ss_tot
+        return 1.0 - float(projection.row_ssr({'Ka_guest': profile.best_ka * factor})[0]) / ss_tot
 
-    lo, hi = profile.ci
-    text = re.sub(r'\s+', ' ', PLOT_GUIDE[IDENTIFIABILITY][1])
-    quoted = [
-        f'Best fit {profile.best_ka / 1e8:.2f}&times;10<sup>8</sup>',
-        f'(R&sup2; {profile.best_r2:.4f})',
+    interval = result.intervals['Ka_guest']
+    lo, hi = interval.low, interval.high
+    best = float(result.parameters['Ka_guest'].magnitude)
+    assert (profile.best_ka, profile.interval.low) == (best, lo), 'the tab and the fit report the same numbers'
+
+    identifiability = re.sub(r'\s+', ' ', PLOT_GUIDE[IDENTIFIABILITY][1])
+    for phrase in (
+        f'Best fit {best / 1e8:.2f}&times;10<sup>8</sup>',
+        f'(R&sup2; {result.r_squared:.4f})',
         f'CI {lo / 1e8:.1f}&ndash;{hi / 1e8:.1f}&times;10<sup>8</sup>',
-        f'(&minus;{round(100 * (1 - lo / profile.best_ka))}&thinsp;% / +{round(100 * (hi / profile.best_ka - 1))}',
-        f'cut-off {profile.r2_threshold:.4f}.',
+        f'(&minus;{round(100 * (1 - lo / best))}&thinsp;% / +{round(100 * (hi / best - 1))}',
+        f'cut-off {profile.r2_threshold:.4f} from {profile.n_points} data points '
+        f'and {profile.n_params} fitted parameters.',
         f'is {at(2.0):.4f} at twice the best K<sub>a</sub> and {at(0.5):.4f} at half',
-    ]
-    for phrase in quoted:
-        assert phrase in text
+        f'by {result.rmse / 1e3:.1f}&times;10<sup>3</sup> a.u. (RMSE)',
+    ):
+        assert phrase in identifiability
+
+    # The headline the Fit Curve and the summary panel quote is the same fit.
+    headline = (
+        f'{best / 1e8:.2f}&times;10<sup>8</sup> M<sup>&minus;1</sup> [{lo / 1e8:.1f}&times;10<sup>8</sup>, '
+        f'{hi / 1e8:.1f}&times;10<sup>8</sup>]'
+    )
+    used = len(result.metadata['active_replica_ids'])
+    for key, extra in (
+        (FIT_CURVE, (f'R&sup2; {result.r_squared:.4f}.',)),
+        (SUMMARY, (f'R&sup2; {result.r_squared:.4f}, {used} of {used} replicates used',)),
+    ):
+        text = re.sub(r'\s+', ' ', PLOT_GUIDE[key][1])
+        assert headline in text
+        for phrase in extra:
+            assert phrase in text
+    signals = ms.signals[[ms.replica_ids.index(r) for r in ms.active_replica_ids]]
+    summary = re.sub(r'\s+', ' ', PLOT_GUIDE[SUMMARY][1])
+    assert f'{np.max(signals) / 1e5:.1f}&times;10<sup>5</sup> a.u.' in summary
+    assert f'{result.rmse / 1e3:.2f}&times;10<sup>3</sup> a.u.' in summary

@@ -8,7 +8,8 @@ button glued immediately after the last tab (not a corner widget).
 
 Used by both tab systems:
 - session tabs — closable, movable, with a "+" that opens a new session;
-- plot tabs — fixed Fit Curve / Distributions over a white content pane.
+- plot tabs — fixed Fit Curve / Identifiability / Ka Sensitivity over a white
+  content pane.
 """
 
 from __future__ import annotations
