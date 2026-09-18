@@ -1,10 +1,13 @@
-# Released results files
+# Results files
 
-Genuine exports, each written by the release its name carries, so the import
+Genuine exports, each written by the version of the app it names, so the import
 path is tested against files the app really produces rather than dicts a test
-assembles.
+assembles. `tests/unit/test_released_results.py` imports each one against the
+data it was made on and pins the status and the numbers a user sees.
 
-Every file fits `data/IDA_system.txt` with the demo IDA conditions
+## Files written by released versions
+
+Every one fits `data/IDA_system.txt` with the demo IDA conditions
 (`Ka_dye` 16.8 MM⁻¹, `[Host]₀` 4.3 µM, `[Dye]₀` 6 µM) at 60 trials:
 
 | File | Release | Fit | Min R² |
@@ -15,7 +18,27 @@ Every file fits `data/IDA_system.txt` with the demo IDA conditions
 | `v150_pr_all.json` | v1.5.0 | per replicate, all eight fitted | 0.90 |
 | `v150_pr_drop.json` | v1.5.0 | per replicate, replicate `0` left out | 0.99 |
 
-`tests/unit/test_released_results.py` imports each one against
-`data/IDA_system.txt` and pins the status and the numbers a user sees. To add a
-file, check out the release, run its own `fit_measurement_set` on a dataset in
-`data/`, and write `FitResult.to_dict()` as JSON.
+To add a file, check out the release, run its own `fit_measurement_set` on a
+dataset in `data/`, and write `FitResult.to_dict()` as JSON.
+
+## A file that records no equilibrium arithmetic
+
+`unmarked_gda.json` carries no `model_arithmetic` entry, so its stored scores
+are those of the earlier equilibrium arithmetic and an import reproduces them
+with `core.models.equilibrium.legacy_arithmetic` before showing the numbers of
+the present one. Its pool reaches binding constants of 1e12 M⁻¹, where the two
+arithmetics differ by up to 3e-5 relative in RMSE; on the demo IDA data above
+they differ by at most 3e-7, which the import gate would let pass unnoticed.
+
+`unmarked_gda_data.txt` beside it holds the data the fit was made on: a
+synthetic GDA titration of 15 dye concentrations up to 2 µM into
+`[Host]₀` = `[Guest]₀` = 0.2 µM, with `Ka_dye` = 10 MM⁻¹, a true `Ka_guest` of
+100 MM⁻¹, signal coefficients `I0` = 0, `I_dye_free` = 5·10⁷ au/M and
+`I_dye_bound` = 3·10⁸ au/M, and three replicates carrying 1 % constant Gaussian
+noise (NumPy seed 20260917).
+
+Both files are written by the code at commit `ccba0f1`: with that tree on
+`PYTHONPATH`, the signals are generated from `GDAAssay.forward_model`, written
+with `write_measurements_txt`, loaded again, and fitted by `fit_measurement_set`
+with the conditions above, 40 trials, a minimum R² of 0.95 and seed 20260917;
+`FitResult.to_dict()` is written as JSON.

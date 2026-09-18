@@ -24,6 +24,7 @@ import pytest
 
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
+from core.models.equilibrium import MODEL_ARITHMETIC
 from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline.fit_pipeline import (
     FitConfig,
@@ -86,6 +87,14 @@ def test_left_out_replicate_is_recorded(fitted):
     assert fit_replica_ids(result) == ['a', 'b']
     assert input_replica_ids(result) == ['a', 'b', 'c']
     assert list(result.metadata['replica_failures']) == ['c']
+
+
+def test_a_fit_records_the_equilibrium_arithmetic_its_scores_were_computed_with(fitted):
+    """The marker an import reads to know which arithmetic wrote a file's scores."""
+    _, result = fitted
+
+    assert result.metadata['model_arithmetic'] == MODEL_ARITHMETIC
+    assert all(sub.metadata['model_arithmetic'] == MODEL_ARITHMETIC for sub in result.replica_fits)
 
 
 def test_each_replicate_fit_records_the_replicate_it_was_measured_against(fitted):
@@ -255,7 +264,7 @@ def _with_scores_scaled(result: FitResult, factor: float) -> FitResult:
 
 
 def test_scores_written_by_other_arithmetic_of_the_same_model_still_verify(fitted):
-    """Two ways of writing the same equilibrium root move a score by about 5e-9; another dataset moves it by 1e-3."""
+    """A score shifted by far less than the import gate still verifies; another dataset moves every score by 1e-3."""
     ms, result = fitted
     selection = ms.with_active(result.metadata['active_replica_ids'])
 

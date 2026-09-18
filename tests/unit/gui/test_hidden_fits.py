@@ -18,6 +18,7 @@ from __future__ import annotations
 import copy
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -30,6 +31,7 @@ from PyQt6.QtTest import QTest  # noqa: E402
 from core.assays.ida import IDAAssay  # noqa: E402
 from core.assays.registry import AssayType  # noqa: E402
 from core.data_processing.measurement_set import MeasurementSet  # noqa: E402
+from core.io import load_measurements  # noqa: E402
 from core.optimizer.filters import calculate_fit_metrics  # noqa: E402
 from core.optimizer.multistart import FitCancelled  # noqa: E402
 from core.pipeline.fit_pipeline import FitConfig, FitResult, PerReplicaFitError, fit_measurement_set  # noqa: E402
@@ -534,6 +536,69 @@ def test_import_of_a_released_file_with_bare_number_conditions_is_checked_and_sh
     assert shown.r_squared == average_fit.r_squared
     _type_into(session, 'h0', '12')
     assert 'This fit was made on replicates A–C with [Host]₀ = 10 µM.' in session.hidden_results_note()
+
+
+def test_import_of_a_file_written_before_the_arithmetic_marker_says_its_numbers_were_recomputed(
+    qapp, make_session, dialogs, monkeypatch
+):
+    """``unmarked_gda.json`` stores the scores of a less precise equilibrium solve.
+
+    Its fit is shown; the one notice tells the user which of its numbers the app
+    computed again.
+    """
+    fixtures = Path(__file__).resolve().parents[2] / 'fixtures' / 'results'
+    conditions = {'Ka_dye': 1e7, 'h0': 2e-7, 'g0': 2e-7}
+    session = make_session()
+    session._assay_panel.set_assay_type(AssayType.GDA)
+    for key, value in conditions.items():
+        session._assay_panel._field_widgets[key].setValue(value)
+    session._data_panel.data_loaded.emit(
+        MeasurementSet.from_dataframe(load_measurements(fixtures / 'unmarked_gda_data.txt'))
+    )
+    monkeypatch.setattr(
+        'gui.fitting_session.QFileDialog.getOpenFileName', lambda *args: (str(fixtures / 'unmarked_gda.json'), '')
+    )
+
+    session.import_results()
+
+    assert dialogs['warning'] == []
+    ((_, title, text),) = dialogs['information']
+    assert title == 'Imported Results'
+    assert text == (
+        'unmarked_gda.json was written by an earlier version of SupraSimFit. Its R², RMSE and fit curve were '
+        'computed again with the equilibrium solution this version uses. The fitted values are unchanged.'
+    )
+    (shown,) = session._state.fit_results
+    assert shown.parameters['Ka_guest'].magnitude > 0
+
+
+def test_import_of_a_released_per_replicate_file_gives_both_reasons_its_numbers_changed(
+    qapp, make_session, dialogs, monkeypatch
+):
+    """``v150_pr_drop.json`` scored its pool against a replicate the fit left out *and* records no
+    arithmetic, so the app rebuilt its numbers twice over and owes the user both reasons."""
+    root = Path(__file__).resolve().parents[3]
+    fixtures = root / 'tests' / 'fixtures' / 'results'
+    session = make_session()
+    session._assay_panel.set_assay_type(AssayType.IDA)
+    for key, value in (('Ka_dye', 16.8e6), ('h0', 4.3e-6), ('d0', 6e-6)):
+        session._assay_panel._field_widgets[key].setValue(value)
+    session._data_panel.data_loaded.emit(
+        MeasurementSet.from_dataframe(load_measurements(root / 'data' / 'IDA_system.txt'))
+    )
+    monkeypatch.setattr(
+        'gui.fitting_session.QFileDialog.getOpenFileName', lambda *args: (str(fixtures / 'v150_pr_drop.json'), '')
+    )
+
+    session.import_results()
+
+    assert dialogs['warning'] == []
+    ((_, _, text),) = dialogs['information']
+    assert 'did not describe the replicates each fit used' in text
+    assert 'written by an earlier version' in text
+    assert text.index('replicates each fit used') < text.index('written by an earlier version'), (
+        'the replicate reason comes first'
+    )
 
 
 def test_import_without_data_shows_the_stored_numbers_unchecked_with_picks_disabled(

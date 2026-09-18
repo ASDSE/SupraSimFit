@@ -25,6 +25,7 @@ from core.assays.base import BaseAssay
 from core.assays.dye_alone import DyeAloneAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
+from core.models.equilibrium import MODEL_ARITHMETIC, legacy_arithmetic
 from core.optimizer.ensemble import collapse, describe, describe_log10, select_representative_index
 from core.optimizer.filters import calculate_fit_metrics, select_valid_fits
 from core.optimizer.multistart import FitCancelled, multistart_minimize
@@ -113,10 +114,15 @@ class FitResult:
         ``active_replica_ids`` (the replicates it was given),
         ``replica_ids_fit`` and ``replica_failures`` for a per-replicate fit
         (the replicates it used and those it left out, with the reason),
-        ``data_fingerprint`` (:meth:`MeasurementSet.fingerprint`) and
+        ``data_fingerprint`` (:meth:`MeasurementSet.fingerprint`),
         ``quality_scored_on`` (``'fitted_replicates'``: every RMSE and R² was
-        measured against the replicates the fit used). Read the replicates
-        through :func:`fit_replica_ids` and :func:`input_replica_ids`.
+        measured against the replicates the fit used) and ``model_arithmetic``
+        (:data:`~core.models.equilibrium.MODEL_ARITHMETIC`, the equilibrium
+        arithmetic that reproduces every score to within ``_REPRODUCE_RTOL`` —
+        the arithmetic that computed them for a fit made here, and the present
+        one for a checked copy of a file that records none). Read the
+        replicates through :func:`fit_replica_ids` and
+        :func:`input_replica_ids`.
     uncertainty_source : str
         What the pool in ``parameter_samples`` spans. ``"optimizer"``
         (default): the multistart passing trials on a single signal.
@@ -1145,9 +1151,12 @@ def _record_data(result: FitResult, ms: MeasurementSet) -> None:
     every RMSE and R² was measured against the replicates the fit used; a
     per-replicate file without it may have scored its pool against every
     replicate it was given, which :func:`verify_imported_result` checks.
+    ``model_arithmetic`` names the equilibrium arithmetic every score was
+    computed with, which the same function needs to reproduce them.
     """
     result.metadata['data_fingerprint'] = ms.fingerprint()
     result.metadata['quality_scored_on'] = 'fitted_replicates'
+    result.metadata['model_arithmetic'] = MODEL_ARITHMETIC
 
 
 class PerReplicaFitError(RuntimeError):
@@ -1378,13 +1387,21 @@ def _no_passing_reason(result: FitResult, floor: float) -> str:
 
 #: Relative tolerance within which a stored score counts as reproduced. The gate
 #: tells the data a fit was made on from other data, which move every RMSE and
-#: R² by 1e-3 or more. The forward model's arithmetic moves them by up to about
-#: 5e-9 between two ways of writing the same root (measured on the DBA data at
-#: binding constants up to the default bound), so the tolerance sits well above
-#: that and far below the difference between datasets.
+#: R² by 1e-3 or more. Scoring the same fit on the same data twice with the
+#: arithmetic that wrote it reproduces every number exactly, and an equivalent
+#: evaluation of the same model — the same equilibrium root found by a bracketing
+#: method at the same relative tolerance — moves them by at most 5e-15. A file
+#: that stores the scores of the earlier absolute-tolerance arithmetic moves them
+#: as far as its binding is tight: 1e-14 or less wherever Ka·c is of order one,
+#: and, over a sweep of GDA, IDA, DBA and the stepwise models at sub-micromolar
+#: totals with pools reaching 1e12 M⁻¹, up to 2e-2 (GDA), 2e-3 (IDA) and 6e-5
+#: (stepwise). Such a file is checked with the arithmetic that wrote it, and what
+#: moves by more than this tolerance is re-scored and shown, not refused. 1e-6
+#: sits far above the spread of one model evaluated two ways and far below the
+#: distance between datasets.
 _REPRODUCE_RTOL = 1e-6
 
-ImportStatus = Literal['verified', 'rescored_legacy', 'different_data', 'unverifiable']
+ImportStatus = Literal['verified', 'rescored_legacy', 'rescored_precision', 'different_data', 'unverifiable']
 
 
 def verify_imported_result(result: FitResult, ms: Optional[MeasurementSet]) -> Tuple[ImportStatus, FitResult]:
@@ -1394,13 +1411,27 @@ def verify_imported_result(result: FitResult, ms: Optional[MeasurementSet]) -> T
     made on. With data loaded, the result's stored quality is measured again on
     its own record: the replicates it used, its conditions and its assay type.
 
+    ``model_arithmetic`` names the equilibrium arithmetic a file's scores were
+    computed with. A file that records none stores the scores of the earlier
+    arithmetic (:func:`~core.models.equilibrium.legacy_arithmetic`), so it is
+    checked with that one and then re-scored with the present one; the gate
+    below is the same either way. A file that names an arithmetic this version
+    does not have cannot be checked at all.
+
     ``'verified'``
         The data carry the fit's fingerprint, or the file records none, and
         every stored RMSE and R² is reproduced (relative 1e-6). The returned
-        copy records the loaded data's fingerprint and the ``quality_scored_on``
-        marker. A fit of the average whose file does not record its
-        replicates is scored on the replicates active in *ms* now, and the copy
-        records them.
+        copy records the loaded data's fingerprint, the ``quality_scored_on``
+        and ``model_arithmetic`` markers. A fit of the average whose file does
+        not record its replicates is scored on the replicates active in *ms*
+        now, and the copy records them.
+    ``'rescored_precision'``
+        A file without a ``model_arithmetic`` entry whose stored numbers
+        reproduce under the arithmetic that wrote them but move by more than
+        1e-6 under the present one — its scores or its curve. The copy keeps
+        the fit — its parameters, its pool and the attempt it reports — and
+        shows the pool's scores, the RMSE, the R² and the curve of the present
+        arithmetic.
     ``'rescored_legacy'``
         A per-replicate file without the ``quality_scored_on`` marker whose
         pool reproduces when scored against every replicate it was given,
@@ -1419,8 +1450,10 @@ def verify_imported_result(result: FitResult, ms: Optional[MeasurementSet]) -> T
         A recorded ``data_fingerprint`` equal to the data's tells numbers that
         do not reproduce on these data from a fit made on other data.
     ``'unverifiable'``
-        No data are loaded, or the result holds no fitted parameters to score.
-        *result* is returned unchanged.
+        No data are loaded, the result holds no fitted parameters to score, or
+        it names an equilibrium arithmetic this version cannot compute with, so
+        its stored scores cannot be reproduced either way. *result* is returned
+        unchanged.
 
     *ms* itself, including which replicates are active, is never changed.
 
@@ -1434,9 +1467,103 @@ def verify_imported_result(result: FitResult, ms: Optional[MeasurementSet]) -> T
     Returns
     -------
     tuple[str, FitResult]
-        The status and the result to show: a checked copy for
-        ``'verified'`` and ``'rescored_legacy'``, *result* otherwise.
+        The status and the result to show: a checked copy for ``'verified'``
+        and the ``'rescored_*'`` statuses, *result* otherwise.
     """
+    recorded_arithmetic = result.metadata.get('model_arithmetic')
+    if recorded_arithmetic == MODEL_ARITHMETIC:
+        return _verify(result, ms)
+    if recorded_arithmetic is not None:  # an arithmetic this version cannot compute with
+        return 'unverifiable', result
+    with legacy_arithmetic():
+        status, checked = _verify(result, ms)
+    if status in ('different_data', 'unverifiable'):
+        return status, checked
+    return _rescore_with_present_arithmetic(status, checked, ms)
+
+
+def _rescore_with_present_arithmetic(
+    status: ImportStatus,
+    checked: FitResult,
+    ms: MeasurementSet,
+) -> Tuple[ImportStatus, FitResult]:
+    """Numbers of the present arithmetic for a file that stores an earlier one's.
+
+    The fit stays the file's: its parameters, its pool and the attempt it
+    reports are untouched, and only what is measured from them is computed
+    again. The attempt the fit itself chose is derived from the file's own
+    scores and pinned before the pool's scores are replaced, so a near-tie in
+    the pool cannot make that choice look like a pick made in the app.
+
+    A ``'verified'`` file whose every number the present arithmetic reproduces
+    within ``_REPRODUCE_RTOL`` keeps the numbers it stores, so importing it
+    twice shows the same values; the ``model_arithmetic`` marker on the copy
+    then says of them what the gate asked, that the present arithmetic
+    reproduces them to within that tolerance. A ``'rescored_legacy'`` file's
+    reported numbers are rebuilt in any case, and are rebuilt here. A
+    per-replicate file's individual fits are measured again against the
+    replicate each of them was fitted on, so the marker speaks for every number
+    in the copy; a file that does not name those replicates keeps them as they
+    stand, there being nothing to measure them against.
+    """
+    shown, moved = _present_numbers(checked, scoring_assay(ms, checked))
+    used = fit_replica_ids(checked)  # the individual fits stand in this order
+    if checked.replica_fits is not None and used is not None and len(used) == len(checked.replica_fits):
+        subs = [_present_numbers(rf, _record_assay(ms, rf, [rid]))[0] for rid, rf in zip(used, checked.replica_fits)]
+        checked, shown = replace(checked, replica_fits=subs), replace(shown, replica_fits=subs)
+    if status == 'verified' and not moved:
+        return status, checked
+
+    metadata = dict(shown.metadata)
+    own = fitted_representative_index(checked)
+    if own is not None:
+        metadata.setdefault('fitted_representative_index', own)
+    return status if status == 'rescored_legacy' else 'rescored_precision', replace(shown, metadata=metadata)
+
+
+def _present_numbers(result: FitResult, assay: BaseAssay) -> Tuple[FitResult, bool]:
+    """*result* with what the present arithmetic measures from its fit, and whether that moved.
+
+    The fit itself is untouched: its parameters, its pool and the attempt it
+    reports stay the file's, and the RMSE, the R², the curve and the pool's
+    scores are measured again from them. The flag says whether any of those
+    numbers moved by more than ``_REPRODUCE_RTOL``, the same gate the check
+    itself applies — the curve included, so a copy that keeps stored numbers
+    keeps a curve the present arithmetic draws the same way.
+    """
+    index = result.representative_index
+    if index is None:
+        vector = _parameter_vector(result, assay)
+    else:
+        vector = np.array([result.parameter_samples[k][index] for k in assay.parameter_keys], dtype=float)
+    rmse, r_squared, x_fit, y_fit = representative_view(assay, vector)
+    pooled = bool(result.parameter_samples) and bool(result.quality_samples)
+    quality = _score_pool(assay, result.parameter_samples) if pooled else result.quality_samples
+    # Early releases drew the curve on the measured points; such a curve stands on another
+    # grid than the one drawn now and there is nothing in it to compare, so it is left alone.
+    stored_x, stored_y = result.x_fit.to('M').magnitude, result.y_fit.to('au').magnitude
+    on_same_grid = np.shape(stored_y) == np.shape(y_fit.magnitude)
+    moved = not (
+        _reproduces((result.rmse, result.r_squared), (rmse, r_squared))
+        and (not on_same_grid or (_reproduces(stored_x, x_fit.magnitude) and _reproduces(stored_y, y_fit.magnitude)))
+        and (not pooled or all(_reproduces(quality[k], result.quality_samples[k]) for k in quality))
+    )
+    metadata = dict(result.metadata)
+    metadata['model_arithmetic'] = MODEL_ARITHMETIC
+    rebuilt = replace(
+        result,
+        rmse=rmse,
+        r_squared=r_squared,
+        x_fit=x_fit,
+        y_fit=y_fit,
+        quality_samples=quality,
+        metadata=metadata,
+    )
+    return rebuilt, moved
+
+
+def _verify(result: FitResult, ms: Optional[MeasurementSet]) -> Tuple[ImportStatus, FitResult]:
+    """Check *result* against *ms* with the arithmetic in force; see :func:`verify_imported_result`."""
     if ms is None or not result.parameters:
         return 'unverifiable', result
     fingerprint = ms.fingerprint()
@@ -1453,6 +1580,7 @@ def verify_imported_result(result: FitResult, ms: Optional[MeasurementSet]) -> T
         return 'different_data', result
     metadata['data_fingerprint'] = fingerprint
     metadata['quality_scored_on'] = 'fitted_replicates'
+    metadata['model_arithmetic'] = MODEL_ARITHMETIC
     assay = _record_assay(ms, result, used)
 
     given = _legacy_input_ids(result, used, ms)

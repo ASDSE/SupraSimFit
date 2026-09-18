@@ -723,7 +723,7 @@ class FittingSession(QWidget):
 
         accepted: list[FitResult] = []
         refused: dict[str, int] = {}  # reason -> how many results it refuses
-        rescored = repicked = False
+        rescored = repicked = recomputed = False
         for result in results:
             try:
                 status, checked = verify_imported_result(result, ms)
@@ -737,6 +737,11 @@ class FittingSession(QWidget):
             if status == 'rescored_legacy':
                 rescored = True
                 repicked = repicked or checked.representative_index != result.representative_index
+            # A file that records no arithmetic and had its numbers rebuilt was measured again
+            # with the present equilibrium solution, whichever reason named the status.
+            recomputed = recomputed or (
+                status in ('rescored_precision', 'rescored_legacy') and 'model_arithmetic' not in result.metadata
+            )
             accepted.append(checked)
         if refused:
             imported = 'nothing was imported' if not accepted else 'they were left out'
@@ -763,6 +768,11 @@ class FittingSession(QWidget):
             if repicked:
                 text += ' The reported fit is now the one the fit chose itself, so an earlier pick is not kept.'
             notices.append(text)
+        if recomputed:
+            notices.append(
+                f'{name} was written by an earlier version of SupraSimFit. Its R², RMSE and fit curve were '
+                'computed again with the equilibrium solution this version uses. The fitted values are unchanged.'
+            )
         # Ranges and spread come from the stored pool of accepted fits. Files
         # without one cannot show them, so say so rather than leaving the user
         # to wonder why those columns are dashes.
