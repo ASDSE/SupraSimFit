@@ -152,17 +152,6 @@ H2G_RECOVERY_BOUNDS = {
 
 
 # ---------------------------------------------------------------------------
-# Reproducibility: seed the global RNG so multistart optimizer is deterministic
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _seed_rng():
-    """Seed numpy global RNG before each test for reproducible optimization."""
-    np.random.seed(42)
-
-
-# ---------------------------------------------------------------------------
 # Synthetic data generators
 # ---------------------------------------------------------------------------
 

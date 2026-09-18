@@ -60,15 +60,13 @@ def batch():
         'assay_cls': IDAAssay,
         'x_base': np.asarray(ms.concentrations),
         'base_conditions': dict(_CONDITIONS),
-        'fit_config': FitConfig(n_trials=4, custom_bounds=GDA_IDA_RECOVERY_BOUNDS),
+        'fit_config': FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS),
         'offsets_list': offsets,
-        'seeds': list(range(_N_JOBS)),
     }
 
 
-def _evaluate(batch, *, on_result, should_cancel):
-    """Run the batch over two worker processes."""
-    assert len(batch['offsets_list']) >= sens._PARALLEL_MIN_JOBS  # below this the work stays in this process
+def _evaluate(batch, *, on_result, should_cancel, max_workers=2):
+    """Run the batch, over worker processes or — with one core, or too few jobs — in this process."""
     return sens._evaluate_batch(
         batch['ms'],
         batch['assay_cls'],
@@ -76,8 +74,7 @@ def _evaluate(batch, *, on_result, should_cancel):
         batch['base_conditions'],
         batch['fit_config'],
         batch['offsets_list'],
-        batch['seeds'],
-        max_workers=2,
+        max_workers=max_workers,
         on_result=on_result,
         should_cancel=should_cancel,
     )
@@ -90,6 +87,7 @@ def test_a_stopped_batch_drops_the_fits_it_had_queued(batch):
     still working through queued fits would be a second run's competition for
     the machine.
     """
+    assert _N_JOBS >= sens._PARALLEL_MIN_JOBS  # below this the work would stay in this process
     finished: list[object] = []
 
     results = _evaluate(batch, on_result=finished.append, should_cancel=lambda: len(finished) >= 3)
@@ -109,7 +107,6 @@ def test_a_stop_is_answered_while_the_pool_is_still_starting(batch):
     longest and no worker has produced anything yet.
     """
     batch['offsets_list'] = [{TITRANT: 0.001 * (index % 11 - 5)} for index in range(_N_STOP_JOBS)]
-    batch['seeds'] = list(range(_N_STOP_JOBS))
     finished: list[object] = []
     fits_at_each_ask: list[int] = []
     requested_at: list[float] = []
@@ -131,22 +128,33 @@ def test_a_stop_is_answered_while_the_pool_is_still_starting(batch):
     assert not multiprocessing.active_children()
 
 
-def test_a_job_that_fails_outright_stops_the_batch_at_once_in_plain_words(batch):
+@pytest.mark.parametrize(
+    'max_workers, n_jobs',
+    [(2, _N_JOBS), (1, sens._PARALLEL_MIN_JOBS - 1)],
+    ids=['over worker processes', 'in this process'],
+)
+def test_a_job_that_fails_outright_stops_the_batch_at_once_in_plain_words(batch, max_workers, n_jobs):
     """One job failing beyond the per-fit guard ends the batch immediately, with a message a user can act on.
 
     The guard turns an unsolvable fit into a sample without a fit, so anything
     still raising is a failure the analysis cannot work around. The offsets of
     the first job stand in for one: they are not numbers, so the perturbation
     cannot even be built.
+
+    A run over a single core, or one with too few perturbations to be worth a
+    pool — a small heatmap — does the work in this process instead. The same
+    failure has to say the same thing there: what the user is told cannot
+    depend on how many cores the machine has or how many cells the grid holds.
     """
+    batch['offsets_list'] = batch['offsets_list'][:n_jobs]
     batch['offsets_list'][0] = {TITRANT: 'not a number'}
     finished: list[object] = []
 
     with pytest.raises(RuntimeError, match='could not be completed') as raised:
-        _evaluate(batch, on_result=finished.append, should_cancel=lambda: False)
+        _evaluate(batch, on_result=finished.append, should_cancel=lambda: False, max_workers=max_workers)
 
     assert isinstance(raised.value.__cause__, TypeError)  # the real failure is kept for the log
-    assert len(finished) < _N_JOBS // 2  # the rest were dropped rather than fitted first
+    assert len(finished) < n_jobs / 2  # the rest were dropped rather than fitted first
     assert not multiprocessing.active_children()
 
 

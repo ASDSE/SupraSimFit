@@ -1,7 +1,7 @@
-"""P3: Fail-fast contract tests.
+"""Fail-fast contract tests.
 
-Verify that assay constructors and core functions reject invalid inputs
-immediately with clear error messages, rather than silently corrupting.
+Verify that assay constructors and the fit reject invalid inputs immediately
+with clear error messages, rather than silently corrupting.
 """
 
 import numpy as np
@@ -11,6 +11,7 @@ from core.assays.dba import DBAAssay
 from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
+from core.pipeline.fit_pipeline import FitConfig, fit_assay
 from core.units import Q_
 
 
@@ -219,3 +220,53 @@ class TestBaseAssayContracts:
         )
         params = np.array([1e8, 100.0])
         assert assay.sum_squared_residuals(params) == pytest.approx(200.0)
+
+
+class TestFitRefusals:
+    """The fit refuses what it cannot do, in words that name the input and the fix.
+
+    Each refusal replaces a number the app would otherwise have to invent: a
+    binding constant with no speciation, a confidence interval with no degrees
+    of freedom, a search range that is not a range of binding constants.
+    """
+
+    def _ida_assay(self, n_points: int = 15, cls=IDAAssay):
+        x = np.linspace(0, 50e-6, n_points)
+        return cls(
+            x_data=Q_(x, 'M'),
+            y_data=Q_(np.linspace(3000.0, 500.0, n_points), 'au'),
+            Ka_dye=Q_(5e5, '1/M'),
+            h0=Q_(10e-6, 'M'),
+            d0=Q_(5e-6, 'M'),
+        )
+
+    def test_a_model_with_no_solution_anywhere_in_the_bounds_is_refused(self):
+        """A binding constant the model returns no speciation for has no fit at all.
+
+        The speciation is stubbed out so the refusal is pinned on the sentinel
+        itself rather than on where one arithmetic happens to give out.
+        """
+
+        class UnsolvableIDA(IDAAssay):
+            def species(self, params):
+                return {k: np.full(self.n_points, np.nan) for k in ('H', 'D', 'G', 'HD', 'HG')}
+
+        with pytest.raises(ValueError, match='no solution at any association constant'):
+            fit_assay(self._ida_assay(cls=UnsolvableIDA))
+
+    def test_too_few_points_to_judge_the_fit_is_refused_with_the_counts(self):
+        """Three points and four parameters leave nothing to measure a confidence interval by."""
+        with pytest.raises(ValueError, match='too few to judge'):
+            fit_assay(self._ida_assay(n_points=3))
+
+    @pytest.mark.parametrize(
+        'bounds',
+        [(0.0, 1e12), (-1e6, 1e12), (1e9, 1e6)],
+        ids=['zero', 'negative', 'inverted'],
+    )
+    def test_ka_bounds_that_are_not_a_range_of_binding_constants_are_refused_by_name(self, bounds):
+        lo, hi = bounds
+        config = FitConfig(custom_bounds={'Ka_guest': (Q_(lo, '1/M'), Q_(hi, '1/M'))})
+
+        with pytest.raises(ValueError, match='Ka_guest'):
+            fit_assay(self._ida_assay(), config)
