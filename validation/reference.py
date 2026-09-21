@@ -24,7 +24,7 @@ from scipy.optimize import brentq, lsq_linear, minimize, minimize_scalar
 from scipy.stats import f as f_dist
 
 from core.assays.base import BaseAssay
-from core.pipeline.inputs import InputSpec, SpecKind
+from core.pipeline.inputs import ErrorModel, SpecKind
 from core.pipeline.varpro import LEVEL, Projection
 from validation.generate import dataset, stream_seed
 from validation.scenarios import Scenario
@@ -82,7 +82,7 @@ def _refine(fn: Callable[[float], float], grid: np.ndarray, on_grid: np.ndarray)
 
 
 def reference_intervals(
-    assay: BaseAssay, signals: np.ndarray, specs: dict[str, InputSpec], seed: int, stream: str
+    assay: BaseAssay, signals: np.ndarray, errors: ErrorModel, seed: int, stream: str
 ) -> dict[str, tuple[float, float]] | None:
     """95 % interval per free Ka that treats every replicate's point as an independent observation.
 
@@ -92,7 +92,7 @@ def reference_intervals(
     the intervals are then comparable edge by edge.
 
     The profile is ``P(k) = min [N log S + z'z]``, the minimum over the other
-    free Ka and over the offsets of the inputs in *specs*, ``z`` the offsets
+    free Ka and over the offsets of the inputs *errors* states, ``z`` the offsets
     stated with a standard deviation in units of it, and the interval holds the
     Ka with ``P(k) - P_min <= N log(1 + F(0.95; 1, nu) / nu)``. With no
     uncertain input the minimum over a second Ka is a scan of the SSR grid
@@ -110,8 +110,11 @@ def reference_intervals(
         The assay the interval is computed for, built from the entered inputs.
     signals : np.ndarray
         Measured signals, shape ``(replicates, points)``.
-    specs : dict[str, InputSpec]
-        Stated uncertainty of every input the profile may move.
+    errors : ErrorModel
+        The stated error sources. Only an input's own uncertainty is a
+        direction this profile searches, so a model carrying a shared source or
+        a per-addition error is refused rather than answered for a model it
+        does not describe.
     seed : int
         The dataset's seed.
     stream : str
@@ -126,6 +129,13 @@ def reference_intervals(
         Interval per free binding constant, or ``None`` when less than one
         degree of freedom is left.
     """
+    if errors.shared or errors.additions is not None:
+        raise ValueError(
+            'The independent reference moves each input on its own, so it cannot compute an interval under a '
+            'shared error source or a per-addition error. Compare the engine against it on a scenario that '
+            'states neither.'
+        )
+    specs = errors.specs
     meta = assay.registry_metadata
     keys = assay.parameter_keys
     bounds = float_bounds(assay)
@@ -295,7 +305,7 @@ def row(scenario: Scenario, seed: int) -> dict[str, Any]:
         projection = Projection(data.assay, data.assay.get_default_bounds())
         fit = projection.fit()
         engine = {key: projection.interval(key, fit) for key in projection.free_ka}
-        found = reference_intervals(data.assay, data.signals, scenario.input_specs, seed, scenario.id)
+        found = reference_intervals(data.assay, data.signals, scenario.error_model, seed, scenario.id)
         if found is None:
             return {'agrees': {}, 'apart': {}, 'no_reference': True}
         out: dict[str, Any] = {

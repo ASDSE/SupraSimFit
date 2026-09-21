@@ -13,9 +13,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from core.pipeline.inputs import TITRANT
 from core.pipeline.profile import JointRegion
 from core.pipeline.varpro import KaInterval
-from validation.score import _profile_accepts, interval_facts, region_excess
+from validation.scenarios import Scenario, SharedEntry, SpecEntry
+from validation.score import _profile_accepts, interval_facts, region_excess, score
 
 
 def interval(low: float, high: float, split: bool = False) -> KaInterval:
@@ -106,3 +108,50 @@ def test_a_cell_the_model_could_not_be_solved_in_is_outside_the_region():
     drawn = region(0.95)
     drawn.r2[2, 2] = np.nan
     assert np.isnan(region_excess(drawn, (1e6, 1e6)))
+
+
+#: The smallest design of each new kind of scenario: a titration whose totals
+#: the titrant dilutes with the stock declared, the same one fitted without it,
+#: and a titration whose concentrations share one stock error. Eight points is
+#: the shortest design any grid runs, which keeps the three fits of this test
+#: inside the fast layer.
+NEW_SCENARIOS = {
+    'declared': Scenario(assay='DBA_DtoH', regime=10.0, n_points=8, noise=0.005, dilution=(0.02, 0.2)),
+    'ignored': Scenario(
+        assay='DBA_DtoH', regime=10.0, n_points=8, noise=0.005, dilution=(0.02, 0.2), declare_stock=False
+    ),
+    'shared': Scenario(
+        assay='DBA_DtoH',
+        regime=10.0,
+        n_points=8,
+        noise=0.005,
+        specs=(SpecEntry('fixed_conc', sigma=3.0), SpecEntry(TITRANT, sigma=3.0)),
+        shared_sources=(SharedEntry('Stock', 4.0, ('fixed_conc', TITRANT)),),
+    ),
+}
+
+
+@pytest.mark.parametrize('kind', sorted(NEW_SCENARIOS))
+def test_a_row_of_each_new_scenario_carries_what_its_check_reads(kind):
+    """A check renders nothing from a row whose fields are missing, and stores the failure as a fit that broke."""
+    row = score(NEW_SCENARIOS[kind], 0)
+    assert row['refused'] is None and row['error'] is None
+    assert set(row['aware']) == {'Ka_dye'} == set(row['cond']) == set(row['err'])
+    assert row['aware']['Ka_dye']['covers'] in (True, False)
+    assert np.isfinite(row['err']['Ka_dye'])
+    assert row['t_fit'] > 0
+
+
+def test_a_scenario_of_an_older_grid_stores_the_fields_its_rows_already_hold():
+    """A field added to every row would differ from the rows the guard compares against."""
+    row = score(Scenario(assay='DBA_DtoH', regime=10.0, n_points=8, noise=0.005), 0)
+    assert 'err' not in row
+    assert row['refused'] is None and row['error'] is None
+
+
+def test_declaring_the_stock_is_what_puts_the_estimate_on_the_truth():
+    """The dilution-ignored rows are only worth reading if the declared fit is the one that recovers Ka."""
+    declared = score(NEW_SCENARIOS['declared'], 0)
+    ignored = score(NEW_SCENARIOS['ignored'], 0)
+    assert abs(declared['err']['Ka_dye']) < 0.05
+    assert abs(ignored['err']['Ka_dye']) > 5 * abs(declared['err']['Ka_dye'])

@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from core.pipeline.diagnostics import DIAGNOSTIC_LEVEL, Verdict
-from validation import legacy, reference, scenarios, sobol
+from validation import budget, legacy, reference, scenarios, sobol
 from validation.criteria import AGREEMENT, COVERAGE, FALSE_ALARM, NULL_RATE, Criterion
 from validation.score import joint_region_row, score
 
@@ -308,6 +308,81 @@ def sobol_coverage(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def dilution_ignored(row: dict[str, Any]) -> dict[str, Any]:
+    """What a diluted titration fitted with constant totals gives: the coverage and the signed error.
+
+    Nothing is judged. The interval is not claimed to hold a truth the model
+    the fit used does not describe; what the rows say is how far the estimate
+    lands from it and how often the interval still reaches it, which is the
+    price of leaving the titrant stock out.
+    """
+    out: dict[str, Any] = {}
+    for key, facts in (row.get('cond') or {}).items():
+        out[f'~cov.{key}'] = facts['covers']
+        out[f'~width.{key}'] = facts['width']
+    for key, error in (row.get('err') or {}).items():
+        out[f'~err.{key}'] = error
+    return {**out, **_fit_metrics(row)}
+
+
+def _on_bound(facts: dict[str, Any]) -> bool:
+    """Whether any fit behind this binding constant's row ran to a bound of the Ka box.
+
+    The baseline or any fit of the design. On a bound the fit reports the edge
+    of the box instead of a value the data chose, and the output is constant
+    there, so what the budget splits is no longer the movement of the inputs.
+    """
+    return bool(facts.get('on_bound', False) or facts.get('n_on_bound', 0))
+
+
+def source_variance(row: dict[str, Any]) -> dict[str, Any]:
+    """Whether the budget's interval for the shared source holds the variance the identity gives it.
+
+    The identity the truth rests on — scale every concentration by ``1 + e``
+    and the fitted constant is divided by it — holds only where every fit of
+    the analysis lies strictly inside the Ka box. Where one ran to a bound the
+    output is constant there instead, the variance the source really carries is
+    not the one the quadrature gives, and the row is left out of the judged
+    rate; ``~on_bound`` is the share of rows that were.
+
+    ``~st_minus_s1`` is the gap between the total and the first-order index of
+    that source, which the identity puts at zero, and ``~sum_rule`` is the
+    homogeneity sum plus one, which it puts at zero as well: both say whether
+    the refits behind the budget are the refits the algebra describes.
+    """
+    out: dict[str, Any] = {'~truth': row.get('truth')}
+    for key, facts in (row.get('ka') or {}).items():
+        on_bound = _on_bound(facts)
+        out[f'cov.{key}'] = None if on_bound else facts['covers']
+        out[f'~on_bound.{key}'] = on_bound
+        out[f'~variance.{key}'] = facts['variance']
+        out[f'~st_minus_s1.{key}'] = facts['st_minus_s1']
+        out[f'~sum_rule.{key}'] = facts['sum_rule']
+    return out
+
+
+def whatif_accuracy(row: dict[str, Any]) -> dict[str, Any]:
+    """How far the what-if line lands from a second analysis run at the reduced uncertainty.
+
+    Both errors are relative to that second analysis' own spread, so a reader
+    sees what the printed sentence would have been wrong by. A fit that ran to
+    a bound of the Ka box reports that edge, decades from the rest, and both
+    spreads carry it, so the errors are reported a second time over the rows
+    where no fit did (``~formula_err_clean``, ``~reweighted_err_clean``) beside
+    the share of rows where one did.
+    """
+    out: dict[str, Any] = {}
+    for key, facts in (row.get('ka') or {}).items():
+        clean = not _on_bound(facts)
+        out[f'~formula_err.{key}'] = facts['formula_err']
+        out[f'~reweighted_err.{key}'] = facts['reweighted_err']
+        out[f'~formula_err_clean.{key}'] = facts['formula_err'] if clean else None
+        out[f'~reweighted_err_clean.{key}'] = facts['reweighted_err'] if clean else None
+        out[f'~on_bound.{key}'] = not clean
+        out[f'~effective.{key}'] = facts['effective']
+    return out
+
+
 def sobol_error(row: dict[str, Any]) -> dict[str, Any]:
     """The error of each index on one design; its root-mean-square is the price of blocking."""
     return {f'~err.{label}': value for label, value in (row.get('err') or {}).items()}
@@ -554,6 +629,106 @@ CHECKS: dict[str, Check] = {
             'this criterion is what says whether that approximation is good enough to print.'
         ),
         stages=(200, 400),
+    ),
+    'dilution-coverage': Check(
+        name='dilution-coverage',
+        claim=(
+            'The interval holds the true binding constant as often as its 95 % level says when the '
+            'titrant dilutes the fixed totals of the sample and the titrant stock is declared, across '
+            'every assay, regime and noise size, at final dilutions of two to twenty percent.'
+        ),
+        metrics=conditional_coverage,
+        cases=tuple(scenarios.dilution_grid()),
+        row=score,
+        criterion=COVERAGE,
+        criterion_reason=(
+            _COVERAGE_REASON + ' The inputs are entered exactly here, so the reported interval is the '
+            'conditional one and what the rate measures is the dilution-aware model rather than any '
+            'statement about the inputs.'
+        ),
+    ),
+    'dilution-ignored': Check(
+        name='dilution-ignored',
+        claim=(
+            'What the same diluted titrations give when the titrant stock is not declared and the fit '
+            'holds the totals constant: how far log10 of the binding constant lands from the truth, and '
+            'how often the interval still reaches it. Reported, not required — it is the cost the '
+            'dilution option removes.'
+        ),
+        metrics=dilution_ignored,
+        cases=tuple(scenarios.dilution_ignored_grid()),
+        row=score,
+        stages=(200,),
+    ),
+    'shared-source-coverage': Check(
+        name='shared-source-coverage',
+        claim=(
+            'The reported interval holds its level when one error of four percent is common to every '
+            'concentration of the sample — one stock behind the host, the fixed partner and the '
+            'titrant — the entries are drawn from exactly that model and the fit is told it.'
+        ),
+        metrics=aware_coverage,
+        cases=tuple(scenarios.shared_source_grid()),
+        row=score,
+        criterion=COVERAGE,
+        criterion_reason=(
+            _COVERAGE_REASON + ' A shared source is a penalty row like any other stated uncertainty, so '
+            'the same criterion applies; what this grid adds is that the entries carry exactly the '
+            "correlation the fit is told about, which is the model's own premise."
+        ),
+    ),
+    'budget-coverage': Check(
+        name='budget-coverage',
+        claim=(
+            'The 95 % intervals the Ka uncertainty budget draws — around the variance of the output, '
+            'around the variance one source explains, around the spread left once that source is exact, '
+            'and around the two indices of a group of inputs taken together — hold the analytically '
+            'known values of two test functions as often as they say.'
+        ),
+        metrics=sobol_coverage,
+        cases=tuple(sobol.coverage_cases()),
+        row=sobol.budget_row,
+        criterion=COVERAGE,
+        criterion_reason=(
+            _COVERAGE_REASON + ' Every one of these quantities comes from the same delete-one-block '
+            'jackknife as the indices, and the variance and the spread are not indices at all, so each '
+            'needs saying separately whether its t interval on eight blocks is good enough to print.'
+        ),
+        stages=(200, 400),
+    ),
+    'source-variance-exact': Check(
+        name='source-variance-exact',
+        claim=(
+            'On a direct-binding titration, where one error common to every concentration moves log10 of '
+            "the binding constant by exactly minus log10 of itself, the budget's 95 % interval for that "
+            "source's variance holds the value the identity gives it. The identity holds where every fit "
+            'of the analysis lies strictly inside the Ka bounds; a draw where one ran to a bound reports '
+            'the edge of the box, where the output is constant, and is left out of the rate and counted '
+            'beside it.'
+        ),
+        metrics=source_variance,
+        cases=tuple(budget.exact_cases()),
+        row=budget.exact_row,
+        criterion=COVERAGE,
+        criterion_reason=(
+            _COVERAGE_REASON + ' The truth here is a one-dimensional integral rather than a simulated '
+            'rate, so the only question the rows answer is whether the Monte Carlo interval of the '
+            'budget reaches it as often as it claims.'
+        ),
+    ),
+    'what-if-accuracy': Check(
+        name='what-if-accuracy',
+        claim=(
+            'How far the what-if line lands from the truth: the first-order formula and the re-weighted '
+            'cross-check against a second analysis run at the reduced uncertainty on the same data and '
+            'the same design, with the effective sample size the cross-check carried. Both errors are '
+            'given again over the draws where no fit ran to a Ka bound, since a fit that did reports the '
+            'edge of the box rather than a spread of the inputs.'
+        ),
+        metrics=whatif_accuracy,
+        cases=tuple(budget.whatif_cases()),
+        row=budget.whatif_row,
+        stages=(30,),
     ),
     'sobol-blocking': Check(
         name='sobol-blocking',

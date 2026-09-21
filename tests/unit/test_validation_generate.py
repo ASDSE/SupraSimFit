@@ -17,8 +17,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from core.pipeline.inputs import TITRANT
 from validation.generate import dataset
-from validation.scenarios import Scenario, SpecEntry, stated_specs
+from validation.scenarios import Scenario, SharedEntry, SpecEntry, stated_specs
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -152,3 +153,153 @@ def test_the_noise_does_not_change_when_the_entries_start_moving():
     stated = dataset(replace(CASE, specs=stated_specs('IDA')), 5)
     assert np.allclose(exact.signals, stated.signals, rtol=0, atol=0)
     assert not np.allclose(exact.entered_x, stated.entered_x, rtol=0, atol=0)
+
+
+#: One dataset of a stored grid, spelled out: the first three true titrant
+#: concentrations, the first three measured signals of its one replicate, and
+#: every entry error. The rows of ``robustness-strained`` were computed from
+#: exactly these numbers, so a draw that moved would make them rows of another
+#: titration under the same key.
+STRAINED = Scenario(
+    assay='GDA',
+    regime=0.1,
+    n_points=12,
+    noise=0.005,
+    specs=stated_specs('GDA'),
+    shared_entries=('h0', TITRANT),
+)
+STRAINED_X = [6.559714763398443e-05, 0.00013119429526796888, 0.00019679144290195332]
+STRAINED_SIGNAL = [1443.927832757218, 3151.4126292557225, 4818.700461862025]
+STRAINED_ERRORS = {
+    'Ka_dye': 0.06708563317022377,
+    'h0': -0.016929754596704375,
+    'g0': 0.03700605307465419,
+    TITRANT: -0.016929754596704375,
+}
+
+
+def test_a_stored_scenario_draws_the_titration_its_rows_were_computed_from():
+    """A new field on a scenario must not touch a stream an existing grid already drew from."""
+    assert STRAINED.id == 'GDA,K=0.1,n=12,noise=0.005,sig,shared(h0/titrant)'
+    data = dataset(STRAINED, 3)
+    assert data.x[:3].tolist() == STRAINED_X
+    assert data.signals[0][:3].tolist() == STRAINED_SIGNAL
+    assert data.entry_errors == STRAINED_ERRORS
+
+
+def dba_complex(ka: float, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """``[HD]`` of 1:1 binding at totals *x* and *y*, from the mass-balance quadratic.
+
+    ``Ka (x - c)(y - c) = c`` has one root below both totals; it is written as
+    ``2 Ka x y / (b + sqrt(b² - 4 Ka² x y))`` with ``b = Ka (x + y) + 1`` so
+    that no digits are lost to cancellation where the binding is strong.
+    """
+    b = ka * (x + y) + 1.0
+    return 2 * ka * x * y / (b + np.sqrt(b**2 - 4 * ka**2 * x * y))
+
+
+def dba_signal_at(data, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """The four-parameter signal of a dye-to-host titration at totals *x* (dye) and *y* (host)."""
+    bound = dba_complex(data.truth['Ka_dye'], x, y)
+    return data.truth['I0'] + data.truth['I_dye_free'] * (x - bound) + data.truth['I_dye_bound'] * bound
+
+
+DILUTED = Scenario(assay='DBA_DtoH', regime=10.0, n_points=12, noise=0.005, dilution=(0.02, 0.2))
+
+
+def test_a_diluted_titration_is_measured_on_the_totals_each_point_carries():
+    """Every addition of titrant dilutes the host; a signal built on the entered total is another curve."""
+    data = dataset(DILUTED, 2)
+    stock = float(data.conditions['titrant_stock'].to('M').magnitude)
+    assert 0.02 <= data.x[-1] / stock <= 0.2
+    host = data.fixed_conc * (1.0 - data.x / stock)
+    assert np.allclose(dba_signal_at(data, data.x, host), data.clean, rtol=1e-10, atol=0)
+    # The same truth on constant totals is a different measurement, so the
+    # agreement above is the dilution and not an identity.
+    constant = dba_signal_at(data, data.x, np.full(data.x.shape, data.fixed_conc))
+    assert np.max(np.abs(constant - data.clean)) > 10 * float(data.noise_sigma.max())
+
+
+def test_a_diluted_titration_is_the_curve_the_assay_itself_draws():
+    """The generator dilutes the totals and the assay dilutes them again from the stock it was handed.
+
+    The two are separate pieces of arithmetic — one in the generator, one in
+    ``BaseAssay.fixed_total`` — and the inputs of these scenarios are exact, so
+    a total either of them dilutes and the other does not parts the curves.
+    Both diluted totals and one carried by the stock are covered.
+    """
+    for scenario in (
+        DILUTED,
+        Scenario(assay='IDA', regime=10.0, n_points=12, noise=0.005, dilution=(0.02, 0.2)),
+        Scenario(
+            assay='IDA',
+            regime=10.0,
+            n_points=12,
+            noise=0.005,
+            dilution=(0.02, 0.2),
+            stock_contains=('d0',),
+        ),
+        Scenario(assay='DBA_HG2', regime=1.0, n_points=12, noise=0.005, dilution=(0.02, 0.2)),
+    ):
+        data = dataset(scenario, 1)
+        params = np.array([data.truth[key] for key in data.assay.parameter_keys])
+        assert np.allclose(data.assay.forward_model(params).magnitude, data.clean, rtol=1e-10, atol=0), scenario.id
+
+
+def test_the_undeclared_twin_is_the_same_titration():
+    """The price of leaving the stock out is read off the measurement that was made with it."""
+    ignored = dataset(replace(DILUTED, declare_stock=False), 2)
+    declared = dataset(DILUTED, 2)
+    assert np.allclose(ignored.x, declared.x, rtol=0, atol=0)
+    assert np.allclose(ignored.signals, declared.signals, rtol=0, atol=0)
+    assert 'titrant_stock' not in ignored.conditions
+    assert 'titrant_stock' in declared.conditions
+
+
+def test_the_entered_stock_carries_the_error_of_the_entered_titrant():
+    """The series and the stock come from one solution, so the dilution itself is entered exactly."""
+    scenario = replace(DILUTED, specs=(SpecEntry(TITRANT, sigma=10.0),))
+    data = dataset(scenario, 4)
+    stock = float(data.conditions['titrant_stock'].to('M').magnitude)
+    assert data.entry_errors[TITRANT] != 0.0
+    assert np.allclose(data.entered_x / stock, data.x / (stock * (1 + data.entry_errors[TITRANT])), rtol=1e-12)
+
+
+SHARED = Scenario(
+    assay='IDA',
+    regime=10.0,
+    n_points=12,
+    noise=0.005,
+    shared_sources=(SharedEntry('Stock', 4.0, ('h0', 'd0')),),
+)
+
+
+def test_one_shared_source_moves_every_input_it_loads_by_the_same_factor():
+    """An input a source loads and nothing else moves carries that source's draw and nothing else."""
+    errors = dataset(SHARED, 6).entry_errors
+    assert set(errors) == {'h0', 'd0'}
+    assert errors['h0'] == errors['d0']
+    assert errors['h0'] != 0.0
+    assert dataset(SHARED, 6).entry_errors == errors
+
+
+def test_two_sources_on_one_input_multiply_there():
+    """Sources are independent, so an input two of them load ends up at ``(1 + a)(1 + b) - 1``."""
+    scenario = replace(
+        SHARED,
+        shared_sources=(
+            SharedEntry('Balance', 4.0, ('h0', 'd0')),
+            SharedEntry('Pipette', 3.0, ('d0', TITRANT)),
+        ),
+    )
+    errors = dataset(scenario, 6).entry_errors
+    assert 1 + errors['d0'] == pytest.approx((1 + errors['h0']) * (1 + errors[TITRANT]), rel=1e-12)
+    assert errors['h0'] != errors[TITRANT]
+
+
+def test_a_shared_source_comes_out_at_the_spread_it_states():
+    """A source drawn at another width would measure the interval against an uncertainty nobody stated."""
+    drawn = np.array([dataset(SHARED, seed).entry_errors['h0'] for seed in range(200)])
+    # 200 draws: the sample standard deviation is within about 15 % of the true one.
+    assert drawn.std(ddof=1) == pytest.approx(0.04, rel=0.2)
+    assert abs(drawn.mean()) < 0.01

@@ -18,11 +18,23 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-__all__ = ['CODE_ROOTS', 'RESULTS_DIR', 'append', 'code_hash', 'load', 'path', 'prune', 'row_key']
+__all__ = [
+    'CODE_ROOTS',
+    'RESULTS_DIR',
+    'UNCOMPARED',
+    'append',
+    'code_hash',
+    'differences',
+    'load',
+    'path',
+    'prune',
+    'row_key',
+]
 
 #: Where the rows live: one JSON Lines file per check.
 RESULTS_DIR = Path(__file__).resolve().parent / 'results'
@@ -157,3 +169,53 @@ def prune(check: str, code: str | None = None) -> int:
     kept = [row for row in found if row.get('code') == wanted]
     file.write_text(''.join(json.dumps(row, default=float) + '\n' for row in kept), encoding='utf-8')
     return len(found) - len(kept) + damaged
+
+
+#: Fields two runs of the same code are not expected to agree on: which code
+#: produced the row, and how long the fit took.
+UNCOMPARED = ('code', 't_fit', 't_total')
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Whether two stored values are the same number, structure for structure.
+
+    Rows are compared after a JSON round trip, which reproduces a float from
+    its shortest repr, so two bit-identical fits give values that compare equal
+    exactly. Two ``NaN`` are the same answer here — a quantity the fit could
+    not produce — although they are never equal.
+    """
+    if isinstance(a, float) and isinstance(b, float):
+        return a == b or (math.isnan(a) and math.isnan(b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return set(a) == set(b) and all(_same(a[key], b[key]) for key in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def differences(
+    check: str, code_a: str, code_b: str, ignore: Iterable[str] = UNCOMPARED
+) -> tuple[int, list[tuple[str, int, str]]]:
+    """Every field in which the rows of *check* under two code hashes disagree.
+
+    Only the ``(case, seed)`` keys both hashes hold are compared; a key one of
+    them is missing says nothing about whether the numbers moved. A field
+    present under one hash and absent under the other is a difference, as is a
+    field whose value changed.
+
+    Returns
+    -------
+    tuple[int, list[tuple[str, int, str]]]
+        How many ``(case, seed)`` keys were compared, and one
+        ``(case, seed, field)`` per differing field, in key order.
+    """
+    left, right = load(check, code_a), load(check, code_b)
+    skip = set(ignore)
+    found: list[tuple[str, int, str]] = []
+    common = sorted(set(left) & set(right))
+    for case, seed in common:
+        a, b = left[(case, seed)], right[(case, seed)]
+        for field in sorted((set(a) | set(b)) - skip):
+            if field not in a or field not in b or not _same(a[field], b[field]):
+                found.append((case, seed, field))
+    return len(common), found

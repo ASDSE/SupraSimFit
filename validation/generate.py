@@ -30,9 +30,9 @@ from core.assays import ASSAY_CLASSES
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.models.equilibrium import dba_signal, gda_signal, h2g_signal, hg2_signal, ida_signal
-from core.pipeline.inputs import TITRANT
+from core.pipeline.inputs import TITRANT, TITRANT_STOCK
 from core.units import Q_
-from validation.scenarios import COMPETITIVE, TWO_KA, Scenario
+from validation.scenarios import COMPETITIVE, TWO_KA, Scenario, fixed_concentrations
 
 __all__ = ['Dataset', 'dataset', 'stream_seed']
 
@@ -90,7 +90,9 @@ class Dataset:
     entered_x : np.ndarray
         Titrant concentrations as entered.
     conditions : dict[str, Any]
-        Conditions as entered, as the assay constructor takes them.
+        Conditions as entered, as the assay constructor takes them; a diluted
+        titration carries the entered titrant stock and what it contains among
+        them.
     assay : BaseAssay
         The assay built from the entered conditions and the average signal.
     """
@@ -120,8 +122,16 @@ def ka_keys(assay: str) -> list[str]:
     return [k for k in meta.param_kinds if k.startswith('Ka')]
 
 
-def _truth(scenario: Scenario, rng: np.random.Generator) -> tuple[dict[str, float], dict[str, Any], float, np.ndarray]:
-    """Draw the truth, the true conditions, the fixed concentration and the titrant grid."""
+def _truth(
+    scenario: Scenario, rng: np.random.Generator
+) -> tuple[dict[str, float], dict[str, Any], float, np.ndarray, float | None]:
+    """Draw the truth, the true conditions, the fixed concentration, the titrant grid and the titrant stock.
+
+    The stock is drawn last, from the final dilution the scenario states: a
+    sample whose last point is a fraction ``phi`` stock was titrated from a
+    stock of ``x[-1] / phi``. A scenario that states no dilution draws nothing
+    and has no stock.
+    """
     assay = scenario.assay
     conc = 10 ** rng.uniform(-6.5, -4)
     span = (
@@ -160,11 +170,36 @@ def _truth(scenario: Scenario, rng: np.random.Generator) -> tuple[dict[str, floa
         conditions = {'fixed_conc': conc, 'mode': assay[4:]}
     if scenario.dark_free_dye:
         truth['I_dye_free'] = 0.0
-    return truth, conditions, conc, x
+    stock = None
+    if scenario.dilution is not None:
+        low, high = scenario.dilution
+        stock = float(x[-1] / np.exp(rng.uniform(np.log(low), np.log(high))))
+    return truth, conditions, conc, x, stock
+
+
+def _point_totals(scenario: Scenario, conditions: dict[str, Any], x: np.ndarray, stock: float | None) -> dict[str, Any]:
+    """The true conditions at each titration point, with every diluted total spelled out per point.
+
+    A sample of volume ``V0`` that has taken up cumulative volume ``W`` of a
+    stock of concentration ``c_T`` holds ``x = c_T W / (V0 + W)`` of the
+    titrant, so the dilution at that point is ``x / c_T`` and a fixed total
+    ``c`` that the stock does not carry stands at ``c (1 - x / c_T)``. A total
+    the stock carries at the sample's own concentration does not move, and
+    without a stock nothing does: the conditions are then handed on as they
+    are, value for value.
+    """
+    if stock is None:
+        return conditions
+    diluted = set(fixed_concentrations(scenario.assay)) - set(scenario.stock_contains)
+    return {key: value * (1.0 - x / stock) if key in diluted else value for key, value in conditions.items()}
 
 
 def _clean_signal(scenario: Scenario, truth: dict[str, float], conditions: dict[str, Any], x: np.ndarray) -> np.ndarray:
-    """The model's signal at *truth*, with ``I0`` still zero."""
+    """The model's signal at *truth* on the conditions of each titration point, with ``I0`` still zero.
+
+    A fixed total is one value, or one value per point where the titrant
+    dilutes it (:func:`_point_totals`).
+    """
     assay = scenario.assay
     if assay == 'GDA':
         y = gda_signal(
@@ -231,7 +266,11 @@ def _entry_errors(scenario: Scenario, rng: np.random.Generator) -> dict[str, flo
     A standard deviation draws the error Gaussian and a range draws it uniform
     over the range. Inputs named in ``shared_entries`` take the same quantile
     of their own distributions, which is one stock error stated as several
-    independent ones. An error below :data:`LOWEST_ENTRY_ERROR` is set to it.
+    independent ones. A stated shared source is drawn once and multiplies into
+    every input it loads, so an input an own spec and a source both move ends
+    up at ``(1 + own)(1 + shared) - 1`` and an input only a source moves ends
+    up at the source's own draw. An error below :data:`LOWEST_ENTRY_ERROR` is
+    set to it.
     """
     common = rng.random()
     errors = {}
@@ -243,6 +282,10 @@ def _entry_errors(scenario: Scenario, rng: np.random.Generator) -> dict[str, flo
         else:
             error = (entry.lo + quantile * (entry.hi - entry.lo)) / 100
         errors[entry.key] = max(scenario.entry_multiple * error, LOWEST_ENTRY_ERROR)
+    for source in scenario.shared_sources:
+        shift = scenario.entry_multiple * source.sigma / 100 * float(_normal_quantile(rng.random()))
+        for key in source.keys:
+            errors[key] = max((1 + errors.get(key, 0.0)) * (1 + shift) - 1, LOWEST_ENTRY_ERROR)
     return errors
 
 
@@ -275,8 +318,8 @@ def dataset(scenario: Scenario, seed: int) -> Dataset:
     # the entries at 2 sigma are the entries at 1 sigma doubled.
     truth_rng, noise_rng = (np.random.default_rng(child) for child in stream_seed(scenario.data_id, seed).spawn(2))
     entry_rng = np.random.default_rng(stream_seed(f'{scenario.entry_id}|entry', seed))
-    truth, conditions, conc, x = _truth(scenario, truth_rng)
-    bare = _clean_signal(scenario, truth, conditions, x)
+    truth, conditions, conc, x, stock = _truth(scenario, truth_rng)
+    bare = _clean_signal(scenario, truth, _point_totals(scenario, conditions, x, stock), x)
     offset = (
         I0_FRACTION * float(np.ptp(bare)) if (truth_rng.integers(2) if scenario.i0 is None else scenario.i0) else 0.0
     )
@@ -308,6 +351,12 @@ def dataset(scenario: Scenario, seed: int) -> Dataset:
         key: Q_(value, CONDITION_UNITS.get(key, 'M')) if not isinstance(value, str) else value
         for key, value in entered.items()
     }
+    if stock is not None and scenario.declare_stock:
+        # The titrant series and the stock come from one solution, so the error
+        # of the entered titrant is the error of the entered stock: the
+        # dilution x / c_T, a ratio of volumes, is entered exactly.
+        quantities[TITRANT_STOCK] = Q_(stock / titrant_factor, 'M')
+        quantities['stock_contains'] = scenario.stock_contains
     assay = assay_cls(x_data=Q_(entered_x, 'M'), y_data=Q_(signals.mean(axis=0), 'au'), **quantities)
     return Dataset(
         scenario=scenario,

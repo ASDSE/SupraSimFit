@@ -17,17 +17,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterator
 
-from core.pipeline.inputs import TITRANT, InputSpec
+from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec, SharedSource
 
 __all__ = [
     'ASSAYS',
     'COMPETITIVE',
+    'DILUTION',
     'ONE_KA',
+    'SHARED_STOCK',
     'STATED_SIGMA',
     'TWO_KA',
     'Scenario',
+    'SharedEntry',
     'SpecEntry',
+    'concentration_inputs',
     'conflict_grid',
+    'dilution_grid',
+    'dilution_ignored_grid',
+    'fixed_concentrations',
     'input_aware_grid',
     'joint_grid',
     'lof_null_grid',
@@ -39,6 +46,7 @@ __all__ = [
     'robustness_grid',
     'robustness_strained_grid',
     'runs_null_grid',
+    'shared_source_grid',
     'stated_specs',
     'two_ka_weak_grid',
 ]
@@ -132,6 +140,52 @@ def stated_specs(assay: str) -> tuple[SpecEntry, ...]:
     return tuple(SpecEntry(key, sigma=STATED_SIGMA[_kind(key)]) for key in INPUT_KEYS[assay])
 
 
+def concentration_inputs(assay: str) -> tuple[str, ...]:
+    """The inputs of *assay* that are concentrations, the titrant series last."""
+    return tuple(key for key in INPUT_KEYS[assay] if _kind(key) != 'binding_constant')
+
+
+def fixed_concentrations(assay: str) -> tuple[str, ...]:
+    """The conditions of *assay* that hold a concentration made up before the titration starts.
+
+    These are the totals a titrant addition dilutes, unless the titrant stock
+    was made up to carry one of them at the sample's own concentration.
+    """
+    return tuple(key for key in concentration_inputs(assay) if key != TITRANT)
+
+
+@dataclass(frozen=True)
+class SharedEntry:
+    """One error several entered inputs carry together, as the panel states it.
+
+    A stock, a balance or a pipette behind several inputs: one relative error
+    of *sigma* percent that moves every input of *keys*, beside whatever each
+    of them carries on its own.
+
+    Attributes
+    ----------
+    name : str
+        What the source is called, in a report and in an id.
+    sigma : float
+        Standard deviation in percent of each entered value.
+    keys : tuple[str, ...]
+        Input keys the source moves, two or more.
+    """
+
+    name: str
+    sigma: float
+    keys: tuple[str, ...]
+
+    def to_source(self) -> SharedSource:
+        """The application's object for this source."""
+        return SharedSource(self.name, self.sigma, self.keys)
+
+    @property
+    def token(self) -> str:
+        """This source as an id writes it."""
+        return f'{self.name}={self.sigma:g}(' + '/'.join(_short(key) for key in self.keys) + ')'
+
+
 @dataclass(frozen=True)
 class Scenario:
     """One family of synthetic titrations.
@@ -184,6 +238,22 @@ class Scenario:
     titrant_error : float
         Scale error of the entered titrant series, as a fraction, planted
         whatever the specs state.
+    dilution : tuple[float, float] | None
+        Range the final dilution is drawn log-uniformly from, per seed: the
+        last titrant concentration as a fraction of the titrant stock, so 0.1
+        is a sample a tenth of which is stock by the end. ``None``: the totals
+        stay constant, which is a titrant stock made up in the sample solution.
+    stock_contains : tuple[str, ...]
+        Fixed concentrations the titrant stock carries at the sample's own
+        concentration, so a titrant addition does not dilute them.
+    declare_stock : bool
+        Whether the fit is told the titrant stock. ``False`` fits a diluted
+        titration as if its totals stayed constant, which is what the dilution
+        option costs when it is left off.
+    shared_sources : tuple[SharedEntry, ...]
+        Errors several entered inputs carry together. Each is drawn once per
+        dataset and multiplies into every input it loads, and the fit is told
+        the same sources.
     """
 
     assay: str
@@ -202,15 +272,40 @@ class Scenario:
     shared_entries: tuple[str, ...] = ()
     misfit_sine: float = 0.0
     titrant_error: float = 0.0
+    dilution: tuple[float, float] | None = None
+    stock_contains: tuple[str, ...] = ()
+    declare_stock: bool = True
+    shared_sources: tuple[SharedEntry, ...] = ()
 
     def __post_init__(self) -> None:
         if self.assay not in ASSAYS:
             raise ValueError(f'{self.assay!r} is not a validated assay; they are {", ".join(ASSAYS)}.')
-        unknown = {e.key for e in self.specs} - set(INPUT_KEYS[self.assay])
+        keys = set(INPUT_KEYS[self.assay])
+        unknown = {e.key for e in self.specs} - keys
         if unknown:
             raise ValueError(f'{self.assay} has no input {sorted(unknown)}; its inputs are {INPUT_KEYS[self.assay]}.')
         if set(self.shared_entries) - {e.key for e in self.specs}:
             raise ValueError('shared_entries names an input that carries no spec.')
+        for source in self.shared_sources:
+            if set(source.keys) - keys:
+                raise ValueError(f'{source.name} loads an input {self.assay} does not have: {sorted(source.keys)}.')
+            if len(set(source.keys)) < 2:
+                raise ValueError(f'{source.name} loads fewer than two inputs; state it on the input itself.')
+            if not source.sigma > 0:
+                raise ValueError(f'{source.name} states a standard deviation of {source.sigma}.')
+        if len({source.name for source in self.shared_sources}) != len(self.shared_sources):
+            raise ValueError('two shared sources carry the same name.')
+        if self.dilution is not None and not 0 < self.dilution[0] <= self.dilution[1] < 1:
+            raise ValueError(f'the final dilution has to lie between 0 and 1; {self.dilution} was given.')
+        fixed = fixed_concentrations(self.assay)
+        if set(self.stock_contains) - set(fixed):
+            raise ValueError(
+                f'{self.assay} has no fixed concentration {sorted(set(self.stock_contains) - set(fixed))}.'
+            )
+        if set(self.stock_contains) == set(fixed):
+            raise ValueError('a stock carrying every fixed concentration dilutes nothing; leave the dilution out.')
+        if self.dilution is None and (self.stock_contains or not self.declare_stock):
+            raise ValueError('a titrant stock is stated only where the scenario states a dilution.')
 
     @property
     def data_id(self) -> str:
@@ -239,6 +334,10 @@ class Scenario:
             parts.append('dark')
         if self.misfit_sine:
             parts.append(f'sine={self.misfit_sine:g}')
+        if self.dilution is not None:
+            parts.append(f'dil={self.dilution[0]:g}:{self.dilution[1]:g}')
+        if self.stock_contains:
+            parts.append('instock(' + '/'.join(self.stock_contains) + ')')
         return ','.join(parts)
 
     @property
@@ -255,6 +354,8 @@ class Scenario:
             parts.append('spec(' + '/'.join(e.token for e in self.specs) + ')')
             if self.shared_entries:
                 parts.append('shared(' + '/'.join(_short(k) for k in self.shared_entries) + ')')
+        if self.shared_sources:
+            parts.append('src(' + '/'.join(s.token for s in self.shared_sources) + ')')
         return ','.join(parts)
 
     @property
@@ -278,6 +379,10 @@ class Scenario:
                 parts.append('shared(' + '/'.join(_short(k) for k in self.shared_entries) + ')')
         if self.titrant_error:
             parts.append(f'titr={self.titrant_error:g}')
+        if not self.declare_stock:
+            parts.append('nostock')
+        if self.shared_sources:
+            parts.append('src(' + '/'.join(s.token for s in self.shared_sources) + ')')
         return ','.join(parts)
 
     @property
@@ -286,9 +391,12 @@ class Scenario:
         return {e.key: e.to_spec() for e in self.specs}
 
     @property
-    def exact_inputs(self) -> bool:
-        """Whether every entered input is the true one."""
-        return not self.specs or self.entry_multiple == 0.0
+    def error_model(self) -> ErrorModel:
+        """Every stated error source, as the fit configuration and the sensitivity analysis take them."""
+        return ErrorModel(
+            specs=self.input_specs,
+            shared=tuple(source.to_source() for source in self.shared_sources),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -530,6 +638,86 @@ def robustness_strained_grid() -> list[Scenario]:
     return grid
 
 
+#: Range the final dilution of a diluted scenario is drawn from: the last
+#: titrant concentration as a fraction of the stock. Two percent is a titration
+#: whose dilution a fit can ignore; twenty percent is one it cannot, and the
+#: largest a titration into one cuvette usually reaches.
+DILUTION = (0.02, 0.20)
+
+#: What the shared error source of :func:`shared_source_grid` is called: one
+#: stock solution behind every concentration of the sample.
+SHARED_STOCK = 'Stock'
+
+
+def dilution_grid() -> list[Scenario]:
+    """Titrations whose fixed totals the titrant dilutes, fitted with the stock declared.
+
+    Every assay across the three regimes and both noise sizes, the final
+    dilution drawn per seed inside :data:`DILUTION`; the inputs are exact, so
+    the reported interval is the conditional one and what is measured is the
+    model. Beside them the two competitive assays with the second fixed
+    species carried by the stock, which dilutes the host alone.
+    """
+    grid = [
+        Scenario(assay=assay, regime=regime, n_points=12, noise=noise, dilution=DILUTION)
+        for assay in ASSAYS
+        for regime in (0.1, 10.0, 1000.0)
+        for noise in NOISE
+    ]
+    grid += [
+        Scenario(
+            assay=assay,
+            regime=10.0,
+            n_points=12,
+            noise=noise,
+            dilution=DILUTION,
+            stock_contains=(fixed_concentrations(assay)[1],),
+        )
+        for assay in COMPETITIVE
+        for noise in NOISE
+    ]
+    return grid
+
+
+def dilution_ignored_grid() -> list[Scenario]:
+    """The medium-regime titrations of :func:`dilution_grid`, fitted as if their totals stayed constant.
+
+    The scenarios carry the same :attr:`~Scenario.data_id` as their declared
+    twins, so they are the same measurements: what the rows show is the price
+    of leaving the titrant stock out, read off the titrations that were run
+    with it.
+    """
+    return [
+        Scenario(assay=assay, regime=10.0, n_points=12, noise=noise, dilution=DILUTION, declare_stock=False)
+        for assay in ASSAYS
+        for noise in NOISE
+    ]
+
+
+def shared_source_grid() -> list[Scenario]:
+    """One error common to every concentration of the sample, stated as such and drawn as such.
+
+    Every input carries the standard deviation of its kind on its own, and one
+    source of four percent moves every concentration — the host, the fixed
+    partner and the titrant — together, as one stock solution behind all of
+    them does. The entries are drawn from exactly that model and the fit is
+    told it, so the reported interval is judged on its own premise.
+    """
+    return [
+        Scenario(
+            assay=assay,
+            regime=regime,
+            n_points=12,
+            noise=noise,
+            specs=stated_specs(assay),
+            shared_sources=(SharedEntry(SHARED_STOCK, 4.0, concentration_inputs(assay)),),
+        )
+        for assay in ASSAYS
+        for regime in (0.1, 10.0, 1000.0)
+        for noise in NOISE
+    ]
+
+
 def reference_grid() -> list[Scenario]:
     """Small designs solved twice: by the engine and by an independent profile.
 
@@ -600,6 +788,9 @@ def all_scenarios() -> Iterator[Scenario]:
         pooling_grid,
         joint_grid,
         before_after_grid,
+        dilution_grid,
+        dilution_ignored_grid,
+        shared_source_grid,
     ):
         yield from grid()
     yield from conflict_grid((1.0,))

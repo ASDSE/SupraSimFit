@@ -129,3 +129,58 @@ def test_the_hash_covers_every_package_a_fit_goes_through(code_copy):
         files[0].write_text(text + '\nUNREACHED = 1\n', encoding='utf-8')
         assert store.code_hash(code_copy) != before, f'a change in {package} does not reach the hash'
         files[0].write_text(text, encoding='utf-8')
+
+
+def test_two_runs_of_the_same_code_differ_in_nothing(results):
+    """The guard's pass is zero differing rows; a comparison that flagged equal rows would never show one."""
+    for code in ('old', 'new'):
+        store.append(
+            'demo',
+            [{'case': 'A', 'seed': seed, 'code': code, 'cov': {'Ka': True}, 'width': 0.1 + seed} for seed in range(3)],
+        )
+    compared, found = store.differences('demo', 'old', 'new')
+    assert compared == 3
+    assert found == []
+
+
+def test_a_field_that_moved_is_named_with_its_case_and_seed(results):
+    """The guard has to say which fit moved; a bare count leaves nothing to look at."""
+    store.append('demo', [{'case': 'A', 'seed': 0, 'code': 'old', 'cov': {'Ka': True}, 'width': 0.25}])
+    store.append('demo', [{'case': 'A', 'seed': 0, 'code': 'new', 'cov': {'Ka': True}, 'width': 0.25000000000001}])
+    compared, found = store.differences('demo', 'old', 'new')
+    assert compared == 1
+    assert found == [('A', 0, 'width')]
+    store.append('demo', [{'case': 'B', 'seed': 0, 'code': 'old', 'cov': {'Ka': True}, 'width': 0.25}])
+    store.append('demo', [{'case': 'B', 'seed': 0, 'code': 'new', 'cov': {'Ka': False}, 'width': 0.25}])
+    assert store.differences('demo', 'old', 'new')[1] == [('A', 0, 'width'), ('B', 0, 'cov')]
+
+
+def test_a_field_one_run_writes_and_the_other_does_not_is_a_difference(results):
+    """A row that started carrying another number is a row the two runs do not agree on."""
+    store.append('demo', [{'case': 'A', 'seed': 0, 'code': 'old', 'cov': {'Ka': True}}])
+    store.append('demo', [{'case': 'A', 'seed': 0, 'code': 'new', 'cov': {'Ka': True}, 'err': {'Ka': 0.0}}])
+    assert store.differences('demo', 'old', 'new')[1] == [('A', 0, 'err')]
+
+
+def test_the_code_and_the_wall_times_are_not_compared(results):
+    """Two runs of one program take different times and carry different hashes by construction."""
+    store.append('demo', [{'case': 'A', 'seed': 0, 'code': 'old', 't_fit': 0.4, 't_total': 0.5, 'cov': {'Ka': True}}])
+    store.append('demo', [{'case': 'A', 'seed': 0, 'code': 'new', 't_fit': 2.9, 't_total': 3.1, 'cov': {'Ka': True}}])
+    assert store.differences('demo', 'old', 'new')[1] == []
+    assert store.differences('demo', 'old', 'new', ignore=('code',))[1] == [('A', 0, 't_fit'), ('A', 0, 't_total')]
+
+
+def test_a_quantity_neither_run_could_produce_is_not_a_difference(results):
+    """A fit that gives no width writes NaN in both runs, and two NaN are the same answer."""
+    for code in ('old', 'new'):
+        store.append('demo', [{'case': 'A', 'seed': 0, 'code': code, 'width': float('nan')}])
+    assert store.differences('demo', 'old', 'new')[1] == []
+
+
+def test_a_key_only_one_run_holds_is_not_compared(results):
+    """A seed the second run never reached says nothing about whether the numbers moved."""
+    store.append('demo', [{'case': 'A', 'seed': seed, 'code': 'old', 'cov': {'Ka': True}} for seed in range(3)])
+    store.append('demo', [{'case': 'A', 'seed': 0, 'code': 'new', 'cov': {'Ka': True}}])
+    compared, found = store.differences('demo', 'old', 'new')
+    assert (compared, found) == (1, [])
+    assert store.differences('demo', 'old', 'missing') == (0, [])

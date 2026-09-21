@@ -195,6 +195,10 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
         and the wall time. ``refused`` or ``error`` instead of the fit's fields
         when the fit did not happen.
 
+    A scenario that states a dilution or a shared error source carries ``err``
+    as well: the signed error of log₁₀ of each binding constant, in decades,
+    which is what the dilution checks report beside the coverage.
+
     ``truth``, ``z``, ``rmse``, ``r_squared``, ``cond_misfit_p`` and
     ``conflict_k`` are provenance: they are stored so a row can be read back
     and questioned, and no check reads them today.
@@ -203,7 +207,7 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
     data = dataset(scenario, seed)
 
     def work() -> dict[str, Any]:
-        config = FitConfig(per_replica=False, input_specs=scenario.input_specs)
+        config = FitConfig(per_replica=False, errors=scenario.error_model)
         fit_started = time.perf_counter()
         result = fit_measurement_set(
             measurement_set(data),
@@ -243,6 +247,14 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
             'r_squared': result.r_squared,
             't_fit': t_fit,
         }
+        if scenario.dilution is not None or scenario.shared_sources:
+            # What a titration measured with diluted totals, or with one error
+            # common to several inputs, does to the estimate itself: the signed
+            # error of log10 Ka, in decades, beside the interval's coverage.
+            row['err'] = {
+                key: float(np.log10(float(result.parameters[key].to('1/M').magnitude) / value))
+                for key, value in truth.items()
+            }
         diagnostics = result.diagnostics
         misfit = None if diagnostics is None else diagnostics.misfit
         conditional_misfit = None if diagnostics is None else diagnostics.conditional_misfit

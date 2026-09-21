@@ -16,6 +16,12 @@
 repeated; a case is taken when one of them matches. A fix round re-runs and
 prints the cells it touched and nothing else.
 
+``python -m validation compare CODE_A [CODE_B] [<check>...]``
+    Compare the rows two code hashes stored for the same cases and seeds, field
+    by field. ``CODE_B`` is the current hash when it is left out. Exits 1 as
+    soon as one field differs, or when a check named on the command line holds
+    no row under both hashes.
+
 ``python -m validation prune``
     Drop the rows an earlier version of the code produced.
 """
@@ -31,6 +37,12 @@ from validation.checks import CHECKS, matching_cases
 from validation.tables import tables
 
 _CASES_HELP = 'regular expression searched in the case ids; repeatable, any match selects'
+
+#: What a code hash looks like on the command line: the twelve hexadecimal
+#: digits :func:`~validation.store.code_hash` prints. An argument of ``compare``
+#: that is not one is a check name, and an unknown check name is refused rather
+#: than read as a hash nothing was ever stored under.
+_CODE_HASH = re.compile('[0-9a-f]{12}')
 
 
 def _list_checks() -> None:
@@ -57,6 +69,37 @@ def _list_cases(patterns: list[str]) -> None:
             print(f'  {case.id}')
 
 
+def _compare(code_a: str, code_b: str, names: list[str]) -> int:
+    """Print what the rows of two code hashes disagree on, and return the exit status.
+
+    Every named check, or every check whose file holds rows, is compared over
+    the ``(case, seed)`` keys both hashes hold. Zero differing rows over rows
+    that exist is the pass; a check named on the command line with no common
+    rows is a failure, because the comparison it was asked for did not happen.
+    """
+    print(f'comparing {code_a} against {code_b}\n')
+    failed = False
+    compared_anything = False
+    for name in names or list(CHECKS):
+        compared, found = store.differences(name, code_a, code_b)
+        compared_anything = compared_anything or compared > 0
+        if not compared:
+            if names:
+                print(f'{name:22s} no rows stored under both hashes')
+                failed = True
+            continue
+        differing = {(case, seed) for case, seed, _ in found}
+        print(f'{name:22s} {compared} rows compared, {len(differing)} differing')
+        if found:
+            case, seed, field = found[0]
+            print(f'  first difference: {case} seed {seed} field {field}')
+            failed = True
+    if not compared_anything:
+        print('no check holds rows under both hashes; nothing was compared.')
+        failed = True
+    return 1 if failed else 0
+
+
 def main() -> None:
     """Read the command line and do what it says."""
     parser = argparse.ArgumentParser(prog='python -m validation', description=__doc__.splitlines()[0])
@@ -77,9 +120,22 @@ def main() -> None:
     list_parser = commands.add_parser('list', help='what each check claims')
     list_parser.add_argument('--cases', action='append', metavar='RE', help=_CASES_HELP)
 
+    compare_parser = commands.add_parser('compare', help='compare the rows of two code hashes')
+    compare_parser.add_argument('code_a', metavar='CODE_A', help='code hash the rows are compared from')
+    compare_parser.add_argument(
+        'rest',
+        nargs='*',
+        metavar='CODE_B | check',
+        help='the second code hash (default: the current one), then the checks to compare (default: all)',
+    )
+
     commands.add_parser('prune', help='drop rows from another code hash')
 
     args = parser.parse_args()
+    if args.command == 'compare':
+        rest = list(args.rest)
+        code_b = rest.pop(0) if rest and _CODE_HASH.fullmatch(rest[0]) else store.code_hash()
+        args.checks = rest
     unknown = [name for name in getattr(args, 'checks', []) if name not in CHECKS]
     if unknown:
         raise SystemExit(f'no such check: {", ".join(unknown)}. The checks are: {", ".join(CHECKS)}.')
@@ -88,6 +144,8 @@ def main() -> None:
             re.compile(pattern)
         except re.error as bad:
             raise SystemExit(f'--cases {pattern!r} is not a regular expression: {bad}') from bad
+    if args.command == 'compare':
+        raise SystemExit(_compare(args.code_a, code_b, args.checks))
     if args.command == 'run':
         runner.run(args.checks, jobs=args.jobs, max_n=args.max_n, time_limit_min=args.time_limit_min, cases=args.cases)
     elif args.command == 'tables':

@@ -15,6 +15,7 @@ PYTHONPATH=$PWD uv run python -m validation run --jobs 8 --time-limit-min 120
 PYTHONPATH=$PWD uv run python -m validation tables conditional-coverage
 PYTHONPATH=$PWD uv run python -m validation tables --format csv > rows.csv
 PYTHONPATH=$PWD uv run python -m validation prune                      # drop rows an earlier engine produced
+PYTHONPATH=$PWD uv run python -m validation compare "$BEFORE"          # that code's rows against this code's
 
 PYTHONPATH=$PWD uv run python -m validation list --cases 'DBA_HG2'     # the ids one expression selects
 PYTHONPATH=$PWD uv run python -m validation run runs-null --cases 'DBA_HG2' --cases 'GDA,K=0.1'
@@ -32,6 +33,16 @@ the rest of the store alone, and a table rendered through the filter says which 
 was narrowed by — the cases left out are cases nobody asked about, not cases that passed.
 
 A full run is hours of processor time. A smoke run is `--max-n 2` on one check.
+
+`compare CODE_A [CODE_B] [<check>...]` reads the rows two code hashes stored for the same
+`(case, seed)` and prints, per check, how many were compared, how many differ and the first
+`(case, seed, field)` that does; it exits 1 on any difference. Everything but `code`, `t_fit`
+and `t_total` is compared, and a value is equal only when it is the same number, so it is the
+guard behind a change that was meant to leave a path alone: run the checks that cover that path
+before the change, run the same command after it into the same store — never `prune` in between,
+since both hashes have to be on disk — and compare. Zero differing rows over some thousands of
+fits is the pass; a check named on the command line with no rows under both hashes is a failure,
+because the comparison that was asked for did not happen.
 
 ## What is in a row
 
@@ -240,6 +251,43 @@ sobol-coverage         4 cases                                  95 % interval
   The 95 % interval the Ka sensitivity analysis draws around a Sobol' index holds the
   analytically known index of two test functions as often as it says.
 
+dilution-coverage      40 cases                                 95 % interval
+  The interval holds the true binding constant as often as its 95 % level says when the titrant
+  dilutes the fixed totals of the sample and the titrant stock is declared, across every assay,
+  regime and noise size, at final dilutions of two to twenty percent.
+
+dilution-ignored       12 cases                                 reported
+  What the same diluted titrations give when the titrant stock is not declared and the fit holds
+  the totals constant: how far log10 of the binding constant lands from the truth, and how often
+  the interval still reaches it. Reported, not required — it is the cost the dilution option
+  removes.
+
+shared-source-coverage 36 cases                                 95 % interval
+  The reported interval holds its level when one error of four percent is common to every
+  concentration of the sample — one stock behind the host, the fixed partner and the titrant —
+  the entries are drawn from exactly that model and the fit is told it.
+
+budget-coverage        4 cases                                  95 % interval
+  The 95 % intervals the Ka uncertainty budget draws — around the variance of the output, around
+  the variance one source explains, around the spread left once that source is exact, and around
+  the two indices of a group of inputs taken together — hold the analytically known values of
+  two test functions as often as they say.
+
+source-variance-exact  4 cases                                  95 % interval
+  On a direct-binding titration, where one error common to every concentration moves log10 of
+  the binding constant by exactly minus log10 of itself, the budget's 95 % interval for that
+  source's variance holds the value the identity gives it. The identity holds where every fit of
+  the analysis lies strictly inside the Ka bounds; a draw where one ran to a bound reports the
+  edge of the box, where the output is constant, and is left out of the rate and counted beside
+  it.
+
+what-if-accuracy       3 cases                                  reported
+  How far the what-if line lands from the truth: the first-order formula and the re-weighted
+  cross-check against a second analysis run at the reduced uncertainty on the same data and the
+  same design, with the effective sample size the cross-check carried. Both errors are given
+  again over the draws where no fit ran to a Ka bound, since a fit that did reports the edge of
+  the box rather than a spread of the inputs.
+
 sobol-blocking         10 cases                                 reported
   What splitting one budget into independently scrambled blocks costs: the root-mean-square
   error of each index, block count by block count, at a fixed budget. Reported, not required.
@@ -258,6 +306,17 @@ worth running when the full ladder is more than a machine can give.
 `input-aware-coverage` whose scenarios are the multiple-1 members of `conflict_grid`, and the
 power curve is the same designs at 2, 3 and 5 times the stated uncertainty. What the two
 checks state rests on the definitions in `checks.py` and on the rows they produce.
+
+`source-variance-exact` and `what-if-accuracy` both rest on fits that stayed inside the Ka box.
+A fit that ran to a bound reports that bound: the output is constant there, so the variance the
+shared source really carries is no longer the quadrature the first check compares against, and the
+spread the second one measures is a jump of decades rather than the movement of the inputs. Each
+row records whether the baseline ran there and how many of the design's fits did. The judged
+coverage of `source-variance-exact` is over the rows where none did, with `~on_bound.KEY` the share
+that were left out beside it; `what-if-accuracy` keeps every row and gives its two error series a
+second time over the clean ones, `~formula_err_clean.KEY` and `~reweighted_err_clean.KEY`. A case
+whose regime leaves most rows on a bound therefore says little: widen the Ka bounds or move the
+case to a regime the default box contains.
 
 `before-after` runs the release before the engine. It extracts that commit with `git archive`
 into a directory of its own and runs it in a subprocess with that directory on the path, so the

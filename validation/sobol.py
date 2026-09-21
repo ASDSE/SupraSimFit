@@ -23,7 +23,7 @@ from core.pipeline.sensitivity import (
     sobol_indices_with_ci,
 )
 
-__all__ = ['SobolCase', 'blocking_row', 'coverage_row', 'index_labels']
+__all__ = ['SobolCase', 'blocking_row', 'budget_row', 'coverage_row', 'index_labels']
 
 #: Coefficients of the g-function: two influential inputs, two weak ones and
 #: two all but inert, so the rows span indices from 0.59 down to 1e-4.
@@ -118,10 +118,10 @@ def coverage_row(case: SobolCase, seed: int) -> dict[str, Any]:
         and the error against the truth beside it.
     """
     f_a, f_b, f_ab, truth, k = _outputs(case, seed)
-    s1, s1_ci, st, st_ci = sobol_indices_with_ci(f_a, f_b, f_ab, case.n_blocks)
-    estimates = np.concatenate([s1, st])
-    low = np.concatenate([s1_ci[:, 0], st_ci[:, 0]])
-    high = np.concatenate([s1_ci[:, 1], st_ci[:, 1]])
+    estimate = sobol_indices_with_ci(f_a, f_b, f_ab, case.n_blocks)
+    estimates = np.concatenate([estimate.s1, estimate.st])
+    low = np.concatenate([estimate.s1_ci[:, 0], estimate.st_ci[:, 0]])
+    high = np.concatenate([estimate.s1_ci[:, 1], estimate.st_ci[:, 1]])
     labels = index_labels(k)
     return {
         'cov': {label: bool(low[i] <= truth[i] <= high[i]) for i, label in enumerate(labels)},
@@ -146,6 +146,113 @@ def blocking_row(case: SobolCase, seed: int) -> dict[str, Any]:
     labels = index_labels(k)
     return {
         'err': {label: float(estimates[i] - truth[i]) for i, label in enumerate(labels)},
+        'refused': None,
+        'error': None,
+    }
+
+
+#: Columns taken from ``B`` together as one reported item, per function. The
+#: Ishigami pair is the two inputs that interact, whose group indices are both
+#: ``1 - S_2``; the g-function pair is its two influential inputs.
+BUDGET_GROUPS: dict[str, tuple[int, ...]] = {'ishigami': (0, 2), 'gfunction': (0, 1)}
+
+
+def ishigami_budget(a: float = 7.0, b: float = 0.1) -> tuple[float, np.ndarray, float, float]:
+    """Analytic variance, per-input variances and group indices of :func:`ishigami`.
+
+    ``V = 1/2 + a²/8 + b π⁴/5 + b² π⁸/18``, ``V_1 = (1 + b π⁴/5)² / 2``,
+    ``V_2 = a²/8`` and ``V_3 = 0``. Conditioning on inputs 1 and 3 leaves only
+    the additive ``a sin²x_2`` term, so both group indices are ``1 - S_2``.
+    """
+    v = 0.5 + a**2 / 8 + b * np.pi**4 / 5 + b**2 * np.pi**8 / 18
+    vi = np.array([0.5 * (1 + b * np.pi**4 / 5) ** 2, a**2 / 8, 0.0])
+    group = 1.0 - (a**2 / 8) / v
+    return float(v), vi, float(group), float(group)
+
+
+def gfunction_budget(a: np.ndarray = G_COEFFICIENTS) -> tuple[float, np.ndarray, float, float]:
+    """Analytic variance, per-input variances and group indices of :func:`gfunction`.
+
+    With ``v_i = 1 / (3 (1 + a_i)²)`` the total variance is ``Π(1 + v_i) - 1``
+    and each input alone explains ``v_i``. A group of two inputs explains
+    ``((1 + v_1)(1 + v_2) - 1) / V`` and its total index is one less the share
+    the remaining inputs explain among themselves.
+    """
+    vi = 1 / (3 * (1 + np.asarray(a, dtype=float)) ** 2)
+    v = float(np.prod(1 + vi) - 1)
+    columns = list(BUDGET_GROUPS['gfunction'])
+    inside = float(np.prod(1 + vi[columns]) - 1) / v
+    outside = float(np.prod(1 + np.delete(vi, columns)) - 1) / v
+    return v, vi, inside, 1.0 - outside
+
+
+#: The closed forms each function's budget is judged against.
+BUDGET_TRUTH = {'ishigami': ishigami_budget, 'gfunction': gfunction_budget}
+
+
+def budget_labels(k: int) -> list[str]:
+    """Row labels of a budget: the variance, each input's share of it, what is left without it, and the group."""
+    return ['V'] + [f'V_{i + 1}' for i in range(k)] + [f'SD_-{i + 1}' for i in range(k)] + ['S1_group', 'ST_group']
+
+
+def budget_row(case: SobolCase, seed: int) -> dict[str, Any]:
+    """Whether the jackknife interval of each absolute budget quantity holds the analytic truth, on one design.
+
+    The design carries one reported item per input and one more for the group
+    of :data:`BUDGET_GROUPS`, whose columns are taken from ``B`` together, so
+    the run reports the variance of the output, the variance each input
+    explains alone, the spread left once an input is known exactly, and the
+    group's first- and total-order index — every quantity the Ka budget of the
+    application prints, against a closed form.
+
+    Returns
+    -------
+    dict
+        ``cov`` per label, with the interval's half width and the error
+        against the truth beside it, as :func:`coverage_row` returns them.
+    """
+    f, k, _ = FUNCTIONS[case.function]
+    columns = BUDGET_GROUPS[case.function]
+    a_points, b_points = sobol_design(case.n_base, k, case.n_blocks, seed=seed)
+    f_ab = []
+    for item in [(i,) for i in range(k)] + [columns]:
+        mixed = a_points.copy()
+        mixed[:, list(item)] = b_points[:, list(item)]
+        f_ab.append(f(mixed))
+    estimate = sobol_indices_with_ci(f(a_points), f(b_points), f_ab, case.n_blocks)
+
+    variance, vi, group_s1, group_st = BUDGET_TRUTH[case.function]()
+    truth = np.concatenate([[variance], vi, np.sqrt(variance - vi), [group_s1, group_st]])
+    estimates = np.concatenate(
+        [
+            [estimate.variance],
+            estimate.source_variance[:k],
+            estimate.sd_if_exact[:k],
+            [estimate.s1[k], estimate.st[k]],
+        ]
+    )
+    low = np.concatenate(
+        [
+            [estimate.variance_ci[0]],
+            estimate.source_variance_ci[:k, 0],
+            estimate.sd_if_exact_ci[:k, 0],
+            [estimate.s1_ci[k, 0], estimate.st_ci[k, 0]],
+        ]
+    )
+    high = np.concatenate(
+        [
+            [estimate.variance_ci[1]],
+            estimate.source_variance_ci[:k, 1],
+            estimate.sd_if_exact_ci[:k, 1],
+            [estimate.s1_ci[k, 1], estimate.st_ci[k, 1]],
+        ]
+    )
+    labels = budget_labels(k)
+    return {
+        'cov': {label: bool(low[i] <= truth[i] <= high[i]) for i, label in enumerate(labels)},
+        'halfwidth': {label: float((high[i] - low[i]) / 2) for i, label in enumerate(labels)},
+        'err': {label: float(estimates[i] - truth[i]) for i, label in enumerate(labels)},
+        'truth': {label: float(truth[i]) for i, label in enumerate(labels)},
         'refused': None,
         'error': None,
     }
