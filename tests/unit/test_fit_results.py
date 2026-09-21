@@ -7,13 +7,16 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from core.pipeline.diagnostics import Conflict, FitDiagnostics, InputShift, MisfitTest, Verdict
 from core.pipeline.fit_pipeline import (
     RESULT_FORMAT,
+    ConditionalFit,
     FitConfig,
     FitResult,
     _config_to_dict,
     summarize_parameters,
 )
+from core.pipeline.inputs import TITRANT, InputSpec
 from core.pipeline.varpro import LEVEL, KaInterval
 from core.units import Q_, Quantity
 
@@ -54,6 +57,41 @@ def _sample_fit_result(**overrides) -> FitResult:
     )
     defaults.update(overrides)
     return FitResult(**defaults)
+
+
+def _with_moved_inputs(**overrides) -> FitResult:
+    """A fit whose inputs were free to move: its headline, the fit at the entered inputs, and the tests.
+
+    The entered host concentration was too high, so the fit moved it down by
+    5 % (half the 10 % stated for it) and reports a lower Ka than the entered
+    inputs alone allow.
+    """
+    conditional = ConditionalFit(
+        parameters={**_sample_fit_result().parameters, 'Ka_guest': Q_(1.5e6, '1/M')},
+        intervals={'Ka_guest': _interval(1.4e6, 1.6e6)},
+        rmse=51.0,
+        r_squared=0.995,
+    )
+    defaults = dict(
+        parameters={**_sample_fit_result().parameters, 'Ka_guest': Q_(1.2e6, '1/M')},
+        intervals={'Ka_guest': _interval(1.0e6, 1.45e6, dof=25.4)},
+        fit_config=_config_to_dict(
+            FitConfig(per_replica=False, input_specs={'h0': InputSpec.sigma_pct(10), TITRANT: InputSpec.sigma_pct(3)})
+        ),
+        conditional=conditional,
+        input_shifts={
+            'h0': InputShift('h0', -0.05, -0.5, False),
+            TITRANT: InputShift(TITRANT, 0.004, 0.13, False),
+        },
+        diagnostics=FitDiagnostics(
+            conditional_misfit=MisfitTest('lack_of_fit', 14.9, 7.9e-08, dof=(9, 24)),
+            misfit=MisfitTest('lack_of_fit', 0.8, 0.62, dof=(9, 24)),
+            conflict=Conflict(0.74, 2, 0.52, (0.17, 0.99)),
+            verdict=Verdict.INPUTS_EXPLAIN,
+        ),
+    )
+    defaults.update(overrides)
+    return _sample_fit_result(**defaults)
 
 
 def _replica(replica_id: str, ka: float) -> FitResult:
@@ -158,6 +196,43 @@ class TestSerialization:
         assert restored.parameters['Ka_guest'].magnitude == pytest.approx(1.5e6)
         assert (restored.rmse, restored.r_squared) == (42.0, 0.998)
         np.testing.assert_array_equal(restored.y_fit.magnitude, _sample_fit_result().y_fit.magnitude)
+
+    def test_what_the_fit_did_with_the_inputs_survives_the_file(self):
+        """The fit at the entered inputs, the shift of every input and the tests are all on the record."""
+        original = _with_moved_inputs()
+
+        restored = FitResult.from_dict(json.loads(json.dumps(original.to_dict())))
+
+        assert restored.intervals == original.intervals
+        assert restored.conditional.intervals == original.conditional.intervals
+        assert restored.conditional.parameters['Ka_guest'].magnitude == pytest.approx(1.5e6)
+        assert restored.conditional.parameters['Ka_guest'].units == Q_(1, '1/M').units
+        assert (restored.conditional.rmse, restored.conditional.r_squared) == (51.0, 0.995)
+        assert restored.input_shifts == original.input_shifts
+        assert restored.diagnostics == original.diagnostics
+        # The uncertainties the fit was made under are part of its configuration snapshot.
+        assert restored.fit_config['input_uncertainty'] == {
+            'h0': {'kind': 'sigma', 'sigma': 10.0, 'lo': 0.0, 'hi': 0.0, 'relative': True},
+            TITRANT: {'kind': 'sigma', 'sigma': 3.0, 'lo': 0.0, 'hi': 0.0, 'relative': True},
+        }
+
+    def test_the_penalised_profiles_are_working_and_stay_out_of_the_file(self):
+        """They are megabytes of curve the tab redraws from the fit, not a record of it."""
+        assert 'aware' not in _with_moved_inputs().to_dict()
+        assert FitResult.from_dict(json.loads(json.dumps(_with_moved_inputs().to_dict()))).aware is None
+
+    def test_a_file_from_a_fit_whose_inputs_were_all_entered_reads_with_none_of_them(self):
+        """Such a file holds no conditional fit — the fit it reports is that one."""
+        d = _sample_fit_result().to_dict()
+        assert (d['conditional'], d['input_shifts'], d['diagnostics']) == (None, {}, None)
+
+        del d['conditional'], d['input_shifts'], d['diagnostics']
+        restored = FitResult.from_dict(json.loads(json.dumps(d)))
+
+        assert restored.conditional is None
+        assert restored.input_shifts == {}
+        assert restored.diagnostics is None
+        assert restored.intervals == _sample_fit_result().intervals
 
     def test_from_dict_missing_optional_fields(self):
         """A file holding only what a fit must have loads, with no interval."""
@@ -325,6 +400,37 @@ class TestSummarizeParameters:
     def test_a_fit_of_the_average_reports_no_replicate_spread(self):
         assert all(r.replicates is None for r in summarize_parameters(_sample_fit_result()))
 
+    def test_a_binding_constant_carries_what_the_entered_inputs_alone_say(self):
+        """Two claims side by side: the interval that lets the inputs move, and the one that does not."""
+        rows = {(r.key, r.is_log): r for r in summarize_parameters(_with_moved_inputs())}
+        plain, twin = rows[('Ka_guest', False)], rows[('Ka_guest', True)]
+
+        assert plain.estimate == pytest.approx(1.2e6) and plain.interval == (1.0e6, 1.45e6)
+        assert plain.conditional_estimate == pytest.approx(1.5e6)
+        assert plain.conditional_interval == (1.4e6, 1.6e6)
+        # The log twin transforms the same endpoints, as it does its own.
+        assert 10**twin.conditional_estimate == pytest.approx(plain.conditional_estimate, rel=1e-15)
+        assert 10 ** twin.conditional_interval[0] == pytest.approx(1.4e6, rel=1e-15)
+        assert 10 ** twin.conditional_interval[1] == pytest.approx(1.6e6, rel=1e-15)
+        # A signal parameter has no interval of either kind.
+        assert rows[('I_dye_free', False)].conditional_estimate is None
+        assert rows[('I_dye_free', False)].conditional_interval is None
+
+    def test_an_open_side_of_the_conditional_interval_is_reported_as_open(self):
+        result = _with_moved_inputs(
+            conditional=replace(_with_moved_inputs().conditional, intervals={'Ka_guest': _interval(open_high=True)})
+        )
+
+        assert {r.conditional_open for r in summarize_parameters(result) if r.key == 'Ka_guest'} == {(False, True)}
+
+    def test_a_fit_that_moved_no_input_reports_no_second_column(self):
+        """Its headline already is the fit at the entered inputs; repeating it would read as two estimates."""
+        result = _with_moved_inputs(input_shifts={})
+
+        rows = summarize_parameters(result)
+        assert all(r.conditional_estimate is None and r.conditional_interval is None for r in rows)
+        assert all(r.conditional_open == (False, False) for r in rows)
+
 
 # ---------------------------------------------------------------------------
 # A signal parameter held on an entered bound
@@ -358,6 +464,29 @@ def test_a_signal_parameter_the_fit_ended_on_an_entered_bound_is_named_with_that
     assert held.r_squared < free.r_squared
     # Read from what the file holds, so an imported result says it too.
     assert parameters_on_bound(FitResult.from_dict(json.loads(json.dumps(held.to_dict())))) == {'I_dye_bound': ceiling}
+
+
+def test_an_infinite_misfit_ratio_is_written_as_strict_json_and_read_back_as_infinite():
+    """Replicates that agree exactly leave no pure error, so the lack-of-fit ratio is infinite.
+
+    A results file is read by other programs too, and JSON has no token for
+    an infinite number, so the file holds null and the reader restores it.
+    """
+    exact = MisfitTest('lack_of_fit', math.inf, 0.0, dof=(9, 24))
+    result = _with_moved_inputs(
+        diagnostics=FitDiagnostics(
+            conditional_misfit=exact,
+            misfit=exact,
+            conflict=Conflict(math.inf, 2, 0.0, (0.17, 0.99)),
+            verdict=Verdict.MODEL_INADEQUATE,
+        )
+    )
+    text = json.dumps(result.to_dict(), allow_nan=False)  # refuses any value JSON cannot hold
+    assert '"statistic": null' in text and '"q": null' in text
+
+    back = FitResult.from_dict(json.loads(text))
+    assert back.diagnostics.misfit == back.diagnostics.conditional_misfit == exact
+    assert back.diagnostics.conflict.q == math.inf
 
 
 def test_a_bound_with_no_limit_is_written_as_strict_json_and_read_back_as_no_limit():

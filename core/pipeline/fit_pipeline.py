@@ -7,6 +7,14 @@ of several replicates is fitted through their average, with an explicit test of
 the assumption that average rests on — that every replicate shares its binding
 constants — deciding which of them enter it.
 
+Every interval rests on the inputs the user entered. An input given an
+uncertainty (:mod:`core.pipeline.inputs`) is free to move within it while Ka is
+profiled (:mod:`core.pipeline.input_aware`), and the headline interval is the
+one that lets them; the fit at the entered inputs and its own interval stay
+beside it as :class:`ConditionalFit`. :attr:`FitResult.diagnostics` holds what
+the tests of :mod:`core.pipeline.diagnostics` say about the model and the
+inputs.
+
 :func:`summarize_parameters` is the single source of every reported row: the
 estimate, its interval and, in per-replicate mode, the spread of the
 replicates' own fits.
@@ -18,7 +26,7 @@ import math
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Tuple, Type
 
 import numpy as np
 
@@ -30,12 +38,36 @@ from core.data_processing.measurement_set import MeasurementSet
 from core.models.equilibrium import MODEL_ARITHMETIC, legacy_arithmetic
 from core.optimizer.ensemble import describe, describe_log10
 from core.optimizer.filters import calculate_fit_metrics
-from core.pipeline.varpro import LEVEL, FitRefused, KaInterval, ProjectedFit, Projection, replicate_outliers
+from core.pipeline.diagnostics import FitDiagnostics, InputShift, MisfitTest, lack_of_fit, runs_test, verdict
+from core.pipeline.input_aware import (
+    AwareFit,
+    AwareResult,
+    at_edge,
+    conflict,
+    fit_jacobian,
+    input_aware,
+    input_shifts,
+)
+from core.pipeline.inputs import TITRANT, InputSpec, constraints, specs_to_dict
+from core.pipeline.varpro import (
+    _LOG_KA_XTOL,
+    LEVEL,
+    FitRefused,
+    KaInterval,
+    ProjectedFit,
+    Projection,
+    replicate_outliers,
+)
 from core.units import Q_, Quantity
 
 # The fit uses the measured concentrations; the plotted/exported curve is
 # evaluated on this denser grid so the line is smooth between data points.
 _FIT_CURVE_POINTS = 300
+
+# Residual degrees of freedom a fit needs before the signs of its residuals are
+# tested for runs. Below three, what the fit could not follow is carried by one
+# or two numbers and the number of runs says nothing about the model.
+_RUNS_TEST_DOF = 3
 
 #: Version of the results-file layout :meth:`FitResult.to_dict` writes. A file
 #: without the entry was written before intervals were reported and is read by
@@ -48,15 +80,49 @@ RESULT_FORMAT = 2
 _BARE_CONDITION_UNITS = {'Ka_dye': '1/M', 'h0': 'M', 'g0': 'M', 'd0': 'M', 'fixed_conc': 'M'}
 
 
-def _dense_fit_curve(assay: BaseAssay, params: np.ndarray) -> tuple[Quantity, Quantity]:
-    """Evaluate the forward model on a dense grid spanning the data range.
+@dataclass(frozen=True)
+class ConditionalFit:
+    """The same fit with every entered input taken as exact.
 
-    Same parameters and conditions as the fit — only the sampling resolution of
-    the displayed curve changes (no effect on the fit, parameters, or metrics).
+    What a fit reports beside its headline whenever the headline lets the
+    inputs move: the least-squares fit at the entered inputs, and the interval
+    the data leave for each binding constant when no input may shift.
+
+    Attributes
+    ----------
+    parameters : dict[str, Quantity]
+        Parameter name → its value at the entered inputs.
+    intervals : dict[str, KaInterval]
+        Interval of every binding constant the fit was free to move.
+    rmse, r_squared : float
+        Measured against the signal the fit was made on.
     """
-    x_mag = assay.x_data.magnitude
-    x_dense = np.linspace(float(x_mag.min()), float(x_mag.max()), _FIT_CURVE_POINTS)
-    return Q_(x_dense, 'M'), assay.forward_model(params, x=x_dense)
+
+    parameters: Dict[str, Quantity]
+    intervals: Dict[str, KaInterval]
+    rmse: float
+    r_squared: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Every field, as written to a results file."""
+        return {
+            'parameters': {k: float(v.magnitude) for k, v in self.parameters.items()},
+            'parameter_units': {k: str(v.units) for k, v in self.parameters.items()},
+            'intervals': {k: v.to_dict() for k, v in self.intervals.items()},
+            'rmse': self.rmse,
+            'r_squared': self.r_squared,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> 'ConditionalFit':
+        """The conditional fit a results file holds."""
+        units = d['parameter_units']
+        return cls(
+            parameters={k: Q_(v, units[k]) for k, v in d['parameters'].items()},
+            intervals={k: KaInterval.from_dict(v) for k, v in d['intervals'].items()},
+            rmse=d['rmse'],
+            r_squared=d['r_squared'],
+        )
 
 
 @dataclass
@@ -69,7 +135,8 @@ class FitResult:
     Attributes
     ----------
     parameters : dict[str, Quantity]
-        Parameter name → the least-squares fit's value.
+        Parameter name → the least-squares fit's value, at the inputs where
+        the fit put them (``input_shifts``).
     rmse : float
         RMSE of the fit against the signal it was fitted to.
     r_squared : float
@@ -114,7 +181,8 @@ class FitResult:
         :func:`input_replica_ids`.
     intervals : dict[str, KaInterval] | None
         Profile-likelihood confidence interval of every binding constant the
-        fit was free to move. ``None`` when the result carries no interval: a
+        fit was free to move, with every input as free as its stated
+        uncertainty allows. ``None`` when the result carries no interval: a
         dye-alone calibration, or a result imported from a file written before
         intervals were reported.
     degenerate_keys : tuple[str, ...]
@@ -125,6 +193,24 @@ class FitResult:
         In per-replicate mode, the fit of every replicate the fit was given on
         its own, each recording its replicate in ``metadata['replica_id']`` and
         carrying no interval. ``None`` for a fit of one signal.
+    conditional : ConditionalFit | None
+        The same fit with the entered inputs held exactly where they were
+        entered. ``None`` for a dye-alone calibration and for a result imported
+        from a file written before the inputs could move. With no input given
+        an uncertainty the fit above is that fit: same numbers, and the very
+        same :class:`~core.pipeline.varpro.KaInterval` objects.
+    input_shifts : dict[str, InputShift]
+        Where the fit put every input that was free to move, as a fraction of
+        its entered value and in units of the uncertainty stated for it. Empty
+        when no input was free to move, which is also what says that the
+        headline above is the conditional fit.
+    diagnostics : FitDiagnostics | None
+        What the misfit tests and the conflict statistic say about the model
+        and the entered inputs (:mod:`core.pipeline.diagnostics`).
+    aware : AwareResult | None
+        The penalised profiles the headline interval was cut from, for the
+        Identifiability tab. It is the fit's own working, not part of what a
+        results file holds, so it is ``None`` after an import.
     """
 
     parameters: Dict[str, Quantity]
@@ -144,6 +230,10 @@ class FitResult:
     intervals: Optional[Dict[str, KaInterval]] = None
     degenerate_keys: Tuple[str, ...] = ()
     replica_fits: Optional[List['FitResult']] = None
+    conditional: Optional[ConditionalFit] = None
+    input_shifts: Dict[str, InputShift] = field(default_factory=dict)
+    diagnostics: Optional[FitDiagnostics] = None
+    aware: Optional[AwareResult] = None
 
     @property
     def per_replica(self) -> bool:
@@ -209,6 +299,9 @@ class FitResult:
             'intervals': None if self.intervals is None else {k: v.to_dict() for k, v in self.intervals.items()},
             'degenerate_keys': list(self.degenerate_keys),
             'replica_fits': None if self.replica_fits is None else [rf.to_dict() for rf in self.replica_fits],
+            'conditional': None if self.conditional is None else self.conditional.to_dict(),
+            'input_shifts': {k: v.to_dict() for k, v in self.input_shifts.items()},
+            'diagnostics': None if self.diagnostics is None else self.diagnostics.to_dict(),
         }
 
     @classmethod
@@ -217,6 +310,9 @@ class FitResult:
 
         The ``format`` entry decides how it is read: the current layout, or —
         with no entry at all — a file written before intervals were reported.
+        A file of the current layout that holds no conditional fit, no input
+        shifts and no diagnostics was written by a fit whose inputs could not
+        move, and reads with those fields empty.
 
         Raises
         ------
@@ -233,11 +329,16 @@ class FitResult:
             )
         intervals = d.get('intervals')
         replica_fits = d.get('replica_fits')
+        conditional = d.get('conditional')
+        diagnostics = d.get('diagnostics')
         return cls(
             **_common_fields(d),
             intervals=None if intervals is None else {k: KaInterval.from_dict(v) for k, v in intervals.items()},
             degenerate_keys=tuple(d.get('degenerate_keys') or ()),
             replica_fits=None if replica_fits is None else [cls.from_dict(rf) for rf in replica_fits],
+            conditional=None if conditional is None else ConditionalFit.from_dict(conditional),
+            input_shifts={k: InputShift.from_dict(v) for k, v in (d.get('input_shifts') or {}).items()},
+            diagnostics=None if diagnostics is None else FitDiagnostics.from_dict(diagnostics),
         )
 
     @classmethod
@@ -323,11 +424,21 @@ class FitConfig:
 
     ``custom_bounds`` overrides the registry's default bounds per parameter;
     ``per_replica`` decides whether the replicates are fitted and tested
-    individually beside the fit of their average.
+    individually beside the fit of their average; ``input_specs`` states how
+    well each entered input is known (:mod:`core.pipeline.inputs`). An input
+    with no spec is taken as exact, and with no spec at all the reported
+    interval is the one conditional on every entered input.
+
+    ``input_labels`` is how the interface writes each input's name. A fit that
+    cannot be made with the inputs as free as they were stated to be says so by
+    naming them, and it has to name them the way the panel does; without the
+    labels such a message can only call an input an input.
     """
 
     custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
     per_replica: bool = True
+    input_specs: Dict[str, InputSpec] = field(default_factory=dict)
+    input_labels: Dict[str, str] = field(default_factory=dict)
 
 
 def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
@@ -354,6 +465,7 @@ def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
         # The on-disk key of the per-replicate mode in exported results files.
         'per_replicate': False,
         'level': LEVEL,
+        'input_uncertainty': specs_to_dict(config.input_specs),
     }
 
 
@@ -400,6 +512,7 @@ def _wrap_params_as_quantities(
 def fit_view(
     assay: BaseAssay,
     params: np.ndarray,
+    offsets: Optional[Mapping[str, float]] = None,
 ) -> Tuple[float, float, Quantity, Quantity]:
     """Reported fields of one parameter vector against *assay*'s signal.
 
@@ -407,15 +520,31 @@ def fit_view(
     curve", used both when a fit is made and when an imported fit is measured
     again on the data loaded now.
 
+    Parameters
+    ----------
+    assay : BaseAssay
+        The data and the inputs as entered.
+    params : np.ndarray
+        Parameter vector in ``assay.parameter_keys`` order.
+    offsets : Mapping[str, float], optional
+        Where a fit put the entered inputs, as a fraction of each
+        (:func:`~core.pipeline.input_aware.input_shifts`). The model is then
+        evaluated on the moved inputs, the titrant included, while the curve
+        stays drawn against the concentrations as entered — the axis the
+        measured points sit on.
+
     Returns
     -------
     tuple[float, float, Quantity, Quantity]
         ``(rmse, r_squared, x_fit, y_fit)``.
     """
-    y_pred = assay.forward_model(params)
+    moved = assay.with_inputs(offsets) if offsets else assay
+    titrant = 1.0 + (offsets or {}).get(TITRANT, 0.0)
+    x_mag = assay.x_data.magnitude
+    y_pred = moved.forward_model(params, x=x_mag * titrant)
     rmse, r_squared = calculate_fit_metrics(assay.y_data.magnitude, y_pred.magnitude)
-    x_fit, y_fit = _dense_fit_curve(assay, params)
-    return rmse, r_squared, x_fit, y_fit
+    x_dense = np.linspace(float(x_mag.min()), float(x_mag.max()), _FIT_CURVE_POINTS)
+    return rmse, r_squared, Q_(x_dense, 'M'), moved.forward_model(params, x=x_dense * titrant)
 
 
 @dataclass(frozen=True)
@@ -466,6 +595,20 @@ class ParameterSummary:
         :func:`~core.optimizer.ensemble.describe` (or ``describe_log10`` for a
         log twin) over the values the replicates the fit used give this
         parameter in their own fits. ``None`` below two such replicates.
+    conditional_estimate : float | None
+        This binding constant at the entered inputs, in the row's own scale.
+        ``None`` on a row that is not a binding constant and on every row of a
+        fit whose inputs were all taken as entered, where the estimate above
+        is already that one.
+    conditional_interval : tuple[float, float] | None
+        Its interval with the inputs held as entered, in the row's own scale;
+        ``None`` on the same rows as *conditional_estimate*.
+    conditional_open : tuple[bool, bool]
+        Per endpoint of *conditional_interval*, whether it reaches as far as
+        the profile goes rather than being closed by the data.
+    conditional_split : bool
+        Whether the values *conditional_interval* spans come in separate
+        stretches, so it spans a gap of values the data reject.
     """
 
     key: str
@@ -480,6 +623,10 @@ class ParameterSummary:
     level: Optional[float]
     degenerate: bool
     replicates: Optional[Dict[str, float]]
+    conditional_estimate: Optional[float] = None
+    conditional_interval: Optional[Tuple[float, float]] = None
+    conditional_open: Tuple[bool, bool] = (False, False)
+    conditional_split: bool = False
 
 
 def _binding_constant_keys(result: FitResult) -> set[str]:
@@ -525,6 +672,10 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
     replicates' values *first* — statistics of log₁₀(Ka) must come from the
     per-fit log values, because log₁₀ of a Ka spread is meaningless.
 
+    The conditional columns are filled only where they say something the
+    estimate does not: on a binding constant of a fit that let its inputs
+    move. With every input as entered the fit above is the conditional one.
+
     Each unit comes from the parameter's own ``Quantity``, which stays correct
     even when the assay type is missing from the registry; only which
     parameters are binding constants is registry metadata.
@@ -532,12 +683,15 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
     ka_keys = _binding_constant_keys(result)
     replicates = _replicate_values(result)
     intervals = result.intervals or {}
+    conditional = result.conditional if result.input_shifts else None
     rows: List[ParameterSummary] = []
     for key, value in result.parameters.items():
         unit = str(value.units) if isinstance(value, Quantity) else ''
         magnitude = float(value.magnitude) if isinstance(value, Quantity) else float(value)
         ci = intervals.get(key)
         pool = replicates.get(key)
+        entered = None if conditional is None or key not in ka_keys else conditional.parameters.get(key)
+        entered_ci = None if conditional is None or key not in ka_keys else conditional.intervals.get(key)
         shared = dict(
             key=key,
             unit=unit,
@@ -547,6 +701,8 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
             interval_split=False if ci is None else ci.split,
             level=None if ci is None else ci.level,
             degenerate=key in result.degenerate_keys,
+            conditional_open=(False, False) if entered_ci is None else (entered_ci.open_low, entered_ci.open_high),
+            conditional_split=False if entered_ci is None else entered_ci.split,
         )
         rows.append(
             ParameterSummary(
@@ -554,6 +710,8 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
                 estimate=magnitude,
                 interval=None if ci is None else (ci.low, ci.high),
                 replicates=None if pool is None else describe(pool),
+                conditional_estimate=None if entered is None else float(entered.magnitude),
+                conditional_interval=None if entered_ci is None else (entered_ci.low, entered_ci.high),
                 **shared,
             )
         )
@@ -564,6 +722,10 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
                     estimate=float(np.log10(magnitude)),
                     interval=None if ci is None else (float(np.log10(ci.low)), float(np.log10(ci.high))),
                     replicates=None if pool is None else describe_log10(pool),
+                    conditional_estimate=None if entered is None else float(np.log10(entered.magnitude)),
+                    conditional_interval=None
+                    if entered_ci is None
+                    else (float(np.log10(entered_ci.low)), float(np.log10(entered_ci.high))),
                     **shared,
                 )
             )
@@ -637,14 +799,25 @@ def fit_assay(
     measurement_set_id: Optional[str] = None,
     source_file: Optional[str] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
+    replicate_signals: Optional[np.ndarray] = None,
 ) -> FitResult:
-    """Fit an assay by variable projection.
+    """Fit an assay by variable projection, with the entered inputs as free as they were stated to be.
 
     The signal parameters are solved exactly inside their bounds at every set
     of binding constants, so the search runs over the one or two binding
     constants alone and its minimum is the least-squares fit of the whole
-    model. Each binding constant the search was free to move gets a
-    profile-likelihood interval.
+    model. That fit, at the inputs as entered, and the profile-likelihood
+    interval of every binding constant it was free to move are the result's
+    :attr:`~FitResult.conditional` fit.
+
+    An input ``config.input_specs`` gives an uncertainty is then free to move
+    within it while each binding constant is profiled again
+    (:func:`~core.pipeline.input_aware.input_aware`): what comes back is the
+    reported fit and the reported interval, which answers what the data say
+    about Ka when the inputs are known no better than stated. With no such
+    input the two are one fit, down to the interval objects. Either way the
+    misfit tests and the conflict statistic of
+    :mod:`core.pipeline.diagnostics` are run and recorded.
 
     Parameters
     ----------
@@ -658,11 +831,17 @@ def fit_assay(
         Original filename, if known.
     should_cancel : Callable[[], bool], optional
         Asked before every equilibrium solve whether to stop.
+    replicate_signals : np.ndarray, optional
+        The replicates the fitted signal is the average of, shape ``(m, n)``.
+        With two or more of them the misfit test is the replicate lack-of-fit
+        F test, which measures the fit against the scatter of the data
+        themselves; otherwise it is the runs test on the residuals.
 
     Returns
     -------
     FitResult
-        The fit, its intervals and the signal parameters the data determine
+        The fit, its intervals, where it put the inputs it was free to move,
+        what the diagnostics say and the signal parameters the data determine
         only in combination.
 
     Raises
@@ -670,8 +849,9 @@ def fit_assay(
     ValueError
         When the binding model has no solution anywhere in the Ka bounds, when
         the Ka bounds are not positive, when a signal the fit is measured
-        against does not change across the titration, or when the data hold too
-        few points to judge the fitted parameters.
+        against does not change across the titration, when the data hold too
+        few points to judge the fitted parameters and the inputs that may
+        move, or when an input uncertainty cannot be read as one.
     FitCancelled
         If *should_cancel* returns True.
     """
@@ -683,6 +863,22 @@ def fit_assay(
     rmse, r_squared, x_fit, y_fit = fit_view(assay, params)
     found = {key: projection.interval(key, fit) for key in projection.ka_keys}
     intervals = {key: ci for key, ci in found.items() if ci is not None}
+    conditional = ConditionalFit(
+        parameters=_wrap_params_as_quantities(params, assay),
+        intervals=intervals,
+        rmse=rmse,
+        r_squared=r_squared,
+    )
+
+    free_inputs = constraints(config.input_specs, assay.get_conditions(), config.input_labels)
+    aware = input_aware(projection, fit, free_inputs, should_cancel=should_cancel, conditional=intervals)
+    shifts = input_shifts(aware)
+    if shifts:
+        params = _aware_params(projection, aware.fit)
+        rmse, r_squared, x_fit, y_fit = fit_view(assay, params, aware.fit.offsets)
+        # The profiles carry the same interval objects as ``conditional`` where
+        # nothing moved, so an unchanged interval stays the one object.
+        intervals = {key: profile.interval for key, profile in aware.profiles.items()}
     return FitResult(
         parameters=_wrap_params_as_quantities(params, assay),
         rmse=rmse,
@@ -698,7 +894,106 @@ def fit_assay(
         metadata={'method': 'variable_projection'},
         intervals=intervals,
         degenerate_keys=projection.degenerate_keys(fit),
+        conditional=conditional,
+        input_shifts=shifts,
+        diagnostics=_diagnose(projection, fit, aware, replicate_signals, intervals, should_cancel),
+        aware=aware,
     )
+
+
+def _aware_params(projection: Projection, fit: AwareFit) -> np.ndarray:
+    """The input-aware fit's parameters in ``parameter_keys`` order, ready for ``assay.forward_model``."""
+    values = {**fit.ka, **dict(zip(projection.coef_keys, fit.coefficients))}
+    return np.array([values[k] for k in projection.assay.parameter_keys])
+
+
+def _diagnose(
+    projection: Projection,
+    fit: ProjectedFit,
+    aware: AwareResult,
+    replicate_signals: Optional[np.ndarray],
+    conditional_intervals: Dict[str, KaInterval],
+    should_cancel: Optional[Callable[[], bool]],
+) -> FitDiagnostics:
+    """Test the model at both fits, test the inputs against what was stated, and name what they say together.
+
+    The test at the fit with the inputs as entered needs that fit's own
+    Jacobian, which is the input-aware result with nothing free to move; where
+    no input moves anyway it is the one result, and both tests are the one
+    test.
+    """
+    entered = (
+        aware
+        if not aware.constraints
+        else input_aware(projection, fit, (), should_cancel=should_cancel, conditional=conditional_intervals)
+    )
+    conditional_misfit = _misfit(projection, entered, replicate_signals)
+    misfit = conditional_misfit if entered is aware else _misfit(projection, aware, replicate_signals)
+    inputs = conflict(aware)
+    return FitDiagnostics(
+        conditional_misfit=conditional_misfit,
+        misfit=misfit,
+        conflict=inputs,
+        verdict=verdict(conditional_misfit, misfit, inputs),
+    )
+
+
+def _misfit(
+    projection: Projection, aware: AwareResult, replicate_signals: Optional[np.ndarray]
+) -> Optional[MisfitTest]:
+    """Whether the fitted curve misses the data by more than the data's own scatter allows.
+
+    With two or more replicates behind the fitted signal the test is theirs:
+    the misfit of the curve against their average, judged against the scatter
+    between them. With one signal there is no such scatter, and what is left to
+    look at is whether the residuals change sign as often as a fit of this
+    model to noise would — a test with little power, which says nothing at all
+    below ``_RUNS_TEST_DOF`` residual degrees of freedom.
+
+    The F test is given the parameter count :func:`_fitted_params`, the
+    parameters the fit moved; the runs test takes its own reference from the
+    Jacobian of those same parameters (:func:`fit_jacobian`).
+    """
+    residual = projection.residual(aware.fit.ka, 0, aware.fit.offsets)
+    if replicate_signals is not None and np.shape(replicate_signals)[0] >= 2:
+        fitted = projection.signals[0] - residual
+        return lack_of_fit(replicate_signals, fitted, _fitted_params(projection, aware))
+    if projection.n_points - aware.fit.n_params < _RUNS_TEST_DOF:
+        return None
+    return runs_test(residual, projection.assay.x_data.magnitude, fit_jacobian(projection, aware))
+
+
+def _fitted_params(projection: Projection, aware: AwareResult) -> int:
+    """Parameters the fit moved: the ``p`` of the lack-of-fit F test.
+
+    Three groups, each counted only where the fit was free to place it:
+
+    - the binding constants the search was free to move whose estimate lies
+      strictly inside its bounds, read on the log10 axis the search works on
+      and at its own resolution ``_LOG_KA_XTOL``;
+    - the rank of the signal columns whose coefficient the bounded solve left
+      inside its bounds (:meth:`Projection.fitted_rank`);
+    - the inputs stated as a range that the fit left off the ends of theirs
+      (:func:`~core.pipeline.input_aware.at_edge`).
+
+    A parameter resting on a bound is held there, not fitted: it takes no
+    dimension from the residual, and counting it makes ``n - p`` smaller than
+    the residual's own dimension and the F ratio correspondingly larger. Over
+    7 200 synthetic null fits of replicated data at the 5 % level, counting
+    every free parameter rejects 4.6 % [0.039, 0.053] where no signal
+    coefficient rests on a bound and the Ka interval is closed, 5.4 % with a
+    coefficient on a bound, 5.9 % with the Ka estimate on its bound and 9.3 %
+    [0.078, 0.110] with both.
+    """
+    fit = aware.fit
+    free_ka = 0
+    for key in projection.free_ka:
+        low, high = (math.log10(bound) for bound in projection.ka_bounds[key])
+        estimate = math.log10(fit.ka[key])
+        if min(estimate - low, high - estimate) > _LOG_KA_XTOL:
+            free_ka += 1
+    ranges = sum(1 for c in aware.constraints if c.sigma is None and not at_edge(c, fit.offsets[c.key]))
+    return free_ka + projection.fitted_rank(fit.ka, fit.offsets) + ranges
 
 
 def fit_linear_assay(
@@ -855,16 +1150,23 @@ def fit_measurement_set(
             source_file=ms.metadata.get('source_file'),
         )
     else:
+        used = ms.active_replica_ids if replica_id is None else [replica_id]
         result = fit_assay(
             assay,
             config=config,
             measurement_set_id=ms.id,
             source_file=ms.metadata.get('source_file'),
             should_cancel=should_cancel,
+            replicate_signals=_replicate_rows(ms, used) if use_average and replica_id is None else None,
         )
     result.metadata['active_replica_ids'] = ms.active_replica_ids if replica_id is None else [replica_id]
     _record_data(result, ms)
     return result
+
+
+def _replicate_rows(ms: MeasurementSet, replica_ids: List[str]) -> np.ndarray:
+    """The measured signals of *replica_ids*, one row each, in the order given."""
+    return np.vstack([ms.get_replica_signal(rid) for rid in replica_ids])
 
 
 def _record_data(result: FitResult, ms: MeasurementSet) -> None:
@@ -932,7 +1234,9 @@ def fit_measurement_set_per_replica(
         holding every given replicate's own fit and the metadata recording the
         replicates given (``active_replica_ids``), used (``replica_ids_fit``),
         left out (``replica_failures``) and the test that decided
-        (``replicate_test``).
+        (``replicate_test``). The reported fit carries the interval, the input
+        shifts and the diagnostics; a replicate's own fit is the search over
+        its own signal at the inputs as entered and carries none of them.
 
     Raises
     ------
@@ -986,6 +1290,7 @@ def fit_measurement_set_per_replica(
         measurement_set_id=ms.id,
         source_file=ms.metadata.get('source_file'),
         should_cancel=should_cancel,
+        replicate_signals=_replicate_rows(ms, used),
     )
     result.replica_fits = replica_fits
     result.fit_config['per_replicate'] = True
@@ -1079,7 +1384,9 @@ def verify_imported_result(result: FitResult, ms: Optional[MeasurementSet]) -> T
 
     Every number shown under a fit's name must describe the data the fit was
     made on. With data loaded, the result's stored quality is measured again on
-    its own record: the replicates it used, its conditions and its assay type.
+    its own record: the replicates it used, its conditions, its assay type and
+    the shifts it reports for the inputs it was free to move — the fit is
+    scored where it was made, not at the entered inputs it moved away from.
 
     ``model_arithmetic`` names the equilibrium arithmetic a file's scores were
     computed with. A file that records none stores the scores of the earlier
@@ -1167,6 +1474,11 @@ def _rescore_with_present_arithmetic(
     return status if status == 'rescored_legacy' else 'rescored_precision', shown
 
 
+def _fitted_offsets(result: FitResult) -> Dict[str, float]:
+    """Where *result* put each input it was free to move, as a fraction of the entered value."""
+    return {key: shift.fraction for key, shift in result.input_shifts.items()}
+
+
 def _present_numbers(result: FitResult, assay: BaseAssay) -> Tuple[FitResult, bool]:
     """*result* with what the present arithmetic measures from its fit, and whether that moved.
 
@@ -1176,7 +1488,7 @@ def _present_numbers(result: FitResult, assay: BaseAssay) -> Tuple[FitResult, bo
     the check itself applies — the curve included, so a copy that keeps stored
     numbers keeps a curve the present arithmetic draws the same way.
     """
-    rmse, r_squared, x_fit, y_fit = fit_view(assay, _parameter_vector(result, assay))
+    rmse, r_squared, x_fit, y_fit = fit_view(assay, _parameter_vector(result, assay), _fitted_offsets(result))
     # Early releases drew the curve on the measured points; such a curve stands on another
     # grid than the one drawn now and there is nothing in it to compare, so it is left alone.
     stored_x, stored_y = result.x_fit.to('M').magnitude, result.y_fit.to('au').magnitude
@@ -1213,14 +1525,15 @@ def _verify(result: FitResult, ms: Optional[MeasurementSet]) -> Tuple[ImportStat
     assay = _record_assay(ms, result, used)
 
     vector = _parameter_vector(result, assay)
+    offsets = _fitted_offsets(result)
     stored = (result.rmse, result.r_squared)
-    if _reproduces(_score(assay, vector), stored):
+    if _reproduces(_score(assay, vector, offsets), stored):
         return 'verified', replace(result, metadata=metadata)
 
     given = _legacy_input_ids(result, used, ms)
-    if given is None or not _reproduces(_score(_record_assay(ms, result, given), vector), stored):
+    if given is None or not _reproduces(_score(_record_assay(ms, result, given), vector, offsets), stored):
         return 'different_data', result
-    rmse, r_squared, x_fit, y_fit = fit_view(assay, vector)
+    rmse, r_squared, x_fit, y_fit = fit_view(assay, vector, offsets)
     return 'rescored_legacy', replace(
         result, rmse=rmse, r_squared=r_squared, x_fit=x_fit, y_fit=y_fit, metadata=metadata
     )
@@ -1240,9 +1553,10 @@ def _legacy_input_ids(result: FitResult, used: List[str], ms: MeasurementSet) ->
     return given
 
 
-def _score(assay: BaseAssay, vector: np.ndarray) -> Tuple[float, float]:
-    """RMSE and R² of the fit with parameters *vector* against *assay*'s signal."""
-    return calculate_fit_metrics(assay.y_data.magnitude, assay.forward_model(vector).magnitude)
+def _score(assay: BaseAssay, vector: np.ndarray, offsets: Optional[Mapping[str, float]] = None) -> Tuple[float, float]:
+    """RMSE and R² of the fit with parameters *vector*, at the inputs *offsets* put them, against *assay*'s signal."""
+    rmse, r_squared, _, _ = fit_view(assay, vector, offsets)
+    return rmse, r_squared
 
 
 def _parameter_vector(result: FitResult, assay: BaseAssay) -> np.ndarray:

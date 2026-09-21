@@ -66,3 +66,30 @@ Both files are written by the code at commit `ccba0f1`: with that tree on
 with `write_measurements_txt`, loaded again, and fitted by `fit_measurement_set`
 with the conditions above, 40 trials, a minimum R² of 0.95 and seed 20260917;
 `FitResult.to_dict()` is written as JSON.
+
+## A file whose fit moved the inputs it was given an uncertainty for
+
+`input_aware_ida.json` is a fit of the average of three replicates whose host
+concentration was entered 8 % above the value the data were made at, with that
+stock stated to 10 % and the titrant to 3 %. The fit moves the host
+concentration by −8.7 % and reports a Ka of 1.89 MM⁻¹ against the 2 MM⁻¹ the
+data carry, where the interval that holds the entered inputs exact — the file's
+`conditional` block — runs from 2.19 to 2.82 MM⁻¹ and does not reach the truth.
+Its `diagnostics` say `inputs_explain`: at the entered inputs the replicates
+reject the curve (lack of fit p = 7e-11) and once the inputs move they do not
+(p = 0.53).
+
+An import scores the reported parameters where the fit put the inputs, so the
+file verifies; strip its `input_shifts` and the same numbers no longer describe
+the data, which is what `different_data` says.
+
+`input_aware_ida_data.txt` beside it holds the data: a synthetic IDA titration
+of 20 guest concentrations up to 50 µM into `[Host]₀` = 10 µM and `[Dye]₀` =
+5 µM, with `Ka_dye` = 0.5 MM⁻¹, a true `Ka_guest` of 2 MM⁻¹, signal
+coefficients `I0` = 0, `I_dye_free` = 5·10⁷ au/M and `I_dye_bound` = 3·10⁸ au/M
+(the `tests/conftest.py` IDA ground truth), and three replicates carrying 1 %
+proportional Gaussian noise (NumPy seed 20260921). The signals are generated
+from `ida_signal`, written with `write_measurements_txt`, loaded again and
+fitted by `fit_measurement_set` with `[Host]₀` entered as 10.8 µM, the average
+of the replicates and the two uncertainties above; `FitResult.to_dict()` is
+written as JSON with an indent of two.

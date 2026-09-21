@@ -16,15 +16,19 @@ least-squares solve. These tests pin what makes the engine trustworthy:
 - the replicate test excludes a replicate that needs another Ka, keeps
   replicates that merely scatter more, and does not judge two replicates;
 - invalid inputs are refused with a plain-language message and a stop request
-  is honoured.
+  is honoured;
+- the projected residual at moved inputs is that of an assay entered at those
+  values, and the start a search over the other Ka is given is where a dense
+  independent scan puts the minimum.
 """
 
 import numpy as np
 import pytest
-from scipy.optimize import lsq_linear
+from scipy.optimize import lsq_linear, minimize_scalar
 from scipy.stats import f as f_dist
 
 from core.assays import ASSAY_CLASSES
+from core.assays.base import TITRANT
 from core.assays.dye_alone import DyeAloneAssay
 from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
@@ -156,6 +160,65 @@ def test_a_zero_weight_row_is_solved_but_does_not_steer_the_shared_ka():
     assert fit.row_ssr[0] == pytest.approx(joint.row_ssr(fit.ka)[0])
 
 
+def test_the_residual_at_moved_inputs_is_that_of_an_assay_entered_at_those_values():
+    x, y = _make_ida_data(IDA_TRUE, n_points=12)
+    y = _homoscedastic(y, 0.02, 8)
+    projection = Projection(_assay(AssayType.IDA, x, y, **_IDA_CONDITIONS), GDA_IDA_RECOVERY_BOUNDS)
+    offsets = {'Ka_dye': 0.08, 'h0': -0.05, 'd0': 0.02, TITRANT: -0.03}
+    moved = {k: v * (1 + offsets[k]) for k, v in _IDA_CONDITIONS.items()}
+    direct = Projection(_assay(AssayType.IDA, x * 0.97, y, **moved), GDA_IDA_RECOVERY_BOUNDS)
+    ka = {'Ka_guest': 1.3e6}
+    residual = projection.residual(ka, offsets=offsets)
+    assert residual.shape == (12,)
+    assert residual @ residual == pytest.approx(direct.row_ssr(ka)[0], rel=1e-12)
+    # No offsets: the entered inputs, and the residual the row's best coefficients leave.
+    entered = projection.residual(ka)
+    assert entered @ entered == pytest.approx(projection.row_ssr(ka)[0], rel=1e-12)
+    assert np.array_equal(entered, projection.residual(ka, offsets={}))
+    assert abs(entered @ entered - residual @ residual) > 1e-3 * (entered @ entered)
+
+
+def test_the_residual_is_infinite_where_the_model_has_no_solution_and_asks_before_it_solves(monkeypatch):
+    x, y = _make_ida_data(IDA_TRUE, n_points=12)
+    assay = _assay(AssayType.IDA, x, y, **_IDA_CONDITIONS)
+    asked = []
+    projection = Projection(assay, GDA_IDA_RECOVERY_BOUNDS, should_cancel=lambda: bool(asked.append(1)))
+    solved = []
+    monkeypatch.setattr(
+        IDAAssay,
+        'species',
+        lambda self, params: solved.append(len(asked)) or {k: np.full(12, np.nan) for k in ('H', 'D', 'G', 'HD', 'HG')},
+    )
+    residual = projection.residual({'Ka_guest': 1e6}, offsets={'h0': 0.01})
+    assert residual.shape == (12,) and np.all(np.isinf(residual))
+    assert solved == [1]  # asked once, before the one species solve
+
+
+def test_inner_start_is_where_a_dense_scan_of_the_other_ka_puts_the_minimum():
+    h0 = 1e-5
+    x = np.linspace(0.0, 1e-4, 20)
+    y = _homoscedastic(_hg2_truth_signal(x, h0, 1e6, 1e5), 0.01, 2)
+    box = (Q_(1e4, '1/M'), Q_(1e8, '1/M'))
+    projection = Projection(
+        _assay(AssayType.DBA_HG2, x, y, h0=Q_(h0, 'M')),
+        {**ASSAY_REGISTRY[AssayType.DBA_HG2].default_bounds, 'Ka_HG': box, 'Ka_HG2': box},
+    )
+    node = float(projection._grid()[0][0][9])
+    for ka in (node, node * 1.37):
+        start = projection.inner_start('Ka_HG', ka)
+        assert list(start) == ['Ka_HG2']
+
+        def ssr(t: float) -> float:
+            return projection.row_ssr({'Ka_HG': ka, 'Ka_HG2': 10.0**t})[0]
+
+        scan = np.linspace(4, 8, 65)
+        i = int(np.argmin([ssr(t) for t in scan]))
+        dense = minimize_scalar(ssr, bounds=(scan[max(i - 1, 0)], scan[min(i + 1, 64)]), method='bounded')
+        assert ssr(np.log10(start['Ka_HG2'])) <= dense.fun * (1 + 1e-9)
+        assert np.log10(start['Ka_HG2']) == pytest.approx(dense.x, abs=1e-3)
+    assert _ida().inner_start('Ka_guest', 1e6) == {}
+
+
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
@@ -221,6 +284,28 @@ def test_a_repeated_fit_and_interval_are_bit_identical():
     assert first[0].objective == second[0].objective
     assert np.array_equal(first[0].coefficients, second[0].coefficients)
     assert first[1] == second[1]
+
+
+def test_two_ka_starts_are_the_lowest_local_minima_of_the_search_grid_and_the_fit_is_no_worse_than_any():
+    h0 = 1e-5
+    x = np.linspace(0.0, 2e-4, 15)
+    y = _homoscedastic(_hg2_truth_signal(x, h0, 1e6, 1e5), 0.05, 3)  # noisy enough for four local minima
+    box = (Q_(1e2, '1/M'), Q_(1e10, '1/M'))
+    projection = Projection(
+        _assay(AssayType.DBA_HG2, x, y, h0=Q_(h0, 'M')),
+        {**ASSAY_REGISTRY[AssayType.DBA_HG2].default_bounds, 'Ka_HG': box, 'Ka_HG2': box},
+    )
+    first, second = (np.geomspace(1e2, 1e10, 33),) * 2  # four nodes per decade
+    ssr = np.array([[projection.row_ssr({'Ka_HG': k1, 'Ka_HG2': k2})[0] for k2 in second] for k1 in first])
+    minima = []
+    for i in range(first.size):
+        for j in range(second.size):
+            around = ssr[max(i - 1, 0) : i + 2, max(j - 1, 0) : j + 2]
+            if ssr[i, j] <= around.min():
+                minima.append((ssr[i, j], {'Ka_HG': float(first[i]), 'Ka_HG2': float(second[j])}))
+    expected = [ka for _, ka in sorted(minima, key=lambda found: found[0])[:5]]
+    assert len(minima) == 4 and projection.two_ka_starts() == expected
+    assert projection.fit().objective <= min(value for value, _ in minima)
 
 
 def test_two_ka_search_is_at_least_as_good_as_a_dense_brute_force_grid():
@@ -367,6 +452,148 @@ def test_two_ka_interval_edges_lie_on_the_cut_off_of_the_profile_over_the_other_
                     *sorted((edge, edge * 10.0 ** (cell if above else -cell))), varpro._PROFILE_PER_DECADE
                 )
                 assert all(profile(ka) > threshold for ka in (span[1:] if above else span[:-1]))
+
+
+def _hand_built(monkeypatch, design: np.ndarray, y: np.ndarray, **bounds) -> Projection:
+    """A host-to-dye projection whose design (offset, free dye, bound dye) is *design* at every Ka."""
+    assay = _assay(AssayType.DBA_HtoD, np.linspace(1e-6, 2e-5, y.size), y)
+    limits = {**ASSAY_REGISTRY[AssayType.DBA_HtoD].default_bounds, **bounds}
+    projection = Projection(assay, limits)
+    monkeypatch.setattr(projection, '_design', lambda ka, assay=None: design)
+    return projection
+
+
+def test_fitted_rank_leaves_out_a_coefficient_the_solve_holds_on_its_bound(monkeypatch):
+    t = np.linspace(0.0, 1.0, 9)
+    design = np.column_stack([np.ones(9), t, t**2])
+    wide = (Q_(-1e3, 'au'), Q_(1e3, 'au'))
+    floor = {
+        'I0': wide,
+        'I_dye_free': (Q_(0.0, 'au/M'), Q_(1e3, 'au/M')),
+        'I_dye_bound': (Q_(0.5, 'au/M'), Q_(1e3, 'au/M')),
+    }
+    # Every coefficient of 2 + 3 t + t² is inside its bounds: three fitted parameters.
+    assert _hand_built(monkeypatch, design, 2 + 3 * t + t**2, **floor).fitted_rank({'Ka_dye': 1e5}) == 3
+    # The slope of 2 - 0.2 t + 3 t² is negative, so it is held on zero: two are fitted.
+    assert _hand_built(monkeypatch, design, 2 - 0.2 * t + 3 * t**2, **floor).fitted_rank({'Ka_dye': 1e5}) == 2
+    # A falling line also puts the curvature on its bound of 0.5, a bound that is not zero: one is left.
+    assert _hand_built(monkeypatch, design, 2 - 3 * t, **floor).fitted_rank({'Ka_dye': 1e5}) == 1
+    # A pinned coefficient is no fitted parameter, inside its bounds or not.
+    pinned = {**floor, 'I_dye_bound': (Q_(1.0, 'au/M'), Q_(1.0, 'au/M'))}
+    assert _hand_built(monkeypatch, design, 2 + 3 * t + t**2, **pinned).fitted_rank({'Ka_dye': 1e5}) == 2
+
+
+def test_fitted_rank_does_not_change_with_a_constant_background_under_the_signal(monkeypatch):
+    # 2 + 3 t + 0.1 t² with every bound far away: three fitted parameters, whatever constant the
+    # instrument adds. "On a bound" is read against the signal's variation, which a background
+    # leaves as it is, and the curvature carries 0.1 of a signal that varies by 3.1.
+    t = np.linspace(0.0, 1.0, 9)
+    design = np.column_stack([np.ones(9), t, t**2])
+    wide = {
+        'I0': (Q_(-1e14, 'au'), Q_(1e14, 'au')),
+        'I_dye_free': (Q_(0.0, 'au/M'), Q_(1e14, 'au/M')),
+        'I_dye_bound': (Q_(0.0, 'au/M'), Q_(1e14, 'au/M')),
+    }
+    for background in (0.0, 1e5, 1e7, 1e9):
+        projection = _hand_built(monkeypatch, design, background + 2 + 3 * t + 0.1 * t**2, **wide)
+        assert projection.fitted_rank({'Ka_dye': 1e5}) == 3
+
+
+def test_a_profile_point_of_one_free_ka_is_one_solve_for_its_residual_and_its_rank(monkeypatch):
+    projection = _ida(n=15, frac=0.02, seed=5)
+    calls = []
+    design = projection._design
+    monkeypatch.setattr(projection, '_design', lambda ka, assay=None: calls.append(ka) or design(ka, assay))
+    point, value, rank = projection.profile_point('Ka_guest', 3e6)
+    assert len(calls) == 1
+    assert (value, rank) == (projection.row_ssr(point)[0], projection.fitted_rank(point))
+
+
+def test_fitted_rank_counts_columns_a_mass_balance_ties_once(monkeypatch):
+    # Free plus bound dye sum to the dye total, so the three columns span two
+    # directions and the solve returns one member of a family: three
+    # coefficients inside their bounds are two fitted parameters.
+    t = np.linspace(0.1, 0.9, 9)
+    design = np.column_stack([np.ones(9), t, 1.0 - t])
+    projection = _hand_built(monkeypatch, design, 5 + 2 * t + 7 * (1 - t))
+    _, coef = projection._solve(design)
+    assert np.all(coef[0] > 0)
+    assert projection.fitted_rank({'Ka_dye': 1e5}) == 2
+
+
+def test_fitted_rank_is_zero_where_the_model_has_no_solution(monkeypatch):
+    t = np.linspace(0.0, 1.0, 9)
+    projection = _hand_built(monkeypatch, np.full((9, 3), np.nan), 2 + 3 * t)
+    assert projection.fitted_rank({'Ka_dye': 1e5}) == 0
+
+
+def test_the_cut_off_rises_by_one_numerator_degree_of_freedom_per_parameter_the_tested_ka_pins():
+    projection = _ida(n=9, frac=0.02, seed=5)
+    fit = projection.fit()
+    assert projection.n_points - projection.n_params(fit) == 6
+    # Upper 5 % points of F(m, 6) from a printed table, m = 1, 2, 3.
+    for released, (m, f_table) in enumerate([(1, 5.987), (2, 5.143), (3, 4.757)]):
+        cut = projection.threshold(fit, released=released)
+        assert cut == pytest.approx(fit.objective * (1 + m * f_table / 6), rel=2e-4)
+    # The joint region constrains two binding constants before anything is pinned.
+    assert projection.threshold(fit, n_constrained=2, released=1) == projection.threshold(fit, released=2)
+
+
+# One titration of the two-Ka weak-regime study (DBA_HG2, K1 h0 = 3, K1 / K2 = 100, 12 points,
+# noise 1 % of the range): the best fit leaves every signal parameter free, and the fit at the
+# true Ka_HG2 holds one on zero.
+_STUDY_H0 = 2.76600857008148e-05
+_STUDY_X = np.linspace(2.2485019902941192e-05, 0.0002698202388352943, 12)
+_STUDY_Y = np.array(
+    [15361.057416840944, 22712.52619322637, 26412.194508553486, 27993.236319842894, 28977.97973701973,
+     29628.64868829678, 29954.86676714702, 30320.057542987903, 30831.151389614395, 31292.74707372996,
+     31408.892195287306, 31722.487579587392]
+)  # fmt: skip
+_STUDY_TRUE = {'Ka_HG': 108459.53380078019, 'Ka_HG2': 1084.595338007802}
+
+
+def _study_projection() -> Projection:
+    assay = _assay(AssayType.DBA_HG2, _STUDY_X, _STUDY_Y, h0=Q_(_STUDY_H0, 'M'))
+    return Projection(assay, dict(ASSAY_REGISTRY[AssayType.DBA_HG2].default_bounds))
+
+
+def test_a_true_ka_whose_fit_pins_a_signal_parameter_is_judged_with_that_parameter_counted():
+    projection = _study_projection()
+    fit = projection.fit()
+    dof = projection.n_points - projection.n_params(fit)
+    point, at_truth, rank = projection.profile_point('Ka_HG2', _STUDY_TRUE['Ka_HG2'], varpro._INNER_PER_DECADE)
+    assert rank == projection.fitted_rank(point) == projection.fitted_rank(fit.ka) - 1
+    # The rise to the true Ka_HG2 gives up two parameters, the constant and the pinned
+    # coefficient. Judged as one it is rejected; judged as the two it is, it is accepted.
+    one, two = (fit.objective * (1 + m * f_dist.ppf(LEVEL, m, dof) / dof) for m in (1, 2))
+    assert one < at_truth < two
+    assert projection.cut_off(fit)(rank) == pytest.approx(two, rel=1e-12)
+    interval = projection.interval('Ka_HG2', fit)
+    assert interval.low <= _STUDY_TRUE['Ka_HG2'] <= interval.high
+    # The closed edge is still where the profile crosses the cut-off of its own point.
+    assert interval.open_high is False
+    cut = projection.cut_off(fit)
+    inside, outside = (
+        projection.profile_point('Ka_HG2', interval.high * s, varpro._INNER_PER_DECADE) for s in (0.999, 1.001)
+    )
+    assert inside[1] <= cut(inside[2]) and outside[1] > cut(outside[2])
+
+
+def test_where_the_tested_ka_pins_nothing_the_interval_is_that_of_the_constant_cut_off():
+    projection = _ida(n=15, frac=0.02, seed=5)
+    fit = projection.fit()
+    grid = varpro._ka_grid(*projection.ka_bounds['Ka_guest'], varpro._PROFILE_PER_DECADE)
+    fitted = projection.fitted_rank(fit.ka)
+    interval = projection.interval('Ka_guest', fit)
+    # Every grid Ka the interval is cut from: the accepted ones and the two that bracket each edge.
+    near = grid[(grid > interval.low / 1.3) & (grid < interval.high * 1.3)]
+    assert all(projection.fitted_rank({'Ka_guest': ka}) == fitted for ka in near)
+    # The envelope of S(K) <= S_min (1 + F(1, n - p) / (n - p)), cut with the constant on the same grid.
+    profile, threshold = projection.profile('Ka_guest'), projection.threshold(fit)
+    (low, high), *_ = varpro._interval(
+        lambda ka: profile(ka) - threshold, grid, np.array([profile(ka) for ka in grid]) - threshold, fit.ka['Ka_guest']
+    )
+    assert (interval.low, interval.high) == (low, high)
 
 
 def test_a_saturated_design_is_open_on_the_side_the_data_cannot_close():

@@ -23,6 +23,9 @@ a two-constant model. These tests pin what makes it trustworthy:
   pairs that clear the joint cut-off, and pinning one Ka leaves one profile and
   no region (each curve against a brute-force minimum over the other Ka is in
   ``tests/integration/test_profile_fits.py``);
+- where the inputs were stated with an uncertainty, the tab also gets the
+  fit's own penalised profile, which lies above the fixed-input curve
+  everywhere it is drawn;
 - a stop request ends the profile at its next solve.
 """
 
@@ -44,7 +47,8 @@ from core.models.equilibrium import legacy_arithmetic
 from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline import profile as profile_module
 from core.pipeline import varpro
-from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measurement_set
+from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_assay, fit_measurement_set
+from core.pipeline.inputs import TITRANT, InputSpec
 from core.pipeline.profile import JointRegion, fit_profile
 from core.pipeline.varpro import FitCancelled, Projection
 from core.units import Q_
@@ -138,11 +142,18 @@ def _strict_local_minima(values: np.ndarray) -> int:
 
 
 def _independent_ssr(assay, bounds: dict, ka: dict[str, float]) -> float:
-    """Best residual at the binding constants *ka* from the forward model alone.
+    """Best residual at the binding constants *ka* from the forward model alone."""
+    return _independent_fit(assay, bounds, ka)[0]
+
+
+def _independent_fit(assay, bounds: dict, ka: dict[str, float]) -> tuple[float, int]:
+    """Best residual at the binding constants *ka*, and how many signal parameters that fit leaves free.
 
     One column per signal parameter from a unit parameter vector through
     ``forward_model``, solved by bounded least squares on the raw columns:
-    no species call, no scaling, no engine.
+    no species call, no scaling, no engine. The parameters left free are
+    the rank of the columns whose coefficient the solve leaves strictly
+    inside its bounds.
     """
     meta = ASSAY_REGISTRY[assay.assay_type]
     keys = assay.parameter_keys
@@ -157,8 +168,11 @@ def _independent_ssr(assay, bounds: dict, ka: dict[str, float]) -> float:
     design, y = np.column_stack(columns), assay.y_data.magnitude
     pinned = lb == ub
     target = y - design[:, pinned] @ lb[pinned]
-    sol = lsq_linear(design[:, ~pinned], target, bounds=(lb[~pinned], ub[~pinned]), method='bvls')
-    return float(np.sum((design[:, ~pinned] @ sol.x - target) ** 2))
+    free = design[:, ~pinned]
+    sol = lsq_linear(free, target, bounds=(lb[~pinned], ub[~pinned]), method='bvls')
+    inside = (sol.x > lb[~pinned]) & (sol.x < ub[~pinned])
+    fitted = free[:, inside] / np.linalg.norm(free[:, inside], axis=0)
+    return float(np.sum((free @ sol.x - target) ** 2)), int(np.linalg.matrix_rank(fitted)) if inside.any() else 0
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +229,8 @@ def test_straight_lines_between_the_drawn_points_follow_the_exact_profile():
     # The line peaks at the best fit and meets the cut-off at the interval's edges.
     assert np.interp(np.log10(profile.best_ka), log_grid, profile.r2) == pytest.approx(profile.best_r2, abs=1e-12)
     for edge in edges:
-        assert np.interp(np.log10(edge), log_grid, profile.r2) == pytest.approx(profile.r2_threshold, abs=1e-8)
+        at = int(np.argmin(np.abs(log_grid - np.log10(edge))))
+        assert profile.r2[at] == pytest.approx(profile.r2_cut[at], abs=1e-8)
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +249,9 @@ def test_ida_demo_interval_matches_the_reference():
     assert profile.n_params == 3
     assert profile.best_ka == pytest.approx(3.257e8, rel=0.03)
     assert profile.best_r2 == pytest.approx(0.99341, abs=1e-4)
-    assert interval.low == pytest.approx(1.708e8, rel=0.03)
+    # Below 2.05e8 1/M the fit holds the offset on zero, which the best fit leaves
+    # free, so the lower edge is where the rise reaches the cut-off of two parameters.
+    assert interval.low == pytest.approx(1.576e8, rel=0.03)
     assert interval.high == pytest.approx(9.847e8, rel=0.03)
     assert (interval.open_low, interval.open_high) == (False, False)
     assert not interval.split
@@ -248,6 +265,42 @@ def test_ida_demo_interval_matches_the_reference():
     assert 1.0 - profile.r2_threshold == pytest.approx(
         (1.0 - profile.best_r2) * (1.0 + f_dist.ppf(interval.level, 1, dof) / dof), rel=1e-10
     )
+
+
+def test_the_cut_off_steps_by_one_numerator_degree_of_freedom_where_the_fit_pins_a_signal_parameter():
+    ms = _demo_ms()
+    profile = fit_profile(ms, IDAAssay, _DEMO_CONDITIONS, _AVERAGE).profiles['Ka_guest']
+    assay = ms.to_assay(IDAAssay, conditions=_DEMO_CONDITIONS, use_average=True)
+    bounds = _resolve_bounds(assay, None)
+    s_min, fitted = _independent_fit(assay, bounds, {'Ka_guest': profile.best_ka})
+    ss_tot = float(np.sum((assay.y_data.magnitude - assay.y_data.magnitude.mean()) ** 2))
+    # Upper 5 % points of F(m, 9) from a printed table.
+    f_table = {1: 5.117, 2: 4.256}
+
+    low, high = profile.interval.low, profile.interval.high
+    counts = set()
+    for at in np.flatnonzero((profile.grid > low / 3) & (profile.grid < high * 3))[::7]:
+        _, fitted_here = _independent_fit(assay, bounds, {'Ka_guest': profile.grid[at]})
+        m = 1 + max(0, fitted - fitted_here)
+        counts.add(m)
+        assert 1.0 - profile.r2_cut[at] == pytest.approx(s_min * (1 + m * f_table[m] / 9) / ss_tot, rel=2e-4)
+    # The non-negative offset is on zero at the low Ka and free at the best fit and above it.
+    assert counts == {1, 2}
+    assert profile.r2_cut.max() == profile.r2_threshold
+
+
+def test_a_profile_whose_fits_pin_nothing_the_best_fit_leaves_free_is_cut_at_one_level(dba_noisy):
+    x, y, _ = dba_noisy
+    ms = _single(x, y)
+    profile = fit_profile(ms, DBAAssay, _DBA_CONDITIONS, _AVERAGE).profiles['Ka_dye']
+    assay = ms.to_assay(DBAAssay, conditions=_DBA_CONDITIONS, use_average=True)
+    bounds = _resolve_bounds(assay, None)
+    # The best fit itself holds the offset on zero, so a fit elsewhere that does the same,
+    # or frees it, gives up the tested Ka and nothing more.
+    _, fitted = _independent_fit(assay, bounds, {'Ka_dye': profile.best_ka})
+    assert fitted == 2
+    assert all(_independent_fit(assay, bounds, {'Ka_dye': ka})[1] >= fitted for ka in profile.grid[::40])
+    assert np.all(profile.r2_cut == profile.r2_threshold)
 
 
 def test_interval_the_data_cannot_close_is_open_on_that_side():
@@ -581,7 +634,7 @@ def test_narrowing_a_coefficient_bound_never_raises_the_profile(dba_noisy):
 
 
 def test_the_joint_region_holds_the_best_fit_and_only_pairs_that_clear_the_joint_cut_off():
-    ms = _hg2_ms(n_points=12, frac=0.02, seed=3)
+    ms = _hg2_ms(n_points=12, frac=0.02, seed=0)
     profiles = fit_profile(ms, HG2Assay, _HG2_CONDITIONS, _HG2_AVERAGE)
     region = profiles.region
     assay = ms.to_assay(HG2Assay, conditions=_HG2_CONDITIONS)
@@ -610,17 +663,40 @@ def test_the_joint_region_holds_the_best_fit_and_only_pairs_that_clear_the_joint
     assert region.y[0] <= best['Ka_HG2'] <= region.y[-1]
     i = int(np.argmin(np.abs(np.log10(region.x) - np.log10(best['Ka_HG']))))
     j = int(np.argmin(np.abs(np.log10(region.y) - np.log10(best['Ka_HG2']))))
-    inside = region.r2 >= region.r2_threshold
+    inside = region.r2 >= region.r2_cut
     assert inside[i, j]
     assert inside.any() and not inside.all()  # the box is cut from the two 1-D intervals, wider than the region
 
-    # Every cell is the exact projected residual, and a cell inside clears the cut-off.
+    # Every cell is the exact projected residual, judged against the joint cut-off of its own
+    # fit: one more numerator degree of freedom per signal parameter it pins and the best fit
+    # leaves free.
+    _, fitted = _independent_fit(assay, bounds, best)
+    counts = set()
     for a in range(0, region.x.size, 9):
         for b in range(0, region.y.size, 9):
-            ssr = _independent_ssr(assay, bounds, {'Ka_HG': region.x[a], 'Ka_HG2': region.y[b]})
+            ssr, fitted_here = _independent_fit(assay, bounds, {'Ka_HG': region.x[a], 'Ka_HG2': region.y[b]})
             assert region.r2[a, b] == pytest.approx(1.0 - ssr / ss_tot, abs=1e-9)
-            if inside[a, b]:
-                assert ssr <= threshold * (1.0 + 1e-8)
+            m = 2 + max(0, fitted - fitted_here)
+            counts.add(m)
+            cut = s_min * (1.0 + m * f_dist.ppf(region.level, m, dof) / dof)
+            assert 1.0 - region.r2_cut[a, b] == pytest.approx(cut / ss_tot, rel=1e-8)
+            assert inside[a, b] == (ssr <= cut)
+    assert {2, 3} <= counts
+
+    # The box is cut the way an interval is: a side inside the Ka bounds lies where the profile
+    # over the other Ka crosses the joint cut-off of its own profile point.
+    projection = _projection(ms, HG2Assay, _HG2_CONDITIONS, _HG2_AVERAGE)
+    joint_cut = projection.cut_off(projection.fit(), region.level, n_constrained=2)
+    closed = [
+        (key, side)
+        for key, axis in zip(region.ka_keys, (region.x, region.y))
+        for side in (axis[0], axis[-1])
+        if side not in (1e4, 1e8)
+    ]
+    assert closed
+    for key, side in closed:
+        _, value, rank = projection.profile_point(key, side)
+        assert value == pytest.approx(joint_cut(rank), rel=1e-6)
 
 
 def test_pinning_one_of_two_ka_profiles_the_other_alone_and_leaves_no_region():
@@ -641,3 +717,69 @@ def test_pinning_one_of_two_ka_profiles_the_other_alone_and_leaves_no_region():
     assert free.grid.size >= _regular_grid_size(free)
     assert list(free.replica_r2) == ['a', 'b']
     assert free.n_params == fixed.n_params == 1 + 4  # one free Ka plus the four unpinned coefficients
+
+
+# ---------------------------------------------------------------------------
+# The second curve: the inputs free within their stated uncertainty
+# ---------------------------------------------------------------------------
+
+_UNCERTAIN_INPUTS = {'h0': InputSpec.sigma_pct(10), TITRANT: InputSpec.sigma_pct(3)}
+
+
+@pytest.fixture(scope='module')
+def uncertain_ida():
+    """A 12-point IDA titration, its fit with two inputs free to move, and the profiles of that fit."""
+    x, y = _make_ida_data(IDA_TRUE, n_points=12)
+    ms = _single(x, _homoscedastic(y, 0.005, 4))
+    config = FitConfig(per_replica=False, input_specs=_UNCERTAIN_INPUTS)
+    assay = ms.to_assay(IDAAssay, conditions=_IDA_CONDITIONS, use_average=True)
+    result = fit_assay(assay, config)
+    return ms, config, result
+
+
+def test_a_fit_that_held_every_input_as_entered_draws_one_curve():
+    """Its penalised profile is that curve again, and a second copy of it would say nothing."""
+    x, y = _make_ida_data(IDA_TRUE, n_points=12)
+    profiles = fit_profile(_single(x, _homoscedastic(y, 0.005, 4)), IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+
+    assert profiles.profiles['Ka_guest'].aware is None
+
+
+def test_the_tab_draws_the_penalised_profile_the_fit_itself_made(uncertain_ida):
+    """Recomputing it could land on another local optimum and show a band the reported fit does not have."""
+    ms, config, result = uncertain_ida
+
+    profiles = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, config, aware=result.aware)
+
+    assert profiles.profiles['Ka_guest'].aware is result.aware.profiles['Ka_guest']
+    assert profiles.profiles['Ka_guest'].aware.interval == result.intervals['Ka_guest']
+
+
+def test_without_the_fits_own_profiles_the_same_ones_are_made_here(uncertain_ida):
+    """A tab opened on a fit that did not carry them still shows that fit's interval."""
+    ms, config, result = uncertain_ida
+
+    profiles = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, config)
+
+    penalised = profiles.profiles['Ka_guest'].aware
+    assert penalised is not None
+    assert penalised.interval.low == pytest.approx(result.intervals['Ka_guest'].low, rel=1e-9)
+    assert penalised.interval.high == pytest.approx(result.intervals['Ka_guest'].high, rel=1e-9)
+
+
+def test_the_penalised_curve_lies_above_the_fixed_input_one(uncertain_ida):
+    """Holding the inputs as entered is one of the choices the penalised profile has, so it can only do better.
+
+    Both curves are R² against the same total sum of squares, which is what
+    lets the tab draw them on one axis.
+    """
+    ms, config, result = uncertain_ida
+    projection = _projection(ms, IDAAssay, _IDA_CONDITIONS, config)
+    ss_tot = float(projection.ss_tot[0])
+    penalised = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, config, aware=result.aware).profiles['Ka_guest'].aware
+
+    for ka, r2 in zip(penalised.grid.tolist(), penalised.r2.tolist()):
+        fixed_input_r2 = 1.0 - float(projection.row_ssr({'Ka_guest': ka})[0]) / ss_tot
+        assert r2 >= fixed_input_r2 - 1e-9, f'at Ka = {ka:g}'
+    # Its cut-off is its own: the F test at the degrees of freedom the moving inputs leave.
+    assert penalised.r2_threshold < 1.0 - float(np.exp(penalised.objective.min() / projection.n_points)) / ss_tot

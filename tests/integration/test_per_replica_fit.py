@@ -27,11 +27,13 @@ from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline.fit_pipeline import (
     FitConfig,
     FitResult,
+    fit_assay,
     fit_measurement_set,
     fit_measurement_set_per_replica,
     fit_replica_ids,
     summarize_parameters,
 )
+from core.pipeline.inputs import TITRANT, InputSpec
 from core.units import Q_
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data, assert_within_tolerance
 
@@ -172,6 +174,54 @@ class TestReplicateColumns:
         assert row.interval[0] < IDA_TRUE['Ka_guest'] < row.interval[1]
         assert row.replicates['min'] < IDA_TRUE['Ka_guest'] < row.replicates['max']
         assert row.level == 0.95
+
+
+class TestReportedFitWithUncertainInputs:
+    """What the reported fit is when the inputs may move: still the fit of the average of the replicates used.
+
+    The replicates decide which of them are averaged and what the spread
+    between them is; the uncertainty of the entered inputs then acts on that
+    one averaged signal. A replicate's own fit stays a search over its own
+    signal at the inputs as entered.
+    """
+
+    @staticmethod
+    def _specs() -> dict:
+        return {'h0': InputSpec.sigma_pct(10), TITRANT: InputSpec.sigma_pct(3)}
+
+    def test_the_reported_fit_is_the_fit_of_the_average_of_the_replicates_used(self):
+        ms = _ida_ms(n_replicas=3, noise_frac=0.01, seed=31)
+        conditions = _ida_conditions()
+        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True, input_specs=self._specs())
+
+        result = fit_measurement_set_per_replica(ms, IDAAssay, conditions, config)
+
+        used = fit_replica_ids(result)
+        direct = fit_assay(
+            ms.with_active(used).to_assay(IDAAssay, conditions=conditions, use_average=True),
+            config,
+            replicate_signals=np.vstack([ms.get_replica_signal(rid) for rid in used]),
+        )
+        assert result.parameters['Ka_guest'].magnitude == direct.parameters['Ka_guest'].magnitude
+        assert result.intervals['Ka_guest'] == direct.intervals['Ka_guest']
+        assert result.conditional.intervals['Ka_guest'] == direct.conditional.intervals['Ka_guest']
+        assert result.input_shifts == direct.input_shifts
+        assert result.diagnostics == direct.diagnostics
+        # The uncertain inputs moved the reported fit away from the one that holds them exact.
+        assert result.parameters['Ka_guest'].magnitude != result.conditional.parameters['Ka_guest'].magnitude
+
+    def test_a_replicates_own_fit_holds_the_inputs_as_entered(self):
+        """It answers what that replicate alone says about Ka, which is what the spread is made of."""
+        ms = _ida_ms(n_replicas=3, noise_frac=0.01, seed=31)
+        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True, input_specs=self._specs())
+
+        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), config)
+
+        for own in result.replica_fits:
+            assert own.input_shifts == {}
+            assert own.conditional is None
+            assert own.diagnostics is None
+            assert own.intervals is None
 
 
 # ---------------------------------------------------------------------------

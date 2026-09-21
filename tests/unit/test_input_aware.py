@@ -1,0 +1,586 @@
+"""Input-aware Ka interval — scientific behaviour tests.
+
+The entered inputs of a fit (concentrations, a carried-over binding constant,
+the titrant series) become nuisance parameters held by the uncertainty the user
+states for them, and the interval of Ka is cut from the penalised profile
+``P(k) = min [n log S + z'z]``. These tests pin what makes it trustworthy:
+
+- with no varying input it IS the fixed-input interval, and with vanishing
+  uncertainties it converges to it;
+- a profile value equals an independently written objective minimised by a
+  different algorithm (Nelder-Mead from seeded random starts on a
+  species-function + BVLS residual), for one and two binding constants;
+- the closed edges lie on the F-test threshold of that independent objective,
+  and the cut-off of a profile point counts the signal parameters its own
+  solution holds on a bound;
+- a repeat is bit-identical and an edge does not depend on the side root
+  finding walks the bracket from;
+- a planted entry error is recovered as a shift of that input, the truth lies
+  inside the input-aware interval and outside the fixed-input one; an input
+  stated as a range stays inside it and is reported on its edge when the truth
+  lies beyond, where it is held and absorbs nothing of the other inputs;
+- a Ka the model cannot be solved at opens the interval the way the fixed-input
+  one does; too few points and a stop request are refused in plain language.
+"""
+
+import numpy as np
+import pytest
+from scipy.optimize import brentq, lsq_linear, minimize
+from scipy.stats import f as f_dist
+
+from core.assays import ASSAY_CLASSES
+from core.assays.ida import IDAAssay
+from core.assays.registry import ASSAY_REGISTRY, AssayType
+from core.models.equilibrium import dba_signal, dba_species, hg2_species, ida_species
+from core.pipeline.input_aware import (
+    AwareProfile,
+    _input_directions,
+    at_edge,
+    conflict,
+    fit_jacobian,
+    input_aware,
+    input_shifts,
+    penalised_objective,
+)
+from core.pipeline.inputs import TITRANT, InputSpec, constraints
+from core.pipeline.varpro import LEVEL, FitCancelled, FitRefused, Projection
+from core.units import Q_
+from tests.conftest import DBA_TRUE, GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
+from tests.unit.test_varpro import _hg2_truth_signal
+
+_IDA_SIGMAS = {'Ka_dye': 0.10, 'h0': 0.03, 'd0': 0.03, TITRANT: 0.03}
+
+
+def _noisy(y: np.ndarray, frac: float, seed: int) -> np.ndarray:
+    return y + np.random.default_rng(seed).normal(0.0, frac * np.ptp(y), y.size)
+
+
+def _ida(n: int, noise: float, seed: int, *, h0_factor: float = 1.0, ka_box=(1e5, 1e8)):
+    """IDA on the conftest truth, the host optionally entered wrong, Ka searched in a narrow box."""
+    x, y = _make_ida_data(IDA_TRUE, n_points=n)
+    assay = IDAAssay(
+        x_data=Q_(x, 'M'),
+        y_data=Q_(_noisy(y, noise, seed), 'au'),
+        Ka_dye=Q_(IDA_TRUE['Ka_dye'], '1/M'),
+        h0=Q_(IDA_TRUE['h0'] * h0_factor, 'M'),
+        d0=Q_(IDA_TRUE['d0'], 'M'),
+    )
+    bounds = {**GDA_IDA_RECOVERY_BOUNDS, 'Ka_guest': (Q_(ka_box[0], '1/M'), Q_(ka_box[1], '1/M'))}
+    return assay, Projection(assay, bounds)
+
+
+def _sigma_constraints(assay, sigmas: dict):
+    return constraints({k: InputSpec.sigma_pct(100 * s) for k, s in sigmas.items()}, assay.get_conditions())
+
+
+def _aware(assay, projection, sigmas: dict):
+    fit = projection.fit()
+    return fit, input_aware(projection, fit, _sigma_constraints(assay, sigmas))
+
+
+@pytest.fixture(scope='module')
+def ida_case():
+    assay, projection = _ida(15, 0.01, 2)
+    fit, result = _aware(assay, projection, _IDA_SIGMAS)
+    return assay, projection, fit, result
+
+
+# ---------------------------------------------------------------------------
+# Independent reference: species functions + BVLS + Nelder-Mead
+# ---------------------------------------------------------------------------
+
+
+def _reference_ssr(columns: np.ndarray, y: np.ndarray, lb: np.ndarray, ub: np.ndarray) -> float:
+    norm = np.linalg.norm(columns, axis=0)
+    solved = lsq_linear(columns / norm, y, bounds=(lb * norm, ub * norm), method='bvls')
+    return float(np.sum((columns @ np.clip(solved.x / norm, lb, ub) - y) ** 2))
+
+
+def _coefficient_box(projection: Projection):
+    return projection._lb, projection._ub
+
+
+def _reference_minimum(objective, n_coords: int, seed: int, spread: np.ndarray) -> float:
+    """Lowest value Nelder-Mead reaches from 20 seeded random starts."""
+    rng = np.random.default_rng(seed)
+    best = np.inf
+    for _ in range(20):
+        start = rng.normal(0.0, 1.0, n_coords) * spread
+        found = minimize(
+            objective, start, method='Nelder-Mead', options={'xatol': 1e-9, 'fatol': 1e-11, 'maxiter': 4000}
+        )
+        best = min(best, found.fun)
+    return float(best)
+
+
+def _ida_reference(assay, projection, k: float) -> float:
+    x, y = assay.x_data.magnitude, assay.y_data.magnitude
+    lb, ub = _coefficient_box(projection)
+    sigma = np.array([_IDA_SIGMAS[key] for key in ('Ka_dye', 'h0', 'd0', TITRANT)])
+    entered = np.array([assay.Ka_dye.magnitude, assay.h0.magnitude, assay.d0.magnitude, 1.0])
+
+    def objective(z: np.ndarray) -> float:
+        ka_dye, h0, d0, scale = entered * (1.0 + sigma * z)
+        species = ida_species(k, ka_dye, h0, d0, scale * x)
+        columns = np.column_stack([np.ones(x.size), species['D'], species['HD']])
+        return x.size * np.log(_reference_ssr(columns, y, lb, ub)) + float(z @ z)
+
+    return _reference_minimum(objective, 4, seed=11, spread=np.ones(4))
+
+
+def test_a_profile_value_is_the_minimum_an_independent_objective_and_algorithm_find(ida_case):
+    """IDA, four varying inputs: at the estimate and at a node outside the interval (the edges follow below)."""
+    assay, projection, _, result = ida_case
+    profile = result.profiles['Ka_guest']
+    assert profile.grid[0] < profile.interval.low
+    for ka in (result.fit.ka['Ka_guest'], float(profile.grid[0])):
+        engine = float(profile.objective[np.flatnonzero(profile.grid == ka)[0]])
+        assert engine == pytest.approx(_ida_reference(assay, projection, ka), abs=1e-6)
+
+
+def test_closed_edges_lie_on_the_f_test_threshold_of_the_independent_objective(ida_case):
+    assay, projection, _, result = ida_case
+    profile = result.profiles['Ka_guest']
+    n, p = assay.n_points, result.fit.n_params
+    # Free plus bound dye sum to the dye total, collinear with the offset: rank 2, and one Ka.
+    assert p == 3
+    # The four inputs take up part of the residual degrees of freedom, less than one each.
+    dof = profile.interval.dof
+    assert n - p - 4 < dof < n - p
+    excess = n * np.log(1 + f_dist.ppf(LEVEL, 1, dof) / dof)
+    assert profile.threshold == pytest.approx(result.fit.objective + excess, rel=1e-12)
+    for edge in (profile.interval.low, profile.interval.high):
+        assert _ida_reference(assay, projection, edge) == pytest.approx(profile.threshold, rel=1e-6)
+    assert profile.interval.level == LEVEL
+
+
+def test_the_cut_off_of_a_profile_point_counts_the_signal_parameters_its_own_solution_pins(ida_case):
+    assay, projection, _, result = ida_case
+    profile = result.profiles['Ka_guest']
+    x, y = assay.x_data.magnitude, assay.y_data.magnitude
+    lb, ub = _coefficient_box(projection)
+    entered = {'Ka_dye': assay.Ka_dye.magnitude, 'h0': assay.h0.magnitude, 'd0': assay.d0.magnitude, TITRANT: 1.0}
+
+    def fitted(ka: float, offsets: dict) -> int:
+        """Rank of the columns an independent bounded solve at the moved inputs leaves inside their bounds."""
+        moved = {key: value * (1.0 + offsets[key]) for key, value in entered.items()}
+        species = ida_species(ka, moved['Ka_dye'], moved['h0'], moved['d0'], moved[TITRANT] * x)
+        columns = np.column_stack([np.ones(x.size), species['D'], species['HD']])
+        norm = np.linalg.norm(columns, axis=0)
+        solved = lsq_linear(columns / norm, y, bounds=(lb * norm, ub * norm), method='bvls')
+        inside = (solved.x > lb * norm) & (solved.x < ub * norm)
+        return int(np.linalg.matrix_rank((columns / norm)[:, inside])) if inside.any() else 0
+
+    n, dof = assay.n_points, profile.interval.dof
+    best = fitted(result.fit.ka['Ka_guest'], result.fit.offsets)
+    given_up = set()
+    for at in (0, int(np.argmin(profile.objective)), profile.grid.size - 1):
+        offsets = dict(zip(result.fit.constraint_keys, profile.offsets[at]))
+        m = 1 + max(0, best - fitted(float(profile.grid[at]), offsets))
+        given_up.add(m)
+        excess = n * np.log(1 + m * f_dist.ppf(LEVEL, m, dof) / dof)
+        assert profile.cut[at] == pytest.approx(result.fit.objective + excess, rel=1e-12)
+    # At the ends of the Ka box the signal parameters run into their bounds; at the estimate none does.
+    assert given_up == {1, 2, 3}
+    assert profile.cut.min() == profile.threshold
+
+
+def test_dba_profile_value_matches_the_independent_minimum():
+    """DBA dye-to-host, two varying inputs (the fixed host and the titrant)."""
+    sigmas = {'fixed_conc': 0.03, TITRANT: 0.03}
+    x = np.linspace(5e-7, 4e-5, 14)
+    truth = dict(I0=DBA_TRUE['I0'], I_dye_free=DBA_TRUE['I_dye_free'], I_dye_bound=DBA_TRUE['I_dye_bound'])
+    y = dba_signal(Ka_dye=DBA_TRUE['Ka_dye'], x_titrant=x, y_fixed=1e-5, mode='DtoH', **truth)
+    assay = ASSAY_CLASSES[AssayType.DBA_DtoH](
+        x_data=Q_(x, 'M'), y_data=Q_(_noisy(y, 0.01, 4), 'au'), fixed_conc=Q_(1.02e-5, 'M'), mode='DtoH'
+    )
+    bounds = {**ASSAY_REGISTRY[AssayType.DBA_DtoH].default_bounds, 'Ka_dye': (Q_(1e4, '1/M'), Q_(1e7, '1/M'))}
+    projection = Projection(assay, bounds)
+    _, result = _aware(assay, projection, sigmas)
+    lb, ub = _coefficient_box(projection)
+    sigma = np.array([0.03, 0.03])
+    profile = result.profiles['Ka_dye']
+
+    def reference(k: float) -> float:
+        def objective(z: np.ndarray) -> float:
+            fixed, scale = np.array([1.02e-5, 1.0]) * (1.0 + sigma * z)
+            species = dba_species(k, scale * x, fixed, mode='DtoH')
+            columns = np.column_stack([np.ones(x.size), species['D'], species['HD']])
+            return x.size * np.log(_reference_ssr(columns, assay.y_data.magnitude, lb, ub)) + float(z @ z)
+
+        return _reference_minimum(objective, 2, seed=12, spread=np.ones(2))
+
+    for ka in (result.fit.ka['Ka_dye'], profile.interval.high):
+        engine = float(profile.objective[np.flatnonzero(profile.grid == ka)[0]])
+        assert engine == pytest.approx(reference(ka), abs=1e-6)
+
+
+@pytest.fixture(scope='module')
+def hg2_case():
+    h0 = 1e-5
+    x = np.linspace(0.0, 1e-4, 20)
+    y = _noisy(_hg2_truth_signal(x, h0, 1e6, 1e5), 0.01, 1)
+    assay = ASSAY_CLASSES[AssayType.DBA_HG2](x_data=Q_(x, 'M'), y_data=Q_(y, 'au'), h0=Q_(1.03 * h0, 'M'))
+    box = (Q_(1e4, '1/M'), Q_(1e7, '1/M'))
+    projection = Projection(assay, {**ASSAY_REGISTRY[AssayType.DBA_HG2].default_bounds, 'Ka_HG': box, 'Ka_HG2': box})
+    fit, result = _aware(assay, projection, {'h0': 0.03, TITRANT: 0.03})
+    return assay, projection, fit, result
+
+
+def test_two_ka_profile_value_matches_the_independent_minimum_over_the_other_ka_and_the_inputs(hg2_case):
+    assay, projection, fit, result = hg2_case
+    x, y = assay.x_data.magnitude, assay.y_data.magnitude
+    lb, ub = _coefficient_box(projection)
+    free = lb != ub
+    profile = result.profiles['Ka_HG']
+    assert not profile.interval.open_high
+    k = profile.interval.high
+    at = int(np.flatnonzero(profile.grid == k)[0])
+    other_hat = np.log10(profile.other_ka[at])
+
+    def objective(v: np.ndarray) -> float:
+        h0 = assay.h0.magnitude * (1.0 + 0.03 * v[1])
+        species = hg2_species(k, 10.0 ** (other_hat + v[0]), h0, (1.0 + 0.03 * v[2]) * x)
+        columns = np.column_stack([np.ones(x.size), species['G'], species['H'], species['HG'], species['HG2']])
+        return x.size * np.log(_reference_ssr(columns[:, free], y, lb[free], ub[free])) + float(v[1:] @ v[1:])
+
+    reference = _reference_minimum(objective, 3, seed=13, spread=np.array([0.5, 1.0, 1.0]))
+    assert float(profile.objective[at]) == pytest.approx(reference, abs=1e-6)
+    assert float(profile.objective[at]) == pytest.approx(profile.threshold, rel=1e-6)
+
+
+def test_two_ka_fit_is_never_worse_than_the_fit_at_the_entered_inputs(hg2_case):
+    assay, _, fit, result = hg2_case
+    assert result.fit.objective <= assay.n_points * np.log(fit.objective) + 1e-9
+    for key, profile in result.profiles.items():
+        assert profile.threshold == result.profiles['Ka_HG'].threshold
+        assert profile.interval.low <= result.fit.ka[key] <= profile.interval.high
+        assert np.nanmin(profile.objective) >= result.fit.objective - 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Reduction to the fixed-input interval
+# ---------------------------------------------------------------------------
+
+
+def test_with_no_varying_input_the_result_is_the_fixed_input_fit_and_its_own_interval_objects():
+    assay, projection = _ida(15, 0.02, 5)
+    fit = projection.fit()
+    conditional = {'Ka_guest': projection.interval('Ka_guest', fit)}
+    result = input_aware(projection, fit, (), conditional=conditional)
+    assert result.profiles['Ka_guest'].interval is conditional['Ka_guest']
+    assert result.fit.ka == fit.ka and result.fit.offsets == {} and result.fit.jacobian.shape == (15, 1)
+    assert np.array_equal(result.fit.coefficients, fit.coefficients[0])
+    assert result.fit.objective == pytest.approx(15 * np.log(fit.objective), rel=1e-14)
+    assert result.fit.n_params == projection.n_params(fit)
+    # Without the caller's intervals the same ones are computed.
+    assert input_aware(projection, fit, ()).profiles['Ka_guest'].interval == conditional['Ka_guest']
+    assert conflict(result) is None and input_shifts(result) == {}
+    # A spec that does not vary is no constraint at all.
+    assert constraints({'h0': InputSpec.sigma_pct(0.0)}, assay.get_conditions()) == ()
+
+
+def test_vanishing_uncertainties_converge_to_the_fixed_input_profile_and_interval():
+    assay, projection = _ida(15, 0.02, 5)
+    fit = projection.fit()
+    conditional = projection.interval('Ka_guest', fit)
+    fixed_profile = projection.profile('Ka_guest')
+    n = assay.n_points
+
+    def gap(sigma: float, ka: float) -> float:
+        cons = _sigma_constraints(assay, {key: sigma for key in _IDA_SIGMAS})
+        return (
+            n * np.log(fixed_profile(ka))
+            - penalised_objective(projection, {'Ka_guest': ka}, cons, {}, other_ka=None)[0]
+        )
+
+    # The profile itself: what the inputs can buy shrinks with the square of their uncertainty.
+    for ka in (conditional.low, fit.ka['Ka_guest'] * 1.3):
+        coarse, fine = gap(1e-3, ka), gap(1e-5, ka)
+        assert 0 < fine < 1e-6
+        assert coarse / fine == pytest.approx(1e4, rel=0.05)
+        assert 0 <= gap(1e-7, ka) < 1e-9
+
+    result = input_aware(projection, fit, _sigma_constraints(assay, {key: 1e-7 for key in _IDA_SIGMAS}))
+    aware = result.profiles['Ka_guest'].interval
+    # Both edges are roots at a tolerance of 1e-7 decades, found in different brackets.
+    assert abs(np.log10(aware.low / conditional.low)) < 2e-7
+    assert abs(np.log10(aware.high / conditional.high)) < 2e-7
+    assert abs(np.log10(result.fit.ka['Ka_guest'] / fit.ka['Ka_guest'])) < 2e-7
+    assert (aware.open_low, aware.open_high, aware.split) == (False, False, False)
+    assert aware.dof == pytest.approx(conditional.dof, abs=1e-6)
+
+
+def test_the_drawn_profile_is_never_below_the_fixed_input_one_on_the_r2_axis(ida_case):
+    """The entered inputs are feasible, so freeing them can only lower the objective."""
+    assay, projection, _, result = ida_case
+    profile = result.profiles['Ka_guest']
+    fixed_profile = projection.profile('Ka_guest')
+    ss_tot = float(projection.ss_tot[0])
+    for ka, r2 in zip(profile.grid[::3], profile.r2[::3]):
+        assert r2 >= 1.0 - fixed_profile(ka) / ss_tot - 1e-12
+    inside = (profile.grid > profile.interval.low * 1.001) & (profile.grid < profile.interval.high / 1.001)
+    assert np.all(profile.r2[inside] > profile.r2_threshold)
+    assert np.all(profile.r2[(profile.grid < profile.interval.low / 1.001)] < profile.r2_threshold)
+    # Drawn at 20 per decade through the search-grid cells of the estimate and the edges, which span this interval.
+    assert np.max(np.diff(np.log10(profile.grid[inside]))) <= 1 / 20 + 1e-9
+
+
+def test_the_fit_is_never_worse_than_the_fit_at_the_entered_inputs(ida_case):
+    """The entered inputs at the fixed-input Ka are allowed, and the search is offered that point."""
+    assay, _, fit, result = ida_case
+    assert result.fit.objective <= assay.n_points * np.log(fit.objective) + 1e-9
+
+
+def test_an_estimate_between_a_rejected_and_an_accepted_node_closes_its_edge_in_its_own_bracket():
+    """Stoichiometric IDA, eight points, inputs entered five standard deviations off.
+
+    The estimate lies between a search-grid node the test rejects and one it
+    accepts, so the lower edge is bracketed by that node and the estimate
+    itself, and the input space has a second basin beside it: the profile at
+    the estimate must be the estimate's own value, whatever a fresh solve from
+    the other side's start points would find.
+    """
+    x = [5.045663887196735e-06, 1.009132777439347e-05, 1.5136991661590206e-05, 2.018265554878694e-05]
+    x += [2.522831943598368e-05, 3.0273983323180412e-05, 3.531964721037715e-05, 4.036531109757388e-05]
+    y = [516804301.5117509, 413749773.0957198, 280815953.7107911, 178221253.79302385]
+    y += [140762674.7090417, 130828298.41243015, 124425258.24760026, 124279590.30513297]
+    assay = IDAAssay(
+        x_data=Q_(np.array(x), 'M'),
+        y_data=Q_(np.array(y), 'au'),
+        Ka_dye=Q_(135969.60128617313, '1/M'),
+        h0=Q_(2.5732880284727687e-05, 'M'),
+        d0=Q_(2.06888486735804e-05, 'M'),
+    )
+    projection = Projection(assay, dict(ASSAY_REGISTRY[AssayType.IDA].default_bounds))
+    _, result = _aware(assay, projection, _IDA_SIGMAS)
+    profile = result.profiles['Ka_guest']
+    interval, estimate = profile.interval, result.fit.ka['Ka_guest']
+    nodes = projection._grid()[0][0]
+    below, above = nodes[nodes < estimate][-1], nodes[nodes > estimate][0]
+    value = dict(zip(profile.grid.tolist(), profile.objective.tolist()))
+    assert value[below] > profile.threshold > value[above]
+    assert below < interval.low < estimate and not interval.open_low
+    assert value[interval.low] == pytest.approx(profile.threshold, abs=1e-5)
+
+
+def test_with_every_binding_constant_pinned_the_inputs_are_still_fitted():
+    assay, _ = _ida(15, 0.001, 3, h0_factor=1.10)
+    pinned = Q_(IDA_TRUE['Ka_guest'], '1/M')
+    projection = Projection(assay, {**GDA_IDA_RECOVERY_BOUNDS, 'Ka_guest': (pinned, pinned)})
+    fit = projection.fit()
+    result = input_aware(projection, fit, _sigma_constraints(assay, {'h0': 0.10}))
+    assert result.profiles == {} and result.fit.ka == {'Ka_guest': IDA_TRUE['Ka_guest']}
+    # Entered 10 % high, and the true Ka held: the host comes back to its true value.
+    assert result.fit.offsets['h0'] == pytest.approx(1 / 1.10 - 1, abs=0.01)
+    assert result.fit.objective < 15 * np.log(fit.objective)
+    assert conflict(result).k == 1 and fit_jacobian(projection, result).shape == (16, 3)
+
+
+def test_the_jacobian_of_the_whole_fit_holds_the_free_signal_columns_the_residual_is_orthogonal_to(ida_case):
+    assay, projection, _, result = ida_case
+    n = assay.n_points
+    jacobian = fit_jacobian(projection, result)
+    # The signal parameters inside their bounds, then Ka and the four inputs; four penalty rows.
+    lb, ub = _coefficient_box(projection)
+    c = int(np.sum((result.fit.coefficients > lb) & (result.fit.coefficients < ub)))
+    assert c >= 2 and jacobian.shape == (n + 4, c + 1 + 4)
+    residual = projection.residual(result.fit.ka, offsets=result.fit.offsets)
+    columns = jacobian[:n, :c]
+    assert np.abs(columns.T @ residual) == pytest.approx(
+        0.0, abs=1e-7 * np.linalg.norm(columns) * np.linalg.norm(residual)
+    )
+    assert not jacobian[n:, : c + 1].any() and np.array_equal(jacobian[n:, c + 1 :], np.eye(4))
+    # The residual rows are in units of the noise scale sqrt(S / n).
+    scale = np.sqrt(result.fit.ssr / n)
+    assert jacobian[:n, c:] * scale == pytest.approx(result.fit.jacobian[:n], rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Determinism
+# ---------------------------------------------------------------------------
+
+
+def test_a_repeat_is_bit_identical(ida_case):
+    _, _, _, first = ida_case
+    assay, projection = _ida(15, 0.01, 2)
+    _, second = _aware(assay, projection, _IDA_SIGMAS)
+    assert first.fit.ka == second.fit.ka and first.fit.offsets == second.fit.offsets
+    assert first.fit.objective == second.fit.objective
+    a, b = first.profiles['Ka_guest'], second.profiles['Ka_guest']
+    assert a.interval == b.interval
+    assert np.array_equal(a.grid, b.grid) and np.array_equal(a.objective, b.objective)
+
+
+def test_an_edge_does_not_depend_on_the_side_root_finding_walks_the_bracket_from(ida_case):
+    """Every value is a function of its Ka and the two bracketing node solutions, so the other order finds the same root."""
+    assay, projection, _, result = ida_case
+    profile = result.profiles['Ka_guest']
+    cons = result.constraints
+    nodes = projection._grid()[0][0]
+    keys = [c.key for c in cons]
+    for edge, outward in ((profile.interval.low, -1), (profile.interval.high, 1)):
+        inner = profile.grid[(profile.grid > edge) if outward < 0 else (profile.grid < edge)]
+        inner = inner[np.isin(inner, nodes)]
+        bracket = [nodes[nodes < edge][-1], inner[0]] if outward < 0 else [inner[-1], nodes[nodes > edge][0]]
+        starts = [dict(zip(keys, profile.offsets[np.flatnonzero(profile.grid == ka)[0]])) for ka in bracket]
+
+        def excess(t: float) -> float:
+            values = [penalised_objective(projection, {'Ka_guest': 10.0**t}, cons, s, other_ka=None)[0] for s in starts]
+            return min(values) - profile.threshold
+
+        a, b = np.log10(bracket)
+        forward = brentq(excess, a, b, xtol=1e-9)
+        backward = brentq(excess, b, a, xtol=1e-9)
+        assert forward == pytest.approx(backward, abs=1e-8)
+        assert np.log10(edge) == pytest.approx(forward, abs=2e-7)
+
+
+# ---------------------------------------------------------------------------
+# What the interval is for: entry errors
+# ---------------------------------------------------------------------------
+
+
+def test_a_planted_entry_error_is_recovered_as_a_shift_and_the_truth_is_inside_only_the_aware_interval():
+    assay, projection = _ida(15, 0.001, 3, h0_factor=1.10)
+    fit, result = _aware(assay, projection, {'h0': 0.10})
+    conditional = projection.interval('Ka_guest', fit)
+    aware = result.profiles['Ka_guest'].interval
+    truth = IDA_TRUE['Ka_guest']
+    assert not conditional.low <= truth <= conditional.high
+    assert aware.low <= truth <= aware.high
+    # Entered 10 % high: the true host is 1 / 1.1 of the entered one, a shift of -9.1 %.
+    shift = input_shifts(result)['h0']
+    assert shift.fraction == pytest.approx(1 / 1.10 - 1, abs=0.01)
+    assert shift.z == pytest.approx(shift.fraction / 0.10) and shift.at_edge is False
+    assert result.fit.ka['Ka_guest'] == pytest.approx(truth, rel=0.03)
+    found = conflict(result)
+    assert found.k == 1 and found.q == pytest.approx(shift.z**2)
+    assert all(0.0 <= w <= 1.0 for w in found.weights) and 0.0 <= found.p_value <= 1.0
+
+
+def test_an_input_stated_as_a_range_stays_inside_it_and_is_reported_on_its_edge():
+    assay, projection = _ida(15, 0.001, 3, h0_factor=1.10)
+    fit = projection.fit()
+    narrow = input_aware(projection, fit, constraints({'h0': InputSpec.interval_pct(-5, 5)}, assay.get_conditions()))
+    shift = input_shifts(narrow)['h0']
+    assert shift.fraction == pytest.approx(-0.05, abs=1e-7) and shift.at_edge is True and shift.z is None
+    assert conflict(narrow) is None
+    profile = narrow.profiles['Ka_guest']
+    assert np.all(profile.offsets >= -0.05 - 1e-12) and np.all(profile.offsets <= 0.05 + 1e-12)
+    # A range is a free parameter with no pseudo-observation: it counts in p.
+    assert narrow.fit.n_params == projection.n_params(fit) + 1 and profile.interval.dof == 15 - 4
+    # Held on its edge the host is not fitted, so the whole fit's Jacobian has the signal parameters and Ka alone.
+    signal = projection.fitted_columns(narrow.fit.ka, narrow.fit.offsets).shape[1]
+    assert fit_jacobian(projection, narrow).shape == (15, signal + 1)
+
+    wide = input_aware(projection, fit, constraints({'h0': InputSpec.interval_pct(-20, 20)}, assay.get_conditions()))
+    shift = input_shifts(wide)['h0']
+    assert shift.fraction == pytest.approx(1 / 1.10 - 1, abs=0.01) and shift.at_edge is False
+    signal = projection.fitted_columns(wide.fit.ka, wide.fit.offsets).shape[1]
+    assert fit_jacobian(projection, wide).shape == (15, signal + 2)
+    interval = wide.profiles['Ka_guest'].interval
+    assert interval.low <= IDA_TRUE['Ka_guest'] <= interval.high
+
+
+def test_only_an_input_stated_as_a_range_can_rest_on_an_edge():
+    specs = {'h0': InputSpec.sigma_pct(5), 'd0': InputSpec.interval_pct(-5, 5)}
+    sigma, ranged = constraints(specs, {'h0': Q_(1e-5, 'M'), 'd0': Q_(5e-6, 'M')})
+    assert [at_edge(ranged, e) for e in (-0.05, 0.0, 0.05)] == [True, False, True]
+    assert not any(at_edge(sigma, e) for e in (sigma.lo, -0.05, 0.0, 0.05, 10.0))
+
+
+def test_a_profile_given_one_cut_off_array_fills_the_other_from_its_constant_level(ida_case):
+    profile = ida_case[3].profiles['Ka_guest']
+    given = AwareProfile(**{**vars(profile), 'r2_cut': None})
+    assert np.array_equal(given.cut, profile.cut)
+    assert np.array_equal(given.r2_cut, np.full(profile.grid.shape, profile.r2_threshold))
+
+
+def test_a_range_input_the_fit_left_on_its_edge_absorbs_nothing_of_the_other_inputs():
+    """Two inputs with the same effect on the signal: a sigma input, and a range input with no penalty row.
+
+    Free inside its range the second reproduces whatever the first does, so
+    the data say nothing about the first (weight 0). Held on an end of its
+    range it is no parameter, and the first input has the information
+    ``g = |a|² / s²`` of its column alone, weight ``g / (1 + g)``.
+    """
+    rng = np.random.default_rng(5)
+    a = rng.normal(size=10)
+    jacobian = np.zeros((11, 2))
+    jacobian[:10, 0] = jacobian[:10, 1] = a
+    jacobian[10, 0] = 1.0
+    specs = {'h0': InputSpec.sigma_pct(3), 'd0': InputSpec.interval_pct(-5, 5)}
+    stated = constraints(specs, {'h0': Q_(1e-5, 'M'), 'd0': Q_(5e-6, 'M')})
+    n, ssr, ss_tot = 10, 2.5, 1e3
+    g = float(a @ a) / (ssr / n)
+    for d0_offset, weight in ((0.02, 0.0), (0.05, g / (1 + g)), (-0.05, g / (1 + g))):
+        weights, _ = _input_directions(jacobian, 0, stated, {'h0': 0.01, 'd0': d0_offset}, ssr, n, ss_tot)
+        assert weights == pytest.approx((weight,), abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Fail-fast and the unsolvable sentinel
+# ---------------------------------------------------------------------------
+
+
+def test_a_ka_the_model_cannot_be_solved_at_opens_the_interval_like_the_fixed_input_one(monkeypatch):
+    """Weakly determined Ka, and a model with no solution above 3e6: the high side is open because the profile stops."""
+    solve = IDAAssay.species
+
+    def species(self, params):
+        found = solve(self, params)
+        return {k: np.full_like(v, np.nan) for k, v in found.items()} if params[0] > 3e6 else found
+
+    monkeypatch.setattr(IDAAssay, 'species', species)
+    assay, projection = _ida(10, 0.08, 1, ka_box=(1e4, 1e9))
+    fit = projection.fit()
+    conditional = projection.interval('Ka_guest', fit)
+    assert conditional.open_high and conditional.unsolvable_high
+    aware = input_aware(projection, fit, _sigma_constraints(assay, {'h0': 0.03})).profiles['Ka_guest']
+    assert aware.interval.open_high and aware.interval.unsolvable_high
+    assert aware.interval.high <= 3e6
+    assert not aware.interval.unsolvable_low
+    assert np.isinf(aware.objective[-1]) and np.isnan(aware.r2[-1])
+
+
+def test_too_few_points_are_refused_once_a_range_counts_as_a_parameter():
+    assay, projection = _ida(4, 0.01, 1)
+    fit = projection.fit()
+    assert projection.interval('Ka_guest', fit) is not None  # n - p = 1 at the entered inputs
+    with pytest.raises(FitRefused, match='too few to fit this model and also let this input move within a range'):
+        input_aware(projection, fit, constraints({'h0': InputSpec.interval_pct(-5, 5)}, assay.get_conditions()))
+
+
+def test_too_few_points_are_refused_when_the_inputs_take_up_the_last_degree_of_freedom():
+    """Five points, n - p = 2: a host and a dye the data determine leave less than one to judge the fit by."""
+    assay, projection = _ida(5, 0.001, 1)
+    fit = projection.fit()
+    assert assay.n_points - projection.n_params(fit) == 2
+    with pytest.raises(FitRefused, match='5 titration points, too few to fit this model and also let .* move. Hold'):
+        input_aware(projection, fit, _sigma_constraints(assay, {'Ka_dye': 0.5, 'h0': 0.5, 'd0': 0.5}))
+    # An uncertainty small enough to hold the inputs leaves the degrees of freedom to the noise.
+    held = input_aware(projection, fit, _sigma_constraints(assay, {'h0': 1e-4}))
+    assert held.profiles['Ka_guest'].interval.dof == pytest.approx(2.0, abs=0.05)
+
+
+def test_a_stop_request_is_honoured():
+    assay, projection = _ida(12, 0.01, 1)
+    fit = projection.fit()
+    asked = []
+
+    def stop_at_the_third_ask() -> bool:
+        asked.append(1)
+        return len(asked) >= 3
+
+    with pytest.raises(FitCancelled):
+        input_aware(projection, fit, _sigma_constraints(assay, {'h0': 0.03}), should_cancel=stop_at_the_third_ask)
+    assert len(asked) == 3
+
+
+def test_a_multi_row_projection_is_refused():
+    assay, _ = _ida(12, 0.01, 1)
+    y = assay.y_data.magnitude
+    projection = Projection(assay, GDA_IDA_RECOVERY_BOUNDS, signals=np.vstack([y, y * 1.01]))
+    with pytest.raises(ValueError, match='describes one signal'):
+        input_aware(projection, projection.fit(), _sigma_constraints(assay, {'h0': 0.03}))

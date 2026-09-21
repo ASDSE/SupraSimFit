@@ -11,14 +11,17 @@ as the columns its signal parameters multiply, which the registry's
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, Tuple
+from dataclasses import dataclass, field, replace
+from typing import Any, ClassVar, Dict, Mapping, Tuple
 
 import numpy as np
 import pint
 
 from core.assays.registry import AssayMetadata, AssayType, get_metadata
 from core.units import Quantity
+
+# Sentinel input key for the titrant (the varying x-axis concentration vector).
+TITRANT = '__titrant__'
 
 
 @dataclass
@@ -162,6 +165,43 @@ class BaseAssay(ABC):
             Conditions like fixed concentrations, known binding constants, etc.
         """
         pass
+
+    def with_inputs(self, offsets: Mapping[str, float]) -> 'BaseAssay':
+        """The same data with some entered inputs moved by a relative offset.
+
+        Parameters
+        ----------
+        offsets : Mapping[str, float]
+            Offset per input as a fraction of its entered value: ``TITRANT``
+            scales every titrant concentration by ``1 + offset``, any other key
+            names a Quantity condition of :meth:`get_conditions` and scales it
+            the same way.
+
+        Returns
+        -------
+        BaseAssay
+            A copy built through the constructor, so the subclass validates the
+            moved conditions like entered ones.
+
+        Raises
+        ------
+        ValueError
+            For a key that is neither ``TITRANT`` nor a Quantity condition, and
+            from the subclass for a condition the offset leaves non-positive.
+        """
+        conditions = self.get_conditions()
+        changes = {}
+        for key, offset in offsets.items():
+            if key == TITRANT:
+                changes['x_data'] = self.x_data * (1.0 + offset)
+            elif isinstance(conditions.get(key), Quantity):
+                changes[key] = conditions[key] * (1.0 + offset)
+            else:
+                raise ValueError(
+                    f'{key!r} is not an input of the {self.assay_type.name} assay; its inputs are '
+                    f'{[k for k, v in conditions.items() if isinstance(v, Quantity)]} and the titrant.'
+                )
+        return replace(self, **changes)
 
     def residuals(self, params: np.ndarray) -> Quantity:
         """Compute residuals (observed - predicted).

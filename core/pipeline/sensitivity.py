@@ -6,7 +6,14 @@ into the model — the titrant concentration vector, the fixed conditions
 carries measurement error, and the fit silently compensates by shifting the
 fitted Ka. This module re-runs the fit many times with those inputs perturbed
 according to each input's stated uncertainty and reports the resulting spread
-of Ka.
+of Ka, and which of the inputs that spread comes from.
+
+The uncertainties are the ones stated for the fit
+(:attr:`~core.pipeline.fit_pipeline.FitConfig.input_specs`); the reported
+interval of the fit itself already accounts for them
+(:mod:`core.pipeline.input_aware`). What this analysis adds is where the spread
+comes from: every sample here is a fit at inputs held at their sampled values,
+and the sample with no offset is the fit at the inputs as entered.
 
 Two analysis modes:
 
@@ -39,13 +46,13 @@ import operator
 import os
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from itertools import islice
 from typing import Callable, Iterator, Optional
 
 import numpy as np
-from scipy.stats import qmc, truncnorm
+from scipy.stats import qmc
 from scipy.stats import t as student_t
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
@@ -58,178 +65,22 @@ from core.pipeline.fit_pipeline import (
     fit_measurement_set,
     fit_replica_ids,
 )
+
+# The inputs and how their uncertainty is stated live in ``core.pipeline.inputs``;
+# every one of these names is importable from this module as well.
+from core.pipeline.inputs import (  # noqa: F401
+    TITRANT,
+    InputSpec,
+    SpecKind,
+    _to_fraction,
+    axis_reaches_zero,
+    input_name,
+    nominal_value,
+    perturbable_inputs,
+    spec_bounds,
+    spec_fraction,
+)
 from core.pipeline.varpro import _SEARCH_PER_DECADE, FitCancelled, FitRefused, Projection, _ka_grid
-from core.units import Quantity
-
-# Sentinel input key for the titrant (the varying x-axis concentration vector).
-TITRANT = '__titrant__'
-
-
-class SpecKind(Enum):
-    """How an input's uncertainty is stated."""
-
-    SIGMA = 'sigma'
-    INTERVAL = 'interval'
-
-
-@dataclass(frozen=True)
-class InputSpec:
-    """The uncertainty of one input.
-
-    ``SIGMA`` is a precision figure — an instrument's pipetting tolerance, say —
-    read as one standard deviation of a Gaussian and truncated so the perturbed
-    value stays positive. ``INTERVAL`` is a plain range, sampled uniformly and
-    free to be asymmetric; a binding constant carried over from an earlier fit
-    arrives in that form, as an estimate with a low and a high bound.
-
-    A relative spec is stated in percent of the input's nominal value. An
-    absolute one is in the input's own unit: for ``SIGMA`` the spread itself,
-    and for ``INTERVAL`` the low and high values the input may take. The titrant
-    has no single nominal value, so it accepts relative specs only.
-    """
-
-    kind: SpecKind
-    sigma: float = 0.0
-    lo: float = 0.0
-    hi: float = 0.0
-    relative: bool = True
-
-    @classmethod
-    def sigma_pct(cls, sigma: float) -> 'InputSpec':
-        """Gaussian with a standard deviation of *sigma* percent."""
-        return cls(SpecKind.SIGMA, sigma=sigma, relative=True)
-
-    @classmethod
-    def sigma_abs(cls, sigma: float) -> 'InputSpec':
-        """Gaussian with a standard deviation of *sigma* in the input's unit."""
-        return cls(SpecKind.SIGMA, sigma=sigma, relative=False)
-
-    @classmethod
-    def interval_pct(cls, lo: float, hi: float) -> 'InputSpec':
-        """Uniform between *lo* and *hi* percent of nominal."""
-        return cls(SpecKind.INTERVAL, lo=lo, hi=hi, relative=True)
-
-    @classmethod
-    def interval_abs(cls, lo: float, hi: float) -> 'InputSpec':
-        """Uniform between the values *lo* and *hi*, in the input's unit."""
-        return cls(SpecKind.INTERVAL, lo=lo, hi=hi, relative=False)
-
-    @property
-    def varies(self) -> bool:
-        """Whether this spec actually moves the input."""
-        if self.kind is SpecKind.SIGMA:
-            return self.sigma > 0
-        return self.hi > self.lo
-
-
-#: Half-width of the deterministic heatmap sweep for a SIGMA spec, in standard
-#: deviations. Two covers ~95% of the distribution.
-_SIGMA_GRID_SPAN = 2.0
-
-
-def _to_fraction(value: float, relative: bool, nominal: Optional[float], name: str) -> float:
-    """Express *value* as a fraction of the input's nominal value.
-
-    *name* names the input in the messages a user reads, so it is a display
-    label, never a dict key.
-    """
-    if relative:
-        return value / 100.0
-    if nominal is None:
-        raise FitRefused(
-            'The titrant is a series of concentrations with no single value to measure against, '
-            'so its uncertainty has to be given as a percentage.'
-        )
-    if nominal == 0:
-        raise FitRefused(f'{name} is set to zero, so an uncertainty in its own unit says nothing about it.')
-    return value / nominal
-
-
-def spec_bounds(spec: InputSpec, nominal: Optional[float], name: str) -> tuple[float, float]:
-    """Relative-offset range a spec spans, as fractions of nominal.
-
-    A SIGMA spec has no hard edges, so its sweep is taken at
-    ``±_SIGMA_GRID_SPAN`` standard deviations. *name* names the input in the
-    messages a user reads, so it is a display label, never a dict key.
-    """
-    if spec.kind is SpecKind.SIGMA:
-        s = _to_fraction(spec.sigma, spec.relative, nominal, name)
-        return -_SIGMA_GRID_SPAN * s, _SIGMA_GRID_SPAN * s
-    if spec.relative:
-        return spec.lo / 100.0, spec.hi / 100.0
-    # An absolute interval states the input's own low and high values, the form a
-    # binding constant carried over from an earlier fit already comes in.
-    if nominal is None:
-        raise FitRefused(
-            'The titrant is a series of concentrations with no single value to measure against, '
-            'so its range has to be given as percentages.'
-        )
-    if nominal == 0:
-        raise FitRefused(f'{name} is set to zero, so a range in its own unit says nothing about it.')
-    return (spec.lo - nominal) / nominal, (spec.hi - nominal) / nominal
-
-
-def axis_reaches_zero(spec: InputSpec, nominal: Optional[float], name: str) -> bool:
-    """Whether a heatmap axis swept over :func:`spec_bounds` would take the input to zero or below.
-
-    The sweep includes both ends, so a lower end at -100 % of the nominal value, to
-    rounding, would fit the model with the input at zero.
-    """
-    return spec_bounds(spec, nominal, name)[0] <= -1.0 + 1e-9
-
-
-def spec_fraction(spec: InputSpec, nominal: Optional[float], name: str, quantile):
-    """Map uniform draws in (0, 1) to relative offsets.
-
-    Going through the inverse CDF keeps the draw independent of how the
-    quantile was produced, so plain random sampling and a low-discrepancy
-    sequence share one definition of an input's distribution.
-
-    One quantile gives one float; an array of quantiles gives an array of the
-    same shape, which is how a whole column of a sampling design is mapped in a
-    single call.
-    """
-    quantiles = np.asarray(quantile, dtype=float)
-    if spec.kind is SpecKind.SIGMA:
-        s = _to_fraction(spec.sigma, spec.relative, nominal, name)
-        if s <= 0:
-            offsets = np.zeros_like(quantiles)
-        else:
-            # Truncated at -1 so the perturbed value never reaches zero or below.
-            offsets = truncnorm.ppf(quantiles, a=-1.0 / s, b=np.inf, loc=0.0, scale=s)
-    else:
-        lo, hi = spec_bounds(spec, nominal, name)
-        offsets = lo + quantiles * (hi - lo)
-    return offsets if quantiles.ndim else float(offsets)
-
-
-def nominal_value(key: str, base_conditions: dict) -> Optional[float]:
-    """Magnitude of an input's nominal value; ``None`` for the titrant."""
-    if key == TITRANT:
-        return None
-    return float(base_conditions[key].magnitude)
-
-
-def input_name(key: str, input_labels: Optional[dict[str, str]]) -> str:
-    """Name an input the way a message shown to the user should name it.
-
-    Parameters
-    ----------
-    key : str
-        Input key: ``TITRANT`` or a condition key.
-    input_labels : dict[str, str] or None
-        Display label per input key, as the interface writes it.
-
-    Returns
-    -------
-    str
-        The label when one is given. Otherwise 'the titrant' for the titrant and
-        a neutral phrase for a condition, so a message never shows a dict key.
-    """
-    label = (input_labels or {}).get(key)
-    if label:
-        return label
-    return 'the titrant' if key == TITRANT else 'this input'
 
 
 class SensitivityMode(Enum):
@@ -289,7 +140,8 @@ class SensitivityResult:
     ka_keys : tuple[str, ...]
         Association-constant parameter keys (registry ``log_scale_keys``).
     baseline_ka : dict[str, float]
-        Unperturbed Ka per key, in ``1/M``: the baseline fit's own.
+        Unperturbed Ka per key, in ``1/M``: the baseline fit's own, at the
+        inputs exactly as entered.
     x_offsets_pct : np.ndarray or None
         HEATMAP only — X-axis offset grid, in percent.
     y_offsets_pct : np.ndarray or None
@@ -330,9 +182,13 @@ class SensitivityResult:
         HEATMAP only — R² of each cell's best fit, aligned with ``ka_grid``.
     baseline_fit : FitResult or None
         The fit of the inputs as entered, made by
-        :func:`~core.pipeline.fit_pipeline.fit_measurement_set`, that every
-        perturbation is compared against. The same engine fits the baseline and
-        every sample, so a sample with no input offset reproduces it exactly. It
+        :func:`~core.pipeline.fit_pipeline.fit_measurement_set` with every
+        input held at the value entered, that every perturbation is compared
+        against. The analysis moves the inputs itself, one sample at a time, so
+        the fit it starts from is the one that moves none of them: its interval
+        is the interval conditional on the entered inputs, not the headline of
+        a fit that lets them move. The same engine fits the baseline and every
+        sample, so a sample with no input offset reproduces it exactly. It
         records the replicates it used and left out, and every sample uses and
         is scored on the same replicates.
     sample_params : dict[str, np.ndarray] or None
@@ -379,39 +235,6 @@ class SensitivityResult:
     degenerate_keys: tuple[str, ...] = ()
     sobol_rows_left_out: dict[str, int] | None = None
     stopped: bool = False
-
-
-def perturbable_inputs(assay_type: AssayType, base_conditions: dict) -> list[tuple[str, str]]:
-    """List the inputs that can be perturbed for an assay.
-
-    Parameters
-    ----------
-    assay_type : AssayType
-        The assay type (kept for API symmetry; classification is by
-        dimensionality of the condition values).
-    base_conditions : dict
-        Assay conditions as passed to the assay constructor. Values that are
-        :class:`pint.Quantity` are classified by dimensionality; non-Quantity
-        values (e.g. the ``mode`` string) are skipped.
-
-    Returns
-    -------
-    list[tuple[str, str]]
-        Ordered ``(key, kind)`` pairs, matching the order the conditions are
-        declared in, with ``TITRANT`` last, carrying kind
-        ``'titrant'``; then each Quantity condition as ``'concentration'``
-        (``M``) or ``'binding_constant'`` (``1/M``).
-    """
-    inputs: list[tuple[str, str]] = []
-    for key, value in base_conditions.items():
-        if not isinstance(value, Quantity):
-            continue
-        if value.is_compatible_with('M'):
-            inputs.append((key, 'concentration'))
-        elif value.is_compatible_with('1/M'):
-            inputs.append((key, 'binding_constant'))
-    inputs.append((TITRANT, 'titrant'))
-    return inputs
 
 
 def estimated_fit_count(sens_config: SensitivityConfig) -> int:
@@ -500,17 +323,18 @@ MAX_SEED = 2**31 - 1
 #: about the error of one scramble of N/2 rows — half the design size, for the
 #: eight replicates the intervals need. More scrambles give the jackknife more
 #: degrees of freedom and so a narrower t quantile, fewer give each scramble
-#: more rows. ``scripts/sobol_interval_coverage.py`` is the coverage study
-#: behind this value and behind ``_SOBOL_SAMPLE_SIZES``: it reruns the interval
-#: over many designs of functions whose indices are known and reports how often
-#: each interval held its index.
+#: more rows. ``python -m validation run sobol-coverage sobol-blocking`` is the
+#: coverage study behind this value and behind ``_SOBOL_SAMPLE_SIZES``: it
+#: reruns the interval over many designs of functions whose indices are known
+#: and reports how often each interval held its index.
 _SOBOL_BLOCKS: int = 8
 
 #: SOBOL sample sizes a run accepts. The smallest is the size at which an index
 #: already carries about the error of one undivided scramble of half it, which is
 #: the price the eight scrambles cost; below that the indices are too coarse to
-#: rank the inputs by. ``scripts/sobol_interval_coverage.py`` measures both the
-#: blocking price and how often the intervals hold their index at these sizes.
+#: rank the inputs by. ``python -m validation run sobol-coverage sobol-blocking``
+#: measures both the blocking price and how often the intervals hold their index
+#: at these sizes.
 _SOBOL_SAMPLE_SIZES: tuple[int, ...] = (1024, 2048, 4096)
 
 
@@ -964,7 +788,10 @@ def run_sensitivity(
         Baseline assay conditions (Quantity values in base units).
     fit_config : FitConfig
         Per-fit configuration: it decides the parameter bounds every fit of the
-        run is made under and how the baseline fit treats the replicates.
+        run is made under and how the baseline fit treats the replicates. Its
+        input uncertainties are not used here — this run samples the ones in
+        *sens_config*, and every fit it makes holds the inputs at their sampled
+        values.
     sens_config : SensitivityConfig
         What to perturb and how.
     progress : callable, optional
@@ -1013,7 +840,7 @@ def run_sensitivity(
     if not ka_keys:
         raise FitRefused('This assay has no association constant to analyse, so sensitivity analysis does not apply.')
 
-    valid_keys = {k for k, _ in perturbable_inputs(assay_type, base_conditions)}
+    valid_keys = {k for k, _ in perturbable_inputs(base_conditions)}
 
     # --- Validate the config before doing any real work ------------------
     size = sens_config.n_samples
@@ -1094,7 +921,12 @@ def run_sensitivity(
 
     if _cancelled():
         raise FitCancelled('The sensitivity analysis was stopped before its first fit.')
-    baseline_result = fit_measurement_set(ms, assay_cls, base_conditions, fit_config, should_cancel=should_cancel)
+    # The baseline is the fit at the inputs as entered: the specs are what this
+    # run samples, so letting the baseline fit move the inputs as well would
+    # report the spread of the samples around a fit that already absorbed them.
+    baseline_result = fit_measurement_set(
+        ms, assay_cls, base_conditions, replace(fit_config, input_specs={}), should_cancel=should_cancel
+    )
     done += 1
     if progress is not None:
         progress(done, total)

@@ -20,6 +20,23 @@ fit at that value of one Ka, so an F test on it gives a profile-likelihood
 confidence interval per Ka, and the same test on the rows of a replicate set
 decides whether every replicate shares K.
 
+The F test of a tested Ka compares two fits, and its numerator counts the
+parameters the best fit has and the fit at the tested Ka has not. That is the
+tested Ka, and every signal parameter the bounded solve holds on a bound there
+while the best fit leaves it free: a coefficient on its bound is not fitted.
+With ``r(K)`` the rank of the columns whose coefficient lies inside its bounds
+at K (:meth:`Projection.fitted_rank`) and ``K_hat`` the best fit,
+
+    m(K)   = constrained Ka + max(0, r(K_hat) - r(K))
+    cut(K) = S_min (1 + m(K) F(level; m(K), n - p) / (n - p))
+
+and the interval is ``{k : P_j(k) <= cut}`` at the profile point of k, the other
+binding constant where it minimises Q. ``n - p`` is that of the best fit
+throughout. Wherever the tested Ka pins nothing the best fit leaves free,
+``m`` is the number of constrained Ka and the cut-off is the constant one of the
+plain F test; where it does, the cut-off steps up, which is conservative against
+the exact mixture of F distributions a bounded parameter follows.
+
 The equilibrium models report a K they have no speciation for as species that
 are not a number, rather than by raising. Such a K has no fit at all, so its
 residual sum of squares is infinite, it never enters an interval and no curve
@@ -391,14 +408,18 @@ class Projection:
         """Every binding constant: the ones given, pinned ones at their value otherwise."""
         return {k: float(ka[k]) if k in ka else self._pinned_ka[k] for k in self.ka_keys}
 
-    def _design(self, ka: Mapping[str, float]) -> np.ndarray:
-        """Signal columns at the binding constants *ka*, one per coefficient, from one species solve."""
+    def _design(self, ka: Mapping[str, float], assay: BaseAssay | None = None) -> np.ndarray:
+        """Signal columns at the binding constants *ka*, one per coefficient, from one species solve.
+
+        The species are those of *assay*, a copy of the projection's assay with
+        moved inputs, and of the projection's own assay when it is omitted.
+        """
         if self._should_cancel is not None and self._should_cancel():
             raise FitCancelled('The fit was stopped.')
         params = np.zeros(len(self.assay.parameter_keys))
         for key, value in self._full_ka(ka).items():
             params[self._ka_index[key]] = value
-        species = self.assay.species(params)
+        species = (self.assay if assay is None else assay).species(params)
         ones = np.ones(self.n_points)
         return np.column_stack(
             [ones if name is None else np.asarray(species[name], dtype=float) for name in self._species_of]
@@ -445,9 +466,7 @@ class Projection:
     def _free_columns(self, design: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Columns of the coefficients that are not pinned, and each column's norm (one for a zero column)."""
         free = design[:, self._lb != self._ub]
-        scale = np.linalg.norm(free, axis=0)
-        scale[scale == 0] = 1.0
-        return free, scale
+        return free, _norms(free)
 
     def row_ssr(self, ka: Mapping[str, float]) -> np.ndarray:
         """Best residual sum of squares of every row at the binding constants *ka*.
@@ -456,6 +475,26 @@ class Projection:
         Ka may be left out of *ka*.
         """
         return self._solve(self._design(ka))[0]
+
+    def _solve_at(
+        self, ka: Mapping[str, float], offsets: Mapping[str, float] | None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Design, each row's SSR and each row's coefficients at *ka* with the entered inputs moved by *offsets*."""
+        design = self._design(ka, self.assay.with_inputs(offsets) if offsets else None)
+        return (design, *self._solve(design))
+
+    def residual(self, ka: Mapping[str, float], row: int = 0, offsets: Mapping[str, float] | None = None) -> np.ndarray:
+        """Projected residual ``y - A c`` of *row* at the binding constants *ka*.
+
+        The design is that of ``assay.with_inputs(offsets)`` — the entered
+        inputs when *offsets* is ``None`` or empty — and ``c`` the bounded
+        least-squares coefficients of :meth:`row_ssr` on it. Every entry is
+        infinite where the equilibrium model has no solution.
+        """
+        design, ssr, coef = self._solve_at(ka, offsets)
+        if not np.isfinite(ssr[row]):
+            return np.full(self.n_points, np.inf)
+        return self.signals[row] - design @ coef[row]
 
     # ------------------------------------------------------------------
     # Search
@@ -548,10 +587,9 @@ class Projection:
             n_free_ka=len(self.free_ka),
         )
 
-    def _search_two(self, w: np.ndarray) -> tuple[dict[str, float], float]:
-        """Two-Ka search: the best of ``_N_REFINE`` refined grid local minima."""
-        axes, _ = self._grid()
-        q_grid = self._weighted_grid(w)
+    @staticmethod
+    def _grid_minima(q_grid: np.ndarray) -> list[tuple[int, int]]:
+        """Indices of the ``_N_REFINE`` lowest local minima of a two-Ka objective grid, lowest first."""
         padded = np.pad(q_grid, 1, constant_values=np.inf)
         n1, n2 = q_grid.shape
         neighbours = np.min(
@@ -564,9 +602,24 @@ class Projection:
             axis=0,
         )
         ii, jj = np.nonzero((q_grid <= neighbours) & np.isfinite(q_grid))
-        if ii.size == 0:
-            return self._full_ka({k: axes[j][0] for j, k in enumerate(self.free_ka)}), np.inf
         order = np.argsort(q_grid[ii, jj], kind='stable')[:_N_REFINE]
+        return [(int(ii[k]), int(jj[k])) for k in order]
+
+    def two_ka_starts(self) -> list[dict[str, float]]:
+        """The grid local minima a two-Ka search refines, lowest first, as binding constants."""
+        axes, _ = self._grid()
+        return [
+            {self.free_ka[0]: float(axes[0][i]), self.free_ka[1]: float(axes[1][j])}
+            for i, j in self._grid_minima(self._weighted_grid(self._weights(None)))
+        ]
+
+    def _search_two(self, w: np.ndarray) -> tuple[dict[str, float], float]:
+        """Two-Ka search: the best of ``_N_REFINE`` refined grid local minima."""
+        axes, _ = self._grid()
+        q_grid = self._weighted_grid(w)
+        starts = self._grid_minima(q_grid)
+        if not starts:
+            return self._full_ka({k: axes[j][0] for j, k in enumerate(self.free_ka)}), np.inf
 
         used = w > 0
         sqrt_w = np.sqrt(w[used])
@@ -580,8 +633,7 @@ class Projection:
             return (((design @ coef[used].T).T - y_used) * sqrt_w[:, None]).ravel()
 
         best: tuple[float, dict[str, float]] | None = None
-        for k in order:
-            i, j = ii[k], jj[k]
+        for i, j in starts:
             node = (float(q_grid[i, j]), {self.free_ka[0]: float(axes[0][i]), self.free_ka[1]: float(axes[1][j])})
             start = np.array([np.log10(axes[0][i]), np.log10(axes[1][j])])
             res = least_squares(residual, start, bounds=(lo, hi), **_TRF_OPTIONS)
@@ -603,6 +655,55 @@ class Projection:
     def n_params(self, fit: ProjectedFit) -> int:
         """Parameter count ``p`` of the F test: the free binding constants plus the design rank."""
         return fit.n_free_ka + fit.rank
+
+    def fitted_columns(self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None) -> np.ndarray:
+        """Design columns of the signal parameters the bounded solve of the first row fits at *ka*.
+
+        The columns, with the inputs moved by *offsets*, of the free
+        coefficients that lie inside their bounds; a coefficient held on a
+        bound is not fitted. None where the model has no solution.
+
+        A coefficient is on a bound when moving it there changes the curve by
+        less than ``_RANK_RTOL`` of the signal's variation about its mean, the
+        scale ``_R2_RESOLUTION`` reads a residual on, so a constant background
+        under the signal leaves the count as it is. The change is the
+        coefficient's distance from the bound times the norm of its column,
+        which is the coefficient in the norm-scaled variables the solve works
+        in. The solver puts a bounded
+        coefficient exactly on its bound in those variables, and unscaling,
+        like the solve of the free ones, is good to rounding times the
+        condition of a design whose rank is read at the same ``_RANK_RTOL``;
+        a fitted coefficient, which scatters by at least the noise of one
+        point in those variables, lands that close to a bound by chance in
+        under 1e-5 of fits at a noise of 0.1 % of the signal.
+        """
+        return self._fitted(*self._solve_at(ka, offsets))
+
+    def _fitted(self, design: np.ndarray, ssr: np.ndarray, coef: np.ndarray) -> np.ndarray:
+        """:meth:`fitted_columns` of a solve :meth:`_solve_at` has made."""
+        free, scale = self._free_columns(design)
+        if not np.isfinite(ssr[0]):
+            return free[:, :0]
+        fitted = self._lb != self._ub
+        margin = np.minimum(coef[0] - self._lb, self._ub - coef[0])[fitted] * scale
+        return free[:, margin > _RANK_RTOL * np.sqrt(self.ss_tot[0])]
+
+    def solved(self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None) -> tuple[np.ndarray, int]:
+        """Each row's SSR at *ka* and the fitted rank of the first row, both from one bounded solve.
+
+        The fitted rank is the rank of :meth:`fitted_columns`, the count
+        :meth:`cut_off` takes. A rank and not a count of columns, because a
+        mass balance ties columns together and the solve then returns one
+        member of a family in which any of the tied coefficients may be the
+        one inside its bounds.
+        """
+        design, ssr, coef = self._solve_at(ka, offsets)
+        columns = self._fitted(design, ssr, coef)
+        return ssr, _rank(columns / _norms(columns))
+
+    def fitted_rank(self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None) -> int:
+        """Signal parameters the bounded solve of the first row fits at *ka* (see :meth:`solved`)."""
+        return self.solved(ka, offsets)[1]
 
     def degenerate_keys(self, fit: ProjectedFit) -> tuple[str, ...]:
         """Signal parameters the data do not determine on their own at the fitted binding constants.
@@ -664,13 +765,15 @@ class Projection:
         if self.signals.shape[0] != 1:
             raise ValueError(f'{what} describes one signal; this projection holds {self.signals.shape[0]} rows.')
 
-    def threshold(self, fit: ProjectedFit, level: float = LEVEL, n_constrained: int = 1) -> float:
+    def threshold(self, fit: ProjectedFit, level: float = LEVEL, n_constrained: int = 1, released: int = 0) -> float:
         """Objective cut-off of the F test on a single-row projection.
 
         ``S_min (1 + m F(level; m, n - p) / (n - p))`` with ``m`` the number of
         constrained binding constants (one for an interval, two for the joint
-        region), ``p`` the free binding constants plus the design rank, and
-        ``S_min`` floored at ``_R2_RESOLUTION`` of the total sum of squares.
+        region) plus *released*, the signal parameters the best fit fits and
+        the fit at the tested Ka holds on a bound; ``p`` the free binding
+        constants plus the design rank, and ``S_min`` floored at
+        ``_R2_RESOLUTION`` of the total sum of squares.
 
         Raises
         ------
@@ -678,15 +781,28 @@ class Projection:
             When ``n - p < 1``, so the data leave nothing to judge the fit by.
         """
         self._require_one_row('A confidence threshold')
-        p = self.n_params(fit)
-        dof = self.n_points - p
-        if dof < 1:
-            raise FitRefused(
-                f'The data have {self.n_points} titration points, too few to judge the {p} parameters this '
-                'model fits, so no fit can be reported. Add titration points, or hold a parameter at one value '
-                'by giving it the same lower and upper bound under Parameter Bounds, and fit again.'
-            )
-        return self._floored(fit) * (1.0 + n_constrained * f_dist.ppf(level, n_constrained, dof) / dof)
+        dof = _require_dof(self.n_points, self.n_params(fit))
+        m = n_constrained + released
+        return self._floored(fit) * (1.0 + m * f_dist.ppf(level, m, dof) / dof)
+
+    def cut_off(self, fit: ProjectedFit, level: float = LEVEL, n_constrained: int = 1) -> Callable[[int], float]:
+        """:meth:`threshold` by fitted rank: the cut-off a fit of that :meth:`fitted_rank` is judged against.
+
+        *released* is how far the rank falls short of the best fit's, so along
+        the binding constants the cut-off is a step function that takes one
+        value per count. The rank comes from the solve that gave the judged
+        residual (:meth:`solved`, :meth:`profile_point`).
+        """
+        fitted = self.fitted_rank(fit.ka)
+        cuts: dict[int, float] = {}
+
+        def at(rank: int) -> float:
+            released = max(0, fitted - rank)
+            if released not in cuts:
+                cuts[released] = self.threshold(fit, level, n_constrained, released)
+            return cuts[released]
+
+        return at
 
     def _floored(self, fit: ProjectedFit) -> float:
         """The best residual of a single-row fit, no smaller than ``_R2_RESOLUTION`` of the total sum of squares."""
@@ -706,6 +822,36 @@ class Projection:
         """
         w = self._weights(weights)
         return lambda ka: self._inner_minimum(ka_key, ka, w, inner_per_decade)[1]
+
+    def profile_point(
+        self, ka_key: str, ka: float, inner_per_decade: int = _SEARCH_PER_DECADE
+    ) -> tuple[dict[str, float], float, int]:
+        """The profile at ``ka_key = ka``: its free binding constants, the objective of all rows, the fitted rank.
+
+        The other free Ka is where :meth:`profile` finds its minimum. It is the
+        point whose fit the F test judges, so its fitted rank is the one
+        :meth:`cut_off` takes. With *ka_key* the only free Ka the objective
+        and the rank are one solve (:meth:`solved`).
+        """
+        point = {ka_key: ka}
+        others = [k for k in self.free_ka if k != ka_key]
+        if not others:
+            ssr, rank = self.solved(point)
+            return point, float(ssr @ self._weights(None)), rank
+        point[others[0]], value = self._inner_minimum(ka_key, ka, self._weights(None), inner_per_decade)
+        return point, value, self.fitted_rank(point)
+
+    def inner_start(self, ka_key: str, ka: float) -> dict[str, float]:
+        """Where the other free Ka minimises the objective at ``ka_key = ka``; empty without another free Ka.
+
+        The minimiser :meth:`profile` finds at the search-grid density: on a
+        search-grid node of *ka_key* the cached grid row refined from its best
+        local minima, a fresh scan of the other Ka refined the same way
+        anywhere else. It is where a search over the other Ka that also moves
+        the entered inputs starts from.
+        """
+        point = self.profile_point(ka_key, ka)[0]
+        return {k: v for k, v in point.items() if k != ka_key}
 
     def _inner_minimum(self, ka_key: str, ka: float, w: np.ndarray, per_decade: int) -> tuple[float | None, float]:
         """The other free Ka that minimises the objective at ``ka_key = ka`` (``None`` without one), and that minimum."""
@@ -728,20 +874,19 @@ class Projection:
     def _two_ka_scan(
         self,
         ka_key: str,
-        node_profile: Callable[[float], float],
-        profile: Callable[[float], float],
-        threshold: float,
+        node_excess: Callable[[float], float],
+        excess_at: Callable[[float], float],
         fit: ProjectedFit,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Ka values a two-Ka interval is cut from, and the profiled excess at each.
 
         A profile point of a two-Ka model costs a minimisation over the other
         Ka, so the whole Ka box cannot be scanned at the profile density. The
-        search-grid nodes are scanned first with *node_profile*, whose inner
+        search-grid nodes are scanned first with *node_excess*, whose inner
         scan is a row of the cached grid so that only the refinements are
         solved; they say roughly which Ka the test accepts. Every cell read
-        again is read with *profile*, its nodes included, which scans the other
-        Ka at ``_INNER_PER_DECADE``. What the interval then depends on is where
+        again is read with *excess_at*, its nodes included, which scans the
+        other Ka at ``_INNER_PER_DECADE``. What the interval then depends on is where
         that verdict turns over, so exactly those cells are scanned again at
         ``_PROFILE_PER_DECADE``, the density a one-Ka interval uses everywhere:
         every cell whose two nodes disagree, and then cell by cell outward past
@@ -758,7 +903,7 @@ class Projection:
         the gap inside it goes unreported.
         """
         nodes = self._grid()[0][self.free_ka.index(ka_key)]
-        excess = {float(ka): node_profile(ka) - threshold for ka in nodes.tolist()}
+        excess = {float(ka): node_excess(ka) for ka in nodes.tolist()}
         dense: set[float] = set()
         logs = np.log10(nodes)
         lo, hi = float(logs[0]), float(logs[-1])
@@ -770,7 +915,7 @@ class Projection:
             for ka in _ka_grid(10.0**a, 10.0**b, _PROFILE_PER_DECADE).tolist():
                 if ka not in dense:
                     dense.add(ka)
-                    excess[ka] = profile(ka) - threshold
+                    excess[ka] = excess_at(ka)
                 accepts = accepts or excess[ka] <= 0
             return accepts
 
@@ -801,27 +946,37 @@ class Projection:
         free Ka, and around the accepted search-grid nodes when the profile is a
         minimisation over another Ka (see :meth:`_two_ka_scan`). The envelope of
         the accepted points is then closed by root finding to ``_LOG_KA_XTOL``
-        decades. A closed edge of a two-Ka interval that only the bound of the
-        other Ka produces is reported open and names that Ka (see
-        :meth:`_bound_behind`).
+        decades. A Ka is accepted where its profile is at or below
+        :meth:`cut_off` at its :meth:`profile_point`; where the cut-off steps
+        at an edge, root finding closes the edge on the step. A closed edge of
+        a two-Ka interval that only the bound of the other Ka produces is
+        reported open and names that Ka (see :meth:`_bound_behind`).
         """
         self._require_one_row('A confidence interval')
         if ka_key not in self.free_ka:
             return None
-        threshold = self.threshold(fit, level)
+        cut = self.cut_off(fit, level)
+
+        def excess(inner_per_decade: int) -> Callable[[float], float]:
+            def at(ka: float) -> float:
+                _, value, rank = self.profile_point(ka_key, ka, inner_per_decade)
+                return value - cut(rank)
+
+            return at
+
         two_ka = len(self.free_ka) == 2
-        profile = self.profile(ka_key, inner_per_decade=_INNER_PER_DECADE if two_ka else _SEARCH_PER_DECADE)
+        excess_at = excess(_INNER_PER_DECADE if two_ka else _SEARCH_PER_DECADE)
         if two_ka:
-            grid, excess_grid = self._two_ka_scan(ka_key, self.profile(ka_key), profile, threshold, fit)
+            grid, excess_grid = self._two_ka_scan(ka_key, excess(_SEARCH_PER_DECADE), excess_at, fit)
         else:
             grid = _ka_grid(*self.ka_bounds[ka_key], _PROFILE_PER_DECADE)
-            excess_grid = np.array([profile(ka) for ka in grid]) - threshold
+            excess_grid = np.array([excess_at(ka) for ka in grid])
         (low, high), (open_low, open_high), split, (unsolvable_low, unsolvable_high) = _interval(
-            lambda ka: profile(ka) - threshold, grid, excess_grid, fit.ka[ka_key]
+            excess_at, grid, excess_grid, fit.ka[ka_key]
         )
-        allowed_rise = threshold - self._floored(fit)
-        limited_by_low = '' if open_low or not two_ka else self._bound_behind(ka_key, low, allowed_rise)
-        limited_by_high = '' if open_high or not two_ka else self._bound_behind(ka_key, high, allowed_rise)
+        floor = self._floored(fit)
+        limited_by_low = '' if open_low or not two_ka else self._bound_behind(ka_key, low, cut, floor)
+        limited_by_high = '' if open_high or not two_ka else self._bound_behind(ka_key, high, cut, floor)
         return KaInterval(
             low=low,
             high=high,
@@ -836,7 +991,7 @@ class Projection:
             limited_by_high=limited_by_high,
         )
 
-    def _bound_behind(self, ka_key: str, edge: float, allowed_rise: float) -> str:
+    def _bound_behind(self, ka_key: str, edge: float, cut: Callable[[int], float], floor: float) -> str:
         """The other free Ka when its bound, and not the data, is what closes the profile of *ka_key* at *edge*.
 
         Along the profile of one constant of a stepwise model the other one
@@ -845,19 +1000,21 @@ class Projection:
         further out. Such a crossing moves with the bound. It shows at the
         edge itself: the minimum over the other Ka lies on its bound, and the
         residual still falls towards that bound — by more than ``_BOUND_RISE``
-        of *allowed_rise* over the last search-grid step. Where the data do set
-        the edge, the other Ka is either inside its bounds or on a bound the
-        residual no longer changes towards.
+        of the allowed rise over the last search-grid step, the allowed rise
+        being the edge's own *cut* above *floor*, the best residual. Where the
+        data do set the edge, the other Ka is either inside its bounds or on a
+        bound the residual no longer changes towards.
         """
         (other,) = (k for k in self.free_ka if k != ka_key)
         objective = self._objective(self._weights(None))
-        other_ka, at_edge = self._inner_minimum(ka_key, edge, self._weights(None), _INNER_PER_DECADE)
+        point, at_edge, rank = self.profile_point(ka_key, edge, _INNER_PER_DECADE)
+        other_ka = point[other]
         lo, hi = self.ka_bounds[other]
         if other_ka not in (lo, hi):
             return ''
         step = 10.0 ** (1.0 / _SEARCH_PER_DECADE)
         inside = min(other_ka * step, hi) if other_ka == lo else max(other_ka / step, lo)
-        return other if objective({ka_key: edge, other: inside}) - at_edge > _BOUND_RISE * allowed_rise else ''
+        return other if objective({ka_key: edge, other: inside}) - at_edge > _BOUND_RISE * (cut(rank) - floor) else ''
 
 
 def replicate_outliers(
@@ -947,12 +1104,31 @@ def replicate_outliers(
 # ----------------------------------------------------------------------
 
 
+def _require_dof(n_points: int, n_params: int) -> int:
+    """Degrees of freedom ``n - p`` of the F test; refused in plain language when there is none."""
+    dof = n_points - n_params
+    if dof < 1:
+        raise FitRefused(
+            f'The data have {n_points} titration points, too few to judge the {n_params} parameters this '
+            'model fits, so no fit can be reported. Add titration points, or hold a parameter at one value '
+            'by giving it the same lower and upper bound under Parameter Bounds, and fit again.'
+        )
+    return dof
+
+
 def _ka_grid(lo: float, hi: float, per_decade: int) -> np.ndarray:
     """Log-spaced Ka grid with at least *per_decade* points per decade; one point when Ka is pinned."""
     if lo == hi:
         return np.array([lo])
     # Decades as a difference of logarithms: a bound far above the other overflows their ratio.
     return np.geomspace(lo, hi, int(np.ceil((np.log10(hi) - np.log10(lo)) * per_decade)) + 1)
+
+
+def _norms(columns: np.ndarray) -> np.ndarray:
+    """Norm of every column, one for a zero column."""
+    scale = np.linalg.norm(columns, axis=0)
+    scale[scale == 0] = 1.0
+    return scale
 
 
 def _rank(columns: np.ndarray) -> int:
@@ -1009,8 +1185,8 @@ def _interval(
 ) -> tuple[tuple[float, float], tuple[bool, bool], bool, tuple[bool, bool]]:
     """Envelope of the Ka values with non-positive excess, edges refined by root finding.
 
-    *excess_fn* is the profiled objective minus the threshold, which *best_ka*
-    always clears. An edge with no grid point beyond it is open at the Ka
+    *excess_fn* is the profiled objective minus the cut-off of its own profile
+    point, which *best_ka* always clears. An edge with no grid point beyond it is open at the Ka
     bound. So is an edge whose next grid point is a Ka the model cannot be
     solved at: the data reject nothing there, the profile simply stops, and
     the edge is the last Ka it could be evaluated at. A grid point inside the

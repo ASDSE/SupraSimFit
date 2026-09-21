@@ -11,6 +11,11 @@ joint confidence region of the pair. The best fit, the intervals and the cut-off
 the engine's own numbers for the averaged signal, computed by the same calls
 the fit makes, so the tab shows the fit it belongs to and nothing else.
 
+Where the inputs were stated with an uncertainty, the fit's penalised profile
+comes with it (:class:`~core.pipeline.input_aware.AwareProfile`): the second
+curve, its own interval and its own cut-off, drawn beside the one above. It is
+the fit's own working, handed over rather than computed again.
+
 The equilibrium models report a Ka they have no speciation for as species that
 are not a number, rather than by raising. Such a Ka has no fit at all, so its
 residual sum of squares is infinite, it never enters the interval and no curve
@@ -36,6 +41,8 @@ import numpy as np
 from core.assays.base import BaseAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds
+from core.pipeline.input_aware import AwareProfile, AwareResult, input_aware
+from core.pipeline.inputs import constraints
 from core.pipeline.varpro import (
     _PROFILE_PER_DECADE,
     _SEARCH_PER_DECADE,
@@ -125,8 +132,10 @@ class ProfileResult:
         The confidence interval of this Ka; ``None`` when Ka is pinned by equal
         bounds, which leaves no interval to estimate.
     r2_threshold : float
-        R² at which the interval is cut. With a pinned Ka there is no interval
-        and the cut is the R² a one-parameter improvement would have to beat.
+        R² at which the interval is cut wherever the fit at the tested Ka pins
+        no signal parameter the best fit leaves free: the plain F test of one
+        constrained Ka. With a pinned Ka there is no interval and the cut is
+        the R² a one-parameter improvement would have to beat.
     n_points : int
         Number of points in the averaged signal.
     n_params : int
@@ -134,6 +143,18 @@ class ProfileResult:
         coefficient design at the optimum plus the free binding constants.
     per_replica : bool
         Whether the fit this profile belongs to ran each replicate separately.
+    aware : AwareProfile | None
+        The same profile with the inputs free to move within the uncertainties
+        stated for them: its own grid, R² curve, cut-off and interval.
+        ``None`` when no input was free to move, where it would be this curve
+        again.
+    r2_cut : np.ndarray
+        R² the fit at each grid Ka is judged against
+        (:meth:`~core.pipeline.varpro.Projection.cut_off`): ``r2_threshold``,
+        and lower over every stretch where the fit holds a signal parameter on
+        a bound that the best fit leaves free, by one numerator degree of
+        freedom of the F test per such parameter. ``r2_threshold`` at every
+        point when left out.
     """
 
     ka_key: str
@@ -147,6 +168,12 @@ class ProfileResult:
     n_points: int
     n_params: int
     per_replica: bool
+    aware: AwareProfile | None = None
+    r2_cut: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        if self.r2_cut is None:
+            self.r2_cut = np.full(self.grid.shape, self.r2_threshold)
 
 
 @dataclass
@@ -160,18 +187,25 @@ class JointRegion:
     x, y : np.ndarray
         Ka values in 1/M of the first and the second key, ascending and
         log-spaced over the region's bounding box: the two one-dimensional
-        intervals cut at the joint threshold, clipped to the Ka bounds.
+        intervals cut at the joint cut-off of each profile point (``r2_cut``
+        along the profile), clipped to the Ka bounds.
     r2 : np.ndarray
         Best R² of the averaged signal at every ``(x[i], y[j])``, shape
         ``(len(x), len(y))``; ``nan`` where the equilibrium model has no
         solution.
     r2_threshold : float
-        R² at which the region is cut: the joint F test with two constrained
-        binding constants.
+        R² at which the region is cut wherever the fit at a pair pins no signal
+        parameter the best fit leaves free: the joint F test with two
+        constrained binding constants.
     level : float
         Confidence level of the region.
     best : tuple[float, float]
         The best fit's Ka pair, in ``ka_keys`` order.
+    r2_cut : np.ndarray
+        R² the fit at every ``(x[i], y[j])`` is judged against, shape of
+        ``r2``: ``r2_threshold``, and lower where the fit holds a signal
+        parameter on a bound that the best fit leaves free. The region is
+        ``r2 >= r2_cut``. ``r2_threshold`` at every pair when left out.
     """
 
     ka_keys: tuple[str, str]
@@ -181,6 +215,11 @@ class JointRegion:
     r2_threshold: float
     level: float
     best: tuple[float, float]
+    r2_cut: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        if self.r2_cut is None:
+            self.r2_cut = np.full(self.r2.shape, self.r2_threshold)
 
 
 @dataclass
@@ -208,6 +247,7 @@ def fit_profile(
     *,
     level: float = LEVEL,
     should_cancel: Callable[[], bool] | None = None,
+    aware: AwareResult | None = None,
 ) -> ProfileSet:
     """Profiles of the averaged signal, their intervals and, for two free Ka, the joint region.
 
@@ -236,6 +276,13 @@ def fit_profile(
         Confidence level of the intervals and the region, between 0 and 1.
     should_cancel : Callable[[], bool], optional
         Asked before every equilibrium solve whether to stop.
+    aware : AwareResult, optional
+        The penalised profiles of the fit being profiled
+        (:attr:`~core.pipeline.fit_pipeline.FitResult.aware`), made at this
+        *level* on these data with this configuration. They are carried
+        through as they are, which is what makes the tab show the fit's own
+        interval; left out, they are computed here whenever
+        ``fit_config.input_specs`` lets an input move.
 
     Returns
     -------
@@ -262,6 +309,18 @@ def fit_profile(
     threshold = projection.threshold(fit, level)
     intervals = {key: projection.interval(key, fit, level) for key in projection.ka_keys}
     ss_tot = float(projection.ss_tot[0])
+    if aware is None and fit_config.input_specs:
+        aware = input_aware(
+            projection,
+            fit,
+            constraints(fit_config.input_specs, assay.get_conditions(), fit_config.input_labels),
+            level=level,
+            should_cancel=should_cancel,
+            conditional={k: ci for k, ci in intervals.items() if ci is not None},
+        )
+    # With nothing free to move the penalised profile is this one, so there is
+    # no second curve to draw.
+    penalised = aware.profiles if aware is not None and aware.constraints else {}
     common = dict(
         best_r2=float(1.0 - fit.objective / ss_tot),
         r2_threshold=float(1.0 - threshold / ss_tot),
@@ -270,7 +329,9 @@ def fit_profile(
         per_replica=fit_config.per_replica,
     )
 
-    def result(key: str, grid: np.ndarray, r2: np.ndarray, replica_r2=None) -> ProfileResult:
+    cut = projection.cut_off(fit, level)
+
+    def result(key: str, grid: np.ndarray, r2: np.ndarray, cuts: dict[float, float], replica_r2=None) -> ProfileResult:
         return ProfileResult(
             ka_key=key,
             grid=grid,
@@ -278,6 +339,8 @@ def fit_profile(
             replica_r2=replica_r2,
             best_ka=fit.ka[key],
             interval=intervals[key],
+            aware=penalised.get(key),
+            r2_cut=1.0 - np.array([cuts[ka] for ka in grid.tolist()]) / ss_tot,
             **common,
         )
 
@@ -292,15 +355,27 @@ def fit_profile(
     if len(projection.free_ka) == 2:
         # Each curve is the objective minimised over the other Ka. Its regular
         # points are the search-grid nodes, where the engine reads the scan of
-        # the other axis from its cache; the same node values cut the joint
-        # region's bounding box at the joint threshold.
-        joint = projection.threshold(fit, level, n_constrained=2)
+        # the other axis from its cache; the same node values, each against the
+        # joint cut-off of its own profile point, cut the joint region's
+        # bounding box, the way an interval is cut.
+        joint_cut = projection.cut_off(fit, level, n_constrained=2)
         box = {}
         for key in projection.ka_keys:
-            profile = projection.profile(key)
+            cuts: dict[float, float] = {}
+            joint_cuts: dict[float, float] = {}
+
+            def profile(ka: float, key: str = key, cuts: dict = cuts, joint_cuts: dict = joint_cuts) -> float:
+                _, value, rank = projection.profile_point(key, ka)
+                cuts[ka], joint_cuts[ka] = cut(rank), joint_cut(rank)
+                return value
+
+            def joint_excess(ka: float, profile=profile, joint_cuts: dict = joint_cuts) -> float:
+                return profile(ka) - joint_cuts[ka]
+
             nodes = _ka_grid(*projection.ka_bounds[key], _SEARCH_PER_DECADE)
-            node_ssr = np.array([profile(ka) for ka in nodes])
-            box[key] = _interval(lambda ka: profile(ka) - joint, nodes, node_ssr - joint, fit.ka[key])[0]
+            node_ssr = np.array([profile(ka) for ka in nodes.tolist()])
+            node_excess = node_ssr - np.array([joint_cuts[ka] for ka in nodes.tolist()])
+            box[key] = _interval(joint_excess, nodes, node_excess, fit.ka[key])[0]
             grid, r2 = _draw(
                 lambda ka: np.array([profile(ka)]),
                 projection.ss_tot,
@@ -309,18 +384,21 @@ def fit_profile(
                 _CURVE_MAX_EXTRA_TWO_KA,
                 marks(key),
             )
-            profiles[key] = result(key, grid, r2[:, 0])
+            profiles[key] = result(key, grid, r2[:, 0], cuts)
         k1, k2 = projection.ka_keys
         x, y = (np.geomspace(*box[k], _REGION_POINTS) for k in (k1, k2))
-        ssr = np.array([[projection.row_ssr({k1: a, k2: b})[0] for b in y] for a in x])
+        # One solve per pair gives its residual and the rank its cut-off is read at.
+        solved = [[projection.solved({k1: a, k2: b}) for b in y] for a in x]
+        ssr = np.array([[cell_ssr[0] for cell_ssr, _ in row] for row in solved])
         region = JointRegion(
             ka_keys=(k1, k2),
             x=x,
             y=y,
             r2=np.where(np.isfinite(ssr), 1.0 - ssr / ss_tot, np.nan),
-            r2_threshold=float(1.0 - joint / ss_tot),
+            r2_threshold=float(1.0 - projection.threshold(fit, level, n_constrained=2) / ss_tot),
             level=level,
             best=(fit.ka[k1], fit.ka[k2]),
+            r2_cut=1.0 - np.array([[joint_cut(rank) for _, rank in row] for row in solved]) / ss_tot,
         )
     else:
         # Every drawn curve: the average first, then each active replicate's own.
@@ -331,17 +409,25 @@ def fit_profile(
             if key not in projection.free_ka:
                 # Equal Ka bounds fix Ka: the fit was not free to move it, so
                 # its profile is the one point the fit reached.
-                profiles[key] = result(key, np.array([fit.ka[key]]), np.array([common['best_r2']]))
+                profiles[key] = result(
+                    key, np.array([fit.ka[key]]), np.array([common['best_r2']]), {fit.ka[key]: threshold}
+                )
                 continue
+            cuts = {}
+
+            def rows(ka: float, key: str = key, cuts: dict[float, float] = cuts) -> np.ndarray:
+                # The first row is the averaged signal, whose solve also gives the rank its cut-off is read at.
+                ssr, rank = curves.solved({key: ka})
+                cuts[ka] = cut(rank)
+                return ssr
+
             nodes = _ka_grid(*projection.ka_bounds[key], _PROFILE_PER_DECADE)
-            node_ssr = np.array([curves.row_ssr({key: ka}) for ka in nodes])
-            grid, r2 = _draw(
-                lambda ka: curves.row_ssr({key: ka}), curves.ss_tot, nodes, node_ssr, _CURVE_MAX_EXTRA, marks(key)
-            )
+            node_ssr = np.array([rows(ka) for ka in nodes.tolist()])
+            grid, r2 = _draw(rows, curves.ss_tot, nodes, node_ssr, _CURVE_MAX_EXTRA, marks(key))
             replica_r2 = (
                 {rid: r2[:, i] for i, rid in enumerate(replica_ids, start=1)} if fit_config.per_replica else None
             )
-            profiles[key] = result(key, grid, r2[:, 0], replica_r2)
+            profiles[key] = result(key, grid, r2[:, 0], cuts, replica_r2)
     return ProfileSet(profiles=profiles, region=region)
 
 

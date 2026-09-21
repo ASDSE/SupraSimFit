@@ -12,7 +12,9 @@ from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
 from core.pipeline.fit_pipeline import FitConfig, fit_assay
+from core.pipeline.inputs import TITRANT, InputSpec
 from core.units import Q_
+from tests.conftest import IDA_TRUE, _make_ida_data
 
 
 class TestGDAFailFast:
@@ -270,3 +272,57 @@ class TestFitRefusals:
 
         with pytest.raises(ValueError, match='Ka_guest'):
             fit_assay(self._ida_assay(), config)
+
+
+class TestInputsTooFreeForTheData:
+    """A fit that cannot be made with the inputs as free as they were stated to be is refused, not quietly narrowed."""
+
+    @staticmethod
+    def _assay(n_points: int = 6) -> IDAAssay:
+        """The IDA ground truth at few points: a signal the inputs really do act on."""
+        x, y = _make_ida_data(IDA_TRUE, n_points=n_points)
+        return IDAAssay(
+            x_data=Q_(x, 'M'),
+            y_data=Q_(y, 'au'),
+            Ka_dye=Q_(IDA_TRUE['Ka_dye'], '1/M'),
+            h0=Q_(IDA_TRUE['h0'], 'M'),
+            d0=Q_(IDA_TRUE['d0'], 'M'),
+        )
+
+    _LABELS = {'h0': '[Host]₀', 'd0': '[Dye]₀', TITRANT: 'Guest (titrant)'}
+
+    def test_too_few_points_for_the_model_and_the_ranges_is_refused_and_names_the_inputs(self):
+        """Six points, three parameters and three inputs free within a range leave nothing to judge Ka by."""
+        config = FitConfig(
+            per_replica=False,
+            input_specs={
+                'h0': InputSpec.interval_pct(-20, 20),
+                'd0': InputSpec.interval_pct(-20, 20),
+                TITRANT: InputSpec.interval_pct(-5, 5),
+            },
+            input_labels=self._LABELS,
+        )
+
+        with pytest.raises(ValueError, match='too few to fit this model') as refused:
+            fit_assay(self._assay(), config)
+
+        message = str(refused.value)
+        assert '[Host]₀' in message and 'Guest (titrant)' in message
+        assert 'Input Uncertainty' in message, 'the message has to say where to change it'
+        assert 'h0' not in message, 'a message shows the labels the panel writes, never a dict key'
+
+    def test_inputs_the_data_determine_take_the_same_room_and_the_fit_is_refused(self):
+        """Falling back to the interval that holds the inputs exact would report a claim nobody asked for.
+
+        Four inputs stated to 50 % are free enough that the data, not the
+        stated uncertainty, decide where they go: they use up what the six
+        points had left to judge Ka by.
+        """
+        specs = {key: InputSpec.sigma_pct(50) for key in ('h0', 'd0', 'Ka_dye', TITRANT)}
+        config = FitConfig(per_replica=False, input_specs=specs, input_labels=self._LABELS)
+
+        with pytest.raises(ValueError, match='too few to fit this model'):
+            fit_assay(self._assay(), config)
+
+        # The same data fit once the inputs are held as entered, so the refusal is about them.
+        assert fit_assay(self._assay(), FitConfig(per_replica=False)).intervals['Ka_guest'] is not None

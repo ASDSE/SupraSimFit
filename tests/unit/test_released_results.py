@@ -5,9 +5,10 @@ by the version of the app its entry in that folder's README names. The five
 released files and the two ``pr42`` ones fit IDA data with the conditions named
 there; ``unmarked_gda.json`` fits the synthetic GDA titration beside it and
 records no ``model_arithmetic``, so its scores are those of the earlier
-equilibrium arithmetic. What the app shows for such a file is decided by
-:func:`verify_imported_result`, so each fixture pins the status and the numbers
-a user importing it sees.
+equilibrium arithmetic; ``input_aware_ida.json`` was fitted with two of its
+inputs free within a stated uncertainty and reports where it put them. What the
+app shows for such a file is decided by :func:`verify_imported_result`, so each
+fixture pins the status and the numbers a user importing it sees.
 
 Expected scores are computed here from the replicate rows the file names,
 independently of the masking and averaging the pipeline does.
@@ -49,6 +50,11 @@ _UNMARKED_DATA = _FIXTURES / 'unmarked_gda_data.txt'
 
 #: The conditions ``unmarked_gda.json`` was fitted with (the synthetic GDA system).
 _UNMARKED_CONDITIONS = {'Ka_dye': Q_(1e7, '1/M'), 'h0': Q_(2e-7, 'M'), 'g0': Q_(2e-7, 'M')}
+
+_AWARE_DATA = _FIXTURES / 'input_aware_ida_data.txt'
+
+#: Ka_guest the data behind that file carry, in 1/M.
+_AWARE_TRUE_KA = 2e6
 
 _PR42_DATA = _FIXTURES / 'pr42_data.txt'
 
@@ -316,3 +322,48 @@ def test_a_file_whose_curve_alone_does_not_reproduce_is_shown_with_the_curve_dra
     assert verify_imported_result(FitResult.from_dict(json.loads(json.dumps(shown.to_dict()))), unmarked_data)[0] == (
         'verified'
     )
+
+
+# ---------------------------------------------------------------------------
+# A fit whose inputs were free within a stated uncertainty
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope='module')
+def aware_data() -> MeasurementSet:
+    """The data ``input_aware_ida.json`` was made on."""
+    return MeasurementSet.from_dataframe(load_measurements(_AWARE_DATA), source_file=str(_AWARE_DATA))
+
+
+def test_a_fit_that_moved_its_inputs_verifies_where_it_put_them(aware_data):
+    """Its numbers were measured at the moved inputs, so that is where they have to be reproduced."""
+    released = _released('input_aware_ida')
+
+    status, shown = verify_imported_result(released, aware_data)
+
+    assert status == 'verified'
+    assert (shown.rmse, shown.r_squared) == (released.rmse, released.r_squared)
+    assert shown.input_shifts['h0'].fraction == pytest.approx(released.input_shifts['h0'].fraction)
+    # What the file says about Ka: the interval that lets the host stock move
+    # covers the truth, the one that holds it as entered does not.
+    assert released.intervals['Ka_guest'].low < _AWARE_TRUE_KA < released.intervals['Ka_guest'].high
+    assert released.conditional.intervals['Ka_guest'].low > _AWARE_TRUE_KA
+
+
+def test_a_file_that_reports_no_shifts_for_a_fit_that_made_them_describes_other_data(aware_data):
+    """Without them the reported curve is the wrong curve, and saying 'verified' would vouch for it."""
+    stripped = json.loads((_FIXTURES / 'input_aware_ida.json').read_text())
+    stripped['input_shifts'] = {}
+
+    status, _ = verify_imported_result(FitResult.from_dict(stripped), aware_data)
+
+    assert status == 'different_data'
+
+
+def test_the_file_survives_being_read_and_written_again():
+    """A results file is the record of a fit; importing and exporting it must not edit that record."""
+    text = (_FIXTURES / 'input_aware_ida.json').read_text()
+
+    written = json.dumps(FitResult.from_dict(json.loads(text)).to_dict(), indent=2) + '\n'
+
+    assert written == text

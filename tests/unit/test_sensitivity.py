@@ -753,7 +753,7 @@ def test_inputs_are_ordered_with_the_titrant_last():
         'h0': Q_(IDA_TRUE['h0'], 'M'),
         'd0': Q_(IDA_TRUE['d0'], 'M'),
     }
-    keys = [key for key, _kind in perturbable_inputs(AssayType.IDA, conditions)]
+    keys = [key for key, _kind in perturbable_inputs(conditions)]
 
     assert keys == ['Ka_dye', 'h0', 'd0', TITRANT]
 

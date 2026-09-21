@@ -20,6 +20,7 @@ from core.assays.hg2 import HG2Assay
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.models.equilibrium import dba_signal
+from core.pipeline.diagnostics import Verdict
 from core.pipeline.fit_pipeline import (
     FitConfig,
     FitResult,
@@ -29,6 +30,7 @@ from core.pipeline.fit_pipeline import (
     fit_measurement_set,
     summarize_parameters,
 )
+from core.pipeline.inputs import TITRANT, InputSpec
 from core.units import Q_
 from tests.conftest import (
     DBA_RECOVERY_BOUNDS,
@@ -464,3 +466,124 @@ class TestFitMeasurementSet:
 
         assert result.measurement_set_id == ms.id
         assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], CLEAN_TOL, 'Ka_guest')
+
+
+# ---------------------------------------------------------------------------
+# The entered inputs as constrained nuisance parameters
+# ---------------------------------------------------------------------------
+
+
+def _ida_replicates(h0_factor: float, n_points: int = 12, noise: float = 0.005, seed: int = 5):
+    """Three IDA replicates of the ground truth, with the host concentration entered *h0_factor* times too high."""
+    x, y = _make_ida_data(IDA_TRUE, n_points=n_points)
+    rng = np.random.default_rng(seed)
+    signals = np.vstack([y + rng.normal(0.0, noise * np.ptp(y), y.size) for _ in range(3)])
+    ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c'))
+    conditions = {
+        'Ka_dye': Q_(IDA_TRUE['Ka_dye'], '1/M'),
+        'h0': Q_(IDA_TRUE['h0'] * h0_factor, 'M'),
+        'd0': Q_(IDA_TRUE['d0'], 'M'),
+    }
+    return ms, conditions
+
+
+class TestInputsFreeWithinTheirUncertainty:
+    """What the reported interval covers once the entered inputs are only as exact as they were stated to be.
+
+    The host concentration is entered 8 % too high, which the fit can only
+    absorb by raising Ka: the data are then described by a Ka that is not the
+    true one, and an interval that takes the entered inputs as exact misses the
+    truth. Stating how well the inputs are known is what puts it back inside.
+    """
+
+    @pytest.fixture(scope='class')
+    def wrong_h0(self):
+        return _ida_replicates(h0_factor=1.08)
+
+    @pytest.fixture(scope='class')
+    def uncertain(self, wrong_h0):
+        """That data fitted with the host stock stated to 10 % and the titrant to 3 %."""
+        ms, conditions = wrong_h0
+        specs = {'h0': InputSpec.sigma_pct(10), TITRANT: InputSpec.sigma_pct(3)}
+        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False, input_specs=specs)
+        return fit_measurement_set(ms, IDAAssay, conditions, config)
+
+    def test_an_input_entered_wrong_shows_as_misfit_and_is_absorbed_within_its_uncertainty(self, uncertain):
+        result = uncertain
+
+        low, high = _interval_of(result, 'Ka_guest')
+        assert low < IDA_TRUE['Ka_guest'] < high
+        # The interval that holds the entered host concentration exact does not reach the truth.
+        conditional = result.conditional.intervals['Ka_guest']
+        assert conditional.low > IDA_TRUE['Ka_guest']
+        assert float(result.conditional.parameters['Ka_guest'].magnitude) > float(
+            result.parameters['Ka_guest'].magnitude
+        )
+        # The fit put the correction on the host concentration, downward and well inside what was stated.
+        shift = result.input_shifts['h0']
+        assert -0.09 < shift.fraction < -0.02
+        assert abs(shift.z) < 1.0
+        assert not shift.at_edge
+
+    def test_the_replicates_say_the_model_misses_at_the_entered_inputs_and_fits_once_they_move(self, uncertain):
+        """Three replicates give the scatter the misfit is judged against, at both fits."""
+        diagnostics = uncertain.diagnostics
+        assert diagnostics.conditional_misfit.kind == 'lack_of_fit'
+        # n - p against n (m - 1): 12 points, 3 parameters the data determine, three replicates.
+        assert diagnostics.conditional_misfit.dof == (12 - 3, 12 * 2)
+        assert diagnostics.conditional_misfit.p_value < 0.001
+        assert diagnostics.misfit.p_value > 0.05
+        assert diagnostics.conflict.p_value > 0.05, 'the shift stays within what was stated, so nothing conflicts'
+        assert diagnostics.verdict is Verdict.INPUTS_EXPLAIN
+
+    def test_with_the_inputs_entered_as_exact_the_misfit_is_the_models_own(self, wrong_h0):
+        """Nothing may move, so the same misfit is reported and no shift can explain it."""
+        ms, conditions = wrong_h0
+        result = fit_measurement_set(
+            ms, IDAAssay, conditions, FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False)
+        )
+
+        assert result.input_shifts == {}
+        assert result.diagnostics.misfit is result.diagnostics.conditional_misfit
+        assert result.diagnostics.conflict is None
+        assert result.diagnostics.verdict is Verdict.MODEL_INADEQUATE
+
+    def test_a_fit_that_moved_no_input_reports_one_interval_twice_over(self, ida_clean):
+        """With nothing free to move the two fits are one fit, down to the interval object."""
+        assay, _ = _ida_assay(ida_clean)
+        result = fit_assay(assay, FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS))
+
+        assert result.intervals['Ka_guest'] is result.conditional.intervals['Ka_guest']
+        assert result.parameters == result.conditional.parameters
+        assert (result.rmse, result.r_squared) == (result.conditional.rmse, result.conditional.r_squared)
+        # One signal and no replicates: the residuals are all there is to test the model with.
+        assert result.diagnostics.conditional_misfit.kind == 'runs'
+
+    def test_the_inputs_are_whichever_ones_the_assay_has(self, gda_clean):
+        """Nothing here knows an assay by name: a GDA states a guest stock, and that is what moves.
+
+        The guest stock is entered 10 % too high and stated to 10 %. Its
+        uncertainty leaves more room for Ka than holding it exact does, which
+        is what a wider interval around the same truth says.
+        """
+        x, y, true = gda_clean
+        noisy = Q_(y.magnitude + np.random.default_rng(3).normal(0.0, 0.005 * np.ptp(y.magnitude), y.size), 'au')
+        assay = GDAAssay(
+            x_data=x,
+            y_data=noisy,
+            Ka_dye=Q_(true['Ka_dye'], '1/M'),
+            h0=Q_(true['h0'], 'M'),
+            g0=Q_(true['g0'] * 1.1, 'M'),
+        )
+        config = FitConfig(
+            custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False, input_specs={'g0': InputSpec.sigma_pct(10)}
+        )
+
+        result = fit_assay(assay, config)
+
+        assert set(result.input_shifts) == {'g0'}
+        low, high = _interval_of(result, 'Ka_guest')
+        assert low < true['Ka_guest'] < high
+        conditional = result.conditional.intervals['Ka_guest']
+        assert (low, high) != (conditional.low, conditional.high)
+        assert np.log10(high / low) > np.log10(conditional.high / conditional.low)

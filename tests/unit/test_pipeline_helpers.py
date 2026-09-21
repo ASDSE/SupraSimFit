@@ -1,25 +1,35 @@
-"""Pipeline helpers: resolving bounds, which fit a dataset is dispatched to, and stopping a running fit."""
+"""Pipeline helpers: resolving bounds, scoring a fit at moved inputs, counting the parameters a fit fitted, which fit a dataset is dispatched to, and stopping a running fit."""
 
 import numpy as np
 import pytest
 
+from core.assays.base import BaseAssay
 from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
+from core.models.equilibrium import ida_signal
+from core.pipeline.diagnostics import lack_of_fit
 from core.pipeline.fit_pipeline import (
     FitConfig,
+    _fitted_params,
+    _misfit,
     _resolve_bounds,
     fit_assay,
     fit_measurement_set,
+    fit_view,
 )
-from core.pipeline.varpro import FitCancelled
+from core.pipeline.input_aware import input_aware
+from core.pipeline.inputs import TITRANT
+from core.pipeline.varpro import FitCancelled, Projection
 from core.units import Q_
 from tests.conftest import (
     DYE_ALONE_TRUE,
     GDA_IDA_RECOVERY_BOUNDS,
+    GDA_TRUE,
     IDA_TRUE,
     _make_dye_alone_data,
+    _make_gda_data,
     _make_ida_data,
 )
 
@@ -61,6 +71,196 @@ class TestResolveBounds:
         assay = _gda_assay()
         merged = _resolve_bounds(assay, None)
         assert set(merged.keys()) == set(assay.parameter_keys)
+
+
+class TestFitViewAtMovedInputs:
+    """What a fit is scored on, and where its curve is drawn, once it has moved the entered inputs."""
+
+    @staticmethod
+    def _assay(h0: float = IDA_TRUE['h0']) -> IDAAssay:
+        x, y = _make_ida_data(IDA_TRUE, n_points=12)
+        return IDAAssay(
+            x_data=Q_(x, 'M'),
+            y_data=Q_(y, 'au'),
+            Ka_dye=Q_(IDA_TRUE['Ka_dye'], '1/M'),
+            h0=Q_(h0, 'M'),
+            d0=Q_(IDA_TRUE['d0'], 'M'),
+        )
+
+    @staticmethod
+    def _params() -> np.ndarray:
+        return np.array(
+            [IDA_TRUE['Ka_guest'], IDA_TRUE['I0'], IDA_TRUE['I_dye_free'], IDA_TRUE['I_dye_bound']], dtype=float
+        )
+
+    def test_the_model_is_asked_at_the_moved_inputs_and_the_moved_titrant(self):
+        """An offset on the titrant scales every concentration the model is asked at, the drawn ones included."""
+        assay = self._assay()
+        offsets = {'h0': 0.1, TITRANT: 0.05}
+
+        rmse, r_squared, x_fit, y_fit = fit_view(assay, self._params(), offsets)
+
+        def signal(concentrations: np.ndarray) -> np.ndarray:
+            return ida_signal(
+                I0=IDA_TRUE['I0'],
+                Ka_guest=IDA_TRUE['Ka_guest'],
+                I_dye_free=IDA_TRUE['I_dye_free'],
+                I_dye_bound=IDA_TRUE['I_dye_bound'],
+                Ka_dye=IDA_TRUE['Ka_dye'],
+                h0=IDA_TRUE['h0'] * 1.1,
+                d0=IDA_TRUE['d0'],
+                g0_values=concentrations * 1.05,
+            )
+
+        measured = assay.x_data.magnitude
+        residuals = assay.y_data.magnitude - signal(measured)
+        assert rmse == pytest.approx(float(np.sqrt(np.mean(residuals**2))), rel=1e-12)
+        observed = assay.y_data.magnitude
+        expected_r2 = 1 - np.sum(residuals**2) / np.sum((observed - observed.mean()) ** 2)
+        assert r_squared == pytest.approx(float(expected_r2), rel=1e-12)
+        # The curve is drawn against the concentrations as entered — the axis the data sit on.
+        assert (x_fit.magnitude.min(), x_fit.magnitude.max()) == (measured.min(), measured.max())
+        np.testing.assert_allclose(y_fit.magnitude, signal(x_fit.magnitude), rtol=1e-12)
+
+    def test_moving_an_input_is_the_same_as_having_entered_the_moved_value(self):
+        entered = fit_view(self._assay(h0=IDA_TRUE['h0'] * 1.1), self._params())
+        moved = fit_view(self._assay(), self._params(), {'h0': 0.1})
+
+        assert moved[:2] == pytest.approx(entered[:2], rel=1e-12)
+        np.testing.assert_allclose(moved[3].magnitude, entered[3].magnitude, rtol=1e-12)
+
+    def test_no_offsets_scores_the_fit_at_the_inputs_as_entered(self):
+        assay = self._assay()
+        scored = fit_view(assay, self._params())
+
+        assert scored[:2] == fit_view(assay, self._params(), {})[:2]
+        np.testing.assert_array_equal(
+            scored[3].magnitude, assay.forward_model(self._params(), x=scored[2].magnitude).magnitude
+        )
+
+
+# Bounds no fit below runs into by accident: the binding constant spans twenty
+# decades and every signal coefficient has room on both sides of where the data
+# put it. What a test pins, it pins on purpose.
+_OPEN_KA = {'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e12, '1/M'))}
+_OPEN_SIGNAL = {
+    'I0': (Q_(-1000, 'au'), Q_(1000, 'au')),
+    'I_dye_free': (Q_(0, 'au/M'), Q_(1e9, 'au/M')),
+    'I_dye_bound': (Q_(0, 'au/M'), Q_(1e9, 'au/M')),
+}
+
+
+class TestTheParametersTheLackOfFitTestCounts:
+    """``p`` of the replicate F test is what the fit moved, not what it was free to move.
+
+    The bounded solve holds a signal coefficient on its bound and the search
+    holds a Ka estimate on its bound. Neither is fitted, so the residual keeps
+    the dimension each would have taken; counting them shrinks ``n - p`` and
+    inflates the ratio.
+    """
+
+    @staticmethod
+    def _replicates(y: np.ndarray, seed: int, noise: float = 0.01, rows: int = 3) -> np.ndarray:
+        """*rows* replicates of the clean signal *y*, each with its own Gaussian noise."""
+        rng = np.random.default_rng(seed)
+        return np.vstack([y + rng.normal(0.0, noise * np.ptp(y), y.size) for _ in range(rows)])
+
+    @staticmethod
+    def _fit(assay: BaseAssay, bounds: dict) -> tuple[Projection, object]:
+        """The projection of *assay* under *bounds* and its fit, with every input held as entered."""
+        projection = Projection(assay, _resolve_bounds(assay, bounds))
+        return projection, input_aware(projection, projection.fit(), ())
+
+    @classmethod
+    def _ida(cls, seed: int) -> tuple[IDAAssay, np.ndarray]:
+        x, y = _make_ida_data(IDA_TRUE, n_points=12)
+        replicates = cls._replicates(y, seed)
+        assay = IDAAssay(
+            x_data=Q_(x, 'M'),
+            y_data=Q_(replicates.mean(axis=0), 'au'),
+            Ka_dye=Q_(IDA_TRUE['Ka_dye'], '1/M'),
+            h0=Q_(IDA_TRUE['h0'], 'M'),
+            d0=Q_(IDA_TRUE['d0'], 'M'),
+        )
+        return assay, replicates
+
+    @classmethod
+    def _gda(cls, seed: int) -> tuple[GDAAssay, np.ndarray]:
+        # A GDA design has an offset column and two species columns no mass
+        # balance ties, so pinning one coefficient lowers the rank of what is
+        # left by one — the count moves where a tied design would hide it.
+        x, y = _make_gda_data(GDA_TRUE, n_points=12)
+        replicates = cls._replicates(y, seed)
+        assay = GDAAssay(
+            x_data=Q_(x, 'M'),
+            y_data=Q_(replicates.mean(axis=0), 'au'),
+            Ka_dye=Q_(GDA_TRUE['Ka_dye'], '1/M'),
+            h0=Q_(GDA_TRUE['h0'], 'M'),
+            g0=Q_(GDA_TRUE['g0'], 'M'),
+        )
+        return assay, replicates
+
+    def test_a_fit_that_placed_every_parameter_itself_counts_every_free_one(self):
+        """Nothing on a bound: the count is the free-parameter count, and the ratio is that count's."""
+        assay, replicates = self._ida(seed=0)
+        projection, aware = self._fit(assay, {**_OPEN_KA, **_OPEN_SIGNAL})
+
+        i0, dye_free, dye_bound = aware.fit.coefficients
+        assert -1000.0 < i0 < 1000.0 and 0.0 < dye_free < 1e9 and 0.0 < dye_bound < 1e9
+        assert 1e-8 < aware.fit.ka['Ka_guest'] < 1e12
+        assert _fitted_params(projection, aware) == aware.fit.n_params
+
+        found = _misfit(projection, aware, replicates)
+        curve = projection.signals[0] - projection.residual(aware.fit.ka, 0, aware.fit.offsets)
+        every_free = lack_of_fit(replicates, curve, aware.fit.n_params)
+        assert found.dof == (12 - aware.fit.n_params, 12 * 2)
+        assert (found.statistic, found.p_value) == (every_free.statistic, every_free.p_value)
+
+    def test_a_coefficient_the_solve_holds_on_its_bound_is_not_counted(self):
+        """The GDA truth has no offset, so a floor of zero under I0 pins it wherever the noise asks for less.
+
+        The ratio is then the lack-of-fit mean square on the degrees of freedom
+        that count leaves, over the pure-error mean square of the replicates.
+        """
+        assay, replicates = self._gda(seed=5)
+        projection, aware = self._fit(assay, {**_OPEN_KA, **_OPEN_SIGNAL, 'I0': (Q_(0, 'au'), Q_(1000, 'au'))})
+
+        i0, dye_free, dye_bound = aware.fit.coefficients
+        assert i0 == 0.0, 'the bounded solve holds the offset on its floor'
+        assert 0.0 < dye_free < 1e9 and 0.0 < dye_bound < 1e9
+        assert 1e-8 < aware.fit.ka['Ka_guest'] < 1e12
+        count = _fitted_params(projection, aware)
+        assert count == aware.fit.n_params - 1
+
+        # The same data with the floor lifted: the offset goes free, and is counted.
+        lifted, lifted_aware = self._fit(assay, {**_OPEN_KA, **_OPEN_SIGNAL})
+        assert lifted_aware.fit.coefficients[0] < 0.0
+        assert _fitted_params(lifted, lifted_aware) == lifted_aware.fit.n_params == aware.fit.n_params
+
+        found = _misfit(projection, aware, replicates)
+        rows, points = replicates.shape
+        mean = replicates.mean(axis=0)
+        curve = projection.signals[0] - projection.residual(aware.fit.ka, 0, aware.fit.offsets)
+        misfit_mean_square = rows * float(np.sum((mean - curve) ** 2)) / (points - count)
+        pure_error_mean_square = float(np.sum((replicates - mean) ** 2)) / (points * (rows - 1))
+        assert found.dof == (points - count, points * (rows - 1))
+        assert found.statistic == pytest.approx(misfit_mean_square / pure_error_mean_square, rel=1e-12)
+
+    def test_a_ka_estimate_on_its_bound_is_not_counted(self):
+        """Bounds that stop below where the data put Ka leave the estimate on the upper one, held there."""
+        assay, _ = self._gda(seed=0)
+        capped = {**_OPEN_SIGNAL, 'Ka_guest': (Q_(1e-8, '1/M'), Q_(1.2e6, '1/M'))}
+        projection, aware = self._fit(assay, capped)
+
+        assert aware.fit.ka['Ka_guest'] == pytest.approx(1.2e6, rel=1e-12)
+        i0, dye_free, dye_bound = aware.fit.coefficients
+        assert -1000.0 < i0 < 1000.0 and 0.0 < dye_free < 1e9 and 0.0 < dye_bound < 1e9
+        assert _fitted_params(projection, aware) == aware.fit.n_params - 1
+
+        # The same data over bounds the estimate lies inside: the constant is counted.
+        inside, inside_aware = self._fit(assay, {**_OPEN_KA, **_OPEN_SIGNAL})
+        assert inside_aware.fit.ka['Ka_guest'] > 1.2e6
+        assert _fitted_params(inside, inside_aware) == inside_aware.fit.n_params == aware.fit.n_params
 
 
 def _ida_measurement_set() -> MeasurementSet:
