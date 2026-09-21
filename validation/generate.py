@@ -1,0 +1,325 @@
+"""One synthetic dataset per (scenario, seed).
+
+The truth is drawn inside the scenario: the concentration scale, the titrant
+span, the signal coefficients and the exact binding constants that put the
+model in the scenario's regime. The randomness comes only from
+``np.random.default_rng``, in three independent streams — the truth, the
+measurement noise and the entry errors — each seeded from the seed and a key of
+the scenario: the titration for the first two
+(:attr:`~validation.scenarios.Scenario.data_id`) and the titration with the
+uncertainties stated for its inputs for the third
+(:attr:`~validation.scenarios.Scenario.entry_id`). A dataset is reproducible
+from ``(scenario.id, seed)`` alone; its noise does not change when the entered
+inputs start moving, and its entry errors are one draw scaled by the multiple.
+
+The draws are those of the studies these checks come from: the fixed
+concentration spans 0.3 µM to 100 µM, the titrant reaches 1.5 to 20 times it,
+and the two signal states differ by two to ten orders of magnitude either way,
+so a scenario stands for a wide family of titrations rather than one curve.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+
+from core.assays import ASSAY_CLASSES
+from core.assays.base import BaseAssay
+from core.assays.registry import ASSAY_REGISTRY, AssayType
+from core.models.equilibrium import dba_signal, gda_signal, h2g_signal, hg2_signal, ida_signal
+from core.pipeline.inputs import TITRANT
+from core.units import Q_
+from validation.scenarios import COMPETITIVE, TWO_KA, Scenario
+
+__all__ = ['Dataset', 'dataset', 'stream_seed']
+
+#: Unit each entered condition is passed in.
+CONDITION_UNITS = {'Ka_dye': '1/M'}
+
+#: Lowest relative entry error: a true value of a tenth of the entered one,
+#: where the binding model still has a solution. An input stated to 10 % and
+#: entered three times as wrongly reaches it at three standard deviations.
+LOWEST_ENTRY_ERROR = -0.9
+
+#: The signal offset a truth that carries one gets, as a fraction of the
+#: offset-free signal's range.
+I0_FRACTION = 0.3
+
+
+def stream_seed(key: str, seed: int) -> np.random.SeedSequence:
+    """Seed sequence of one stream, from a key and the seed alone.
+
+    The key is hashed rather than used as text so that two scenarios whose keys
+    share a prefix start from unrelated states.
+    """
+    digest = int.from_bytes(hashlib.sha256(key.encode('utf-8')).digest()[:8], 'big')
+    return np.random.SeedSequence([digest, int(seed)])
+
+
+@dataclass(frozen=True)
+class Dataset:
+    """One synthetic titration, as generated and as the fit receives it.
+
+    Attributes
+    ----------
+    scenario : Scenario
+        The family this dataset was drawn from.
+    seed : int
+        Its seed within that family.
+    truth : dict[str, float]
+        Every model parameter at its true value, in canonical units (1/M, a.u.,
+        a.u./M), in ``assay.parameter_keys`` order.
+    fixed_conc : float
+        The concentration (M) the regime refers to: the host, or the fixed
+        partner of a DBA titration.
+    x : np.ndarray
+        True titrant concentrations (M).
+    clean : np.ndarray
+        The model's signal at ``truth`` on ``x``, plus any planted misfit —
+        what was measured before noise.
+    signals : np.ndarray
+        Measured signals, shape ``(replicates, points)``.
+    noise_sigma : np.ndarray
+        Standard deviation of the noise at each point.
+    entry_errors : dict[str, float]
+        Relative error of each entered input: its true value is the entered one
+        times ``1 + e``.
+    entered_x : np.ndarray
+        Titrant concentrations as entered.
+    conditions : dict[str, Any]
+        Conditions as entered, as the assay constructor takes them.
+    assay : BaseAssay
+        The assay built from the entered conditions and the average signal.
+    """
+
+    scenario: Scenario
+    seed: int
+    truth: dict[str, float]
+    fixed_conc: float
+    x: np.ndarray
+    clean: np.ndarray
+    signals: np.ndarray
+    noise_sigma: np.ndarray
+    entry_errors: dict[str, float]
+    entered_x: np.ndarray
+    conditions: dict[str, Any]
+    assay: BaseAssay
+
+    @property
+    def ka_truth(self) -> dict[str, float]:
+        """The true value of every binding constant the fit is free to move."""
+        return {k: self.truth[k] for k in ka_keys(self.scenario.assay)}
+
+
+def ka_keys(assay: str) -> list[str]:
+    """The binding-constant keys of *assay*, in parameter order."""
+    meta = ASSAY_REGISTRY[AssayType[assay]]
+    return [k for k in meta.param_kinds if k.startswith('Ka')]
+
+
+def _truth(scenario: Scenario, rng: np.random.Generator) -> tuple[dict[str, float], dict[str, Any], float, np.ndarray]:
+    """Draw the truth, the true conditions, the fixed concentration and the titrant grid."""
+    assay = scenario.assay
+    conc = 10 ** rng.uniform(-6.5, -4)
+    span = (
+        float(np.exp(rng.uniform(np.log(1.5), np.log(20.0))))
+        if scenario.titrant_span is None
+        else scenario.titrant_span
+    )
+    contrast = 10 ** rng.uniform(0.3, 1.0) * (1 if rng.integers(2) else -1)
+    free = 10 ** rng.uniform(6, 8)
+    bound = free * 10**contrast
+    x = np.linspace(span * conc / scenario.n_points, span * conc, scenario.n_points)
+
+    if assay in COMPETITIVE:
+        ratio = float(rng.choice([0.01, 1.0, 100.0])) if scenario.ratio is None else scenario.ratio
+        partner = conc * rng.uniform(0.5, 2.0)
+        ka = scenario.regime / conc
+        truth = {'Ka_guest': ka, 'I0': 0.0, 'I_dye_free': free, 'I_dye_bound': bound}
+        conditions = {'Ka_dye': ka / ratio, 'h0': conc, 'g0' if assay == 'GDA' else 'd0': partner}
+    elif assay in TWO_KA:
+        k_ratio = float(rng.choice([0.01, 1.0, 100.0])) if scenario.k_ratio is None else scenario.k_ratio
+        second = 'Ka_HG2' if assay == 'DBA_HG2' else 'Ka_H2G'
+        last = 'I_HG2' if assay == 'DBA_HG2' else 'I_H2G'
+        ka = scenario.regime / conc
+        truth = {
+            'Ka_HG': ka,
+            second: ka / k_ratio,
+            'I0': 0.0,
+            'I_G': free * rng.uniform(0.0, 0.3),
+            'I_H': 0.0,
+            'I_HG': free * 10 ** rng.uniform(0.5, 1.2),
+            last: free * 10 ** rng.uniform(-0.3, 1.5),
+        }
+        conditions = {'h0': conc}
+    else:
+        truth = {'Ka_dye': scenario.regime / conc, 'I0': 0.0, 'I_dye_free': free, 'I_dye_bound': bound}
+        conditions = {'fixed_conc': conc, 'mode': assay[4:]}
+    if scenario.dark_free_dye:
+        truth['I_dye_free'] = 0.0
+    return truth, conditions, conc, x
+
+
+def _clean_signal(scenario: Scenario, truth: dict[str, float], conditions: dict[str, Any], x: np.ndarray) -> np.ndarray:
+    """The model's signal at *truth*, with ``I0`` still zero."""
+    assay = scenario.assay
+    if assay == 'GDA':
+        y = gda_signal(
+            I0=0.0,
+            Ka_guest=truth['Ka_guest'],
+            Ka_dye=conditions['Ka_dye'],
+            h0=conditions['h0'],
+            g0=conditions['g0'],
+            d0_values=x,
+            I_dye_free=truth['I_dye_free'],
+            I_dye_bound=truth['I_dye_bound'],
+        )
+    elif assay == 'IDA':
+        y = ida_signal(
+            I0=0.0,
+            Ka_guest=truth['Ka_guest'],
+            Ka_dye=conditions['Ka_dye'],
+            h0=conditions['h0'],
+            d0=conditions['d0'],
+            g0_values=x,
+            I_dye_free=truth['I_dye_free'],
+            I_dye_bound=truth['I_dye_bound'],
+        )
+    elif assay in ('DBA_HtoD', 'DBA_DtoH'):
+        y = dba_signal(
+            I0=0.0,
+            Ka_dye=truth['Ka_dye'],
+            x_titrant=x,
+            y_fixed=conditions['fixed_conc'],
+            mode=conditions['mode'],
+            I_dye_free=truth['I_dye_free'],
+            I_dye_bound=truth['I_dye_bound'],
+        )
+    elif assay == 'DBA_HG2':
+        y = hg2_signal(
+            I0=0.0,
+            h0=conditions['h0'],
+            g0_values=x,
+            Ka_HG=truth['Ka_HG'],
+            Ka_HG2=truth['Ka_HG2'],
+            I_G=truth['I_G'],
+            I_H=truth['I_H'],
+            I_HG=truth['I_HG'],
+            I_HG2=truth['I_HG2'],
+        )
+    else:
+        y = h2g_signal(
+            I0=0.0,
+            h0=conditions['h0'],
+            g0_values=x,
+            Ka_HG=truth['Ka_HG'],
+            Ka_H2G=truth['Ka_H2G'],
+            I_G=truth['I_G'],
+            I_H=truth['I_H'],
+            I_HG=truth['I_HG'],
+            I_H2G=truth['I_H2G'],
+        )
+    return np.asarray(y, dtype=float)
+
+
+def _entry_errors(scenario: Scenario, rng: np.random.Generator) -> dict[str, float]:
+    """Relative error of each entered input, at the scenario's multiple of what was stated.
+
+    A standard deviation draws the error Gaussian and a range draws it uniform
+    over the range. Inputs named in ``shared_entries`` take the same quantile
+    of their own distributions, which is one stock error stated as several
+    independent ones. An error below :data:`LOWEST_ENTRY_ERROR` is set to it.
+    """
+    common = rng.random()
+    errors = {}
+    for entry in scenario.specs:
+        own = rng.random()
+        quantile = common if entry.key in scenario.shared_entries else own
+        if entry.sigma > 0:
+            error = entry.sigma / 100 * float(_normal_quantile(quantile))
+        else:
+            error = (entry.lo + quantile * (entry.hi - entry.lo)) / 100
+        errors[entry.key] = max(scenario.entry_multiple * error, LOWEST_ENTRY_ERROR)
+    return errors
+
+
+def _normal_quantile(u: float) -> float:
+    """Standard normal quantile of *u*, by the error function's inverse."""
+    from scipy.special import ndtri
+
+    return float(ndtri(u))
+
+
+def dataset(scenario: Scenario, seed: int) -> Dataset:
+    """The dataset of one (scenario, seed): the truth, the measurement and the inputs as entered.
+
+    Parameters
+    ----------
+    scenario : Scenario
+        The family to draw from.
+    seed : int
+        Which draw.
+
+    Returns
+    -------
+    Dataset
+        The same dataset, bit for bit, for the same ``(scenario.id, seed)``.
+    """
+    # The truth and the noise hang on the titration alone, so a scenario and the
+    # same titration with its inputs stated or mis-entered are the same
+    # measurement; the entries have a stream of their own, keyed by the
+    # titration and the uncertainties stated for it but not by the multiple, so
+    # the entries at 2 sigma are the entries at 1 sigma doubled.
+    truth_rng, noise_rng = (np.random.default_rng(child) for child in stream_seed(scenario.data_id, seed).spawn(2))
+    entry_rng = np.random.default_rng(stream_seed(f'{scenario.entry_id}|entry', seed))
+    truth, conditions, conc, x = _truth(scenario, truth_rng)
+    bare = _clean_signal(scenario, truth, conditions, x)
+    offset = (
+        I0_FRACTION * float(np.ptp(bare)) if (truth_rng.integers(2) if scenario.i0 is None else scenario.i0) else 0.0
+    )
+    truth['I0'] = offset
+    clean = bare + offset
+    if scenario.misfit_sine:
+        clean = clean + scenario.misfit_sine * float(np.ptp(bare)) * np.sin(np.pi * x / x.max())
+
+    if scenario.proportional:
+        sigma = scenario.noise * np.abs(clean)
+    else:
+        sigma = np.full(x.size, scenario.noise * float(np.ptp(clean)))
+    signals = np.vstack([clean + sigma * noise_rng.standard_normal(x.size) for _ in range(scenario.replicates)])
+
+    errors = _entry_errors(scenario, entry_rng)
+    titrant_factor = 1.0 + errors.get(TITRANT, 0.0)
+    if scenario.titrant_error:
+        titrant_factor *= 1.0 + scenario.titrant_error * float(entry_rng.choice([-1.0, 1.0]))
+    entered_x = x / titrant_factor
+    entered = {
+        key: value / (1 + errors[key]) if key in errors else value
+        for key, value in conditions.items()
+        if not isinstance(value, str)
+    }
+    entered.update({key: value for key, value in conditions.items() if isinstance(value, str)})
+
+    assay_cls = ASSAY_CLASSES[AssayType[scenario.assay]]
+    quantities = {
+        key: Q_(value, CONDITION_UNITS.get(key, 'M')) if not isinstance(value, str) else value
+        for key, value in entered.items()
+    }
+    assay = assay_cls(x_data=Q_(entered_x, 'M'), y_data=Q_(signals.mean(axis=0), 'au'), **quantities)
+    return Dataset(
+        scenario=scenario,
+        seed=seed,
+        truth={key: truth[key] for key in assay.parameter_keys},
+        fixed_conc=conc,
+        x=x,
+        clean=clean,
+        signals=signals,
+        noise_sigma=sigma,
+        entry_errors=errors,
+        entered_x=entered_x,
+        conditions=quantities,
+        assay=assay,
+    )
