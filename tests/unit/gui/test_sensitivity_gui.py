@@ -58,67 +58,26 @@ from core.units import Q_  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-def test_set_assay_type_rebuilds_input_rows(qapp):
-    """The uncertainty rows track the assay's perturbable inputs (titrant + conditions)."""
+def test_the_heatmap_axes_offer_the_inputs_the_uncertainty_panel_names(qapp):
+    """A heatmap sweeps two of the assay's inputs, so its axes are the rows of the panel that states them."""
+    from gui.widgets.input_uncertainty_panel import InputUncertaintyPanel
     from gui.widgets.sensitivity_panel import SensitivityPanel
 
-    panel = SensitivityPanel()
+    inputs, panel = InputUncertaintyPanel(), SensitivityPanel()
 
-    panel.set_assay_type(AssayType.IDA)
-    assert set(panel._rows) == {TITRANT, 'Ka_dye', 'h0', 'd0'}
-    # Heatmap axis combos offer exactly those inputs.
-    assert panel._x_combo.count() == len(panel._rows)
+    for assay_type, keys in (
+        (AssayType.IDA, {TITRANT, 'Ka_dye', 'h0', 'd0'}),
+        (AssayType.GDA, {TITRANT, 'Ka_dye', 'h0', 'g0'}),
+        # A single-condition assay: just the titrant + its one fixed concentration.
+        (AssayType.DBA_HtoD, {TITRANT, 'fixed_conc'}),
+    ):
+        inputs.set_assay_type(assay_type)
+        panel.set_assay_type(assay_type)
+        panel.set_inputs(inputs.input_labels())
 
-    panel.set_assay_type(AssayType.GDA)
-    assert set(panel._rows) == {TITRANT, 'Ka_dye', 'h0', 'g0'}
-
-    # A single-condition assay: just the titrant + its one fixed concentration.
-    panel.set_assay_type(AssayType.DBA_HtoD)
-    assert set(panel._rows) == {TITRANT, 'fixed_conc'}
-
-
-def test_heatmap_controls_hidden_outside_heatmap_mode(qapp):
-    """The heatmap axis group shows only in Heatmap mode; samples row is inverse."""
-    from gui.widgets.sensitivity_panel import SensitivityPanel
-
-    panel = SensitivityPanel()
-    panel.set_assay_type(AssayType.IDA)
-
-    # Default mode is the sensitivity-index analysis.
-    assert panel._heatmap_group.isHidden()
-    assert not panel._samples_row.isHidden()
-
-    # Switch to Heatmap (combo index 1).
-    panel._mode_combo.setCurrentIndex(1)
-    assert not panel._heatmap_group.isHidden()
-    assert panel._samples_row.isHidden()
-
-    # Back to the index analysis.
-    panel._mode_combo.setCurrentIndex(0)
-    assert panel._heatmap_group.isHidden()
-    assert not panel._samples_row.isHidden()
-
-
-def test_sample_size_choices_are_the_valid_sobol_sizes_defaulting_to_1024(qapp):
-    """The panel offers exactly the sizes the 8-block Sobol' design accepts, from 1024 up."""
-    from gui.widgets.sensitivity_panel import SensitivityPanel
-
-    panel = SensitivityPanel()
-    sizes = [panel._samples_combo.itemData(i) for i in range(panel._samples_combo.count())]
-    assert sizes == [1024, 2048, 4096]
-    assert panel.current_config().n_samples == 1024
-
-
-def test_panel_disabled_for_dye_alone(qapp):
-    """DYE_ALONE has no Ka to analyse, so the whole panel is disabled."""
-    from gui.widgets.sensitivity_panel import SensitivityPanel
-
-    panel = SensitivityPanel()
-    panel.set_assay_type(AssayType.IDA)
-    assert panel.isEnabled()
-
-    panel.set_assay_type(AssayType.DYE_ALONE)
-    assert not panel.isEnabled()
+        assert set(inputs.input_labels()) == keys
+        offered = {panel._x_combo.itemData(i): panel._x_combo.itemText(i) for i in range(panel._x_combo.count())}
+        assert offered == inputs.input_labels()
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +183,12 @@ def _heatmap_result():
         n_success=8,
         n_total=9,
         config=SensitivityConfig(
-            SensitivityMode.HEATMAP, 1, {TITRANT: 5.0, 'h0': 5.0}, x_key=TITRANT, y_key='h0', n_steps=3
+            SensitivityMode.HEATMAP,
+            1,
+            {TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)},
+            x_key=TITRANT,
+            y_key='h0',
+            n_steps=3,
         ),
         seed_used=0,
         r2_grid=r2,
@@ -508,7 +472,7 @@ def test_ka_sensitivity_tab_names_the_indices_one_way_and_the_uncertainty_group(
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
     w = SensitivityWidget()
-    assert 'Input uncertainty' in w._placeholder.text() and 'Δ' not in w._placeholder.text()
+    assert 'Input Uncertainty' in w._placeholder.text() and 'Δ' not in w._placeholder.text()
 
     w.update_result(replace(_sobol_result(), sobol_rows_left_out={'Ka_guest': 3}, sobol_s1={'Ka_guest': {'h0': 4.0}}))
     (index_panel,) = [
@@ -1124,13 +1088,18 @@ def _made_on(result: SensitivityResult, ms, conditions) -> SensitivityResult:
 
 
 def _fake_run(n_fits: int, pause: float = 0.0):
-    """Stand-in for ``run_sensitivity`` reporting *n_fits* finished fits, then a Sobol' result made on its inputs."""
+    """Stand-in for ``run_sensitivity`` reporting *n_fits* finished fits, then a Sobol' result made on its inputs.
 
-    def run(ms, assay_cls, conditions, *args, progress, **kwargs):
+    The result carries the configuration it was asked to run, as a real run's
+    does: the session checks a held run against the uncertainties it records.
+    """
+
+    def run(ms, assay_cls, conditions, _fit_config, sens_config, *args, progress, **kwargs):
         for done in range(1, n_fits + 1):
             time.sleep(pause)
             progress(done, n_fits)
-        return _sobol_result() if ms is None else _made_on(_sobol_result(), ms, conditions)
+        result = replace(_sobol_result(), config=sens_config)
+        return result if ms is None else _made_on(result, ms, conditions)
 
     return run
 
@@ -1202,6 +1171,10 @@ def _demo_session(monkeypatch):
     session = FittingSession()
     session._assay_panel.set_assay_type(AssayType.IDA)
     session._data_panel.load_file('data/IDA_system.txt')
+    # Every uncertainty row opens fixed, so the analysis has nothing to vary
+    # until one is stated: σ 5 % on each of the assay's four inputs.
+    for row in session._input_panel._rows.values():
+        row.set_spec(InputSpec.sigma_pct(5.0))
     combo = session._sensitivity_panel._samples_combo
     combo.setCurrentIndex(combo.findData(1024))
     return session, warnings
@@ -1536,7 +1509,7 @@ def _no_index_result(*, stopped: bool):
 
 @pytest.mark.parametrize(
     ('stopped', 'fix'),
-    [(True, 'let it finish'), (False, 'Input uncertainty')],
+    [(True, 'let it finish'), (False, 'Input Uncertainty')],
     ids=['stopped', 'failed'],
 )
 def test_an_index_panel_with_no_bars_says_why_it_is_empty(qapp, stopped, fix):

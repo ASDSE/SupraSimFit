@@ -7,6 +7,12 @@ in Qt widgets that support HTML (QLabel, QFormLayout, pg.TextItem).
 :func:`fmt_interval_html` / :func:`fmt_interval_plain` write a confidence
 interval the same way wherever one is reported.
 
+:func:`verdict_sentence`, :func:`fmt_shift`, :func:`fmt_misfit` and
+:func:`fmt_p` write what the diagnostics of a fit say — whether the model and
+the entered inputs describe the data, and where the fit put the inputs it was
+free to move — so the summary block, the Identifiability tab and the exported
+report say it in the same words.
+
 Value and unit formatting is handled by Pint's built-in formatters:
   - ``f"{Q_(value, unit):.3g~H}"`` for HTML values+units
   - ``f"{Q_(value, 'dimensionless'):.3g~P}"`` for pretty Unicode values
@@ -21,6 +27,7 @@ from __future__ import annotations
 
 import math
 import re
+from html import escape
 
 from core.units import ureg
 
@@ -349,3 +356,299 @@ def fmt_bound_note(on_bound: dict) -> str:
         f'The fit ended on a bound entered under Parameter Bounds ({held}), which may hold the curve away from '
         'the data. Unless that bound is something you know about the system, widen it and fit again.'
     )
+
+
+def _escape(text: str) -> str:
+    """Plain text made safe for a rich-text widget: ``p < 0.001`` must not read as the start of a tag."""
+    return escape(text, quote=False)
+
+
+#: Below this a p-value is reported as a bound. The references behind the tests
+#: here are Monte-Carlo quadratures — 100 000 draws for the runs test, 200 000
+#: for the conflict statistic — whose own error is 5e-4 to 7e-4 at p = 0.05, so
+#: digits past the third decimal would report the quadrature, not the data.
+_P_FLOOR = 0.001
+
+#: Above this two significant figures round to 1, and ``p = 1`` would read as a
+#: test that is certain rather than one that found nothing; such a p is reported
+#: as a bound from this value instead.
+_P_CEILING = 0.99
+
+
+def fmt_p(p: float) -> str:
+    """A p-value as every report writes it: ``p = 0.55``, ``p = 0.0012``, ``p < 0.001``, ``p > 0.99``.
+
+    Two significant figures, which is as finely as the references behind these
+    tests are known, and a bound past :data:`_P_FLOOR` and :data:`_P_CEILING`.
+    """
+    if p < _P_FLOOR:
+        return f'p < {_P_FLOOR:g}'
+    rounded = float(f'{p:.2g}')
+    if rounded > _P_CEILING:
+        return f'p > {_P_CEILING:g}'
+    return f'p = {rounded:g}'
+
+
+def fmt_stat(value: float) -> str:
+    """A test statistic to three significant figures: ``0.9``, ``12``, ``24.2``, ``200``, ``1.2×10⁵``.
+
+    Plain digits over the range an F ratio or a conflict statistic reads in,
+    and ``×10ⁿ`` notation outside it, so a number never appears as ``1.2e+05``.
+
+    Raises
+    ------
+    ValueError
+        For a statistic that is not finite. ``inf`` is library phrasing, not a
+        reading a user can act on; what an infinite F ratio means is said in
+        words by :func:`fmt_misfit`, which is where one can arise.
+    """
+    if not math.isfinite(value):
+        raise ValueError(f'A test statistic of {value} has no reading as a number; say in words what it means.')
+    if value and not 0.01 <= abs(value) < 1e4:
+        return fmt_sci(value, 2)
+    return f'{float(f"{value:.3g}"):g}'
+
+
+#: What an infinite lack-of-fit F ratio says. The ratio divides the curve's
+#: distance from the mean signal by the scatter of the replicates about it, so
+#: it is infinite exactly where that scatter is zero — every replicate equal at
+#: every point — and the test then has no noise to judge the distance against.
+_NO_PURE_ERROR = 'the replicates agree exactly at every point, so any distance from the curve counts against the model'
+
+
+def fmt_misfit(test, *, named: bool = True) -> str:
+    """One misfit test as a report quotes it, with its statistic and p-value.
+
+    ``lack-of-fit F(9, 72) = 0.9, p = 0.55`` for the replicate F test and
+    ``runs test: 6 runs, 7.0 expected, p = 0.41`` for the runs test. An F ratio
+    with no finite reading is said in words instead (:data:`_NO_PURE_ERROR`).
+
+    Parameters
+    ----------
+    test : core.pipeline.diagnostics.MisfitTest
+        The test to write.
+    named : bool
+        Whether to name the F test. The runs test names itself either way; the
+        F ratio is named where the sentence around it does not say which test
+        it is.
+    """
+    if test.kind == 'runs':
+        runs = int(round(test.statistic))
+        head = f'runs test: {runs} run{"" if runs == 1 else "s"}, {test.expected:.1f} expected'
+    elif not math.isfinite(test.statistic):
+        return f'{"lack-of-fit: " if named else ""}{_NO_PURE_ERROR}'
+    else:
+        dof = '' if test.dof is None else f'({test.dof[0]}, {test.dof[1]})'
+        head = f'{"lack-of-fit " if named else ""}F{dof} = {fmt_stat(test.statistic)}'
+    return f'{head}, {fmt_p(test.p_value)}'
+
+
+def _fmt_percent(fraction: float) -> str:
+    """An offset from an entered value as a signed percentage of it, to one decimal."""
+    return f'{fraction * 100:+.1f} %'.replace('-', '−')
+
+
+def fmt_shift(shift, label: str, *, html: bool) -> str:
+    """Where the fit put one input, as every report names it.
+
+    ``[Host]₀ −11.4 % (3.8 σ)`` for an input stated with a standard deviation —
+    the percentage it moved and how many standard deviations that is — and
+    ``[Dye]₀ −6.0 % (at the edge of its range)`` for one stated as a range that
+    the fit took to an end of. A range the fit stayed inside reads as the
+    percentage alone: there is no standard deviation to compare it with.
+
+    Parameters
+    ----------
+    shift : core.pipeline.diagnostics.InputShift
+        The fitted offset of one input.
+    label : str
+        The input's name as the Input Uncertainty panel writes it.
+    html : bool
+        Whether the result goes into a rich-text widget, which needs its
+        markup characters escaped.
+    """
+    text = f'{label} {_fmt_percent(shift.fraction)}'
+    if shift.z is not None:
+        text += f' ({abs(shift.z):.1f} σ)'
+    elif shift.at_edge:
+        text += ' (at the edge of its range)'
+    return _escape(text) if html else text
+
+
+#: Why a conflict does not name the input that is wrong. Said of a fit whose
+#: only input free to move is the one the correction landed on.
+_ALIKE_ONE = 'this is the only input the fit was free to move, so the correction landed there whatever its real cause'
+
+#: Said where the data do inform one direction per input stated with a standard
+#: deviation: the shifts are then each the fit's own reading, and what is left
+#: to say is that the statistic weighs them as one.
+_ALIKE_TOGETHER = 'the statistic weighs them together, so it does not say which of them is off'
+
+
+def _alike(conflict, shifts) -> str:
+    """Why the listed shifts do not name the input that is off, read from the fit's own weights.
+
+    ``conflict.k`` is how many combinations of the inputs stated with a
+    standard deviation these data pin down. Fewer than there are such inputs
+    and the fit could not tell them apart — the host concentration and the
+    titrant scale move the curve almost alike — so the correction landed where
+    the combinations it does see point, which need not be the input that is
+    off: with a planted 3 σ error in one input the largest shift sat on that
+    input in 27 to 58 % of the conflicts (design 1.5). As many directions as
+    inputs and the data do see each one, so no such claim is made.
+
+    An input stated as a range carries no standard deviation and no ``z``, and
+    so enters neither the statistic nor this count.
+    """
+    stated = sum(1 for shift in shifts.values() if shift.z is not None)
+    if stated <= 1:
+        return _ALIKE_ONE
+    if conflict.k >= stated:
+        return _ALIKE_TOGETHER
+    one = conflict.k == 1
+    return (
+        f'the data see only {"one combination" if one else f"{conflict.k} combinations"} of these {stated} '
+        f'inputs, so the correction landed where {"that combination points" if one else "those combinations point"}'
+    )
+
+
+#: What is left to say when the data are too few for any misfit test: the fit
+#: is reported, and nothing here speaks for or against it.
+_NO_MISFIT_TEST = (
+    'The data leave too few points beyond the fitted parameters to test whether the model and the entered '
+    'inputs describe them, so nothing here speaks for or against the fit.'
+)
+
+#: Said wherever the interval is reported under a model the data reject.
+_MODEL_TAIL = 'The interval assumes a model the data reject; try another binding model or check the data.'
+
+#: Why a fit whose every stated uncertainty is a range carries no conflict
+#: statistic: a range is a hard limit the fit is free anywhere inside, not a
+#: spread a shift can be weighed against. A clause, so the summary block and
+#: the exported report each lead into it in their own voice.
+RANGES_ONLY = (
+    'every uncertainty is stated as a range, so the fit is free anywhere inside it and there is nothing to '
+    'test a shift against'
+)
+
+#: What the record of the input uncertainties reads when none was stated. The
+#: summary block on screen and the exported report each state it in their own
+#: line, in the same words.
+NO_UNCERTAINTY = 'none — the interval takes the inputs as exact'
+
+
+def verdict_sentence(diagnostics, shifts, labels, *, html: bool) -> str:
+    """What the diagnostics of one fit say, in one plain-language sentence group.
+
+    The four verdicts read as design section 3 fixes them: the model and the
+    entered inputs describe the data; the entered inputs miss it and a shift
+    inside their stated uncertainties explains it; the data need the inputs,
+    *taken together*, further out than stated; or no allowed shift rescues the
+    model. The shifts are listed largest ``|z|`` first, the inputs stated as a
+    range after them — a range carries no ``z`` to rank by — and each by its
+    own key where two are equal, so the order is the same on every report.
+
+    The sentence never names one input as the cause of a conflict: the
+    statistic judges them together (:mod:`core.pipeline.diagnostics`).
+
+    Parameters
+    ----------
+    diagnostics : core.pipeline.diagnostics.FitDiagnostics
+        The tests of the fit and the verdict they give.
+    shifts : Mapping[str, core.pipeline.diagnostics.InputShift]
+        Where the fit put every input it was free to move; empty when every
+        input was taken as entered.
+    labels : Mapping[str, str]
+        Each input's name as the Input Uncertainty panel writes it.
+    html : bool
+        Whether the result goes into a rich-text widget.
+    """
+    text = _verdict_text(diagnostics, shifts, labels)
+    return _escape(text) if html else text
+
+
+def _verdict_text(diagnostics, shifts, labels) -> str:
+    """:func:`verdict_sentence` as plain text."""
+    from core.pipeline.diagnostics import Verdict
+
+    listed = fmt_shifts(shifts, labels, html=False)
+    if diagnostics.verdict is Verdict.CONSISTENT:
+        test = diagnostics.misfit or diagnostics.conditional_misfit
+        if test is None:
+            return _NO_MISFIT_TEST
+        return f'The model and the entered inputs describe the data ({fmt_misfit(test)}).'
+
+    if diagnostics.verdict is Verdict.INPUTS_EXPLAIN:
+        return (
+            f'At the entered inputs the model misses the data ({fmt_misfit(diagnostics.conditional_misfit, named=False)}). '
+            f'It fits once the inputs move within their stated uncertainties: {listed}. '
+            'The interval includes these shifts.'
+        )
+
+    if diagnostics.verdict is Verdict.INPUTS_CONFLICT:
+        from core.pipeline.inputs import input_name
+
+        conflict = diagnostics.conflict
+        one = len(shifts) == 1
+        if one:
+            # One input free to move is one input the sentence can name: there
+            # are no others for the statistic to have weighed it against. Why
+            # naming it is not naming the cause is said by :func:`_alike`.
+            (shift,) = shifts.values()
+            lead = (
+                f'The data fit only with {input_name(shift.key, dict(labels))} further from the value you '
+                'entered than the uncertainty you stated allows'
+            )
+        else:
+            lead = (
+                'The data fit only with the inputs, taken together, further from their entered values than '
+                'their stated uncertainties allow'
+            )
+        return (
+            f'{lead} (q = {fmt_stat(conflict.q)}, {fmt_p(conflict.p_value)}). '
+            f'The fit put the correction here: {listed} — {_alike(conflict, shifts)}. '
+            f'Check the {"value" if one else "values"} you entered for {"it" if one else "them"}. '
+            f'The interval assumes the {"shift is" if one else "shifts are"} real.'
+        )
+
+    test = diagnostics.misfit or diagnostics.conditional_misfit
+    if shifts:
+        return (
+            'The model does not describe the data even with the inputs free to move within their uncertainties '
+            f'({fmt_misfit(test, named=False)} after the shifts). {_MODEL_TAIL}'
+        )
+    return (
+        f'The model does not describe the data at the entered inputs ({fmt_misfit(test, named=False)}). '
+        f'{_MODEL_TAIL} Enter the uncertainty of the inputs under Input Uncertainty to test whether the '
+        'inputs explain it.'
+    )
+
+
+def fmt_shifts(shifts, labels, *, html: bool) -> str:
+    """Every shift of one fit, largest ``|z|`` first, named as the Input Uncertainty panel names its inputs.
+
+    The inputs stated as a range come after the ones stated with a standard
+    deviation — a range carries no ``z`` to rank by — and two that moved
+    equally far are ordered by their key, so the same fit reads the same on
+    every report.
+
+    Parameters
+    ----------
+    shifts : Mapping[str, core.pipeline.diagnostics.InputShift]
+        Where the fit put every input it was free to move.
+    labels : Mapping[str, str]
+        Each input's name as the Input Uncertainty panel writes it.
+    html : bool
+        Whether the result goes into a rich-text widget.
+    """
+    from core.pipeline.inputs import input_name
+
+    ordered = sorted(shifts.values(), key=_shift_order)
+    return ', '.join(fmt_shift(shift, input_name(shift.key, dict(labels)), html=html) for shift in ordered)
+
+
+def _shift_order(shift) -> tuple:
+    """Sort key: the inputs stated with a σ by how far they moved in σ, then the ranges, then by key."""
+    if shift.z is None:
+        return (1, -abs(shift.fraction), shift.key)
+    return (0, -abs(shift.z), shift.key)

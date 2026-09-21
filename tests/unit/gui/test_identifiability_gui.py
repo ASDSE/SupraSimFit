@@ -11,7 +11,9 @@ pytest.importorskip('PyQt6')
 from PyQt6.QtCore import Qt  # noqa: E402
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind  # noqa: E402
+from core.pipeline.diagnostics import Conflict, FitDiagnostics, InputShift, MisfitTest, Verdict  # noqa: E402
 from core.pipeline.fit_pipeline import FitResult  # noqa: E402
+from core.pipeline.input_aware import AwareProfile  # noqa: E402
 from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet  # noqa: E402
 from core.pipeline.sensitivity import (  # noqa: E402
     TITRANT,
@@ -30,8 +32,17 @@ BEST_KA = 10**8.5
 PEAK_R2 = 0.995
 CUT_R2 = 0.99
 
+#: The input-aware profile of the fixtures below: its peak sits at a Ka of its
+#: own, its curve is wider — a fit free to move the inputs stays acceptable
+#: further out — and it lies above the conditional curve everywhere, which is
+#: what the method guarantees (the entered inputs are always available to it).
+AWARE_CENTRE = 8.6
+AWARE_WIDTH = 3.0  # decades of the aware bump, against one decade for the conditional one
+AWARE_PEAK = 0.997
+AWARE_CUT = 0.9945
 
-def _fit(keys=IDA_KEYS, assay='IDA', *, per_replica=False):
+
+def _fit(keys=IDA_KEYS, assay='IDA', *, per_replica=False, diagnostics=None, shifts=None):
     """A FitResult carrying only what the tab reads: the parameters, the assay and the replicate record."""
     return FitResult(
         parameters={k: Q_(1.0 if k.startswith('Ka') else 0.5, 'dimensionless') for k in keys},
@@ -42,6 +53,8 @@ def _fit(keys=IDA_KEYS, assay='IDA', *, per_replica=False):
         assay_type=assay,
         model_name='equilibrium_4param',
         fit_config={'per_replicate': per_replica},
+        diagnostics=diagnostics,
+        input_shifts=shifts or {},
     )
 
 
@@ -59,21 +72,55 @@ def _interval(low=1e8, high=1e9, *, open_low=False, open_high=False, split=False
     )
 
 
-def _profile(ka_key='Ka_guest', *, per_replica=False, interval=..., centre=8.5, peak=PEAK_R2):
+def _bump(grid, middle, top, width=1.0):
+    """A bell of height *top* peaking at ``10**middle``, *width* decades across."""
+    return top * np.exp(-(((np.log10(grid) - middle) / width) ** 2))
+
+
+def _aware_profile(
+    ka_key='Ka_guest',
+    *,
+    grid=None,
+    centre=AWARE_CENTRE,
+    peak=AWARE_PEAK,
+    cut=AWARE_CUT,
+    interval=...,
+):
+    """The penalised profile of one Ka: what the fit reaches with the inputs free within their uncertainties.
+
+    Its objective is the engine's own ``n log S`` of an inflated residual sum of
+    squares, whose R² reading is ``1 - exp(P/n)/SS_tot``; the numbers here are
+    written for ``SS_tot = 1`` and twelve points, so the two are consistent.
+    """
+    grid = np.logspace(-8, 12, 401) if grid is None else grid
+    n = 12
+    r2 = _bump(grid, centre, peak, AWARE_WIDTH)
+    return AwareProfile(
+        ka_key=ka_key,
+        grid=grid,
+        objective=n * np.log(1.0 - r2),
+        r2=r2,
+        offsets=np.zeros((grid.size, 1)),
+        threshold=float(n * np.log(1.0 - cut)),
+        r2_threshold=cut,
+        interval=_interval(10**7.8, 10**9.4) if interval is ... else interval,
+    )
+
+
+def _profile(ka_key='Ka_guest', *, per_replica=False, interval=..., centre=8.5, peak=PEAK_R2, aware=None):
     """A bell-shaped profile around ``10**centre``, with its interval and cut-off.
 
-    ``interval=None`` is a Ka pinned by equal bounds, which has none.
+    ``interval=None`` is a Ka pinned by equal bounds, which has none; *aware* is
+    the same profile with the inputs free to move, ``None`` where every input
+    was entered as exact.
     """
     grid = np.logspace(-8, 12, 401)
-
-    def bump(middle, top):
-        return top * np.exp(-((np.log10(grid) - middle) ** 2))
 
     return ProfileResult(
         ka_key=ka_key,
         grid=grid,
-        r2=bump(centre, peak),
-        replica_r2={rid: bump(centre + 0.1 * i, peak - 0.005 * (i + 1)) for i, rid in enumerate('ABC')}
+        r2=_bump(grid, centre, peak),
+        replica_r2={rid: _bump(grid, centre + 0.1 * i, peak - 0.005 * (i + 1)) for i, rid in enumerate('ABC')}
         if per_replica
         else None,
         best_ka=10**centre,
@@ -83,6 +130,7 @@ def _profile(ka_key='Ka_guest', *, per_replica=False, interval=..., centre=8.5, 
         n_points=12,
         n_params=3,
         per_replica=per_replica,
+        aware=aware,
     )
 
 
@@ -94,6 +142,8 @@ def _profile_set(**kwargs):
 #: log10 Ka of the two-Ka region's centre, and the radius of its accepted disc.
 REGION_CENTRE = (6.0, 4.0)
 REGION_THRESHOLD = 0.99
+#: Cut-off over the low-Ka_HG third of the region's grid, where the fits hold a signal parameter on its bound.
+REGION_STEPPED_CUT = 0.98
 
 
 def _region_r2(x, y):
@@ -102,16 +152,32 @@ def _region_r2(x, y):
     return 1.0 - 0.01 * ((lx - REGION_CENTRE[0]) ** 2 + (ly - REGION_CENTRE[1]) ** 2)
 
 
-def _two_ka_set():
-    """A hand-built ProfileSet for a 1:2 model: a profile per binding constant and their joint region."""
+def _two_ka_set(*, aware=False):
+    """A hand-built ProfileSet for a 1:2 model: a profile per binding constant and their joint region.
+
+    With *aware*, each constant also carries the profile it has with the inputs
+    free to move within the uncertainties stated for them.
+    """
     x = np.geomspace(1e5, 1e7, 16)
     y = np.geomspace(1e3, 1e5, 12)
     r2 = _region_r2(x, y)
     r2[0, 0] = np.nan  # a Ka pair the equilibrium model has no solution for
     profiles = {
-        'Ka_HG': _profile('Ka_HG', centre=6.0, interval=_interval(10**5.5, 10**6.5)),
-        'Ka_HG2': _profile('Ka_HG2', centre=4.0, interval=_interval(10**3.5, 10**4.5)),
+        'Ka_HG': _profile(
+            'Ka_HG',
+            centre=6.0,
+            interval=_interval(10**5.5, 10**6.5),
+            aware=_aware_profile('Ka_HG', centre=6.1, interval=_interval(10**5.3, 10**6.7)) if aware else None,
+        ),
+        'Ka_HG2': _profile(
+            'Ka_HG2',
+            centre=4.0,
+            interval=_interval(10**3.5, 10**4.5),
+            aware=_aware_profile('Ka_HG2', centre=4.1, interval=_interval(10**3.3, 10**4.7)) if aware else None,
+        ),
     }
+    r2_cut = np.full(r2.shape, REGION_THRESHOLD)
+    r2_cut[: x.size // 3] = REGION_STEPPED_CUT
     region = JointRegion(
         ka_keys=('Ka_HG', 'Ka_HG2'),
         x=x,
@@ -120,6 +186,7 @@ def _two_ka_set():
         r2_threshold=REGION_THRESHOLD,
         level=0.95,
         best=(10 ** REGION_CENTRE[0], 10 ** REGION_CENTRE[1]),
+        r2_cut=r2_cut,
     )
     return ProfileSet(profiles=profiles, region=region)
 
@@ -415,11 +482,31 @@ def test_the_cut_off_is_named_beside_the_plot(qapp):
     """The dotted cut-off is named on a right-hand axis at its height, never over the data."""
     w = _widget(_fit(), _profile_set())
     items = w._items['Ka_guest']
-    assert items['cut'].pen.style() == Qt.PenStyle.DotLine and items['cut'].value() == CUT_R2
+    assert items['cut'].opts['pen'].style() == Qt.PenStyle.DotLine
+    assert np.all(items['cut'].getData()[1] == CUT_R2)
     axis = items['main'].getAxis('right')
     assert axis.isVisible()
     assert axis._tickLevels == [[(CUT_R2, 'cut-off 0.9900')]]
     assert items['cut'].zValue() < items['average'].zValue() < items['best'].zValue()
+
+
+def test_the_cut_off_line_steps_where_the_profile_says_a_signal_parameter_reaches_its_bound(qapp):
+    """One level per profile point, stepping midway between two points; the axis names the level nothing is held at."""
+    profile_set = _profile_set()
+    profile = profile_set.profiles['Ka_guest']
+    held = profile.grid < 10**8.2
+    profile.r2_cut = np.where(held, CUT_R2 - 0.004, CUT_R2)
+    w = _widget(_fit(), profile_set)
+    items = w._items['Ka_guest']
+    steps, levels = items['cut'].getData()
+    np.testing.assert_array_equal(levels, profile.r2_cut)
+    assert items['cut'].opts['stepMode'] == 'center' and steps.size == levels.size + 1
+    log_grid = np.log10(profile.grid)
+    last_held = int(np.flatnonzero(held)[-1])
+    assert steps[last_held + 1] == pytest.approx(0.5 * (log_grid[last_held] + log_grid[last_held + 1]))
+    assert (steps[0], steps[-1]) == (log_grid[0], log_grid[-1])
+    # Two levels are drawn and the axis names one of them, so it says which.
+    assert items['main'].getAxis('right')._tickLevels == [[(CUT_R2, 'cut-off 0.9900 (nothing held)')]]
 
 
 def test_r2_axis_is_linear(qapp):
@@ -449,6 +536,21 @@ def test_default_view_frames_the_peak_and_the_cut_off(qapp):
     main.autoRange()
     _, (all_lo, all_hi) = main.viewRange()
     assert all_lo <= 0.0 and all_hi >= PEAK_R2
+
+
+def test_default_view_holds_every_step_of_the_cut_off_inside_its_ka_span(qapp):
+    """A step three level spans below the constant cut-off is framed where it is in view, and only there."""
+    profile_set = _profile_set()
+    profile = profile_set.profiles['Ka_guest']
+    span = PEAK_R2 - CUT_R2
+    profile.r2_cut = np.where(profile.grid < 10**8.2, CUT_R2 - 3 * span, CUT_R2)
+    (x_lo, _), (y_lo, y_hi) = _widget(_fit(), profile_set)._items['Ka_guest']['main'].viewRange()
+    assert x_lo < 8.2 and y_lo < CUT_R2 - 3 * span < PEAK_R2 < y_hi
+
+    # The same step at Ka the default view does not show leaves the view on the peak and the constant cut-off.
+    profile.r2_cut = np.where(profile.grid < 10**6.0, CUT_R2 - 3 * span, CUT_R2)
+    _, y_range = _widget(_fit(), profile_set)._items['Ka_guest']['main'].viewRange()
+    assert y_range == pytest.approx((0.985, 0.998))
 
 
 def test_an_interval_open_at_both_ends_is_not_padded_past_the_drawn_curve(qapp):
@@ -571,6 +673,134 @@ def test_a_chart_too_wide_for_the_tab_does_not_take_the_text_with_it(qapp, monke
 
 
 # ---------------------------------------------------------------------------
+# Input uncertainties: the second curve, the conditional line, the verdict
+# ---------------------------------------------------------------------------
+
+
+def _aware_set(**kwargs):
+    """A one-Ka ProfileSet whose profile also carries its input-aware twin."""
+    return _profile_set(aware=_aware_profile(), **kwargs)
+
+
+def test_stated_input_uncertainties_draw_a_second_curve_with_its_own_band_and_cut_off(qapp):
+    """The headline band and cut-off are the input-aware ones; the conditional interval stays underneath."""
+    profile_set = _aware_set()
+    aware = profile_set.profiles['Ka_guest'].aware
+    w = _widget(_fit(), profile_set)
+    items = w._items['Ka_guest']
+
+    np.testing.assert_allclose(items['aware'].getData()[0], np.log10(aware.grid))
+    np.testing.assert_array_equal(items['aware'].getData()[1], aware.r2)
+    # Two lines on one R² axis are told apart by colour, and both are drawn smooth.
+    assert items['aware'].opts['pen'].color() != items['average'].opts['pen'].color()
+    assert items['aware'].opts['antialias']
+    assert items['aware_band'].getRegion() == pytest.approx((7.8, 9.4))
+    assert np.all(items['aware_cut'].getData()[1] == AWARE_CUT)
+    assert items['cut'] is None  # one cut-off is drawn: the one the headline band is cut at
+    axis = items['main'].getAxis('right')
+    assert axis._tickLevels == [[(AWARE_CUT, f'cut-off {AWARE_CUT:.4f}')]]
+    # The conditional interval is still on screen, fainter and underneath.
+    assert items['band'].getRegion() == pytest.approx((8.0, 9.0))
+    assert items['band'].zValue() < items['aware_band'].zValue()
+    assert items['band'].brush.color().alpha() < items['aware_band'].brush.color().alpha()
+    legend = w._legend.text().replace('&nbsp;', ' ')
+    assert 'with input uncertainties' in legend and 'at the entered inputs' in legend
+
+
+def test_the_input_aware_estimate_is_marked_beside_the_conditional_one(qapp):
+    """Two curves, two estimates: each peak carries the marker of its own curve, in its own colour."""
+    w = _widget(_fit(), _aware_set())
+    items = w._items['Ka_guest']
+
+    assert items['best'].getData()[0][0] == pytest.approx(np.log10(BEST_KA))
+    assert items['best'].getData()[1][0] == pytest.approx(PEAK_R2)
+    assert items['aware_best'].getData()[0][0] == pytest.approx(AWARE_CENTRE)
+    assert items['aware_best'].getData()[1][0] == pytest.approx(AWARE_PEAK)
+    assert items['aware_best'].opts['brush'].color() == items['aware'].opts['pen'].color()
+
+
+def test_without_stated_uncertainties_there_is_one_curve_and_no_conditional_line(qapp):
+    """Nothing varying: the tab is s2's — one curve, one band, one cut-off, no second reading to explain."""
+    w = _widget(_fit(), _profile_set())
+    items = w._items['Ka_guest']
+
+    assert (items['aware'], items['aware_band'], items['aware_cut'], items['aware_best']) == (None,) * 4
+    assert np.all(items['cut'].getData()[1] == CUT_R2)
+    assert 'with input uncertainties' not in w._legend.text().replace('&nbsp;', ' ')
+    assert 'Conditional on the entered inputs' not in w._summary.text()
+
+
+def test_the_headline_interval_is_the_input_aware_one_and_the_conditional_one_follows(qapp):
+    """Both readings are on screen, the input-aware one first: it is what the fit reports."""
+    from gui.plotting.labels import fmt_interval_html, fmt_sci
+
+    w = _widget(_fit(), _aware_set())
+    text = w._summary.text()
+
+    headline = f'95% CI {fmt_interval_html(fmt_sci(10**7.8), fmt_sci(10**9.4), False, False)} M<sup>−1</sup>'
+    conditional = f'95% CI {fmt_interval_html(fmt_sci(1e8), fmt_sci(1e9), False, False)} M<sup>−1</sup>'
+    assert text.index(headline) < text.index('Conditional on the entered inputs') < text.index(conditional)
+    # Each reading is quoted with the estimate it belongs to.
+    assert text.index(fmt_sci(10**AWARE_CENTRE, 3)) < text.index(fmt_sci(BEST_KA, 3))
+    # The widening is what usually happens, not what always happens.
+    assert 'usually' in text
+
+
+def test_an_input_aware_side_the_data_leave_open_says_so_and_names_its_edge(qapp):
+    """The open-side reading follows the headline interval, while the conditional one is closed at both ends."""
+    from gui.plotting.labels import fmt_sci
+
+    aware = _aware_profile(interval=_interval(10**7.8, 1e12, open_high=True))
+    w = _widget(_fit(), _profile_set(aware=aware))
+    text = w._summary.text()
+
+    assert text.count('Open: the data cannot rule out') == 1
+    assert 'a higher K<sub>a</sub>' in text
+    assert f'It reaches the bound of {fmt_sci(1e12)}' in text
+    assert 'no upper limit' in text
+
+
+def test_the_default_view_frames_both_peaks_and_the_cut_off(qapp):
+    """Four levels now decide the reading — two peaks and two cut-offs — and the view holds all of them."""
+    w = _widget(_fit(), _aware_set())
+    (x_lo, x_hi), (y_lo, y_hi) = w._items['Ka_guest']['main'].viewRange()
+
+    span = AWARE_PEAK - CUT_R2  # the lowest and the highest of the four levels
+    # Upwards the view stops a tenth of a span above R² = 1, short of the 0.6
+    # spans over the highest level it would take on a curve further from 1.
+    assert (y_lo, y_hi) == pytest.approx((CUT_R2 - span, 1.0 + 0.1 * span))
+    assert y_lo < CUT_R2 < AWARE_CUT < PEAK_R2 < AWARE_PEAK < y_hi
+    # Across: both intervals and both estimates, with a fifth of that span on either side.
+    assert (x_lo, x_hi) == pytest.approx((7.8 - 0.32, 9.4 + 0.32))
+
+
+def test_the_verdict_on_the_model_and_the_inputs_is_shown_under_the_intervals(qapp):
+    """What the fit found out about the model and the entered inputs is reported here too, in the panel's words."""
+    from gui.plotting.labels import verdict_sentence
+
+    shifts = {'h0': InputShift(key='h0', fraction=-0.041, z=-1.4, at_edge=False)}
+    diagnostics = FitDiagnostics(
+        conditional_misfit=MisfitTest(kind='runs', statistic=4.0, p_value=0.004, expected=7.0),
+        misfit=MisfitTest(kind='runs', statistic=7.0, p_value=0.55, expected=7.0),
+        conflict=Conflict(q=1.9, k=1, p_value=0.17, weights=(0.9,)),
+        verdict=Verdict.INPUTS_EXPLAIN,
+    )
+    labels = {'h0': '[Host]₀'}  # the plain name an IDA fit's host concentration is reported by
+    w = _widget(_fit(diagnostics=diagnostics, shifts=shifts), _aware_set())
+    text = w._summary.text()
+
+    sentence = verdict_sentence(diagnostics, shifts, labels, html=True)
+    assert sentence in text
+    assert text.index('Conditional on the entered inputs') < text.index(sentence)
+    assert '[Host]₀ −4.1 % (1.4 σ)' in text
+    # A result that carries no verdict — one read from a file written before the
+    # fit tested its inputs — says nothing about the model instead of inventing it.
+    untested = _widget(_fit(), _aware_set())
+    silent = untested._summary.text()
+    assert text.startswith(silent) and len(text) > len(silent)
+
+
+# ---------------------------------------------------------------------------
 # Two binding constants: a panel each and the joint region
 # ---------------------------------------------------------------------------
 
@@ -592,8 +822,11 @@ def test_two_binding_constants_get_a_panel_each_and_a_joint_region(qapp):
     assert '[3.2×10⁵, 3.2×10⁶]' in summary and '[3.2×10³, 3.2×10⁴]' in summary
 
     region = profile_set.region
-    inside = np.isfinite(region.r2) & (region.r2 >= region.r2_threshold)
+    inside = np.isfinite(region.r2) & (region.r2 >= region.r2_cut)
     assert not inside[0, 0]  # the pair the model has no solution for is out, whatever its R² compares as
+    # Each pair is judged against the cut-off of its own fit: where that steps down, pairs
+    # below the first level are in the region.
+    assert np.any(inside & (region.r2 < region.r2_threshold))
     # What is painted, not only what was handed over: an image left to scale
     # itself to its own largest byte fills the region white instead of grey.
     drawn = w._region_items['region']
@@ -628,9 +861,96 @@ def test_the_region_panel_reads_in_ka_with_a_labelled_axis_per_constant(qapp):
     assert mapped.right() == pytest.approx(7.0 + step / 2)
 
 
+def test_two_binding_constants_with_input_uncertainties_draw_both_curves_over_a_conditional_region(qapp):
+    """Each constant gets its two curves; the pair region is the one at the inputs as entered, and says so."""
+    plain = _widget(_fit(keys=HG2_KEYS, assay='DBA_HG2'), _two_ka_set(), 'DBA_HG2')
+    assert plain._region_items['main'].titleLabel.text == ''
+
+    w = _widget(_fit(keys=HG2_KEYS, assay='DBA_HG2'), _two_ka_set(aware=True), 'DBA_HG2')
+
+    for key, centre in (('Ka_HG', 6.1), ('Ka_HG2', 4.1)):
+        items = w._items[key]
+        assert items['aware'] is not None and items['aware_band'] is not None and items['cut'] is None
+        assert items['aware_best'].getData()[0][0] == pytest.approx(centre)
+    assert 'entered inputs' in w._region_items['main'].titleLabel.text
+    # The bands behind the region are the two conditional intervals it is drawn with.
+    edges = ((5.5, 6.5), (3.5, 4.5))
+    assert all(band.getRegion() == pytest.approx(r) for band, r in zip(w._region_items['bands'], edges))
+    assert 'entered inputs' in w._notes.text()
+    assert w._summary.text().count('Conditional on the entered inputs') == 2
+
+
 def test_one_binding_constant_has_no_region_panel(qapp):
     w = _widget(_fit(), _profile_set())
     assert w._region_items == {}
+
+
+def test_what_every_interval_rests_on_is_said_once_for_the_fit(qapp):
+    """The counts and the bounds hold for the whole fit; repeating them per binding constant buries the numbers."""
+    w = _widget(_fit(keys=HG2_KEYS, assay='DBA_HG2'), _two_ka_set(aware=True), 'DBA_HG2')
+    text = w._summary.text()
+
+    assert text.count('parameter bounds this fit was given') == 1
+    assert text.count('12 data points') == 1 and text.count('3 fitted parameters') == 1
+    assert text.count('free to move within the uncertainty you stated') == 1
+    # Each constant still carries its own estimate and both of its intervals.
+    assert text.count('Conditional on the entered inputs') == 2
+    # And the shared line comes after them, not between a constant and its interval.
+    assert text.index('K<sub>a(HG₂)</sub>') < text.index('12 data points')
+
+
+def test_the_pair_panel_drops_below_the_others_where_the_three_do_not_fit_side_by_side(qapp):
+    """At 1440x900 the three panels do not fit across the tab, and the pair is the one that falls off the edge.
+
+    Below the other two it is in view whole — title, axes and all — and the
+    page no longer scrolls sideways over it.
+    """
+    from gui.plotting.identifiability_widget import _MAIN_MIN_HEIGHT, _MAIN_MIN_WIDTH
+
+    w = _widget(_fit(keys=HG2_KEYS, assay='DBA_HG2'), _two_ka_set(aware=True), 'DBA_HG2')
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.resize(1560, 720)  # room enough for the three side by side
+    w.show()
+    for _ in range(8):
+        qapp.processEvents()
+    assert not w._region_wrapped
+
+    w.resize(1044, 573)  # the Identifiability tab of a 1440x900 window
+    for _ in range(10):
+        qapp.processEvents()
+
+    assert w._region_wrapped
+    assert w._content.horizontalScrollBar().maximum() == 0
+    region = w._region_items['main']
+    box = region.getViewBox()
+    assert box.width() >= _MAIN_MIN_WIDTH and box.height() >= _MAIN_MIN_HEIGHT
+    assert region.titleLabel.isVisible() and 'entered inputs' in region.titleLabel.text
+    # Below both Ka panels, and inside the page rather than past its right edge.
+    pair = region.mapRectToScene(region.boundingRect())
+    for items in w._items.values():
+        assert items['main'].mapRectToScene(items['main'].boundingRect()).bottom() <= pair.top()
+        assert items['main'].getViewBox().width() >= _MAIN_MIN_WIDTH
+    assert pair.right() <= w._glw.width()
+
+    w.resize(1560, 720)
+    for _ in range(10):
+        qapp.processEvents()
+    assert not w._region_wrapped  # back beside them once there is room again
+    w.close()
+
+
+def test_a_tab_too_narrow_for_two_panels_keeps_the_pair_beside_them(qapp):
+    """Shorter panels buy nothing where the page scrolls sideways either way, so the row is left alone."""
+    w = _widget(_fit(keys=HG2_KEYS, assay='DBA_HG2'), _two_ka_set(), 'DBA_HG2')
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.resize(738, 406)  # the Identifiability tab of an 1100x700 window
+    w.show()
+    for _ in range(10):
+        qapp.processEvents()
+
+    assert not w._region_wrapped
+    assert w._content.horizontalScrollBar().maximum() > 0
+    w.close()
 
 
 # ---------------------------------------------------------------------------
@@ -881,6 +1201,62 @@ def test_a_run_for_another_assay_is_not_drawn(qapp):
 # ---------------------------------------------------------------------------
 # Real objects
 # ---------------------------------------------------------------------------
+
+
+def test_renders_a_real_input_aware_fit_beside_its_conditional_one(qapp):
+    """Two replicates of the synthetic IDA truth, the host stated to 5 %: the tab shows the fit's own working.
+
+    The marked estimate is the Ka the fit reports, the quoted intervals are the
+    two the fit made, and the drawn input-aware curve lies above the
+    conditional one at every Ka — a fit free to move the host within its
+    uncertainty can always leave it where it was entered.
+    """
+    from core.assays.ida import IDAAssay
+    from core.data_processing.measurement_set import MeasurementSet
+    from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
+    from core.pipeline.inputs import InputSpec
+    from core.pipeline.profile import fit_profile
+    from gui.plotting.labels import fmt_sci, verdict_sentence
+    from gui.widgets.assay_conditions import result_input_labels
+    from tests.conftest import IDA_TRUE, _make_ida_data
+
+    rng = np.random.default_rng(0)
+    x, y = _make_ida_data(IDA_TRUE, n_points=14)
+    ms = MeasurementSet(
+        concentrations=x,
+        signals=np.vstack([y * (1 + 0.01 * rng.standard_normal(y.size)) for _ in range(2)]),
+        replica_ids=('A', 'B'),
+    )
+    conditions = {
+        'Ka_dye': Q_(IDA_TRUE['Ka_dye'], '1/M'),
+        'h0': Q_(IDA_TRUE['h0'], 'M'),
+        'd0': Q_(IDA_TRUE['d0'], 'M'),
+    }
+    config = FitConfig(per_replica=False, input_specs={'h0': InputSpec.sigma_pct(5.0)})
+    fit = fit_measurement_set(ms, IDAAssay, conditions, config)
+    profile_set = fit_profile(ms, IDAAssay, conditions, config, aware=fit.aware)
+    profile = profile_set.profiles['Ka_guest']
+
+    w = _widget(fit, profile_set)
+    items = w._items['Ka_guest']
+
+    reported = fit.parameters['Ka_guest'].to('1/M').magnitude
+    assert items['aware_best'].getData()[0][0] == pytest.approx(np.log10(reported), abs=1e-6)
+    assert items['best'].getData()[0][0] == pytest.approx(np.log10(profile.best_ka))
+    # Freeing the host cannot fit worse than leaving it as entered.
+    aware_x, aware_y = items['aware'].getData()
+    conditional = np.interp(aware_x, *items['average'].getData())
+    assert np.all(aware_y >= conditional - 1e-9)
+    # Both readings quoted are the fit's own.
+    text = w._summary.text()
+    headline, entered = fit.intervals['Ka_guest'], fit.conditional.intervals['Ka_guest']
+    head, _, conditional_line = text.partition('Conditional on the entered inputs')
+    assert f'95% CI [{fmt_sci(headline.low)}, {fmt_sci(headline.high)}]' in head
+    assert f'95% CI [{fmt_sci(entered.low)}, {fmt_sci(entered.high)}]' in conditional_line
+    # The verdict this fit reached on the model and the inputs is here too.
+    # Named from the fit's own assay, which is where the tab takes its names from.
+    labels = result_input_labels(fit.assay_type)
+    assert verdict_sentence(fit.diagnostics, fit.input_shifts, labels, html=True) in conditional_line
 
 
 def test_renders_a_real_ida_fit_and_its_profile(qapp):

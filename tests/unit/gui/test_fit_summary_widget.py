@@ -75,6 +75,20 @@ def _log_row(table):
 # ---------------------------------------------------------------------------
 
 
+def test_the_empty_panel_asks_only_for_the_height_of_what_it_shows(qapp):
+    """With no fit yet, the rows that only a fit fills are hidden and must not reserve height.
+
+    The panel shares the window's height with the plot tabs above it through a
+    splitter, so height reserved for nothing is height the chart loses.
+    """
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    reserved = widget._page.widget().layout().itemAt(0).sizeHint().height()
+
+    assert reserved == widget._params_group.sizeHint().height()
+
+
 def test_the_table_reports_an_estimate_and_its_interval_per_binding_constant(qapp):
     from gui.plotting.fit_summary_widget import _LEVEL_TEXT
 
@@ -694,3 +708,253 @@ def test_the_columns_are_shared_out_again_over_the_width_the_table_ends_up_with(
     assert sum(table.columnWidth(c) for c in range(table.columnCount())) == wide
     assert not table.horizontalScrollBar().isVisible()
     window.close()
+
+
+# ---------------------------------------------------------------------------
+# Inputs that were free to move: the conditional column and the Model and
+# inputs block
+# ---------------------------------------------------------------------------
+
+
+#: What the block calls the inputs of an IDA fit, which is what
+#: :func:`~gui.widgets.assay_conditions.result_input_labels` derives from the
+#: assay the fit records.
+_INPUT_LABELS = {'h0': '[Host]₀', 'd0': '[Dye]₀', '__titrant__': 'Guest (titrant, whole series)'}
+
+#: Stands for "leave this at the fixture's default", so a test can ask for None.
+_DEFAULT = object()
+
+
+def _aware_result(*, shifts=None, diagnostics=_DEFAULT, uncertainty=None, conditional=True, **overrides):
+    """A GDA fit whose entered inputs were free to move, with its conditional fit beside it."""
+    from core.pipeline.diagnostics import FitDiagnostics, InputShift, MisfitTest, Verdict
+    from core.pipeline.fit_pipeline import ConditionalFit
+    from core.pipeline.varpro import KaInterval
+    from core.units import Q_
+
+    shifts = {'h0': InputShift('h0', -0.041, -1.4, False)} if shifts is None else shifts
+    if diagnostics is _DEFAULT:
+        diagnostics = FitDiagnostics(
+            conditional_misfit=MisfitTest('lack_of_fit', 0.9, 0.55, dof=(9, 72)),
+            misfit=MisfitTest('lack_of_fit', 0.8, 0.62, dof=(9, 72)),
+            conflict=None,
+            verdict=Verdict.CONSISTENT,
+        )
+    base = _result(
+        # h0, d0 and Ka_dye are the inputs of an IDA fit, and the block names
+        # them from the assay the result records.
+        assay_type='IDA',
+        # The headline: the fit with the inputs free to move, and its wider interval.
+        parameters={
+            'Ka_guest': Q_(1.30e6, '1/M'),
+            'I0': Q_(100.0, 'au'),
+            'I_dye_free': Q_(5e4, 'au/M'),
+            'I_dye_bound': Q_(8e4, 'au/M'),
+        },
+        intervals={'Ka_guest': KaInterval(0.5e6, 3.0e6, False, False, 0.95, 16)},
+        fit_config={
+            'per_replicate': False,
+            'level': 0.95,
+            'input_uncertainty': {'h0': {'kind': 'sigma', 'sigma': 3.0, 'lo': 0.0, 'hi': 0.0, 'relative': True}}
+            if uncertainty is None
+            else uncertainty,
+        },
+        conditions={'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M'), 'Ka_dye': Q_(1.68e7, '1/M')},
+        input_shifts=shifts,
+        diagnostics=diagnostics,
+        **overrides,
+    )
+    if not conditional:
+        return base
+    from dataclasses import replace
+
+    return replace(
+        base,
+        conditional=ConditionalFit(
+            parameters={**base.parameters, 'Ka_guest': Q_(1.24e6, '1/M')},
+            intervals={'Ka_guest': KaInterval(0.7e6, 2.2e6, False, False, 0.95, 16)},
+            rmse=0.006,
+            r_squared=0.997,
+        ),
+    )
+
+
+def _aware_widget(result=None):
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.update_result(_aware_result() if result is None else result)
+    return widget
+
+
+def _block(widget):
+    return widget._diagnostics_label.text()
+
+
+def test_the_conditional_column_shows_the_fit_with_the_inputs_taken_as_entered(qapp):
+    """The headline moved the inputs; the column beside it is what the data say with them held where entered."""
+    from gui.plotting.fit_summary_widget import _CONDITIONAL_HEADER
+
+    widget = _aware_widget()
+    table = widget._table
+    column = _headers(table).index(_CONDITIONAL_HEADER)
+    row = _ka_row(table)
+
+    assert row[1].startswith('1.3×10')  # the headline estimate, with the inputs free
+    assert row[column].startswith('1.24×10')  # the conditional one
+    assert '[7×10' in row[column] and '2.2×10' in row[column]
+    # The headline interval is the one the column of intervals carries.
+    assert '5×10' in row[2] and '3×10' in row[2]
+
+
+def test_a_split_conditional_interval_is_marked_like_any_other(qapp):
+    """The bracket in that column spans rejected values just as the headline one can, and reads as a range unmarked."""
+    from dataclasses import replace
+
+    from gui.plotting.fit_summary_widget import _CONDITIONAL_HEADER
+    from gui.plotting.labels import SPLIT_MARK
+
+    base = _aware_result()
+    split = replace(base.conditional.intervals['Ka_guest'], split=True)
+    result = replace(base, conditional=replace(base.conditional, intervals={'Ka_guest': split}))
+    widget = _aware_widget(result)
+    column = _headers(widget._table).index(_CONDITIONAL_HEADER)
+
+    assert SPLIT_MARK in _ka_row(widget._table)[column]
+    assert SPLIT_MARK not in _ka_row(widget._table)[2]  # the headline interval is not split
+    assert 'separate stretches' in widget._footnote.text()
+
+
+def test_the_log10_twin_carries_the_conditional_numbers_on_a_log_scale(qapp):
+    from gui.plotting.fit_summary_widget import _CONDITIONAL_HEADER
+
+    widget = _aware_widget()
+    column = _headers(widget._table).index(_CONDITIONAL_HEADER)
+    text = _log_row(widget._table)[column]
+    estimate, interval = text.split(' [')
+    low, high = (float(v) for v in interval.rstrip(']').split(', '))
+
+    assert float(estimate) == pytest.approx(np.log10(1.24e6), abs=5e-5)
+    assert (low, high) == (pytest.approx(np.log10(0.7e6), abs=5e-5), pytest.approx(np.log10(2.2e6), abs=5e-5))
+
+
+def test_a_fit_with_every_input_as_entered_is_not_shown_a_column_repeating_its_own_numbers(qapp):
+    from gui.plotting.fit_summary_widget import _CONDITIONAL_HEADER
+
+    widget = _widget()
+
+    assert _CONDITIONAL_HEADER not in _headers(widget._table)
+
+
+def test_the_block_says_what_the_diagnostics_say_and_which_uncertainties_were_used(qapp):
+    from gui.plotting.labels import verdict_sentence
+
+    widget = _aware_widget()
+    text = _block(widget)
+    result = widget._fit
+
+    assert verdict_sentence(result.diagnostics, result.input_shifts, _INPUT_LABELS, html=True) in text
+    # Both misfit tests are quoted: the fit as entered, and the fit that moved.
+    assert 'F(9, 72) = 0.9' in text and 'F(9, 72) = 0.8' in text
+    assert '[Host]₀ −4.1 % (1.4 σ)' in text
+    assert 'Input uncertainties used' in text and '[Host]₀ ± 3 %' in text
+    assert not widget._diagnostics_label.isHidden()
+
+
+def test_a_fit_that_took_every_input_as_entered_says_the_interval_takes_them_as_exact(qapp):
+    """The block is the record of what the interval covers, so 'nothing stated' has to be stated."""
+    widget = _aware_widget(_aware_result(shifts={}, uncertainty={}, conditional=False))
+    text = _block(widget)
+
+    assert 'none — the interval takes the inputs as exact' in text
+    assert 'Shifts' not in text
+
+
+def test_an_input_stated_as_a_range_reports_the_end_it_rests_on_and_no_sigma(qapp):
+    from core.pipeline.diagnostics import InputShift
+
+    widget = _aware_widget(
+        _aware_result(
+            shifts={'d0': InputShift('d0', -0.06, None, True)},
+            uncertainty={'d0': {'kind': 'interval', 'sigma': 0.0, 'lo': -6.0, 'hi': 10.0, 'relative': True}},
+        )
+    )
+    text = _block(widget)
+
+    assert '[Dye]₀ −6.0 % (at the edge of its range)' in text
+    assert 'σ)' not in text
+    assert '[Dye]₀ −6 % to +10 %' in text
+    # There is no statistic for a range, and the block says why rather than
+    # leaving the reader to infer that nothing was tested.
+    assert 'there is nothing to test a shift against' in text
+    assert 'q =' not in text
+
+
+def test_an_absolute_uncertainty_is_reported_in_the_input_s_own_unit(qapp):
+    widget = _aware_widget(
+        _aware_result(uncertainty={'h0': {'kind': 'sigma', 'sigma': 2e-7, 'lo': 0.0, 'hi': 0.0, 'relative': False}})
+    )
+
+    assert '[Host]₀ ± 2.0×10⁻⁷ M' in _block(widget)
+
+
+def test_a_conflict_is_reported_as_one_statement_about_the_inputs_together(qapp):
+    from core.pipeline.diagnostics import Conflict, FitDiagnostics, InputShift, MisfitTest, Verdict
+
+    diagnostics = FitDiagnostics(
+        conditional_misfit=MisfitTest('lack_of_fit', 200.0, 1e-9, dof=(9, 72)),
+        misfit=MisfitTest('lack_of_fit', 1.1, 0.4, dof=(9, 72)),
+        conflict=Conflict(q=24.2, k=2, p_value=1e-5, weights=(0.3, 0.9)),
+        verdict=Verdict.INPUTS_CONFLICT,
+    )
+    shifts = {
+        'h0': InputShift('h0', -0.114, -3.8, False),
+        '__titrant__': InputShift('__titrant__', 0.093, 3.1, False),
+    }
+    widget = _aware_widget(_aware_result(shifts=shifts, diagnostics=diagnostics))
+    text = _block(widget)
+
+    assert 'q = 24.2' in text
+    assert '2 directions' in text
+    # Largest |z| first, and the culprit left open: the statistic judges them together.
+    assert text.index('[Host]₀ −11.4') < text.index('Guest (titrant, whole series) +9.3')
+    # The data inform one direction per stated input here, so the block says only
+    # that the statistic weighs them as one — it does not claim they are alike.
+    assert 'does not say which of them is off' in text
+    assert 'almost alike' not in text
+
+
+def test_sigma_inputs_the_data_cannot_check_are_said_to_be_unchecked(qapp):
+    """With no direction the data inform there is no conflict statistic, and no verdict on the inputs."""
+    from core.pipeline.diagnostics import FitDiagnostics, InputShift, MisfitTest, Verdict
+
+    diagnostics = FitDiagnostics(
+        conditional_misfit=MisfitTest('runs', 6.0, 0.41, expected=7.0),
+        misfit=MisfitTest('runs', 6.0, 0.41, expected=7.0),
+        conflict=None,
+        verdict=Verdict.CONSISTENT,
+    )
+    widget = _aware_widget(_aware_result(shifts={'h0': InputShift('h0', -0.041, -1.4, False)}, diagnostics=diagnostics))
+    text = _block(widget)
+
+    assert 'cannot check' in text
+    assert 'q =' not in text
+
+
+def test_an_imported_result_without_diagnostics_shows_no_block_rather_than_an_empty_one(qapp):
+    widget = _aware_widget(_aware_result(shifts={}, diagnostics=None, conditional=False, uncertainty={}))
+
+    assert widget._diagnostics_label.isHidden()
+    assert widget._diagnostics_heading.isHidden()
+
+
+def test_the_samples_view_shows_no_model_and_inputs_block(qapp):
+    """The block tests one fit against the data; the samples table summarises many fits of moved inputs."""
+    widget = _aware_widget()
+    widget.set_sensitivity(_sobol_run({'Ka_guest': [1.1e6, 1.2e6, 1.3e6]}))
+    widget.show_samples(True)
+
+    assert widget._diagnostics_label.isHidden()
+
+    widget.show_samples(False)
+    assert not widget._diagnostics_label.isHidden()

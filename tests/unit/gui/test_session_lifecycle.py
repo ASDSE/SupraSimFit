@@ -6,7 +6,9 @@ and its sensitivity run, waits for each thread and deletes each worker before
 its widgets go. The long runs are stood in for by functions that do nothing but
 watch their cancel flag: what these tests pin is the stopping, not the science.
 
-One analysis at a time is checked here too.
+One analysis at a time is checked here too, and so is what the two runs are
+given: both read the uncertainties from the one Input Uncertainty panel, and
+neither starts while a row of it cannot be used as set.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from PyQt6.QtCore import QEvent, QThread  # noqa: E402
 
 from core.assays.registry import AssayType  # noqa: E402
 from core.pipeline.fit_pipeline import FitConfig  # noqa: E402
+from core.pipeline.inputs import InputSpec  # noqa: E402
 from core.pipeline.varpro import FitCancelled  # noqa: E402
 from tests.unit.gui.test_sensitivity_gui import _fake_run, _made_on, _sobol_result  # noqa: E402
 
@@ -88,6 +91,15 @@ def watchful_sensitivity(monkeypatch):
     monkeypatch.setattr(workers, 'run_sensitivity', run)
 
 
+def _state_an_uncertainty(session, spec: InputSpec | None = None) -> None:
+    """State an uncertainty on the host concentration, which the analysis needs to have anything to vary.
+
+    Every row opens fixed, so without this the analysis is refused before a
+    worker is ever started.
+    """
+    session._input_panel._rows['h0'].set_spec(spec or InputSpec.sigma_pct(5.0))
+
+
 def _session(dialogs):
     """A session on the bundled IDA dataset, ready to fit and to analyse."""
     from gui.fitting_session import FittingSession
@@ -96,6 +108,7 @@ def _session(dialogs):
     session._assay_panel.set_assay_type(AssayType.IDA)
     session._fit_panel.set_config(FitConfig(per_replica=False))
     session._data_panel.load_file(str(_IDA_DATA))
+    _state_an_uncertainty(session)
     return session
 
 
@@ -110,6 +123,7 @@ def _window(monkeypatch):
 def _load(session) -> None:
     session._assay_panel.set_assay_type(AssayType.IDA)
     session._data_panel.load_file(str(_IDA_DATA))
+    _state_an_uncertainty(session)
 
 
 def test_closing_a_tab_mid_fit_stops_the_fit_and_leaves_no_thread_running(qapp, monkeypatch, dialogs, watchful_fit):
@@ -257,6 +271,90 @@ def test_loading_other_data_stops_the_running_fit_instead_of_abandoning_it(qapp,
     session.shutdown()
 
 
+def test_cancelling_a_fit_leaves_the_tab_as_it_was_and_lets_the_next_fit_start(qapp, dialogs, monkeypatch):
+    """A cancelled fit reports nothing: the result already on the tab stands, and a new fit starts straight away."""
+    from gui import workers
+
+    session = _session(dialogs)
+    session._input_panel.reset_to_defaults()  # every input exact, so this first fit is the quick one
+    session.run_fit()
+    _wait_until(qapp, lambda: session._state.fit_results)
+    _wait_until(qapp, lambda: session._state.profile_result is not None)
+    shown = [result.id for result in session._state.fit_results]
+    profile = session._state.profile_result
+
+    def watchful(ms, assay_cls, conditions, config, should_cancel=None, **kwargs):
+        while should_cancel is None or not should_cancel():
+            time.sleep(0.005)
+        raise FitCancelled('The fit was cancelled.')
+
+    monkeypatch.setattr(workers, 'fit_measurement_set', watchful)
+    session.run_fit()
+    worker = session._fit_worker
+    _wait_until(qapp, worker.isRunning)
+    said: list[str] = []
+    session.status_message.connect(said.append)
+
+    session.cancel_fit()
+
+    assert worker.cancelled and not worker.isRunning()  # asked to stop, and its thread seen out
+    assert not session.fit_running()
+    assert said[-1].startswith('Fit cancelled')
+    assert dialogs == []  # a cancel the user asked for is not a failure to warn about
+    assert [result.id for result in session._state.fit_results] == shown
+    assert session._state.profile_result is profile
+
+    session.run_fit()  # the next fit starts at once, with nothing left to wait for
+
+    assert session.fit_running() and dialogs == []
+    session.shutdown()
+    _settle(qapp)
+    with pytest.raises(RuntimeError):
+        worker.isRunning()  # the cancelled fit's worker was retired, not left for the tab to destroy
+
+
+def test_the_fit_action_stops_the_running_fit_and_follows_the_tab_on_screen(qapp, monkeypatch, dialogs, watchful_fit):
+    """One action per tab: it starts that tab's fit, and stops it while it runs, as the analysis button does."""
+    window = _window(monkeypatch)
+    running = window.active_session()
+    _load(running)
+    running.run_fit()
+    worker = running._fit_worker
+    _wait_until(qapp, worker.isRunning)
+
+    assert window._act_fit.text() == 'Cancel Fit' and window._act_fit.isEnabled()
+    assert window._act_fit.toolTip() == 'Stop the fit running in this session (Ctrl+R)'
+
+    window._new_session()  # an idle tab: the fit of another tab is not offered here
+
+    assert window._act_fit.text() == 'Run Fit' and window._act_fit.isEnabled()
+
+    window._tabs.setCurrentWidget(running)
+
+    assert window._act_fit.text() == 'Cancel Fit'
+
+    window._act_fit.trigger()
+
+    assert worker.cancelled and not running.fit_running()
+    assert window._act_fit.text() == 'Run Fit' and window._act_fit.isEnabled()
+    assert window._act_fit.toolTip().startswith('Fit the active session')
+    assert dialogs == []
+    window.close()
+
+
+def test_the_demo_takes_every_input_as_exact_again(qapp, dialogs, watchful_fit):
+    """Demo IDA promises the same run every time, so it resets the uncertainties as it resets the bounds."""
+    session = _session(dialogs)
+    assert session._input_panel.current_specs()  # the session states one on the host concentration
+
+    session.load_demo_ida()
+
+    assert session._input_panel.current_specs() == {}
+    assert session.fit_running()  # the demo's own fit, made with the inputs as exact
+    assert session._fit_worker.config.input_specs == {}
+    session.shutdown()
+
+
 def test_a_fit_and_an_analysis_never_run_at_the_same_time(qapp, dialogs, watchful_fit, watchful_sensitivity):
     session = _session(dialogs)
     session.run_sensitivity()
@@ -395,8 +493,93 @@ def test_the_analysis_is_told_what_the_panel_calls_each_input(qapp, monkeypatch,
     session.run_sensitivity()
     _wait_until(qapp, lambda: session._state.sensitivity_result is not None)
 
-    assert seen == [session._sensitivity_panel.input_labels()]
+    assert seen == [session._input_panel.input_labels()]
     assert seen[0], 'the panel names every input it offers'
+
+
+def test_the_fit_is_given_the_uncertainties_stated_in_the_panel(qapp, dialogs, watchful_fit):
+    """The interval the fit reports covers these, so the fit has to be told exactly what the panel holds."""
+    session = _session(dialogs)
+    session._input_panel._rows['d0'].set_spec(InputSpec.interval_pct(-6.0, 6.0))
+
+    session.run_fit()
+    _wait_until(qapp, session._fit_worker.isRunning)
+    _wait_until(qapp, lambda: bool(watchful_fit))
+    session.shutdown()
+
+    (config,) = watchful_fit
+    assert config.input_specs == {'h0': InputSpec.sigma_pct(5.0), 'd0': InputSpec.interval_pct(-6.0, 6.0)}
+    # A refusal has to name an input the way the sidebar names it.
+    assert config.input_labels == session._input_panel.input_labels()
+    assert dialogs == []
+
+
+def test_the_fit_is_refused_while_an_uncertainty_cannot_be_used_as_set(qapp, dialogs, watchful_fit):
+    """A range down to zero leaves the model nothing to fit: the fit says so and starts nothing."""
+    session = _session(dialogs)
+    _state_an_uncertainty(session, InputSpec.interval_pct(-100.0, 5.0))
+
+    session.run_fit()
+
+    assert not session.fit_running()
+    assert watchful_fit == []
+    assert dialogs[-1][1] == 'Input Uncertainty'
+    assert 'would be taken down to zero' in dialogs[-1][2]
+    assert '[Host]₀' in dialogs[-1][2]
+
+
+def test_the_analysis_varies_the_inputs_the_shared_panel_states(qapp, monkeypatch, dialogs):
+    """One panel states the uncertainties; the analysis draws from those, not from a set of its own."""
+    from gui import workers
+
+    seen: list = []
+    run = _fake_run(2)
+
+    def record(ms, assay_cls, conditions, fit_config, sens_config, **kwargs):
+        seen.append((fit_config, sens_config))
+        return run(ms, assay_cls, conditions, fit_config, sens_config, **kwargs)
+
+    monkeypatch.setattr(workers, 'run_sensitivity', record)
+    session = _session(dialogs)
+    session._input_panel._rows['Ka_dye'].set_spec(InputSpec.sigma_pct(2.0))
+
+    session.run_sensitivity()
+    _wait_until(qapp, lambda: session._state.sensitivity_result is not None)
+
+    (fit_config, sens_config) = seen[0]
+    assert sens_config.input_specs == session._input_panel.current_specs()
+    assert set(sens_config.input_specs) == {'h0', 'Ka_dye'}  # the rows left fixed are not drawn
+    # The analysis perturbs the inputs itself, so every one of its fits takes them as given.
+    assert fit_config.input_specs == {}
+    assert dialogs == []
+
+
+def test_the_uncertainty_rows_are_locked_while_a_run_reads_them(qapp, dialogs, watchful_fit):
+    """A run is reported against the uncertainties it was given, so they cannot be edited under it."""
+    session = _session(dialogs)
+    row = session._input_panel._rows['h0']
+    assert row.isEnabled()
+
+    session.run_fit()
+    _wait_until(qapp, session._fit_worker.isRunning)
+
+    assert not row.isEnabled()
+
+    session.shutdown()
+
+    assert row.isEnabled()
+
+
+def test_the_analysis_is_refused_while_every_input_is_fixed(qapp, dialogs):
+    """With nothing to vary there is no spread to split, and the message says where to state one."""
+    session = _session(dialogs)
+    session._input_panel._rows['h0'].set_spec(None)
+
+    session.run_sensitivity()
+
+    assert not session.sensitivity_running()
+    assert dialogs[-1][1] == 'Sensitivity Analysis'
+    assert 'Every input is set to fixed under Input Uncertainty' in dialogs[-1][2]
 
 
 def test_a_finished_analysis_leaves_no_worker_behind(qapp, monkeypatch, dialogs):
@@ -415,11 +598,23 @@ def test_a_finished_analysis_leaves_no_worker_behind(qapp, monkeypatch, dialogs)
         worker.isRunning()
 
 
+def _deliver_sensitivity(session):
+    """Hand *session* a Sobol' run, with the uncertainties it was drawn from stated on the panel.
+
+    The panel is what a held run is checked against, so a run delivered here
+    states its own specs on it, as the analysis the user starts does.
+    """
+    run = _made_on(_sobol_result(), session._state.measurement_set, session._assay_panel.current_conditions())
+    for key, spec in run.config.input_specs.items():
+        session._input_panel._rows[key].set_spec(spec)
+    session._on_sensitivity_complete(run)
+    return run
+
+
 def test_save_plot_saves_the_tab_on_screen(qapp, monkeypatch, dialogs, tmp_path):
     saved: list[tuple[str, str]] = []
     session = _session(dialogs)
-    ms = session._state.measurement_set
-    session._on_sensitivity_complete(_made_on(_sobol_result(), ms, session._assay_panel.current_conditions()))
+    _deliver_sensitivity(session)
     monkeypatch.setattr(
         'gui.fitting_session.QFileDialog.getSaveFileName',
         lambda *args, **kwargs: (str(tmp_path / 'out.png'), ''),
@@ -446,8 +641,7 @@ def test_the_save_plot_dialog_offers_only_what_the_tab_can_write(qapp, monkeypat
     """
     asked: list[tuple[str, str]] = []
     session = _session(dialogs)
-    ms = session._state.measurement_set
-    session._on_sensitivity_complete(_made_on(_sobol_result(), ms, session._assay_panel.current_conditions()))
+    _deliver_sensitivity(session)
     monkeypatch.setattr(type(session._identifiability_widget), 'has_chart', lambda self: True)
     monkeypatch.setattr(
         'gui.fitting_session.QFileDialog.getSaveFileName',

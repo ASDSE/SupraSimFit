@@ -8,6 +8,10 @@ result exports; undoing the change shows it again with identical numbers.
 Imports are checked against the loaded data, and work still running never
 reaches data it was not given.
 
+A change to what the Input Uncertainty panel states hides the fit too: the
+interval it reports is the one that covers the uncertainties the fit was given,
+so a different set of them asks a different question of the same data.
+
 The data hold two replicates that follow the IDA ground truth and one that
 follows the same model at three times its Ka, which the replicate test leaves
 out of the fit. One fit is made per module and handed to each session the way
@@ -143,6 +147,24 @@ def _shown_session(qapp, make_session, fit):
     return session
 
 
+def _deliver_sensitivity(session, fit):
+    """Hand *session* a Sobol' run, with the uncertainties it was drawn from stated on the panel.
+
+    The panel is what both results are checked against, so the run's own specs
+    are set on it and recorded on *fit* — the state the app is in once a fit
+    and an analysis have been run on one set of uncertainties.
+    """
+    from core.pipeline.inputs import specs_to_dict
+
+    ms = session._state.measurement_set
+    result = _made_on(_sobol_result(), ms, session._assay_panel.current_conditions())
+    fit.fit_config['input_uncertainty'] = specs_to_dict(result.config.input_specs)
+    for key, spec in result.config.input_specs.items():
+        session._input_panel._rows[key].set_spec(spec)
+    session._on_sensitivity_complete(result)
+    return result
+
+
 def _toggle(session, rid: str, on: bool) -> None:
     session._replica_panel._checkboxes[rid].setChecked(on)
 
@@ -206,8 +228,7 @@ def test_switching_the_left_out_replicate_keeps_the_fit_and_its_numbers(qapp, ma
 
 def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_back_on(qapp, make_session, fit, dialogs):
     session = _shown_session(qapp, make_session, fit)
-    ms = session._state.measurement_set
-    session._on_sensitivity_complete(_made_on(_sobol_result(), ms, session._assay_panel.current_conditions()))
+    _deliver_sensitivity(session, fit)
     before = _numbers(session)
     sensitivity = session._sensitivity_widget
     assert sensitivity._stack.currentWidget() is sensitivity._results_host
@@ -250,8 +271,7 @@ def test_the_status_bar_stops_describing_results_that_have_been_hidden(qapp, mak
 def test_a_sensitivity_run_is_hidden_and_shown_on_its_own_record(qapp, make_session, fit, dialogs):
     """The run used every replicate, the fit left 'c' out: switching 'c' off hides the run only."""
     session = _shown_session(qapp, make_session, fit)
-    ms = session._state.measurement_set
-    session._on_sensitivity_complete(_made_on(_sobol_result(), ms, session._assay_panel.current_conditions()))
+    _deliver_sensitivity(session, fit)
 
     _toggle(session, 'c', False)
 
@@ -264,6 +284,28 @@ def test_a_sensitivity_run_is_hidden_and_shown_on_its_own_record(qapp, make_sess
     _toggle(session, 'c', True)
     assert session._state.sensitivity_note is None
     assert not identifiability._controls.isHidden()
+
+
+def test_changing_an_uncertainty_hides_the_sensitivity_run_it_was_drawn_from(qapp, make_session, fit, dialogs):
+    """The uncertainties are what the analysis samples, so another set of them makes it answer another question."""
+    from core.pipeline.inputs import InputSpec
+
+    session = _shown_session(qapp, make_session, fit)
+    _deliver_sensitivity(session, fit)
+    assert session._state.sensitivity_note is None
+
+    session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(30.0))
+
+    assert session._state.sensitivity_note == (
+        'The input uncertainties have changed since this analysis; set them back under Input Uncertainty, or '
+        'run the analysis again.'
+    )
+    assert session._summary_widget._sensitivity_note == session._state.sensitivity_note
+    assert session._sensitivity_widget._mismatch_label.text() == session._state.sensitivity_note
+
+    session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(5.0))
+
+    assert session._state.sensitivity_note is None
 
 
 def test_a_condition_edit_hides_the_fit_once_finished_and_the_same_value_restores_it(qapp, make_session, fit, dialogs):
@@ -297,6 +339,75 @@ def test_a_pause_in_typing_finishes_a_condition_edit(qapp, make_session, fit, di
     _wait_until(qapp, lambda: not session._state.fit_results, timeout=5.0)
 
     assert '[Dye]₀ is now 6 µM' in session.hidden_results_note()
+
+
+def test_the_ka_profile_is_given_the_fit_s_own_penalised_profiles(qapp, make_session, fit, dialogs, monkeypatch):
+    """The tab has to draw the interval the fit reported, which a second computation of it need not reproduce."""
+    from gui import workers
+
+    seen: list = []
+    profile = workers.fit_profile
+
+    def record(*args, aware=None, **kwargs):
+        seen.append(aware)
+        return profile(*args, aware=aware, **kwargs)
+
+    monkeypatch.setattr(workers, 'fit_profile', record)
+
+    session = _shown_session(qapp, make_session, fit)
+
+    assert len(seen) == 1
+    assert seen[0] is fit.aware, "the profile got the fit's own result, not one of its own"
+    assert session._state.profile_result is not None
+
+
+def test_stating_an_uncertainty_hides_the_fit_until_it_is_run_again(qapp, make_session, fit, dialogs):
+    """The interval on screen takes the inputs as exact; saying they are not makes it answer another question."""
+    from core.pipeline.inputs import InputSpec
+
+    session = _shown_session(qapp, make_session, fit)
+    before = _numbers(session)
+
+    session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(5.0))
+
+    # The note names what the fit was made with, so the panel can be set back
+    # to it without opening the file the fit came from.
+    _assert_hidden(
+        session,
+        'This fit was made with every input taken as exact. The input uncertainties set now differ: set them '
+        'back under Input Uncertainty, or fit again to update the interval.',
+    )
+
+    session._input_panel._rows['h0'].set_spec(None)
+
+    assert session._state.fit_results == [fit]
+    assert _numbers(session) == before
+
+
+def test_the_note_names_the_uncertainties_the_hidden_fit_was_made_with(qapp, make_session, fit, dialogs):
+    """A fit made with uncertainties says which ones, as a fit made with other conditions names those."""
+    from core.pipeline.inputs import InputSpec, specs_to_dict
+
+    session = _shown_session(qapp, make_session, fit)
+    fit.fit_config['input_uncertainty'] = specs_to_dict(
+        {'h0': InputSpec.sigma_pct(10.0), '__titrant__': InputSpec.sigma_pct(3.0)}
+    )
+
+    session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(5.0))
+
+    assert session.hidden_results_note() == (
+        'This fit was made with [Host]₀ σ 10 % and Guest (titrant, whole series) σ 3 %. The input uncertainties '
+        'set now differ: set them back under Input Uncertainty, or fit again to update the interval.'
+    )
+
+
+def test_typing_a_condition_does_not_hide_the_fit_through_the_uncertainty_rows(qapp, make_session, fit, dialogs):
+    """The rows read the conditions as they are typed; an unfinished edit is not a change to what they state."""
+    session = _shown_session(qapp, make_session, fit)
+
+    _type_into(session, 'h0', '12', finish=False)
+
+    assert session._state.fit_results == [fit]
 
 
 def test_switching_the_assay_type_hides_the_fit_and_switching_back_restores_it(qapp, make_session, fit, dialogs):
@@ -718,6 +829,43 @@ def test_a_finished_fit_names_the_replicates_it_left_out_and_why(qapp, make_sess
     assert dialogs['warning'] == []
 
 
+def test_the_status_bar_names_the_test_a_rejected_model_failed_and_not_the_verdict(qapp):
+    """Low-scatter replicates reject a curve that follows the data closely, so the short note says what was measured.
+
+    On one line beside an R² of 0.99, a bare verdict on the model reads as a
+    failure of the app rather than as the outcome of a powerful test. The
+    verdict in full, with the statistic and what to do about it, is in the
+    summary block under the plot and in the exported report, which have the
+    room for it.
+    """
+    from core.pipeline.diagnostics import FitDiagnostics, MisfitTest, Verdict
+    from gui.fitting_session import _verdict_note
+    from gui.plotting.labels import verdict_sentence
+
+    diagnostics = FitDiagnostics(
+        conditional_misfit=MisfitTest(kind='lack_of_fit', statistic=199.6, p_value=3.2e-47, dof=(9, 72)),
+        misfit=None,
+        conflict=None,
+        verdict=Verdict.MODEL_INADEQUATE,
+    )
+    result = FitResult(
+        parameters={'Ka_guest': Q_(1e6, '1/M')},
+        rmse=5.7e3,
+        r_squared=0.9941,
+        x_fit=Q_(np.zeros(3), 'M'),
+        y_fit=Q_(np.zeros(3), 'au'),
+        assay_type='IDA',
+        model_name='equilibrium_4param',
+        diagnostics=diagnostics,
+    )
+    note = _verdict_note(result)
+
+    assert note == 'the curve misses the data by more than their scatter allows'
+    full = verdict_sentence(diagnostics, {}, {}, html=False)
+    assert 'The model does not describe the data' in full
+    assert 'try another binding model or check the data' in full
+
+
 def test_a_new_fit_replaces_the_previous_one_on_identifiability_before_its_profile_arrives(
     qapp, make_session, fit, dialogs
 ):
@@ -739,7 +887,8 @@ def test_a_new_fit_replaces_the_previous_one_on_identifiability_before_its_profi
     assert identifiability._stack.currentWidget() is identifiability._content
 
 
-def test_run_fit_is_disabled_while_a_fit_runs(qapp, dialogs, slow_fit, monkeypatch):
+def test_the_fit_action_offers_cancel_while_a_fit_runs(qapp, dialogs, slow_fit, monkeypatch):
+    """The one fit action stops the running fit; a second fit is refused while it is still going."""
     from gui.main_window import FittingMainWindow
 
     monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
@@ -750,14 +899,14 @@ def test_run_fit_is_disabled_while_a_fit_runs(qapp, dialogs, slow_fit, monkeypat
 
     session.run_fit()
     worker = session._fit_worker
-    assert not window._act_fit.isEnabled()
-    assert window._act_fit.toolTip().startswith('A fit is already running in this session.')
+    assert window._act_fit.text() == 'Cancel Fit' and window._act_fit.isEnabled()
     session.run_fit()
     assert session._fit_worker is worker and len(slow_fit) <= 1
     assert dialogs['warning'][-1][1] == 'Already Running'
+    assert dialogs['warning'][-1][2].startswith('A fit is already running in this session.')
 
     _wait_until(qapp, lambda: not session.fit_running())
-    assert window._act_fit.isEnabled()
+    assert window._act_fit.text() == 'Run Fit' and window._act_fit.isEnabled()
     for thread in session.findChildren(QThread):
         thread.wait()
 

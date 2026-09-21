@@ -91,6 +91,13 @@ QGroupBox::title {
 """
 
 
+#: The two states of the one fit action: it starts the active session's fit,
+#: and stops that fit while it runs, as the sensitivity panel's own button does.
+_RUN_FIT = 'Run Fit'
+_CANCEL_FIT = 'Cancel Fit'
+_CANCEL_FIT_TIP = 'Stop the fit running in this session (Ctrl+R)'
+
+
 class FittingMainWindow(QMainWindow):
     """Main application window: tab management + toolbar + menu routing.
 
@@ -196,10 +203,10 @@ class FittingMainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        self._act_fit = QAction('Run Fit', self)
+        self._act_fit = QAction(_RUN_FIT, self)
         self._act_fit.setShortcut(QKeySequence('Ctrl+R'))
         self._act_fit.setToolTip('Fit the active session\u2019s data (Ctrl+R)')
-        self._act_fit.triggered.connect(self._on_run_fit)
+        self._act_fit.triggered.connect(self._on_fit_action)
         tb.addAction(self._act_fit)
 
         tb.addSeparator()
@@ -238,8 +245,8 @@ class FittingMainWindow(QMainWindow):
         self._act_export_all.setToolTip('Export selected artefacts (raw data, results, plots, style) into one folder')
         self._act_export_all.triggered.connect(self._on_export_all)
 
-        # Run Fit and the result exports follow the active session (_sync_actions);
-        # their own tooltips are shown whenever they are available.
+        # The fit action and the result exports follow the active session
+        # (_sync_actions); their own tooltips are shown whenever they are available.
         self._action_tips: dict[QAction, str] = {
             action: action.toolTip()
             for action in (
@@ -369,17 +376,22 @@ class FittingMainWindow(QMainWindow):
         self._sync_actions()
 
     def _sync_actions(self) -> None:
-        """Enable Run Fit, Save Plot and the result exports for what the active session can do now.
+        """Set the fit action, Save Plot and the result exports to what the active session can do now.
 
-        Run Fit is unavailable while a fit or a sensitivity analysis is running
-        there, Save Plot while the plot tab on screen has nothing to save, and
-        the result exports while every fit the session holds is hidden; each
-        tooltip then says why.
+        The fit action stops the fit of the tab on screen while one runs there
+        and starts a fit otherwise, unavailable while that session's
+        sensitivity analysis is running. Save Plot follows what the plot tab on
+        screen has to save, and the result exports are unavailable while every
+        fit the session holds is hidden; each tooltip then says why. Every one
+        of these belongs to the tab on screen, so switching tabs runs this
+        again.
         """
         session = self.active_session()
         busy = None if session is None else session.busy_note()
-        self._act_fit.setEnabled(busy is None)
-        self._act_fit.setToolTip(busy or self._action_tips[self._act_fit])
+        fitting = session is not None and session.fit_running()
+        self._act_fit.setText(_CANCEL_FIT if fitting else _RUN_FIT)
+        self._act_fit.setEnabled(fitting or busy is None)
+        self._act_fit.setToolTip(_CANCEL_FIT_TIP if fitting else (busy or self._action_tips[self._act_fit]))
 
         plot_note = None if session is None else session.plot_export_note()
         self._act_save_plot.setEnabled(plot_note is None)
@@ -437,9 +449,14 @@ class FittingMainWindow(QMainWindow):
         self._sim_window.raise_()
         self._sim_window.activateWindow()
 
-    def _on_run_fit(self) -> None:
+    def _on_fit_action(self) -> None:
+        """Run the active session's fit, or stop the fit it is running."""
         session = self.active_session()
-        if session:
+        if session is None:
+            return
+        if session.fit_running():
+            session.cancel_fit()
+        else:
             session.run_fit()
 
     def _on_export(self) -> None:

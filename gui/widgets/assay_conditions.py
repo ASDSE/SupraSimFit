@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from core.assays import ASSAY_CLASSES, AssayType
 from core.assays.base import BaseAssay
+from core.assays.registry import ASSAY_REGISTRY
+from core.pipeline.inputs import TITRANT
 
 
 @dataclass(frozen=True)
@@ -152,3 +154,46 @@ def assay_class(assay_type: AssayType) -> type[BaseAssay]:
 def condition_fields(assay_type: AssayType) -> tuple[ConditionField, ...]:
     """Return the condition field schemas for the given assay type."""
     return ASSAY_CONDITIONS[assay_type]
+
+
+def input_labels(assay_type: AssayType) -> dict[str, str]:
+    """Every input a fit of *assay_type* rests on, as an HTML display label.
+
+    Its conditions, plus the titrant, which moves as one factor over the whole
+    series. One definition: the Input Uncertainty panel writes these names on
+    screen and the exported report writes them for the same inputs, so the two
+    must not drift apart.
+    """
+    labels = {field.key: field.label for field in ASSAY_CONDITIONS[assay_type]}
+    labels[TITRANT] = f'{ASSAY_REGISTRY[assay_type].x_label} (titrant, whole series)'
+    return labels
+
+
+def result_input_labels(assay_type_name: str) -> dict[str, str]:
+    """Every input of a stored fit, as plain display text, named from the fit's own assay.
+
+    The one naming a report of a finished fit uses — on screen and in the
+    exported files alike — so one fit's inputs read the same wherever they are
+    shown, whatever assay is selected now.
+
+    Parameters
+    ----------
+    assay_type_name : str
+        ``FitResult.assay_type``: the ``AssayType`` name the fit records.
+
+    Returns
+    -------
+    dict[str, str]
+        Input key → plain display name. Empty for an assay type this version
+        does not know, where a report falls back on the input's key.
+    """
+    # Imported here, not at module scope: gui.plotting's package __init__ pulls
+    # in the widgets that read this registry, so a module-level import of
+    # anything under gui.plotting would close a cycle through it.
+    from gui.plotting.labels import plain_label
+
+    try:
+        assay_type = AssayType[assay_type_name]
+    except KeyError:
+        return {}
+    return {key: plain_label(label) for key, label in input_labels(assay_type).items()}

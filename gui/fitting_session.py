@@ -25,6 +25,7 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
+from core.pipeline.diagnostics import Verdict
 from core.pipeline.fit_pipeline import (
     FitConfig,
     FitResult,
@@ -33,25 +34,35 @@ from core.pipeline.fit_pipeline import (
     parameters_on_bound,
     verify_imported_result,
 )
+from core.pipeline.inputs import input_name, specs_from_dict, specs_to_dict
 from core.pipeline.profile import ProfileSet
-from core.pipeline.sensitivity import LONG_RUN_SOLVES, estimated_fit_count, estimated_model_solves
+from core.pipeline.sensitivity import (
+    LONG_RUN_SOLVES,
+    SensitivityMode,
+    SensitivityResult,
+    estimated_fit_count,
+    estimated_model_solves,
+)
 from core.pipeline.varpro import projectable
+from core.units import Quantity
 from gui import plot_guide, preferences
 from gui.app_state import SessionState
 from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.plotting.colors import INK, INK_2, INK_3
 from gui.plotting.fit_summary_widget import FitSummaryWidget, and_join, same_inputs
 from gui.plotting.identifiability_widget import IdentifiabilityWidget
-from gui.plotting.labels import fmt_bound_note, fmt_r2, fmt_sci
+from gui.plotting.labels import fmt_bound_note, fmt_r2, fmt_sci, fmt_unit_pretty
 from gui.plotting.plot_style import PlotStyleWidget
 from gui.plotting.plot_widget import PlotWidget
 from gui.plotting.sensitivity_widget import STOPPING_TEXT, SensitivityWidget
+from gui.widgets.assay_conditions import result_input_labels
 from gui.widgets.assay_config_panel import AssayConfigPanel
 from gui.widgets.bounds_panel import BoundsPanel
 from gui.widgets.data_panel import DataPanel
 from gui.widgets.fit_config_panel import FitConfigPanel
 from gui.widgets.flat_tabs import FlatTabWidget
 from gui.widgets.info_button import InfoGroupBox
+from gui.widgets.input_uncertainty_panel import InputUncertaintyPanel
 from gui.widgets.preprocessing_panel import PreprocessingPanel
 from gui.widgets.replica_panel import ReplicaPanel, describe_replicates
 from gui.widgets.sensitivity_panel import SensitivityPanel
@@ -211,18 +222,59 @@ _UNCHECKED_NOTE = (
     'No data are loaded, so these numbers are shown as stored in the file and could not be checked against '
     'the data. To check them, load the data first and import the results again.'
 )
-_FIT_RUNNING_NOTE = 'A fit is already running in this session. Wait for it to finish, then run the fit again.'
+_FIT_RUNNING_NOTE = (
+    'A fit is already running in this session. Wait for it to finish, or stop it with Cancel Fit, '
+    'then run the fit again.'
+)
 _SENSITIVITY_RUNNING_NOTE = (
     'A sensitivity analysis is running in this session. Wait for it to finish, or stop it, then run the fit.'
 )
 _FIT_RUNNING_ANALYSIS_NOTE = (
-    'A fit is running in this session. Wait for it to finish, then run the sensitivity analysis.'
+    'A fit is running in this session. Wait for it to finish, or stop it with Cancel Fit, '
+    'then run the sensitivity analysis.'
 )
 _SENSITIVITY_RUNNING_ANALYSIS_NOTE = (
     'A sensitivity analysis is already running in this session. Wait for it to finish, or stop it, '
     'then run the analysis again.'
 )
 _RESULTS_HIDDEN_NOTE = 'Results hidden — they do not describe the data and settings loaded now.'
+
+#: Said of a fit whose reported interval was worked out from other input
+#: uncertainties than the ones set now, which is what the interval accounts for.
+#: Both ways back are offered: the uncertainties of an imported fit are set
+#: under the panel like its conditions, and a fit made here is run again. The
+#: fit's own record fills ``{stated}``, so what to set back is named and not
+#: only pointed at, as the conditions a fit was made with are.
+_INPUTS_CHANGED_NOTE = (
+    'This fit was made with {stated}. The input uncertainties set now differ: set them back under Input '
+    'Uncertainty, or fit again to update the interval.'
+)
+
+#: Read for ``{stated}`` of a fit that was made with every input taken as exact.
+_NO_UNCERTAINTY_STATED = 'every input taken as exact'
+
+#: Said of a sensitivity analysis drawn from other input uncertainties than the
+#: ones set now. They are what the analysis samples, so the spread it reports
+#: and a heatmap's axes are entirely a function of them.
+_SENSITIVITY_INPUTS_NOTE = (
+    'The input uncertainties have changed since this analysis; set them back under Input Uncertainty, or run '
+    'the analysis again.'
+)
+
+#: What the fit's diagnostics say, in the few words the status bar has room for.
+#: The sentence in full — with the test statistics, the shifts and what to do —
+#: is in the summary block under the plot and in the exported report.
+#:
+#: A rejected model is named by what the test measured rather than by the
+#: conclusion it leads to: replicates that scatter little make the test powerful
+#: enough to reject a curve that follows the data closely, and beside the R² on
+#: the same line the conclusion alone reads as a failure of the app.
+_VERDICT_NOTE = {
+    Verdict.CONSISTENT: 'the model and the entered inputs describe the data',
+    Verdict.INPUTS_EXPLAIN: 'the data fit once the inputs move within their uncertainties',
+    Verdict.INPUTS_CONFLICT: 'the inputs together are further from their entered values than you stated',
+    Verdict.MODEL_INADEQUATE: 'the curve misses the data by more than their scatter allows',
+}
 
 #: Why imported results were refused, by :func:`_refusal_reason`; formatted with
 #: ``which`` ("The results" or "2 of the 3 results"), ``name`` and ``imported``.
@@ -269,6 +321,37 @@ def _capitalized(text: str) -> str:
     return f'{text[0].upper()}{text[1:]}'
 
 
+def _stated_as(result: FitResult, used: dict) -> str:
+    """What *result* was told about its inputs, read back from its own record.
+
+    Each input named and valued as the Input Uncertainty panel writes it, so a
+    note about a fit made with other uncertainties says which ones they were
+    and they can be set back without opening the file.
+    """
+    from gui.session import stated_uncertainty
+
+    specs = specs_from_dict(used)
+    if not specs:
+        return _NO_UNCERTAINTY_STATED
+    labels = result_input_labels(result.assay_type)
+    stated = []
+    for key, spec in specs.items():
+        value = (result.conditions or {}).get(key)
+        unit = fmt_unit_pretty(str(value.units)) if isinstance(value, Quantity) else ''
+        stated.append(f'{input_name(key, labels)} {stated_uncertainty(spec, unit)}')
+    return and_join(stated)
+
+
+def _verdict_note(result: FitResult) -> str:
+    """What the fit's diagnostics say in a few words, for the status bar; ``''`` for a fit that has none.
+
+    A fit of an assay with no association constant, and a result read from a
+    file written before the diagnostics existed, carry no verdict.
+    """
+    diagnostics = result.diagnostics
+    return '' if diagnostics is None else _VERDICT_NOTE[diagnostics.verdict]
+
+
 class FittingSession(QWidget):
     """One complete fitting workflow: data → preprocess → configure → fit → visualize.
 
@@ -276,7 +359,8 @@ class FittingSession(QWidget):
     :class:`SessionState`; widgets communicate via Qt signals coordinated here.
 
     A result stays on screen only while the loaded selection matches the
-    record it was made on (:meth:`_mismatch_note` is the one test). After
+    record it was made on (:meth:`_mismatch_note` is the one test, joined for
+    a sensitivity run by :meth:`_sensitivity_inputs_note`). After
     every change to the replicates, the conditions or the assay type, a result
     that no longer matches is hidden on every tab behind a note naming what
     changed, and shown again, unchanged, once the selection matches. A change
@@ -291,7 +375,8 @@ class FittingSession(QWidget):
         Emitted to update the main window's status bar.
     actions_changed()
         Emitted when :meth:`fit_running` or :meth:`hidden_results_note` may
-        have changed, so the window can enable Run Fit and the result exports.
+        have changed, so the window can set its fit action — Run Fit, or
+        Cancel Fit while one runs here — and the result exports.
     """
 
     title_changed = pyqtSignal(str)
@@ -307,6 +392,9 @@ class FittingSession(QWidget):
         self._sensitivity_worker: SensitivityWorker | None = None
         self._sensitivity_started = 0.0
         self._custom_tab_name: str | None = None
+        # The uncertainties as the panel last stated them, so a row that
+        # reports itself without changing them leaves the results alone.
+        self._stated_specs: dict[str, dict] = {}
         self._setup_ui()
         self._connect_signals()
 
@@ -384,6 +472,18 @@ class FittingSession(QWidget):
             if worker is not None:
                 worker.cancel()
 
+    def cancel_fit(self) -> None:
+        """Stop the fit running in this session, leaving the tab as it was before it started.
+
+        A cancelled fit reports nothing, so whatever the tabs showed — the
+        previous fit and its Ka profile, where there was one — still stands,
+        and the next fit can start as soon as this one has stopped.
+        """
+        if self._fit_worker is None:
+            return
+        self._stop_fit()
+        self.status_message.emit('Fit cancelled — nothing on the tab was changed.')
+
     def shutdown(self) -> None:
         """Stop every background run this session started and wait for its thread to end.
 
@@ -428,12 +528,29 @@ class FittingSession(QWidget):
             )
             return
 
+        input_problems = self._input_panel.problems()
+        if input_problems:
+            QMessageBox.warning(
+                self,
+                'Input Uncertainty',
+                'The fit cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in input_problems),
+            )
+            return
+
         assay_cls = self._assay_panel.get_assay_class()
         conditions = self._assay_panel.current_conditions()
         config = self._fit_panel.current_config()
         custom_bounds = self._bounds_panel.current_bounds()
         if custom_bounds:
             config = replace(config, custom_bounds=custom_bounds)
+        # The uncertainties widen the reported interval to cover them; a fit
+        # that cannot be made with the inputs as free as they were stated to be
+        # names them in its refusal the way the panel names them.
+        config = replace(
+            config,
+            input_specs=self._input_panel.current_specs(),
+            input_labels=self._input_panel.input_labels(),
+        )
 
         if config.per_replica and ms.n_active < 3:
             # The shared-Ka test needs three replicates to name one of them as
@@ -460,8 +577,10 @@ class FittingSession(QWidget):
     def load_demo_ida(self) -> None:
         """Load the bundled IDA demo dataset and run a fit with default settings.
 
-        Resets the panels to the IDA defaults first, so the run starts from the
-        same settings whatever the session held before.
+        Resets the assay, the parameter bounds, the input uncertainties and the
+        fit configuration to the IDA defaults first, so the run starts from the
+        same settings whatever the session held before: every input is taken as
+        exact and the interval is the one conditional on the demo's conditions.
         """
         if not _DEMO_IDA_PATH.exists():
             QMessageBox.warning(self, 'Demo Data Missing', f'Could not find:\n{_DEMO_IDA_PATH}')
@@ -474,6 +593,7 @@ class FittingSession(QWidget):
         # 1. Reset all panels to IDA defaults
         self._assay_panel.set_assay_type(AssayType.IDA)
         self._bounds_panel.reset_to_defaults()
+        self._input_panel.reset_to_defaults()
         self._fit_panel.set_config(FitConfig(per_replica=False))
 
         # 2. Load data (triggers _on_data_loaded → resets replicas, clears results)
@@ -820,6 +940,7 @@ class FittingSession(QWidget):
         self._preprocess_panel = PreprocessingPanel()
         self._replica_panel = ReplicaPanel()
         self._assay_panel = AssayConfigPanel()
+        self._input_panel = InputUncertaintyPanel()
         self._fit_panel = FitConfigPanel()
         self._sensitivity_panel = SensitivityPanel()
         self._bounds_panel = BoundsPanel()
@@ -835,6 +956,7 @@ class FittingSession(QWidget):
             self._preprocess_panel,
             self._replica_panel,
             self._assay_panel,
+            self._input_panel,
             self._fit_panel,
             self._sensitivity_panel,
             self._bounds_panel,
@@ -888,10 +1010,13 @@ class FittingSession(QWidget):
         # No explicit initial split: the sidebar opens at its content-driven
         # sizeHint width and the plot (stretch factor 1) takes the rest.
 
-        # Initialise BoundsPanel and SensitivityPanel for default assay type
+        # Open the panels that follow the assay on the default assay type. The
+        # heatmap axes are the uncertainty panel's inputs, named as it names them.
         self._bounds_panel.set_assay_type(self._state.assay_type)
+        self._input_panel.set_assay_type(self._state.assay_type)
         self._sensitivity_panel.set_assay_type(self._state.assay_type)
-        self._sensitivity_panel.set_nominal_values(self._assay_panel.current_conditions())
+        self._name_inputs()
+        self._on_conditions_changed()
 
         # Push the initial display unit into PlotStyleWidget so the style
         # dict reflects the DataPanel's combo from the first emission.
@@ -913,10 +1038,12 @@ class FittingSession(QWidget):
 
         self._assay_panel.assay_type_changed.connect(self._on_assay_type_changed)
         self._assay_panel.assay_type_changed.connect(self._sensitivity_panel.set_assay_type)
-        self._assay_panel.conditions_changed.connect(
-            lambda: self._sensitivity_panel.set_nominal_values(self._assay_panel.current_conditions())
-        )
+        self._assay_panel.conditions_changed.connect(self._on_conditions_changed)
         self._assay_panel.conditions_edited.connect(self._show_results)
+
+        # The uncertainties are what a fit's interval accounts for, so a change
+        # to them puts the fit on screen out of date with the panel.
+        self._input_panel.specs_changed.connect(self._on_input_specs_changed)
 
         self._fit_panel.config_changed.connect(self._on_config_changed)
 
@@ -938,6 +1065,12 @@ class FittingSession(QWidget):
         )
         # Save Plot saves the tab on screen, so what it can do changes with the tab.
         self._plot_tabs.currentChanged.connect(lambda _: self.actions_changed.emit())
+
+        # A fit and an analysis each read the uncertainties as they were when it
+        # started, so the rows stay as they were read until it ends.
+        self.actions_changed.connect(
+            lambda: self._input_panel.set_running(self.fit_running() or self.sensitivity_running())
+        )
 
     # ------------------------------------------------------------------
     # Slots
@@ -1002,8 +1135,40 @@ class FittingSession(QWidget):
     def _on_assay_type_changed(self, assay_type: AssayType) -> None:
         self._state.assay_type = assay_type
         self._bounds_panel.set_assay_type(assay_type)
+        # The new assay has its own inputs: the uncertainty rows are rebuilt for
+        # them first, and the heatmap axes then offer exactly those inputs.
+        self._input_panel.set_assay_type(assay_type)
+        self._name_inputs()
         meta = ASSAY_REGISTRY[assay_type]
         self._update_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
+
+    def _on_input_specs_changed(self) -> None:
+        """Check the results against the uncertainties again, once the uncertainties themselves have changed.
+
+        The panel reports itself whenever a row is touched, which includes a
+        set value arriving from the conditions form as it is typed. Only a
+        change to what the rows state can put a result out of date, so the
+        results are left alone until one happens.
+        """
+        stated = specs_to_dict(self._input_panel.current_specs())
+        if stated != self._stated_specs:
+            self._stated_specs = stated
+            self._show_results()
+
+    def _name_inputs(self) -> None:
+        """Offer the heatmap axes the selected assay's inputs, named as the uncertainty panel names them.
+
+        A finished fit names its own inputs from the assay it was made for
+        (:func:`~gui.widgets.assay_conditions.result_input_labels`), so what is
+        reported about a fit does not follow the assay selected now.
+        """
+        self._sensitivity_panel.set_inputs(self._input_panel.input_labels())
+
+    def _on_conditions_changed(self) -> None:
+        """Give both panels the conditions' set values, which an uncertainty in percent is read against."""
+        conditions = self._assay_panel.current_conditions()
+        self._input_panel.set_nominal_values(conditions)
+        self._sensitivity_panel.set_nominal_values(conditions)
 
     def _on_config_changed(self) -> None:
         self._state.fit_config = self._fit_panel.current_config()
@@ -1037,7 +1202,11 @@ class FittingSession(QWidget):
             ms = worker.ms.with_active(fit_replica_ids(result))
             # Until the profiles arrive the tab says they are being computed.
             self._identifiability_widget.show_profile_pending(result, result.assay_type)
-            self._profile_worker = ProfileWorker(ms, worker.assay_cls, worker.conditions, worker.config, parent=self)
+            # The fit already worked out the penalised profiles behind its
+            # interval: the tab draws those, rather than computing them again.
+            self._profile_worker = ProfileWorker(
+                ms, worker.assay_cls, worker.conditions, worker.config, result.aware, parent=self
+            )
             self._profile_worker.finished.connect(self._on_profile_complete)
             self._profile_worker.error.connect(self._on_profile_error)
             self._profile_worker.start()
@@ -1053,9 +1222,11 @@ class FittingSession(QWidget):
             given = input_replica_ids(result) or used
             counted = f', {len(used)} of {len(given)} replicates used' if given else ''
             on_bound = fmt_bound_note(parameters_on_bound(result))
+            verdict = _verdict_note(result)
             self.status_message.emit(
                 f'Fit complete — R²={fmt_r2(result.r_squared)}, RMSE={fmt_sci(result.rmse)}{counted}'
                 f'{f" ({left_out})" if left_out else ""}{f" — {on_bound}" if on_bound else ""}'
+                f'{f" — {verdict}" if verdict else ""}'
             )
 
     @staticmethod
@@ -1174,7 +1345,27 @@ class FittingSession(QWidget):
             )
             return
 
-        problems = self._sensitivity_panel.run_problems()
+        input_problems = self._input_panel.problems()
+        if input_problems:
+            QMessageBox.warning(
+                self,
+                'Input Uncertainty',
+                'The analysis cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in input_problems),
+            )
+            return
+
+        # The analysis draws the inputs from the uncertainties stated in the
+        # shared panel, the same ones the fit's interval accounts for.
+        specs = self._input_panel.current_specs()
+        if not specs:
+            QMessageBox.warning(
+                self,
+                'Sensitivity Analysis',
+                'Every input is set to fixed under Input Uncertainty, so the analysis has nothing to vary. '
+                'Choose a σ or a range for at least one input.',
+            )
+            return
+        problems = self._sensitivity_panel.run_problems(specs)
         if problems:
             QMessageBox.warning(
                 self,
@@ -1182,15 +1373,7 @@ class FittingSession(QWidget):
                 'The analysis cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in problems),
             )
             return
-        sens_config = self._sensitivity_panel.current_config()
-        if not sens_config.input_specs:
-            QMessageBox.warning(
-                self,
-                'Sensitivity Analysis',
-                'Every input is set to fixed, so the analysis has nothing to vary. '
-                'Choose a σ or a range for at least one input.',
-            )
-            return
+        sens_config = self._sensitivity_panel.current_config(specs)
 
         assay_cls = self._assay_panel.get_assay_class()
         conditions = self._assay_panel.current_conditions()
@@ -1221,7 +1404,7 @@ class FittingSession(QWidget):
             fit_config,
             sens_config,
             max_workers=worker_count,
-            input_labels=self._sensitivity_panel.input_labels(),
+            input_labels=self._input_panel.input_labels(),
             parent=self,
         )
         self._sensitivity_worker.progress.connect(self._on_sensitivity_progress)
@@ -1345,21 +1528,28 @@ class FittingSession(QWidget):
     # Showing and hiding results
     # ------------------------------------------------------------------
 
-    def _mismatch_note(self, result: FitResult | None, what: str, redo: str) -> str | None:
+    def _mismatch_note(
+        self, result: FitResult | None, what: str, redo: str, *, uncertainties: bool = True
+    ) -> str | None:
         """Why *result* does not describe the loaded selection, as a short plain note; ``None`` when it does.
 
         The one match test for every result the session holds. *result*
         matches when it was made on the loaded data (the same
         ``data_fingerprint``), every replicate it used is active and every
         active replicate was given to it, its conditions equal the entered ones
-        by value (a unit switch changes nothing), and its assay type is the one
-        selected. The note names what differs and how to undo it. *what* names
-        the result ("fit") and *redo* how to make a new one ("run the fit
-        again"). With no data loaded only the assay type and the conditions
-        can be compared. The fit configuration is not part of the test: a
-        sensitivity analysis is run from its own settings and carries its own
-        baseline fit, and every configuration difference that changes what it
-        means is named where it is shown.
+        by value (a unit switch changes nothing), its assay type is the one
+        selected, and — for a fit, whose interval accounts for them — the input
+        uncertainties it was made with are the ones set now. The note names
+        what differs and how to undo it. *what* names the result ("fit") and
+        *redo* how to make a new one ("run the fit again"). With no data
+        loaded only the assay type, the conditions and the uncertainties can be
+        compared. *uncertainties* is ``False`` for a sensitivity analysis'
+        baseline, which is fitted with the uncertainties stripped because the
+        analysis draws them itself; the analysis' own record of them is
+        compared by :meth:`_sensitivity_inputs_note`. The rest of the fit
+        configuration is not part of the test: a sensitivity analysis is run
+        from its own settings, and every configuration difference that changes
+        what it means is named where it is shown.
         """
         ms = self._state.measurement_set
         made = f'This {what} was made'
@@ -1421,9 +1611,28 @@ class FittingSession(QWidget):
                     fixes.append('enter its conditions again')
 
         if not changes:
+            used = result.fit_config.get('input_uncertainty') or {}
+            if uncertainties and used != specs_to_dict(self._input_panel.current_specs()):
+                return _INPUTS_CHANGED_NOTE.format(stated=_stated_as(result, used))
             return None
         fix = fixes[0] if len(fixes) == 1 else 'change these back'
         return f'{made}. {_capitalized(and_join(changes))}. {_capitalized(fix)}, or {redo}.'
+
+    def _sensitivity_inputs_note(self, result: SensitivityResult) -> str | None:
+        """Why *result* no longer describes the uncertainties set now; ``None`` while it does.
+
+        The analysis draws its samples from the uncertainties it was run with,
+        so the Ka spread, the Sobol' indices and a heatmap's axis ranges are
+        entirely a function of them; the run records them in
+        ``config.input_specs``. A heatmap holds every input but its two axes at
+        its set value and records only those two, so only what it recorded is
+        compared.
+        """
+        used = specs_to_dict(result.config.input_specs)
+        stated = specs_to_dict(self._input_panel.current_specs())
+        if result.config.mode is SensitivityMode.HEATMAP:
+            stated = {key: stated[key] for key in used if key in stated}
+        return None if used == stated else _SENSITIVITY_INPUTS_NOTE
 
     def _show_results(self, *, redraw: bool = False, force: bool = False) -> None:
         """Show every held result whose record matches the loaded selection, and hide the rest behind a note.
@@ -1446,8 +1655,11 @@ class FittingSession(QWidget):
         sensitivity_note = None
         if state.sensitivity_result is not None:
             sensitivity_note = self._mismatch_note(
-                state.sensitivity_result.baseline_fit, 'sensitivity analysis', 'run the analysis again'
-            )
+                state.sensitivity_result.baseline_fit,
+                'sensitivity analysis',
+                'run the analysis again',
+                uncertainties=False,
+            ) or self._sensitivity_inputs_note(state.sensitivity_result)
         changed = notes != state.hidden_fit_notes or sensitivity_note != state.sensitivity_note
         state.hidden_fit_notes = notes
         state.sensitivity_note = sensitivity_note

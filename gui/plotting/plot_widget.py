@@ -1080,10 +1080,14 @@ class PlotWidget(QWidget):
     def _annotation_html(self) -> str:
         """Body of the fit-summary overlay.
 
-        Each binding constant reads ``estimate [low, high]``: the least-squares
-        fit and the confidence interval of that same fit. Every other parameter
-        is its fitted value alone, starred where the data determine it only in
-        combination with others. Rows come from
+        Each binding constant reads ``estimate [low, high]``: the fit the curve
+        is drawn from and the confidence interval of that same fit, which is
+        the fit with every input the user gave an uncertainty free to move
+        inside it. The fit conditional on the entered inputs has its own column
+        in the summary table; printed here it would read as this curve's
+        interval. Every other parameter is its fitted value alone, starred
+        where the data determine it only in combination with others. Rows come
+        from
         :func:`~core.pipeline.fit_pipeline.summarize_parameters`, so the plot,
         the summary table and the exports quote the same numbers. RMSE is
         omitted: it is already in the Fit Quality panel and is monotone in the

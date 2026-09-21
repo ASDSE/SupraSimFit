@@ -14,13 +14,13 @@ _GDA_HTML = """
 <h3>Guest Displacement Assay (GDA)</h3>
 
 <p><b>What the Experiment Does</b></p>
-<p>A pre-formed host&ndash;dye complex is titrated with a competing guest.
-As guest concentration increases, it displaces the dye from the host,
-changing the observed fluorescence (or absorbance) signal. By fitting the
-displacement curve you can extract the host&ndash;guest association
-constant <i>K<sub>a,guest</sub></i>, provided the host&ndash;dye
-association constant <i>K<sub>a,dye</sub></i> is known from a separate
-direct binding experiment.</p>
+<p>Dye is titrated into a pre-equilibrated mixture of host and a competing
+guest. The added dye competes with the guest for the host, so the observed
+fluorescence (or absorbance) signal follows how much of it binds. By fitting
+that curve you can extract the host&ndash;guest association constant
+<i>K<sub>a,guest</sub></i>, provided the host&ndash;dye association constant
+<i>K<sub>a,dye</sub></i> is known from a separate direct binding
+experiment.</p>
 
 <p><b>The Model</b></p>
 <p>At each point the free concentrations of host <i>[H]</i>, dye <i>[D]</i>,
@@ -43,7 +43,8 @@ The signal is the 4-parameter linear combination:</p>
 <p><b>Fitted Parameters</b></p>
 <ul>
   <li><b>K<sub>a,guest</sub></b> &mdash; the quantity of interest; controls
-      how quickly guest displaces dye as [G]<sub>0</sub> rises.</li>
+      how much host the fixed guest holds, and so how much of the added dye
+      finds a free binding site.</li>
   <li><b>I<sub>0</sub></b> &mdash; baseline offset (solvent/background).</li>
   <li><b>I<sub>dye,free</sub></b> &mdash; brightness coefficient of free dye.</li>
   <li><b>I<sub>dye,bound</sub></b> &mdash; brightness coefficient of the
@@ -51,10 +52,14 @@ The signal is the 4-parameter linear combination:</p>
 </ul>
 
 <p><b>Known Conditions</b></p>
-<p>[H]<sub>0</sub>, [D]<sub>0</sub>, and K<sub>a,dye</sub> must be supplied.
+<p>[H]<sub>0</sub>, [G]<sub>0</sub>, and K<sub>a,dye</sub> must be supplied;
+the dye concentrations are the titrant series read from the data file.
 GDA will only give a meaningful K<sub>a,guest</sub> if these inputs are
 accurate &mdash; errors in K<sub>a,dye</sub> propagate directly into the
-fitted K<sub>a,guest</sub>.</p>
+fitted K<sub>a,guest</sub>. How well each of them, and the titrant series, is
+known belongs under <b>Input Uncertainty</b>: state it and the fit may move that
+input within what you stated, so the reported confidence interval covers the
+entry error as well as the scatter of the data.</p>
 
 <p><b>When to Use It</b></p>
 <p>Use GDA when the guest is non-chromogenic (so a direct titration is
@@ -97,7 +102,11 @@ and host&ndash;guest equilibria at each guest concentration
 <p><b>Known Conditions</b></p>
 <p>You must know [H]<sub>0</sub>, [D]<sub>0</sub>, and K<sub>a,dye</sub>.
 K<sub>a,dye</sub> is typically obtained from a prior DBA fit of the same
-host&ndash;dye pair.</p>
+host&ndash;dye pair &mdash; which gives it a confidence interval of its own.
+Enter that interval, and the uncertainty of the concentrations and of the
+titrant series, under <b>Input Uncertainty</b>: the fit may then move each input
+within what you stated, and the reported interval for K<sub>a,guest</sub> covers
+that freedom instead of assuming the numbers are exact.</p>
 
 <p><b>When to Use It</b></p>
 <p>IDA is the standard &ldquo;workhorse&rdquo; assay for measuring
@@ -151,6 +160,12 @@ of the experiment, not of the fitter.</p>
       absolute values.</li>
 </ul>
 
+<p><b>Known Conditions</b></p>
+<p>The fixed dye concentration [D]<sub>0</sub> is the one condition you supply,
+and the host concentrations are the titrant series. Both come from a weighing
+and a dilution: state how well you know them under <b>Input Uncertainty</b> and
+the reported interval for K<sub>a,dye</sub> covers that error too.</p>
+
 <p><b>When to Use It</b></p>
 <p>Use this mode when it is experimentally easier to titrate the host
 (e.g. a large cage molecule) into a fixed dye solution. If the dye is
@@ -181,6 +196,12 @@ linear combination.</p>
 <p>As with DBA H&rarr;D, only <i>K<sub>a,dye</sub></i> is strictly
 identifiable; the signal coefficients enter the fit in a
 degenerate linear combination.</p>
+
+<p><b>Known Conditions</b></p>
+<p>The fixed host concentration [H]<sub>0</sub> is the one condition you supply,
+and the dye concentrations are the titrant series. State how well you know them
+under <b>Input Uncertainty</b> and the reported interval for
+K<sub>a,dye</sub> covers that error as well as the scatter of the data.</p>
 
 <p><b>When to Use It</b></p>
 <p>Use this mode when the host is the limiting / expensive reagent.
@@ -266,10 +287,14 @@ data equally well. The <i>Identifiability</i> tab reports what the data do fix
 region of the pair. The region is not the rectangle the two intervals span: it
 stretches along the direction in which one constant compensates the other, and
 rejects pairs that each interval on its own allows. Judge a reported
-<i>pair</i> of constants against the region.</p>
+<i>pair</i> of constants against the region. Each single interval covers the
+uncertainty you state for the entered inputs; the region of the pair holds them
+at the values you entered.</p>
 
 <p><b>Known Conditions</b></p>
-<p>Only the fixed total host <i>[H]<sub>0</sub></i> is required.</p>
+<p>Only the fixed total host <i>[H]<sub>0</sub></i> is required. State how well
+you know it, and the guest concentrations of the titrant series, under
+<b>Input Uncertainty</b> to have the reported intervals cover that error.</p>
 """
 
 _DBA_H2G_HTML = """
@@ -312,10 +337,14 @@ Free host is solved at each point and the signal is a per-species sum:</p>
 independently determinable</b> from a single titration. The
 <i>Identifiability</i> tab reports a 95&thinsp;% confidence interval for each
 constant and the joint region of the pair; judge a reported pair against that
-region, which is the wider statement wherever the two constants trade off.</p>
+region, which is the wider statement wherever the two constants trade off. Each
+single interval covers the uncertainty you state for the entered inputs; the
+region of the pair holds them at the values you entered.</p>
 
 <p><b>Known Conditions</b></p>
-<p>Only the fixed total host <i>[H]<sub>0</sub></i> is required.</p>
+<p>Only the fixed total host <i>[H]<sub>0</sub></i> is required. State how well
+you know it, and the guest concentrations of the titrant series, under
+<b>Input Uncertainty</b> to have the reported intervals cover that error.</p>
 """
 
 ASSAY_DESCRIPTIONS: dict[str, tuple[str, str]] = {

@@ -331,6 +331,36 @@ def test_annotation_reports_the_estimate_and_its_interval(qapp):
     assert line.startswith('Ka(G) = 1.24×106')
 
 
+def test_the_annotation_quotes_the_headline_fit_and_not_the_conditional_one(qapp):
+    """With an input free to move, the drawn curve is the input-aware fit, so its numbers are the ones beside it.
+
+    The pair conditional on the entered inputs belongs to the summary table's
+    own column; printed here it would read as the interval of this curve.
+    """
+    from core.pipeline.diagnostics import InputShift
+    from core.pipeline.fit_pipeline import ConditionalFit
+    from core.pipeline.varpro import KaInterval
+    from core.units import Q_
+
+    pw = _binding_plot(
+        qapp,
+        parameters={'Ka_guest': Q_(1.3e6, '1/M'), 'I_0': Q_(1000.0, 'au')},
+        intervals={'Ka_guest': KaInterval(5.0e5, 3.0e6, False, False, 0.95, 21)},
+        input_shifts={'h0': InputShift('h0', -0.041, -1.4, False)},
+        conditional=ConditionalFit(
+            parameters={'Ka_guest': Q_(1.24e6, '1/M'), 'I_0': Q_(1000.0, 'au')},
+            intervals={'Ka_guest': KaInterval(9.0e5, 2.1e6, False, False, 0.95, 21)},
+            rmse=12.3,
+            r_squared=0.9962,
+        ),
+    )
+    line = _ka_line(pw._annotation_item.textItem.toPlainText())
+
+    assert line.startswith('Ka(G) = 1.3×106')
+    assert '[5×105, 3×106]' in line
+    assert '1.24' not in line and '2.1×106' not in line
+
+
 def test_annotation_writes_an_open_side_in_words(qapp):
     """A side the data do not close has no limit to print; the bound the search stopped at is not one."""
     from core.pipeline.varpro import KaInterval

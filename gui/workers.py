@@ -11,6 +11,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from core.assays.base import BaseAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
+from core.pipeline.input_aware import AwareResult
 from core.pipeline.profile import fit_profile
 from core.pipeline.sensitivity import SensitivityConfig, SensitivityRunError, run_sensitivity
 from core.pipeline.varpro import FitCancelled, FitRefused
@@ -23,7 +24,10 @@ logger = logging.getLogger(__name__)
 _PROGRESS_INTERVAL = 0.1
 
 #: Shown when the fit fails for a reason the pipeline does not state itself.
-_FIT_FAILED = 'The fit could not be completed. Check the assay conditions and the parameter bounds, then run it again.'
+_FIT_FAILED = (
+    'The fit could not be completed. Check the assay conditions, the parameter bounds and the '
+    'input uncertainties, then run it again.'
+)
 
 #: Shown when the Ka profile fails for a reason the pipeline does not state itself.
 _PROFILE_FAILED = 'The range of Kₐ your data support could not be worked out for this fit.'
@@ -92,11 +96,14 @@ def retire(worker: QThread | None) -> None:
 class FitWorker(QThread):
     """Run :func:`fit_measurement_set` in a background thread.
 
-    Keeps the interface responsive while the fit searches the Ka bounds. The
-    inputs stay readable as ``ms``, ``assay_cls``, ``conditions`` and
-    ``config``, so the fit's Ka profiles can be computed on the same inputs.
-    :meth:`cancel` stops the fit at its next equilibrium solve; a cancelled fit
-    ends quietly, emitting neither signal, because it has no result to report.
+    Keeps the interface responsive while the fit searches the Ka bounds and,
+    where an input may move within a stated uncertainty, works out the interval
+    that lets it (seconds on most data, longer on a model with two binding
+    constants). The inputs stay readable as ``ms``, ``assay_cls``,
+    ``conditions`` and ``config``, so the fit's Ka profiles can be computed on
+    the same inputs. :meth:`cancel` stops the fit at its next equilibrium
+    solve, which every part of it asks before; a cancelled fit ends quietly,
+    emitting neither signal, because it has no result to report.
 
     Parameters
     ----------
@@ -182,6 +189,12 @@ class ProfileWorker(QThread):
         Assay conditions the fit used.
     config : FitConfig
         Configuration the fit used; its replicate handling and bounds apply.
+    aware : AwareResult or None
+        The penalised profiles the fit itself made
+        (:attr:`~core.pipeline.fit_pipeline.FitResult.aware`), passed straight
+        through so the tab draws the fit's own curves and interval rather than
+        a second computation of them. ``None`` for a fit that took every input
+        as entered, which has none.
 
     Signals
     -------
@@ -207,6 +220,7 @@ class ProfileWorker(QThread):
         assay_cls: type[BaseAssay],
         conditions: dict[str, Any],
         config: FitConfig,
+        aware: AwareResult | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -214,6 +228,7 @@ class ProfileWorker(QThread):
         self._assay_cls = assay_cls
         self._conditions = conditions
         self._config = config
+        self._aware = aware
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -234,6 +249,7 @@ class ProfileWorker(QThread):
                     self._conditions,
                     self._config,
                     should_cancel=lambda: self._cancelled,
+                    aware=self._aware,
                 )
             )
         except FitCancelled:

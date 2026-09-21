@@ -36,7 +36,11 @@ supramolecular host&ndash;dye pairs range from
 <p>K<sub>a,dye</sub> is a free parameter <b>only in the Direct Binding
 Assays</b> (DBA Host&rarr;Dye and DBA Dye&rarr;Host). In IDA and GDA it
 is a <i>known</i> input that you supply in the Assay Configuration
-panel &mdash; those assays fit K<sub>a,guest</sub> instead.</p>
+panel &mdash; those assays fit K<sub>a,guest</sub> instead. A value taken
+from an earlier DBA fit is known to within that fit&rsquo;s own interval:
+state it under <b>Input Uncertainty</b>, as a &plusmn;&thinsp;&sigma; or as
+the range itself, and the K<sub>a,guest</sub> interval reported covers that
+uncertainty rather than assuming the number exact.</p>
 
 <p><b>What It Controls in the Fit</b></p>
 <p>Sets the curvature and midpoint of the DBA titration curve. Too
@@ -86,6 +90,13 @@ curve to lower guest concentrations.</p>
   <li>A value at the lower bound with the interval open below it means
       guest is too weak to displace the dye under your conditions
       &mdash; decrease [H]<sub>0</sub> or use a weaker indicator.</li>
+  <li>The interval reported covers whatever uncertainty you state for the
+      entered inputs under <b>Input Uncertainty</b>, with the interval
+      conditional on those inputs shown beside it. If stating a few percent
+      on K<sub>a,dye</sub> or [Host]<sub>0</sub> widens it sharply, your
+      K<sub>a,guest</sub> is limited by those numbers rather than by the
+      titration &mdash; the <i>K<sub>a</sub> Sensitivity</i> tab says which
+      of them it is.</li>
 </ul>
 """)
 
@@ -231,7 +242,9 @@ _KA_HG_HTML = _with_sci_note("""
 <p>Searched on a log grid over a wide range. It trades off with the
 second-step constant, so judge it from its confidence interval and from the
 joint region of the pair on the <i>Identifiability</i> tab, not from the
-estimate alone.</p>
+estimate alone. Its interval covers the uncertainty you state for the entered
+inputs under <b>Input Uncertainty</b>; the region of the pair holds them at the
+values you entered.</p>
 """)
 
 _KA_HG2_HTML = _with_sci_note("""

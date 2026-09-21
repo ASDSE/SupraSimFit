@@ -10,10 +10,19 @@ marked and the two single-Ka intervals as faint bands. After a sensitivity run
 the best fit of every Sobol' sample joins each Ka panel as a translucent cloud,
 optionally coloured by one input's offset.
 
+Where the fit was given an uncertainty for an input, each Ka panel carries a
+second curve: what the model reaches at that Ka with every input free to move
+within its stated uncertainty. It lies above the first one everywhere — leaving
+the inputs as entered is one of the fits it may choose — and the band and the
+cut-off drawn are its own, because the interval it implies is the one the fit
+reports. The interval at the inputs exactly as entered stays underneath, and
+the summary quotes both. The joint region of a pair of binding constants is
+drawn at the inputs as entered and is titled that way.
+
 The R² axis is linear: for one signal the squared misfit is linear in R², so
 equal R² gaps are equal misfit gaps. The peak and the cut-off sit close together
-near 1, so the default view frames the two of them and View All shows the full
-range.
+near 1, so the default view frames every peak and cut-off drawn and View All
+shows the full range.
 """
 
 from __future__ import annotations
@@ -38,9 +47,11 @@ from PyQt6.QtWidgets import (
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
 from core.pipeline.fit_pipeline import FitResult, fit_replica_ids, input_replica_ids
+from core.pipeline.input_aware import AwareProfile
 from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet
 from core.pipeline.sensitivity import TITRANT, SensitivityResult
-from gui.plotting.colors import INK, INK_2, INK_3, SERIES, SURFACE
+from core.pipeline.varpro import KaInterval
+from gui.plotting.colors import INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
 from gui.plotting.labels import (
     fmt_interval_html,
     fmt_param,
@@ -49,13 +60,27 @@ from gui.plotting.labels import (
     fmt_sci,
     fmt_unit_html,
     plain_label,
+    verdict_sentence,
 )
 from gui.plotting.plot_style import DEFAULT_STYLE
 from gui.plotting.sensitivity_widget import _LogKaAxis
-from gui.widgets.assay_conditions import condition_fields
+from gui.widgets.assay_conditions import condition_fields, result_input_labels
 from gui.widgets.replica_panel import describe_replicates
 
 _BAND = (82, 81, 78, 28)
+# The input-aware curve, its band, its cut-off and its estimate: one colour for
+# the whole reading, so a line, a band and a marker are read together. Orange
+# against the ink of the curve at the entered inputs, and never the blue of the
+# sensitivity samples underneath.
+_AWARE = SERIES_TOTAL
+_BAND_AWARE = (235, 104, 52, 34)
+# The interval at the entered inputs, where an input-aware one is drawn over it:
+# the same ink as _BAND, fainter, so the headline band stays the one that reads.
+_BAND_CONDITIONAL = (82, 81, 78, 16)
+# A band lies under the curves and is painted faint enough for them to read
+# through it; a legend swatch is a character wide and would be invisible at that
+# alpha, so it is painted at one the eye resolves in its own colour.
+_LEGEND_FILL_ALPHA = 110
 # The joint region is drawn over the two single-Ka bands, so it is the same ink
 # at an alpha that still reads where a band lies underneath it.
 _REGION_FILL = (82, 81, 78, 70)
@@ -138,21 +163,32 @@ def _plain_input_label(assay_type: AssayType, key: str) -> str:
     return fmt_param_plain(key)
 
 
-def _default_r2_range(values: np.ndarray, peak: float, cut: float) -> tuple[float, float]:
-    """Default R² span of the view: the peak and the cut-off, plus the *values* inside the default Ka span.
+def _default_r2_range(values: np.ndarray, levels: Sequence[float]) -> tuple[float, float]:
+    """Default R² span of the view: every level drawn, plus the *values* inside the default Ka span.
 
-    The two levels that decide the reading are the profile's best R² and the
-    R² its interval is cut at. The view runs from one level span below the lower
-    of them to 0.6 spans above the higher of them and *values*, never more than
+    The levels that decide the reading are each drawn profile's best R² and the
+    R² an interval is cut at, every step of it inside the default Ka span. The view runs from one level span below the lowest
+    of them to 0.6 spans above the highest of them and *values*, never more than
     0.1 span above R² = 1. Values far below the levels stay out of the default
     view, so a few poor sensitivity samples cannot squeeze the levels into a few
     pixels.
     """
     values = values[np.isfinite(values)]
-    low, high = min(cut, peak), max(cut, peak)
+    low, high = min(levels), max(levels)
     span = max(high - low, _MIN_R2_SPAN)
     top = max(high, float(values.max())) if values.size else high
     return low - span, min(top + 0.6 * span, 1.0 + 0.1 * span)
+
+
+def _aware_peak(aware: AwareProfile) -> tuple[float, float]:
+    """The Ka the input-aware profile is best at, and its R² there.
+
+    The curve holds the estimate itself as one of its points, so its highest
+    drawn point is the fit's own: no interpolation stands between the marker
+    and the reported number.
+    """
+    index = int(np.nanargmax(aware.r2))
+    return float(aware.grid[index]), float(aware.r2[index])
 
 
 def _log_extent(values: np.ndarray) -> tuple[float, float]:
@@ -192,9 +228,11 @@ class IdentifiabilityWidget(QWidget):
         super().__init__(parent)
         self.setToolTip(
             '<qt>The line is the best R² any fit can reach at each K<sub>a</sub>; the shaded band is '
-            'the range of K<sub>a</sub> the data support.<br>With two binding constants the last panel '
-            'shows which pairs of them the data support together.<br>Scroll to zoom, drag to pan, '
-            'right-click for the full view.</qt>'
+            'the range of K<sub>a</sub> the data support.<br>Where you stated an uncertainty for an input, '
+            'a second line and band show what the data support once the inputs may move within it.'
+            '<br>With two binding constants the last panel shows which pairs of them the data support '
+            'together, at the inputs as entered.<br>Scroll to zoom, drag to pan, right-click for the '
+            'full view.</qt>'
         )
         self._style: dict = dict(DEFAULT_STYLE)
         self._fit: FitResult | None = None
@@ -210,6 +248,14 @@ class IdentifiabilityWidget(QWidget):
         self._items: dict[str, dict] = {}
         # Drawn items of the joint-region panel, empty for a model with one binding constant.
         self._region_items: dict = {}
+        # The column that panel is drawn in beside the Ka panels, and whether it
+        # sits on a row of its own below them instead (:meth:`_wrap_region`).
+        self._region_col = 0
+        self._region_wrapped = False
+        # Width the chart needs with every panel in one row, and with the pair
+        # panel below the others; each measured while it is so (:meth:`_fit_canvas`).
+        self._row_width = 0
+        self._wrapped_width = 0
         self._legend_entries: dict[str, tuple[str, str]] = {}
         # The last render's notes: about the chart, and about the drawn sensitivity samples.
         self._note_lists: tuple[list[str], list[str]] = ([], [])
@@ -315,8 +361,9 @@ class IdentifiabilityWidget(QWidget):
         with two binding constants draws three panels, together wider than a
         laptop screen, and asking for all three would grow the window past the
         edge of the screen with no way to shrink it back. So the tab asks for one
-        panel with its data area at ``_MAIN_MIN_WIDTH`` and :meth:`_fit_canvas`
-        lets the page scroll over the rest.
+        panel with its data area at ``_MAIN_MIN_WIDTH``; :meth:`_fit_canvas` puts
+        the pair panel on a row of its own where the three do not fit side by
+        side, and lets the page scroll over whatever is still too wide.
         """
         hint = super().minimumSizeHint()
         if self._stack.currentWidget() is not self._content:
@@ -324,7 +371,7 @@ class IdentifiabilityWidget(QWidget):
         widths = self._panel_widths()
         # What the chart needs beyond the panels themselves — its own margins and
         # the spacing between them — is needed for a single panel just as much.
-        around = self._chart_width() - sum(widths)
+        around = self._row_width - sum(widths)
         margins = self._content.widget().layout().contentsMargins()
         scrollbar = self._content.verticalScrollBar().sizeHint().width()
         width = int(np.ceil(max(widths, default=0.0) + around)) + margins.left() + margins.right() + scrollbar
@@ -346,18 +393,17 @@ class IdentifiabilityWidget(QWidget):
         keeps ``_MAIN_MIN_HEIGHT`` of data area under its Ka axis. Only below
         that does the page scroll. The notes are always below the chart.
 
-        The chart also keeps the width it needs, so a tab too narrow for every
-        panel scrolls sideways over them rather than squeezing them. The text
-        is held to the width of the tab even then: a reader should never have to
-        scroll sideways to finish a sentence.
+        The chart also keeps the width it needs. Where the panels do not fit
+        side by side, the pair panel drops below the others; where even what is
+        left is too wide, the page scrolls sideways over it rather than
+        squeezing the panels. The text is held to the width of the tab even
+        then: a reader should never have to scroll sideways to finish a
+        sentence.
         """
         viewport = self._content.viewport()
         layout = self._content.widget().layout()
         margins = layout.contentsMargins()
         scrollbar = self._content.verticalScrollBar()
-        chart_width = self._chart_width()
-        if chart_width != self._glw.minimumWidth():
-            self._glw.setMinimumWidth(chart_width)
         width = viewport.width() - margins.left() - margins.right()
         if not scrollbar.isVisible():
             # The text is measured at the width it has once the page scrolls,
@@ -365,6 +411,19 @@ class IdentifiabilityWidget(QWidget):
             # viewport it wraps to one line fewer, and the chart it then sizes
             # runs a line past the bottom of the tab.
             width -= scrollbar.sizeHint().width()
+        if not self._region_wrapped:
+            self._row_width = self._chart_width()
+        # The pair panel drops below the others where the three do not fit side
+        # by side — but only where the two that are left do fit, since a page
+        # that scrolls sideways either way gains nothing from shorter panels.
+        self._wrap_region(self._row_width > width and self._wrapped_width <= width)
+        if self._region_wrapped:
+            self._wrapped_width = self._chart_width()
+            if self._wrapped_width > width:
+                self._wrap_region(False)
+        chart_width = self._chart_width()
+        if chart_width != self._glw.minimumWidth():
+            self._glw.setMinimumWidth(chart_width)
         self._hold_text_to(width if chart_width > width else None)
         above = margins.top() + self._summary.heightForWidth(width) + layout.spacing()
         if not self._controls.isHidden():
@@ -376,6 +435,33 @@ class IdentifiabilityWidget(QWidget):
         height = with_legend if with_legend >= roomy else min(max(room, needed), roomy)
         if height != self._glw.minimumHeight():
             self._glw.setMinimumHeight(height)
+
+    def _wrap_region(self, wrapped: bool) -> None:
+        """Put the joint-region panel on a row of its own below the Ka panels, or back beside them.
+
+        Three panels side by side are wider than a laptop screen, and the one
+        that falls off the edge is the pair — the last column, and the one a
+        reader is least likely to go looking for behind a scrollbar. On its own
+        row it is in view at the full width of the page, and the page grows
+        downwards, which it scrolls in anyway. What the panels lose in height
+        buys nothing where the page scrolls sideways regardless, so
+        :meth:`_fit_canvas` wraps only where the rest of the chart fits.
+
+        The panel keeps every curve, band and view range it was drawn with: it
+        is moved between cells of the chart's grid, not drawn again.
+        """
+        if not self._region_items or self._region_wrapped == wrapped:
+            return
+        plot = self._region_items['main']
+        self._glw.ci.removeItem(plot)
+        # The column it leaves behind takes no share of the width, or it would
+        # hold an empty gap as wide as a panel beside the Ka panels.
+        self._glw.ci.layout.setColumnStretchFactor(self._region_col, 0 if wrapped else 1)
+        if wrapped:
+            self._glw.ci.addItem(plot, row=1, col=0, colspan=self._region_col)
+        else:
+            self._glw.ci.addItem(plot, row=0, col=self._region_col)
+        self._region_wrapped = wrapped
 
     def _hold_text_to(self, width: int | None) -> None:
         """Hold the page's text to *width*; ``None`` lets it take the width the page gives it.
@@ -567,6 +653,8 @@ class IdentifiabilityWidget(QWidget):
         self._glw.clear()
         self._items = {}
         self._region_items = {}
+        self._region_wrapped = False
+        self._wrapped_width = 0
         self._legend_entries = {}
         # The sample controls are offered only while there are sensitivity samples to draw.
         self._controls.setVisible(False)
@@ -604,8 +692,21 @@ class IdentifiabilityWidget(QWidget):
             unit_html = fmt_unit_html(meta.units.get(ka_key, ''))
             self._render_key(2 * index, ka_key, unit_html, profile, samples, notes, sample_notes)
             summary.append(self._summary_line(ka_key, unit_html, profile))
+        drawn = [profiles[key] for key in ka_keys]
+        if any(profile.interval is not None for profile in drawn):
+            summary.append(self._interval_note(drawn))
         if self._profile.region is not None:
             self._render_region(2 * len(ka_keys), meta, self._profile.region, profiles)
+            if any(profile.aware is not None for profile in profiles.values()):
+                notes.append(
+                    'The panel of the pair takes the entered inputs as exact. The uncertainties you stated '
+                    "widen each binding constant's own interval, in the panels beside it."
+                )
+        # What the fit found out about the model and the entered inputs, in the
+        # words the summary table and the report use.
+        verdict = self._verdict_html()
+        if verdict:
+            summary.append(verdict)
 
         self._summary.setText('<br>'.join(summary))
         self._set_legend()
@@ -674,30 +775,76 @@ class IdentifiabilityWidget(QWidget):
         offsets = result.sample_offsets_pct.get(self._colour_key) if self._colour_key is not None else None
         return {'ka': result.sample_ka, 'r2': r2, 'offsets': offsets}
 
-    def _summary_line(self, ka_key: str, unit_html: str, profile: ProfileResult) -> str:
-        """One line per Ka key: best fit, the confidence interval, how far it reaches and what it rests on.
+    def _verdict_html(self) -> str:
+        """What the fit found out about the model and the entered inputs, or nothing where it tested neither.
 
-        The second line names the two numbers the cut-off is worked out from —
-        how many data points and how many fitted parameters — and says the
-        interval reaches no further than the bounds the fit was given. An open
-        side names what it stops at — the bound, the Ka the binding model
-        cannot be solved past, or the Ka beyond which only the bound of the
-        other binding constant rejects the fit — and says what would pin it
-        down.
+        The inputs are named from the fit's own assay, so this tab and the
+        exported report name the same fit's inputs alike.
+        """
+        diagnostics = self._fit.diagnostics
+        if diagnostics is None:
+            return ''
+        labels = result_input_labels(self._fit.assay_type)
+        return verdict_sentence(diagnostics, self._fit.input_shifts, labels, html=True)
+
+    def _interval_note(self, profiles: list[ProfileResult]) -> str:
+        """The grey line under the per-Ka blocks: what every interval of this fit rests on.
+
+        The point and parameter counts are the fit's own projection's and the
+        bounds are the fit's, so they hold for every binding constant alike and
+        are said once for the fit.
+        """
+        counts = f'{_count(profiles[0].n_points, "data point")} and {_count(profiles[0].n_params, "fitted parameter")}'
+        if any(profile.aware is not None for profile in profiles):
+            text = (
+                'Every input was free to move within the uncertainty you stated for it, which usually widens '
+                f'the interval. Each interval at the entered inputs is worked out from {counts}, and no '
+                'interval reaches further than the parameter bounds this fit was given.'
+            )
+        else:
+            text = (
+                f'Each interval is worked out from {counts}, and reaches no further than the parameter bounds '
+                'this fit was given.'
+            )
+        return f'<span style="color:{INK_2}">{text}</span>'
+
+    def _summary_line(self, ka_key: str, unit_html: str, profile: ProfileResult) -> str:
+        """One block per Ka key: the reported estimate and interval, and how far it reaches.
+
+        Where the fit was given an uncertainty for an input, the block leads
+        with the interval that allows for them — the one the fit reports — and
+        the reading at the inputs exactly as entered follows it. What both rest
+        on is in :meth:`_interval_note`, once for the fit. An open side names
+        what it stops at — the bound, the Ka the binding model cannot be solved
+        past, or the Ka beyond which only the bound of the other binding
+        constant rejects the fit — and says what would pin it down.
         """
         label = fmt_param(ka_key)
         best = profile.best_ka
         best_txt = f'{fmt_sci(best, 3)} {unit_html}'.strip()
-        head = (
-            f'{label}: best fit{" of the replicates' average" if profile.per_replica else ""} '
-            f'{best_txt} (R² {fmt_r2(profile.best_r2)})'
-        )
+        average = " of the replicates' average" if profile.per_replica else ''
+        fit_txt = f'best fit{average} {best_txt} (R² {fmt_r2(profile.best_r2)})'
         interval = profile.interval
         if interval is None:
             return (
-                f'{head}<br><span style="color:{INK_2}">{label} is fixed at {best_txt} by its bounds, '
-                'so there is no interval.</span>'
+                f'{label}: {fit_txt}<br><span style="color:{INK_2}">{label} is fixed at {best_txt} by its '
+                'bounds, so there is no interval.</span>'
             )
+        conditional = self._ci_html(interval, best, unit_html)
+        if profile.aware is None:
+            return f'{label}: {fit_txt} · {conditional}{self._reach_html(interval, unit_html)}'
+        estimate, _ = _aware_peak(profile.aware)
+        estimate_txt = f'{fmt_sci(estimate, 3)} {unit_html}'.strip()
+        aware = profile.aware.interval
+        return (
+            f'{label}: best fit{average} {estimate_txt} · {self._ci_html(aware, estimate, unit_html)}'
+            f'{self._reach_html(aware, unit_html)}'
+            f'<br>Conditional on the entered inputs: {fit_txt} · {conditional}'
+        )
+
+    @staticmethod
+    def _ci_html(interval: KaInterval, estimate: float, unit_html: str) -> str:
+        """``95% CI [1.3×10⁸, 1.9×10⁸] M⁻¹ (−31% / +52%)``: the interval and how far each closed end lies."""
         lo, hi = interval.low, interval.high
         lo_open, hi_open = interval.open_low, interval.open_high
         # The same bracket as the summary table, the plot annotation and the
@@ -706,10 +853,10 @@ class IdentifiabilityWidget(QWidget):
         ci_txt = fmt_interval_html(fmt_sci(lo), fmt_sci(hi), lo_open, hi_open)
         if not (lo_open and hi_open):
             ci_txt = f'{ci_txt} {unit_html}'.strip()
-        # How far from the best fit each end the data close lies. An open end is
+        # How far from the estimate each end the data close lies. An open end is
         # no distance from it, so the end that is closed is named instead.
         closed = [
-            (side, _pct(edge / best))
+            (side, _pct(edge / estimate))
             for edge, is_open, side in ((lo, lo_open, 'lower end'), (hi, hi_open, 'upper end'))
             if not is_open
         ]
@@ -717,21 +864,22 @@ class IdentifiabilityWidget(QWidget):
             change = f' ({closed[0][1]} / {closed[1][1]})'
         else:
             change = f' ({closed[0][0]} {closed[0][1]})' if closed else ''
-        line = f'{head} · {interval.level:.0%} CI {ci_txt}{change}'
-        line += (
-            f'<br><span style="color:{INK_2}">The interval is worked out from '
-            f'{_count(profile.n_points, "data point")} and {_count(profile.n_params, "fitted parameter")}, '
-            'and reaches no further than the parameter bounds this fit was given.</span>'
-        )
+        return f'{interval.level:.0%} CI {ci_txt}{change}'
+
+    @staticmethod
+    def _reach_html(interval: KaInterval, unit_html: str) -> str:
+        """What an interval spans where it is not one connected stretch, and what each open side stops at."""
+        line = ''
         if interval.split:
             line += (
                 f'<br><span style="color:{INK_2}">Not every K<sub>a</sub> inside the band explains the data well '
                 'enough: the ones that do come in separate stretches, and the band spans all of them. The line '
                 'shows where they are.</span>'
             )
+        lo, hi = interval.low, interval.high
         for is_open, unsolvable, limited_by, side, edge, advice in (
             (
-                lo_open,
+                interval.open_low,
                 interval.unsolvable_low,
                 interval.limited_by_low,
                 'lower',
@@ -739,7 +887,7 @@ class IdentifiabilityWidget(QWidget):
                 'Points at a higher titrant concentration would pin it down.',
             ),
             (
-                hi_open,
+                interval.open_high,
                 interval.unsolvable_high,
                 interval.limited_by_high,
                 'higher',
@@ -806,14 +954,19 @@ class IdentifiabilityWidget(QWidget):
         items: dict = {
             'main': main,
             'average': None,
+            'aware': None,
             'replicas': [],
             'band': None,
+            'aware_band': None,
             'cut': None,
+            'aware_cut': None,
             'best': None,
+            'aware_best': None,
             'samples': None,
             'colour_bar': None,
         }
         self._items[ka_key] = items
+        aware = profile.aware
         log_best = float(np.log10(profile.best_ka))
         xs: list[np.ndarray] = [np.array([log_best])]
         sample_x = sample_y = np.empty(0)
@@ -822,13 +975,31 @@ class IdentifiabilityWidget(QWidget):
         interval = profile.interval
         if interval is not None:
             lo, hi = np.log10([interval.low, interval.high])
-            band = pg.LinearRegionItem(values=(lo, hi), movable=False, brush=pg.mkBrush(*_BAND), pen=pg.mkPen(None))
-            band.setZValue(-10)
+            # With an input-aware interval over it, this one is the reading at
+            # the inputs as entered: fainter, and underneath.
+            fill = _BAND if aware is None else _BAND_CONDITIONAL
+            band = pg.LinearRegionItem(values=(lo, hi), movable=False, brush=pg.mkBrush(*fill), pen=pg.mkPen(None))
+            band.setZValue(-10 if aware is None else -11)
             main.addItem(band)
             items['band'] = band
             legend['band'] = (
-                '<span style="color:#dddcd7">&#9608;</span>',
-                f'{interval.level:.0%} confidence interval',
+                f'<span style="color:{_on_surface(INK_2, _LEGEND_FILL_ALPHA)}">&#9608;</span>',
+                f'{interval.level:.0%} confidence interval'
+                if aware is None
+                else f'{interval.level:.0%} CI at the entered inputs',
+            )
+            xs.append(np.array([lo, hi]))
+        if aware is not None:
+            lo, hi = np.log10([aware.interval.low, aware.interval.high])
+            band = pg.LinearRegionItem(
+                values=(lo, hi), movable=False, brush=pg.mkBrush(*_BAND_AWARE), pen=pg.mkPen(None)
+            )
+            band.setZValue(-10)
+            main.addItem(band)
+            items['aware_band'] = band
+            legend['aware_band'] = (
+                f'<span style="color:{_on_surface(_AWARE, _LEGEND_FILL_ALPHA)}">&#9608;</span>',
+                f'{aware.interval.level:.0%} confidence interval',
             )
             xs.append(np.array([lo, hi]))
         for r2 in (profile.replica_r2 or {}).values():
@@ -841,23 +1012,56 @@ class IdentifiabilityWidget(QWidget):
         # breaks there instead of stepping across the gap.
         items['average'] = main.plot(log_grid, profile.r2, pen=pg.mkPen(INK, width=2), connect='finite', antialias=True)
         items['average'].setZValue(3)
+        entered = ' with the inputs as entered' if aware is not None else ''
         legend['profile'] = (
             f'<span style="color:{INK}">&#9473;</span>',
-            'best R² reachable at each K<sub>a</sub>' + (" on the replicates' average" if profile.per_replica else ''),
+            'best R² reachable at each K<sub>a</sub>'
+            + (" on the replicates' average" if profile.per_replica else '')
+            + entered,
         )
-        if interval is not None:
-            # The band spans the Ka values where the line is above this cut-off.
-            items['cut'] = self._level_line(main, profile.r2_threshold)
+        if aware is not None:
+            items['aware'] = main.plot(
+                np.log10(aware.grid), aware.r2, pen=pg.mkPen(_AWARE, width=2), connect='finite', antialias=True
+            )
+            # Over the curve at the entered inputs, which it never falls below.
+            items['aware'].setZValue(3.2)
+            legend['aware'] = (
+                f'<span style="color:{_AWARE}">&#9473;</span>',
+                'the same with input uncertainties',
+            )
+        # The band spans the Ka values where its own line is above this cut-off;
+        # the reading the fit reports is the input-aware one where there is one.
+        cut_profile = aware if aware is not None else profile
+        if aware is not None or interval is not None:
+            key = 'aware_cut' if aware is not None else 'cut'
+            colour = _AWARE if aware is not None else INK
+            items[key] = self._cut_line(main, np.log10(cut_profile.grid), cut_profile.r2_cut, colour)
+            # The axis names the level nothing is held at. Where the line drawn
+            # steps to another level as well, the number alone reads as a
+            # contradiction of the drawing, so it says which level it is.
+            cuts = np.asarray(cut_profile.r2_cut, dtype=float)
+            stepped = np.unique(cuts[np.isfinite(cuts)]).size > 1
+            label = f'cut-off {fmt_r2(cut_profile.r2_threshold)}{" (nothing held)" if stepped else ""}'
             axis = main.getAxis('right')
-            axis.setTicks([[(profile.r2_threshold, f'cut-off {fmt_r2(profile.r2_threshold)}')]])
+            axis.setTicks([[(cut_profile.r2_threshold, label)]])
             axis.setTickFont(tick_font)
             axis.setPen(pg.mkPen(INK_3, width=1))
             axis.setTextPen(pg.mkPen(INK_2))
-            axis.setWidth(tick_fm.horizontalAdvance(f'cut-off {fmt_r2(profile.r2_threshold)}') + 14)
+            axis.setWidth(tick_fm.horizontalAdvance(label) + 14)
             main.showAxis('right')
-            legend['cut'] = (f'<span style="color:{INK}">&#8943;</span>', f'{interval.level:.0%} CI cut-off')
+            level = (aware.interval if aware is not None else interval).level
+            legend[key] = (f'<span style="color:{colour}">&#8943;</span>', f'{level:.0%} CI cut-off')
         items['best'] = self._best_marker(main, log_best, profile.best_r2)
-        legend['best'] = (f'<span style="color:{INK}">&#9670;</span>', 'best fit')
+        legend['best'] = (
+            f'<span style="color:{INK}">&#9670;</span>',
+            'best fit' if aware is None else 'best fit at the entered inputs',
+        )
+        if aware is not None:
+            estimate, estimate_r2 = _aware_peak(aware)
+            log_estimate = float(np.log10(estimate))
+            items['aware_best'] = self._best_marker(main, log_estimate, estimate_r2, _AWARE)
+            xs.append(np.array([log_estimate]))
+            legend['aware_best'] = (f'<span style="color:{_AWARE}">&#9670;</span>', 'best fit reported')
 
         if samples is not None and ka_key in samples['ka']:
             sample_x, sample_y = self._add_samples(col, main, ka_key, samples)
@@ -888,6 +1092,7 @@ class IdentifiabilityWidget(QWidget):
         legend = self._legend_entries
         tick_font, label_font = self._fonts()
         k1, k2 = region.ka_keys
+        self._region_col = col
         plot = self._glw.addPlot(row=0, col=col, axisItems={n: _LogKaAxis(n) for n in ('bottom', 'left')})
         for name in ('left', 'bottom'):
             axis = plot.getAxis(name)
@@ -900,6 +1105,10 @@ class IdentifiabilityWidget(QWidget):
         plot.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
         self._style_axes(plot, tick_font, label_font)
         self._glw.ci.layout.setColumnStretchFactor(col, 1)
+        if any(profile.aware is not None for profile in profiles.values()):
+            # The panels beside this one carry two readings each; this one is
+            # the pair at the inputs as entered, and is named that way.
+            plot.setTitle('At the entered inputs', color=INK_2, size=f'{label_font.pointSize()}pt')
 
         # The two single-Ka intervals, behind the region and in the same grey as
         # the bands of the panels beside it: each of them is what that Ka alone
@@ -920,7 +1129,7 @@ class IdentifiabilityWidget(QWidget):
             plot.addItem(band)
             bands.append(band)
 
-        inside = np.isfinite(region.r2) & (region.r2 >= region.r2_threshold)
+        inside = np.isfinite(region.r2) & (region.r2 >= region.r2_cut)
         rgba = np.zeros(inside.shape + (4,), dtype=np.ubyte)
         rgba[inside] = _REGION_FILL
         # Explicit levels: left to scale itself, an image whose largest byte is
@@ -942,23 +1151,30 @@ class IdentifiabilityWidget(QWidget):
         self._region_items = {'main': plot, 'region': image, 'best': best, 'bands': bands}
 
     @staticmethod
-    def _level_line(main: pg.PlotItem, r2: float) -> pg.InfiniteLine:
-        """Add the horizontal cut-off line at *r2* to *main*; its name is on the right-hand axis."""
-        line = pg.InfiniteLine(pos=r2, angle=0, pen=pg.mkPen(INK, width=1.5, style=Qt.PenStyle.DotLine))
+    def _cut_line(main: pg.PlotItem, log_grid: np.ndarray, r2_cut: np.ndarray, colour: str = INK) -> pg.PlotDataItem:
+        """Add the dotted cut-off line to *main* in *colour*; its name is on the right-hand axis.
+
+        The cut-off holds one level per profile point and steps, midway between
+        two points, where the fit starts to hold a signal parameter on its bound.
+        """
+        steps = np.concatenate([log_grid[:1], 0.5 * (log_grid[:-1] + log_grid[1:]), log_grid[-1:]])
+        line = pg.PlotDataItem(
+            steps, r2_cut, stepMode='center', pen=pg.mkPen(colour, width=1.5, style=Qt.PenStyle.DotLine)
+        )
         # Above the sample cloud, below the curves and the best-fit marker.
         line.setZValue(1.5)
         main.addItem(line, ignoreBounds=True)
         return line
 
     @staticmethod
-    def _best_marker(plot: pg.PlotItem, x: float, y: float) -> pg.ScatterPlotItem:
-        """Mark the best fit at *(x, y)*, above every curve and cloud."""
+    def _best_marker(plot: pg.PlotItem, x: float, y: float, colour: str = INK) -> pg.ScatterPlotItem:
+        """Mark the best fit at *(x, y)* in *colour*, above every curve and cloud."""
         marker = pg.ScatterPlotItem(
             x=[x],
             y=[y],
             symbol='d',
             size=_DOT_SIZE,
-            brush=pg.mkBrush(INK),
+            brush=pg.mkBrush(colour),
             pen=pg.mkPen(SURFACE, width=_RING_WIDTH),
         )
         marker.setZValue(4)
@@ -1027,13 +1243,13 @@ class IdentifiabilityWidget(QWidget):
     ) -> tuple[tuple[float, float], tuple[float, float]]:
         """Set the default view and return its (Ka, R²) ranges, Ka in log10 units.
 
-        Across: the Ka values in *xs* — the best fit, the interval and the
-        sensitivity samples — at least a decade wide, with ``_X_PAD`` of that
-        span on either side so the interval reads as a band with the curve
+        Across: the Ka values in *xs* — every estimate and interval drawn, and
+        the sensitivity samples — at least a decade wide, with ``_X_PAD`` of
+        that span on either side so an interval reads as a band with the curve
         falling away outside it. The padding stops at the ends of *log_grid*,
         the drawn curve, which leaves no empty margin where the interval
         already spans the Ka bounds. Up and down: :func:`_default_r2_range` of
-        the profile's peak and cut-off with the sample R² inside that Ka span.
+        every peak and cut-off drawn with the sample R² inside that Ka span.
         """
         x_all = np.concatenate(xs)
         x_lo, x_hi = float(x_all.min()), float(x_all.max())
@@ -1046,7 +1262,15 @@ class IdentifiabilityWidget(QWidget):
         x_hi = min(x_hi + pad, max(float(log_grid[-1]), x_hi))
         sample_x, sample_y = samples
         in_view = sample_y[(sample_x >= x_lo) & (sample_x <= x_hi)]
-        y_lo, y_hi = _default_r2_range(in_view, profile.best_r2, profile.r2_threshold)
+        levels = [profile.best_r2, profile.r2_threshold]
+        if profile.aware is not None:
+            levels += [_aware_peak(profile.aware)[1], profile.aware.r2_threshold]
+        # The cut-off steps down where the fit pins a signal parameter; the view holds every step inside its Ka span.
+        for curve in (profile, profile.aware):
+            if curve is not None:
+                logs = np.log10(curve.grid)
+                levels += curve.r2_cut[(logs >= x_lo) & (logs <= x_hi)].tolist()
+        y_lo, y_hi = _default_r2_range(in_view, levels)
         main.setLimits(yMin=min(_R2_LIMITS[0], y_lo), yMax=max(_R2_LIMITS[1], y_hi))
         main.setRange(xRange=(x_lo, x_hi), yRange=(y_lo, y_hi), padding=0)
         return (x_lo, x_hi), (y_lo, y_hi)

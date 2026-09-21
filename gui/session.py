@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
+from core.pipeline.diagnostics import MisfitTest
 from core.pipeline.fit_pipeline import (
     FitResult,
     ParameterSummary,
@@ -18,8 +19,23 @@ from core.pipeline.fit_pipeline import (
     parameters_on_bound,
     summarize_parameters,
 )
+from core.pipeline.inputs import InputSpec, SpecKind, specs_from_dict
 from core.units import Quantity
-from gui.plotting.labels import SPLIT_NOTE, fmt_bound_note, fmt_interval_plain, fmt_log10, fmt_r2, fmt_unit_pretty
+from gui.plotting.labels import (
+    NO_UNCERTAINTY,
+    RANGES_ONLY,
+    SPLIT_NOTE,
+    fmt_bound_note,
+    fmt_interval_plain,
+    fmt_log10,
+    fmt_misfit,
+    fmt_p,
+    fmt_r2,
+    fmt_sci,
+    fmt_unit_pretty,
+    verdict_sentence,
+)
+from gui.widgets.assay_conditions import result_input_labels
 from gui.widgets.replica_panel import _display_label
 
 if TYPE_CHECKING:
@@ -182,6 +198,148 @@ def _interval_cell(spec: ParameterSummary, result: FitResult, ka_keys: set[str])
     return '—'
 
 
+#: Said above the per-Ka line that reports the interval with every input taken as entered.
+_CONDITIONAL_NOTE = (
+    'The interval above covers the input uncertainties stated below; the one here takes every input exactly as entered.'
+)
+
+#: Said when the data inform no direction of the inputs, so the fit has nothing
+#: to check the entered values against.
+_NO_CONFLICT_TEST = (
+    'These data do not tell the stated inputs apart from the binding constant they are fitted with, so they '
+    'cannot check the values you entered. Where the fit put each shift is above; whether the inputs are right '
+    'is not something this fit can say.'
+)
+
+#: Said when every varying input is stated as a range, which the fit treats as a
+#: hard limit rather than as a distribution to weigh a shift against.
+_RANGES_ONLY = (
+    f'These inputs are not tested against what you stated: {RANGES_ONLY}. '
+    'A shift resting at the edge of its range is marked above.'
+)
+
+
+def stated_uncertainty(spec: InputSpec, unit: str) -> str:
+    """One input's uncertainty as the user stated it: a standard deviation or a range, in percent or in its own unit.
+
+    A value in the input's own unit is written in ``×10ⁿ`` notation, as every
+    other concentration a report shows is, so no reader meets ``2e-07``.
+    """
+    if spec.kind is SpecKind.SIGMA:
+        return f'σ {spec.sigma:g} %' if spec.relative else f'σ {fmt_sci(spec.sigma, 2)} {unit}'.rstrip()
+    if spec.relative:
+        return f'{spec.lo:+g} % to {spec.hi:+g} %'.replace('-', '−')
+    return f'{fmt_sci(spec.lo, 2)} to {fmt_sci(spec.hi, 2)} {unit}'.rstrip()
+
+
+def _input_uncertainty_block(result: FitResult) -> list[str]:
+    """The INPUT UNCERTAINTY table: what was stated per input and where the fit put it.
+
+    Empty for a fit that took every input as entered, which has no input to
+    report and no shift to show.
+    """
+    specs = specs_from_dict(result.fit_config.get('input_uncertainty') or {})
+    if not specs:
+        return []
+    labels = result_input_labels(result.assay_type)
+    rows: list[tuple[str, ...]] = []
+    for key, spec in specs.items():
+        unit = str(result.conditions[key].units) if isinstance(result.conditions.get(key), Quantity) else ''
+        shift = result.input_shifts.get(key)
+        if shift is None:
+            moved, against = '—', '—'
+        else:
+            # The same percentage and σ the summary block and the plot show.
+            moved = f'{100 * shift.fraction:+.1f} %'.replace('-', '−')
+            if shift.z is not None:
+                against = f'{abs(shift.z):.1f} σ'
+            else:
+                against = 'at the edge of its range' if shift.at_edge else '—'
+        rows.append(
+            (labels.get(key, key), stated_uncertainty(spec, fmt_unit_pretty(unit) if unit else ''), moved, against)
+        )
+
+    lines = ['INPUT UNCERTAINTY', '-' * 60]
+    lines.extend(
+        _wrapped(
+            'The fit was free to move each input inside the uncertainty stated for it, and the interval it '
+            'reports covers that freedom. Where it put each one is below, as a percentage of the value entered '
+            'and against the uncertainty stated for it.'
+        )
+    )
+    lines.append('')
+    lines.extend(_fixed_width_table(('Input', 'Stated', 'Shift', 'Against what was stated'), rows))
+    lines.append('')
+    return lines
+
+
+#: Width the MODEL AND INPUTS lines label their test in, so the statistics line up.
+_TEST_LABEL_WIDTH = 32
+
+
+def _misfit_line(test: MisfitTest | None) -> str:
+    """One misfit test as the report quotes it, or why there was none to run."""
+    if test is None:
+        return 'not tested — the data hold too few points beyond the fitted parameters to judge the residuals.'
+    return fmt_misfit(test)
+
+
+def _model_and_inputs_block(result: FitResult) -> list[str]:
+    """The MODEL AND INPUTS block: what the tests say about the model and about the entered inputs.
+
+    Empty for a result that carries no diagnostics — an assay with no
+    association constant, or a file written before they were reported.
+    """
+    diagnostics = result.diagnostics
+    if diagnostics is None:
+        return []
+    labels = result_input_labels(result.assay_type)
+    lines = ['MODEL AND INPUTS', '-' * 60]
+    lines.extend(_wrapped(verdict_sentence(diagnostics, result.input_shifts, labels, html=False)))
+    lines.append('')
+    lines.append(
+        f'  {"Model at the entered inputs:":<{_TEST_LABEL_WIDTH}}{_misfit_line(diagnostics.conditional_misfit)}'
+    )
+    if result.input_shifts:
+        lines.append(f'  {"Model with the inputs moved:":<{_TEST_LABEL_WIDTH}}{_misfit_line(diagnostics.misfit)}')
+    conflict = diagnostics.conflict
+    specs = specs_from_dict(result.fit_config.get('input_uncertainty') or {})
+    # What the block's readings are conditioned on, so a printed report says it
+    # rather than leaving it to be inferred from a section that is not there.
+    stated = 'stated above under INPUT UNCERTAINTY.' if specs else f'{NO_UNCERTAINTY}.'
+    lines.append(f'  {"Input uncertainties used:":<{_TEST_LABEL_WIDTH}}{stated}')
+    if conflict is not None:
+        lines.append(
+            f'  {"Inputs against what you stated:":<{_TEST_LABEL_WIDTH}}q = {conflict.q:.3g}, {fmt_p(conflict.p_value)}'
+        )
+        lines.append('')
+        directions = 'the one combination' if conflict.k == 1 else f'the {conflict.k} combinations'
+        if len(result.input_shifts) == 1:
+            lines.extend(
+                _wrapped(
+                    f'q judges the stated input against what you said you knew, over {directions} these data '
+                    'pin down. The shift says where the fit put the correction, not that this input is the one '
+                    'that is off.'
+                )
+            )
+        else:
+            lines.extend(
+                _wrapped(
+                    f'q judges the stated inputs together, over {directions} of them these data pin down. '
+                    'The shift on each input says where the fit put the correction, not which input is off.'
+                )
+            )
+    elif specs:
+        lines.append('')
+        lines.extend(
+            _wrapped(
+                _RANGES_ONLY if all(spec.kind is SpecKind.INTERVAL for spec in specs.values()) else _NO_CONFLICT_TEST
+            )
+        )
+    lines.append('')
+    return lines
+
+
 def _fixed_width_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> list[str]:
     """Render *rows* as space-padded columns sized to their widest entry.
 
@@ -224,6 +382,18 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
     the replicates the fit used, listed (``;``-separated) with the ones it left
     out; both are blank when the result does not record its replicates.
 
+    Where the fit was free to move an input, the ``cond_`` columns carry the
+    same binding constant with every input held as entered, and one row per
+    such input carries where the fit put it: ``parameter`` is the input's key,
+    ``unit`` is ``% of entered``, ``estimate`` the shift in percent, and
+    ``input_z`` how many stated standard deviations that is (blank for an
+    input stated as a range, where ``input_at_edge`` says whether the fit took
+    it to an end of that range). The ``verdict``, ``misfit_p``,
+    ``cond_misfit_p``, ``conflict_q`` and ``conflict_p`` columns describe the
+    fit as a whole and repeat on every one of its rows; ``misfit_p`` is the
+    misfit test of the fit the interval comes from and ``cond_misfit_p`` the
+    one at the inputs exactly as entered.
+
     Parameters
     ----------
     results : list[FitResult]
@@ -253,6 +423,12 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'ci_split',
         'ci_level',
         'ci_dof',
+        'cond_estimate',
+        'cond_ci_low',
+        'cond_ci_high',
+        'cond_ci_open_low',
+        'cond_ci_open_high',
+        'cond_ci_split',
         'degenerate',
         'replicate_median',
         'replicate_min',
@@ -262,10 +438,39 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'r_squared',
         'replicates_used',
         'replicates_left_out',
+        'verdict',
+        'misfit_p',
+        'cond_misfit_p',
+        'conflict_q',
+        'conflict_p',
+        'input_z',
+        'input_at_edge',
     )
 
     def flag(value: bool) -> str:
         return 'true' if value else 'false'
+
+    def diagnostic_cells(result: FitResult) -> tuple[str, ...]:
+        """What the fit's diagnostics say, repeated on every row of that fit: they describe the fit, not a parameter.
+
+        Both misfit tests are written. The verdict is read from the fit at the
+        entered inputs as much as from the fit that reports the interval, so a
+        reader of the table alone can see what it was read from.
+        """
+        diagnostics = result.diagnostics
+        if diagnostics is None:
+            return ('', '', '', '', '')
+        conflict = diagnostics.conflict
+
+        def p_value(test) -> str:
+            return '' if test is None else f'{test.p_value:.6g}'
+
+        return (
+            diagnostics.verdict.value,
+            p_value(diagnostics.misfit),
+            p_value(diagnostics.conditional_misfit),
+            *(('', '') if conflict is None else (f'{conflict.q:.6e}', f'{conflict.p_value:.6g}')),
+        )
 
     with path.open('w', encoding='utf-8', newline='') as handle:
         writer = csv.writer(handle)
@@ -275,6 +480,8 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
             used, left_out = ('', '') if record is None else (';'.join(record[0]), ';'.join(n for n, _ in record[1]))
             n_used = len(fit_replica_ids(result) or ())
             intervals = result.intervals or {}
+            diagnostics = diagnostic_cells(result)
+            quality = [f'{result.rmse:.6e}', f'{result.r_squared:.6f}', used, left_out]
             for spec in summarize_parameters(result):
                 ci = spec.interval
                 dof = intervals[spec.key].dof if spec.key in intervals else None
@@ -302,17 +509,55 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
                             )
                         ),
                         '' if spec.level is None else f'{spec.level:g}',
-                        '' if dof is None else dof,
+                        # Residual degrees of freedom: a whole number where every
+                        # input was held as entered, and a fraction where the fit
+                        # was free to move one, since an input the data pin down
+                        # takes a residual degree of freedom with it.
+                        '' if dof is None else f'{dof:.6g}',
+                        *(
+                            ('', '', '', '', '', '')
+                            if spec.conditional_interval is None
+                            else (
+                                f'{spec.conditional_estimate:.6e}',
+                                f'{spec.conditional_interval[0]:.6e}',
+                                f'{spec.conditional_interval[1]:.6e}',
+                                *map(flag, spec.conditional_open),
+                                flag(spec.conditional_split),
+                            )
+                        ),
                         flag(spec.degenerate),
                         *(
                             ('', '', '', '')
                             if across is None
                             else (f'{across["median"]:.6e}', f'{across["min"]:.6e}', f'{across["max"]:.6e}', n_used)
                         ),
-                        f'{result.rmse:.6e}',
-                        f'{result.r_squared:.6f}',
-                        used,
-                        left_out,
+                        *quality,
+                        *diagnostics,
+                        '',
+                        '',
+                    ]
+                )
+            # One row per input the fit was free to move: where it put that
+            # input, in percent of the value entered, and how far that is
+            # against the uncertainty stated for it. The input is named by its
+            # key, as every other row of the column is, so a reader can join it
+            # to the condition of that name; the TXT report gives the names.
+            for key, shift in result.input_shifts.items():
+                writer.writerow(
+                    [
+                        index,
+                        result.assay_type,
+                        result.source_file or '',
+                        key,
+                        '% of entered',
+                        f'{100 * shift.fraction:.6e}',
+                        # The interval, conditional and replicate columns
+                        # describe a fitted parameter; an input has none.
+                        *('',) * 22,
+                        *quality,
+                        *diagnostics,
+                        '' if shift.z is None else f'{shift.z:.6e}',
+                        flag(shift.at_edge),
                     ]
                 )
 
@@ -382,6 +627,13 @@ def _replicates_block(result: FitResult, replica_ids: Sequence[str] | None) -> l
 def export_results_txt(results: list[FitResult], path: str | Path, *, replica_ids: Sequence[str] | None = None) -> None:
     """Export fit results as a human-readable text report.
 
+    The report holds the fitted parameters with their intervals, the
+    replicates' own fits, the fit quality and the conditions entered. A fit
+    that was free to move an input inside a stated uncertainty adds the
+    interval conditional on the inputs exactly as entered, a table of what was
+    stated for each input and where the fit put it, and what the misfit tests
+    and the conflict statistic say about the model and those inputs.
+
     Parameters
     ----------
     results : list[FitResult]
@@ -424,7 +676,9 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
         lines.extend(
             _wrapped(
                 'Estimate = the least-squares fit of the data. Interval = the range of a binding constant the '
-                'data cannot tell apart from that fit, cut from the fit’s own profile by an F test.'
+                'data cannot tell apart from that fit, cut from the fit’s own profile by an F test. Where an '
+                'input was given an uncertainty, the fit was free to move it inside that uncertainty and the '
+                'interval covers that freedom.'
             )
         )
         if ka_keys and result.intervals is None:
@@ -444,6 +698,19 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 ],
             )
         )
+        conditional = [spec for spec in specs if not spec.is_log and spec.conditional_interval is not None]
+        if conditional:
+            lines.append('')
+            lines.extend(_wrapped(_CONDITIONAL_NOTE))
+            for spec in conditional:
+                low, high = spec.conditional_interval
+                bracket = fmt_interval_plain(_fmt_report(spec, low), _fmt_report(spec, high), *spec.conditional_open)
+                estimate = _fmt_report(spec, spec.conditional_estimate)
+                lines.append(
+                    f'  Conditional on the entered inputs: {spec.key} = {estimate} {bracket} {_row_unit(spec)}'.rstrip()
+                )
+                if spec.conditional_split:
+                    lines.extend(_wrapped(f'{spec.key} conditional on the entered inputs: {SPLIT_NOTE}'))
         if any(spec.degenerate for spec in specs):
             lines.append('')
             lines.extend(_wrapped(f'* {_DEGENERATE_NOTE}'))
@@ -472,6 +739,9 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
             lines.append('')
             lines.extend(_wrapped(bound_note))
         lines.append('')
+
+        lines.extend(_input_uncertainty_block(result))
+        lines.extend(_model_and_inputs_block(result))
 
         replicates_block = _replicates_block(result, replica_ids)
         lines.extend(replicates_block)

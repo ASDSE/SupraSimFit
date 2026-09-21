@@ -18,6 +18,7 @@ from core.data_processing.measurement_set import MeasurementSet  # noqa: E402
 from core.pipeline.fit_pipeline import FitConfig  # noqa: E402
 from core.pipeline.profile import ProfileSet  # noqa: E402
 from tests.conftest import DYE_ALONE_TRUE, IDA_TRUE, _make_dye_alone_data, _make_ida_data  # noqa: E402
+from tests.unit.gui.test_identifiability_gui import _fit  # noqa: E402
 from tests.unit.gui.test_sensitivity_gui import _sobol_result  # noqa: E402
 
 
@@ -100,6 +101,28 @@ def test_the_identifiability_tab_is_one_of_the_plot_tabs(make_session):
     tabs = session._plot_tabs
     names = [tabs.tabText(i) for i in range(tabs.count())]
     assert isinstance(tabs.widget(names.index('Identifiability')), IdentifiabilityWidget)
+
+
+def test_the_tab_names_a_shifted_input_from_the_fit_s_own_assay(make_session):
+    """The names belong to the fit being reported, so switching the assay selector cannot rename its inputs."""
+    from core.pipeline.diagnostics import FitDiagnostics, InputShift, MisfitTest, Verdict
+
+    session = _ida_session(make_session)
+    widget = session._identifiability_widget
+    widget._fit = _fit(
+        shifts={'h0': InputShift(key='h0', fraction=-0.041, z=-1.4, at_edge=False)},
+        diagnostics=FitDiagnostics(
+            conditional_misfit=MisfitTest(kind='runs', statistic=4.0, p_value=0.004, expected=7.0),
+            misfit=MisfitTest(kind='runs', statistic=7.0, p_value=0.55, expected=7.0),
+            conflict=None,
+            verdict=Verdict.INPUTS_EXPLAIN,
+        ),
+    )
+
+    assert '[Host]₀ −4.1 % (1.4 σ)' in widget._verdict_html()
+
+    session._assay_panel.set_assay_type(AssayType.GDA)
+    assert '[Host]₀ −4.1 % (1.4 σ)' in widget._verdict_html()
 
 
 def test_style_changes_reach_identifiability_tab(make_session):

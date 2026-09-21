@@ -571,7 +571,7 @@ def _no_index_reason(result: SensitivityResult) -> str:
         )
     return (
         f'No index: {counts}. A group needs all of its fits, and none has them, so there is nothing to rank the '
-        'inputs by. Narrow the uncertainties under Input uncertainty, or widen the bounds under Parameter '
+        'inputs by. Narrow the uncertainties under Input Uncertainty, or widen the bounds under Parameter '
         'Bounds, and run it again.'
     )
 
@@ -633,8 +633,7 @@ class SensitivityWidget(QWidget):
         self._stack = QStackedLayout(self._stack_host)
 
         self._placeholder = QLabel(
-            'Set how uncertain each input is under Input uncertainty in the Ka Sensitivity panel, '
-            'then press Run Sensitivity Analysis.'
+            'Set how uncertain each input is under Input Uncertainty, then press Run Sensitivity Analysis.'
         )
         self._placeholder.setWordWrap(True)
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)

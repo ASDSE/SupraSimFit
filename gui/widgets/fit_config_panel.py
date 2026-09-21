@@ -40,6 +40,13 @@ whose own curve needs a different K<sub>a</sub> than the others agree on is
 left out of the average and named, with its p-value, in the Replicates table
 and in the report.</p>
 
+<p><b>What the replicates also give the report</b></p>
+<p>With two or more replicates in the fit, their scatter about their mean
+measures the noise without using the model at all, and <i>Model and inputs</i>
+under the summary table uses it to say whether the fitted curve misses the data
+by more than that scatter allows. With a single replicate that question is
+answered instead from runs of points on one side of the curve.</p>
+
 <p><b>The test</b></p>
 <p>Replicates are removed one at a time, worst first, and only while a
 replicate is below a 1&thinsp;% level (the outlier level of ISO&nbsp;5725-2)
@@ -57,6 +64,11 @@ no settings: the signal parameters are solved exactly inside their bounds at
 every binding constant, and the binding constants are searched over the whole
 range set under Parameter Bounds, so the same data and settings always give the
 same answer.</p>
+<p>What the reported confidence interval covers is set elsewhere, under
+<b>Input Uncertainty</b>: with every input fixed, as that panel starts, the
+interval takes the conditions you entered as exact; state an uncertainty for one
+and the fit may move it within what you stated, and the interval covers that as
+well.</p>
 """
 
 
