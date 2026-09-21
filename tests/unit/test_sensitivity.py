@@ -21,6 +21,9 @@ implementation:
   run;
 - every sample keeps the whole fit behind its Ka, and the signal coefficients
   the data fix only in combination are named;
+- the fits that ran to the edge of the Ka box are counted — the baseline's own
+  and the design's or the grid's, and nothing else — so what the spread beside
+  them describes can be read off the result;
 - the Sobol' design is made of independent scrambles, and the t-intervals the
   delete-one-block jackknife over them gives cover the analytic Ishigami
   indices at close to their stated 95 %.
@@ -37,6 +40,7 @@ import ast
 import os
 import pathlib
 import threading
+from itertools import count
 
 import numpy as np
 import pytest
@@ -55,6 +59,7 @@ from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measureme
 from core.pipeline.sensitivity import (
     LONG_RUN_SOLVES,
     TITRANT,
+    ErrorModel,
     InputSpec,
     SensitivityConfig,
     SensitivityMode,
@@ -143,7 +148,7 @@ def _heatmap(n_steps: int, sigma_pct: float = 10.0) -> SensitivityConfig:
     return SensitivityConfig(
         mode=SensitivityMode.HEATMAP,
         n_samples=1,
-        input_specs={'h0': InputSpec.sigma_pct(sigma_pct), 'd0': InputSpec.sigma_pct(sigma_pct)},
+        errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(sigma_pct), 'd0': InputSpec.sigma_pct(sigma_pct)}),
         seed=2,
         x_key='h0',
         y_key='d0',
@@ -164,7 +169,7 @@ def test_negligible_delta_collapses_onto_baseline(ida_setup, monkeypatch):
     """
     _use_small_design(monkeypatch, 4)
     cfg = SensitivityConfig(
-        mode=SensitivityMode.SOBOL, n_samples=8, input_specs={TITRANT: InputSpec.sigma_pct(1e-3)}, seed=1
+        mode=SensitivityMode.SOBOL, n_samples=8, errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(1e-3)}), seed=1
     )
     result = _run(ida_setup, cfg)
 
@@ -182,8 +187,14 @@ def test_spread_grows_with_delta(ida_setup, monkeypatch):
     Same seed for both runs so the only difference is the perturbation width.
     """
     _use_small_design(monkeypatch, 4)
-    small = _run(ida_setup, SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(2.0)}, seed=7))
-    big = _run(ida_setup, SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(10.0)}, seed=7))
+    small = _run(
+        ida_setup,
+        SensitivityConfig(SensitivityMode.SOBOL, 8, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=7),
+    )
+    big = _run(
+        ida_setup,
+        SensitivityConfig(SensitivityMode.SOBOL, 8, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(10.0)}), seed=7),
+    )
 
     std_small = float(np.std(_samples(small)))
     std_big = float(np.std(_samples(big)))
@@ -203,7 +214,7 @@ def test_titrant_alone_produces_spread(ida_setup, monkeypatch):
     """
     _use_small_design(monkeypatch, 4)
     cfg = SensitivityConfig(
-        mode=SensitivityMode.SOBOL, n_samples=8, input_specs={TITRANT: InputSpec.sigma_pct(8.0)}, seed=3
+        mode=SensitivityMode.SOBOL, n_samples=8, errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(8.0)}), seed=3
     )
     result = _run(ida_setup, cfg)
 
@@ -221,7 +232,7 @@ def test_ka_dye_alone_shifts_ka(ida_setup, monkeypatch):
     """
     _use_small_design(monkeypatch, 4)
     cfg = SensitivityConfig(
-        mode=SensitivityMode.SOBOL, n_samples=8, input_specs={'Ka_dye': InputSpec.sigma_pct(15.0)}, seed=5
+        mode=SensitivityMode.SOBOL, n_samples=8, errors=ErrorModel(specs={'Ka_dye': InputSpec.sigma_pct(15.0)}), seed=5
     )
     result = _run(ida_setup, cfg)
 
@@ -231,6 +242,107 @@ def test_ka_dye_alone_shifts_ka(ida_setup, monkeypatch):
     assert np.std(samples) > 0
     # At least one perturbed fit lands meaningfully away from the baseline.
     assert np.max(np.abs(samples - baseline)) / baseline > 0.01
+
+
+# ---------------------------------------------------------------------------
+# Fits that run to the edge of the Ka box
+# ---------------------------------------------------------------------------
+
+
+_CAPPED_BOUNDS = {**GDA_IDA_RECOVERY_BOUNDS, 'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e5, '1/M'))}
+
+
+def _ka_by_call(values: dict[int, float], otherwise: float):
+    """A refit that reports *values* by the order it is called in, and *otherwise* for every other call.
+
+    The batch runs its perturbations in order, so the call index is the row of
+    the design: the rows of every Saltelli matrix first, then the two refits per
+    input behind the elasticities.
+    """
+    calls = count()
+
+    def fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, deltas=None, sequential=False):
+        ka = values.get(next(calls), otherwise)
+        return {'Ka_guest': ka, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0
+
+    return fit
+
+
+def test_the_design_fits_that_ran_to_a_ka_bound_are_counted_and_nothing_else_is(ida_setup, monkeypatch):
+    """The count is over the whole Saltelli design, and over nothing beside it.
+
+    A fit on a bound is the edge of the box rather than a value the data chose,
+    and it sits decades from the rest, so what the spread and the budget mean
+    depends on how many of them there are. The refits behind the elasticities
+    are steps of a thousandth taken to measure a slope, not samples of the
+    stated uncertainties, and a perturbation with no fit is already counted as
+    one that produced none.
+    """
+    _use_small_design(monkeypatch, 2)
+    upper = float(_CAPPED_BOUNDS['Ka_guest'][1].magnitude)
+    # 4 rows per matrix, three matrices for one source: twelve design fits, then
+    # two refits per input. Three of the design fits stop at the bound, one has
+    # no fit at all, and every elasticity refit stops there too.
+    on_bound = {0: upper, 5: upper, 11: upper, 7: float('nan'), **{i: upper for i in range(12, 20)}}
+    monkeypatch.setattr(sens, '_fit_perturbed', _ka_by_call(on_bound, otherwise=1e3))
+    ms, assay_cls, conditions, _ = ida_setup
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=1)
+
+    result = run_sensitivity(ms, assay_cls, conditions, FitConfig(custom_bounds=_CAPPED_BOUNDS), cfg, max_workers=1)
+
+    assert result.n_on_bound == {'Ka_guest': 3}
+
+
+def test_a_ka_box_the_data_ask_past_puts_the_baseline_and_every_sample_on_its_bound(ida_setup, monkeypatch):
+    """Bounds that stop an order of magnitude below the truth are reported, not fitted around.
+
+    Every fit of the run is the upper bound itself, the baseline included: the
+    box, not the data, is what the analysis would otherwise be describing.
+    """
+    _use_small_design(monkeypatch, 2)
+    ms, assay_cls, conditions, _ = ida_setup
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=1)
+
+    result = run_sensitivity(ms, assay_cls, conditions, FitConfig(custom_bounds=_CAPPED_BOUNDS), cfg, max_workers=1)
+
+    assert result.baseline_on_bound == {'Ka_guest': True}
+    assert result.baseline_ka['Ka_guest'] == pytest.approx(1e5)
+    assert result.n_on_bound == {'Ka_guest': 4 * (1 + 2)}
+
+
+def test_a_run_inside_its_ka_box_counts_no_fit_on_a_bound(ida_setup, monkeypatch):
+    """The bounds a fit of these data is made under leave every one of them room, and the counts say so."""
+    _use_small_design(monkeypatch, 2)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=1)
+
+    result = _run(ida_setup, cfg)
+
+    assert result.baseline_on_bound == {'Ka_guest': False}
+    assert result.n_on_bound == {'Ka_guest': 0}
+
+
+def test_the_heatmap_counts_its_grid_fits_the_same_way(ida_setup):
+    """A heatmap fits a grid instead of a design; a cell on the bound is the same thing as a sample on it."""
+    ms, assay_cls, conditions, _ = ida_setup
+    cfg = _heatmap(3)
+
+    inside = _run(ida_setup, cfg)
+    capped = run_sensitivity(ms, assay_cls, conditions, FitConfig(custom_bounds=_CAPPED_BOUNDS), cfg, max_workers=1)
+
+    assert inside.n_on_bound == {'Ka_guest': 0} and inside.baseline_on_bound == {'Ka_guest': False}
+    assert capped.n_on_bound == {'Ka_guest': 9} and capped.baseline_on_bound == {'Ka_guest': True}
+
+
+def test_a_binding_constant_pinned_to_one_value_is_not_reported_as_on_its_bound(ida_setup, monkeypatch):
+    """A pinned constant rests on its bounds by construction, which says nothing about what the data limit."""
+    _use_small_design(monkeypatch, 2)
+    pinned = {**GDA_IDA_RECOVERY_BOUNDS, 'Ka_guest': (Q_(2e6, '1/M'), Q_(2e6, '1/M'))}
+    ms, assay_cls, conditions, _ = ida_setup
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=1)
+
+    result = run_sensitivity(ms, assay_cls, conditions, FitConfig(custom_bounds=pinned), cfg, max_workers=1)
+
+    assert result.baseline_on_bound == {} and result.n_on_bound == {}
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +357,8 @@ def test_seed_makes_draws_reproducible(ida_setup, monkeypatch):
     deterministic projected fit, so nothing else can move a sample.
     """
     _use_small_design(monkeypatch, 4)
-    cfg_a = SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(5.0)}, seed=123)
-    cfg_b = SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(5.0)}, seed=456)
+    cfg_a = SensitivityConfig(SensitivityMode.SOBOL, 8, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=123)
+    cfg_b = SensitivityConfig(SensitivityMode.SOBOL, 8, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=456)
 
     r1 = _run(ida_setup, cfg_a)
     r2 = _run(ida_setup, cfg_a)
@@ -268,10 +380,10 @@ def test_a_run_given_no_seed_reports_the_seed_that_repeats_it(ida_setup, monkeyp
     say why.
     """
     _use_small_design(monkeypatch, 2)
-    unseeded = SensitivityConfig(SensitivityMode.SOBOL, 4, {TITRANT: InputSpec.sigma_pct(5.0)})
+    unseeded = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}))
 
     first = _run(ida_setup, unseeded)
-    again = _run(ida_setup, SensitivityConfig(SensitivityMode.SOBOL, 4, unseeded.input_specs, seed=first.seed_used))
+    again = _run(ida_setup, SensitivityConfig(SensitivityMode.SOBOL, 4, unseeded.errors, seed=first.seed_used))
     another = _run(ida_setup, unseeded)
 
     assert isinstance(first.seed_used, int)
@@ -283,7 +395,7 @@ def test_a_run_given_no_seed_reports_the_seed_that_repeats_it(ida_setup, monkeyp
 def test_a_seeded_run_reports_the_seed_it_was_given(ida_setup, monkeypatch):
     """With a seed set, that seed is what the result records."""
     _use_small_design(monkeypatch, 2)
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, {TITRANT: InputSpec.sigma_pct(5.0)}, seed=77)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=77)
 
     assert _run(ida_setup, cfg).seed_used == 77
 
@@ -302,7 +414,7 @@ def test_heatmap_center_matches_baseline_and_shape(ida_setup):
     cfg = SensitivityConfig(
         mode=SensitivityMode.HEATMAP,
         n_samples=1,
-        input_specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)},
+        errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)}),
         seed=0,
         x_key=TITRANT,
         y_key='h0',
@@ -328,7 +440,7 @@ def test_heatmap_axes_perturb_the_inputs_they_name(ida_setup, monkeypatch):
     the two axis keys, or transposing the grid, moves the variation.
     """
 
-    def ka_from_h0_alone(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
+    def ka_from_h0_alone(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
         signal = dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)
         return {'Ka_guest': 1e8 * (1 + 3 * offsets.get('h0', 0.0)), **signal}, 1.0
 
@@ -336,7 +448,7 @@ def test_heatmap_axes_perturb_the_inputs_they_name(ida_setup, monkeypatch):
     cfg = SensitivityConfig(
         mode=SensitivityMode.HEATMAP,
         n_samples=1,
-        input_specs={'h0': InputSpec.sigma_pct(4.0), 'd0': InputSpec.sigma_pct(10.0)},
+        errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(4.0), 'd0': InputSpec.sigma_pct(10.0)}),
         seed=0,
         x_key='h0',
         y_key='d0',
@@ -384,7 +496,7 @@ def test_a_model_with_two_binding_constants_is_analysed_like_any_other():
     cfg = SensitivityConfig(
         mode=SensitivityMode.HEATMAP,
         n_samples=1,
-        input_specs={'h0': InputSpec.sigma_pct(5.0), TITRANT: InputSpec.sigma_pct(5.0)},
+        errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(5.0), TITRANT: InputSpec.sigma_pct(5.0)}),
         seed=4,
         x_key='h0',
         y_key=TITRANT,
@@ -410,40 +522,42 @@ def test_a_model_with_two_binding_constants_is_analysed_like_any_other():
 
 
 def test_estimated_fit_count_scales_with_inputs():
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(5.0)})
-    assert estimated_fit_count(cfg) == 1024 * (1 + 2)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}))
+    assert estimated_fit_count(cfg, 4) == 1024 * (1 + 2) + 2 * 4
 
 
 def test_estimated_fit_count_counts_only_varying_inputs():
-    """Sobol' costs N x (k + 2); an input held fixed is not one of the k."""
+    """Sobol' costs N x (k + 2) plus two elasticity refits per input; an input held fixed is not one of the k."""
     cfg = SensitivityConfig(
         SensitivityMode.SOBOL,
         2048,
-        {
-            TITRANT: InputSpec.sigma_pct(5.0),
-            'h0': InputSpec.sigma_pct(5.0),
-            'd0': InputSpec.sigma_pct(0.0),
-        },
+        ErrorModel(
+            specs={
+                TITRANT: InputSpec.sigma_pct(5.0),
+                'h0': InputSpec.sigma_pct(5.0),
+                'd0': InputSpec.sigma_pct(0.0),
+            }
+        ),
     )
-    assert estimated_fit_count(cfg) == 2048 * (2 + 2)
+    assert estimated_fit_count(cfg, 4) == 2048 * (2 + 2) + 2 * 4
 
 
 def test_estimated_fit_count_heatmap_is_grid_squared():
     cfg = SensitivityConfig(
         SensitivityMode.HEATMAP,
         200,
-        {TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)},
+        ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)}),
         x_key=TITRANT,
         y_key='h0',
         n_steps=7,
     )
-    assert estimated_fit_count(cfg) == 49
+    assert estimated_fit_count(cfg, 4) == 49
 
 
 _SIZING_CONFIG = SensitivityConfig(
     SensitivityMode.HEATMAP,
     1,
-    {TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)},
+    ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)}),
     x_key=TITRANT,
     y_key='h0',
     n_steps=10,
@@ -470,7 +584,7 @@ _SIZING_CONFIG = SensitivityConfig(
 )
 def test_model_solves_scale_with_the_ka_box_the_fits_search(assay_type, bounds, nodes):
     """Sizing a run means counting the Ka grid every fit sweeps, the baseline's included."""
-    solves = estimated_model_solves(_SIZING_CONFIG, FitConfig(custom_bounds=bounds), assay_type)
+    solves = estimated_model_solves(_SIZING_CONFIG, FitConfig(custom_bounds=bounds), assay_type, 4)
 
     assert solves == (100 + 1) * nodes
 
@@ -503,7 +617,7 @@ def test_a_run_solves_the_model_at_least_as_often_as_it_was_sized_for(ida_setup,
     monkeypatch.setattr(IDAAssay, 'species', counting_species)
     run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
 
-    assert len(solves) >= estimated_model_solves(cfg, fit_config, AssayType.IDA)
+    assert len(solves) >= estimated_model_solves(cfg, fit_config, AssayType.IDA, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -518,7 +632,7 @@ def test_sample_size_outside_the_checked_range_raises(ida_setup, n_samples):
     Coverage passed at 1024 and 4096; 2048 lies between them. Smaller sizes failed the check.
     """
     ms, assay_cls, conditions, fit_config = ida_setup
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, n_samples, {TITRANT: InputSpec.sigma_pct(5.0)})
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, n_samples, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}))
     with pytest.raises(ValueError, match=f'must be 1024, 2048 or 4096; {n_samples} was chosen'):
         run_sensitivity(ms, assay_cls, conditions, fit_config, cfg)
 
@@ -534,7 +648,7 @@ def test_every_accepted_sample_size_is_a_whole_design():
 
 def test_negative_percent_raises(ida_setup):
     ms, assay_cls, conditions, fit_config = ida_setup
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(-5.0)})
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(-5.0)}))
     with pytest.raises(ValueError, match='negative'):
         run_sensitivity(ms, assay_cls, conditions, fit_config, cfg)
 
@@ -546,7 +660,7 @@ def test_negative_percent_raises(ida_setup):
 )
 def test_range_reaching_below_zero_raises(ida_setup, key, spec):
     """A concentration cannot go negative, so a range that takes it there is refused before any fit."""
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {key: spec}, seed=3)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={key: spec}), seed=3)
 
     with pytest.raises(ValueError, match='below zero'):
         _run(ida_setup, cfg)
@@ -554,7 +668,7 @@ def test_range_reaching_below_zero_raises(ida_setup, key, spec):
 
 def test_all_zero_percent_raises(ida_setup):
     ms, assay_cls, conditions, fit_config = ida_setup
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(0.0)})
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(0.0)}))
     with pytest.raises(ValueError, match='vary'):
         run_sensitivity(ms, assay_cls, conditions, fit_config, cfg)
 
@@ -564,7 +678,7 @@ def test_heatmap_same_axis_twice_raises(ida_setup):
     cfg = SensitivityConfig(
         SensitivityMode.HEATMAP,
         6,
-        {TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)},
+        ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)}),
         x_key=TITRANT,
         y_key=TITRANT,
     )
@@ -586,7 +700,12 @@ def test_heatmap_axis_reaching_zero_raises_before_any_fit(ida_setup, monkeypatch
     monkeypatch.setattr(sens, '_fit_perturbed', lambda *a, **k: pytest.fail('no fit may run'))
     other = 'd0'
     cfg = SensitivityConfig(
-        SensitivityMode.HEATMAP, 6, {key: spec, other: InputSpec.sigma_pct(5.0)}, x_key=key, y_key=other, n_steps=3
+        SensitivityMode.HEATMAP,
+        6,
+        ErrorModel(specs={key: spec, other: InputSpec.sigma_pct(5.0)}),
+        x_key=key,
+        y_key=other,
+        n_steps=3,
     )
     with pytest.raises(ValueError, match='reaches zero or below'):
         _run(ida_setup, cfg)
@@ -594,7 +713,7 @@ def test_heatmap_axis_reaching_zero_raises_before_any_fit(ida_setup, monkeypatch
 
 def test_unknown_input_key_raises(ida_setup):
     ms, assay_cls, conditions, fit_config = ida_setup
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {'not_an_input': InputSpec.sigma_pct(5.0)})
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={'not_an_input': InputSpec.sigma_pct(5.0)}))
     with pytest.raises(ValueError, match='an input this assay does not have'):
         run_sensitivity(ms, assay_cls, conditions, fit_config, cfg)
 
@@ -603,24 +722,32 @@ def test_dye_alone_has_no_ka_to_analyse():
     """DYE_ALONE has no association constant, so sensitivity does not apply."""
     x, y = _make_dye_alone_data({'slope': 5e7, 'intercept': 0.0})
     ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(5.0)})
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}))
     with pytest.raises(ValueError, match='association constant'):
         run_sensitivity(ms, DyeAloneAssay, {}, FitConfig(), cfg)
 
 
 _MESSAGE_CONFIGS = {
-    'negative-sigma': SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.sigma_pct(-5.0)}),
-    'upside-down-range': SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.interval_pct(5.0, -5.0)}),
-    'range-below-zero': SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.interval_pct(-200.0, 0.0)}),
+    'negative-sigma': SensitivityConfig(
+        SensitivityMode.SOBOL, 1024, ErrorModel(specs={'h0': InputSpec.sigma_pct(-5.0)})
+    ),
+    'upside-down-range': SensitivityConfig(
+        SensitivityMode.SOBOL, 1024, ErrorModel(specs={'h0': InputSpec.interval_pct(5.0, -5.0)})
+    ),
+    'range-below-zero': SensitivityConfig(
+        SensitivityMode.SOBOL, 1024, ErrorModel(specs={'h0': InputSpec.interval_pct(-200.0, 0.0)})
+    ),
     'axis-to-zero': SensitivityConfig(
         SensitivityMode.HEATMAP,
         1,
-        {'h0': InputSpec.sigma_pct(50.0), 'd0': InputSpec.sigma_pct(5.0)},
+        ErrorModel(specs={'h0': InputSpec.sigma_pct(50.0), 'd0': InputSpec.sigma_pct(5.0)}),
         x_key='h0',
         y_key='d0',
         n_steps=3,
     ),
-    'absolute-titrant': SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_abs(1e-6)}),
+    'absolute-titrant': SensitivityConfig(
+        SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_abs(1e-6)})
+    ),
 }
 
 
@@ -671,7 +798,7 @@ def _cost_config() -> SensitivityConfig:
         mode=SensitivityMode.HEATMAP,
         n_samples=1,  # unused by HEATMAP; the grid sets the workload
         n_steps=3,
-        input_specs={TITRANT: InputSpec.sigma_pct(4.0), 'h0': InputSpec.sigma_pct(4.0)},
+        errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(4.0), 'h0': InputSpec.sigma_pct(4.0)}),
         x_key=TITRANT,
         y_key='h0',
         seed=5,
@@ -700,7 +827,7 @@ def test_estimated_fit_count_matches_the_fits_actually_run(ida_setup, max_worker
         max_workers=max_workers,
     )
 
-    expected = estimated_fit_count(cfg) + 1  # perturbations + the baseline
+    expected = estimated_fit_count(cfg, len(perturbable_inputs(conditions))) + 1  # perturbations + the baseline
     assert len(reports) == expected
     assert reports[-1] == (expected, expected)
 
@@ -886,7 +1013,7 @@ def test_sobol_run_reports_an_index_per_varied_input(ida_setup, monkeypatch):
     cfg = SensitivityConfig(
         mode=SensitivityMode.SOBOL,
         n_samples=8,
-        input_specs={TITRANT: InputSpec.sigma_pct(4.0), 'h0': InputSpec.sigma_pct(4.0)},
+        errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(4.0), 'h0': InputSpec.sigma_pct(4.0)}),
         seed=9,
     )
 
@@ -895,7 +1022,9 @@ def test_sobol_run_reports_an_index_per_varied_input(ida_setup, monkeypatch):
     assert set(result.sobol_s1) == set(result.ka_keys)
     assert set(result.sobol_s1['Ka_guest']) == {TITRANT, 'h0'}
     assert set(result.sobol_st['Ka_guest']) == {TITRANT, 'h0'}
-    assert result.n_total == estimated_fit_count(cfg)
+    assert result.sources == (TITRANT, 'h0')
+    assert result.source_inputs == {TITRANT: (TITRANT,), 'h0': ('h0',)}
+    assert result.n_total == result.n_planned == estimated_fit_count(cfg, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -1016,10 +1145,10 @@ def test_parallel_and_serial_produce_the_same_answer(ida_setup, monkeypatch):
     cfg = SensitivityConfig(
         mode=SensitivityMode.SOBOL,
         n_samples=8,
-        input_specs={TITRANT: InputSpec.sigma_pct(5.0)},
+        errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}),
         seed=21,
     )
-    assert estimated_fit_count(cfg) >= sens._PARALLEL_MIN_JOBS
+    assert estimated_fit_count(cfg, 4) >= sens._PARALLEL_MIN_JOBS
 
     serial = run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
     parallel = run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=2)
@@ -1208,7 +1337,7 @@ def test_samples_are_aligned_with_the_sobol_points(ida_setup, monkeypatch):
     designs = _record_designs(monkeypatch)
     ms, assay_cls, conditions, fit_config = ida_setup
     specs = {'h0': InputSpec.sigma_pct(5.0), TITRANT: InputSpec.interval_pct(-8.0, 4.0)}
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, specs, seed=13)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs=specs), seed=13)
 
     result = _run(ida_setup, cfg)
 
@@ -1247,7 +1376,7 @@ def test_every_sample_keeps_the_whole_fit_behind_its_ka(monkeypatch):
     ms, _, conditions, _ = setup
     specs = {'h0': InputSpec.sigma_pct(5.0), TITRANT: InputSpec.sigma_pct(5.0)}
 
-    result = _run(setup, SensitivityConfig(SensitivityMode.SOBOL, 2, specs, seed=8))
+    result = _run(setup, SensitivityConfig(SensitivityMode.SOBOL, 2, ErrorModel(specs=specs), seed=8))
 
     assert tuple(result.sample_params) == ASSAY_REGISTRY[AssayType.IDA].parameter_keys
     np.testing.assert_array_equal(result.sample_params['Ka_guest'], result.sample_ka['Ka_guest'])
@@ -1301,7 +1430,7 @@ def test_the_run_names_the_coefficients_its_baseline_fit_found_degenerate(assay_
     """
     _use_small_design(monkeypatch, 1)
     ms, assay_cls, conditions, fit_config = _single_ka_setup(assay_type)
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 2, {TITRANT: InputSpec.sigma_pct(2.0)}, seed=1)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 2, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1)
 
     result = run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
 
@@ -1316,7 +1445,7 @@ def test_named_ida_coefficients_move_without_changing_the_signal(ida_setup, monk
     """
     _use_small_design(monkeypatch, 1)
     ms, assay_cls, conditions, _ = ida_setup
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 2, {TITRANT: InputSpec.sigma_pct(2.0)}, seed=1)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 2, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1)
     result = _run(ida_setup, cfg)
     assay = ms.to_assay(assay_cls, conditions=conditions, use_average=True)
     fit = np.array([result.baseline_fit.parameters[key].magnitude for key in assay.parameter_keys])
@@ -1411,14 +1540,19 @@ def _toy_outputs():
 
 
 def _jackknife_by_loop(f_a, f_b, f_ab, rows_by_block, level=0.95):
-    """Pooled indices and their t-intervals, written out block by block.
+    """Every pooled quantity of the estimate and its t-interval, written out block by block.
 
-    Returns ``(S1 and S_total concatenated, their intervals)``.
+    Returns ``(quantities, their intervals)`` in the order S1, S_total, the
+    variance of the A and B outputs, the variance each input explains alone
+    (S1 x variance) and the standard deviation left without it.
     """
 
     def indices(rows):
         s1, st = sobol_indices_from_outputs(f_a[rows], f_b[rows], [ab[rows] for ab in f_ab])
-        return np.concatenate([s1, st])
+        both = np.concatenate([f_a[rows], f_b[rows]])
+        variance = np.mean((both - both.mean()) ** 2)
+        explained = s1 * variance
+        return np.concatenate([s1, st, [variance], explained, np.sqrt(np.clip(variance - explained, 0.0, None))])
 
     estimate = indices([row for rows in rows_by_block for row in rows])
     n = len(rows_by_block)
@@ -1431,11 +1565,18 @@ def _jackknife_by_loop(f_a, f_b, f_ab, rows_by_block, level=0.95):
     return estimate, np.column_stack([estimate - half, estimate + half])
 
 
+def _quantities(result) -> tuple[np.ndarray, np.ndarray]:
+    """A ``SobolEstimate`` as ``(quantities, intervals)`` in the order of :func:`_jackknife_by_loop`."""
+    values = [result.s1, result.st, [result.variance], result.source_variance, result.sd_if_exact]
+    intervals = [result.s1_ci, result.st_ci, [result.variance_ci], result.source_variance_ci, result.sd_if_exact_ci]
+    return np.concatenate(values), np.vstack(intervals)
+
+
 def _check_against_loop(result, expected) -> None:
-    s1, s1_ci, st, st_ci = result
+    values, intervals = _quantities(result)
     estimate, interval = expected
-    np.testing.assert_allclose(np.concatenate([s1, st]), estimate, rtol=1e-12, atol=1e-15)
-    np.testing.assert_allclose(np.vstack([s1_ci, st_ci]), interval, rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(values, estimate, rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(intervals, interval, rtol=1e-12, atol=1e-15)
 
 
 @pytest.mark.parametrize('level', [0.95, 0.9])
@@ -1450,7 +1591,7 @@ def test_jackknife_interval_matches_a_plain_loop(level):
 
     rows_by_block = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]]
     _check_against_loop(result, _jackknife_by_loop(f_a, f_b, f_ab, rows_by_block, level))
-    assert np.all(np.diff(np.vstack([result[1], result[3]]), axis=1) > 0)
+    assert np.all(np.diff(_quantities(result)[1], axis=1) > 0)
 
 
 def test_non_finite_rows_are_left_out_of_every_matrix():
@@ -1485,11 +1626,15 @@ def test_fewer_than_three_usable_blocks_give_no_interval():
     emptied[1:] = np.nan
     one_row = sobol_indices_with_ci(emptied, f_b, list(f_ab), 4)
 
-    for s1, s1_ci, st, st_ci in (two_blocks, two_left):
-        assert np.all(np.isfinite(s1)) and np.all(np.isfinite(st))
-        assert np.all(np.isnan(s1_ci)) and np.all(np.isnan(st_ci))
-    assert all(np.all(np.isnan(part)) for part in one_row)
-    assert one_row[1].shape == one_row[3].shape == (2, 2)
+    for result in (two_blocks, two_left):
+        values, intervals = _quantities(result)
+        assert np.all(np.isfinite(values))
+        assert np.all(np.isnan(intervals))
+    values, intervals = _quantities(one_row)
+    assert np.all(np.isnan(values)) and np.all(np.isnan(intervals))
+    for interval in (one_row.s1_ci, one_row.st_ci, one_row.source_variance_ci, one_row.sd_if_exact_ci):
+        assert interval.shape == (2, 2)
+    assert np.shape(one_row.variance_ci) == (2,)
 
 
 def test_interval_covers_the_ishigami_indices_at_its_stated_level():
@@ -1519,7 +1664,8 @@ def test_interval_covers_the_ishigami_indices_at_its_stated_level():
     s1_hits = np.zeros(3)
     st_hits = np.zeros(3)
     for design in range(n_designs):
-        _, s1_ci, _, st_ci = sobol_indices_with_ci(f_a[design], f_b[design], f_ab[design], sens._SOBOL_BLOCKS)
+        estimate = sobol_indices_with_ci(f_a[design], f_b[design], f_ab[design], sens._SOBOL_BLOCKS)
+        s1_ci, st_ci = estimate.s1_ci, estimate.st_ci
         s1_hits += (s1_ci[:, 0] <= s1_true) & (s1_true <= s1_ci[:, 1])
         st_hits += (st_ci[:, 0] <= st_true) & (st_true <= st_ci[:, 1])
 
@@ -1537,7 +1683,7 @@ def test_sobol_indices_split_the_variance_of_log_ka(ida_setup, monkeypatch):
     variance instead.
     """
 
-    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
+    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
         signal = dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)
         ka = 10.0 ** (8 + 40 * offsets.get('h0', 0.0) + 20 * offsets.get('d0', 0.0))  # no offset: the baseline
         return {'Ka_guest': ka, **signal}, 1.0
@@ -1546,7 +1692,7 @@ def test_sobol_indices_split_the_variance_of_log_ka(ida_setup, monkeypatch):
     cfg = SensitivityConfig(
         SensitivityMode.SOBOL,
         1024,
-        {'h0': InputSpec.interval_pct(-10.0, 10.0), 'd0': InputSpec.interval_pct(-10.0, 10.0)},
+        ErrorModel(specs={'h0': InputSpec.interval_pct(-10.0, 10.0), 'd0': InputSpec.interval_pct(-10.0, 10.0)}),
         seed=4,
     )
 
@@ -1571,14 +1717,14 @@ def test_run_intervals_leave_out_rows_without_a_fit(ida_setup, monkeypatch):
     def log_ka(h0, d0):
         return 8 + 40 * h0 + 20 * d0
 
-    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
+    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
         h0, d0 = offsets.get('h0', 0.0), offsets.get('d0', 0.0)
         if h0 > 0.08:
             return None
         return {'Ka_guest': 10.0 ** log_ka(h0, d0), **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0
 
     monkeypatch.setattr(sens, '_fit_perturbed', fake_fit)
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, specs, seed=4)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs=specs), seed=4)
 
     result = _run(ida_setup, cfg)
 
@@ -1603,7 +1749,8 @@ def test_run_intervals_leave_out_rows_without_a_fit(ida_setup, monkeypatch):
         points = a_points.copy()
         points[:, column] = b_points[:, column]
         mixed.append(outputs(points))
-    s1, s1_ci, st, st_ci = sobol_indices_with_ci(outputs(a_points), outputs(b_points), mixed, sens._SOBOL_BLOCKS)
+    estimate = sobol_indices_with_ci(outputs(a_points), outputs(b_points), mixed, sens._SOBOL_BLOCKS)
+    s1, s1_ci, st, st_ci = estimate.s1, estimate.s1_ci, estimate.st, estimate.st_ci
     without_fit = ~np.all(np.isfinite([outputs(a_points), outputs(b_points), *mixed]), axis=0)
 
     assert 0 < result.n_success < result.n_total

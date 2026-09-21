@@ -6,6 +6,8 @@
 - ``constraints`` turns the stated uncertainties into offsets a fit may use, in
   the order the inputs are declared, converts a spread given in the input's own
   unit, and refuses what cannot be fitted in words that name the input.
+- A shared source adds one constraint after the inputs' own; the titrant stock
+  is a condition of dimension M that is not an input.
 - The specs survive the round trip through a results file.
 """
 
@@ -17,9 +19,14 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.pipeline.inputs import (
     _INPUT_FLOOR,
     TITRANT,
+    TITRANT_STOCK,
+    ErrorModel,
     InputConstraint,
     InputSpec,
+    SharedSource,
     constraints,
+    perturbable_inputs,
+    shared_key,
     specs_from_dict,
     specs_to_dict,
 )
@@ -78,20 +85,24 @@ def test_constraints_follow_the_declared_order_and_keep_only_what_varies():
         'h0': InputSpec.sigma_pct(0.0),
         'Ka_dye': InputSpec.sigma_abs(5e4),
     }
-    found = constraints(specs, _IDA)
+    found = constraints(ErrorModel(specs=specs), _IDA)
     assert [c.key for c in found] == ['Ka_dye', 'd0', TITRANT]
     ka_dye, d0, titrant = found
     # 5e4 1/M on an entered 5e5 1/M is 10 %.
     assert ka_dye == InputConstraint('Ka_dye', pytest.approx(0.10), -1.0 + _INPUT_FLOOR, np.inf, 5e5, 'this input')
     # A message names an input by the label the interface gives it.
-    assert [c.name for c in constraints(specs, _IDA, _LABELS)] == [_LABELS['Ka_dye'], _LABELS['d0'], _LABELS[TITRANT]]
+    assert [c.name for c in constraints(ErrorModel(specs=specs), _IDA, _LABELS)] == [
+        _LABELS['Ka_dye'],
+        _LABELS['d0'],
+        _LABELS[TITRANT],
+    ]
     assert titrant.name == 'the titrant'
     assert (d0.sigma, d0.lo, d0.hi, d0.nominal) == (None, pytest.approx(-0.04), pytest.approx(0.06), 5e-6)
     assert (titrant.sigma, titrant.nominal) == (pytest.approx(0.02), None)
     # A range given as the input's own low and high values.
-    (h0,) = constraints({'h0': InputSpec.interval_abs(0.9e-5, 1.2e-5)}, _IDA)
+    (h0,) = constraints(ErrorModel(specs={'h0': InputSpec.interval_abs(0.9e-5, 1.2e-5)}), _IDA)
     assert (h0.lo, h0.hi) == (pytest.approx(-0.1), pytest.approx(0.2))
-    assert constraints({}, _IDA) == ()
+    assert constraints(ErrorModel(specs={}), _IDA) == ()
 
 
 @pytest.mark.parametrize(
@@ -108,7 +119,7 @@ def test_constraints_follow_the_declared_order_and_keep_only_what_varies():
 )
 def test_what_cannot_be_fitted_is_refused_in_words_that_name_the_input(specs, message):
     with pytest.raises(ValueError, match=message):
-        constraints(specs, _IDA, _LABELS)
+        constraints(ErrorModel(specs=specs), _IDA, _LABELS)
 
 
 def test_specs_round_trip_through_a_results_file_dict():
@@ -121,4 +132,25 @@ def test_specs_round_trip_through_a_results_file_dict():
     written = specs_to_dict(specs)
     assert written['Ka_dye'] == {'kind': 'interval', 'sigma': 0.0, 'lo': 4e5, 'hi': 7e5, 'relative': False}
     assert specs_from_dict(written) == specs
-    assert constraints(specs_from_dict(written), _IDA) == constraints(specs, _IDA)
+    assert constraints(ErrorModel(specs=specs_from_dict(written)), _IDA) == constraints(ErrorModel(specs=specs), _IDA)
+
+
+def test_the_titrant_stock_is_not_an_input_of_its_own():
+    """The stock is the titrant's scale, so it moves with ``TITRANT`` and is not listed."""
+    diluted = {**_IDA, TITRANT_STOCK: Q_(1e-3, 'M'), 'stock_contains': ('d0',)}
+    assert perturbable_inputs(diluted) == perturbable_inputs(_IDA)
+    assert TITRANT_STOCK not in dict(perturbable_inputs(diluted))
+
+
+def test_a_shared_source_is_one_sigma_constraint_after_the_inputs_own():
+    own = {TITRANT: InputSpec.sigma_pct(2.0), 'h0': InputSpec.interval_pct(-5, 5)}
+    shared = (SharedSource('Host and dye stock', 4.0, ('h0', 'd0')), SharedSource('Balance', 1.5, ('d0', TITRANT)))
+    found = constraints(ErrorModel(specs=own, shared=shared), _IDA, _LABELS)
+
+    # The own constraints are those of the same specs alone, in the declared order of the inputs.
+    assert found[:2] == constraints(ErrorModel(specs=own), _IDA, _LABELS)
+    assert [c.key for c in found] == ['h0', TITRANT, shared_key('Host and dye stock'), shared_key('Balance')]
+    assert found[2] == InputConstraint(
+        shared_key('Host and dye stock'), 0.04, -1.0 + _INPUT_FLOOR, np.inf, None, 'Host and dye stock'
+    )
+    assert found[3].sigma == pytest.approx(0.015) and found[3].name == 'Balance'

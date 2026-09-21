@@ -5,22 +5,27 @@ into the model — the titrant concentration vector, the fixed conditions
 (``h0`` / ``d0`` / …) and any non-fitted binding constant (``Ka_dye``). Each
 carries measurement error, and the fit silently compensates by shifting the
 fitted Ka. This module re-runs the fit many times with those inputs perturbed
-according to each input's stated uncertainty and reports the resulting spread
-of Ka, and which of the inputs that spread comes from.
+according to the stated error sources and reports the resulting spread of Ka,
+and which of the sources that spread comes from.
 
-The uncertainties are the ones stated for the fit
-(:attr:`~core.pipeline.fit_pipeline.FitConfig.input_specs`); the reported
-interval of the fit itself already accounts for them
-(:mod:`core.pipeline.input_aware`). What this analysis adds is where the spread
-comes from: every sample here is a fit at inputs held at their sampled values,
-and the sample with no offset is the fit at the inputs as entered.
+The error sources are the ones stated for the fit
+(:attr:`~core.pipeline.fit_pipeline.FitConfig.errors`, an
+:class:`~core.pipeline.inputs.ErrorModel`): the error each input has alone, the
+errors several inputs share, and the random error of each titrant addition. The
+reported interval of the fit itself already accounts for the first two
+(:mod:`core.pipeline.input_aware`) and, through its residual scatter, for the
+third. What this analysis adds is where the spread comes from: every sample
+here is a fit at inputs held at their sampled values, and the sample with no
+offset is the fit at the inputs as entered.
 
 Two analysis modes:
 
-- **SOBOL** — every varied input sampled together on a Saltelli design built
-  from independently scrambled Sobol' blocks → the Ka distribution, first- and
-  total-order Sobol' indices of log₁₀(Ka) with 95 % intervals for their Monte
-  Carlo sampling error, and each sample's input offsets, Ka and R².
+- **SOBOL** — every source sampled together on a Saltelli design built from
+  independently scrambled Sobol' blocks → the Ka distribution, first- and
+  total-order Sobol' indices of log₁₀(Ka) per source with 95 % intervals for
+  their Monte Carlo sampling error, each sample's source offsets, Ka and R²,
+  and the absolute variance budget (:class:`Budget`, :func:`what_if`) with the
+  elasticity of Ka to every input (:func:`input_elasticities`).
 - **HEATMAP** — sweep two chosen input offsets on a grid, fit at each cell →
   a 2D Ka surface with the R² of every cell.
 
@@ -41,18 +46,19 @@ derived in the GUI layer.
 
 from __future__ import annotations
 
+import math
 import multiprocessing as mp
 import operator
 import os
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from itertools import islice
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Mapping, Optional
 
 import numpy as np
-from scipy.stats import qmc
+from scipy.stats import qmc, truncnorm
 from scipy.stats import t as student_t
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
@@ -69,18 +75,24 @@ from core.pipeline.fit_pipeline import (
 # The inputs and how their uncertainty is stated live in ``core.pipeline.inputs``;
 # every one of these names is importable from this module as well.
 from core.pipeline.inputs import (  # noqa: F401
+    ADDITIONS,
     TITRANT,
+    TITRANT_STOCK,
+    ErrorModel,
     InputSpec,
     SpecKind,
     _to_fraction,
     axis_reaches_zero,
     input_name,
     nominal_value,
+    perturb_titrant,
     perturbable_inputs,
+    source_name,
     spec_bounds,
     spec_fraction,
+    validate,
 )
-from core.pipeline.varpro import _SEARCH_PER_DECADE, FitCancelled, FitRefused, Projection, _ka_grid
+from core.pipeline.varpro import _SEARCH_PER_DECADE, FitCancelled, FitRefused, Projection, _ka_grid, on_ka_bound
 
 
 class SensitivityMode(Enum):
@@ -99,13 +111,14 @@ class SensitivityConfig:
     mode : SensitivityMode
         Which analysis to run.
     n_samples : int
-        SOBOL only — base sample count ``N``; the run fits ``N × (k + 2)``
-        perturbations for ``k`` varied inputs. ``N`` is split evenly over
+        SOBOL only — base sample count ``N``; the run fits ``N × (g + 2)``
+        perturbations for ``g`` reported sources. ``N`` is split evenly over
         ``_SOBOL_BLOCKS`` independent scrambles and must be one of
         ``_SOBOL_SAMPLE_SIZES``.
-    input_specs : dict[str, InputSpec]
-        Input key (``TITRANT`` or a condition key) → its uncertainty. An
-        absent key, or a spec that does not vary, holds that input fixed.
+    errors : ErrorModel
+        The stated error sources. SOBOL samples every one of them; HEATMAP
+        reads the own uncertainty (``errors.specs``) of its two axis inputs. An
+        input with no spec, or one that does not vary, has no error of its own.
     seed : int or None
         Seed of the run: fixes the Sobol' scrambles, the one random part of a
         run. ``None`` lets the run draw one, which it reports as
@@ -120,7 +133,7 @@ class SensitivityConfig:
 
     mode: SensitivityMode
     n_samples: int
-    input_specs: dict[str, InputSpec]
+    errors: ErrorModel
     seed: Optional[int] = None
     x_key: Optional[str] = None
     y_key: Optional[str] = None
@@ -159,10 +172,13 @@ class SensitivityResult:
         Root seed of the run: ``config.seed`` when one was set, otherwise the
         seed the run drew. Feeding it back as ``config.seed`` repeats the run.
     sobol_s1, sobol_st : dict[str, dict[str, float]] or None
-        SOBOL only — ka_key → input key → first-order / total-order index of
-        the variance of log₁₀(Ka).
+        SOBOL only — ka_key → source key → first-order / total-order index of
+        the variance of log₁₀(Ka). An input's own error goes by the input's
+        key, a shared source by :func:`~core.pipeline.inputs.shared_key` of its
+        name, and the random errors of the additions, all of them as one
+        item, by ``ADDITIONS``.
     sobol_s1_ci, sobol_st_ci : dict[str, dict[str, tuple[float, float]]] or None
-        SOBOL only — ka_key → input key → ``(low, high)`` 95 % t-interval of
+        SOBOL only — ka_key → source key → ``(low, high)`` 95 % t-interval of
         the matching index: the estimate ± t(B − 1, 0.975) × its standard
         error from the delete-one-block jackknife over the ``B`` independent
         scrambles that hold a usable sample (see
@@ -171,11 +187,20 @@ class SensitivityResult:
         uncertainties or in the model; it is not clipped to 0 … 1, and it is
         ``NaN`` when fewer than three scrambles hold a usable sample.
     sample_offsets_pct : dict[str, np.ndarray] or None
-        SOBOL only — varied input key → its offset in percent of nominal for
-        each ``A`` sample, then each ``B`` sample.
+        SOBOL only — source key → the source's offset in percent for each ``A``
+        sample, then each ``B`` sample. ``ADDITIONS`` has no entry: it is one
+        offset per titration point, not one per sample.
     sample_ka : dict[str, np.ndarray] or None
         SOBOL only — ka_key → best Ka (1/M) per sample, index-aligned with
         ``sample_offsets_pct``; ``NaN`` only where no fit could be produced.
+    sample_usable : dict[str, np.ndarray] or None
+        SOBOL only — ka_key → whether each sample belongs to a design row the
+        indices and the budget were built from, aligned with ``sample_ka``: the
+        rows whose ``A``, ``B`` and every mixed sample gave a finite
+        log₁₀(Ka). The ``A`` and the ``B`` sample of one row stand or fall
+        together, so the mask repeats over the two halves. It is what
+        :func:`what_if` re-weights, so its answer and the budget it is compared
+        against describe the same rows.
     sample_r2 : np.ndarray or None
         SOBOL only — R² of each sample's best fit, aligned the same way.
     r2_grid : np.ndarray or None
@@ -204,11 +229,40 @@ class SensitivityResult:
         SOBOL only — ka_key → how many of the ``n_samples`` design rows that
         key's indices and intervals leave out: the rows where the ``A``, the
         ``B`` or any mixed sample gave no finite log₁₀(Ka).
+    baseline_on_bound : dict[str, bool]
+        Free binding constant → whether the baseline fit's estimate rests on a
+        bound of its box (:func:`~core.pipeline.varpro.on_ka_bound`) rather than
+        inside it. There the data do not limit that constant at the inputs as
+        entered: every elasticity of it is zero and the spread the analysis
+        reports is not the inputs' own. A constant pinned to one value has no
+        entry.
+    n_on_bound : dict[str, int]
+        Free binding constant → how many of the run's perturbed fits put it on a
+        bound: the samples of every matrix of the SOBOL design, or every cell of
+        a heatmap grid. The elasticity refits and the fits that produced no fit
+        at all are not counted (``n_total - n_success`` counts the latter). Such
+        a fit is the edge of the box rather than a value the data chose, and it
+        sits decades from the rest, so a share of them inflates the spread and
+        the budget.
     stopped : bool
         Whether the run was stopped before every planned perturbed fit
         finished. The fits it never reached are ``NaN`` like the ones that
         could not be produced, and ``n_total`` counts only the fits that
         finished.
+    budget : dict[str, Budget] or None
+        SOBOL only — ka_key → the absolute variance budget of log₁₀(Ka).
+    elasticity : dict[str, dict[str, float]] or None
+        SOBOL only — ka_key → input key → ``d ln Ka / d ln input`` at the
+        entered inputs, for every perturbable input whether it varies or not
+        (:func:`input_elasticities`); ``NaN`` where a refit gave no fit.
+    sources : tuple[str, ...]
+        SOBOL only — the reported source keys in the order of the design,
+        ``ADDITIONS`` last.
+    source_inputs : dict[str, tuple[str, ...]]
+        SOBOL only — source key → the input keys that source moves.
+    n_planned : int
+        Perturbed fits the run planned, the elasticity refits included and the
+        baseline excluded; ``n_total`` reaches it unless the run was stopped.
     """
 
     mode: SensitivityMode
@@ -228,32 +282,46 @@ class SensitivityResult:
     sobol_st_ci: Optional[dict[str, dict[str, tuple[float, float]]]] = None
     sample_offsets_pct: Optional[dict[str, np.ndarray]] = None
     sample_ka: Optional[dict[str, np.ndarray]] = None
+    sample_usable: Optional[dict[str, np.ndarray]] = None
     sample_r2: Optional[np.ndarray] = None
     r2_grid: Optional[np.ndarray] = None
     baseline_fit: FitResult | None = None
     sample_params: dict[str, np.ndarray] | None = None
     degenerate_keys: tuple[str, ...] = ()
     sobol_rows_left_out: dict[str, int] | None = None
+    baseline_on_bound: dict[str, bool] = field(default_factory=dict)
+    n_on_bound: dict[str, int] = field(default_factory=dict)
     stopped: bool = False
+    budget: dict[str, Budget] | None = None
+    elasticity: dict[str, dict[str, float]] | None = None
+    sources: tuple[str, ...] = ()
+    source_inputs: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    n_planned: int = 0
 
 
-def estimated_fit_count(sens_config: SensitivityConfig) -> int:
+def _reported_sources(errors: ErrorModel) -> tuple[str, ...]:
+    """Source keys a SOBOL run reports: every single source, then ``ADDITIONS`` when stated."""
+    return (*errors.source_specs(), *((ADDITIONS,) if errors.additions is not None else ()))
+
+
+def estimated_fit_count(sens_config: SensitivityConfig, n_inputs: int) -> int:
     """Number of perturbed fits a config will run, the baseline excluded.
 
     Parameters
     ----------
     sens_config : SensitivityConfig
         The configuration to size.
+    n_inputs : int
+        Perturbable inputs of the assay, ``len(perturbable_inputs(base_conditions))``.
 
     Returns
     -------
     int
-        SOBOL → ``n_samples × (k + 2)`` for ``k`` varied inputs;
-        HEATMAP → ``n_steps ** 2``.
+        SOBOL → ``n_samples × (g + 2)`` for ``g`` reported sources, plus the
+        ``2 × n_inputs`` refits of the elasticities; HEATMAP → ``n_steps ** 2``.
     """
     if sens_config.mode is SensitivityMode.SOBOL:
-        n_active = sum(1 for spec in sens_config.input_specs.values() if spec.varies)
-        return sens_config.n_samples * (n_active + 2)
+        return sens_config.n_samples * (len(_reported_sources(sens_config.errors)) + 2) + 2 * n_inputs
     return sens_config.n_steps**2
 
 
@@ -264,7 +332,9 @@ def estimated_fit_count(sens_config: SensitivityConfig) -> int:
 LONG_RUN_SOLVES = 700_000
 
 
-def estimated_model_solves(sens_config: SensitivityConfig, fit_config: FitConfig, assay_type: AssayType) -> int:
+def estimated_model_solves(
+    sens_config: SensitivityConfig, fit_config: FitConfig, assay_type: AssayType, n_inputs: int
+) -> int:
     """Work a configuration will take, counted in solves of the binding model.
 
     A fit solves the model once per node of its Ka search grid, plus the handful
@@ -281,6 +351,8 @@ def estimated_model_solves(sens_config: SensitivityConfig, fit_config: FitConfig
     assay_type : AssayType
         Assay being fitted; its registry defaults fill in the bounds the
         configuration does not override.
+    n_inputs : int
+        Perturbable inputs of the assay, as :func:`estimated_fit_count` takes it.
 
     Returns
     -------
@@ -294,7 +366,7 @@ def estimated_model_solves(sens_config: SensitivityConfig, fit_config: FitConfig
         if meta.param_kinds[key] is ParamKind.BINDING_CONSTANT:
             lo, hi = (float(bound.to(meta.units[key]).magnitude) for bound in bounds[key])
             nodes *= _ka_grid(lo, hi, _SEARCH_PER_DECADE).size
-    return (estimated_fit_count(sens_config) + 1) * nodes
+    return (estimated_fit_count(sens_config, n_inputs) + 1) * nodes
 
 
 #: Keeps a quantile off the exact edges, where a truncated normal maps to its bound.
@@ -303,7 +375,7 @@ _QUANTILE_EPS = 1e-9
 
 def _axis_bounds(sens_config: 'SensitivityConfig', key: str, base_conditions: dict, name: str) -> tuple[float, float]:
     """Offset range a heatmap axis sweeps, as fractions of nominal."""
-    spec = sens_config.input_specs.get(key)
+    spec = sens_config.errors.specs.get(key)
     if spec is None:
         return 0.0, 0.0
     return spec_bounds(spec, nominal_value(key, base_conditions), name)
@@ -407,7 +479,10 @@ def sobol_indices_from_outputs(
 ) -> tuple[np.ndarray, np.ndarray]:
     """First-order and total-order Sobol' indices from evaluated matrices.
 
-    ``f_ab[i]`` holds the outputs for ``A`` with column *i* taken from ``B``.
+    ``f_ab[i]`` holds the outputs for ``A`` with the columns of reported item
+    *i* taken from ``B``: one column for a single source, several for a group,
+    for which the same estimators give the group's closed first-order index
+    ``Var(E[Y | group]) / Var(Y)`` and its total index.
     First order uses the Saltelli estimator and total order the Jansen one.
 
     The outputs are centred on the mean of ``A`` and ``B`` first. Neither
@@ -419,7 +494,7 @@ def sobol_indices_from_outputs(
     Returns
     -------
     tuple of np.ndarray
-        ``(S1, S_total)``, one entry per input.
+        ``(S1, S_total)``, one entry per reported item.
     """
     centre = float(np.mean(np.concatenate([f_a, f_b])))
     f_a = np.asarray(f_a, dtype=float) - centre
@@ -434,32 +509,78 @@ def sobol_indices_from_outputs(
     return s1, st
 
 
+@dataclass(frozen=True)
+class SobolEstimate:
+    """Sobol' indices and the absolute variances behind them, each with its jackknife interval.
+
+    ``g`` is the number of reported items. Every interval is ``(low, high)``.
+
+    Attributes
+    ----------
+    s1, st : np.ndarray, shape (g,)
+        First-order and total-order index per item.
+    s1_ci, st_ci : np.ndarray, shape (g, 2)
+        Their intervals.
+    variance : float
+        Variance of the output over the usable ``A`` and ``B`` rows.
+    variance_ci : tuple[float, float]
+        Its interval.
+    source_variance : np.ndarray, shape (g,)
+        ``s1 × variance``: the variance of the output an item explains alone,
+        ``Var(E[Y | item])``.
+    source_variance_ci : np.ndarray, shape (g, 2)
+        Its interval. The variance has a sampling error of its own, so this is
+        not the interval of ``s1`` times the variance.
+    sd_if_exact : np.ndarray, shape (g,)
+        ``sqrt(max(variance − source_variance, 0))``: the standard deviation
+        left, on average, once the item is known exactly. By the law of total
+        variance ``E[Var(Y | item)] = Var(Y) (1 − S1)``, so it is the
+        first-order index that answers it.
+    sd_if_exact_ci : np.ndarray, shape (g, 2)
+        Its interval.
+    """
+
+    s1: np.ndarray
+    s1_ci: np.ndarray
+    st: np.ndarray
+    st_ci: np.ndarray
+    variance: float
+    variance_ci: tuple[float, float]
+    source_variance: np.ndarray
+    source_variance_ci: np.ndarray
+    sd_if_exact: np.ndarray
+    sd_if_exact_ci: np.ndarray
+
+
 def sobol_indices_with_ci(
     f_a: np.ndarray, f_b: np.ndarray, f_ab: list[np.ndarray], n_blocks: int, level: float = 0.95
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Sobol' indices with t-intervals from a delete-one-block jackknife.
+) -> SobolEstimate:
+    """Sobol' indices and absolute variances with t-intervals from a delete-one-block jackknife.
 
     The outputs follow the row order of :func:`sobol_design`, block by block.
     A row whose output is not finite in ``A``, ``B`` or any ``AB_i`` is left
     out everywhere, since the estimators pair rows across the matrices. The
     indices come from :func:`sobol_indices_from_outputs` on every usable row
-    pooled. Of the ``B`` blocks that keep at least one usable row, each is left
-    out in turn and the indices recomputed; their spread gives the standard
-    error ``SE = sqrt((B − 1)/B · Σ_j (θ_(j) − mean θ_(·))²)``, and the interval
-    is the estimate ± t(B − 1, (1 + level)/2) · SE.
+    pooled, the variance is that of the pooled ``A`` and ``B`` outputs, and the
+    other quantities of :class:`SobolEstimate` follow from the two. Of the
+    ``B`` blocks that keep at least one usable row, each is left out in turn
+    and every quantity recomputed; their spread gives the standard error
+    ``SE = sqrt((B − 1)/B · Σ_j (θ_(j) − mean θ_(·))²)``, and the interval is
+    the estimate ± t(B − 1, (1 + level)/2) · SE.
 
     The blocks are independent scrambles, so the jackknife sees independent
     replicates of the design; the rows inside a scrambled block are not
     independent draws and cannot stand in for them. The interval covers the
-    Monte Carlo sampling error of one index at a time, not errors in the input
-    distributions or in the model. It is symmetric and not clipped to 0 … 1.
+    Monte Carlo sampling error of one quantity at a time, not errors in the
+    input distributions or in the model. It is symmetric and not clipped.
 
     Parameters
     ----------
     f_a, f_b : np.ndarray
         Outputs for ``A`` and ``B``, one per design row.
     f_ab : list[np.ndarray]
-        ``f_ab[i]`` holds the outputs for ``A`` with column *i* taken from ``B``.
+        ``f_ab[i]`` holds the outputs for ``A`` with the columns of reported
+        item *i* taken from ``B``.
     n_blocks : int
         Scrambles the rows are split into, in equal consecutive runs.
     level : float
@@ -467,11 +588,9 @@ def sobol_indices_with_ci(
 
     Returns
     -------
-    tuple of np.ndarray
-        ``(S1, S1 interval, S_total, S_total interval)``; the indices have
-        shape ``(n_inputs,)`` and the intervals ``(n_inputs, 2)``, low then
-        high. The intervals are ``NaN`` when fewer than three blocks or fewer
-        than two rows are usable, and the indices too when fewer than two rows
+    SobolEstimate
+        The intervals are ``NaN`` when fewer than three blocks or fewer than
+        two rows are usable, and the estimates too when fewer than two rows
         are.
 
     Raises
@@ -482,28 +601,367 @@ def sobol_indices_with_ci(
     f_a = np.asarray(f_a, dtype=float)
     f_b = np.asarray(f_b, dtype=float)
     f_ab = np.asarray(f_ab, dtype=float)
-    n_inputs = len(f_ab)
+    n_items = len(f_ab)
     if n_blocks < 1 or f_a.size % n_blocks:
         raise ValueError(f'{f_a.size} design rows cannot be split into {n_blocks} equal blocks.')
     usable = np.isfinite(f_a) & np.isfinite(f_b) & np.all(np.isfinite(f_ab), axis=0)
-    no_interval = np.full((n_inputs, 2), np.nan)
+
+    def quantities(rows: np.ndarray) -> np.ndarray:
+        """``[s1 (g), st (g), variance (1), source variance (g), sd if exact (g)]`` on *rows*."""
+        s1, st = sobol_indices_from_outputs(f_a[rows], f_b[rows], f_ab[:, rows])
+        variance = float(np.var(np.concatenate([f_a[rows], f_b[rows]])))
+        source_variance = s1 * variance
+        sd_if_exact = np.sqrt(np.maximum(variance - source_variance, 0.0))
+        return np.concatenate([s1, st, [variance], source_variance, sd_if_exact])
+
+    def estimate_of(values: np.ndarray, interval: np.ndarray) -> SobolEstimate:
+        cuts = np.cumsum([n_items, n_items, 1, n_items])
+        s1, st, variance, source_variance, sd_if_exact = np.split(values, cuts)
+        s1_ci, st_ci, variance_ci, source_variance_ci, sd_if_exact_ci = np.split(interval, cuts)
+        return SobolEstimate(
+            s1=s1,
+            s1_ci=s1_ci,
+            st=st,
+            st_ci=st_ci,
+            variance=float(variance[0]),
+            variance_ci=(float(variance_ci[0, 0]), float(variance_ci[0, 1])),
+            source_variance=source_variance,
+            source_variance_ci=source_variance_ci,
+            sd_if_exact=sd_if_exact,
+            sd_if_exact_ci=sd_if_exact_ci,
+        )
+
+    no_interval = np.full((4 * n_items + 1, 2), np.nan)
     if int(usable.sum()) < 2:
-        return np.full(n_inputs, np.nan), no_interval, np.full(n_inputs, np.nan), no_interval.copy()
-
-    def indices(rows: np.ndarray) -> np.ndarray:
-        return np.concatenate(sobol_indices_from_outputs(f_a[rows], f_b[rows], f_ab[:, rows]))
-
-    estimate = indices(usable)
+        return estimate_of(np.full(4 * n_items + 1, np.nan), no_interval)
+    estimate = quantities(usable)
     block = np.arange(f_a.size) // (f_a.size // n_blocks)
     kept = np.unique(block[usable])
     n_kept = kept.size
     if n_kept < 3:
-        return estimate[:n_inputs], no_interval, estimate[n_inputs:], no_interval.copy()
-    leave_one_out = np.array([indices(usable & (block != j)) for j in kept])
+        return estimate_of(estimate, no_interval)
+    leave_one_out = np.array([quantities(usable & (block != j)) for j in kept])
     se = np.sqrt((n_kept - 1) / n_kept * np.sum((leave_one_out - leave_one_out.mean(axis=0)) ** 2, axis=0))
     half = student_t.ppf((1 + level) / 2, n_kept - 1) * se
-    interval = np.column_stack([estimate - half, estimate + half])
-    return estimate[:n_inputs], interval[:n_inputs], estimate[n_inputs:], interval[n_inputs:]
+    return estimate_of(estimate, np.column_stack([estimate - half, estimate + half]))
+
+
+@dataclass(frozen=True)
+class BudgetRow:
+    """One source's line of a :class:`Budget`.
+
+    Attributes
+    ----------
+    source : str
+        Source key.
+    variance : float
+        Variance of log₁₀(Ka), in decades², the source explains alone
+        (``SobolEstimate.source_variance``).
+    variance_ci : tuple[float, float]
+        Its jackknife interval.
+    sd_if_exact : float
+        Standard deviation of log₁₀(Ka), in decades, left once this source is
+        known exactly (``SobolEstimate.sd_if_exact``).
+    sd_if_exact_ci : tuple[float, float]
+        Its jackknife interval.
+    elasticity : float or None
+        ``d ln Ka / d ln`` of the inputs the source moves, summed over them: to
+        first order, the percent Ka moves per percent of this source, which is
+        where a source whose inputs pull Ka in opposite directions shows that it
+        cancels. ``None`` for ``ADDITIONS``, which is no single offset.
+    """
+
+    source: str
+    variance: float
+    variance_ci: tuple[float, float]
+    sd_if_exact: float
+    sd_if_exact_ci: tuple[float, float]
+    elasticity: float | None
+
+
+@dataclass(frozen=True)
+class Budget:
+    """Absolute variance budget of log₁₀ of one binding constant under the stated error sources.
+
+    Attributes
+    ----------
+    variance : float
+        Variance of log₁₀(Ka) over the samples, in decades².
+    variance_ci : tuple[float, float]
+        Its jackknife interval.
+    rows : tuple[BudgetRow, ...]
+        One row per reported source, in the order of ``SensitivityResult.sources``.
+    """
+
+    variance: float
+    variance_ci: tuple[float, float]
+    rows: tuple[BudgetRow, ...]
+
+    @property
+    def sd(self) -> float:
+        """Standard deviation of log₁₀(Ka), in decades; ``10 ** sd`` is the factor Ka spreads by."""
+        return math.sqrt(self.variance)
+
+    @property
+    def interactions(self) -> float:
+        """Share of the variance no single source explains alone, ``1 − Σ S1``.
+
+        An estimate, reported with its sign: sampling error takes it below zero
+        when the sources add up to the whole variance. ``NaN`` when too few fits
+        finished to work the variance out, since there is then no share to state;
+        ``0`` when the variance is exactly zero, where no source explains
+        anything because there is nothing to explain.
+        """
+        if not math.isfinite(self.variance):
+            return math.nan
+        if not self.variance > 0:
+            return 0.0
+        return 1.0 - sum(row.variance for row in self.rows) / self.variance
+
+
+@dataclass(frozen=True)
+class WhatIf:
+    """Spread of log₁₀(Ka) if one source's uncertainty were reduced (:func:`what_if`).
+
+    Attributes
+    ----------
+    sd : float
+        Standard deviation in decades, by the first-order formula.
+    sd_reweighted : float or None
+        The same from the run's samples re-weighted to the reduced
+        distribution, which assumes nothing about the model; ``None`` when too
+        few samples carry weight, or when no re-weighting applies.
+    effective_samples : float or None
+        Effective size of the re-weighted sample, ``(Σw)² / Σw²``; ``None``
+        when no re-weighting applies.
+    largest_after : str
+        Source key of the largest row of the budget after the reduction.
+    """
+
+    sd: float
+    sd_reweighted: float | None
+    effective_samples: float | None
+    largest_after: str
+
+
+#: Effective sample size below which the re-weighted what-if is withheld. The
+#: relative standard error of a variance estimated from m normal values is
+#: sqrt(2 / m): 10 % on the variance and 5 % on its root at m = 200. Below that
+#: the cross-check is less certain than the first-order formula it checks.
+_MIN_EFFECTIVE_SAMPLES = 200
+
+
+def _density_ratio(
+    spec: InputSpec, nominal: Optional[float], name: str, offsets: np.ndarray, ratio: float
+) -> np.ndarray:
+    """Density of a source reduced to *ratio* of its width over the density it was sampled from, at *offsets*.
+
+    The sampled density is the one :func:`spec_fraction` draws from: a normal
+    truncated at −1 for a standard deviation, a uniform one for a range. The
+    reduced one has *ratio* times the standard deviation, or the range shrunk
+    to *ratio* of its width about its centre.
+    """
+    if spec.kind is SpecKind.SIGMA:
+        s = _to_fraction(spec.sigma, spec.relative, nominal, name)
+
+        def density(scale: float) -> np.ndarray:
+            return truncnorm.pdf(offsets, a=-1.0 / scale, b=np.inf, loc=0.0, scale=scale)
+
+        return density(ratio * s) / density(s)
+    lo, hi = spec_bounds(spec, nominal, name)
+    inside = np.abs(offsets - (lo + hi) / 2.0) <= ratio * (hi - lo) / 2.0
+    return np.where(inside, 1.0 / ratio, 0.0)
+
+
+def what_if(result: SensitivityResult, ka_key: str, source: str, ratio: float) -> WhatIf:
+    """Spread of log₁₀(Ka) if *source*'s uncertainty were *ratio* times what was stated; makes no fit.
+
+    The formula ``V' = V − V_i (1 − ratio²)`` is exact for a model additive in
+    the source with a linear effect of it, and first order otherwise. The
+    cross-check assumes no model: it weights every ``A`` and ``B`` sample the
+    budget was built from (``SensitivityResult.sample_usable``) by
+    ``w = reduced density / sampled density`` of the source's offset and takes
+    the weighted variance ``Σ w (y − ȳ_w)² / Σ w``. Both answers are over the
+    same rows, so a gap between them is the first-order approximation and
+    nothing else. It is given when at least
+    ``_MIN_EFFECTIVE_SAMPLES`` effective samples carry it, and never for
+    ``ADDITIONS`` (a product of one weight per titration point leaves no
+    effective sample) or for ``ratio = 0`` (a point mass has no density; the
+    answer there is the row's ``sd_if_exact``).
+
+    Parameters
+    ----------
+    result : SensitivityResult
+        A SOBOL result.
+    ka_key : str
+        Binding constant to answer for.
+    source : str
+        One of ``result.sources``.
+    ratio : float
+        Reduced uncertainty over stated uncertainty, from 0 (exact) to 1
+        (unchanged). Only improvements: weights towards a wider density are
+        unbounded.
+
+    Raises
+    ------
+    ValueError
+        For a result without a budget, a source the result does not report, or
+        a ratio outside 0 … 1.
+    """
+    if result.budget is None:
+        raise ValueError('Only a Sobol analysis has a variance budget to ask a what-if of.')
+    if not 0.0 <= ratio <= 1.0:
+        raise ValueError(f'The reduced uncertainty must be between 0 and 1 times the stated one; {ratio} was given.')
+    budget = result.budget[ka_key]
+    after = {row.source: row.variance * (ratio**2 if row.source == source else 1.0) for row in budget.rows}
+    if source not in after:
+        raise ValueError(f'{source!r} is not a source of this analysis.')
+    explained = next(row.variance for row in budget.rows if row.source == source)
+    sd = math.sqrt(max(budget.variance - explained * (1.0 - ratio**2), 0.0))
+    largest_after = max(after, key=after.__getitem__)
+    if source == ADDITIONS or ratio == 0.0:
+        return WhatIf(sd, None, None, largest_after)
+
+    spec = result.config.errors.source_specs()[source]
+    # Only an input's own spec can be absolute, and its source key is the input's key.
+    nominal = None if spec.relative else nominal_value(source, result.baseline_fit.conditions)
+    log_ka = np.log10(result.sample_ka[ka_key])
+    # The rows the budget was built from, which is not every row with a fit of
+    # its own: a row whose mixed samples gave no fit is out of the estimators
+    # everywhere, so re-weighting it here would answer over a wider sample than
+    # the variance the answer is read beside.
+    usable = result.sample_usable[ka_key]
+    y = log_ka[usable]
+    w = _density_ratio(spec, nominal, source_name(source), result.sample_offsets_pct[source][usable] / 100.0, ratio)
+    total = float(np.sum(w))
+    if not total > 0:
+        return WhatIf(sd, None, 0.0, largest_after)
+    effective = total**2 / float(np.sum(w**2))
+    if effective < _MIN_EFFECTIVE_SAMPLES:
+        return WhatIf(sd, None, effective, largest_after)
+    mean = float(np.sum(w * y)) / total
+    return WhatIf(sd, math.sqrt(float(np.sum(w * (y - mean) ** 2)) / total), effective, largest_after)
+
+
+def homogeneity_sum(elasticity: Mapping[str, float], kinds: Mapping[str, str]) -> float:
+    """``Σ s_j`` over the concentrations and the titrant minus ``Σ s_j`` over the entered binding constants.
+
+    A binding model built from mass balances and association constants is
+    homogeneous: every concentration times ``c`` and every entered constant
+    divided by ``c`` is the same least-squares problem with every fitted
+    constant divided by ``c``. Differentiated at ``c = 1`` that makes this sum
+    ``−1`` for every fitted binding constant, which is a test of the refits and
+    of the model code, not information about the data.
+
+    Parameters
+    ----------
+    elasticity : Mapping[str, float]
+        Input key → ``d ln Ka / d ln input`` of one binding constant.
+    kinds : Mapping[str, str]
+        Input key → its kind, ``dict(perturbable_inputs(base_conditions))``.
+    """
+    return sum(-value if kinds[key] == 'binding_constant' else value for key, value in elasticity.items())
+
+
+@dataclass(frozen=True)
+class SobolJobs:
+    """The perturbations of one SOBOL design (:func:`sobol_jobs`).
+
+    Attributes
+    ----------
+    sources : tuple[str, ...]
+        Reported source keys: item *i* of the design, ``ADDITIONS`` last.
+    source_offsets : list[dict[str, float]]
+        Per design row, the relative offset of every single source. The rows
+        run matrix by matrix: ``A``, ``B``, then ``AB_i`` for each reported item.
+    jobs : list[tuple[dict[str, float], np.ndarray | None]]
+        Per design row, what one refit takes: the relative offset of every
+        input the sources move, and the relative error of every titrant
+        addition or ``None`` when no error of the additions is stated.
+    """
+
+    sources: tuple[str, ...]
+    source_offsets: list[dict[str, float]]
+    jobs: list[tuple[dict[str, float], np.ndarray | None]]
+
+
+def sobol_jobs(
+    errors: ErrorModel,
+    base_conditions: Mapping,
+    n_base: int,
+    n_points: int,
+    n_replicates: int,
+    seed: int | np.random.SeedSequence | None,
+    input_labels: Optional[Mapping[str, str]] = None,
+) -> SobolJobs:
+    """Build the Saltelli design of a SOBOL run over the sources of *errors*; makes no fit.
+
+    The design has one column per single source (``errors.source_specs()``, in
+    its order) and, when an error of the additions is stated, one column per
+    titration point after them. A reported item is one single source, or all
+    the addition columns together as ``ADDITIONS``; ``AB_i`` is ``A`` with the
+    columns of item *i* taken from ``B``, which for a group of columns gives
+    the group's closed first-order index and its total index at the cost of one
+    matrix, whatever the number of points.
+
+    Every column goes through the inverse CDF of its source
+    (:func:`spec_fraction`). Replicates are separate titrations with
+    independent addition errors and a refit is of their average, whose
+    first-order addition error is the mean of *n_replicates* independent ones:
+    the addition columns are sampled at ``sigma / sqrt(n_replicates)``.
+
+    Parameters
+    ----------
+    errors : ErrorModel
+        The stated sources.
+    base_conditions : Mapping
+        Entered assay conditions; an absolute spec is measured against them.
+    n_base : int
+        Rows per matrix.
+    n_points : int
+        Titration points.
+    n_replicates : int
+        Replicates whose average every refit fits.
+    seed : int, SeedSequence or None
+        Root of the scrambles, as :func:`sobol_design` takes it.
+    input_labels : Mapping[str, str], optional
+        Display label per input key, to name an input in a message.
+    """
+    specs = errors.source_specs()
+    n_single = len(specs)
+    n_columns = n_single + (n_points if errors.additions is not None else 0)
+    groups = [[column] for column in range(n_single)]
+    if errors.additions is not None:
+        groups.append(list(range(n_single, n_columns)))
+    a_points, b_points = sobol_design(n_base, n_columns, _SOBOL_BLOCKS, seed)
+    matrices = [a_points, b_points]
+    for group in groups:
+        mixed = a_points.copy()
+        mixed[:, group] = b_points[:, group]
+        matrices.append(mixed)
+    # One batch for every matrix. Each source is mapped through its inverse CDF
+    # one column at a time: the same numbers as row by row, and fast enough not
+    # to hold the run up before the first fit is dispatched.
+    quantiles = np.clip(np.vstack(matrices), _QUANTILE_EPS, 1.0 - _QUANTILE_EPS)
+    columns = [
+        spec_fraction(
+            spec,
+            nominal_value(key, base_conditions) if key in errors.specs else None,
+            source_name(key, input_labels),
+            quantiles[:, column],
+        ).tolist()
+        for column, (key, spec) in enumerate(specs.items())
+    ]
+    source_offsets = [dict(zip(specs, row)) for row in zip(*columns)] if columns else [{} for _ in quantiles]
+    deltas: list[np.ndarray | None] = [None] * len(quantiles)
+    if errors.additions is not None:
+        per_average = InputSpec.sigma_pct(errors.additions.sigma_pct / math.sqrt(n_replicates))
+        deltas = list(spec_fraction(per_average, None, source_name(ADDITIONS), quantiles[:, n_single:]))
+    return SobolJobs(
+        sources=_reported_sources(errors),
+        source_offsets=source_offsets,
+        jobs=[(errors.input_offsets(offsets), row) for offsets, row in zip(source_offsets, deltas)],
+    )
 
 
 #: Below this many perturbations, starting worker processes costs more than it
@@ -577,7 +1035,7 @@ def _thread_capped_children() -> Iterator[None]:
 _WORKER_STATE: dict = {}
 
 
-def _init_worker(ms, assay_cls, x_base, base_conditions, fit_config) -> None:
+def _init_worker(ms, assay_cls, x_base, base_conditions, fit_config, sequential) -> None:
     """Hand a worker process the data every job in the batch needs."""
     _WORKER_STATE.update(
         ms=ms,
@@ -585,12 +1043,13 @@ def _init_worker(ms, assay_cls, x_base, base_conditions, fit_config) -> None:
         x_base=x_base,
         base_conditions=base_conditions,
         fit_config=fit_config,
+        sequential=sequential,
     )
 
 
 def _run_job(state: dict, job):
-    """Run one perturbation with the batch state *state* → ``(index, result)``."""
-    index, offsets = job
+    """Run one perturbation ``(index, offsets, deltas or None)`` with the batch state *state* → ``(index, result)``."""
+    index, offsets, deltas = job
     return index, _fit_perturbed(
         state['ms'],
         state['assay_cls'],
@@ -598,6 +1057,8 @@ def _run_job(state: dict, job):
         state['base_conditions'],
         offsets,
         state['fit_config'],
+        deltas,
+        state['sequential'],
     )
 
 
@@ -625,18 +1086,21 @@ def _evaluate_batch(
     x_base,
     base_conditions,
     fit_config,
-    offsets_list,
+    perturbations,
     *,
+    sequential,
     max_workers,
     on_result,
     should_cancel,
 ):
     """Fit a batch of perturbations, in parallel when that is worthwhile.
 
-    Results come back in the order of *offsets_list* however the work was
-    scheduled, so a Sobol' row pairing or a heatmap cell index stays valid. A
-    perturbation has one fit, so the answer does not depend on which worker ran
-    it.
+    A perturbation is ``(input offsets, addition errors or None)``, what
+    :func:`_fit_perturbed` takes; *sequential* says how the addition errors of
+    the batch accumulate. Results come back in the order of *perturbations*
+    however the work was scheduled, so a Sobol' row pairing or a heatmap cell
+    index stays valid. A perturbation has one fit, so the answer does not
+    depend on which worker ran it.
 
     ``spawn`` is used on every platform. Workers start from a Qt application
     that already runs threads, and forking such a process is unsafe, so the
@@ -656,14 +1120,15 @@ def _evaluate_batch(
         jobs are dropped and the pool shut down before the error is raised, so
         the caller hears about it instead of waiting out the rest of the batch.
     """
-    results: list = [None] * len(offsets_list)
-    jobs = list(enumerate(offsets_list))
+    results: list = [None] * len(perturbations)
+    jobs = [(index, offsets, deltas) for index, (offsets, deltas) in enumerate(perturbations)]
     state = {
         'ms': ms,
         'assay_cls': assay_cls,
         'x_base': x_base,
         'base_conditions': base_conditions,
         'fit_config': fit_config,
+        'sequential': sequential,
     }
 
     if max_workers <= 1 or len(jobs) < _PARALLEL_MIN_JOBS:
@@ -687,7 +1152,7 @@ def _evaluate_batch(
             max_workers=max_workers,
             mp_context=mp.get_context('spawn'),
             initializer=_init_worker,
-            initargs=(ms, assay_cls, x_base, base_conditions, fit_config),
+            initargs=(ms, assay_cls, x_base, base_conditions, fit_config, sequential),
         )
         # Submitting inside the cap: the pool starts a process per job until it
         # is full, so the first round starts every worker under the cap.
@@ -715,7 +1180,7 @@ def _evaluate_batch(
 
 
 def _perturbed_ms(ms, x_base: np.ndarray, offsets: dict) -> MeasurementSet:
-    """Copy of *ms* with the titrant grid rescaled, replica activity preserved.
+    """Copy of *ms* with the titrant grid *x_base* rescaled, replica activity preserved.
 
     The signals are untouched, and so is which replicates are active: the
     perturbation moves the inputs, not the measurements or the set of them the
@@ -733,8 +1198,23 @@ def _perturbed_ms(ms, x_base: np.ndarray, offsets: dict) -> MeasurementSet:
     return out
 
 
-def _fit_perturbed(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
+def _stock_magnitude(base_conditions: Mapping) -> Optional[float]:
+    """The declared titrant stock in M, the unit of the titrant grid; ``None`` when no dilution is declared."""
+    stock = base_conditions.get(TITRANT_STOCK)
+    return None if stock is None else float(stock.to('M').magnitude)
+
+
+def _fit_perturbed(ms, assay_cls, x_base, base_conditions, offsets, fit_config, deltas=None, sequential=False):
     """Fit of one perturbation → ``({parameter key: value}, R²)``.
+
+    *offsets* is the relative offset per input key. Every entered condition
+    takes its own; the ``TITRANT`` offset is the error of the stock's
+    concentration, so it scales the titrant grid and the declared titrant stock
+    together and the dilution of every point stays what the volumes made it.
+    *deltas*, when given, is the relative volume error of every addition
+    (:func:`~core.pipeline.inputs.perturb_titrant`, accumulating when
+    *sequential*); it moves the grid first, since the scale error applies to
+    whatever volumes were delivered.
 
     The averaged signal of the active replicates is projected onto the
     perturbed model and its binding constants searched over the Ka box in
@@ -747,8 +1227,12 @@ def _fit_perturbed(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
     records as NaN, and the other thousands of samples stand. Quality is not
     judged here — every fit is reported whatever its R².
     """
+    if deltas is not None:
+        x_base = perturb_titrant(x_base, deltas, sequential, _stock_magnitude(base_conditions))
     perturbed = _perturbed_ms(ms, x_base, offsets)
     conditions = {k: (v * (1 + offsets[k]) if k in offsets else v) for k, v in base_conditions.items()}
+    if TITRANT in offsets and TITRANT_STOCK in conditions:
+        conditions[TITRANT_STOCK] = conditions[TITRANT_STOCK] * (1 + offsets[TITRANT])
     assay = perturbed.to_assay(assay_cls, conditions=conditions, use_average=True)
     projection = Projection(assay, _resolve_bounds(assay, fit_config.custom_bounds))
     try:
@@ -758,6 +1242,120 @@ def _fit_perturbed(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
     params = projection.params(fit)
     _, r_squared = calculate_fit_metrics(assay.y_data.magnitude, assay.forward_model(params).magnitude)
     return dict(zip(assay.parameter_keys, params.tolist())), float(r_squared)
+
+
+#: Relative step of the central difference behind an elasticity. The slope of
+#: ln Ka against ln input is smooth, so the truncation error falls with the
+#: square of the step, while a refit resolves log10 Ka to about 1e-7 decades (the
+#: tolerance of the Ka refinement), an error in the slope that grows as the step
+#: shrinks. Over the six binding assays the truncation error is below 1e-5 at
+#: 1e-3 (3e-4 to 7e-4 at 1e-2) and the resolution costs about 1e-4 per slope
+#: (1.5e-3 at 1e-4), so 1e-3 is where the two together are smallest.
+_ELASTICITY_STEP = 1e-3
+
+
+def _elasticity_perturbations(base_conditions: Mapping) -> list[tuple[dict[str, float], None]]:
+    """One step up and one step down for every perturbable input, in the order of :func:`perturbable_inputs`."""
+    return [
+        ({key: sign * _ELASTICITY_STEP}, None) for key, _ in perturbable_inputs(base_conditions) for sign in (1.0, -1.0)
+    ]
+
+
+def _elasticities(base_conditions: Mapping, ka: Mapping[str, np.ndarray]) -> dict[str, dict[str, float]]:
+    """ka key → input key → ``d ln Ka / d ln input`` from the fits of :func:`_elasticity_perturbations`."""
+    span = math.log1p(_ELASTICITY_STEP) - math.log1p(-_ELASTICITY_STEP)
+    keys = [key for key, _ in perturbable_inputs(base_conditions)]
+    return {
+        ka_key: {key: float(np.log(values[2 * i]) - np.log(values[2 * i + 1])) / span for i, key in enumerate(keys)}
+        for ka_key, values in ka.items()
+    }
+
+
+def input_elasticities(
+    ms,
+    assay_cls,
+    base_conditions: dict,
+    fit_config: FitConfig,
+    *,
+    max_workers: Optional[int] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
+) -> dict[str, dict[str, float]]:
+    """Elasticity ``d ln Ka / d ln input`` of every binding constant to every perturbable input.
+
+    A central difference at ``±_ELASTICITY_STEP`` around the entered inputs: two
+    refits per input of the average of the active replicates of *ms*, made the
+    way every sample of :func:`run_sensitivity` is, whether or not an
+    uncertainty is stated for the input. An elasticity of −1 says a 1 % error
+    of the input is a 1 % error of Ka the other way.
+
+    Parameters
+    ----------
+    ms : MeasurementSet
+        Source data; its active replicates are averaged.
+    assay_cls : type[BaseAssay]
+        Concrete assay class.
+    base_conditions : dict
+        Entered assay conditions.
+    fit_config : FitConfig
+        Supplies the parameter bounds of the refits.
+    max_workers : int, optional
+        Worker processes, as :func:`run_sensitivity` takes it.
+    should_cancel : callable, optional
+        Polled between refits.
+
+    Returns
+    -------
+    dict[str, dict[str, float]]
+        ka key → input key → elasticity; ``NaN`` where a refit gave no fit.
+
+    Raises
+    ------
+    FitCancelled
+        If *should_cancel* stopped the refits.
+    """
+    workers = default_worker_count() if max_workers is None else max(1, int(max_workers))
+    probe_assay = ms.to_assay(assay_cls, conditions=base_conditions, use_average=True)
+
+    def cancelled() -> bool:
+        return should_cancel is not None and should_cancel()
+
+    fits = _evaluate_batch(
+        ms,
+        assay_cls,
+        np.asarray(ms.concentrations),
+        base_conditions,
+        fit_config,
+        _elasticity_perturbations(base_conditions),
+        sequential=False,
+        max_workers=workers,
+        on_result=lambda value: None,
+        should_cancel=cancelled,
+    )
+    if cancelled():
+        raise FitCancelled('The elasticities were stopped before every refit finished.')
+    ka_keys = ASSAY_REGISTRY[probe_assay.assay_type].log_scale_keys
+    return _elasticities(
+        base_conditions,
+        {key: np.array([np.nan if fit is None else fit[0][key] for fit in fits]) for key in ka_keys},
+    )
+
+
+def _free_ka_bounds(assay, fit_config: FitConfig, ka_keys: tuple[str, ...]) -> dict[str, tuple[float, float]]:
+    """The Ka box every free binding constant is searched over, in that key's registry unit.
+
+    A constant whose two bounds are equal is pinned to that value rather than
+    searched, and it is left out: it rests on its bounds by construction, which
+    says nothing about what the data limit.
+    """
+    units = ASSAY_REGISTRY[assay.assay_type].units
+    bounds = _resolve_bounds(assay, fit_config.custom_bounds)
+    box = {key: tuple(float(end.to(units[key]).magnitude) for end in bounds[key]) for key in ka_keys}
+    return {key: ends for key, ends in box.items() if ends[0] < ends[1]}
+
+
+def _count_on_bound(values: np.ndarray, bounds: tuple[float, float]) -> int:
+    """How many of the fitted *values* rest on a bound of *bounds*; a perturbation with no fit is not one."""
+    return sum(on_ka_bound(float(value), bounds) for value in values if np.isfinite(value))
 
 
 def run_sensitivity(
@@ -789,7 +1387,7 @@ def run_sensitivity(
     fit_config : FitConfig
         Per-fit configuration: it decides the parameter bounds every fit of the
         run is made under and how the baseline fit treats the replicates. Its
-        input uncertainties are not used here — this run samples the ones in
+        error sources are not used here — this run samples the ones in
         *sens_config*, and every fit it makes holds the inputs at their sampled
         values.
     sens_config : SensitivityConfig
@@ -816,9 +1414,12 @@ def run_sensitivity(
     ------
     ValueError
         For an invalid config (a SOBOL ``n_samples`` outside
-        ``_SOBOL_SAMPLE_SIZES``, no input set to vary, negative percent, a range
-        reaching below zero, unknown key, HEATMAP with ``x_key == y_key``, a
-        non-perturbable axis key or an axis reaching zero), for an assay with no
+        ``_SOBOL_SAMPLE_SIZES``, nothing set to vary, negative percent, a range
+        reaching below zero, unknown key, a shared source or an error of the
+        additions :func:`~core.pipeline.inputs.validate` refuses, sequential
+        additions on a titrant series that falls, HEATMAP with
+        ``x_key == y_key``, a non-perturbable axis key or an axis reaching
+        zero), for an assay with no
         association constant (DYE_ALONE), and for whatever the baseline fit
         itself refuses — bounds it cannot fit under, or a model the engine
         cannot project. Its message is written for the user.
@@ -851,7 +1452,8 @@ def run_sensitivity(
             f'The number of samples must be {", ".join(map(str, smaller))} or {largest}; '
             f'{sens_config.n_samples} was chosen.'
         )
-    for key, spec in sens_config.input_specs.items():
+    errors = sens_config.errors
+    for key, spec in errors.specs.items():
         if key not in valid_keys:
             raise FitRefused(
                 'An uncertainty is set for an input this assay does not have, so the analysis cannot run. '
@@ -869,8 +1471,20 @@ def run_sensitivity(
                 f'The range for {name} reaches below zero, and a concentration or binding constant cannot be '
                 f'negative. Raise its lower end to {"-100 %" if spec.relative else "0"} or more.'
             )
-    if not any(spec.varies for spec in sens_config.input_specs.values()):
+    validate(errors, base_conditions, input_labels)
+    if sens_config.mode is SensitivityMode.SOBOL and not errors.varies:
         raise FitRefused('No input is set to vary — give at least one input a non-zero uncertainty.')
+    if sens_config.mode is SensitivityMode.HEATMAP and not any(spec.varies for spec in errors.specs.values()):
+        raise FitRefused(
+            'No input is set to vary — give at least one input a non-zero uncertainty of its own. '
+            'The heatmap sweeps two inputs over their own uncertainty; shared error sources and the random '
+            'error of the additions are part of the Sobol analysis only.'
+        )
+    sobol_additions = errors.additions if sens_config.mode is SensitivityMode.SOBOL else None
+    if sobol_additions is not None:
+        # Additions into one cuvette cannot lower the concentration: a series
+        # that falls is refused here, before any fit is made.
+        perturb_titrant(x_base, np.zeros(x_base.size), sobol_additions.sequential, _stock_magnitude(base_conditions))
 
     if sens_config.mode is SensitivityMode.HEATMAP:
         for axis, axis_key in (('X', sens_config.x_key), ('Y', sens_config.y_key)):
@@ -882,7 +1496,7 @@ def run_sensitivity(
         if sens_config.x_key == sens_config.y_key:
             raise FitRefused('Heatmap X and Y axes must be two different inputs.')
         for axis_key in (sens_config.x_key, sens_config.y_key):
-            spec = sens_config.input_specs.get(axis_key)
+            spec = errors.specs.get(axis_key)
             name = input_name(axis_key, input_labels)
             if spec is not None and axis_reaches_zero(spec, nominal_value(axis_key, base_conditions), name):
                 raise FitRefused(
@@ -893,7 +1507,8 @@ def run_sensitivity(
             raise FitRefused('Heatmap grid resolution must be at least 1.')
 
     # --- Baseline (unperturbed) fit --------------------------------------
-    total = estimated_fit_count(sens_config) + 1  # +1 for the baseline
+    n_planned = estimated_fit_count(sens_config, len(valid_keys))
+    total = n_planned + 1  # +1 for the baseline
     done = 0
 
     # One root seed drives the whole run, drawn here when none was configured, so
@@ -921,11 +1536,11 @@ def run_sensitivity(
 
     if _cancelled():
         raise FitCancelled('The sensitivity analysis was stopped before its first fit.')
-    # The baseline is the fit at the inputs as entered: the specs are what this
-    # run samples, so letting the baseline fit move the inputs as well would
+    # The baseline is the fit at the inputs as entered: the sources are what
+    # this run samples, so letting the baseline fit move the inputs as well would
     # report the spread of the samples around a fit that already absorbed them.
     baseline_result = fit_measurement_set(
-        ms, assay_cls, base_conditions, replace(fit_config, input_specs={}), should_cancel=should_cancel
+        ms, assay_cls, base_conditions, replace(fit_config, errors=ErrorModel()), should_cancel=should_cancel
     )
     done += 1
     if progress is not None:
@@ -940,8 +1555,18 @@ def run_sensitivity(
     probe_assay = ms.to_assay(assay_cls, conditions=base_conditions, use_average=True)
     baseline_ka = {k: baseline_result.parameters[k].to('1/M').magnitude for k in ka_keys}
     degenerate_keys = baseline_result.degenerate_keys
+    # The Ka box every fit of the run searches, and where the baseline landed in
+    # it: on a bound the data do not limit that constant, and neither the spread
+    # nor the budget below describes the inputs any more.
+    ka_box = _free_ka_bounds(probe_assay, fit_config, ka_keys)
+    baseline_on_bound = {
+        key: on_ka_bound(float(baseline_result.parameters[key].to(metadata.units[key]).magnitude), bounds)
+        for key, bounds in ka_box.items()
+    }
 
-    def _evaluate(offsets_list: list[dict]) -> tuple[dict[str, np.ndarray], np.ndarray, dict]:
+    def _evaluate(
+        perturbations: list[tuple[dict, np.ndarray | None]],
+    ) -> tuple[dict[str, np.ndarray], np.ndarray, dict]:
         """Fit every perturbation → (value per parameter key, R²), NaN where no fit was produced."""
         counters = {'total': 0, 'success': 0, 'done': done}
         values = _evaluate_batch(
@@ -950,7 +1575,8 @@ def run_sensitivity(
             x_base,
             base_conditions,
             fit_config,
-            offsets_list,
+            perturbations,
+            sequential=sobol_additions is not None and sobol_additions.sequential,
             max_workers=workers,
             on_result=_tally(counters),
             should_cancel=_cancelled,
@@ -963,49 +1589,67 @@ def run_sensitivity(
 
     # --- Dispatch on mode ------------------------------------------------
     if sens_config.mode is SensitivityMode.SOBOL:
-        active_keys = [key for key, spec in sens_config.input_specs.items() if spec.varies]
-        n_base, n_inputs = sens_config.n_samples, len(active_keys)
-        a_points, b_points = sobol_design(n_base, n_inputs, _SOBOL_BLOCKS, seed_used)
-        matrices = [a_points, b_points]
-        for column in range(n_inputs):
-            mixed = a_points.copy()
-            mixed[:, column] = b_points[:, column]
-            matrices.append(mixed)
-        # One batch for every matrix, in the order A, B, AB_1 … AB_k. Each input
-        # is mapped through its inverse CDF one column at a time: the same
-        # numbers as row by row, and fast enough not to hold the run up before
-        # the first fit is dispatched.
-        quantiles = np.clip(np.vstack(matrices), _QUANTILE_EPS, 1.0 - _QUANTILE_EPS)
-        columns = [
-            spec_fraction(
-                sens_config.input_specs[key],
-                nominal_value(key, base_conditions),
-                input_name(key, input_labels),
-                quantiles[:, column],
-            ).tolist()
-            for column, key in enumerate(active_keys)
-        ]
-        offsets_list = [dict(zip(active_keys, row)) for row in zip(*columns)]
-        params, r2, counters = _evaluate(offsets_list)
+        n_base = sens_config.n_samples
+        design = sobol_jobs(
+            errors,
+            base_conditions,
+            n_base,
+            x_base.size,
+            len(fit_replica_ids(baseline_result) or ()) or 1,
+            seed_used,
+            input_labels,
+        )
+        sources = design.sources
+        # One batch: every matrix of the design in the order A, B, AB_1 … AB_g,
+        # then the refits of the elasticities.
+        perturbations = design.jobs + _elasticity_perturbations(base_conditions)
+        params, r2, counters = _evaluate(perturbations)
         n_samples = 2 * n_base  # the A and B rows
+        n_design = len(design.jobs)
+        elasticity = _elasticities(base_conditions, {key: params[key][n_design:] for key in ka_keys})
 
         sobol_s1: dict[str, dict[str, float]] = {}
         sobol_st: dict[str, dict[str, float]] = {}
         sobol_s1_ci: dict[str, dict[str, tuple[float, float]]] = {}
         sobol_st_ci: dict[str, dict[str, tuple[float, float]]] = {}
         rows_left_out: dict[str, int] = {}
+        usable: dict[str, np.ndarray] = {}
+        budget: dict[str, Budget] = {}
         for key in ka_keys:
             # The indices split the variance of log10(Ka): Ka spans orders of
             # magnitude, and on the raw scale one far-off fit would own almost
             # all of the variance and push the indices far outside 0 to 1. A
             # row without a fit in every matrix is left out of the indices.
-            by_matrix = np.log10(params[key]).reshape(len(matrices), n_base)
-            s1, s1_ci, st, st_ci = sobol_indices_with_ci(by_matrix[0], by_matrix[1], by_matrix[2:], _SOBOL_BLOCKS)
-            sobol_s1[key] = {k: float(v) for k, v in zip(active_keys, s1)}
-            sobol_st[key] = {k: float(v) for k, v in zip(active_keys, st)}
-            sobol_s1_ci[key] = {k: (float(lo), float(hi)) for k, (lo, hi) in zip(active_keys, s1_ci)}
-            sobol_st_ci[key] = {k: (float(lo), float(hi)) for k, (lo, hi) in zip(active_keys, st_ci)}
-            rows_left_out[key] = int(np.sum(~np.all(np.isfinite(by_matrix), axis=0)))
+            by_matrix = np.log10(params[key][:n_design]).reshape(len(sources) + 2, n_base)
+            estimate = sobol_indices_with_ci(by_matrix[0], by_matrix[1], by_matrix[2:], _SOBOL_BLOCKS)
+            sobol_s1[key] = {k: float(v) for k, v in zip(sources, estimate.s1)}
+            sobol_st[key] = {k: float(v) for k, v in zip(sources, estimate.st)}
+            sobol_s1_ci[key] = {k: (float(lo), float(hi)) for k, (lo, hi) in zip(sources, estimate.s1_ci)}
+            sobol_st_ci[key] = {k: (float(lo), float(hi)) for k, (lo, hi) in zip(sources, estimate.st_ci)}
+            # The rows the estimators could use. The A and the B sample of a row
+            # are dropped together, so the mask over the samples is it twice.
+            rows_used = np.all(np.isfinite(by_matrix), axis=0)
+            rows_left_out[key] = int(np.sum(~rows_used))
+            usable[key] = np.tile(rows_used, 2)
+            budget[key] = Budget(
+                variance=estimate.variance,
+                variance_ci=estimate.variance_ci,
+                rows=tuple(
+                    BudgetRow(
+                        source=source,
+                        variance=float(estimate.source_variance[i]),
+                        variance_ci=tuple(map(float, estimate.source_variance_ci[i])),
+                        sd_if_exact=float(estimate.sd_if_exact[i]),
+                        sd_if_exact_ci=tuple(map(float, estimate.sd_if_exact_ci[i])),
+                        # To first order a source moves Ka by the sum of what
+                        # the inputs it moves do.
+                        elasticity=None
+                        if source == ADDITIONS
+                        else sum(elasticity[key][moved] for moved in errors.loaded(source)),
+                    )
+                    for i, source in enumerate(sources)
+                ),
+            )
 
         return SensitivityResult(
             mode=sens_config.mode,
@@ -1024,15 +1668,24 @@ def run_sensitivity(
             sobol_s1_ci=sobol_s1_ci,
             sobol_st_ci=sobol_st_ci,
             sample_offsets_pct={
-                k: 100.0 * np.array([offsets[k] for offsets in offsets_list[:n_samples]]) for k in active_keys
+                k: 100.0 * np.array([offsets[k] for offsets in design.source_offsets[:n_samples]])
+                for k in errors.source_specs()
             },
             sample_ka={key: params[key][:n_samples] for key in ka_keys},
+            sample_usable=usable,
             sample_r2=r2[:n_samples],
             baseline_fit=baseline_result,
             sample_params={key: values[:n_samples] for key, values in params.items()},
             degenerate_keys=degenerate_keys,
             sobol_rows_left_out=rows_left_out,
-            stopped=counters['total'] < len(offsets_list),
+            baseline_on_bound=baseline_on_bound,
+            n_on_bound={key: _count_on_bound(params[key][:n_design], bounds) for key, bounds in ka_box.items()},
+            stopped=counters['total'] < len(perturbations),
+            budget=budget,
+            elasticity=elasticity,
+            sources=sources,
+            source_inputs={source: errors.loaded(source) for source in sources},
+            n_planned=n_planned,
         )
 
     # --- HEATMAP ---------------------------------------------------------
@@ -1045,10 +1698,10 @@ def run_sensitivity(
     x_offsets = np.linspace(x_lo, x_hi, sens_config.n_steps)
     y_offsets = np.linspace(y_lo, y_hi, sens_config.n_steps)
     cells = [(iy, ix) for iy in range(len(y_offsets)) for ix in range(len(x_offsets))]
-    offsets_list = [
-        {sens_config.x_key: float(x_offsets[ix]), sens_config.y_key: float(y_offsets[iy])} for iy, ix in cells
+    perturbations = [
+        ({sens_config.x_key: float(x_offsets[ix]), sens_config.y_key: float(y_offsets[iy])}, None) for iy, ix in cells
     ]
-    params, r2, counters = _evaluate(offsets_list)
+    params, r2, counters = _evaluate(perturbations)
     shape = (len(y_offsets), len(x_offsets))
     r2_grid = r2.reshape(shape)
 
@@ -1067,5 +1720,8 @@ def run_sensitivity(
         r2_grid=r2_grid,
         baseline_fit=baseline_result,
         degenerate_keys=degenerate_keys,
-        stopped=counters['total'] < len(offsets_list),
+        baseline_on_bound=baseline_on_bound,
+        n_on_bound={key: _count_on_bound(params[key], bounds) for key, bounds in ka_box.items()},
+        stopped=counters['total'] < len(perturbations),
+        n_planned=n_planned,
     )

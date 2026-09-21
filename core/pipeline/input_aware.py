@@ -6,6 +6,11 @@ assay conditions and the titrant series as one scale factor. Input j is
 ``theta_j = entered_j (1 + e_j)``, and the user states per input
 (:mod:`core.pipeline.inputs`) a standard deviation ``s_j`` of ``e_j``, a range
 ``e_j`` must stay in, or nothing, which holds the input at its entered value.
+An error several inputs have in common is one more such offset, stated with a
+standard deviation, and the *loading* of the sources
+(:meth:`core.pipeline.inputs.ErrorModel.input_offsets`) gives each input the
+product of the ``1 + e`` of the sources that move it. Everything below counts
+sources: with no shared one, a source is an input.
 
 With the projected residual sum of squares
 ``S(K, e) = min over lb <= c <= ub of ||y - A(K, theta(e)) c||²``, Gaussian
@@ -167,12 +172,17 @@ class AwareFit:
     ka : dict[str, float]
         Every binding constant in 1/M, pinned ones at their value.
     offsets : dict[str, float]
-        Fitted offset of every varying input as a fraction of its entered
-        value; empty when no input varies.
+        Fitted relative offset of every varying source, by constraint key;
+        empty when nothing varies.
+    input_offsets : dict[str, float]
+        Where those offsets put the inputs, as a fraction of each entered
+        value and by input key: what ``Projection`` and
+        ``BaseAssay.with_inputs`` take. The same floats as *offsets* when no
+        source is shared.
     coefficients : np.ndarray
-        Signal parameters at ``(ka, offsets)`` in ``Projection.coef_keys`` order.
+        Signal parameters at ``(ka, input_offsets)`` in ``Projection.coef_keys`` order.
     ssr : float
-        Residual sum of squares at ``(ka, offsets)``.
+        Residual sum of squares at ``(ka, input_offsets)``.
     objective : float
         ``P_min = n log(ssr) + z'z``, the residual floored at the resolution of R².
     n_params : int
@@ -193,6 +203,7 @@ class AwareFit:
 
     ka: dict[str, float]
     offsets: dict[str, float]
+    input_offsets: dict[str, float]
     coefficients: np.ndarray
     ssr: float
     objective: float
@@ -217,7 +228,7 @@ class AwareProfile:
     r2 : np.ndarray
         ``1 - exp(P / n) / SS_tot`` on *grid*; not a number where unsolvable.
     offsets : np.ndarray
-        Fitted input offsets per grid point, shape ``(len(grid), inputs)``.
+        Fitted offset of every constraint per grid point, shape ``(len(grid), constraints)``.
     threshold : float
         ``P_min`` plus the acceptance excess of a solution that pins no signal
         parameter the optimum fits (``m = 1``).
@@ -284,10 +295,12 @@ class _Problem:
         projection: Projection,
         constraints: Sequence[InputConstraint],
         should_cancel: Callable[[], bool] | None = None,
+        loading: Callable[[Mapping[str, float]], dict[str, float]] | None = None,
     ):
         projection._require_one_row('An interval with uncertain inputs')
         self.projection = projection
         self.constraints = tuple(constraints)
+        self._loading = loading
         self.n = projection.n_points
         self.keys = tuple(c.key for c in self.constraints)
         self.is_sigma = np.array([c.sigma is not None for c in self.constraints], dtype=bool)
@@ -307,7 +320,13 @@ class _Problem:
         return np.clip(np.zeros(len(self.constraints)), self.lo, self.hi)
 
     def offsets(self, coords: np.ndarray) -> dict[str, float]:
+        """Relative offset per constraint key."""
         return {key: float(e) for key, e in zip(self.keys, coords * self.unit)}
+
+    def input_offsets(self, coords: np.ndarray) -> dict[str, float]:
+        """Relative offset per input key, which is what the projection takes."""
+        offsets = self.offsets(coords)
+        return offsets if self._loading is None else self._loading(offsets)
 
     def unsolvable(self, ka: Mapping[str, float]) -> _Point:
         return _Point(np.inf, dict(ka), self.start_coords(), np.inf)
@@ -328,7 +347,7 @@ class _Problem:
 
     def _residual(self, fixed: Mapping[str, float], moving: Sequence[str], v: np.ndarray) -> np.ndarray:
         ka = {**fixed, **{key: 10.0 ** v[i] for i, key in enumerate(moving)}}
-        return self.projection.residual(ka, 0, self.offsets(v[len(moving) :]))
+        return self.projection.residual(ka, 0, self.input_offsets(v[len(moving) :]))
 
     def _box(self, moving: Sequence[str]) -> tuple[tuple[np.ndarray, np.ndarray], np.ndarray]:
         ka_box = np.log10([self.projection.ka_bounds[key] for key in moving]).reshape(len(moving), 2)
@@ -392,7 +411,7 @@ class _Problem:
         coords = x[m:]
         value = self.n * float(np.log(max(ssr, self.floor))) + float(np.sum(coords[self.is_sigma] ** 2))
         ka = {**fixed, **{key: float(10.0 ** x[i]) for i, key in enumerate(moving)}}
-        rank = self.projection.fitted_rank(ka, self.offsets(coords))
+        rank = self.projection.fitted_rank(ka, self.input_offsets(coords))
         return _Point(value, {key: ka[key] for key in self.projection.free_ka}, coords, ssr, rank)
 
     def jacobian(self, point: _Point) -> np.ndarray:
@@ -682,6 +701,7 @@ def input_aware(
     fixed: ProjectedFit,
     constraints: Sequence[InputConstraint],
     *,
+    loading: Callable[[Mapping[str, float]], dict[str, float]] | None = None,
     level: float = LEVEL,
     should_cancel: Callable[[], bool] | None = None,
     conditional: Mapping[str, KaInterval] | None = None,
@@ -710,9 +730,14 @@ def input_aware(
     fixed : ProjectedFit
         Its fit at the entered inputs.
     constraints : Sequence[InputConstraint]
-        The varying inputs (:func:`core.pipeline.inputs.constraints`). When
+        The varying sources (:func:`core.pipeline.inputs.constraints`). When
         empty, the result is the fixed-input fit with the intervals of
         :meth:`Projection.interval`.
+    loading : Callable[[Mapping[str, float]], dict[str, float]], optional
+        Maps the offsets of the constraints, by constraint key, to the offsets
+        of the inputs, by input key
+        (:meth:`core.pipeline.inputs.ErrorModel.input_offsets`). Without it
+        every constraint key is an input key and the offsets pass as they are.
     level : float
         Confidence level.
     should_cancel : Callable[[], bool], optional
@@ -735,7 +760,7 @@ def input_aware(
     if not constraints:
         return _fixed_inputs(projection, fixed, level, conditional)
 
-    problem = _Problem(projection, constraints, should_cancel)
+    problem = _Problem(projection, constraints, should_cancel, loading)
     n_ranges = int(np.sum(~problem.is_sigma))
     best: list[_Point] = []
 
@@ -745,7 +770,7 @@ def input_aware(
         return point
 
     def n_params(point: _Point) -> int:
-        design, _, _ = projection._solve_at(point.ka, problem.offsets(point.coords))
+        design, _, _ = projection._solve_at(point.ka, problem.input_offsets(point.coords))
         free, scale = projection._free_columns(design)
         return len(projection.free_ka) + _rank(free / scale) + n_ranges
 
@@ -817,10 +842,12 @@ def input_aware(
         )
 
     offsets = problem.offsets(optimum.coords)
-    _, _, coefficients = projection._solve_at(optimum.ka, offsets)
+    input_offsets = problem.input_offsets(optimum.coords)
+    _, _, coefficients = projection._solve_at(optimum.ka, input_offsets)
     fit = AwareFit(
         ka=projection._full_ka(optimum.ka),
         offsets=offsets,
+        input_offsets=input_offsets,
         coefficients=coefficients[0],
         ssr=optimum.ssr,
         objective=optimum.value,
@@ -871,6 +898,7 @@ def _fixed_inputs(
     fit = AwareFit(
         ka=dict(fixed.ka),
         offsets={},
+        input_offsets={},
         coefficients=fixed.coefficients[0],
         ssr=float(fixed.row_ssr[0]),
         objective=n * float(np.log(projection._floored(fixed))),
@@ -892,7 +920,7 @@ def fit_jacobian(projection: Projection, result: AwareResult) -> np.ndarray:
     units of the noise scale ``sqrt(S / n)``, the penalty rows as they are.
     """
     fit, n = result.fit, result.n_points
-    fitted = projection.fitted_columns(fit.ka, fit.offsets)
+    fitted = projection.fitted_columns(fit.ka, fit.input_offsets)
     scale = float(np.sqrt(max(fit.ssr, _R2_RESOLUTION * result.ss_tot) / n))
     columns = np.zeros((fit.jacobian.shape[0], fitted.shape[1]))
     columns[:n] = fitted
@@ -913,6 +941,7 @@ def penalised_objective(
     start: Mapping[str, float],
     *,
     other_ka: Mapping[str, float] | None,
+    loading: Callable[[Mapping[str, float]], dict[str, float]] | None = None,
 ) -> tuple[float, dict[str, float], dict[str, float], float]:
     """``n log S + z'z`` minimised at the binding constants *ka* from one start.
 
@@ -921,10 +950,12 @@ def penalised_objective(
     ka : Mapping[str, float]
         The binding constants held fixed.
     start : Mapping[str, float]
-        Starting offset per varying input, as fractions; an input left out
-        starts as entered.
+        Starting offset per constraint key, as fractions; one left out starts
+        at zero.
     other_ka : Mapping[str, float] or None
         Starting value of every free binding constant not in *ka*.
+    loading : Callable[[Mapping[str, float]], dict[str, float]], optional
+        As in :func:`input_aware`.
 
     Returns
     -------
@@ -932,7 +963,7 @@ def penalised_objective(
         The objective, the fitted offsets, the fitted other binding constants
         and the residual sum of squares.
     """
-    problem = _Problem(projection, constraints)
+    problem = _Problem(projection, constraints, loading=loading)
     coords = np.array([start.get(key, 0.0) for key in problem.keys]) / problem.unit
     point = problem.solve(dict(ka), _Point(np.nan, {**ka, **(other_ka or {})}, coords, np.nan))
     others = {key: value for key, value in point.ka.items() if key not in ka}

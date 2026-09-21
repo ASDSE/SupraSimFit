@@ -76,6 +76,8 @@ class GDAAssay(BaseAssay):
         if self.g0.magnitude < 0:
             raise ValueError('g0 must be positive (or zero)')
 
+        self._check_dilution()
+
     def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
@@ -99,16 +101,17 @@ class GDAAssay(BaseAssay):
             I_dye_free=I_dye_free,
             I_dye_bound=I_dye_bound,
             Ka_dye=self.Ka_dye.magnitude,
-            h0=self.h0.magnitude,
+            h0=self.fixed_total('h0', xx),
             d0_values=xx,
-            g0=self.g0.magnitude,
+            g0=self.fixed_total('g0', xx),
         )
         return Q_(result, 'au')
 
     def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
         """Free host, dye, guest and both complexes (M) across the dye titration."""
         Ka_guest = params[0]
-        return gda_species(Ka_guest, self.Ka_dye.magnitude, self.h0.magnitude, self.x_data.magnitude, self.g0.magnitude)
+        x = self.x_data.magnitude
+        return gda_species(Ka_guest, self.Ka_dye.magnitude, self.fixed_total('h0', x), x, self.fixed_total('g0', x))
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.
@@ -116,10 +119,12 @@ class GDAAssay(BaseAssay):
         Returns
         -------
         Dict[str, Any]
-            {'Ka_dye': ..., 'h0': ..., 'g0': ...}
+            {'Ka_dye': ..., 'h0': ..., 'g0': ...}, and the two dilution
+            conditions when a titrant stock is declared.
         """
         return {
             'Ka_dye': self.Ka_dye,
             'h0': self.h0,
             'g0': self.g0,
+            **self.dilution_conditions(),
         }

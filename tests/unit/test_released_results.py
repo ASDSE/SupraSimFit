@@ -6,9 +6,12 @@ released files and the two ``pr42`` ones fit IDA data with the conditions named
 there; ``unmarked_gda.json`` fits the synthetic GDA titration beside it and
 records no ``model_arithmetic``, so its scores are those of the earlier
 equilibrium arithmetic; ``input_aware_ida.json`` was fitted with two of its
-inputs free within a stated uncertainty and reports where it put them. What the
-app shows for such a file is decided by :func:`verify_imported_result`, so each
-fixture pins the status and the numbers a user importing it sees.
+inputs free within a stated uncertainty and reports where it put them; and
+``diluted_shared_ida.json`` was fitted with the titrant stock declared, so its
+fixed totals fall along the titration, and with an error source two of its
+inputs share. What the app shows for such a file is decided by
+:func:`verify_imported_result`, so each fixture pins the status and the numbers
+a user importing it sees.
 
 Expected scores are computed here from the replicate rows the file names,
 independently of the masking and averaging the pipeline does.
@@ -31,10 +34,12 @@ from core.models.equilibrium import MODEL_ARITHMETIC, legacy_arithmetic
 from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline.fit_pipeline import (
     FitResult,
+    _fitted_offsets,
     fit_replica_ids,
     fit_view,
     verify_imported_result,
 )
+from core.pipeline.inputs import ErrorModel, shared_key
 from core.units import Q_
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +60,19 @@ _AWARE_DATA = _FIXTURES / 'input_aware_ida_data.txt'
 
 #: Ka_guest the data behind that file carry, in 1/M.
 _AWARE_TRUE_KA = 2e6
+
+_DILUTED_DATA = _FIXTURES / 'diluted_shared_ida_data.txt'
+
+#: The conditions ``diluted_shared_ida.json`` was fitted with, as entered.
+_DILUTED_CONDITIONS = {'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'd0': Q_(5e-6, 'M')}
+
+#: The titrant stock that file declares, and the name of the source its two
+#: concentrations share.
+_DILUTED_STOCK = Q_(5e-4, 'M')
+_DILUTED_SHARED = 'Host and dye stock'
+
+#: Ka_guest the data behind that file carry, in 1/M (the ``tests/conftest.py`` IDA truth).
+_DILUTED_TRUE_KA = 2e6
 
 _PR42_DATA = _FIXTURES / 'pr42_data.txt'
 
@@ -363,6 +381,100 @@ def test_a_file_that_reports_no_shifts_for_a_fit_that_made_them_describes_other_
 def test_the_file_survives_being_read_and_written_again():
     """A results file is the record of a fit; importing and exporting it must not edit that record."""
     text = (_FIXTURES / 'input_aware_ida.json').read_text()
+
+    written = json.dumps(FitResult.from_dict(json.loads(text)).to_dict(), indent=2) + '\n'
+
+    assert written == text
+
+
+# ---------------------------------------------------------------------------
+# A fit whose totals were diluted by the titrant, with an error source two inputs share
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope='module')
+def diluted_data() -> MeasurementSet:
+    """The data ``diluted_shared_ida.json`` was made on."""
+    return MeasurementSet.from_dataframe(load_measurements(_DILUTED_DATA), source_file=_DILUTED_DATA.name)
+
+
+def _diluted_score(ms: MeasurementSet, result: FitResult, *, stock) -> tuple[float, float]:
+    """RMSE and R² of *result*'s parameters against the replicates' mean, its inputs where the fit put them.
+
+    Built here from the stored offsets and the entered conditions rather than
+    through the pipeline, and with *stock* as given, so the same call answers
+    both what the file claims and what constant totals would have given.
+    """
+    signal = np.asarray(ms.signals).mean(axis=0)
+    offsets = _fitted_offsets(result)
+    conditions = {key: value * (1.0 + offsets.get(key, 0.0)) for key, value in _DILUTED_CONDITIONS.items()}
+    assay = IDAAssay(
+        x_data=Q_(np.asarray(ms.concentrations), 'M'),
+        y_data=Q_(signal, 'au'),
+        titrant_stock=stock,
+        **conditions,
+    )
+    vector = np.array([result.parameters[k].magnitude for k in _KEYS], dtype=float)
+    return calculate_fit_metrics(signal, assay.forward_model(vector).magnitude)
+
+
+def test_a_diluted_fit_with_a_shared_source_verifies_on_its_own_data(diluted_data):
+    """Its numbers were measured with the totals diluted and the inputs moved, so that is where they hold."""
+    released = _released('diluted_shared_ida')
+
+    status, shown = verify_imported_result(released, diluted_data)
+
+    assert status == 'verified'
+    assert (shown.rmse, shown.r_squared) == (released.rmse, released.r_squared)
+    rmse, r_squared = _diluted_score(diluted_data, shown, stock=_DILUTED_STOCK)
+    assert shown.rmse == pytest.approx(rmse, rel=1e-9)
+    assert shown.r_squared == pytest.approx(r_squared, rel=1e-9)
+    # What the file says about Ka: the interval holds the value the data carry.
+    assert released.intervals['Ka_guest'].low < _DILUTED_TRUE_KA < released.intervals['Ka_guest'].high
+
+
+def test_the_conditions_of_a_diluted_file_rebuild_the_diluted_assay(diluted_data):
+    """The stock travels with the fit, and it is what makes the totals fall along the titration."""
+    released = _released('diluted_shared_ida')
+    assert released.conditions['titrant_stock'] == _DILUTED_STOCK
+    assert released.conditions['stock_contains'] == ()
+
+    assay = diluted_data.to_assay(IDAAssay, conditions=released.conditions, use_average=True)
+    x = assay.x_data.magnitude
+    host = assay.fixed_total('h0', x)
+
+    # Every fixed concentration falls by the fraction of the volume that came
+    # from the stock, down to 1 − max(x)/stock at the last point.
+    assert host[0] == pytest.approx(_DILUTED_CONDITIONS['h0'].magnitude)
+    assert host[-1] / host[0] == pytest.approx(1.0 - x[-1] / _DILUTED_STOCK.magnitude)
+    # Rebuilt without the stock the same parameters describe the data measurably
+    # worse, so the record really is of a diluted fit.
+    diluted_rmse, _ = _diluted_score(diluted_data, released, stock=_DILUTED_STOCK)
+    constant_rmse, _ = _diluted_score(diluted_data, released, stock=None)
+    assert constant_rmse > 10 * diluted_rmse
+
+
+def test_a_shift_of_a_diluted_file_names_the_source_two_of_its_inputs_share(diluted_data):
+    """A shared source is reported under its own key, and the record says which inputs it moved."""
+    released = _released('diluted_shared_ida')
+    key = shared_key(_DILUTED_SHARED)
+
+    assert set(released.input_shifts) == {'h0', key}
+    errors = ErrorModel.from_dict(released.fit_config)
+    assert errors.loaded(key) == ('h0', 'd0')
+    # The dye concentration has no entry of its own, so the shared source is the
+    # only thing that moved it, and the host carries both sources at once.
+    offsets = _fitted_offsets(released)
+    shared = released.input_shifts[key].fraction
+    own = released.input_shifts['h0'].fraction
+    assert offsets['d0'] == pytest.approx(shared)
+    assert offsets['h0'] == pytest.approx((1.0 + own) * (1.0 + shared) - 1.0)
+    assert offsets['h0'] != pytest.approx(own)
+
+
+def test_a_diluted_file_read_and_written_again_is_the_same_record():
+    """The dilution conditions and the shared source survive a round trip unchanged."""
+    text = (_FIXTURES / 'diluted_shared_ida.json').read_text()
 
     written = json.dumps(FitResult.from_dict(json.loads(text)).to_dict(), indent=2) + '\n'
 

@@ -12,7 +12,7 @@ from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
 from core.pipeline.fit_pipeline import FitConfig, fit_assay
-from core.pipeline.inputs import TITRANT, InputSpec
+from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec
 from core.units import Q_
 from tests.conftest import IDA_TRUE, _make_ida_data
 
@@ -295,11 +295,13 @@ class TestInputsTooFreeForTheData:
         """Six points, three parameters and three inputs free within a range leave nothing to judge Ka by."""
         config = FitConfig(
             per_replica=False,
-            input_specs={
-                'h0': InputSpec.interval_pct(-20, 20),
-                'd0': InputSpec.interval_pct(-20, 20),
-                TITRANT: InputSpec.interval_pct(-5, 5),
-            },
+            errors=ErrorModel(
+                specs={
+                    'h0': InputSpec.interval_pct(-20, 20),
+                    'd0': InputSpec.interval_pct(-20, 20),
+                    TITRANT: InputSpec.interval_pct(-5, 5),
+                }
+            ),
             input_labels=self._LABELS,
         )
 
@@ -319,7 +321,7 @@ class TestInputsTooFreeForTheData:
         points had left to judge Ka by.
         """
         specs = {key: InputSpec.sigma_pct(50) for key in ('h0', 'd0', 'Ka_dye', TITRANT)}
-        config = FitConfig(per_replica=False, input_specs=specs, input_labels=self._LABELS)
+        config = FitConfig(per_replica=False, errors=ErrorModel(specs=specs), input_labels=self._LABELS)
 
         with pytest.raises(ValueError, match='too few to fit this model'):
             fit_assay(self._assay(), config)

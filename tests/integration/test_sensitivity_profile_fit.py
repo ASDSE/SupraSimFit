@@ -14,7 +14,7 @@ import pytest
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
-from core.pipeline.inputs import TITRANT, InputSpec
+from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec
 from core.pipeline.sensitivity import SensitivityConfig, SensitivityMode, run_sensitivity
 from core.units import Q_
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
@@ -41,7 +41,7 @@ def _heatmap(specs: dict) -> SensitivityConfig:
     return SensitivityConfig(
         mode=SensitivityMode.HEATMAP,
         n_samples=0,
-        input_specs=specs,
+        errors=ErrorModel(specs=specs),
         seed=1,
         x_key='h0',
         y_key=TITRANT,
@@ -52,7 +52,7 @@ def _heatmap(specs: dict) -> SensitivityConfig:
 def test_the_run_starts_from_the_fit_at_the_inputs_as_entered():
     """Its samples are the offsets from that fit, so the fit itself must hold every input where it was entered."""
     ms = _ida_ms()
-    fit_config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False, input_specs=_SPECS)
+    fit_config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False, errors=ErrorModel(specs=_SPECS))
 
     result = run_sensitivity(ms, IDAAssay, _CONDITIONS, fit_config, _heatmap(_SPECS), max_workers=1)
 
@@ -75,7 +75,7 @@ def test_a_run_is_not_refused_because_the_interval_of_a_fit_would_be():
         'd0': InputSpec.interval_pct(-20, 20),
         TITRANT: InputSpec.interval_pct(-5, 5),
     }
-    fit_config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False, input_specs=specs)
+    fit_config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False, errors=ErrorModel(specs=specs))
 
     with pytest.raises(ValueError, match='too few to fit this model'):
         fit_measurement_set(ms, IDAAssay, _CONDITIONS, fit_config)

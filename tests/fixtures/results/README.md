@@ -93,3 +93,32 @@ from `ida_signal`, written with `write_measurements_txt`, loaded again and
 fitted by `fit_measurement_set` with `[Host]₀` entered as 10.8 µM, the average
 of the replicates and the two uncertainties above; `FitResult.to_dict()` is
 written as JSON with an indent of two.
+
+## A file whose totals were diluted by the titrant, with a shared error source
+
+`diluted_shared_ida.json` is a fit of the average of three replicates of a
+titration whose fixed concentrations fall with every addition of titrant. The
+stock is declared at 0.5 mM against a highest titrant concentration of 50 µM, so
+the host and the dye are down to 90 % of their entered values at the last point,
+and the stock holds neither of them. `[Host]₀` carries an uncertainty of its own
+(σ 3 %) and one source named *Host and dye stock* (σ 4 %) moves `[Host]₀` and
+`[Dye]₀` together, so the file's `fit_config` carries a `shared_sources` entry
+and its `input_shifts` report the shared source under its own key beside the
+host's own shift. The reported interval holds the 2 MM⁻¹ the data carry.
+
+An import rebuilds the diluted assay from the file's own `titrant_stock` and
+`stock_contains` conditions and scores the reported parameters where the fit put
+the inputs, so the file verifies; scored with the totals held constant instead,
+the same parameters miss the data by an order of magnitude more.
+
+`diluted_shared_ida_data.txt` beside it holds the data: a synthetic IDA
+titration of 20 guest concentrations up to 50 µM into `[Host]₀` = 10 µM and
+`[Dye]₀` = 5 µM diluted as above, with `Ka_dye` = 0.5 MM⁻¹, a true `Ka_guest` of
+2 MM⁻¹, signal coefficients `I0` = 0, `I_dye_free` = 5·10⁷ au/M and
+`I_dye_bound` = 3·10⁸ au/M (the `tests/conftest.py` IDA ground truth), and three
+replicates carrying 1 % proportional Gaussian noise (NumPy seed 20260922). The
+signals are generated from `IDAAssay.forward_model` with the stock declared,
+written with `write_measurements_txt`, loaded again and fitted by
+`fit_measurement_set` with the entered conditions above, the stock, the two
+error sources and the average of the replicates; `FitResult.to_dict()` is
+written as JSON with an indent of two.

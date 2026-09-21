@@ -48,14 +48,14 @@ from core.pipeline.input_aware import (
     input_aware,
     input_shifts,
 )
-from core.pipeline.inputs import TITRANT, InputSpec, constraints, specs_to_dict
+from core.pipeline.inputs import TITRANT, ErrorModel, constraints
 from core.pipeline.varpro import (
-    _LOG_KA_XTOL,
     LEVEL,
     FitRefused,
     KaInterval,
     ProjectedFit,
     Projection,
+    on_ka_bound,
     replicate_outliers,
 )
 from core.units import Q_, Quantity
@@ -200,9 +200,11 @@ class FitResult:
         an uncertainty the fit above is that fit: same numbers, and the very
         same :class:`~core.pipeline.varpro.KaInterval` objects.
     input_shifts : dict[str, InputShift]
-        Where the fit put every input that was free to move, as a fraction of
-        its entered value and in units of the uncertainty stated for it. Empty
-        when no input was free to move, which is also what says that the
+        Where the fit put every error source that was free to move, by source
+        key (an input's own key, or
+        :func:`~core.pipeline.inputs.shared_key` of a shared source): as a
+        fraction of the entered value and in units of the uncertainty stated
+        for it. Empty when nothing was free to move, which is also what says that the
         headline above is the conditional fit.
     diagnostics : FitDiagnostics | None
         What the misfit tests and the conflict statistic say about the model
@@ -396,7 +398,11 @@ def _common_fields(d: Dict[str, Any]) -> Dict[str, Any]:
                     f"FitResult.from_dict: no unit for condition '{k}' "
                     f'(assay_type={d.get("assay_type")!r}), so it cannot be loaded without corrupting units.'
                 )
-        conditions[k] = Q_(v, unit) if unit is not None else v
+        if unit is not None:
+            conditions[k] = Q_(v, unit)
+        else:
+            # JSON has no tuple: a condition that lists keys (``stock_contains``) is held as one.
+            conditions[k] = tuple(v) if isinstance(v, list) else v
 
     return dict(
         parameters={k: Q_(v, _unit_for(k)) for k, v in d['parameters'].items()},
@@ -424,10 +430,11 @@ class FitConfig:
 
     ``custom_bounds`` overrides the registry's default bounds per parameter;
     ``per_replica`` decides whether the replicates are fitted and tested
-    individually beside the fit of their average; ``input_specs`` states how
-    well each entered input is known (:mod:`core.pipeline.inputs`). An input
-    with no spec is taken as exact, and with no spec at all the reported
-    interval is the one conditional on every entered input.
+    individually beside the fit of their average; ``errors`` states how well
+    the entered inputs are known (:class:`core.pipeline.inputs.ErrorModel`), of
+    which a fit reads ``errors.for_fit()``. An input no source moves is taken
+    as exact, and with no source at all the reported interval is the one
+    conditional on every entered input.
 
     ``input_labels`` is how the interface writes each input's name. A fit that
     cannot be made with the inputs as free as they were stated to be says so by
@@ -437,7 +444,7 @@ class FitConfig:
 
     custom_bounds: Optional[Dict[str, Tuple[Quantity, Quantity]]] = None
     per_replica: bool = True
-    input_specs: Dict[str, InputSpec] = field(default_factory=dict)
+    errors: ErrorModel = field(default_factory=ErrorModel)
     input_labels: Dict[str, str] = field(default_factory=dict)
 
 
@@ -465,7 +472,7 @@ def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
         # The on-disk key of the per-replicate mode in exported results files.
         'per_replicate': False,
         'level': LEVEL,
-        'input_uncertainty': specs_to_dict(config.input_specs),
+        **config.errors.for_fit().to_dict(),
     }
 
 
@@ -527,8 +534,8 @@ def fit_view(
     params : np.ndarray
         Parameter vector in ``assay.parameter_keys`` order.
     offsets : Mapping[str, float], optional
-        Where a fit put the entered inputs, as a fraction of each
-        (:func:`~core.pipeline.input_aware.input_shifts`). The model is then
+        Where a fit put the entered inputs, as a fraction of each and by input
+        key (``AwareFit.input_offsets``). The model is then
         evaluated on the moved inputs, the titrant included, while the curve
         stays drawn against the concentrations as entered — the axis the
         measured points sit on.
@@ -810,8 +817,9 @@ def fit_assay(
     interval of every binding constant it was free to move are the result's
     :attr:`~FitResult.conditional` fit.
 
-    An input ``config.input_specs`` gives an uncertainty is then free to move
-    within it while each binding constant is profiled again
+    An input ``config.errors`` gives an uncertainty, its own or one it shares
+    with other inputs, is then free to move within it while each binding
+    constant is profiled again
     (:func:`~core.pipeline.input_aware.input_aware`): what comes back is the
     reported fit and the reported interval, which answers what the data say
     about Ka when the inputs are known no better than stated. With no such
@@ -870,12 +878,20 @@ def fit_assay(
         r_squared=r_squared,
     )
 
-    free_inputs = constraints(config.input_specs, assay.get_conditions(), config.input_labels)
-    aware = input_aware(projection, fit, free_inputs, should_cancel=should_cancel, conditional=intervals)
+    errors = config.errors.for_fit()
+    free_inputs = constraints(errors, assay.get_conditions(), config.input_labels)
+    aware = input_aware(
+        projection,
+        fit,
+        free_inputs,
+        loading=errors.input_offsets if errors.shared else None,
+        should_cancel=should_cancel,
+        conditional=intervals,
+    )
     shifts = input_shifts(aware)
     if shifts:
         params = _aware_params(projection, aware.fit)
-        rmse, r_squared, x_fit, y_fit = fit_view(assay, params, aware.fit.offsets)
+        rmse, r_squared, x_fit, y_fit = fit_view(assay, params, aware.fit.input_offsets)
         # The profiles carry the same interval objects as ``conditional`` where
         # nothing moved, so an unchanged interval stays the one object.
         intervals = {key: profile.interval for key, profile in aware.profiles.items()}
@@ -954,7 +970,7 @@ def _misfit(
     parameters the fit moved; the runs test takes its own reference from the
     Jacobian of those same parameters (:func:`fit_jacobian`).
     """
-    residual = projection.residual(aware.fit.ka, 0, aware.fit.offsets)
+    residual = projection.residual(aware.fit.ka, 0, aware.fit.input_offsets)
     if replicate_signals is not None and np.shape(replicate_signals)[0] >= 2:
         fitted = projection.signals[0] - residual
         return lack_of_fit(replicate_signals, fitted, _fitted_params(projection, aware))
@@ -969,8 +985,7 @@ def _fitted_params(projection: Projection, aware: AwareResult) -> int:
     Three groups, each counted only where the fit was free to place it:
 
     - the binding constants the search was free to move whose estimate lies
-      strictly inside its bounds, read on the log10 axis the search works on
-      and at its own resolution ``_LOG_KA_XTOL``;
+      strictly inside its bounds (:func:`~core.pipeline.varpro.on_ka_bound`);
     - the rank of the signal columns whose coefficient the bounded solve left
       inside its bounds (:meth:`Projection.fitted_rank`);
     - the inputs stated as a range that the fit left off the ends of theirs
@@ -986,14 +1001,9 @@ def _fitted_params(projection: Projection, aware: AwareResult) -> int:
     [0.078, 0.110] with both.
     """
     fit = aware.fit
-    free_ka = 0
-    for key in projection.free_ka:
-        low, high = (math.log10(bound) for bound in projection.ka_bounds[key])
-        estimate = math.log10(fit.ka[key])
-        if min(estimate - low, high - estimate) > _LOG_KA_XTOL:
-            free_ka += 1
+    free_ka = sum(not on_ka_bound(fit.ka[key], projection.ka_bounds[key]) for key in projection.free_ka)
     ranges = sum(1 for c in aware.constraints if c.sigma is None and not at_edge(c, fit.offsets[c.key]))
-    return free_ka + projection.fitted_rank(fit.ka, fit.offsets) + ranges
+    return free_ka + projection.fitted_rank(fit.ka, fit.input_offsets) + ranges
 
 
 def fit_linear_assay(
@@ -1475,8 +1485,13 @@ def _rescore_with_present_arithmetic(
 
 
 def _fitted_offsets(result: FitResult) -> Dict[str, float]:
-    """Where *result* put each input it was free to move, as a fraction of the entered value."""
-    return {key: shift.fraction for key, shift in result.input_shifts.items()}
+    """Where *result* put each input its fit moved, as a fraction of the entered value.
+
+    ``input_shifts`` holds the offset of every error source; the error model
+    the fit recorded turns them into the offsets of the inputs.
+    """
+    fractions = {key: shift.fraction for key, shift in result.input_shifts.items()}
+    return ErrorModel.from_dict(result.fit_config).input_offsets(fractions)
 
 
 def _present_numbers(result: FitResult, assay: BaseAssay) -> Tuple[FitResult, bool]:

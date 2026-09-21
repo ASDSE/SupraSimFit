@@ -54,14 +54,14 @@ def batch():
     """Everything :func:`~core.pipeline.sensitivity._evaluate_batch` needs, with real offsets to fit."""
     x, y = _make_ida_data(IDA_TRUE, n_points=20)
     ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
-    offsets = [{TITRANT: 0.001 * (index % 11 - 5)} for index in range(_N_JOBS)]
+    perturbations = [({TITRANT: 0.001 * (index % 11 - 5)}, None) for index in range(_N_JOBS)]
     return {
         'ms': ms,
         'assay_cls': IDAAssay,
         'x_base': np.asarray(ms.concentrations),
         'base_conditions': dict(_CONDITIONS),
         'fit_config': FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS),
-        'offsets_list': offsets,
+        'perturbations': perturbations,
     }
 
 
@@ -73,7 +73,8 @@ def _evaluate(batch, *, on_result, should_cancel, max_workers=2):
         batch['x_base'],
         batch['base_conditions'],
         batch['fit_config'],
-        batch['offsets_list'],
+        batch['perturbations'],
+        sequential=False,
         max_workers=max_workers,
         on_result=on_result,
         should_cancel=should_cancel,
@@ -106,7 +107,7 @@ def test_a_stop_is_answered_while_the_pool_is_still_starting(batch):
     start-up, which is the slowest a stop can ever be: the queue is at its
     longest and no worker has produced anything yet.
     """
-    batch['offsets_list'] = [{TITRANT: 0.001 * (index % 11 - 5)} for index in range(_N_STOP_JOBS)]
+    batch['perturbations'] = [({TITRANT: 0.001 * (index % 11 - 5)}, None) for index in range(_N_STOP_JOBS)]
     finished: list[object] = []
     fits_at_each_ask: list[int] = []
     requested_at: list[float] = []
@@ -146,8 +147,8 @@ def test_a_job_that_fails_outright_stops_the_batch_at_once_in_plain_words(batch,
     failure has to say the same thing there: what the user is told cannot
     depend on how many cores the machine has or how many cells the grid holds.
     """
-    batch['offsets_list'] = batch['offsets_list'][:n_jobs]
-    batch['offsets_list'][0] = {TITRANT: 'not a number'}
+    batch['perturbations'] = batch['perturbations'][:n_jobs]
+    batch['perturbations'][0] = ({TITRANT: 'not a number'}, None)
     finished: list[object] = []
 
     with pytest.raises(RuntimeError, match='could not be completed') as raised:

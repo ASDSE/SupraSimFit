@@ -48,7 +48,7 @@ from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline import profile as profile_module
 from core.pipeline import varpro
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_assay, fit_measurement_set
-from core.pipeline.inputs import TITRANT, InputSpec
+from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec
 from core.pipeline.profile import JointRegion, fit_profile
 from core.pipeline.varpro import FitCancelled, Projection
 from core.units import Q_
@@ -731,7 +731,7 @@ def uncertain_ida():
     """A 12-point IDA titration, its fit with two inputs free to move, and the profiles of that fit."""
     x, y = _make_ida_data(IDA_TRUE, n_points=12)
     ms = _single(x, _homoscedastic(y, 0.005, 4))
-    config = FitConfig(per_replica=False, input_specs=_UNCERTAIN_INPUTS)
+    config = FitConfig(per_replica=False, errors=ErrorModel(specs=_UNCERTAIN_INPUTS))
     assay = ms.to_assay(IDAAssay, conditions=_IDA_CONDITIONS, use_average=True)
     result = fit_assay(assay, config)
     return ms, config, result

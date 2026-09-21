@@ -22,7 +22,7 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.models.equilibrium import dba_signal, ida_signal
 from core.pipeline.diagnostics import Verdict, runs_test, verdict
 from core.pipeline.input_aware import conflict, fit_jacobian, input_aware
-from core.pipeline.inputs import TITRANT, InputSpec, constraints
+from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec, constraints
 from core.pipeline.varpro import Projection
 from core.units import Q_
 from tests.conftest import DBA_TRUE, IDA_TRUE
@@ -91,7 +91,7 @@ def analyse(name: str, seed: int, entry_error: float = 1.0) -> tuple[bool, bool,
     key = case['ka_key']
     conditional = projection.interval(key, fit)
     specs = {k: InputSpec.sigma_pct(100 * s) for k, s in case['sigmas'].items()}
-    result = input_aware(projection, fit, constraints(specs, assay.get_conditions()))
+    result = input_aware(projection, fit, constraints(ErrorModel(specs=specs), assay.get_conditions()))
     aware = result.profiles[key].interval
     x = assay.x_data.magnitude
     found = verdict(

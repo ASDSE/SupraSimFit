@@ -45,6 +45,11 @@ class DyeAloneAssay(BaseAssay):
     assay_type: AssayType = field(init=False, default=AssayType.DYE_ALONE)
     model_name: ClassVar[str] = 'linear'
 
+    def __post_init__(self):
+        """Validate the data; a calibration has no concentration a titration could dilute."""
+        super().__post_init__()
+        self._check_dilution()
+
     def forward_model(self, params: np.ndarray) -> Quantity:
         """Compute predicted signal from parameters.
 

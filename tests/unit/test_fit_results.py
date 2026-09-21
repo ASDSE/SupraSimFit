@@ -16,7 +16,7 @@ from core.pipeline.fit_pipeline import (
     _config_to_dict,
     summarize_parameters,
 )
-from core.pipeline.inputs import TITRANT, InputSpec
+from core.pipeline.inputs import TITRANT, AdditionError, ErrorModel, InputSpec, SharedSource, specs_to_dict
 from core.pipeline.varpro import LEVEL, KaInterval
 from core.units import Q_, Quantity
 
@@ -76,7 +76,10 @@ def _with_moved_inputs(**overrides) -> FitResult:
         parameters={**_sample_fit_result().parameters, 'Ka_guest': Q_(1.2e6, '1/M')},
         intervals={'Ka_guest': _interval(1.0e6, 1.45e6, dof=25.4)},
         fit_config=_config_to_dict(
-            FitConfig(per_replica=False, input_specs={'h0': InputSpec.sigma_pct(10), TITRANT: InputSpec.sigma_pct(3)})
+            FitConfig(
+                per_replica=False,
+                errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(10), TITRANT: InputSpec.sigma_pct(3)}),
+            )
         ),
         conditional=conditional,
         input_shifts={
@@ -233,6 +236,32 @@ class TestSerialization:
         assert restored.input_shifts == {}
         assert restored.diagnostics is None
         assert restored.intervals == _sample_fit_result().intervals
+
+    def test_a_condition_that_lists_keys_comes_back_from_json_as_the_tuple_it_was(self):
+        """JSON has no tuple; the assay holds ``stock_contains`` as one, and a comparison of conditions needs it back."""
+        conditions = {
+            **_sample_fit_result().conditions,
+            'titrant_stock': Q_(1e-3, 'M'),
+            'stock_contains': ('h0',),
+        }
+        written = json.loads(json.dumps(_sample_fit_result(conditions=conditions).to_dict()))
+        assert written['conditions']['stock_contains'] == ['h0']
+        restored = FitResult.from_dict(written).conditions
+        assert restored['stock_contains'] == ('h0',) and isinstance(restored['stock_contains'], tuple)
+        assert restored['titrant_stock'].to('M').magnitude == pytest.approx(1e-3)
+        assert restored == conditions
+
+    def test_a_fit_without_shared_sources_records_the_entries_it_always_has(self):
+        """``shared_sources`` and ``titrant_additions`` appear only when stated, and the additions never in a fit's record."""
+        specs = {'h0': InputSpec.sigma_pct(10)}
+        plain = _config_to_dict(FitConfig(errors=ErrorModel(specs=specs, additions=AdditionError(1.0, True))))
+        assert list(plain) == ['custom_bounds', 'per_replicate', 'level', 'input_uncertainty']
+        assert plain['input_uncertainty'] == specs_to_dict(specs)
+
+        shared = SharedSource('Stock', 4.0, ('h0', 'g0'))
+        with_shared = _config_to_dict(FitConfig(errors=ErrorModel(specs=specs, shared=(shared,))))
+        assert list(with_shared) == [*plain, 'shared_sources']
+        assert ErrorModel.from_dict(json.loads(json.dumps(with_shared))) == ErrorModel(specs=specs, shared=(shared,))
 
     def test_from_dict_missing_optional_fields(self):
         """A file holding only what a fit must have loads, with no interval."""

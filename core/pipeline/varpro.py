@@ -199,6 +199,27 @@ def projectable(assay_type: AssayType) -> bool:
     return n_ka in (1, 2) and others_linear
 
 
+def on_ka_bound(ka: float, bounds: tuple[float, float]) -> bool:
+    """Whether a fitted binding constant rests on a bound of its box instead of inside it.
+
+    The search works on log10(Ka) and resolves it to ``_LOG_KA_XTOL``, so an
+    estimate within that of either end is one it could not move off: the data do
+    not limit Ka on that side and the fit reports the bound. The single reading
+    of "on its bound", wherever a fit is asked whether it ran to the edge of the
+    box — a parameter held there is not one the residual paid for.
+
+    Parameters
+    ----------
+    ka : float
+        The fitted constant, in the unit *bounds* is given in.
+    bounds : tuple[float, float]
+        The lower and the upper bound of the Ka box, both positive.
+    """
+    low, high = np.log10(bounds)
+    estimate = np.log10(ka)
+    return not min(estimate - low, high - estimate) > _LOG_KA_XTOL
+
+
 @dataclass(frozen=True)
 class KaInterval:
     """Profile-likelihood confidence interval of one binding constant.

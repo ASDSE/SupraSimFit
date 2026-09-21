@@ -178,7 +178,7 @@ def _positive_root(a: float, b: float, total: float, sqrt_disc: float) -> float:
 def dba_species(
     Ka_dye: float,
     x_titrant: np.ndarray,
-    y_fixed: float,
+    y_fixed: float | np.ndarray,
     *,
     mode: str,
 ) -> dict:
@@ -214,8 +214,11 @@ def dba_species(
         Association constant for host-dye binding (M⁻¹).
     x_titrant : np.ndarray
         Titrant concentrations (M) — host for ``HtoD``, dye for ``DtoH``.
-    y_fixed : float
-        Fixed component concentration (M) — dye for ``HtoD``, host for ``DtoH``.
+    y_fixed : float or np.ndarray
+        Fixed component concentration (M) — dye for ``HtoD``, host for
+        ``DtoH``.  A scalar is the same total at every point; an array
+        broadcast against ``x_titrant`` gives each point its own total, which
+        is what a titration that dilutes its sample has.
     mode : str
         ``"HtoD"`` (host titrated into fixed dye) or ``"DtoH"`` (dye titrated
         into fixed host), keyword-only.
@@ -223,26 +226,26 @@ def dba_species(
     Returns
     -------
     dict
-        ``{'H', 'D', 'HD'}`` → arrays of concentrations (M), same shape as
-        ``x_titrant``.  A point is NaN where ``Ka_dye`` or a total is negative
-        or non-finite.
+        ``{'H', 'D', 'HD'}`` → arrays of concentrations (M), of the shape
+        ``x_titrant`` and ``y_fixed`` broadcast to.  A point is NaN where
+        ``Ka_dye`` or one of its own totals is negative or non-finite.
     """
     if mode not in ('HtoD', 'DtoH'):
         raise ValueError(f"mode must be 'HtoD' or 'DtoH', got {mode!r}")
 
-    x_titrant = np.asarray(x_titrant, dtype=float)
-    H = np.full_like(x_titrant, np.nan)
-    D = np.full_like(x_titrant, np.nan)
-    HD = np.full_like(x_titrant, np.nan)
+    x_titrant, y_values = np.broadcast_arrays(np.asarray(x_titrant, dtype=float), np.asarray(y_fixed, dtype=float))
+    H = np.full(x_titrant.shape, np.nan)
+    D = np.full(x_titrant.shape, np.nan)
+    HD = np.full(x_titrant.shape, np.nan)
     # Python floats: the same IEEE arithmetic as numpy scalars at a third of the cost.
-    Ka_dye, y_fixed = float(Ka_dye), float(y_fixed)
-    if not _all_valid(Ka_dye, y_fixed):
+    Ka_dye = float(Ka_dye)
+    if not _all_valid(Ka_dye):
         return {'H': H, 'D': D, 'HD': HD}
-    two_sqrt_ay = 2.0 * math.sqrt(Ka_dye * y_fixed)
 
-    for i, x in enumerate(x_titrant.tolist()):
-        if not _all_valid(x):
+    for i, (x, y_fixed) in enumerate(zip(x_titrant.tolist(), y_values.tolist())):
+        if not _all_valid(x, y_fixed):
             continue
+        two_sqrt_ay = 2.0 * math.sqrt(Ka_dye * y_fixed)
         # Quadratic for y_free (free concentration of the fixed species),
         #   Ka_dye * y_free^2 + (Ka_dye * delta + 1) * y_free - y_fixed = 0,
         # and, with the two species exchanged, for x_free.  Both share the
@@ -275,7 +278,7 @@ def dba_signal(
     I_dye_free: float,
     I_dye_bound: float,
     x_titrant: np.ndarray,
-    y_fixed: float,
+    y_fixed: float | np.ndarray,
     *,
     mode: str,
 ) -> np.ndarray:
@@ -299,8 +302,9 @@ def dba_signal(
         Signal coefficients for free dye and the host-dye complex.
     x_titrant : np.ndarray
         Titrant concentrations (M) — host for ``HtoD``, dye for ``DtoH``.
-    y_fixed : float
-        Fixed component concentration (M) — dye for ``HtoD``, host for ``DtoH``.
+    y_fixed : float or np.ndarray
+        Fixed component concentration (M) — dye for ``HtoD``, host for
+        ``DtoH``; one value, or one per titration point.
     mode : str
         ``"HtoD"`` or ``"DtoH"`` (keyword-only).
 
@@ -488,32 +492,41 @@ def competitive_species_point(
 def _competitive_species_grid(Ka_guest, Ka_dye, h0, d0_values, g0_values) -> dict:
     """Speciation across a titration for the competitive model.
 
-    Exactly one of ``d0_values`` / ``g0_values`` is the titrant array; the other
-    is a scalar broadcast to every point.  GDA (dye titrant) and IDA (guest
-    titrant) both route through here so they share the per-point solve.
+    One of ``d0_values`` / ``g0_values`` is the titrant array.  Every other
+    total is either a scalar, the same at each point, or an array of one total
+    per point, which is what a titration that dilutes its sample has; the three
+    are broadcast against one another and solved point by point.  GDA (dye
+    titrant) and IDA (guest titrant) both route through here so they share the
+    per-point solve.
     """
+    h0_values = np.atleast_1d(np.asarray(h0, dtype=float))
     d0_values = np.atleast_1d(np.asarray(d0_values, dtype=float))
     g0_values = np.atleast_1d(np.asarray(g0_values, dtype=float))
-    d0_values, g0_values = np.broadcast_arrays(d0_values, g0_values)
+    h0_values, d0_values, g0_values = np.broadcast_arrays(h0_values, d0_values, g0_values)
     h_free = np.array(
-        [_competitive_free_host(Ka_guest, Ka_dye, h0, d0, g0) for d0, g0 in zip(d0_values.tolist(), g0_values.tolist())]
+        [
+            _competitive_free_host(Ka_guest, Ka_dye, h0_i, d0, g0)
+            for h0_i, d0, g0 in zip(h0_values.tolist(), d0_values.tolist(), g0_values.tolist())
+        ]
     )
     return _competitive_speciation(h_free, float(Ka_guest), float(Ka_dye), d0_values, g0_values)
 
 
 def gda_species(Ka_guest, Ka_dye, h0, d0_values, g0) -> dict:
-    """Competitive speciation for GDA (dye titrated, guest fixed).
+    """Competitive speciation for GDA (dye titrated, host and guest fixed).
 
-    Returns ``{'H','D','G','HD','HG'}`` arrays over ``d0_values`` (M).  See
+    Returns ``{'H','D','G','HD','HG'}`` arrays over ``d0_values`` (M).  ``h0``
+    and ``g0`` are one value each, or one per titration point.  See
     :func:`competitive_species_point`.
     """
     return _competitive_species_grid(Ka_guest, Ka_dye, h0, d0_values, g0)
 
 
 def ida_species(Ka_guest, Ka_dye, h0, d0, g0_values) -> dict:
-    """Competitive speciation for IDA (guest titrated, dye fixed).
+    """Competitive speciation for IDA (guest titrated, host and dye fixed).
 
-    Returns ``{'H','D','G','HD','HG'}`` arrays over ``g0_values`` (M).  See
+    Returns ``{'H','D','G','HD','HG'}`` arrays over ``g0_values`` (M).  ``h0``
+    and ``d0`` are one value each, or one per titration point.  See
     :func:`competitive_species_point`.
     """
     return _competitive_species_grid(Ka_guest, Ka_dye, h0, d0, g0_values)
@@ -564,9 +577,9 @@ def gda_signal(
     I_dye_free: float,
     I_dye_bound: float,
     Ka_dye: float,
-    h0: float,
+    h0: float | np.ndarray,
     d0_values: np.ndarray,
-    g0: float,
+    g0: float | np.ndarray,
 ) -> np.ndarray:
     """Compute GDA signal across dye concentration range.
 
@@ -589,12 +602,12 @@ def gda_signal(
         Signal coefficient for host-dye complex.
     Ka_dye : float
         Known association constant for host-dye (M^-1).
-    h0 : float
-        Total host concentration (M).
+    h0 : float or np.ndarray
+        Total host concentration (M) - fixed; one value, or one per point.
     d0_values : np.ndarray
         Dye concentrations (M) - the independent variable (titrant).
-    g0 : float
-        Total guest concentration (M) - fixed.
+    g0 : float or np.ndarray
+        Total guest concentration (M) - fixed; one value, or one per point.
 
     Returns
     -------
@@ -611,8 +624,8 @@ def ida_signal(
     I_dye_free: float,
     I_dye_bound: float,
     Ka_dye: float,
-    h0: float,
-    d0: float,
+    h0: float | np.ndarray,
+    d0: float | np.ndarray,
     g0_values: np.ndarray,
 ) -> np.ndarray:
     """Compute IDA signal across guest concentration range.
@@ -636,10 +649,10 @@ def ida_signal(
         Signal coefficient for host-dye complex.
     Ka_dye : float
         Known association constant for host-dye (M^-1).
-    h0 : float
-        Total host concentration (M).
-    d0 : float
-        Total dye concentration (M) - fixed.
+    h0 : float or np.ndarray
+        Total host concentration (M) - fixed; one value, or one per point.
+    d0 : float or np.ndarray
+        Total dye concentration (M) - fixed; one value, or one per point.
     g0_values : np.ndarray
         Guest concentrations (M) - the independent variable (titrant).
 
@@ -805,8 +818,9 @@ def _legacy_free_ligand_12(K1: float, K2: float, core_total: float, ligand_total
 def _stepwise_species(K1: float, K2: float, core_total, ligand_total) -> tuple:
     """Free ligand, free core, CL and CL₂ (arrays, M) across a titration of a stepwise 1:2 system.
 
-    One of the totals is the titrant array, the other a scalar broadcast to
-    every point.  The free ligand comes from :func:`_solve_free_ligand_12` per
+    One of the totals is the titrant array; the other is a scalar, the same at
+    every point, or an array of one total per point, which is what a titration
+    that dilutes its sample has.  The free ligand comes from :func:`_solve_free_ligand_12` per
     point; the fractions of the core are formed as they are there
     (``a = K1·l``, ``b = (K1·l)·(K2·l)``), by products and quotients only.  Each
     complex is the core total times its fraction ``a/D`` or ``b/D``, so a free
@@ -827,7 +841,7 @@ def _stepwise_species(K1: float, K2: float, core_total, ligand_total) -> tuple:
 def hg2_species(
     Ka_HG: float,
     Ka_HG2: float,
-    h0: float,
+    h0: float | np.ndarray,
     g0_values: np.ndarray,
 ) -> dict:
     """Equilibrium speciation for stepwise 1:2 host–guest binding.
@@ -851,16 +865,16 @@ def hg2_species(
     ----------
     Ka_HG, Ka_HG2 : float
         Stepwise association constants (M⁻¹).
-    h0 : float
-        Total (fixed) host concentration (M).
+    h0 : float or np.ndarray
+        Total (fixed) host concentration (M); one value, or one per point.
     g0_values : np.ndarray
         Total guest concentrations (M) — the titrant.
 
     Returns
     -------
     dict
-        ``{'H', 'G', 'HG', 'HG2'}`` → arrays of concentrations (M), same
-        shape as ``g0_values``.  A point is NaN where a constant or total is
+        ``{'H', 'G', 'HG', 'HG2'}`` → arrays of concentrations (M), of the
+        shape ``h0`` and ``g0_values`` broadcast to.  A point is NaN where a constant or total is
         negative or non-finite, or ``Ka_HG·Ka_HG2·[G]²`` exceeds a double.
     """
     G, H, HG, HG2 = _stepwise_species(Ka_HG, Ka_HG2, h0, g0_values)
@@ -875,7 +889,7 @@ def hg2_signal(
     I_H: float,
     I_HG: float,
     I_HG2: float,
-    h0: float,
+    h0: float | np.ndarray,
     g0_values: np.ndarray,
 ) -> np.ndarray:
     """Compute the signal for stepwise 1:2 host–guest binding (HG, HG₂).
@@ -896,8 +910,8 @@ def hg2_signal(
         Stepwise association constants (M⁻¹).
     I_G, I_H, I_HG, I_HG2 : float
         Signal coefficients for free guest, free host, HG and HG₂.
-    h0 : float
-        Total (fixed) host concentration (M).
+    h0 : float or np.ndarray
+        Total (fixed) host concentration (M); one value, or one per point.
     g0_values : np.ndarray
         Total guest concentrations (M) — the titrant.
 
@@ -913,7 +927,7 @@ def hg2_signal(
 def h2g_species(
     Ka_HG: float,
     Ka_H2G: float,
-    h0: float,
+    h0: float | np.ndarray,
     g0_values: np.ndarray,
 ) -> dict:
     """Equilibrium speciation for stepwise 2:1 host–guest binding.
@@ -934,16 +948,16 @@ def h2g_species(
     ----------
     Ka_HG, Ka_H2G : float
         Stepwise association constants (M⁻¹).
-    h0 : float
-        Total (fixed) host concentration (M).
+    h0 : float or np.ndarray
+        Total (fixed) host concentration (M); one value, or one per point.
     g0_values : np.ndarray
         Total guest concentrations (M) — the titrant.
 
     Returns
     -------
     dict
-        ``{'H', 'G', 'HG', 'H2G'}`` → arrays of concentrations (M), same
-        shape as ``g0_values``.  A point is NaN where a constant or total is
+        ``{'H', 'G', 'HG', 'H2G'}`` → arrays of concentrations (M), of the
+        shape ``h0`` and ``g0_values`` broadcast to.  A point is NaN where a constant or total is
         negative or non-finite, or ``Ka_HG·Ka_H2G·[H]²`` exceeds a double.
     """
     H, G, HG, H2G = _stepwise_species(Ka_HG, Ka_H2G, g0_values, h0)
@@ -958,7 +972,7 @@ def h2g_signal(
     I_H: float,
     I_HG: float,
     I_H2G: float,
-    h0: float,
+    h0: float | np.ndarray,
     g0_values: np.ndarray,
 ) -> np.ndarray:
     """Compute the signal for stepwise 2:1 host–guest binding (HG, H₂G).
@@ -979,8 +993,8 @@ def h2g_signal(
         Stepwise association constants (M⁻¹).
     I_G, I_H, I_HG, I_H2G : float
         Signal coefficients for free guest, free host, HG and H₂G.
-    h0 : float
-        Total (fixed) host concentration (M).
+    h0 : float or np.ndarray
+        Total (fixed) host concentration (M); one value, or one per point.
     g0_values : np.ndarray
         Total guest concentrations (M) — the titrant.
 

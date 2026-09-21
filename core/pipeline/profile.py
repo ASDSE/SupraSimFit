@@ -282,7 +282,7 @@ def fit_profile(
         *level* on these data with this configuration. They are carried
         through as they are, which is what makes the tab show the fit's own
         interval; left out, they are computed here whenever
-        ``fit_config.input_specs`` lets an input move.
+        ``fit_config.errors`` lets an input move.
 
     Returns
     -------
@@ -309,11 +309,13 @@ def fit_profile(
     threshold = projection.threshold(fit, level)
     intervals = {key: projection.interval(key, fit, level) for key in projection.ka_keys}
     ss_tot = float(projection.ss_tot[0])
-    if aware is None and fit_config.input_specs:
+    errors = fit_config.errors.for_fit()
+    if aware is None and (errors.specs or errors.shared):
         aware = input_aware(
             projection,
             fit,
-            constraints(fit_config.input_specs, assay.get_conditions(), fit_config.input_labels),
+            constraints(errors, assay.get_conditions(), fit_config.input_labels),
+            loading=errors.input_offsets if errors.shared else None,
             level=level,
             should_cancel=should_cancel,
             conditional={k: ci for k, ci in intervals.items() if ci is not None},

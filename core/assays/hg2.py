@@ -60,6 +60,8 @@ class HG2Assay(BaseAssay):
         if self.h0.magnitude <= 0:
             raise ValueError('h0 must be positive')
 
+        self._check_dilution()
+
     def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
@@ -85,7 +87,7 @@ class HG2Assay(BaseAssay):
             I_H=I_H,
             I_HG=I_HG,
             I_HG2=I_HG2,
-            h0=self.h0.magnitude,
+            h0=self.fixed_total('h0', xx),
             g0_values=xx,
         )
         return Q_(result, 'au')
@@ -93,7 +95,8 @@ class HG2Assay(BaseAssay):
     def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
         """Free host, guest, HG and HG2 complexes (M) across the guest titration."""
         Ka_HG, Ka_HG2 = params[0], params[1]
-        return hg2_species(Ka_HG, Ka_HG2, self.h0.magnitude, self.x_data.magnitude)
+        x = self.x_data.magnitude
+        return hg2_species(Ka_HG, Ka_HG2, self.fixed_total('h0', x), x)
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.
@@ -101,6 +104,7 @@ class HG2Assay(BaseAssay):
         Returns
         -------
         Dict[str, Any]
-            ``{'h0': ...}``
+            ``{'h0': ...}``, and the two dilution conditions when a titrant
+            stock is declared.
         """
-        return {'h0': self.h0}
+        return {'h0': self.h0, **self.dilution_conditions()}

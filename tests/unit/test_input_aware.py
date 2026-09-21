@@ -14,7 +14,9 @@ states for them, and the interval of Ka is cut from the penalised profile
   and the cut-off of a profile point counts the signal parameters its own
   solution holds on a bound;
 - a repeat is bit-identical and an edge does not depend on the side root
-  finding walks the bracket from;
+  finding walks the bracket from; a loading that hands the offsets through is
+  the fit without one, bit for bit, and a shared source moves every input it
+  loads by the product of their sources, against the independent objective;
 - a planted entry error is recovered as a shift of that input, the truth lies
   inside the input-aware interval and outside the fixed-input one; an input
   stated as a range stays inside it and is reported on its edge when the truth
@@ -42,7 +44,7 @@ from core.pipeline.input_aware import (
     input_shifts,
     penalised_objective,
 )
-from core.pipeline.inputs import TITRANT, InputSpec, constraints
+from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec, SharedSource, constraints, shared_key
 from core.pipeline.varpro import LEVEL, FitCancelled, FitRefused, Projection
 from core.units import Q_
 from tests.conftest import DBA_TRUE, GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
@@ -70,7 +72,9 @@ def _ida(n: int, noise: float, seed: int, *, h0_factor: float = 1.0, ka_box=(1e5
 
 
 def _sigma_constraints(assay, sigmas: dict):
-    return constraints({k: InputSpec.sigma_pct(100 * s) for k, s in sigmas.items()}, assay.get_conditions())
+    return constraints(
+        ErrorModel(specs={k: InputSpec.sigma_pct(100 * s) for k, s in sigmas.items()}), assay.get_conditions()
+    )
 
 
 def _aware(assay, projection, sigmas: dict):
@@ -277,7 +281,7 @@ def test_with_no_varying_input_the_result_is_the_fixed_input_fit_and_its_own_int
     assert input_aware(projection, fit, ()).profiles['Ka_guest'].interval == conditional['Ka_guest']
     assert conflict(result) is None and input_shifts(result) == {}
     # A spec that does not vary is no constraint at all.
-    assert constraints({'h0': InputSpec.sigma_pct(0.0)}, assay.get_conditions()) == ()
+    assert constraints(ErrorModel(specs={'h0': InputSpec.sigma_pct(0.0)}), assay.get_conditions()) == ()
 
 
 def test_vanishing_uncertainties_converge_to_the_fixed_input_profile_and_interval():
@@ -412,6 +416,50 @@ def test_a_repeat_is_bit_identical(ida_case):
     assert np.array_equal(a.grid, b.grid) and np.array_equal(a.objective, b.objective)
 
 
+def test_a_loading_that_hands_the_offsets_through_is_the_fit_without_one(ida_case):
+    _, _, _, plain = ida_case
+    assay, projection = _ida(15, 0.01, 2)
+    loaded = input_aware(projection, projection.fit(), _sigma_constraints(assay, _IDA_SIGMAS), loading=dict)
+    assert plain.fit.ka == loaded.fit.ka and plain.fit.objective == loaded.fit.objective
+    assert plain.fit.offsets == loaded.fit.offsets == loaded.fit.input_offsets == plain.fit.input_offsets
+    assert np.array_equal(plain.fit.coefficients, loaded.fit.coefficients)
+    assert np.array_equal(plain.fit.jacobian, loaded.fit.jacobian)
+    a, b = plain.profiles['Ka_guest'], loaded.profiles['Ka_guest']
+    assert a.interval == b.interval
+    assert np.array_equal(a.grid, b.grid) and np.array_equal(a.objective, b.objective)
+    assert np.array_equal(a.offsets, b.offsets) and np.array_equal(a.cut, b.cut)
+
+
+def test_a_shared_source_moves_its_inputs_together_in_the_independent_objective():
+    """IDA, host and dye each with an error of their own and one in common: three penalised offsets, two inputs."""
+    assay, projection = _ida(15, 0.01, 2)
+    own, common = 0.03, 0.04
+    errors = ErrorModel(
+        specs={'h0': InputSpec.sigma_pct(100 * own), 'd0': InputSpec.sigma_pct(100 * own)},
+        shared=(SharedSource('Stock', 100 * common, ('h0', 'd0')),),
+    )
+    cons = constraints(errors, assay.get_conditions())
+    x, y = assay.x_data.magnitude, assay.y_data.magnitude
+    lb, ub = _coefficient_box(projection)
+
+    def reference(k: float) -> float:
+        def objective(z: np.ndarray) -> float:
+            h0 = assay.h0.magnitude * (1.0 + own * z[0]) * (1.0 + common * z[2])
+            d0 = assay.d0.magnitude * (1.0 + own * z[1]) * (1.0 + common * z[2])
+            species = ida_species(k, assay.Ka_dye.magnitude, h0, d0, x)
+            columns = np.column_stack([np.ones(x.size), species['D'], species['HD']])
+            return x.size * np.log(_reference_ssr(columns, y, lb, ub)) + float(z @ z)
+
+        return _reference_minimum(objective, 3, seed=5, spread=np.ones(3))
+
+    for ka in (projection.fit().ka['Ka_guest'], 4e6):
+        value, offsets, _, _ = penalised_objective(
+            projection, {'Ka_guest': ka}, cons, {}, other_ka=None, loading=errors.input_offsets
+        )
+        assert set(offsets) == {'h0', 'd0', shared_key('Stock')}
+        assert value == pytest.approx(reference(ka), abs=1e-6)
+
+
 def test_an_edge_does_not_depend_on_the_side_root_finding_walks_the_bracket_from(ida_case):
     """Every value is a function of its Ka and the two bracketing node solutions, so the other order finds the same root."""
     assay, projection, _, result = ida_case
@@ -462,7 +510,9 @@ def test_a_planted_entry_error_is_recovered_as_a_shift_and_the_truth_is_inside_o
 def test_an_input_stated_as_a_range_stays_inside_it_and_is_reported_on_its_edge():
     assay, projection = _ida(15, 0.001, 3, h0_factor=1.10)
     fit = projection.fit()
-    narrow = input_aware(projection, fit, constraints({'h0': InputSpec.interval_pct(-5, 5)}, assay.get_conditions()))
+    narrow = input_aware(
+        projection, fit, constraints(ErrorModel(specs={'h0': InputSpec.interval_pct(-5, 5)}), assay.get_conditions())
+    )
     shift = input_shifts(narrow)['h0']
     assert shift.fraction == pytest.approx(-0.05, abs=1e-7) and shift.at_edge is True and shift.z is None
     assert conflict(narrow) is None
@@ -474,7 +524,9 @@ def test_an_input_stated_as_a_range_stays_inside_it_and_is_reported_on_its_edge(
     signal = projection.fitted_columns(narrow.fit.ka, narrow.fit.offsets).shape[1]
     assert fit_jacobian(projection, narrow).shape == (15, signal + 1)
 
-    wide = input_aware(projection, fit, constraints({'h0': InputSpec.interval_pct(-20, 20)}, assay.get_conditions()))
+    wide = input_aware(
+        projection, fit, constraints(ErrorModel(specs={'h0': InputSpec.interval_pct(-20, 20)}), assay.get_conditions())
+    )
     shift = input_shifts(wide)['h0']
     assert shift.fraction == pytest.approx(1 / 1.10 - 1, abs=0.01) and shift.at_edge is False
     signal = projection.fitted_columns(wide.fit.ka, wide.fit.offsets).shape[1]
@@ -485,7 +537,7 @@ def test_an_input_stated_as_a_range_stays_inside_it_and_is_reported_on_its_edge(
 
 def test_only_an_input_stated_as_a_range_can_rest_on_an_edge():
     specs = {'h0': InputSpec.sigma_pct(5), 'd0': InputSpec.interval_pct(-5, 5)}
-    sigma, ranged = constraints(specs, {'h0': Q_(1e-5, 'M'), 'd0': Q_(5e-6, 'M')})
+    sigma, ranged = constraints(ErrorModel(specs=specs), {'h0': Q_(1e-5, 'M'), 'd0': Q_(5e-6, 'M')})
     assert [at_edge(ranged, e) for e in (-0.05, 0.0, 0.05)] == [True, False, True]
     assert not any(at_edge(sigma, e) for e in (sigma.lo, -0.05, 0.0, 0.05, 10.0))
 
@@ -511,7 +563,7 @@ def test_a_range_input_the_fit_left_on_its_edge_absorbs_nothing_of_the_other_inp
     jacobian[:10, 0] = jacobian[:10, 1] = a
     jacobian[10, 0] = 1.0
     specs = {'h0': InputSpec.sigma_pct(3), 'd0': InputSpec.interval_pct(-5, 5)}
-    stated = constraints(specs, {'h0': Q_(1e-5, 'M'), 'd0': Q_(5e-6, 'M')})
+    stated = constraints(ErrorModel(specs=specs), {'h0': Q_(1e-5, 'M'), 'd0': Q_(5e-6, 'M')})
     n, ssr, ss_tot = 10, 2.5, 1e3
     g = float(a @ a) / (ssr / n)
     for d0_offset, weight in ((0.02, 0.0), (0.05, g / (1 + g)), (-0.05, g / (1 + g))):
@@ -549,7 +601,11 @@ def test_too_few_points_are_refused_once_a_range_counts_as_a_parameter():
     fit = projection.fit()
     assert projection.interval('Ka_guest', fit) is not None  # n - p = 1 at the entered inputs
     with pytest.raises(FitRefused, match='too few to fit this model and also let this input move within a range'):
-        input_aware(projection, fit, constraints({'h0': InputSpec.interval_pct(-5, 5)}, assay.get_conditions()))
+        input_aware(
+            projection,
+            fit,
+            constraints(ErrorModel(specs={'h0': InputSpec.interval_pct(-5, 5)}), assay.get_conditions()),
+        )
 
 
 def test_too_few_points_are_refused_when_the_inputs_take_up_the_last_degree_of_freedom():

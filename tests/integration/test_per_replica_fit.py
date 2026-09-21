@@ -33,7 +33,7 @@ from core.pipeline.fit_pipeline import (
     fit_replica_ids,
     summarize_parameters,
 )
-from core.pipeline.inputs import TITRANT, InputSpec
+from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec
 from core.units import Q_
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data, assert_within_tolerance
 
@@ -192,7 +192,9 @@ class TestReportedFitWithUncertainInputs:
     def test_the_reported_fit_is_the_fit_of_the_average_of_the_replicates_used(self):
         ms = _ida_ms(n_replicas=3, noise_frac=0.01, seed=31)
         conditions = _ida_conditions()
-        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True, input_specs=self._specs())
+        config = FitConfig(
+            custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True, errors=ErrorModel(specs=self._specs())
+        )
 
         result = fit_measurement_set_per_replica(ms, IDAAssay, conditions, config)
 
@@ -213,7 +215,9 @@ class TestReportedFitWithUncertainInputs:
     def test_a_replicates_own_fit_holds_the_inputs_as_entered(self):
         """It answers what that replicate alone says about Ka, which is what the spread is made of."""
         ms = _ida_ms(n_replicas=3, noise_frac=0.01, seed=31)
-        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True, input_specs=self._specs())
+        config = FitConfig(
+            custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True, errors=ErrorModel(specs=self._specs())
+        )
 
         result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), config)
 

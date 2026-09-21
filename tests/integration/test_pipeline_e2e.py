@@ -30,7 +30,7 @@ from core.pipeline.fit_pipeline import (
     fit_measurement_set,
     summarize_parameters,
 )
-from core.pipeline.inputs import TITRANT, InputSpec
+from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec
 from core.units import Q_
 from tests.conftest import (
     DBA_RECOVERY_BOUNDS,
@@ -505,7 +505,7 @@ class TestInputsFreeWithinTheirUncertainty:
         """That data fitted with the host stock stated to 10 % and the titrant to 3 %."""
         ms, conditions = wrong_h0
         specs = {'h0': InputSpec.sigma_pct(10), TITRANT: InputSpec.sigma_pct(3)}
-        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False, input_specs=specs)
+        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False, errors=ErrorModel(specs=specs))
         return fit_measurement_set(ms, IDAAssay, conditions, config)
 
     def test_an_input_entered_wrong_shows_as_misfit_and_is_absorbed_within_its_uncertainty(self, uncertain):
@@ -576,7 +576,9 @@ class TestInputsFreeWithinTheirUncertainty:
             g0=Q_(true['g0'] * 1.1, 'M'),
         )
         config = FitConfig(
-            custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False, input_specs={'g0': InputSpec.sigma_pct(10)}
+            custom_bounds=GDA_IDA_RECOVERY_BOUNDS,
+            per_replica=False,
+            errors=ErrorModel(specs={'g0': InputSpec.sigma_pct(10)}),
         )
 
         result = fit_assay(assay, config)
