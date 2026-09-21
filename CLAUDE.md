@@ -83,16 +83,16 @@ All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY:
 
 | Layer | Path | Responsibility |
 |-------|------|----------------|
-| **Assays** | `core/assays/` | `BaseAssay` ABC + subclasses; each wraps a forward model reference |
+| **Assays** | `core/assays/` | `BaseAssay` ABC + subclasses; each wraps a forward model reference. Two optional keyword-only conditions declare dilution by the titrant — `titrant_stock` and `stock_contains` — and `fixed_total(key, x)` is what every `forward_model` / `species` reads a fixed total from; `_check_dilution()` (last statement of each subclass `__post_init__`) refuses a stock the data contradict |
 | **Models** | `core/models/` | Pure, unit-free math: `equilibrium.py`, `linear.py` |
 | **Optimizer** | `core/optimizer/` | Numerical helpers around the fit: `calculate_fit_metrics` (filters.py), `describe`/`describe_log10` summary stats (ensemble.py), `linear_regression` (linear_fit.py) |
 | **Fit engine** | `core/pipeline/varpro.py` | Variable projection: `Projection` (bounded linear solve of the signal parameters at a fixed Ka, log-grid search + refinement over the Ka, profile, `KaInterval`, `residual()` / `inner_start()` at shifted inputs), `replicate_outliers()`, `projectable()`. Pure numerics on an assay, its bounds and one or more signal rows |
-| **Inputs** | `core/pipeline/inputs.py` | What the user states about each entered input: `InputSpec` (σ or range, relative or absolute), `perturbable_inputs()`, `TITRANT`, and the `InputConstraint` tuple `constraints()` hands to the fit; `specs_to_dict()` / `specs_from_dict()` for the results file. Shared by the interval and the sensitivity analysis |
+| **Inputs** | `core/pipeline/inputs.py` | What the user states about the entered inputs, as one `ErrorModel` of independent sources: each input's own `InputSpec` (σ or range, relative or absolute), the named `SharedSource`s that move two or more inputs together (`shared_key()`, `input_offsets()` maps source offsets to input offsets), and the `AdditionError` of each titrant addition (`perturb_titrant()`, sensitivity only — `for_fit()` drops it). Plus `perturbable_inputs()`, `TITRANT`, `TITRANT_STOCK`, `ADDITIONS`, the `InputConstraint` tuple `constraints()` hands to the fit (one per source), `validate()`, `source_name()`, and `to_dict()` / `from_dict()` for the results file. Shared by the interval and the sensitivity analysis |
 | **Input-aware interval** | `core/pipeline/input_aware.py` | `input_aware()` → `AwareResult`: the penalised profile of each Ka with the entered inputs free inside their stated uncertainties (`AwareFit`, `AwareProfile`), `fit_jacobian()`, `conflict()`, `input_shifts()` |
 | **Diagnostics** | `core/pipeline/diagnostics.py` | Pure functions on arrays: `lack_of_fit()` / `runs_test()` (does the curve miss the data), `conflict_reference()` / `conflict_test()` / `conflict_p_value()` (did the inputs move further than stated), `verdict()` → `FitDiagnostics` |
 | **Pipeline** | `core/pipeline/` | Orchestration: `fit_assay()`, `fit_measurement_set()`, `FitConfig`, `FitResult`, `ConditionalFit`, `summarize_parameters()` (`fit_pipeline.py`) |
 | **Ka profile** | `core/pipeline/profile.py` | Curves for the Identifiability tab, built on the engine: `fit_profile()` → `ProfileSet` (one `ProfileResult` per Ka, each carrying the conditional curve and the `AwareProfile` beside it, plus the two-Ka `JointRegion`) |
-| **Ka sensitivity** | `core/pipeline/sensitivity.py` | `run_sensitivity()` → `SensitivityResult`: Sobol' (`sobol_design`, `sobol_indices_with_ci`) and heatmap runs over inputs drawn from the same `InputSpec`s (re-exported from `inputs.py`), each sample one fixed-input fit; worker-process fan-out |
+| **Ka sensitivity** | `core/pipeline/sensitivity.py` | `run_sensitivity()` → `SensitivityResult`: Sobol' (`sobol_design`, `sobol_indices_with_ci` → `SobolEstimate`) and heatmap runs over the same `ErrorModel`, each sample one fixed-input fit; indices are per **source**, with the per-addition offsets taken from `B` as one column group; the absolute budget (`Budget`, `BudgetRow`) with `what_if()` (pure: formula plus importance re-weighting) and `input_elasticities()` / `homogeneity_sum()`; worker-process fan-out |
 | **Data Processing** | `core/data_processing/` | `MeasurementSet` (immutable 2D container), Z-score replica filter, concentration helpers, `prepare_plot_data()` (`plotting.py`) |
 | **I/O** | `core/io/` | Strategy pattern with explicit dict registries (no decorators); readers per format under `io/formats/` (BMG/csv/ensight/jasco/txt/xlsx) + measurement writer |
 | **Units** | `core/units.py` | pint `UnitRegistry` singleton; plain `dict[str,str]` unit tables (`PARAM_UNITS`, `CONDITION_UNITS`); custom `au` unit for signals |
@@ -100,20 +100,25 @@ All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY:
 | **GUI session** | `gui/fitting_session.py` | `FittingSession` — one tab: owns state, wires all panels, dispatches the fit |
 | **GUI state** | `gui/app_state.py` | `AppState` dataclass — mutable session state (`ms`, `fit_results`, …) |
 | **GUI workers** | `gui/workers.py` | `FitWorker`, `ProfileWorker`, `SensitivityWorker` QThreads — run the fit (interval, input-aware interval and diagnostics together), the Ka profile and the sensitivity analysis off the main thread; each emits `finished`/`error`, `ProfileWorker` takes the fit's own `AwareResult`, and `SensitivityWorker` also emits `progress(done, total)` and `stopped()` (a cancel that lands before the baseline fit) |
-| **GUI widgets** | `gui/widgets/` | `AssayConfigPanel`, `BoundsPanel`, `DataPanel`, `FitConfigPanel`, `InputUncertaintyPanel` (per-input σ / range / fixed, shared by the interval and the sensitivity analysis), `PreprocessingPanel`, `ReplicaPanel`, `SensitivityPanel` (mode, sample size, heatmap axes, seed) + shared inputs (`numeric_inputs.py`, `info_button.py`) |
+| **GUI widgets** | `gui/widgets/` | `AssayConfigPanel`, `BoundsPanel`, `DataPanel`, `FitConfigPanel`, `InputUncertaintyPanel` (the one place uncertainties are stated: per-input σ / range / fixed, the named shared error sources, and the random error of each addition — `current_errors()` → `ErrorModel`, shared by the interval and the sensitivity analysis), `PreprocessingPanel`, `ReplicaPanel`, `SensitivityPanel` (mode, sample size, heatmap axes, seed) + shared inputs (`numeric_inputs.py`, `info_button.py`) |
 | **GUI plotting** | `gui/plotting/` | `PlotWidget`, `FitSummaryWidget`, `PlotStyleWidget`, `IdentifiabilityWidget` (Ka profiles and the joint region), `SensitivityWidget` (Ka Sensitivity tab); labels and interval formatters in `labels.py`, colors in `colors.py`, image export in `export.py` (PyQtGraph native) |
 | **GUI dialogs** | `gui/dialogs/` | `ExportMultipleDialog`, `PreferencesDialog`, `PlotGuideDialog` — modal dialogs invoked from the toolbar and menus |
 | **GUI help** | `gui/plot_guide.py`, `gui/dialogs/plot_guide_dialog.py` | "Reading the plots" guide: one HTML section per plot tab, opened from the Help menu |
-| **Validation** | `validation/` | The synthetic-data generators, the scoring and the result store behind every rate the app states: `python -m validation run <check>` computes rows, `python -m validation tables` renders them; see `validation/README.md` |
+| **Validation** | `validation/` | The synthetic-data generators, the scoring and the result store behind every rate the app states: `python -m validation run <check>` computes rows, `python -m validation tables` renders them, `python -m validation compare <code hash>` asserts that two builds produced the same rows field for field; the budget and what-if checks live in `validation/budget.py`; see `validation/README.md` |
 | **Auto-update** | `gui/update_check.py`, `gui/update_dialog.py`, `gui/download_worker.py` | Compares latest GitHub release against `_version.py`; prompts and downloads if newer |
 
 ### Fitting Pipeline Flow
 
-`load_measurements()` → `MeasurementSet` → `.to_assay()` → `BaseAssay` → `fit_assay(assay, FitConfig)` → `Projection` (signal parameters by bounded linear least squares, Ka by log-grid search + refinement) → profile-likelihood interval per Ka (the **conditional** fit and interval, every entered input taken as exact) → `input_aware()` with the `InputSpec`s of `FitConfig.input_specs` (penalised profile: each Ka against the best fit reachable while the inputs move inside their stated uncertainties) → `diagnostics` (misfit test at both fits, conflict statistic, `verdict()`) → `FitResult`
+`load_measurements()` → `MeasurementSet` → `.to_assay()` → `BaseAssay` → `fit_assay(assay, FitConfig)` → `Projection` (signal parameters by bounded linear least squares, Ka by log-grid search + refinement) → profile-likelihood interval per Ka (the **conditional** fit and interval, every entered input taken as exact) → `input_aware()` with the constraints of `FitConfig.errors.for_fit()` — one per error source, an input's own or a shared one (penalised profile: each Ka against the best fit reachable while the inputs move inside their stated uncertainties, a `loading` map turning source offsets into input offsets) → `diagnostics` (misfit test at both fits, conflict statistic, `verdict()`) → `FitResult`
 
 With no uncertainty stated — how the Input Uncertainty panel opens — `input_aware()`
 returns the conditional interval objects themselves, so a fit of exact inputs costs
-nothing extra and reports one interval.
+nothing extra and reports one interval. A titration with no titrant stock and no shared
+source must give bit-identical numbers: `fixed_total()` hands the model the entered
+scalar, so the equilibrium arithmetic is the scalar one operation for operation and in
+the same order; `input_offsets()` is the identity; and `get_conditions()` / `fit_config`
+carry no dilution or shared-source key. Any change on that path has to preserve all
+three.
 
 A per-replicate fit (`fit_measurement_set_per_replica`) builds one `Projection` over all
 replicate rows, runs `replicate_outliers()` to decide which replicates share a Ka, and
@@ -141,7 +146,7 @@ with a spread from another describes no distribution.
 
 ### Named Parameter Handling
 
-Parameters use **string keys**, not positional indices. `FitConfig.custom_bounds` is `Dict[str, Tuple[Quantity, Quantity]]`, merged with registry defaults via `_resolve_bounds()`.
+Parameters use **string keys**, not positional indices. `FitConfig.custom_bounds` is `Dict[str, Tuple[Quantity, Quantity]]`, merged with registry defaults via `_resolve_bounds()`. `FitConfig.errors` is the one `ErrorModel` a fit reads; `FitResult.input_shifts` is keyed by **source** key, which is an input key for an input's own uncertainty and `shared_key(name)` for a shared source.
 
 ## Scientific Conventions
 
@@ -149,7 +154,9 @@ Parameters use **string keys**, not positional indices. `FitConfig.custom_bounds
 - **4-parameter signal model:** `Signal = I0 + I_dye_free·[D_free] + I_dye_bound·[HD]`.
 - Signal coefficients (`I0`, `I_dye_free`, `I_dye_bound`) are **structurally degenerate** in DBA/IDA — only Ka is identifiable. Tests verify Ka recovery + signal reconstruction, never the individual coefficients.
 - Concentrations are stored internally in **Molar**; GUI inputs (nM/µM/mM/M, M⁻¹/kM⁻¹/MM⁻¹) convert to base units at the boundary.
-- **Entered inputs are exact until the user says otherwise.** Every row of the Input Uncertainty panel opens *fixed*, so a fit reports the conditional interval as its headline until an uncertainty is stated for at least one input. The sensitivity analysis needs at least one varying input and says so in plain language when none is set.
+- **Entered inputs are exact until the user says otherwise.** Every row of the Input Uncertainty panel opens *fixed*, no shared source is present and the additions entry reads *none*, so a fit reports the conditional interval as its headline until an error source is stated. The sensitivity analysis needs at least one varying source and says so in plain language when none is set.
+- **Totals stay constant until the user says otherwise.** The conditions form opens on *stay constant*; declaring a titrant stock is the user's explicit statement, and the concentrations in a data file are the titrant concentrations in the cuvette **after** each addition.
+- **Homogeneity.** Scaling every concentration by `c` and every entered binding constant by `1/c` divides every fitted constant by `c`, so the elasticities of each fitted constant satisfy `Σ(concentrations) − Σ(entered binding constants) = −1`. A source loading every concentration therefore has elasticity `s_Ka_dye − 1` in a competitive assay (it largely cancels) and exactly `−1` in direct binding (it does not). Tested, never displayed.
 - **A conflict is a statement about the inputs together.** The per-input shift says where the fit put the correction, not which input is wrong — several inputs move the curve almost alike, and a significant conflict can come with every shift under one σ. No message, help text or document may name one input as the cause.
 - Example datasets with reference parameters live in `data/` (see `data/Readme.md`).
 
@@ -160,7 +167,7 @@ Tests verify **scientific correctness first** — reproduce a bug as a failing t
 ## Adding a New Assay Type
 
 1. Add an enum value to `AssayType` in `core/assays/registry.py`.
-2. Create a `BaseAssay` subclass with `forward_model()` and `species()` implementations — the engine builds its design from `species()`, so the two must come from the same solve.
+2. Create a `BaseAssay` subclass with `forward_model()` and `species()` implementations — the engine builds its design from `species()`, so the two must come from the same solve. Read every fixed total through `self.fixed_total(key, x)`, never `self.<key>.magnitude`, so the assay dilutes when a titrant stock is declared, and end `__post_init__` with `self._check_dilution()`.
 3. Add an `ASSAY_REGISTRY` entry with metadata (keys, bounds, log-scale, units, labels, `param_kinds`, `signal_species`, and `category` + `subtype_label` — the latter two slot it into the two-level assay menu; no widget code changes needed).
 4. Add the forward-model math in `core/models/`.
 5. Add tests (parameter recovery + fail-fast).

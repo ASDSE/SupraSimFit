@@ -48,6 +48,24 @@ The process works as a chain of dependencies:
 4. **Comparison:** The residual that remains is the price of that $K_a$.
 5. **Search:** Steps 1–4 are repeated across the whole allowed range of $K_a$ and refined around the best candidates. The $K_a$ with the smallest residual, and the response factors solved with it, are the best estimates.
 
+### 3.4. Totals That Fall with Each Addition
+
+A mass balance needs the total concentration of every fixed species *at the point being modelled*. Unless the samples were made up to a common volume, or the titrant stock was prepared in the sample solution itself, each addition of titrant adds volume and every fixed total falls along the titration.
+
+Only the titrant stock concentration $c_T$ is needed to describe that, because the measured titrant concentration already carries the volume. A sample of volume $V_0$ that has taken up a cumulative volume $W_i$ of stock holds
+
+$$x_i = \frac{c_T W_i}{V_0 + W_i} \quad\Longrightarrow\quad \varphi_i \;=\; \frac{W_i}{V_0 + W_i} \;=\; \frac{x_i}{c_T},$$
+
+so the fraction of the final volume that came from the stock is $x_i / c_T$ and a fixed species the stock does not contain has total
+
+$$c_k(x_i) \;=\; c_k \left(1 - \frac{x_i}{c_T}\right),$$
+
+while one the stock carries at the sample's own concentration stays at $c_k$. The relation between $\varphi_i$ and $x_i$ is a ratio of volumes, so it holds equally for additions into one cuvette and for separately prepared samples: the mode of preparation does not enter. The convention for $x$ is the titrant concentration in the cuvette after each addition; concentrations computed without dilution convert as $x = x_{\text{nom}} c_T / (c_T + x_{\text{nom}})$.
+
+The model is therefore exact rather than approximate, and one code path serves both cases: with no stock declared, $c_k(x_i)$ is the scalar $c_k$ and the equilibrium arithmetic is the scalar arithmetic, operation for operation. Fitting diluted data with the totals held constant biases $K_a$ by an amount and in a direction that depend on the assay and on the dilution reached; `python -m validation run dilution-coverage dilution-ignored` measures the coverage recovered and the error left behind.
+
+Dilution is also consistent with the scaling identity of Section 9.6: $c_T$ is a concentration and scales with the others, while $\varphi_i$ is invariant.
+
 ## 4. Algorithmic Implementation
 
 The toolkit integrates several classes of algorithms to solve the inverse problem of finding parameters that best explain the measurement data.
@@ -236,7 +254,15 @@ and the user states, per input, one of three things:
 - a **range** $[lo_j, hi_j]$ of offsets: a box constraint on $e_j$ and no penalty — every value inside is equally acceptable and none outside, which is the form in which a $K_{a,\text{dye}}$ carried over from an earlier fit, or a tolerance quoted by a supplier, naturally arrives;
 - **fixed**: $e_j = 0$, the input is not a parameter. This is where every input starts, so a fit reports the interval of Section 6 until an uncertainty is stated.
 
-The statements are independent per input, and the same statements feed the sensitivity analysis of Section 9, which samples from them instead of fitting them.
+**Errors several inputs share.** The three statements above describe the error an input carries *alone*. An error common to several inputs — their solutions come from one stock, were weighed on one balance, were pipetted with one pipette — is stated once, as a named source with a standard deviation $s_S$ in percent and the set $L(S)$ of inputs it loads. The sources are independent and act multiplicatively, so
+
+$$\theta_j \;=\; \theta_{e,j} \prod_{S \,:\, j \in L(S)} (1 + e_S),$$
+
+and the vector of parameters the fit carries is one offset per **source**, not per input. Each source contributes its own pseudo-observation $z_S = e_S / s_S$ exactly as an input's own $\sigma$ does, so nothing in Section 7.2 changes but the map from the offsets the fit varies to the inputs the model is evaluated at. With no shared source that map is the identity and the two coincide.
+
+The distinction matters because the data can separate some input combinations and not others. By the scaling identity of Section 9.6, a source loading every concentration of a direct-binding assay lies along a direction the model cannot distinguish from $K_a$ itself: its residual column is collinear with the $K_a$ column and only its penalty row tells the two apart. The penalised profile is then $P(k) = \min_{e}\big[\,n \log S_e(k(1+e)) + (e/s_S)^2\,\big]$ — the conditional profile widened by the source's own distribution — so the reported interval carries that uncertainty in full, and no amount of data narrows it. Split into per-input errors instead, the same physical stock error would be spread over directions the data *can* resolve and the interval would come out too narrow. In a competitive assay the same source widens the interval only by its small net elasticity, for the reason given in Section 9.6. `python -m validation run shared-source-coverage` measures coverage when the entered values really are drawn from a model with a shared source.
+
+The statements are independent per source, and the same error model feeds the sensitivity analysis of Section 9, which samples from it instead of fitting it. One entry it does not feed is the random error of each titrant addition (Section 9.5): a random error in $x$ is, point by point, scatter in the signal, which the residual variance behind the interval already measures — carrying it here as well would count it twice and would turn the profile into an errors-in-variables fit with $n$ further nuisance parameters.
 
 ### 7.2. The Penalised Profile and Its Threshold
 
@@ -302,11 +328,11 @@ with $S_{\text{mean}}$ the residual sum of squares of the fit against the averag
 
 ### 8.2. Did the Inputs Have to Move Too Far
 
-The fitted shifts $\hat{e}_j$ are reported per input, in percent of the entered value and — for an input stated with a $\sigma$ — in units of that $\sigma$, $\hat{z}_j = \hat{e}_j / s_j$. Whether they agree with what was stated is one statistic. Linearised at the optimum, the penalised estimate satisfies
+The fitted shifts $\hat{e}_j$ are reported per **source** — an input's own uncertainty or a source several inputs share — in percent of the entered value and, for a source stated with a $\sigma$, in units of that $\sigma$, $\hat{z}_j = \hat{e}_j / s_j$; a shared source is reported with the inputs it moves named beside it. Whether they agree with what was stated is one statistic. Linearised at the optimum, the penalised estimate satisfies
 
 $$\hat{\mathbf{z}} \sim N(0, V), \qquad V = I - \big[H^{-1}\big]_{zz}, \qquad H = J'J,$$
 
-with $J$ the Jacobian of the stacked residual over the free association constants and the varying inputs, its residual rows in units of the fit's own noise scale $s = \sqrt{S_{\min}/n}$ — the Jacobian the last inner solve has already computed, since the projected residual's Jacobian carries the same $(K, \mathbf{e})$ block as the full one (Golub & Pereyra 1973). An input stated as a range that the fit left on an end of that range is held there, like a signal parameter on its bound, and its column stays out of $J$: free, it would absorb part of what the data say about the other inputs, and the weights would come out too small for the shifts the fit actually made. The eigenvalues of $V$ are $g/(1+g)$ for the information $g$ the data hold about each input direction: 1 where the data determine an input, 0 along a direction they cannot see, such as a common scale of every concentration. The statistic is the squared length of $\hat{\mathbf{z}}$ along the informed directions,
+with $J$ the Jacobian of the stacked residual over the free association constants and the varying sources, its residual rows in units of the fit's own noise scale $s = \sqrt{S_{\min}/n}$ — the Jacobian the last inner solve has already computed, since the projected residual's Jacobian carries the same $(K, \mathbf{e})$ block as the full one (Golub & Pereyra 1973). An input stated as a range that the fit left on an end of that range is held there, like a signal parameter on its bound, and its column stays out of $J$: free, it would absorb part of what the data say about the other inputs, and the weights would come out too small for the shifts the fit actually made. The eigenvalues of $V$ are $g/(1+g)$ for the information $g$ the data hold about each input direction: 1 where the data determine an input, 0 along a direction they cannot see, such as a common scale of every concentration. The statistic is the squared length of $\hat{\mathbf{z}}$ along the informed directions,
 
 $$q = \sum_{i:\,w_i \ge 0.01} \big(\mathbf{v}_i'\hat{\mathbf{z}}\big)^2 \;\sim\; \sum_i w_i\,\chi^2_1 \quad\text{under the null,}$$
 
@@ -333,16 +359,19 @@ The interval is reported in every case, with the verdict beside it. Withholding 
 
 ## 9. Input Sensitivity: Sobol' Variance Decomposition
 
-The interval of Section 7 says how wide the uncertainty of $K_a$ is when the entered inputs are uncertain. The sensitivity analysis answers the other question about that statement: *which* input it comes from. Each input is drawn from the uncertainty stated for it in Section 7.1, and the fit is repeated over the resulting input distribution, every sample holding its own drawn inputs as exact.
+The interval of Section 7 says how wide the uncertainty of $K_a$ is when the entered inputs are uncertain. The sensitivity analysis answers the other questions about that statement: *which* error it comes from, how much of $K_a$ it accounts for in absolute terms, and what a smaller error would buy. The error model of Section 7.1 is read here as a distribution to draw from, and the fit is repeated over it, every sample holding its own drawn inputs as exact.
 
-### 9.1. Inputs and Their Distributions
+### 9.1. Error Sources and Their Distributions
 
-The perturbable inputs are those of Section 7.1 — the fixed conditions ($h_0$, $d_0$, $K_{a,\text{dye}}$, …) and the titrant concentration vector — under the same statements, read here as distributions to draw from rather than as constraints to fit under. Each is drawn independently, through its inverse CDF, so the same definition of an input's distribution serves plain random draws and a low-discrepancy sequence alike:
+What is drawn, decomposed and reported is one offset per **source**, not per input, because a source is the physical thing an experimenter can act on: one stock to re-make, one pipette to recalibrate. Three kinds appear:
 
-- a $\sigma$ spec (in percent of nominal, or in the input's own unit) draws from a normal distribution truncated at zero, so a concentration never goes negative;
-- an interval spec draws uniformly between its ends, the form in which a $K_a$ carried over from an earlier fit naturally arrives.
+- an input's **own** uncertainty — one offset moving that input;
+- a **shared** source — one offset moving every input it loads, by the same fraction;
+- the **random error of each addition** — $n$ offsets, one per titration point, reported as a single item (Section 9.5).
 
-The titrant enters as **one common factor**: a single draw scales the whole concentration vector, which is how a mis-calibrated stock solution acts — it displaces every titration point together, not each one independently.
+Each offset is drawn independently, through its inverse CDF, so the same definition serves plain random draws and a low-discrepancy sequence alike: a $\sigma$ (in percent of nominal, or in the input's own unit) draws from a normal distribution truncated at zero, so a concentration never goes negative; a range draws uniformly between its ends, the form in which a $K_a$ carried over from an earlier fit naturally arrives. A shared source is a precision figure of one physical object, so it is a $\sigma$ in percent and nothing else. An input loaded by several sources takes the product of their factors, exactly as in Section 7.1.
+
+The titrant's own entry is **one common factor**: a single draw scales the whole concentration vector, which is how a mis-calibrated stock solution acts — it displaces every titration point together. With the stock declared (Section 3.4) the same draw scales $c_T$, because the titrant's scale error *is* the stock's concentration error: $x_i = c_T \varphi_i$, and $\varphi_i$ is a ratio of volumes that a concentration error cannot move. The stock is therefore not an input of its own.
 
 ### 9.2. Estimators
 
@@ -350,7 +379,7 @@ For output $Y = \log_{10} K_a$ and inputs $X_1 \dots X_k$, the first-order and t
 
 $$S_i = \frac{\operatorname{Var}_{X_i}\!\big(E[Y \mid X_i]\big)}{\operatorname{Var}(Y)}, \qquad S_{T_i} = \frac{E\!\big[\operatorname{Var}(Y \mid X_{\sim i})\big]}{\operatorname{Var}(Y)}$$
 
-They are estimated on a Saltelli design: two independent sample matrices $A$ and $B$ and the $k$ matrices $AB_i$ that take column $i$ from $B$ — $N \times (k + 2)$ fits in total. First order uses the Saltelli et al. (2010) estimator and total order the Jansen (1999) estimator:
+They are estimated on a Saltelli design: two independent sample matrices $A$ and $B$ and one matrix $AB_g$ per reported source, which takes that source's columns from $B$ — $N \times (g + 2)$ fits for $g$ reported sources. A source with one offset contributes one column; the additions contribute all of theirs, taken from $B$ **together**, and the same two estimators applied to $AB_g$ then give the closed first-order index $\operatorname{Var}(E[Y \mid \mathbf{e}_g]) / \operatorname{Var}(Y)$ and the total index of that group of columns (Jacques, Lavergne & Devictor 2006). The cost of the analysis therefore depends on how many *sources* were stated, not on how many titration points they move. First order uses the Saltelli et al. (2010) estimator and total order the Jansen (1999) estimator:
 
 $$\hat{S}_i = \frac{\frac{1}{N}\sum_j f(B)_j\big(f(AB_i)_j - f(A)_j\big)}{\hat{V}}, \qquad \hat{S}_{T_i} = \frac{\frac{1}{2N}\sum_j \big(f(A)_j - f(AB_i)_j\big)^2}{\hat{V}}$$
 
@@ -373,6 +402,46 @@ The blocks are independent replicates of one design; the rows *inside* a scrambl
 Each sample is refitted by the projection of Section 4.1, on the average of the replicates the reported fit used and with its own drawn inputs held exact, so its $K_a$ is the best the model can do for them; the run's baseline is that same projection at the inputs as entered. Every sample counts, however poorly it describes the data. Discarding the poor ones would remove precisely the input combinations the data disagree with, which would bias the sampled distribution back towards the inputs as entered and make the analysis look more reassuring than the evidence allows.
 
 Because every refit is one deterministic projection, the spread the analysis reports is the effect of the stated input uncertainties and nothing else — there is no search scatter mixed into it. The analysis therefore covers every assay with an association constant, the stepwise two-constant models included; a model with no association constant has nothing to decompose.
+
+### 9.5. The Random Error of Each Addition
+
+The titrant's own entry moves the whole series by one factor. The scatter of the *individual* additions is a separate statement: a standard deviation $\sigma_\delta$ in percent, and the mode of preparation, which fixes how the errors accumulate. With $w_i = W_i/V_0 = x_i/(c_T - x_i)$ — the volume ratio, which is $x_i$ itself in the undiluted limit $c_T \to \infty$ — the exact transform for unequal aliquots is
+
+$$\text{sequential:}\quad w'_i = \sum_{j \le i} (w_j - w_{j-1})(1 + \delta_j), \qquad \text{separate samples:}\quad w'_i = w_i (1 + \delta_i),$$
+
+followed by $x'_i = c_T w'_i / (1 + w'_i)$. For equal aliquots the sequential case reproduces the familiar accumulation — a relative standard deviation of $\sigma_\delta/\sqrt{i}$ at point $i$, correlated across points — without assuming equal aliquots anywhere. Sequential mode requires $x$ non-decreasing in file order and refuses otherwise, naming the first point that falls.
+
+Which of the two modes costs more variance depends on the design, so the mode is the user's statement and not a default. Replicates are separate titrations with independent addition errors, and the reported fit is of their average, whose first-order addition error is the mean of $m$ independent ones; the analysis therefore draws $\delta$ at $\sigma_\delta/\sqrt{m}$ for $m$ replicates used.
+
+The item is reported beside the other sources but is not added to the fit's interval, for the reason given at the end of Section 7.1: it is already inside it. Its place here is to say how much of the spread pipetting explains.
+
+### 9.6. The Absolute Budget, Elasticities and the Scaling Identity
+
+**From shares to decades.** The same run is read once more as absolute numbers, per association constant. With $V = \operatorname{Var}(Y)$ over the usable $A$ and $B$ rows, $Y = \log_{10} K_a$:
+
+$$\mathrm{SD} = \sqrt{V} \ \text{decades}, \qquad V_i = S_i V, \qquad \mathrm{SD}_{-i} = \sqrt{\max(V - V_i,\, 0)}.$$
+
+$\mathrm{SD}_{-i}$ is the spread that would be left if source $i$ were exact, and it is the **first-order** index that answers that question, by the law of total variance $E[\operatorname{Var}(Y \mid e_i)] = V(1 - S_i)$; the total index answers a different one. Every quantity above joins the jackknifed vector of Section 9.3 and carries its own 95 % interval — the interval of $V_i$ is not that of $S_i$ scaled by $V$, because $V$ has a sampling error of its own. What no single source explains alone, $1 - \sum_i S_i$, is reported with its sign as *interactions*, being an estimate like the rest.
+
+**What a smaller error would buy.** Reducing source $i$ from $s$ to $r s$, $0 \le r \le 1$, gives
+
+$$V' = V - V_i\,(1 - r^2),$$
+
+exact when the model is additive in $e_i$ with a linear effect and first order otherwise. The same question is answered a second time with no further fits and no such assumption, by importance re-weighting (Kahn & Marshall 1953): each sample is weighted by $w = \mathrm{pdf}'(e_i)/\mathrm{pdf}(e_i)$, the ratio of the narrowed sampling density to the one it was drawn from, and $V'_w = \sum w (y - \bar y_w)^2 / \sum w$ recomputed with an effective sample size $(\sum w)^2 / \sum w^2$. Re-weighting can only narrow a density — weights towards a wider one are unbounded — so only reductions are offered, and the cross-check is shown only while enough samples carry weight for it to be more precise than the formula's own error. It is not offered for the additions group, where a product of $n$ weights collapses.
+
+**Elasticities.** Beside the shares the run reports $s_j = \partial \ln K_a / \partial \ln \theta_j$ for every perturbable input, varying or not, by a central difference at a relative step of $10^{-3}$ — two refits per input, added to the same batch. The step is a measured compromise: the truncation error of the central difference falls as the step squared while the resolution of the refit ($10^{-7}$ decades) divided by the step rises, and $10^{-3}$ sits below $10^{-5}$ truncation with about $10^{-4}$ of resolution noise across all six assays. A source's elasticity is the sum over the inputs it loads, to first order, which is what makes cancellation between them visible.
+
+**The scaling identity.** Every registered model is built from mass balances and association constants of unit M$^{-1}$ alone. Multiplying every concentration — fixed totals, titrant and titrant stock — by $c$ and every *entered* binding constant by $1/c$ multiplies every species concentration by $c$; the signal coefficients (au/M) absorb the $1/c$ and the offset is unchanged, so the least-squares problem is identical and every fitted constant is divided by $c$:
+
+$$F(c\,\theta_{\text{conc}},\; K_{\text{known}}/c) \;=\; F(\theta)/c.$$
+
+Differentiating at $c = 1$ (Euler's theorem on homogeneous functions) gives, for **each** fitted constant,
+
+$$\sum_{j \,\in\, \text{concentrations}} s_j \;-\; \sum_{j \,\in\, \text{entered binding constants}} s_j \;=\; -1,$$
+
+that is $s_{h_0} + s_{d_0} + s_{\text{titrant}} - s_{K_{a,\text{dye}}} = -1$ for IDA (with $g_0$ for $d_0$ in GDA), $s_{\text{fixed}} + s_{\text{titrant}} = -1$ for both DBA directions, and $s_{h_0} + s_{\text{titrant}} = -1$ for each constant of the stepwise models. It holds with dilution declared, since the stock scales with the titrant, and it needs no bound to be active at the fit, since bounds do not scale.
+
+Two consequences follow for the budget. A source loading every concentration of a **competitive** assay has elasticity exactly $s_{K_{a,\text{dye}}} - 1$, small wherever the fitted constant is close to proportional to the entered $K_{a,\text{dye}}$: such an error largely cancels. In **direct binding** the same source has elasticity exactly $-1$ — a 1 % error of the concentration scale is a 1 % error of $K_a$, which no amount of data removes — and it therefore contributes exactly $\operatorname{Var}(\log_{10}(1 + e))$ to the budget, additively, with $S_T = S_1$. That closed form is the reference the check `source-variance-exact` holds the budget's interval of $V_i$ against; `budget-coverage` does the same for $V$, $V_i$, $\mathrm{SD}_{-i}$ and a grouped index on the Ishigami and g-function test problems, and `what-if-accuracy` compares both what-if answers against a second run made at the reduced $\sigma$. The identity itself is a property of the models, checked in the test suite rather than displayed: it says nothing about the user's data.
 
 ## 10. General Theoretical Workflow Diagram
 
