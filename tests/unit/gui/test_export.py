@@ -1,17 +1,24 @@
-"""Tests for the image-export pipeline.
+"""Tests for the export pipeline: the plot images and the uncertainty budget table.
 
 Verifies:
   * single-plot PNG export honours the requested width
   * single-plot SVG export writes a parseable vector file
   * unsupported export formats raise ``ValueError``
   * the fit-summary annotation survives an export and actually lands in it
+  * the Ka uncertainty budget is offered only where there is one, and the file
+    holds the rows the Ka Sensitivity tab reports
 """
+
+import csv
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 pytest.importorskip('PyQt6')
 pytest.importorskip('pyqtgraph')
+
+_IDA_DATA = Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt'
 
 
 @pytest.fixture
@@ -163,3 +170,105 @@ def test_annotation_actually_renders_into_the_export(annotated_plot_widget, tmp_
     # The overlay is a multi-line boxed label; anything under a few hundred
     # sampled pixels means it did not render where the canvas can see it.
     assert changed > 300, f'annotation contributed only {changed} sampled pixels to the export'
+
+
+# ----------------------------------------------------------------------
+# The Ka uncertainty budget: a table of the analysis on screen, written as
+# a CSV so its numbers can be read outside the app.
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def analysed_session(qapp, monkeypatch):
+    """Build a session on the IDA data showing a given sensitivity run."""
+    from core.assays.registry import AssayType
+    from gui.fitting_session import FittingSession
+    from tests.unit.gui.test_sensitivity_gui import _made_on
+
+    monkeypatch.setattr('gui.fitting_session.QMessageBox.warning', lambda *args: None)
+    sessions = []
+
+    def build(result=None):
+        session = FittingSession()
+        sessions.append(session)
+        session._assay_panel.set_assay_type(AssayType.IDA)
+        session._data_panel.load_file(str(_IDA_DATA))
+        if result is None:
+            return session
+        run = _made_on(result, session._state.measurement_set, session._assay_panel.current_conditions())
+        for key, spec in run.config.errors.specs.items():
+            session._input_panel._rows[key].set_spec(spec)
+        session._on_sensitivity_complete(run)
+        assert session._state.sensitivity_note is None, 'the run has to be the one the session is showing'
+        return session
+
+    yield build
+    for session in sessions:
+        session.shutdown()
+
+
+def _artefact(session, key):
+    from gui.session import build_artefacts
+
+    (artefact,) = [a for a in build_artefacts(session) if a.key == key]
+    return artefact
+
+
+def test_the_budget_is_written_as_the_sensitivity_tab_reports_it(analysed_session, tmp_path):
+    """The file is the table on screen: every row of it, with the analysis's own numbers."""
+    from tests.unit.gui.test_sensitivity_gui import _sobol_result
+
+    session = analysed_session(_sobol_result())
+    artefact = _artefact(session, 'budget_csv')
+    path = tmp_path / f'run{artefact.suffix}'
+
+    assert artefact.available and artefact.label == 'Ka uncertainty budget (CSV)'
+    assert artefact.suffix == '_budget.csv'
+    artefact.writer(path)
+
+    rows = session._sensitivity_widget.budget_rows()
+    assert rows, 'the run reports a budget'
+    with path.open(encoding='utf-8', newline='') as handle:
+        written = list(csv.DictReader(handle))
+    assert [list(row) for row in written] == [[str(key) for key in rows[0]]] * len(rows)
+    assert written == [{key: str(value) for key, value in row.items()} for row in rows]
+
+
+def test_a_budget_with_no_number_in_it_is_refused_rather_than_written_empty(analysed_session, tmp_path):
+    """A run whose samples gave too few fits has a budget of NaN; a file of empty cells would answer nothing."""
+    from core.pipeline.sensitivity import Budget
+    from tests.unit.gui.test_sensitivity_gui import _sobol_result
+
+    result = _sobol_result()
+    result.budget = {'Ka_guest': Budget(np.nan, (np.nan, np.nan), result.budget['Ka_guest'].rows)}
+    artefact = _artefact(analysed_session(result), 'budget_csv')
+    path = tmp_path / f'run{artefact.suffix}'
+
+    assert artefact.available, 'the tab is showing a Sobol run, so the file is offered'
+    with pytest.raises(ValueError, match='too few of its samples have a fit'):
+        artefact.writer(path)
+    assert not path.exists()
+
+
+def test_a_heatmap_has_no_budget_to_export_and_says_why(analysed_session):
+    """A heatmap sweeps two inputs on a grid; it splits no variance between the sources."""
+    from dataclasses import replace
+
+    from tests.unit.gui.test_sensitivity_gui import _heatmap_result, _sobol_result
+
+    # The fit at the entered inputs is what the session checks a run against,
+    # and a heatmap makes one like any other run.
+    heatmap = replace(_heatmap_result(), baseline_fit=_sobol_result().baseline_fit)
+    artefact = _artefact(analysed_session(heatmap), 'budget_csv')
+
+    assert not artefact.available
+    assert artefact.unavailable_reason == (
+        'The analysis shown is a heatmap. Run one with Sensitivity indices to get an uncertainty budget.'
+    )
+
+
+def test_without_an_analysis_the_budget_says_to_run_one(analysed_session):
+    artefact = _artefact(analysed_session(), 'budget_csv')
+
+    assert not artefact.available
+    assert artefact.unavailable_reason == 'Run a sensitivity analysis first.'

@@ -784,7 +784,7 @@ class IdentifiabilityWidget(QWidget):
         diagnostics = self._fit.diagnostics
         if diagnostics is None:
             return ''
-        labels = result_input_labels(self._fit.assay_type)
+        labels = result_input_labels(self._fit.assay_type, self._fit.fit_config)
         return verdict_sentence(diagnostics, self._fit.input_shifts, labels, html=True)
 
     def _interval_note(self, profiles: list[ProfileResult]) -> str:

@@ -5,12 +5,17 @@ binding-constant condition): its uncertainty as a σ or a range, in percent of t
 entered value or in the input's own unit, or *fixed*. Every row opens fixed, so a
 fit takes the entered inputs as exact until an uncertainty is stated.
 
-The specs the panel collects feed two things: the confidence interval of every fit
+Below the rows the panel states the rest of the
+:class:`~core.pipeline.inputs.ErrorModel`: the shared error sources, each a σ in
+percent and the inputs it moves together, and the random error of each titrant
+addition.
+
+What the panel collects feeds two things: the confidence interval of every fit
 (:func:`core.pipeline.input_aware.input_aware` lets the fit move each input inside
 its uncertainty) and the Ka sensitivity analysis
-(:class:`~core.pipeline.sensitivity.SensitivityConfig`), which draws the inputs from
-the same specs. The panel itself runs neither — it emits :attr:`specs_changed` and
-the owning session reads :meth:`current_specs` and :meth:`problems`.
+(:class:`~core.pipeline.sensitivity.SensitivityConfig`), which draws the sources from
+the same model. The panel itself runs neither — it emits :attr:`specs_changed` and
+the owning session reads :meth:`current_errors` and :meth:`problems`.
 
 An assay whose signal the engine cannot project onto binding constants
 (:func:`core.pipeline.varpro.projectable`) reports no association constant, so an
@@ -25,11 +30,13 @@ from dataclasses import dataclass
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QSizePolicy,
     QStackedWidget,
     QStyle,
@@ -39,7 +46,16 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.pipeline.inputs import InputSpec, SpecKind, axis_reaches_zero, perturbable_inputs
+from core.pipeline.inputs import (
+    AdditionError,
+    ErrorModel,
+    InputSpec,
+    SharedSource,
+    SpecKind,
+    axis_reaches_zero,
+    perturbable_inputs,
+    source_problems,
+)
 from core.pipeline.varpro import projectable
 from core.units import Q_, Quantity
 from gui.plotting.colors import INK_2
@@ -98,13 +114,27 @@ conditions. The input then shows a warning, and neither a fit nor an analysis st
 until you change the value or choose <b>fixed</b>.</p>
 <p>Use realistic numbers: pipetting error is often a few percent, a stated
 literature K<sub>a,dye</sub> may be uncertain by 10–20%.</p>
-<p>Each input is stated on its own, so both the interval and the analysis take their
-errors to be unrelated. Inputs made from one stock, pipetted with one pipette or read
-against one calibration move together; for those, the spread and the shares describe a
-different experiment from yours.</p>
-<p>The titrant moves as one factor over the whole series — a stock or dilution error
-that shifts every concentration by the same fraction. Scatter from point-to-point
-pipetting is not part of it.</p>
+<h3>Shared error sources</h3>
+<p>The entry on an input above is the error <b>only that input</b> has. An error several
+inputs have in common — their solutions come from one stock, were weighed on one balance
+or pipetted with one pipette — is a <b>shared error source</b>: name it, state its σ in
+percent, and tick every input it moves. The sources are independent and multiply, so an
+input with an entry of its own and a shared source carries both.</p>
+<p>Both the interval of every fit and the K<sub>a</sub> Sensitivity analysis use exactly
+this model. The analysis reports a shared source as one item, which is what you can act
+on: one stock to re-make, one pipette to recalibrate.</p>
+<h3>Random error of each addition</h3>
+<p>The titrant entry above moves the whole series by one factor — a stock or dilution
+error that shifts every concentration by the same fraction. The scatter of the individual
+additions is stated here instead. Choose <i>sequential additions into one cuvette</i>,
+where every point carries the errors of the additions before it as well as its own, or
+<i>separately prepared samples</i>, where each point is pipetted on its own.</p>
+<p>This entry feeds the K<sub>a</sub> Sensitivity analysis only. A random error in the
+titrant concentrations is, point by point, scatter in the signal, which the residual
+scatter behind the interval of a fit already measures; the analysis shows how much of
+that spread the pipetting explains. With <i>m</i> replicates the analysis draws it at
+σ/√<i>m</i>, which takes the replicates to be separate titrations, each pipetted on its
+own.</p>
 """
 
 #: Significant figures an absolute value is shown and kept with.
@@ -117,6 +147,19 @@ _DEFAULT_SPEC = InputSpec.sigma_pct(5.0)
 #: Indent of an input's value line under its label, and the gap below it before the next input.
 _VALUE_INDENT = 12
 _INPUT_GAP = 8
+#: The σ a shared source and the additions entry open with — the number a row offers
+#: when a kind is chosen. Stating the source is the user's explicit act; the number is
+#: there to be edited, and reaches nothing until the source or the mode is stated.
+_DEFAULT_SOURCE_SIGMA = _DEFAULT_SPEC.sigma
+#: The entries of the per-addition error selector, each with the ``sequential`` flag it
+#: states; ``None`` is no statement at all, not an error of zero.
+_ADDITION_MODES: tuple[tuple[str, bool | None], ...] = (
+    ('none', None),
+    ('sequential additions into one cuvette', True),
+    ('separately prepared samples', False),
+)
+#: The additions entry as the panel opens it: no mode chosen, and a σ to edit once one is.
+_NO_ADDITIONS = (0, _DEFAULT_SOURCE_SIGMA)
 
 
 def _unavailable_reason(assay_type: AssayType) -> str:
@@ -157,6 +200,15 @@ def _restate(spec: InputSpec, kind: SpecKind, relative: bool, nominal: float | N
     if kind is SpecKind.SIGMA:
         return InputSpec.sigma_abs(nominal * half)
     return InputSpec.interval_abs(nominal * (1 + centre - half), nominal * (1 + centre + half))
+
+
+def _warning_label() -> QLabel:
+    """A hidden red line for what is wrong with the row above it, as every row of the panel shows it."""
+    label = QLabel()
+    label.setWordWrap(True)
+    label.setStyleSheet('color: #b42318;')
+    label.hide()
+    return label
 
 
 def _fit_text_width(edit: QLineEdit, sample: str) -> None:
@@ -214,6 +266,10 @@ class _ValueLine(QWidget):
             self._unit_combo = None
             layout.addWidget(QLabel(self._units[0][0]))
         layout.addStretch(1)
+
+    def focus_widgets(self) -> list[QWidget]:
+        """The widgets that take the keyboard on this line, in reading order."""
+        return [*self._boxes] if self._unit_combo is None else [*self._boxes, self._unit_combo]
 
     def _percent_box(self, interval: bool) -> NoScrollDoubleSpinBox:
         box = NoScrollDoubleSpinBox()
@@ -347,10 +403,7 @@ class _InputSpecRow(QWidget):
             self._values.addWidget(page)
         self._values.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-        self._warning = QLabel()
-        self._warning.setWordWrap(True)
-        self._warning.setStyleSheet('color: #b42318;')
-        self._warning.hide()
+        self._warning = _warning_label()
 
         layout = QVBoxLayout(self)
         # Indented under the label; the bottom margin separates this input from the next.
@@ -378,6 +431,18 @@ class _InputSpecRow(QWidget):
     def setEnabled(self, enabled: bool) -> None:  # Qt override: the selector is not a child
         super().setEnabled(enabled)
         self.kind.setEnabled(enabled)
+
+    def focus_widgets(self) -> list[QWidget]:
+        """The widgets that take the keyboard in this row: the kind selector, then the values.
+
+        Every kind's page is chained; Qt passes over the hidden ones, so the order
+        holds whichever kind is shown.
+        """
+        widgets: list[QWidget] = [self.kind]
+        for page in map(self._values.widget, range(self._values.count())):
+            if isinstance(page, _ValueLine):
+                widgets += page.focus_widgets()
+        return widgets
 
     def spec(self) -> InputSpec | None:
         """The :class:`InputSpec` this row describes; ``None`` when the input is fixed."""
@@ -518,15 +583,112 @@ class _InputSpecRow(QWidget):
         self.changed.emit()
 
 
+class _SharedSourceRow(QWidget):
+    """One error several inputs have in common: its name, its σ in percent, and the inputs it moves.
+
+    A shared source is the precision figure of one physical thing — a stock, a balance,
+    a pipette — so it is a standard deviation in percent and nothing else. Every input of
+    the assay gets a checkbox; the source moves the ticked ones by the same offset, and
+    the name is what every report calls it. What is wrong with the source is shown under
+    it, in the sentence a run would refuse with, as an input's row shows its own.
+    """
+
+    changed = pyqtSignal()
+    remove_requested = pyqtSignal()
+
+    def __init__(self, labels: dict[str, str], parent=None):
+        super().__init__(parent)
+        self._name = QLineEdit()
+        self._name.setToolTip('What every report calls this source, such as “Host and dye stock”.')
+        self._name.textChanged.connect(self.changed)
+
+        self._sigma = NoScrollDoubleSpinBox()
+        self._sigma.setDecimals(1)
+        self._sigma.setSingleStep(1.0)
+        self._sigma.setRange(0.0, 1000.0)
+        self._sigma.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._sigma.setFixedWidth(self._sigma.sizeHint().width())
+        self._sigma.setToolTip('One standard deviation of the error the ticked inputs share, in percent.')
+        self._sigma.valueChanged.connect(self.changed)
+
+        self._remove_btn = QPushButton('Remove')
+        self._remove_btn.setToolTip('Remove this shared error source.')
+        self._remove_btn.clicked.connect(self.remove_requested)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(4)
+        top.addWidget(self._name, 1)
+        top.addWidget(QLabel('σ ='))
+        top.addWidget(self._sigma)
+        top.addWidget(QLabel('%'))
+        top.addWidget(self._remove_btn)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, _INPUT_GAP)
+        layout.setSpacing(4)
+        layout.addLayout(top)
+        applies = QLabel('applies to:')
+        applies.setStyleSheet(f'color: {INK_2};')
+        layout.addWidget(applies)
+
+        # One tick per input of the assay, labelled as the rows above label it, so a
+        # source is stated against the same names the fit and the analysis report.
+        self._ticks: dict[str, QCheckBox] = {}
+        self._labels: dict[str, QLabel] = {}
+        for key, html in labels.items():
+            line = QHBoxLayout()
+            line.setContentsMargins(_VALUE_INDENT, 0, 0, 0)
+            line.setSpacing(4)
+            tick = QCheckBox()
+            tick.toggled.connect(self.changed)
+            label = QLabel(html)
+            label.setTextFormat(Qt.TextFormat.RichText)
+            line.addWidget(tick)
+            line.addWidget(label)
+            line.addStretch(1)
+            layout.addLayout(line)
+            self._ticks[key] = tick
+            self._labels[key] = label
+
+        self._warning = _warning_label()
+        layout.addWidget(self._warning)
+
+    def focus_widgets(self) -> list[QWidget]:
+        """The widgets that take the keyboard in this row, in reading order."""
+        return [self._name, self._sigma, *self._ticks.values(), self._remove_btn]
+
+    def set_problem(self, problem: str | None) -> None:
+        """Show *problem* under the row, or nothing when the source can be used."""
+        self._warning.setText(problem or '')
+        self._warning.setVisible(bool(problem))
+
+    def source(self) -> SharedSource:
+        """The source this row states: its name without surrounding blanks, its σ, and the ticked inputs as listed."""
+        return SharedSource(
+            name=self._name.text().strip(),
+            sigma_pct=self._sigma.value(),
+            inputs=tuple(key for key, tick in self._ticks.items() if tick.isChecked()),
+        )
+
+    def set_source(self, source: SharedSource) -> None:
+        """Show *source* again, ticking the inputs it moves."""
+        self._name.setText(source.name)
+        self._sigma.setValue(source.sigma_pct)
+        for key, tick in self._ticks.items():
+            tick.setChecked(key in source.inputs)
+
+
 class InputUncertaintyPanel(InfoGroupBox):
-    """The stated uncertainty of every input of the current assay.
+    """The stated error model of the current assay: every input's own uncertainty, the shared sources and the additions.
 
     Signals
     -------
     specs_changed()
-        Emitted whenever the specs the panel reports may have changed: an edit, a
-        kind chosen, a set value taken from the conditions form, or a rebuild for
-        another assay.
+        Emitted whenever the model the panel reports may have changed: an edit, a
+        kind chosen, a shared source added, changed or removed, the additions entry
+        set, a set value taken from the conditions form, or a rebuild for another
+        assay.
     """
 
     specs_changed = pyqtSignal()
@@ -538,13 +700,22 @@ class InputUncertaintyPanel(InfoGroupBox):
         self._rows: dict[str, _InputSpecRow] = {}
         # input key -> the plain display name shown for it, the titrant included.
         self._labels: dict[str, str] = {}
+        # The shared sources as shown, in the order they are reported, and the HTML
+        # label each of their tick lists offers per input.
+        self._shared_rows: list[_SharedSourceRow] = []
+        self._shared_labels: dict[str, str] = {}
         self._rows_assay: AssayType | None = None
         # Each assay's rows as the user left them, restored on switching back. Keyed by
         # assay as well: one key can name another species, or another set value, in
         # another assay (DBA's fixed_conc is the dye in one direction, the host in the other).
         self._remembered: dict[tuple[AssayType, str], _RowState] = {}
+        # The same for the sources below the rows, which are stated against this assay's inputs.
+        self._remembered_shared: dict[AssayType, tuple[SharedSource, ...]] = {}
+        self._remembered_additions: dict[AssayType, tuple[int, float]] = {}
         # Condition key -> its set value in the base unit, from the conditions form.
         self._nominals: dict[str, float] = {}
+        # The conditions the inputs are read off, as :func:`validate` takes them.
+        self._base: dict[str, Quantity] = {}
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -583,45 +754,64 @@ class InputUncertaintyPanel(InfoGroupBox):
         """
         return dict(self._labels)
 
-    def current_specs(self) -> dict[str, InputSpec]:
-        """The uncertainty of every input that is not fixed, as the rows state it.
+    def current_errors(self) -> ErrorModel:
+        """The whole error model as the panel states it.
 
-        A percentage spec is in percent of the set value and an absolute one in the
-        input's base unit, both as entered: the conversion to a relative offset belongs
-        to :func:`core.pipeline.inputs.constraints`, which reads the conditions of the
-        assay being fitted. A fixed input is left out, which takes it as exact.
+        An input's own uncertainty is in ``specs``, left out when the input is fixed,
+        which takes it as exact. A percentage spec is in percent of the set value and an
+        absolute one in the input's base unit, both as entered: the conversion to a
+        relative offset belongs to :func:`core.pipeline.inputs.constraints`, which reads
+        the conditions of the assay being fitted. The shared sources come in the order
+        they are shown, and the additions entry is ``None`` until a mode is chosen.
 
-        A row that cannot vary as set — a σ of 0, a range that does not open — is
-        reported by :meth:`problems` and stops the fit; it is not silently dropped here.
+        A source that states no error a titration can have — a σ of 0, a range that does
+        not open, a shared source on one input — is reported by :meth:`problems` and
+        stops the fit; it is not silently dropped here.
         """
-        return {key: spec for key, row in self._rows.items() if (spec := row.spec()) is not None}
+        return ErrorModel(
+            specs={key: spec for key, row in self._rows.items() if (spec := row.spec()) is not None},
+            shared=tuple(row.source() for row in self._shared_rows),
+            additions=self._additions(),
+        )
 
     def problems(self) -> list[str]:
-        """Why the uncertainties cannot be used as set, one sentence per problem naming the input.
+        """Why the model cannot be used as set, one sentence per problem naming its source.
 
-        Empty when every row can be used. Every row is checked: a fit lets each input
-        that is not fixed move within its uncertainty.
+        Empty when everything stated can be used. Every input row is checked — a fit
+        lets each input that is not fixed move within its uncertainty — and the sources
+        below them are put to :func:`core.pipeline.inputs.source_problems`, whose
+        sentences are the ones a run refuses with: the panel says every one of them
+        here, before the run, so nothing is left to find on the next attempt.
         """
-        return [problem for row in self._rows.values() if (problem := row.problem())]
+        found = [problem for row in self._rows.values() if (problem := row.problem())]
+        return found + source_problems(self.current_errors(), self._base, self._labels)
 
     def reset_to_defaults(self) -> None:
-        """Take every input as exact again, as the panel opens with them.
+        """State nothing about the inputs again, as the panel opens.
 
-        The uncertainties are settings of the fit, like the parameter bounds,
-        so whatever resets a session to its defaults resets these too.
+        Every input exact, no shared source, and no error on the additions. These are
+        settings of the fit, like the parameter bounds, so whatever resets a session to
+        its defaults resets them too.
         """
+        blocked = self.blockSignals(True)
         for row in self._rows.values():
-            blocked = row.blockSignals(True)
             row.set_spec(None)
-            row.blockSignals(blocked)
-        # Reported once, when every row is fixed: a half-reset panel describes
+        self._clear_shared()
+        self._set_additions_state(_NO_ADDITIONS)
+        self.blockSignals(blocked)
+        # Reported once, when nothing is stated any more: a half-reset panel describes
         # no state a reader of the signal should act on.
         self.specs_changed.emit()
 
     def set_running(self, running: bool) -> None:
-        """Lock the rows while a fit or an analysis is live."""
+        """Lock the rows and the sources below them while a fit or an analysis is live."""
         for row in self._rows.values():
             row.setEnabled(not running)
+        for shared in self._shared_rows:
+            shared.setEnabled(not running)
+        self._add_shared_btn.setEnabled(not running)
+        self._additions_combo.setEnabled(not running)
+        self._additions_sigma.setEnabled(not running)
 
     # ------------------------------------------------------------------
     # UI
@@ -643,16 +833,117 @@ class InputUncertaintyPanel(InfoGroupBox):
         self._form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
         layout.addLayout(self._form)
 
+        # The titrant is the last input row, so its scatter from point to point is
+        # stated directly under the factor that moves the whole series.
+        additions = QVBoxLayout()
+        additions.setContentsMargins(8, 4, 8, 0)
+        additions.setSpacing(4)
+        additions.addWidget(QLabel('Random error of each addition:'))
+        self._additions_combo = QComboBox()
+        for text, sequential in _ADDITION_MODES:
+            self._additions_combo.addItem(text, sequential)
+        self._additions_combo.setToolTip(
+            'How the titrant was added: one cuvette filled addition after addition, or a sample '
+            'prepared on its own for every point. The analysis needs to know which to work out what '
+            'the scatter of the additions does to Ka.'
+        )
+        self._additions_combo.currentIndexChanged.connect(self._on_additions_mode_changed)
+        # The mode's wording is long, so it sits under its label rather than beside it:
+        # the panel stays as wide as the input rows above make it.
+        mode_line = QHBoxLayout()
+        mode_line.setContentsMargins(_VALUE_INDENT, 0, 0, 0)
+        mode_line.addWidget(self._additions_combo)
+        additions.addLayout(mode_line)
+
+        self._additions_sigma = NoScrollDoubleSpinBox()
+        self._additions_sigma.setDecimals(1)
+        self._additions_sigma.setSingleStep(1.0)
+        self._additions_sigma.setRange(0.0, 1000.0)
+        self._additions_sigma.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._additions_sigma.setFixedWidth(self._additions_sigma.sizeHint().width())
+        self._additions_sigma.setToolTip('One standard deviation of a single addition, in percent of its volume.')
+        self._additions_sigma.valueChanged.connect(self.specs_changed)
+        self._additions_sigma_row = QWidget()
+        sigma_line = QHBoxLayout(self._additions_sigma_row)
+        sigma_line.setContentsMargins(_VALUE_INDENT, 0, 0, 0)
+        sigma_line.setSpacing(4)
+        sigma_line.addWidget(QLabel('σ ='))
+        sigma_line.addWidget(self._additions_sigma)
+        sigma_line.addWidget(QLabel('%'))
+        sigma_line.addStretch(1)
+        additions.addWidget(self._additions_sigma_row)
+        self._additions_warning = _warning_label()
+        self._additions_warning.setContentsMargins(_VALUE_INDENT, 0, 0, 0)
+        additions.addWidget(self._additions_warning)
+        layout.addLayout(additions)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(8, _INPUT_GAP, 8, 0)
+        title = QLabel('Shared error sources')
+        title.setStyleSheet('font-weight: bold;')
+        header.addWidget(title)
+        header.addStretch(1)
+        self._add_shared_btn = QPushButton('Add')
+        self._add_shared_btn.setToolTip('State an error several inputs have in common.')
+        self._add_shared_btn.clicked.connect(self._on_add_shared)
+        header.addWidget(self._add_shared_btn)
+        layout.addLayout(header)
+
+        self._shared_layout = QVBoxLayout()
+        self._shared_layout.setContentsMargins(8, 4, 8, 0)
+        self._shared_layout.setSpacing(4)
+        layout.addLayout(self._shared_layout)
+
+        # Every change the panel reports is a change to what is wrong with it.
+        self.specs_changed.connect(self._refresh_problems)
         self._rebuild_inputs(self._assay_type)
 
+    def _refresh_problems(self) -> None:
+        """Show under each shared source, and under the additions entry, what is wrong with it.
+
+        Each sentence is the one a run would refuse with. The sources are put to
+        :func:`core.pipeline.inputs.source_problems` one more at a time, and a row
+        shows every sentence that source added — a name another source already has
+        included.
+        """
+        stated: list[SharedSource] = []
+        reported: list[str] = []
+        for row in self._shared_rows:
+            stated.append(row.source())
+            found = source_problems(ErrorModel(shared=tuple(stated)), self._base, self._labels)
+            row.set_problem('\n'.join(found[len(reported) :]) or None)
+            reported = found
+        additions = source_problems(ErrorModel(additions=self._additions()), self._base, self._labels)
+        self._additions_warning.setText(additions[0] if additions else '')
+        self._additions_warning.setVisible(bool(additions))
+
+    def _apply_tab_order(self) -> None:
+        """Chain the panel's controls in the order they are read.
+
+        Qt builds its focus chain from the order widgets were created, and the
+        additions entry and the Add button are built once for the session while the
+        input rows and the shared sources come and go. Chaining after every rebuild
+        is what keeps each control behind the one it is read after.
+        """
+        chain: list[QWidget] = []
+        for row in self._rows.values():
+            chain += row.focus_widgets()
+        chain += [self._additions_combo, self._additions_sigma, self._add_shared_btn]
+        for shared in self._shared_rows:
+            chain += shared.focus_widgets()
+        for first, second in zip(chain, chain[1:]):
+            QWidget.setTabOrder(first, second)
+
     def _rebuild_inputs(self, assay_type: AssayType) -> None:
-        """Rebuild the uncertainty rows for ``assay_type``, as last left for that assay.
+        """Rebuild the rows and the sources below them for ``assay_type``, as last left for that assay.
 
         The set values of another assay's conditions are dropped: the new assay's
         arrive through :meth:`set_nominal_values`.
         """
         if self._rows_assay is not None:
             self._remembered.update({(self._rows_assay, key): row.state() for key, row in self._rows.items()})
+            self._remembered_shared[self._rows_assay] = tuple(row.source() for row in self._shared_rows)
+            self._remembered_additions[self._rows_assay] = self._additions_state()
         if assay_type is not self._rows_assay:
             self._nominals = {}
         self._rows_assay = assay_type
@@ -668,6 +959,7 @@ class InputUncertaintyPanel(InfoGroupBox):
         inputs = perturbable_inputs(base)
 
         by_key = {f.key: f for f in fields}
+        self._base = base
         self._labels = {key: plain_label(labels[key]) for key, _kind in inputs}
         for key, _kind in inputs:
             row = _InputSpecRow(self._labels[key], by_key.get(key))
@@ -683,4 +975,81 @@ class InputUncertaintyPanel(InfoGroupBox):
             # Connected after the row is filled: the rebuild reports itself once, below.
             row.changed.connect(self.specs_changed)
 
+        # A source is stated against this assay's inputs, so its row is rebuilt with them.
+        self._clear_shared()
+        self._shared_labels = {key: labels[key] for key, _kind in inputs}
+        for source in self._remembered_shared.get(assay_type, ()):
+            self._add_shared_row(source)
+        self._set_additions_state(self._remembered_additions.get(assay_type, _NO_ADDITIONS))
+
+        self._apply_tab_order()
+        self.specs_changed.emit()
+
+    # ------------------------------------------------------------------
+    # Shared sources and the error of each addition
+    # ------------------------------------------------------------------
+
+    def _add_shared_row(self, source: SharedSource) -> _SharedSourceRow:
+        """Show one more shared source, without reporting it: the caller says when the model changed."""
+        row = _SharedSourceRow(self._shared_labels)
+        row.set_source(source)
+        self._shared_layout.addWidget(row)
+        self._shared_rows.append(row)
+        # Connected after the row is filled: what filling it emitted is not a change.
+        row.changed.connect(self.specs_changed)
+        row.remove_requested.connect(lambda: self._remove_shared(row))
+        return row
+
+    def _on_add_shared(self) -> None:
+        self._add_shared_row(SharedSource(self._next_shared_name(), _DEFAULT_SOURCE_SIGMA, ()))
+        self._apply_tab_order()
+        self.specs_changed.emit()
+
+    def _remove_shared(self, row: _SharedSourceRow) -> None:
+        self._shared_rows.remove(row)
+        row.setParent(None)
+        row.deleteLater()
+        self._apply_tab_order()
+        self.specs_changed.emit()
+
+    def _clear_shared(self) -> None:
+        """Take every shared source off the panel, without reporting it."""
+        for row in self._shared_rows:
+            row.setParent(None)
+            row.deleteLater()
+        self._shared_rows.clear()
+
+    def _next_shared_name(self) -> str:
+        """A preset name no source on the panel has, so two never collide before they are named."""
+        taken = {row.source().name for row in self._shared_rows}
+        number = 1
+        while f'Shared source {number}' in taken:
+            number += 1
+        return f'Shared source {number}'
+
+    def _additions(self) -> AdditionError | None:
+        """The random error of each addition as stated; ``None`` while no mode is chosen."""
+        sequential = self._additions_combo.currentData()
+        if sequential is None:
+            return None
+        return AdditionError(sigma_pct=self._additions_sigma.value(), sequential=sequential)
+
+    def _additions_state(self) -> tuple[int, float]:
+        """The additions entry as shown — the mode and the σ beside it, kept even while no mode is chosen."""
+        return self._additions_combo.currentIndex(), self._additions_sigma.value()
+
+    def _set_additions_state(self, state: tuple[int, float]) -> None:
+        """Show *state* again, without reporting it."""
+        index, sigma = state
+        blocked = self._additions_combo.blockSignals(True)
+        self._additions_combo.setCurrentIndex(index)
+        self._additions_combo.blockSignals(blocked)
+        blocked = self._additions_sigma.blockSignals(True)
+        self._additions_sigma.setValue(sigma)
+        self._additions_sigma.blockSignals(blocked)
+        # The σ is a number about a mode: it is shown once one is chosen.
+        self._additions_sigma_row.setVisible(index > 0)
+
+    def _on_additions_mode_changed(self, index: int) -> None:
+        self._additions_sigma_row.setVisible(index > 0)
         self.specs_changed.emit()

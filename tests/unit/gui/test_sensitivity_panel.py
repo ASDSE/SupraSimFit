@@ -1,13 +1,14 @@
 """The Ka Sensitivity panel: the run's own settings, on specs stated elsewhere.
 
-The uncertainty of each input is stated in the Input Uncertainty panel (its own test
-file); this panel takes those specs from the caller. Pins:
+The error model is stated in the Input Uncertainty panel (its own test file); this panel
+takes it from the caller. Pins:
 
 - the axis combos offer the inputs it was given, named as that panel names them, and
   default to the first two;
-- the config it builds carries the passed specs — every one for sensitivity indices,
-  the two axes' for a heatmap — and the mode, sample size, seed and grid steps shown;
-- indices need at least one input that is not fixed, and say so in plain language;
+- the config it builds carries the passed error model — the whole of it for sensitivity
+  indices, the two axis inputs' own uncertainties for a heatmap — and the mode, sample
+  size, seed and grid steps shown;
+- indices need at least one source that varies, and say so in plain language;
 - a heatmap refuses an axis that is fixed, an axis used twice, and an axis whose
   passed spec would sweep the input down to zero, naming the input each time;
 - an assay that fits no association constant is closed with one sentence saying why;
@@ -20,12 +21,20 @@ Require a ``QApplication`` (the ``qapp`` fixture).
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 pytest.importorskip('PyQt6')
 
 from core.assays.registry import AssayType  # noqa: E402
-from core.pipeline.inputs import TITRANT, InputSpec  # noqa: E402
+from core.pipeline.inputs import (  # noqa: E402
+    TITRANT,
+    AdditionError,
+    ErrorModel,
+    InputSpec,
+    SharedSource,
+)
 from core.pipeline.sensitivity import SensitivityMode  # noqa: E402
 from core.units import Q_  # noqa: E402
 
@@ -76,25 +85,33 @@ def test_the_axis_combos_offer_the_inputs_they_were_given_named_as_the_uncertain
     assert [panel._y_combo.itemData(i) for i in range(panel._y_combo.count())] == ['fixed_conc', TITRANT]
 
 
-def test_the_config_carries_the_passed_specs_and_the_settings_shown(qapp):
+def test_the_config_carries_the_passed_error_model_and_the_settings_shown(qapp):
     panel = _ida_panel()
     specs = {'Ka_dye': InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_abs(0.2e-6)}
+    errors = ErrorModel(
+        specs=specs,
+        shared=(SharedSource('Host and dye stock', 4.0, ('Ka_dye', 'h0')),),
+        additions=AdditionError(1.5, sequential=True),
+    )
     panel._samples_combo.setCurrentIndex(panel._samples_combo.findText('2048'))
     panel._seed_check.setChecked(True)
     panel._seed_spin.setValue(7)
 
-    config = panel.current_config(specs)
+    config = panel.current_config(errors)
 
+    # Sensitivity indices split the spread between every source stated, so all of them go.
     assert config.mode is SensitivityMode.SOBOL
-    assert config.input_specs == specs
+    assert config.errors == errors
     assert (config.n_samples, config.seed) == (2048, 7)
 
-    # A heatmap holds every other input at its set value, so only the axes reach the run.
+    # A heatmap sweeps two inputs and holds everything else at its set value: only their
+    # own uncertainties reach the run, and a source that moves several inputs at once
+    # is no axis of a grid.
     _heatmap(panel, 'Ka_dye', 'h0')
     panel._steps_spin.setValue(9)
-    config = panel.current_config({**specs, 'd0': InputSpec.sigma_pct(4.0)})
+    config = panel.current_config(replace(errors, specs={**specs, 'd0': InputSpec.sigma_pct(4.0)}))
     assert config.mode is SensitivityMode.HEATMAP
-    assert config.input_specs == specs
+    assert config.errors == ErrorModel(specs=specs)
     assert (config.x_key, config.y_key, config.n_steps) == ('Ka_dye', 'h0', 9)
 
 
@@ -106,34 +123,36 @@ def test_the_sample_sizes_offered_are_the_ones_the_sobol_design_accepts(qapp):
 
     sizes = [panel._samples_combo.itemData(i) for i in range(panel._samples_combo.count())]
     assert sizes == list(_SOBOL_SAMPLE_SIZES)
-    assert panel.current_config({'h0': InputSpec.sigma_pct(5.0)}).n_samples == sizes[0]
+    assert panel.current_config(ErrorModel(specs={'h0': InputSpec.sigma_pct(5.0)})).n_samples == sizes[0]
 
 
-def test_indices_need_one_input_that_is_not_fixed_and_say_so(qapp):
-    """With every input fixed there is no spread to split, and the message names where to set one."""
+def test_indices_need_a_source_that_varies_and_say_so(qapp):
+    """With nothing stated there is no spread to split, and the message names where to state it."""
     panel = _ida_panel()
 
-    (problem,) = panel.run_problems({})
+    (problem,) = panel.run_problems(ErrorModel())
     assert problem == (
         'No input varies, so there is no spread to split. Set an uncertainty for at least one input '
         'under Input Uncertainty.'
     )
     with pytest.raises(ValueError, match='No input varies'):
-        panel.current_config({})
+        panel.current_config(ErrorModel())
 
-    assert panel.run_problems({'d0': InputSpec.sigma_pct(5.0)}) == []
+    assert panel.run_problems(ErrorModel(specs={'d0': InputSpec.sigma_pct(5.0)})) == []
+    # A source several inputs share moves them all, so it is a spread to split on its own.
+    assert panel.run_problems(ErrorModel(shared=(SharedSource('Stock', 4.0, ('h0', 'd0')),))) == []
 
 
 def test_a_heatmap_axis_that_is_fixed_or_used_twice_blocks_the_run_naming_the_input(qapp):
     panel = _ida_panel()
     _heatmap(panel, TITRANT, 'h0')
 
-    assert panel.run_problems({TITRANT: InputSpec.sigma_pct(7.0)}) == [
+    assert panel.run_problems(ErrorModel(specs={TITRANT: InputSpec.sigma_pct(7.0)})) == [
         '[Host]₀ is a heatmap axis, so it cannot be fixed: set a σ or a range for it under Input Uncertainty.'
     ]
 
     _heatmap(panel, 'Ka_dye', 'Ka_dye')
-    assert panel.run_problems({'Ka_dye': InputSpec.sigma_pct(5.0)}) == [
+    assert panel.run_problems(ErrorModel(specs={'Ka_dye': InputSpec.sigma_pct(5.0)})) == [
         'Ka,dye is both heatmap axes: choose another input for one of them.'
     ]
 
@@ -161,10 +180,10 @@ def test_a_heatmap_axis_reaching_zero_blocks_the_run_naming_it(qapp, spec, probl
     _heatmap(panel, 'h0', 'd0')
     other = {'d0': InputSpec.sigma_pct(5.0)}
 
-    (message,) = panel.run_problems({'h0': spec, **other})
+    (message,) = panel.run_problems(ErrorModel(specs={'h0': spec, **other}))
     assert message.startswith('[Host]₀ as a heatmap axis would reach zero') and message.endswith(problem)
 
-    assert panel.run_problems({'h0': inside, **other}) == []
+    assert panel.run_problems(ErrorModel(specs={'h0': inside, **other})) == []
 
 
 def test_an_assay_with_no_association_constant_is_unavailable_and_says_why(qapp):
@@ -196,7 +215,7 @@ def test_a_panel_never_told_its_inputs_refuses_to_configure_a_run(qapp):
     panel.set_assay_type(AssayType.IDA)
 
     with pytest.raises(RuntimeError, match='set_inputs'):
-        panel.run_problems({'h0': InputSpec.sigma_pct(5.0)})
+        panel.run_problems(ErrorModel(specs={'h0': InputSpec.sigma_pct(5.0)}))
 
 
 def test_heatmap_controls_are_shown_only_in_heatmap_mode(qapp):
@@ -243,3 +262,12 @@ def test_the_help_says_what_one_sample_is_and_where_the_uncertainties_are_set():
     # The replicates each sample uses follow the fit; the panel offers no choice of its own.
     helps = [value for name, value in vars(sensitivity_panel).items() if name.endswith('_HELP_HTML')]
     assert not any('Per replicate' in help_text or 'Average replicates' in help_text for help_text in helps)
+
+
+def test_the_mode_help_says_a_shared_source_is_one_item_of_the_split():
+    """The analysis splits the spread between the sources as stated, shared ones included."""
+    from gui.widgets import sensitivity_panel
+
+    text = ' '.join(sensitivity_panel._MODE_HELP_HTML.split())
+    assert 'An error several inputs share is one source of its own' in text
+    assert 'errors are unrelated' not in text

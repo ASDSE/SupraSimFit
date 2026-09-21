@@ -7,6 +7,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 from PyQt6.QtCore import QEvent, QObject, QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
@@ -34,7 +35,7 @@ from core.pipeline.fit_pipeline import (
     parameters_on_bound,
     verify_imported_result,
 )
-from core.pipeline.inputs import input_name, specs_from_dict, specs_to_dict
+from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, source_name
 from core.pipeline.profile import ProfileSet
 from core.pipeline.sensitivity import (
     LONG_RUN_SOLVES,
@@ -44,14 +45,14 @@ from core.pipeline.sensitivity import (
     estimated_model_solves,
 )
 from core.pipeline.varpro import projectable
-from core.units import Quantity
+from core.units import Q_, Quantity
 from gui import plot_guide, preferences
 from gui.app_state import SessionState
 from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.plotting.colors import INK, INK_2, INK_3
-from gui.plotting.fit_summary_widget import FitSummaryWidget, and_join, same_inputs
+from gui.plotting.fit_summary_widget import FitSummaryWidget, same_inputs
 from gui.plotting.identifiability_widget import IdentifiabilityWidget
-from gui.plotting.labels import fmt_bound_note, fmt_r2, fmt_sci, fmt_unit_pretty
+from gui.plotting.labels import and_join, fmt_bound_note, fmt_r2, fmt_sci, fmt_unit_pretty
 from gui.plotting.plot_style import PlotStyleWidget
 from gui.plotting.plot_widget import PlotWidget
 from gui.plotting.sensitivity_widget import STOPPING_TEXT, SensitivityWidget
@@ -253,6 +254,25 @@ _INPUTS_CHANGED_NOTE = (
 #: Read for ``{stated}`` of a fit that was made with every input taken as exact.
 _NO_UNCERTAINTY_STATED = 'every input taken as exact'
 
+#: Said when the titrant stock entered is no more concentrated than the titrant
+#: concentrations measured. The panel cannot make this check — it is the one
+#: that needs the loaded data — and the assay refuses the same thing with the
+#: same sentence once a fit reaches it.
+_STOCK_BELOW_DATA = (
+    'The titrant stock ({stock}) must be more concentrated than the highest titrant concentration in the data '
+    '({highest}): a sample cannot hold more titrant than the stock it was made from. Check the stock '
+    'concentration and its unit.'
+)
+
+#: Said instead where the two concentrations read alike in the unit the form
+#: shows — the stock equals the highest titrant concentration, or is above it by
+#: less than the figures shown. Naming one number twice would read as a value
+#: having to be more concentrated than itself.
+_STOCK_NOT_ABOVE_DATA = (
+    'The titrant stock is no more concentrated than the highest titrant concentration in the data ({highest}): '
+    'a sample cannot hold more titrant than the stock it was made from. Check the stock concentration and its unit.'
+)
+
 #: Said of a sensitivity analysis drawn from other input uncertainties than the
 #: ones set now. They are what the analysis samples, so the spread it reports
 #: and a heatmap's axes are entirely a function of them.
@@ -321,24 +341,29 @@ def _capitalized(text: str) -> str:
     return f'{text[0].upper()}{text[1:]}'
 
 
-def _stated_as(result: FitResult, used: dict) -> str:
-    """What *result* was told about its inputs, read back from its own record.
+def _stated_as(result: FitResult) -> str:
+    """What *result* was told about its inputs and about what they share, read back from its own record.
 
-    Each input named and valued as the Input Uncertainty panel writes it, so a
-    note about a fit made with other uncertainties says which ones they were
+    Each source named and valued as the Input Uncertainty panel writes it — an
+    input's own uncertainty and, after them, the ones several inputs share — so
+    a note about a fit made with other uncertainties says which ones they were
     and they can be set back without opening the file.
     """
     from gui.session import stated_uncertainty
 
-    specs = specs_from_dict(used)
-    if not specs:
+    sources = ErrorModel.from_dict(result.fit_config).source_specs()
+    if not sources:
         return _NO_UNCERTAINTY_STATED
-    labels = result_input_labels(result.assay_type)
+    labels = result_input_labels(result.assay_type, result.fit_config)
     stated = []
-    for key, spec in specs.items():
+    for key, spec in sources.items():
         value = (result.conditions or {}).get(key)
         unit = fmt_unit_pretty(str(value.units)) if isinstance(value, Quantity) else ''
-        stated.append(f'{input_name(key, labels)} {stated_uncertainty(spec, unit)}')
+        # A shared source is named with the inputs it moves, which only the
+        # labels of this fit's own record carry; source_name answers for a
+        # result whose assay this version does not know.
+        name = labels.get(key) or source_name(key, labels)
+        stated.append(f'{name} {stated_uncertainty(spec, unit)}')
     return and_join(stated)
 
 
@@ -394,7 +419,7 @@ class FittingSession(QWidget):
         self._custom_tab_name: str | None = None
         # The uncertainties as the panel last stated them, so a row that
         # reports itself without changing them leaves the results alone.
-        self._stated_specs: dict[str, dict] = {}
+        self._stated_errors = ErrorModel()
         self._setup_ui()
         self._connect_signals()
 
@@ -494,6 +519,33 @@ class FittingSession(QWidget):
         self._stop_profile()
         self._stop_sensitivity()
 
+    def _assay_problems(self, ms: MeasurementSet) -> list[str]:
+        """Why the assay as configured cannot describe the loaded data, one sentence per problem; empty when it can.
+
+        The Assay Configuration panel's own checks, and the one that needs the
+        data: a sample cannot hold more titrant than the stock it was made
+        from, so the stock has to be more concentrated than every titrant
+        concentration measured. A stock that has not been entered at all is
+        already the panel's first sentence, so it is not measured against the
+        data as well.
+        """
+        panel = self._assay_panel
+        problems = panel.problems()
+        stock = panel.current_conditions().get(TITRANT_STOCK)
+        if stock is None or not stock.magnitude > 0:
+            return problems
+        concentrations = np.asarray(ms.concentrations, dtype=float)
+        finite = concentrations[np.isfinite(concentrations)]
+        if finite.size and float(finite.max()) >= stock.magnitude:
+            entered = panel.format_condition(TITRANT_STOCK, stock)
+            highest = panel.format_condition(TITRANT_STOCK, Q_(float(finite.max()), 'M'))
+            problems.append(
+                _STOCK_NOT_ABOVE_DATA.format(highest=highest)
+                if entered == highest
+                else _STOCK_BELOW_DATA.format(stock=entered, highest=highest)
+            )
+        return problems
+
     def run_fit(self) -> None:
         """Start a background fitting run on a copy of the loaded data, so later changes never reach it."""
         ms = self._state.measurement_set
@@ -517,6 +569,15 @@ class FittingSession(QWidget):
                 'concentration vector in the Data panel before running the fit.',
             )
             self._data_panel.focus_concentration_table()
+            return
+
+        assay_problems = self._assay_problems(ms)
+        if assay_problems:
+            QMessageBox.warning(
+                self,
+                'Assay Configuration',
+                'The fit cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in assay_problems),
+            )
             return
 
         bound_problems = self._bounds_panel.problems()
@@ -545,10 +606,13 @@ class FittingSession(QWidget):
             config = replace(config, custom_bounds=custom_bounds)
         # The uncertainties widen the reported interval to cover them; a fit
         # that cannot be made with the inputs as free as they were stated to be
-        # names them in its refusal the way the panel names them.
+        # names them in its refusal the way the panel names them. The random
+        # error of each addition is scatter the fit's own residuals already
+        # measure, so it is left out here (``for_fit``) and a change to it never
+        # puts a fit out of date.
         config = replace(
             config,
-            input_specs=self._input_panel.current_specs(),
+            errors=self._input_panel.current_errors().for_fit(),
             input_labels=self._input_panel.input_labels(),
         )
 
@@ -1143,16 +1207,16 @@ class FittingSession(QWidget):
         self._update_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
 
     def _on_input_specs_changed(self) -> None:
-        """Check the results against the uncertainties again, once the uncertainties themselves have changed.
+        """Check the results against the error sources again, once the sources themselves have changed.
 
         The panel reports itself whenever a row is touched, which includes a
         set value arriving from the conditions form as it is typed. Only a
-        change to what the rows state can put a result out of date, so the
+        change to what the panel states can put a result out of date, so the
         results are left alone until one happens.
         """
-        stated = specs_to_dict(self._input_panel.current_specs())
-        if stated != self._stated_specs:
-            self._stated_specs = stated
+        stated = self._input_panel.current_errors()
+        if stated != self._stated_errors:
+            self._stated_errors = stated
             self._show_results()
 
     def _name_inputs(self) -> None:
@@ -1345,6 +1409,15 @@ class FittingSession(QWidget):
             )
             return
 
+        assay_problems = self._assay_problems(ms)
+        if assay_problems:
+            QMessageBox.warning(
+                self,
+                'Assay Configuration',
+                'The analysis cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in assay_problems),
+            )
+            return
+
         input_problems = self._input_panel.problems()
         if input_problems:
             QMessageBox.warning(
@@ -1354,10 +1427,11 @@ class FittingSession(QWidget):
             )
             return
 
-        # The analysis draws the inputs from the uncertainties stated in the
-        # shared panel, the same ones the fit's interval accounts for.
-        specs = self._input_panel.current_specs()
-        if not specs:
+        # The analysis draws the inputs from the error sources stated in the
+        # shared panel, the same ones the fit's interval accounts for, plus the
+        # random error of each addition, which only it samples.
+        errors = self._input_panel.current_errors()
+        if not errors.varies:
             QMessageBox.warning(
                 self,
                 'Sensitivity Analysis',
@@ -1365,7 +1439,7 @@ class FittingSession(QWidget):
                 'Choose a σ or a range for at least one input.',
             )
             return
-        problems = self._sensitivity_panel.run_problems(specs)
+        problems = self._sensitivity_panel.run_problems(errors)
         if problems:
             QMessageBox.warning(
                 self,
@@ -1373,7 +1447,7 @@ class FittingSession(QWidget):
                 'The analysis cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in problems),
             )
             return
-        sens_config = self._sensitivity_panel.current_config(specs)
+        sens_config = self._sensitivity_panel.current_config(errors)
 
         assay_cls = self._assay_panel.get_assay_class()
         conditions = self._assay_panel.current_conditions()
@@ -1382,9 +1456,12 @@ class FittingSession(QWidget):
         if custom_bounds:
             fit_config = replace(fit_config, custom_bounds=custom_bounds)
 
-        curve_fits = estimated_fit_count(sens_config) + 1
+        # Every fit the run makes: the perturbations, the refits the
+        # elasticities take, and the baseline.
+        n_inputs = len(self._input_panel.input_labels())
+        curve_fits = estimated_fit_count(sens_config, n_inputs) + 1
         worker_count = preferences.worker_count()
-        if estimated_model_solves(sens_config, fit_config, self._state.assay_type) > LONG_RUN_SOLVES:
+        if estimated_model_solves(sens_config, fit_config, self._state.assay_type, n_inputs) > LONG_RUN_SOLVES:
             spread = 'one at a time' if worker_count == 1 else f'{worker_count} at a time'
             reply = QMessageBox.question(
                 self,
@@ -1463,7 +1540,7 @@ class FittingSession(QWidget):
         # Counted as the cost dialog and the progress bar count: every fit the
         # run makes, the baseline included. The baseline is this result, so it
         # succeeded; only the perturbed fits could have failed.
-        planned = estimated_fit_count(result.config) + 1
+        planned = result.n_planned + 1
         succeeded = result.n_success + 1
         if cancelled:
             self.status_message.emit(
@@ -1537,9 +1614,10 @@ class FittingSession(QWidget):
         matches when it was made on the loaded data (the same
         ``data_fingerprint``), every replicate it used is active and every
         active replicate was given to it, its conditions equal the entered ones
-        by value (a unit switch changes nothing), its assay type is the one
-        selected, and — for a fit, whose interval accounts for them — the input
-        uncertainties it was made with are the ones set now. The note names
+        by value (a unit switch changes nothing) and describe the same dilution
+        by the titrant, its assay type is the one selected, and — for a fit,
+        whose interval accounts for them — the error sources it was made with
+        are the ones set now. The note names
         what differs and how to undo it. *what* names the result ("fit") and
         *redo* how to make a new one ("run the fit again"). With no data
         loaded only the assay type, the conditions and the uncertainties can be
@@ -1552,7 +1630,8 @@ class FittingSession(QWidget):
         what it means is named where it is shown.
         """
         ms = self._state.measurement_set
-        made = f'This {what} was made'
+        opening = f'This {what} was made'
+        made = opening
         changes: list[str] = []
         fixes: list[str] = []
         if result is None or ms is not None:
@@ -1606,32 +1685,80 @@ class FittingSession(QWidget):
                         for key in keys
                     ]
                     fixes.append(f'set it back to {stored[keys[0]]}' if len(keys) == 1 else 'set them back')
-                else:
+                dilution, dilution_fixes = self._dilution_mismatch(result.conditions, entered)
+                changes += dilution
+                fixes += dilution_fixes
+                # Only what the conditions themselves said: a replicate switched
+                # off is already in `changes` and does not name this difference.
+                if not keys and not dilution:
                     changes.append('the assay conditions entered now differ from its own')
                     fixes.append('enter its conditions again')
 
         if not changes:
-            used = result.fit_config.get('input_uncertainty') or {}
-            if uncertainties and used != specs_to_dict(self._input_panel.current_specs()):
-                return _INPUTS_CHANGED_NOTE.format(stated=_stated_as(result, used))
+            used = ErrorModel.from_dict(result.fit_config)
+            if uncertainties and used != self._input_panel.current_errors().for_fit():
+                return _INPUTS_CHANGED_NOTE.format(stated=_stated_as(result))
             return None
         fix = fixes[0] if len(fixes) == 1 else 'change these back'
-        return f'{made}. {_capitalized(and_join(changes))}. {_capitalized(fix)}, or {redo}.'
+        # A dilution difference names nothing the result was made with — the
+        # choice is on or off — so with nothing else differing the note has no
+        # opening clause to carry and starts at the change itself.
+        head = f'{made}. ' if made != opening else ''
+        return f'{head}{_capitalized(and_join(changes))}. {_capitalized(fix)}, or {redo}.'
+
+    def _dilution_mismatch(self, stored: dict, entered: dict) -> tuple[list[str], list[str]]:
+        """What changed about the dilution by the titrant, and how to undo it; two empty lists when nothing did.
+
+        The two differences a key-by-key comparison of the conditions cannot
+        name: a result made with the additions diluting the sample carries the
+        titrant stock and a result made with the totals constant carries
+        neither dilution key, so switching the choice adds or removes a key
+        rather than changing one; and which fixed concentrations the stock
+        itself holds is a list of keys, not a value a condition field shows.
+        """
+        was, now = TITRANT_STOCK in stored, TITRANT_STOCK in entered
+        if was != now:
+            return (
+                [f'the dilution by the titrant is now switched {"on" if now else "off"}'],
+                [f'switch it {"off" if now else "back on"}'],
+            )
+        if not now:
+            return [], []
+        stored_in = tuple(stored.get('stock_contains') or ())
+        entered_in = tuple(entered.get('stock_contains') or ())
+        if set(stored_in) == set(entered_in):
+            return [], []
+        return (
+            [
+                f'the titrant stock is now stated to contain {self._contains_text(entered_in)}'
+                if entered_in
+                else 'the titrant stock is now stated to contain none of the fixed concentrations'
+            ],
+            [
+                f'tick {self._contains_text(stored_in)} under the titrant stock again'
+                if stored_in
+                else 'untick every concentration under the titrant stock again'
+            ],
+        )
+
+    def _contains_text(self, keys: tuple[str, ...]) -> str:
+        """The concentrations *keys* names, as the conditions form labels them."""
+        return and_join([self._assay_panel.condition_name(key) or key for key in keys])
 
     def _sensitivity_inputs_note(self, result: SensitivityResult) -> str | None:
         """Why *result* no longer describes the uncertainties set now; ``None`` while it does.
 
-        The analysis draws its samples from the uncertainties it was run with,
+        The analysis draws its samples from the error sources it was run with,
         so the Ka spread, the Sobol' indices and a heatmap's axis ranges are
         entirely a function of them; the run records them in
-        ``config.input_specs``. A heatmap holds every input but its two axes at
-        its set value and records only those two, so only what it recorded is
+        ``config.errors``. A heatmap holds every input but its two axes at its
+        set value and records only those two, so only what it recorded is
         compared.
         """
-        used = specs_to_dict(result.config.input_specs)
-        stated = specs_to_dict(self._input_panel.current_specs())
+        used = result.config.errors
+        stated = self._input_panel.current_errors()
         if result.config.mode is SensitivityMode.HEATMAP:
-            stated = {key: stated[key] for key in used if key in stated}
+            stated = ErrorModel(specs={key: stated.specs[key] for key in used.specs if key in stated.specs})
         return None if used == stated else _SENSITIVITY_INPUTS_NOTE
 
     def _show_results(self, *, redraw: bool = False, force: bool = False) -> None:

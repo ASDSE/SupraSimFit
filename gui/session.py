@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -19,13 +20,15 @@ from core.pipeline.fit_pipeline import (
     parameters_on_bound,
     summarize_parameters,
 )
-from core.pipeline.inputs import InputSpec, SpecKind, specs_from_dict
+from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, InputSpec, SpecKind, shared_key
+from core.pipeline.sensitivity import SensitivityMode
 from core.units import Quantity
 from gui.plotting.labels import (
     NO_UNCERTAINTY,
     RANGES_ONLY,
     SPLIT_NOTE,
     fmt_bound_note,
+    fmt_concentration,
     fmt_interval_plain,
     fmt_log10,
     fmt_misfit,
@@ -233,17 +236,22 @@ def stated_uncertainty(spec: InputSpec, unit: str) -> str:
 
 
 def _input_uncertainty_block(result: FitResult) -> list[str]:
-    """The INPUT UNCERTAINTY table: what was stated per input and where the fit put it.
+    """The INPUT UNCERTAINTY table: what was stated per source and where the fit put it.
 
-    Empty for a fit that took every input as entered, which has no input to
+    One row per input with an uncertainty of its own, then one per source
+    several inputs share, which the label names with the inputs it moves.
+    Empty for a fit that took every input as entered, which has no source to
     report and no shift to show.
     """
-    specs = specs_from_dict(result.fit_config.get('input_uncertainty') or {})
-    if not specs:
+    errors = ErrorModel.from_dict(result.fit_config)
+    specs = errors.specs
+    if not specs and not errors.shared:
         return []
-    labels = result_input_labels(result.assay_type)
+    labels = result_input_labels(result.assay_type, result.fit_config)
+    stated: list[tuple[str, InputSpec]] = list(specs.items())
+    stated += [(shared_key(source.name), InputSpec.sigma_pct(source.sigma_pct)) for source in errors.shared]
     rows: list[tuple[str, ...]] = []
-    for key, spec in specs.items():
+    for key, spec in stated:
         unit = str(result.conditions[key].units) if isinstance(result.conditions.get(key), Quantity) else ''
         shift = result.input_shifts.get(key)
         if shift is None:
@@ -267,9 +275,34 @@ def _input_uncertainty_block(result: FitResult) -> list[str]:
             'and against the uncertainty stated for it.'
         )
     )
+    if errors.shared:
+        lines.extend(
+            _wrapped(
+                'A shared source is one error several inputs have in common — one stock, balance or pipette '
+                'behind all of them — and it moves every input it applies to by the same percentage.'
+            )
+        )
     lines.append('')
-    lines.extend(_fixed_width_table(('Input', 'Stated', 'Shift', 'Against what was stated'), rows))
+    lines.extend(_fixed_width_table(('Source', 'Stated', 'Shift', 'Against what was stated'), rows))
     lines.append('')
+    return lines
+
+
+#: The two conditions that say how the samples were made rather than what is in
+#: them: a report names them in one sentence instead of printing their keys.
+_DILUTION_KEYS = (TITRANT_STOCK, 'stock_contains')
+
+
+def _dilution_lines(result: FitResult) -> list[str]:
+    """How the titrant diluted the sample, as the CONDITIONS block states it; empty when the totals stayed constant."""
+    stock = result.conditions.get(TITRANT_STOCK)
+    if not isinstance(stock, Quantity):
+        return []
+    lines = [f'  Titrant stock: {fmt_concentration(stock)}; fixed concentrations diluted by each addition']
+    contains = tuple(result.conditions.get('stock_contains') or ())
+    if contains:
+        labels = result_input_labels(result.assay_type, result.fit_config)
+        lines.append(f'  also in the stock: {", ".join(labels.get(key, key) for key in contains)}')
     return lines
 
 
@@ -293,7 +326,7 @@ def _model_and_inputs_block(result: FitResult) -> list[str]:
     diagnostics = result.diagnostics
     if diagnostics is None:
         return []
-    labels = result_input_labels(result.assay_type)
+    labels = result_input_labels(result.assay_type, result.fit_config)
     lines = ['MODEL AND INPUTS', '-' * 60]
     lines.extend(_wrapped(verdict_sentence(diagnostics, result.input_shifts, labels, html=False)))
     lines.append('')
@@ -303,7 +336,7 @@ def _model_and_inputs_block(result: FitResult) -> list[str]:
     if result.input_shifts:
         lines.append(f'  {"Model with the inputs moved:":<{_TEST_LABEL_WIDTH}}{_misfit_line(diagnostics.misfit)}')
     conflict = diagnostics.conflict
-    specs = specs_from_dict(result.fit_config.get('input_uncertainty') or {})
+    specs = ErrorModel.from_dict(result.fit_config).source_specs()
     # What the block's readings are conditioned on, so a printed report says it
     # rather than leaving it to be inferred from a section that is not there.
     stated = 'stated above under INPUT UNCERTAINTY.' if specs else f'{NO_UNCERTAINTY}.'
@@ -384,11 +417,14 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
 
     Where the fit was free to move an input, the ``cond_`` columns carry the
     same binding constant with every input held as entered, and one row per
-    such input carries where the fit put it: ``parameter`` is the input's key,
-    ``unit`` is ``% of entered``, ``estimate`` the shift in percent, and
-    ``input_z`` how many stated standard deviations that is (blank for an
-    input stated as a range, where ``input_at_edge`` says whether the fit took
-    it to an end of that range). The ``verdict``, ``misfit_p``,
+    source it could move carries where the fit put it: ``parameter`` is the
+    source's key — the input's own key, and ``shared:<name>`` for a source
+    several inputs share, listed after the inputs — ``unit`` is
+    ``% of entered``, ``estimate`` the shift in percent, and ``input_z`` how
+    many stated standard deviations that is (blank for an input stated as a
+    range, where ``input_at_edge`` says whether the fit took it to an end of
+    that range). Which inputs a shared source moves is in the TXT report and
+    in the results file's ``fit_config``. The ``verdict``, ``misfit_p``,
     ``cond_misfit_p``, ``conflict_q`` and ``conflict_p`` columns describe the
     fit as a whole and repeat on every one of its rows; ``misfit_p`` is the
     misfit test of the fit the interval comes from and ``cond_misfit_p`` the
@@ -537,11 +573,12 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
                         '',
                     ]
                 )
-            # One row per input the fit was free to move: where it put that
-            # input, in percent of the value entered, and how far that is
-            # against the uncertainty stated for it. The input is named by its
-            # key, as every other row of the column is, so a reader can join it
-            # to the condition of that name; the TXT report gives the names.
+            # One row per source the fit was free to move: where it put that
+            # source, in percent of the value entered, and how far that is
+            # against the uncertainty stated for it. The source is named by its
+            # key, as every other row of the column is, so a reader can join an
+            # input to the condition of that name; the TXT report gives the
+            # names, a shared source's inputs included.
             for key, shift in result.input_shifts.items():
                 writer.writerow(
                     [
@@ -772,10 +809,13 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
             lines.append('CONDITIONS')
             lines.append('-' * 60)
             for cond_key, cond_val in result.conditions.items():
+                if cond_key in _DILUTION_KEYS:
+                    continue
                 if isinstance(cond_val, Quantity):
                     lines.append(f'  {cond_key}: {cond_val:.4g~P}')
                 else:
                     lines.append(f'  {cond_key}: {cond_val}')
+            lines.extend(_dilution_lines(result))
             lines.append('')
 
         if i < len(results) - 1:
@@ -828,6 +868,8 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     - Identifiability plot: the tab holds a chart.
     - Fit results (JSON/TXT/CSV): a result is shown; exported are the shown results.
     - Ka sensitivity plot: a sensitivity analysis is shown.
+    - Ka uncertainty budget: the shown analysis reports sensitivity indices,
+      which is what a budget is split from; a heatmap has none.
     - Style template: always available (style widget is always present).
 
     While every held result is hidden, the result artefacts give the note
@@ -837,6 +879,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     ms_loaded = state.measurement_set is not None
     has_results = bool(state.fit_results)
     has_sensitivity = state.sensitivity_result is not None and state.sensitivity_note is None
+    has_budget = has_sensitivity and state.sensitivity_result.mode is SensitivityMode.SOBOL
     # The Identifiability tab is cleared by an import of results fitted elsewhere,
     # so what it has to save is a question for the tab, not for the held results.
     has_identifiability = session._identifiability_widget.has_chart()
@@ -845,6 +888,11 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     no_fit_msg = session.hidden_results_note() or 'Run a fit first.'
     no_identifiability_msg = session.hidden_results_note() or 'Run a fit in this session first.'
     no_sensitivity_msg = state.sensitivity_note or 'Run a sensitivity analysis first.'
+    no_budget_msg = (
+        no_sensitivity_msg
+        if not has_sensitivity
+        else 'The analysis shown is a heatmap. Run one with Sensitivity indices to get an uncertainty budget.'
+    )
 
     from core.io.formats.measurement_writer import (
         write_measurements_csv,
@@ -877,6 +925,23 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
 
     def _write_sensitivity(path: Path) -> None:
         session._sensitivity_widget.export_image(str(path))
+
+    def _write_budget_csv(path: Path) -> None:
+        """The budget table as the Ka Sensitivity tab reports it, one row per source and Ka."""
+        budgets = (state.sensitivity_result.budget or {}).values()
+        # A Sobol run always has a budget per binding constant; whether it holds
+        # a number is the question, and a file of empty cells answers nothing.
+        if not any(math.isfinite(budget.variance) for budget in budgets):
+            raise ValueError(
+                'This analysis reports no uncertainty budget: too few of its samples have a fit to split the '
+                'spread of Ka between the sources. Run the analysis again.'
+            )
+        rows = session._sensitivity_widget.budget_rows()
+        columns = list(dict.fromkeys(key for row in rows for key in row))
+        with path.open('w', encoding='utf-8', newline='') as handle:
+            writer = csv.DictWriter(handle, columns, restval='')
+            writer.writeheader()
+            writer.writerows(rows)
 
     def _write_style(path: Path) -> None:
         style = session._style_widget.widget.current_style()
@@ -954,6 +1019,14 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
             available=has_sensitivity,
             unavailable_reason=no_sensitivity_msg,
             writer=_write_sensitivity,
+        ),
+        ExportableArtefact(
+            key='budget_csv',
+            label='Ka uncertainty budget (CSV)',
+            suffix='_budget.csv',
+            available=has_budget,
+            unavailable_reason=no_budget_msg,
+            writer=_write_budget_csv,
         ),
         ExportableArtefact(
             key='style_json',

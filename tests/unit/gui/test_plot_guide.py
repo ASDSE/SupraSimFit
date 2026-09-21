@@ -1,7 +1,10 @@
 """Help ▸ Reading the plots: each entry point opens the window's one non-modal guide at the right section.
 
-Also guards the Identifiability example: its numbers are recomputed from the demo
-data, so the guide cannot quietly drift away from what the app produces.
+Also guards the examples and the Ka Sensitivity entry against the code they
+describe: the Identifiability numbers are recomputed from the demo data, the
+budget table's columns and the name of the per-addition item are read off the
+widget that draws them, and the fit count the example quotes is computed by the
+analysis itself. A guide that drifts away from what the app produces fails here.
 """
 
 from __future__ import annotations
@@ -183,3 +186,68 @@ def test_the_examples_still_describe_the_demo_data():
     summary = re.sub(r'\s+', ' ', PLOT_GUIDE[SUMMARY][1])
     assert f'{np.max(signals) / 1e5:.1f}&times;10<sup>5</sup> a.u.' in summary
     assert f'{result.rmse / 1e3:.2f}&times;10<sup>3</sup> a.u.' in summary
+
+
+#: What the Ka Sensitivity entry says about each column of the budget table,
+#: keyed by the header the widget draws. Written out here rather than matched
+#: loosely, so a column renamed or added in the widget fails until the guide
+#: explains it.
+_BUDGET_COLUMN_IN_THE_GUIDE = {
+    'Source': 'What is ranked: sources, not inputs',
+    'Stated uncertainty': '<i>Stated uncertainty</i> &mdash; what you entered',
+    'Elasticity': '<i>Elasticity</i> &mdash; how many percent K<sub>a</sub> moves per percent',
+    'Share of variance S₁ [95 %]': '<i>Share of variance S<sub>1</sub></i> &mdash; the first-order index',
+    'Variance (decades²) [95 %]': '<i>Variance</i> &mdash; that share as an absolute number, in decades&sup2;',
+    'Spread if exact (decades) [95 %]': '<i>Spread if exact</i> &mdash; what would be left',
+}
+
+
+def _sensitivity_text() -> str:
+    """The Ka Sensitivity entry as one line, so a phrase broken over two lines still matches."""
+    from gui.plot_guide import PLOT_GUIDE, SENSITIVITY
+
+    return re.sub(r'\s+', ' ', PLOT_GUIDE[SENSITIVITY][1])
+
+
+def test_the_sensitivity_entry_explains_every_column_of_the_budget_table():
+    """A column on screen with no explanation is a number the reader cannot act on."""
+    from gui.plotting.sensitivity_widget import _BUDGET_HEADERS, _INTERACTIONS_ROW
+
+    assert tuple(_BUDGET_COLUMN_IN_THE_GUIDE) == _BUDGET_HEADERS
+    text = _sensitivity_text()
+    missing = [header for header, phrase in _BUDGET_COLUMN_IN_THE_GUIDE.items() if ' '.join(phrase.split()) not in text]
+    assert not missing, f'the guide no longer explains these budget columns: {missing}'
+    assert f'<i>{_INTERACTIONS_ROW}</i>' in text, 'the last row of the table is unexplained'
+
+
+def test_the_sensitivity_entry_calls_the_per_addition_item_what_the_widget_labels_it():
+    """The reader looks the item up by the name on screen, and is told why it is not added to the interval."""
+    from gui.plotting.sensitivity_widget import _ADDITIONS_LABEL
+
+    text = _sensitivity_text()
+
+    assert f'<b>{_ADDITIONS_LABEL}</b>' in text
+    # Why it is listed but not added: the same reason the widget prints under the table.
+    assert 'already inside it' in text
+
+
+def test_the_sensitivity_example_quotes_the_fit_count_its_own_run_would_cost():
+    """The example names four sources and a sample size; the run's own estimate has to match it.
+
+    The elasticity refits are part of that estimate, so a guide written before
+    them would quote the older, smaller number and fail here.
+    """
+    from core.pipeline.inputs import ErrorModel, InputSpec
+    from core.pipeline.sensitivity import SensitivityConfig, SensitivityMode, estimated_fit_count
+
+    inputs = ('h0', 'd0', 'Ka_dye', 'titrant')
+    config = SensitivityConfig(
+        mode=SensitivityMode.SOBOL,
+        n_samples=1024,
+        errors=ErrorModel(specs={key: InputSpec.sigma_pct(5.0) for key in inputs}),
+    )
+
+    fits = estimated_fit_count(config, len(inputs))
+
+    assert fits > config.n_samples * (len(inputs) + 2), 'the elasticity refits are part of the cost'
+    assert f'sample size 1024, which costs {fits} fits' in _sensitivity_text()

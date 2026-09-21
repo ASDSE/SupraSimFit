@@ -861,6 +861,38 @@ def test_the_block_says_what_the_diagnostics_say_and_which_uncertainties_were_us
     assert not widget._diagnostics_label.isHidden()
 
 
+def test_the_block_names_a_shared_source_with_the_inputs_it_moves(qapp):
+    """A shift of a source several inputs share is read against the source, so the block has to name it as one."""
+    from core.pipeline.diagnostics import InputShift
+    from core.pipeline.inputs import ErrorModel, SharedSource, shared_key
+
+    key = shared_key('Host and dye stock')
+    errors = ErrorModel(shared=(SharedSource('Host and dye stock', 4.0, ('h0', 'd0')),))
+    result = _aware_result(shifts={key: InputShift(key, -0.041, -1.02, False)}, uncertainty={})
+    result.fit_config.update(errors.to_dict())
+    text = _block(_aware_widget(result))
+
+    assert 'Host and dye stock (shared by [Host]₀, [Dye]₀) −4.1 % (1.0 σ)' in text
+    assert 'Input uncertainties used: Host and dye stock (shared by [Host]₀, [Dye]₀) ± 4 %.' in text
+
+
+def test_the_block_says_that_the_titrant_diluted_the_sample(qapp):
+    """The totals the fit used fall with each addition, which is part of the model behind the numbers above."""
+    from core.units import Q_
+
+    result = _aware_result()
+    result.conditions.update({'titrant_stock': Q_(1.0e-3, 'M'), 'stock_contains': ('d0',)})
+    text = _block(_aware_widget(result))
+
+    # In the unit the stock was entered in, not in raw molar.
+    assert 'a stock of 1 mM' in text and 'every fixed concentration falls with each addition' in text
+    assert 'except [Dye]₀' in text
+
+
+def test_the_block_of_a_fit_with_constant_totals_says_nothing_about_dilution(qapp):
+    assert 'each addition' not in _block(_aware_widget())
+
+
 def test_a_fit_that_took_every_input_as_entered_says_the_interval_takes_them_as_exact(qapp):
     """The block is the record of what the interval covers, so 'nothing stated' has to be stated."""
     widget = _aware_widget(_aware_result(shifts={}, uncertainty={}, conditional=False))

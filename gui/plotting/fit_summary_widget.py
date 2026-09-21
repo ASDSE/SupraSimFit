@@ -29,10 +29,10 @@ from core.pipeline.fit_pipeline import (
     parameters_on_bound,
     summarize_parameters,
 )
-from core.pipeline.inputs import input_name
+from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, input_name, shared_key
 from core.pipeline.sensitivity import SensitivityMode, SensitivityResult
 from core.pipeline.varpro import LEVEL
-from core.units import Q_
+from core.units import Q_, Quantity
 from gui.plotting.colors import INK_2
 from gui.plotting.labels import (
     NO_UNCERTAINTY,
@@ -40,7 +40,9 @@ from gui.plotting.labels import (
     SPLIT_MARK,
     SPLIT_NOTE,
     UNSOLVABLE_NOTE,
+    and_join,
     fmt_bound_note,
+    fmt_concentration,
     fmt_interval_html,
     fmt_log10,
     fmt_misfit,
@@ -504,11 +506,6 @@ class ParameterTable(QTableWidget):
         self.updateGeometry()
 
 
-def and_join(items: list[str]) -> str:
-    """``a``, ``a and b``, ``a, b and c``."""
-    return items[0] if len(items) == 1 else f'{", ".join(items[:-1])} and {items[-1]}'
-
-
 def _degenerate_note(keys: list[str], tail: str) -> str:
     """Why the starred rows are starred: the shared fact, then what it means for this view."""
     return (
@@ -607,27 +604,47 @@ def _spec_text(spec: dict, value) -> str:
 
 
 def _uncertainty_line(result: FitResult, labels: dict[str, str]) -> str:
-    """What the fit was told about its inputs, read back from the fit's own record."""
+    """What the fit was told about its inputs and about the sources they share, read back from the fit's own record."""
     specs = (result.fit_config or {}).get('input_uncertainty') or {}
-    if not specs:
+    shared = ErrorModel.from_dict(result.fit_config or {}).shared
+    if not specs and not shared:
         return f'Input uncertainties used: {NO_UNCERTAINTY}.'
     conditions = result.conditions or {}
-    stated = ', '.join(
-        f'{input_name(key, labels)} {_spec_text(spec, conditions.get(key))}' for key, spec in specs.items()
+    stated = [f'{input_name(key, labels)} {_spec_text(spec, conditions.get(key))}' for key, spec in specs.items()]
+    # A shared source is a precision figure of one stock, balance or pipette,
+    # so it is a standard deviation in percent and nothing else.
+    stated += [f'{labels.get(shared_key(source.name), source.name)} ± {source.sigma_pct:g} %' for source in shared]
+    return f'Input uncertainties used: {", ".join(stated)}.'
+
+
+def _dilution_line(result: FitResult, labels: dict[str, str]) -> str:
+    """How the titrant diluted the sample this fit was made on; ``''`` where the totals stayed constant."""
+    conditions = result.conditions or {}
+    stock = conditions.get(TITRANT_STOCK)
+    if not isinstance(stock, Quantity):
+        return ''
+    line = (
+        f'Dilution: the titrant was added from a stock of {fmt_concentration(stock)}, so every fixed '
+        'concentration falls with each addition'
     )
-    return f'Input uncertainties used: {stated}.'
+    contains = tuple(conditions.get('stock_contains') or ())
+    if contains:
+        held = ', '.join(labels.get(key, key) for key in contains)
+        line += f', except {held}, which the stock holds at the sample’s own concentration'
+    return f'{line}.'
 
 
 def _diagnostics_lines(result: FitResult) -> list[str]:
     """The Model and inputs block of one fit, one line each; empty for a result that carries no diagnostics.
 
-    The inputs are named from the fit's own assay, so the block and the
-    exported report name the same fit's inputs alike.
+    The sources are named from the fit's own assay and its own record of what
+    the inputs share, so the block and the exported report name the same fit's
+    sources alike.
     """
     diagnostics = result.diagnostics
     if diagnostics is None:
         return []
-    labels = result_input_labels(result.assay_type)
+    labels = result_input_labels(result.assay_type, result.fit_config)
     shifts = result.input_shifts or {}
     lines = [verdict_sentence(diagnostics, shifts, labels, html=True)]
     lines += _misfit_lines(diagnostics, bool(shifts))
@@ -635,6 +652,9 @@ def _diagnostics_lines(result: FitResult) -> list[str]:
     if inputs:
         lines.append(inputs)
     lines.append(_uncertainty_line(result, labels))
+    dilution = _dilution_line(result, labels)
+    if dilution:
+        lines.append(dilution)
     return lines
 
 

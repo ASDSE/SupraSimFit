@@ -42,6 +42,7 @@ from core.pipeline.varpro import FitCancelled, FitRefused  # noqa: E402
 from core.units import Q_  # noqa: E402
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data  # noqa: E402
 from tests.unit.gui.test_sensitivity_gui import _made_on, _sobol_result  # noqa: E402
+from tests.unit.gui.test_session_lifecycle import _state_dilution, _state_shared_source  # noqa: E402
 
 _CONDITIONS = {
     'Ka_dye': Q_(IDA_TRUE['Ka_dye'], '1/M'),
@@ -72,6 +73,26 @@ def fitted() -> FitResult:
 def fit(fitted) -> FitResult:
     """A fresh copy of the module's fit: a session records its own checks on the result it is given."""
     return copy.deepcopy(fitted)
+
+
+#: Titrant stock of the diluted fit: ten times the highest titrant
+#: concentration in the data, so the last point sits at a tenth of the sample's
+#: volume and the totals there are down by 10 %.
+_STOCK = Q_(10 * float(_data().concentrations.max()), 'M')
+
+
+@pytest.fixture(scope='module')
+def diluted_fitted() -> FitResult:
+    """A fit made with the additions diluting the sample, for the notes about the dilution."""
+    conditions = {**_CONDITIONS, 'titrant_stock': _STOCK, 'stock_contains': ()}
+    config = FitConfig(per_replica=True, custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
+    return fit_measurement_set(_data(), IDAAssay, conditions, config)
+
+
+@pytest.fixture
+def diluted_fit(diluted_fitted) -> FitResult:
+    """A fresh copy of the module's diluted fit."""
+    return copy.deepcopy(diluted_fitted)
 
 
 @pytest.fixture(scope='module')
@@ -158,8 +179,8 @@ def _deliver_sensitivity(session, fit):
 
     ms = session._state.measurement_set
     result = _made_on(_sobol_result(), ms, session._assay_panel.current_conditions())
-    fit.fit_config['input_uncertainty'] = specs_to_dict(result.config.input_specs)
-    for key, spec in result.config.input_specs.items():
+    fit.fit_config['input_uncertainty'] = specs_to_dict(result.config.errors.specs)
+    for key, spec in result.config.errors.specs.items():
         session._input_panel._rows[key].set_spec(spec)
     session._on_sensitivity_complete(result)
     return result
@@ -329,6 +350,105 @@ def test_a_condition_edit_hides_the_fit_once_finished_and_the_same_value_restore
     session._assay_panel._field_widgets['h0']._combo.setCurrentText('nM')
     assert session._state.fit_results == [fit]
     assert _numbers(session) == before
+
+
+def test_a_conditions_difference_with_no_name_is_said_even_beside_a_replicate_change(qapp, make_session, fit, dialogs):
+    """Two changes, two sentences: a replicate switched off must not swallow the one about the conditions.
+
+    A result can carry a condition the form has no field for — here one of
+    another assay's — so the comparison sees the conditions differ without a
+    name to put on the difference. A note that then mentioned only the
+    replicate would offer a fix that leaves the result describing another
+    configuration than the one entered.
+    """
+    session = _shown_session(qapp, make_session, fit)
+    fit.conditions = {**fit.conditions, 'g0': Q_(1e-6, 'M')}
+
+    _toggle(session, 'a', False)
+
+    _assert_hidden(
+        session,
+        'This fit was made on replicates A and B. Replicate A is now off and the assay conditions entered now '
+        'differ from its own. Change these back, or run the fit again.',
+    )
+
+
+def _diluted_session(qapp, make_session, diluted_fit):
+    """A session with the dilution stated as the diluted fit was made with it, showing that fit."""
+    session = make_session(_data())
+    _state_dilution(session, _STOCK.magnitude)
+    _deliver(session, diluted_fit)
+    _wait_until(qapp, lambda: session._state.profile_result is not None)
+    assert session.hidden_results_note() is None
+    return session
+
+
+def test_changing_the_titrant_stock_hides_the_fit_and_names_it(qapp, make_session, diluted_fit, dialogs):
+    """The stock says how much each addition dilutes the sample, so another one is another model of the data."""
+    session = _diluted_session(qapp, make_session, diluted_fit)
+
+    session._assay_panel._stock_widget.setValue(2 * _STOCK.magnitude)
+    session._assay_panel._finish_edit()
+
+    _assert_hidden(
+        session,
+        'This fit was made on replicates A and B with Titrant stock concentration = 500 µM. Titrant stock '
+        'concentration is now 1000 µM. Set it back to 500 µM, or run the fit again.',
+    )
+
+
+def test_switching_the_dilution_off_hides_a_fit_made_with_it(qapp, make_session, diluted_fit, dialogs):
+    """Constant totals are a different model of the same data, and no condition field shows the difference."""
+    session = _diluted_session(qapp, make_session, diluted_fit)
+
+    session._assay_panel._dilution_combo.setCurrentIndex(0)
+
+    _assert_hidden(
+        session,
+        'This fit was made on replicates A and B. The dilution by the titrant is now switched off. '
+        'Switch it back on, or run the fit again.',
+    )
+
+
+def test_switching_the_dilution_on_hides_a_fit_made_without_it(qapp, make_session, fit, dialogs):
+    session = _shown_session(qapp, make_session, fit)
+
+    _state_dilution(session, _STOCK.magnitude)
+
+    _assert_hidden(
+        session,
+        'This fit was made on replicates A and B. The dilution by the titrant is now switched on. '
+        'Switch it off, or run the fit again.',
+    )
+
+
+def test_ticking_a_species_into_the_stock_hides_the_fit(qapp, make_session, diluted_fit, dialogs):
+    """A species the stock holds at the sample's concentration does not fall with the additions, so the model changes."""
+    session = _diluted_session(qapp, make_session, diluted_fit)
+
+    session._assay_panel._contains_boxes['d0'].setChecked(True)
+
+    _assert_hidden(
+        session,
+        'This fit was made on replicates A and B. The titrant stock is now stated to contain [Dye]₀. '
+        'Untick every concentration under the titrant stock again, or run the fit again.',
+    )
+
+
+def test_changing_a_shared_source_hides_the_fit_and_names_it(qapp, make_session, fit, dialogs):
+    """A source several inputs share widens the interval like any other, so the note names it as it names an input."""
+    from core.pipeline.inputs import ErrorModel, SharedSource
+
+    session = _shown_session(qapp, make_session, fit)
+    fit.fit_config.update(ErrorModel(shared=(SharedSource('Host and dye stock', 4.0, ('h0', 'd0')),)).to_dict())
+
+    _state_shared_source(session, SharedSource('Host and dye stock', 6.0, ('h0', 'd0')))
+
+    _assert_hidden(
+        session,
+        'This fit was made with Host and dye stock (shared by [Host]₀, [Dye]₀) σ 4 %. The input uncertainties '
+        'set now differ: set them back under Input Uncertainty, or fit again to update the interval.',
+    )
 
 
 def test_a_pause_in_typing_finishes_a_condition_edit(qapp, make_session, fit, dialogs):
@@ -943,3 +1063,16 @@ def test_a_fit_the_pipeline_refuses_is_reported_in_its_own_words(qapp, monkeypat
     assert shown == refusal
     for message in (library, unexpected):
         assert 'broadcast' not in message and message.startswith('The fit could not be completed.')
+
+
+def test_a_dilution_difference_without_data_reads_as_a_sentence(
+    qapp, make_session, diluted_fit, dialogs, monkeypatch, tmp_path
+):
+    """The dilution names no value the fit was made with, so with nothing else differing the note is the change."""
+    session = make_session()
+
+    _import(session, monkeypatch, tmp_path, [diluted_fit])
+
+    assert session.hidden_results_note() == (
+        'The dilution by the titrant is now switched off. Switch it back on, or run the fit again.'
+    )

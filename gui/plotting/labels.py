@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import math
 import re
-from html import escape
+from html import escape, unescape
 
 from core.units import ureg
 
@@ -50,13 +50,23 @@ def _format_exponent_unicode(exp: int) -> str:
     return str(exp).translate(_SUPERSCRIPT_DIGITS)
 
 
+def and_join(items) -> str:
+    """Names as a sentence lists them: ``a``, ``a and b``, ``a, b and c``; ``''`` for none."""
+    items = list(items)
+    if len(items) <= 1:
+        return ''.join(items)
+    return f'{", ".join(items[:-1])} and {items[-1]}'
+
+
 def plain_label(html: str) -> str:
     """Flatten an HTML display label into plain text.
 
     Digits inside ``<sub>`` and ``<sup>`` become their Unicode sub- and
-    superscripts and every remaining tag is dropped, so the label reads in
-    widgets that paint plain text — pyqtgraph axis ticks, combo box entries,
-    check box labels.
+    superscripts, every remaining tag is dropped and the entities left behind
+    become the characters they stand for, so the label reads in widgets that
+    paint plain text — pyqtgraph axis ticks, combo box entries, check box
+    labels. A name the user typed reaches a label escaped, and an ampersand in
+    it has to read as an ampersand here.
 
     Parameters
     ----------
@@ -70,7 +80,7 @@ def plain_label(html: str) -> str:
     """
     text = _SUB_TAG_RE.sub(lambda m: m.group(1).translate(_SUBSCRIPT_DIGITS), html)
     text = _SUP_TAG_RE.sub(lambda m: m.group(1).translate(_SUPERSCRIPT_DIGITS), text)
-    return _ANY_TAG_RE.sub('', text)
+    return unescape(_ANY_TAG_RE.sub('', text))
 
 
 def fmt_r2(value: float) -> str:
@@ -223,6 +233,37 @@ def fmt_sci(value: float, digits: int = 2) -> str:
     return f'{rounded / 10.0**exp:.{digits - 1}f}×10{_format_exponent_unicode(exp)}'
 
 
+def fmt_spread(sd_decades: float, *, html: bool) -> str:
+    """A spread of log₁₀(Ka) as decades and as the factor Ka spreads by: ``0.084 decades (×/÷ 1.21)``.
+
+    Decades are what the analysis works in; the factor is what they mean for Ka
+    itself — a standard deviation of 0.084 decades is a Ka known to within a
+    factor of 1.21 either way — so a spread is written as both wherever it is
+    reported. Two significant figures on the spread, the reading an uncertainty
+    carries, and three on the factor it maps to.
+
+    Parameters
+    ----------
+    sd_decades : float
+        The spread: one standard deviation of log₁₀(Ka), in decades.
+    html : bool
+        Whether the result goes into a rich-text widget. There the factor is
+        tied to its sign with a non-breaking space, so a wrapped line never
+        leaves ``×/÷`` standing at the end of one.
+
+    Raises
+    ------
+    ValueError
+        For anything that is not a standard deviation. A spread that could not
+        be worked out is said in words by the caller, where there is room to
+        say why.
+    """
+    if not (math.isfinite(sd_decades) and sd_decades >= 0.0):
+        raise ValueError(f'{sd_decades} is not a spread: a standard deviation is a finite number, zero or more.')
+    space = '&nbsp;' if html else ' '
+    return f'{fmt_sci(sd_decades, 2)} decades (×/÷{space}{fmt_sci(10.0**sd_decades, 3)})'
+
+
 def _canonical_unit(unit_str: str) -> str:
     """Map the signal unit's display alias ``a.u.`` to its parseable token ``au``.
 
@@ -307,6 +348,23 @@ def fmt_species(key: str, *, brackets: bool = True) -> str:
     """
     label = SPECIES_LABELS.get(key, f'[{key}]')
     return label if brackets else label.strip('[]')
+
+
+#: The concentration units the conditions form offers, largest first.
+_CONCENTRATION_UNITS = ('M', 'mM', 'µM', 'nM')
+
+
+def fmt_concentration(value, digits: int = 4) -> str:
+    """*value* in the largest concentration unit the form offers that leaves it at 1 or more: ``500 µM``.
+
+    A concentration is entered in one of these units, so a report reads it back
+    in the one it was typed in rather than in raw molar. Values below one
+    nanomolar, and zero, are shown in nanomolar.
+    """
+    for unit in _CONCENTRATION_UNITS:
+        magnitude = float(value.to(unit).magnitude)
+        if abs(magnitude) >= 1.0 or unit == _CONCENTRATION_UNITS[-1]:
+            return f'{magnitude:.{digits}g} {unit}'
 
 
 def fmt_unit_html(unit_str: str) -> str:

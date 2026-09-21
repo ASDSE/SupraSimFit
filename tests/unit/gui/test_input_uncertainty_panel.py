@@ -1,12 +1,19 @@
 """The Input Uncertainty panel: what the user states about the inputs a fit rests on.
 
-Pins what reaches the fit and the sensitivity analysis from what the user sets:
+Pins the whole error model that reaches the fit and the sensitivity analysis from what
+the user sets — each input's own uncertainty, the errors several inputs have in common,
+and the random error of each titrant addition:
 
-- every input opens *fixed*, so a fit takes the entered inputs as exact until an
-  uncertainty is stated, and the panel reports no spec and no problem;
-- what :meth:`current_specs` hands on is what the rows state — fixed inputs left out,
+- every input opens *fixed* and no source is stated, so a fit takes the entered inputs
+  as exact until something is stated, and the panel reports no problem;
+- what :meth:`current_errors` hands on is what the rows state — fixed inputs left out,
   a percentage in percent and an absolute σ or range in the input's own base unit,
-  neither converted on the way;
+  neither converted on the way — plus the shared sources in the order they are shown
+  and the additions entry;
+- a shared source that states no error a titration can have is refused by name, and so
+  is an additions entry of zero, each shown on its own row before a run is attempted;
+- Tab runs from the input rows through the additions entry and the Add button to the
+  shared sources, whatever order the widgets were built in;
 - choosing another kind carries the numbers over (σ = s ↔ range −s..+s, percent ↔
   the input's unit through its set value in the conditions form), and a range becomes
   the σ of half its width; the help does not call that the same uncertainty;
@@ -17,8 +24,8 @@ Pins what reaches the fit and the sensitivity analysis from what the user sets:
   it and :meth:`problems` names it; only *fixed* leaves an input out;
 - a range that would take an input down to zero is named as a problem;
 - every input is named as the panel shows it;
-- each assay's entries, kinds and units come back on switching back to it, and never
-  reach another assay;
+- each assay's entries, kinds and units, its shared sources and its additions entry come
+  back on switching back to it, and never reach another assay;
 - an assay that fits no association constant is closed with one sentence saying why;
 - the rows lock while a fit or an analysis is live;
 - the panel is as wide whichever kind each input shows;
@@ -34,11 +41,21 @@ import pytest
 pytest.importorskip('PyQt6')
 
 from core.assays.registry import AssayType  # noqa: E402
-from core.pipeline.inputs import TITRANT, InputSpec, SpecKind  # noqa: E402
+from core.pipeline.inputs import (  # noqa: E402
+    TITRANT,
+    AdditionError,
+    ErrorModel,
+    InputSpec,
+    SharedSource,
+    SpecKind,
+)
 from core.units import Q_  # noqa: E402
 
 _KA_DYE = 16.8e6  # M⁻¹, the Ka,dye set in the conditions form
 _H0 = 4.3e-6  # M
+
+_SEQUENTIAL = 'sequential additions into one cuvette'
+_SEPARATE = 'separately prepared samples'
 
 
 def _ida_panel():
@@ -57,6 +74,25 @@ def _choose(row, kind: str) -> None:
     row.kind.setCurrentIndex(index)
 
 
+def _add_shared(panel, name: str, sigma_pct: float, keys):
+    """Add a shared error source and fill it in, as a user does; return its row."""
+    panel._add_shared_btn.click()
+    row = panel._shared_rows[-1]
+    row._name.setText(name)
+    row._sigma.setValue(sigma_pct)
+    for key in keys:
+        row._ticks[key].setChecked(True)
+    return row
+
+
+def _set_additions(panel, mode: str, sigma_pct: float) -> None:
+    """Choose an additions mode and its σ, as a user does."""
+    index = panel._additions_combo.findText(mode)
+    assert index >= 0, mode
+    panel._additions_combo.setCurrentIndex(index)
+    panel._additions_sigma.setValue(sigma_pct)
+
+
 def _assert_spec(actual: InputSpec | None, expected: InputSpec) -> None:
     assert actual is not None
     assert (actual.kind, actual.relative) == (expected.kind, expected.relative)
@@ -64,20 +100,24 @@ def _assert_spec(actual: InputSpec | None, expected: InputSpec) -> None:
 
 
 def test_every_input_starts_fixed_so_a_fit_takes_the_entered_inputs_as_exact(qapp):
-    """Nothing is assumed about the inputs until the user says something: no spec, no problem."""
+    """Nothing is assumed about the inputs until the user says something: no source, no problem."""
     panel = _ida_panel()
 
     assert [row.kind.currentText() for row in panel._rows.values()] == ['fixed'] * len(panel._rows)
     assert all(row.spec() is None for row in panel._rows.values())
-    assert panel.current_specs() == {}
+    # The empty model: no input moves, nothing is shared, and no error is stated on the additions.
+    assert panel.current_errors() == ErrorModel()
     assert panel.problems() == []
+    assert panel._shared_rows == []
+    assert panel._additions_combo.currentText() == 'none'
+    assert panel._additions_sigma_row.isHidden()
 
     # The kind a user then picks starts from a usable number rather than an empty box.
     _choose(panel._rows['h0'], '± σ %')
-    assert panel.current_specs() == {'h0': InputSpec.sigma_pct(5.0)}
+    assert panel.current_errors() == ErrorModel(specs={'h0': InputSpec.sigma_pct(5.0)})
 
 
-def test_current_specs_leaves_fixed_inputs_out_and_hands_on_what_the_rows_state(qapp):
+def test_current_errors_leaves_fixed_inputs_out_and_hands_on_what_the_rows_state(qapp):
     """A percentage stays a percentage and an absolute σ stays in the input's base unit."""
     panel = _ida_panel()
     panel._rows['h0'].set_spec(InputSpec.sigma_pct(3.0))
@@ -85,7 +125,7 @@ def test_current_specs_leaves_fixed_inputs_out_and_hands_on_what_the_rows_state(
     panel._rows['d0'].set_spec(InputSpec.interval_abs(5.7e-6, 6.2e-6))
     panel._rows[TITRANT].set_spec(None)
 
-    specs = panel.current_specs()
+    specs = panel.current_errors().specs
 
     assert set(specs) == {'h0', 'Ka_dye', 'd0'}
     assert specs['h0'] == InputSpec(SpecKind.SIGMA, sigma=3.0, relative=True)
@@ -96,7 +136,7 @@ def test_current_specs_leaves_fixed_inputs_out_and_hands_on_what_the_rows_state(
 def test_specs_changed_reports_an_edit_a_kind_and_a_rebuild(qapp):
     panel = _ida_panel()
     seen = []
-    panel.specs_changed.connect(lambda: seen.append(panel.current_specs()))
+    panel.specs_changed.connect(lambda: seen.append(panel.current_errors().specs))
 
     _choose(panel._rows['h0'], '± σ %')
     assert seen and seen[-1] == {'h0': InputSpec.sigma_pct(5.0)}
@@ -144,6 +184,25 @@ def test_help_says_the_numbers_carry_over_and_the_spread_changes():
     assert 'keeps the uncertainty' not in text and 'uncertainty over' not in text
     assert 'carries the numbers over' in text
     assert 'an even draw between −5 % and +5 % varies less than a σ of 5 %' in text
+
+
+def test_the_help_tells_an_input_own_error_from_a_shared_one_and_says_what_each_feeds():
+    """Three statements, three readers: an own entry, a shared source, and the error of each addition."""
+    from gui.widgets.input_uncertainty_panel import _UNCERTAINTY_HELP_HTML
+
+    text = ' '.join(_UNCERTAINTY_HELP_HTML.split())
+    # An own entry against a shared one, and where a shared one comes from.
+    assert 'the error <b>only that input</b> has' in text
+    assert 'come from one stock, were weighed on one balance or pipetted with one pipette' in text
+    # Both readers use the model as stated — the analysis no longer assumes unrelated inputs.
+    assert 'Both the interval of every fit and the K<sub>a</sub> Sensitivity analysis use exactly this model' in text
+    assert 'take their errors to be unrelated' not in text
+    # The additions feed the analysis alone, and why.
+    assert 'feeds the K<sub>a</sub> Sensitivity analysis only' in text
+    assert 'scatter in the signal, which the residual scatter behind the interval of a fit already measures' in text
+    # What the σ means with replicates, and what that takes them to be.
+    assert 'draws it at σ/√<i>m</i>' in text
+    assert 'takes the replicates to be separate titrations' in text
 
 
 def test_the_help_says_what_the_uncertainties_feed_and_what_each_kind_means_for_the_fit():
@@ -255,7 +314,7 @@ def test_a_range_from_minus_6_to_plus_4_percent_is_exactly_that_interval(qapp):
     high.setValue(4.0)
 
     assert row.spec() == InputSpec(SpecKind.INTERVAL, lo=-6.0, hi=4.0)
-    assert panel.current_specs()['Ka_dye'] == InputSpec(SpecKind.INTERVAL, lo=-6.0, hi=4.0)
+    assert panel.current_errors().specs['Ka_dye'] == InputSpec(SpecKind.INTERVAL, lo=-6.0, hi=4.0)
 
 
 @pytest.mark.parametrize(
@@ -360,6 +419,179 @@ def test_each_assays_entries_come_back_on_switching_back_and_reach_no_other_assa
     assert panel._rows['fixed_conc'].spec() is None
 
 
+def test_the_panel_states_the_whole_error_model(qapp):
+    """Each input's own uncertainty, what two of them share, and the error of each addition."""
+    panel = _ida_panel()
+    panel._rows['h0'].set_spec(InputSpec.sigma_pct(3.0))
+    panel._rows[TITRANT].set_spec(InputSpec.interval_pct(-2.0, 2.0))
+    _add_shared(panel, 'Host and dye stock', 4.0, ('d0', 'h0'))
+    _set_additions(panel, _SEQUENTIAL, 1.5)
+
+    errors = panel.current_errors()
+
+    assert errors.specs == {'h0': InputSpec.sigma_pct(3.0), TITRANT: InputSpec.interval_pct(-2.0, 2.0)}
+    # The inputs of a source are listed as the panel lists them, whatever order they were ticked in.
+    assert errors.shared == (SharedSource('Host and dye stock', 4.0, ('h0', 'd0')),)
+    assert errors.additions == AdditionError(1.5, sequential=True)
+    assert panel.problems() == []
+
+    # A second source is reported after the first, in the order the rows are shown.
+    _add_shared(panel, 'Guest pipette', 2.0, ('d0', TITRANT))
+    assert [source.name for source in panel.current_errors().shared] == ['Host and dye stock', 'Guest pipette']
+
+    # Separately prepared samples carry no error from one point to the next.
+    _set_additions(panel, _SEPARATE, 1.5)
+    assert panel.current_errors().additions == AdditionError(1.5, sequential=False)
+
+    # "none" is the absence of a statement, not an error of zero, and hides the σ.
+    panel._additions_combo.setCurrentIndex(panel._additions_combo.findText('none'))
+    assert panel.current_errors().additions is None
+    assert panel._additions_sigma_row.isHidden()
+
+    # Removing a source takes it out of the model.
+    panel._shared_rows[0]._remove_btn.click()
+    assert [source.name for source in panel.current_errors().shared] == ['Guest pipette']
+
+
+def test_a_shared_source_offers_every_input_of_the_assay_named_as_the_panel_names_it(qapp):
+    """The tick list is the assay's inputs, labelled as the rows above label them, as rich text."""
+    from PyQt6.QtCore import Qt
+
+    from gui.plotting.labels import plain_label
+
+    panel = _ida_panel()
+    panel._add_shared_btn.click()
+    row = panel._shared_rows[0]
+
+    assert list(row._ticks) == list(panel.input_labels())
+    assert [label.textFormat() for label in row._labels.values()] == [Qt.TextFormat.RichText] * len(row._ticks)
+    assert {key: plain_label(label.text()) for key, label in row._labels.items()} == panel.input_labels()
+    # A fresh source is named for the user to overwrite and states an uncertainty to edit.
+    assert row._name.text() == 'Shared source 1'
+    assert row._sigma.value() > 0
+    # Another source gets a name of its own, so two never collide by default.
+    panel._add_shared_btn.click()
+    assert panel._shared_rows[1]._name.text() == 'Shared source 2'
+
+
+@pytest.mark.parametrize(
+    ('spoil', 'problem'),
+    [
+        (
+            lambda row: row._name.setText('  '),
+            'A shared error source has no name. Give it a name, or remove it.',
+        ),
+        (
+            lambda row: row._sigma.setValue(0.0),
+            "The uncertainty of the shared error source 'Host and dye stock' has to be above zero. "
+            'Enter it in percent, or remove the source.',
+        ),
+        (
+            lambda row: row._ticks['d0'].setChecked(False),
+            'A shared error source has to apply to at least two inputs. '
+            "'Host and dye stock' applies to one: tick a second input, or remove it and enter the "
+            'uncertainty on the input itself.',
+        ),
+    ],
+)
+def test_a_shared_source_that_states_no_error_a_titration_can_have_is_refused_naming_it(qapp, spoil, problem):
+    """The panel refuses what the fit would refuse, in the same words, before a run starts."""
+    panel = _ida_panel()
+    row = _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
+    assert panel.problems() == []
+
+    spoil(row)
+
+    assert panel.problems() == [problem]
+
+
+def test_two_shared_sources_of_one_name_are_refused(qapp):
+    """A name is how every report calls the source, so two sources cannot share one."""
+    panel = _ida_panel()
+    _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
+    _add_shared(panel, 'Host and dye stock', 2.0, ('h0', TITRANT))
+
+    assert panel.problems() == ["Two shared error sources are named 'Host and dye stock'. Give each its own name."]
+
+
+def test_every_source_that_cannot_be_used_is_named_at_once(qapp):
+    """The input rows all report together; the sources below them have to as well, or fixing one finds the next."""
+    panel = _ida_panel()
+    first = _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
+    second = _add_shared(panel, 'Titrant stock', 2.0, ('h0', TITRANT))
+    _set_additions(panel, _SEPARATE, 0.0)
+
+    first._sigma.setValue(0.0)
+    second._ticks['h0'].setChecked(False)
+
+    assert panel.problems() == [
+        "The uncertainty of the shared error source 'Host and dye stock' has to be above zero. "
+        'Enter it in percent, or remove the source.',
+        "A shared error source has to apply to at least two inputs. 'Titrant stock' applies to one: tick a "
+        'second input, or remove it and enter the uncertainty on the input itself.',
+        "The random error of each addition has to be above zero. Enter it in percent, or set it to 'none'.",
+    ]
+
+
+def test_an_additions_error_that_cannot_vary_is_refused(qapp):
+    """Choosing a mode states that the additions scatter; a σ of 0 says the opposite."""
+    panel = _ida_panel()
+    _set_additions(panel, _SEPARATE, 0.0)
+
+    assert panel.problems() == [
+        "The random error of each addition has to be above zero. Enter it in percent, or set it to 'none'."
+    ]
+
+    panel._additions_sigma.setValue(1.0)
+    assert panel.problems() == []
+
+
+def test_the_shared_sources_and_the_additions_come_back_on_switching_back(qapp):
+    """They are remembered per assay, like the input rows: another assay starts with none."""
+    panel = _ida_panel()
+    _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
+    _set_additions(panel, _SEPARATE, 1.5)
+
+    panel.set_assay_type(AssayType.GDA)
+    assert panel.current_errors() == ErrorModel()
+    assert panel._shared_rows == []
+    assert panel._additions_combo.currentText() == 'none'
+    assert panel._additions_sigma_row.isHidden()
+
+    panel.set_assay_type(AssayType.IDA)
+    errors = panel.current_errors()
+    assert errors.shared == (SharedSource('Host and dye stock', 4.0, ('h0', 'd0')),)
+    assert errors.additions == AdditionError(1.5, sequential=False)
+    assert not panel._additions_sigma_row.isHidden()
+
+
+def test_specs_changed_reports_every_shared_source_and_additions_control(qapp):
+    """Whatever the user changes here changes the model, so the session hears about all of it."""
+    panel = _ida_panel()
+    seen = []
+    panel.specs_changed.connect(lambda: seen.append(panel.current_errors()))
+
+    def reports(action) -> bool:
+        before = len(seen)
+        action()
+        return len(seen) > before
+
+    assert reports(panel._add_shared_btn.click)
+    row = panel._shared_rows[0]
+    assert reports(lambda: row._name.setText('Host and dye stock'))
+    assert reports(lambda: row._sigma.setValue(4.0))
+    assert reports(lambda: row._ticks['h0'].setChecked(True))
+    assert reports(lambda: row._ticks['d0'].setChecked(True))
+    assert seen[-1].shared == (SharedSource('Host and dye stock', 4.0, ('h0', 'd0')),)
+
+    assert reports(lambda: panel._additions_combo.setCurrentIndex(panel._additions_combo.findText(_SEQUENTIAL)))
+    assert reports(lambda: panel._additions_sigma.setValue(1.5))
+    assert seen[-1].additions == AdditionError(1.5, sequential=True)
+
+    assert reports(row._remove_btn.click)
+    assert seen[-1].shared == ()
+
+
 def test_an_assay_with_no_association_constant_is_unavailable_and_says_why(qapp):
     """An uncertainty only widens an interval of a Ka, so an assay that fits none is closed with a reason."""
     from core.pipeline.varpro import projectable
@@ -375,7 +607,7 @@ def test_an_assay_with_no_association_constant_is_unavailable_and_says_why(qapp)
     assert panel._unavailable.text() == (
         'Dye Alone has no association constant, so an uncertainty in the inputs changes nothing here.'
     )
-    assert panel.current_specs() == {}
+    assert panel.current_errors() == ErrorModel()
 
     # Every assay whose signal the engine can project is open, the two-constant ones included.
     for assay_type in (AssayType.IDA, AssayType.DBA_HG2, AssayType.DBA_H2G):
@@ -384,10 +616,20 @@ def test_an_assay_with_no_association_constant_is_unavailable_and_says_why(qapp)
         assert panel._unavailable.isHidden()
 
 
-def test_the_rows_lock_while_a_run_is_live(qapp):
+def test_every_control_locks_while_a_run_is_live(qapp):
     panel = _ida_panel()
+    _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
+    _set_additions(panel, _SEPARATE, 1.5)
+
     panel.set_running(True)
-    controls = [*(row.kind for row in panel._rows.values()), *panel._rows.values()]
+    controls = [
+        *(row.kind for row in panel._rows.values()),
+        *panel._rows.values(),
+        panel._add_shared_btn,
+        *panel._shared_rows,
+        panel._additions_combo,
+        panel._additions_sigma,
+    ]
     assert not any(control.isEnabled() for control in controls)
     panel.set_running(False)
     assert all(control.isEnabled() for control in controls)
@@ -429,7 +671,7 @@ def test_a_typed_value_counts_before_the_box_loses_focus(qapp):
 
     assert box.text() == '2e6'
     _assert_spec(row.spec(), InputSpec.sigma_abs(2e6))
-    _assert_spec(panel.current_specs()['Ka_dye'], InputSpec.sigma_abs(2e6))
+    _assert_spec(panel.current_errors().specs['Ka_dye'], InputSpec.sigma_abs(2e6))
 
 
 def test_typed_text_that_is_not_a_number_is_named_as_a_problem(qapp):
@@ -459,16 +701,93 @@ def test_a_typed_absolute_value_is_used_as_shown(qapp):
     _assert_spec(row.spec(), InputSpec.sigma_abs(1.2346e6))
 
 
-def test_reset_to_defaults_takes_every_input_as_exact_again(qapp):
+def test_reset_to_defaults_states_nothing_about_the_inputs_again(qapp):
     """Demo IDA promises the same run every time, so it resets these settings as it resets the bounds."""
     panel = _ida_panel()
     _choose(panel._rows['h0'], '± σ %')
     _choose(panel._rows[TITRANT], 'range %')
+    _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
+    _set_additions(panel, _SEQUENTIAL, 2.0)
     seen = []
-    panel.specs_changed.connect(lambda: seen.append(panel.current_specs()))
+    panel.specs_changed.connect(lambda: seen.append(panel.current_errors()))
 
     panel.reset_to_defaults()
 
-    assert panel.current_specs() == {}
     assert [row.kind.currentText() for row in panel._rows.values()] == ['fixed'] * len(panel._rows)
-    assert seen == [{}]  # the session is told, so a fit made with the old ones is marked out of date
+    assert panel._shared_rows == []
+    assert panel._additions_combo.currentText() == 'none'
+    # Reported once, when nothing is stated any more: a fit made with the old model is
+    # marked out of date, and a half-reset panel is no state to act on.
+    assert seen == [ErrorModel()]
+
+
+def _shown_problems(panel) -> list[str]:
+    """What the panel shows under its shared sources and its additions entry, in that order."""
+    shown = [row._warning.text() for row in panel._shared_rows if row._warning.isVisibleTo(panel)]
+    return shown + ([panel._additions_warning.text()] if panel._additions_warning.isVisibleTo(panel) else [])
+
+
+def test_a_shared_source_that_cannot_be_used_says_so_on_the_row(qapp):
+    """An input row shows its problem in place; a source has to as well, or the user runs to find out."""
+    panel = _ida_panel()
+    row = _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
+    assert _shown_problems(panel) == []
+
+    row._sigma.setValue(0.0)
+
+    assert _shown_problems(panel) == [
+        "The uncertainty of the shared error source 'Host and dye stock' has to be above zero. "
+        'Enter it in percent, or remove the source.'
+    ]
+    # Fixing it takes the warning off the row again.
+    row._sigma.setValue(4.0)
+    assert _shown_problems(panel) == []
+
+
+def test_the_additions_entry_that_cannot_be_used_says_so_under_it(qapp):
+    panel = _ida_panel()
+
+    _set_additions(panel, _SEPARATE, 0.0)
+
+    assert _shown_problems(panel) == [
+        "The random error of each addition has to be above zero. Enter it in percent, or set it to 'none'."
+    ]
+
+
+def test_each_source_is_told_its_own_fault_where_several_are_wrong(qapp):
+    """The row a problem belongs to is the one that shows it, the duplicated name included."""
+    panel = _ida_panel()
+    _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
+    _add_shared(panel, 'Host and dye stock', 2.0, ('h0', TITRANT))
+    _add_shared(panel, 'Pipette', 3.0, ('h0', 'd0'))
+
+    assert [row._warning.isVisibleTo(panel) for row in panel._shared_rows] == [False, True, False]
+    assert _shown_problems(panel) == [
+        "Two shared error sources are named 'Host and dye stock'. Give each its own name."
+    ]
+    # What a run refuses with is the same list.
+    assert panel.problems() == _shown_problems(panel)
+
+
+def test_tab_runs_from_the_input_rows_through_the_additions_to_the_shared_sources(qapp):
+    """The additions entry and the Add button are built before the rows, so the order is set after each rebuild."""
+    from PyQt6.QtCore import Qt
+
+    panel = _ida_panel()
+    panel.resize(490, 900)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qapp.processEvents()
+    shared = _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
+
+    expected = [widget for row in panel._rows.values() for widget in row.focus_widgets()]
+    expected += [panel._additions_combo, panel._additions_sigma, panel._add_shared_btn, *shared.focus_widgets()]
+
+    reached, widget = [], expected[0]
+    for _ in range(600):
+        widget = widget.nextInFocusChain()
+        if widget is expected[0]:
+            break
+        if widget in expected:
+            reached.append(widget)
+    assert reached == expected[1:]

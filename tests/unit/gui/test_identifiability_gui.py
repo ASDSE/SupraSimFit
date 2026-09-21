@@ -800,6 +800,26 @@ def test_the_verdict_on_the_model_and_the_inputs_is_shown_under_the_intervals(qa
     assert text.startswith(silent) and len(text) > len(silent)
 
 
+def test_the_verdict_names_a_shared_source_with_the_inputs_it_moves(qapp):
+    """The shift is against the source, so the tab has to say which inputs that source moved."""
+    from core.pipeline.inputs import ErrorModel, SharedSource, shared_key
+
+    key = shared_key('Host and dye stock')
+    shifts = {key: InputShift(key=key, fraction=-0.041, z=-1.4, at_edge=False)}
+    diagnostics = FitDiagnostics(
+        conditional_misfit=MisfitTest(kind='runs', statistic=4.0, p_value=0.004, expected=7.0),
+        misfit=MisfitTest(kind='runs', statistic=7.0, p_value=0.55, expected=7.0),
+        conflict=Conflict(q=1.9, k=1, p_value=0.17, weights=(0.9,)),
+        verdict=Verdict.INPUTS_EXPLAIN,
+    )
+    fit = _fit(diagnostics=diagnostics, shifts=shifts)
+    fit.fit_config.update(ErrorModel(shared=(SharedSource('Host and dye stock', 4.0, ('h0', 'd0')),)).to_dict())
+
+    w = _widget(fit, _aware_set())
+
+    assert 'Host and dye stock (shared by [Host]₀, [Dye]₀) −4.1 % (1.4 σ)' in w._summary.text()
+
+
 # ---------------------------------------------------------------------------
 # Two binding constants: a panel each and the joint region
 # ---------------------------------------------------------------------------
@@ -1214,7 +1234,7 @@ def test_renders_a_real_input_aware_fit_beside_its_conditional_one(qapp):
     from core.assays.ida import IDAAssay
     from core.data_processing.measurement_set import MeasurementSet
     from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
-    from core.pipeline.inputs import InputSpec
+    from core.pipeline.inputs import ErrorModel, InputSpec
     from core.pipeline.profile import fit_profile
     from gui.plotting.labels import fmt_sci, verdict_sentence
     from gui.widgets.assay_conditions import result_input_labels
@@ -1232,7 +1252,7 @@ def test_renders_a_real_input_aware_fit_beside_its_conditional_one(qapp):
         'h0': Q_(IDA_TRUE['h0'], 'M'),
         'd0': Q_(IDA_TRUE['d0'], 'M'),
     }
-    config = FitConfig(per_replica=False, input_specs={'h0': InputSpec.sigma_pct(5.0)})
+    config = FitConfig(per_replica=False, errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(5.0)}))
     fit = fit_measurement_set(ms, IDAAssay, conditions, config)
     profile_set = fit_profile(ms, IDAAssay, conditions, config, aware=fit.aware)
     profile = profile_set.profiles['Ka_guest']
@@ -1255,7 +1275,7 @@ def test_renders_a_real_input_aware_fit_beside_its_conditional_one(qapp):
     assert f'95% CI [{fmt_sci(entered.low)}, {fmt_sci(entered.high)}]' in conditional_line
     # The verdict this fit reached on the model and the inputs is here too.
     # Named from the fit's own assay, which is where the tab takes its names from.
-    labels = result_input_labels(fit.assay_type)
+    labels = result_input_labels(fit.assay_type, fit.fit_config)
     assert verdict_sentence(fit.diagnostics, fit.input_shifts, labels, html=True) in conditional_line
 
 

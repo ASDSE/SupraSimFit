@@ -17,6 +17,9 @@ Pins the wiring the compute-layer tests can't reach:
   symmetric in the log ratio to the baseline Ka; Ka on the Plot Style's Ka
   scale; R²), labels its colour bar in the style's tick font, keeps the choice
   across new results and restyles, and names both inputs in its hover readout.
+- The budget says when fits ran to the edge of the Ka bounds: with the baseline
+  there it prints the reason in place of the spread and no number at all, and
+  with a share of the samples there it counts them above the numbers it keeps.
 - The summary under the plot tabs follows the tab: the samples view on Ka
   Sensitivity, the fit on every other tab, and a new run, a failed run, a
   heatmap and new or cleared data never leave it stale. What that view shows is
@@ -43,13 +46,18 @@ import pyqtgraph as pg  # noqa: E402
 
 from core.assays.registry import AssayType  # noqa: E402
 from core.pipeline.fit_pipeline import FitResult  # noqa: E402
+from core.pipeline.inputs import AdditionError, ErrorModel, SharedSource, shared_key  # noqa: E402
 from core.pipeline.sensitivity import (  # noqa: E402
     _SOBOL_BLOCKS,
+    ADDITIONS,
     TITRANT,
+    Budget,
+    BudgetRow,
     InputSpec,
     SensitivityConfig,
     SensitivityMode,
     SensitivityResult,
+    WhatIf,
 )
 from core.units import Q_  # noqa: E402
 
@@ -108,6 +116,37 @@ def _baseline_fit():
     )
 
 
+#: The budget of the IDA run below, in round numbers: a variance of 0.007056
+#: decades² is a spread of exactly 0.084 decades, and the ends of its interval,
+#: 0.006561 and 0.007569, are exactly 0.081 and 0.087 decades — so what the
+#: header line should read is known without repeating the widget's arithmetic.
+_VARIANCE = 0.007056
+_BUDGET = Budget(
+    variance=_VARIANCE,
+    variance_ci=(0.006561, 0.007569),
+    rows=(
+        BudgetRow('Ka_dye', 0.05 * _VARIANCE, (2e-4, 5e-4), 0.081873, (0.079, 0.084), 0.31),
+        BudgetRow('h0', 0.2 * _VARIANCE, (1.1e-3, 1.7e-3), 0.075132, (0.072, 0.078), -1.2),
+        BudgetRow(TITRANT, 0.6 * _VARIANCE, (3.8e-3, 4.7e-3), 0.053126, (0.050, 0.056), 0.95),
+    ),
+)
+#: Every perturbable input of the IDA assay, the two that are not sources of
+#: their own included, as ``input_elasticities`` reports them.
+_ELASTICITY = {'Ka_dye': 0.31, 'h0': -1.2, 'd0': 0.62, TITRANT: 0.95}
+
+
+def _two_ka_budget() -> Budget:
+    """A budget for a constant of the 1:2 model: two sources, neither dominant."""
+    return Budget(
+        variance=0.01,
+        variance_ci=(0.008, 0.012),
+        rows=(
+            BudgetRow('h0', 0.004, (0.003, 0.005), 0.0775, (0.07, 0.085), 0.4),
+            BudgetRow(TITRANT, 0.004, (0.003, 0.005), 0.0775, (0.07, 0.085), 0.4),
+        ),
+    )
+
+
 def _sobol_result():
     """Three varied inputs, 40 A+B samples, sample 5 unfitted."""
     rng = np.random.default_rng(0)
@@ -135,7 +174,9 @@ def _sobol_result():
         ka_grid=None,
         n_success=n - 1,
         n_total=n,
-        config=SensitivityConfig(SensitivityMode.SOBOL, n // 2, {k: InputSpec.sigma_pct(5.0) for k in _INPUTS}, seed=0),
+        config=SensitivityConfig(
+            SensitivityMode.SOBOL, n // 2, ErrorModel(specs={k: InputSpec.sigma_pct(5.0) for k in _INPUTS}), seed=0
+        ),
         seed_used=0,
         sobol_s1={'Ka_guest': s1},
         sobol_st={'Ka_guest': st},
@@ -143,10 +184,18 @@ def _sobol_result():
         sobol_st_ci={'Ka_guest': {k: (v - 0.04, v + 0.2) for k, v in st.items()}},
         sample_offsets_pct=offsets,
         sample_ka={'Ka_guest': ka},
+        # As a run records it: the A and the B sample of a design row are kept
+        # or dropped together, so sample 5 takes its partner 25 with it.
+        sample_usable={'Ka_guest': np.tile(np.isfinite(ka[: n // 2]) & np.isfinite(ka[n // 2 :]), 2)},
         sample_r2=r2,
         baseline_fit=_baseline_fit(),
         sample_params={'Ka_guest': ka, **signal},
         degenerate_keys=('I0', 'I_dye_free', 'I_dye_bound'),
+        budget={'Ka_guest': _BUDGET},
+        elasticity={'Ka_guest': _ELASTICITY},
+        sources=_INPUTS,
+        source_inputs={key: (key,) for key in _INPUTS},
+        n_planned=n * (len(_INPUTS) + 2) + 2 * len(_INPUTS),
     )
 
 
@@ -185,7 +234,7 @@ def _heatmap_result():
         config=SensitivityConfig(
             SensitivityMode.HEATMAP,
             1,
-            {TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)},
+            ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)}),
             x_key=TITRANT,
             y_key='h0',
             n_steps=3,
@@ -236,7 +285,12 @@ def _two_ka_result(mode: SensitivityMode = SensitivityMode.SOBOL) -> Sensitivity
             n_success=9,
             n_total=9,
             config=SensitivityConfig(
-                mode, 1, {key: InputSpec.sigma_pct(5.0) for key in _TWO_KA_INPUTS}, x_key=TITRANT, y_key='h0', n_steps=3
+                mode,
+                1,
+                ErrorModel(specs={key: InputSpec.sigma_pct(5.0) for key in _TWO_KA_INPUTS}),
+                x_key=TITRANT,
+                y_key='h0',
+                n_steps=3,
             ),
             seed_used=7,
             r2_grid=np.full((3, 3), 0.99),
@@ -254,7 +308,9 @@ def _two_ka_result(mode: SensitivityMode = SensitivityMode.SOBOL) -> Sensitivity
         ka_grid=None,
         n_success=n,
         n_total=n,
-        config=SensitivityConfig(mode, n // 2, {key: InputSpec.sigma_pct(5.0) for key in _TWO_KA_INPUTS}, seed=7),
+        config=SensitivityConfig(
+            mode, n // 2, ErrorModel(specs={key: InputSpec.sigma_pct(5.0) for key in _TWO_KA_INPUTS}), seed=7
+        ),
         seed_used=7,
         sobol_s1=indices,
         sobol_st=indices,
@@ -262,9 +318,14 @@ def _two_ka_result(mode: SensitivityMode = SensitivityMode.SOBOL) -> Sensitivity
         sobol_st_ci={key: {k: (0.3, 0.5) for k in _TWO_KA_INPUTS} for key in keys},
         sample_offsets_pct=offsets,
         sample_ka={key: value * (1 + 0.01 * offsets[TITRANT]) for key, value in baseline.items()},
+        sample_usable={key: np.ones(n, dtype=bool) for key in keys},
         sample_r2=np.full(n, 0.99),
         baseline_fit=fit,
         sample_params={key: value * (1 + 0.01 * offsets[TITRANT]) for key, value in baseline.items()},
+        budget={key: _two_ka_budget() for key in keys},
+        elasticity={key: dict.fromkeys(_TWO_KA_INPUTS, 0.5) for key in keys},
+        sources=_TWO_KA_INPUTS,
+        source_inputs={key: (key,) for key in _TWO_KA_INPUTS},
     )
 
 
@@ -288,9 +349,9 @@ def test_a_two_constant_model_is_reported_per_binding_constant(qapp):
     headings = [
         label.text()
         for label in w._results_host.widget().findChildren(QLabel)
-        if label.text().endswith('vs each input')
+        if label.text().endswith('vs each source')
     ]
-    assert headings == [f'{fmt_param(key)} vs each input' for key in ('Ka_HG', 'Ka_HG2')]
+    assert headings == [f'{fmt_param(key)} vs each source' for key in ('Ka_HG', 'Ka_HG2')]
     x_labels = [plot.getAxis('bottom').labelText for plot in _plots(w)]
     assert sum(label.startswith('Δ ') for label in x_labels) == 2 * len(_TWO_KA_INPUTS)
 
@@ -391,7 +452,7 @@ def _ranged_result() -> SensitivityResult:
     conditions = {'Ka_dye': Q_(1.68e7, '1/M'), 'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M')}
     return replace(
         base,
-        config=replace(base.config, input_specs=specs),
+        config=replace(base.config, errors=ErrorModel(specs=specs)),
         sample_offsets_pct=offsets,
         baseline_fit=replace(base.baseline_fit, conditions=conditions),
     )
@@ -550,8 +611,9 @@ def test_note_states_the_unfitted_count_and_the_seed(qapp):
 
     assert f'Seed {result.seed_used}' in text  # what repeats the run is on the tab, and in its picture
 
-    # A result with no Ka per sample has no count to report, only its seed.
-    result.sample_r2 = result.sample_ka = None
+    # A result with no Ka per sample has no count to report and no budget to
+    # draw from them, only its seed.
+    result.sample_r2 = result.sample_ka = result.budget = None
     w.update_result(result)
     assert w._note.text() == f'Seed {result.seed_used}: enter it under Fixed seed to repeat this analysis exactly.'
 
@@ -1500,6 +1562,7 @@ def _no_index_result(*, stopped: bool):
         sobol_s1_ci=missing_ci,
         sobol_st_ci=missing_ci,
         sample_ka={'Ka_guest': ka},
+        sample_usable={'Ka_guest': np.zeros(ka.size, dtype=bool)},
         sobol_rows_left_out={'Ka_guest': _sobol_result().config.n_samples},
         stopped=stopped,
         n_success=6,
@@ -1569,15 +1632,16 @@ def test_one_run_is_quoted_the_same_number_of_fits_wherever_it_is_counted(qapp, 
     """
     from PyQt6.QtWidgets import QMessageBox
 
-    from core.pipeline.sensitivity import estimated_fit_count
+    from core.pipeline.sensitivity import estimated_fit_count, perturbable_inputs
     from gui import workers
 
     def run(ms, assay_cls, conditions, fit_config, sens_config, *, progress, **kwargs):
-        # What run_sensitivity itself counts to: the perturbed fits and the baseline.
-        total = estimated_fit_count(sens_config) + 1
+        # What run_sensitivity itself counts to: the perturbed fits, the
+        # elasticity refits of every perturbable input, and the baseline.
+        total = estimated_fit_count(sens_config, len(perturbable_inputs(conditions))) + 1
         progress(total, total)
         result = _made_on(_sobol_result(), ms, conditions)
-        return replace(result, config=sens_config, n_success=total - 1, n_total=total - 1)
+        return replace(result, config=sens_config, n_success=total - 1, n_total=total - 1, n_planned=total - 1)
 
     monkeypatch.setattr(workers, 'run_sensitivity', run)
     session, warnings = _demo_session(monkeypatch)
@@ -1600,3 +1664,501 @@ def test_one_run_is_quoted_the_same_number_of_fits_wherever_it_is_counted(qapp, 
     assert f'{counted:,} times' in asked[0]
     assert f'Analysing — {counted:,} of {counted:,}' in messages
     assert messages[-1] == f'Sensitivity complete — {counted:,} of {counted:,} fits succeeded'
+
+
+# ---------------------------------------------------------------------------
+# Uncertainty budget
+# ---------------------------------------------------------------------------
+
+
+def _budget_tables(widget) -> list:
+    """The budget table of each binding constant, in the order the constants are drawn."""
+    from gui.plotting.fit_summary_widget import ParameterTable
+
+    return widget._results_host.widget().findChildren(ParameterTable)
+
+
+def _cells(table) -> list[list[str]]:
+    """A table's rows as the text of their cells."""
+    return [
+        [table.cellWidget(row, col).text() for col in range(table.columnCount())] for row in range(table.rowCount())
+    ]
+
+
+def _headers(table) -> list[str]:
+    return [table.horizontalHeaderItem(col).text() for col in range(table.columnCount())]
+
+
+def test_the_budget_table_shows_the_numbers_of_the_result_it_was_given(qapp):
+    """Every cell is the analysis's own number, formatted; nothing in the table is worked out here.
+
+    The fixture's variance, its interval and the share of each source are round
+    numbers, so what each cell must read is known without repeating the widget's
+    arithmetic: 0.05 × 0.007056 decades² for the dye constant, and the share no
+    single source explains, 1 − (0.05 + 0.2 + 0.6) = 0.15.
+    """
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_sobol_result())
+    (table,) = _budget_tables(w)
+
+    assert _headers(table) == [
+        'Source',
+        'Stated uncertainty',
+        'Elasticity',
+        'Share of variance S₁ [95 %]',
+        'Variance (decades²) [95 %]',
+        'Spread if exact (decades) [95 %]',
+    ]
+    rows = _cells(table)
+    assert [row[0] for row in rows] == [w._input_label(AssayType.IDA, key) for key in _INPUTS] + ['Interactions']
+    # Ka,dye: stated as σ 5 %, elasticity 0.31, S₁ 0.05 [0.02, 0.15],
+    # 0.05 × 0.007056 = 3.528e-4 decades², 0.0819 decades left if it were exact.
+    assert rows[0] == [
+        w._input_label(AssayType.IDA, 'Ka_dye'),
+        '5 % (1 SD)',
+        '0.31',
+        '0.050 [0.020, 0.15]',
+        '3.5×10⁻⁴ [2.0×10⁻⁴, 5.0×10⁻⁴]',
+        '0.082 [0.079, 0.084]',
+    ]
+    # An input the fit answers to the other way round keeps its sign.
+    assert rows[1][2] == '−1.2'
+    # The interactions row carries the share alone: the rest is not a number it has.
+    assert rows[-1] == ['Interactions', '–', '–', '0.15', '–', '–']
+
+
+def test_the_spread_column_never_shows_a_negative_standard_deviation(qapp):
+    """The jackknife interval is symmetric, so on a source that explains almost everything its lower end dips below
+    zero; a spread cannot be negative, and the header line reads such an end the same way."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    result = _sobol_result()
+    budget = result.budget['Ka_guest']
+    first = budget.rows[0]
+    quiet = BudgetRow(first.source, first.variance, first.variance_ci, 0.004, (-0.004, 0.012), first.elasticity)
+    result.budget = {'Ka_guest': Budget(budget.variance, budget.variance_ci, (quiet, *budget.rows[1:]))}
+    w = SensitivityWidget()
+
+    w.update_result(result)
+
+    assert _cells(_budget_tables(w)[0])[0][-1] == '4.0×10⁻³ [0, 0.012]'
+
+
+def test_the_budget_table_states_a_range_input_by_its_two_ends(qapp):
+    """A range is stated as the ends entered, in percent of the value the analysis started from."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_ranged_result())
+    stated = {row[0]: row[1] for row in _cells(_budget_tables(w)[0])}
+
+    assert stated[w._input_label(AssayType.IDA, 'Ka_dye')] == '−6 % to +4 %'
+    # A range is reduced by shrinking it about its centre, so the what-if row
+    # asks for half a width and says so.
+    _, spin, sentence = w._what_if['Ka_guest']
+    assert spin.prefix() == '±'
+    assert spin.maximum() == 5.0  # half of −6 % to +4 %
+    assert 'from ±5 % to ±2.5 %' in sentence.text()
+    # [Host]₀ is entered as 4.1–4.4 µM of 4.3 µM: −4.65 % to +2.33 % of it.
+    low, high = (f'{value:+.3g}'.replace('-', '−') for value in _H0_RANGE_PCT)
+    assert stated[w._input_label(AssayType.IDA, 'h0')] == f'{low} % to {high} %'
+
+
+def test_the_header_line_states_the_spread_and_the_interval_of_the_spread(qapp):
+    """A variance of 0.007056 decades² is a spread of 0.084 decades, a factor of 1.21 either way.
+
+    The interval is the interval of the variance read in decades: 0.006561 and
+    0.007569 decades² are 0.081 and 0.087 decades.
+    """
+    from gui.plotting.labels import fmt_param
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    result = _sobol_result()
+    w.update_result(result)
+
+    assert w._budget_header(result, 'Ka_guest') == (
+        f'Input-limited spread of log₁₀({fmt_param("Ka_guest")}), 1 SD: 0.084 decades (×/÷&nbsp;1.21) [0.081, 0.087]'
+    )
+
+
+def test_a_budget_no_run_could_pin_down_says_so_instead_of_writing_nan(qapp):
+    """Too few finished fits leave no variance; the line says that, rather than printing a number that is not one."""
+    from core.pipeline.sensitivity import Budget
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    result = _sobol_result()
+    result.budget = {'Ka_guest': Budget(np.nan, (np.nan, np.nan), result.budget['Ka_guest'].rows)}
+    w = SensitivityWidget()
+    w.update_result(result)
+
+    line = w._budget_header(result, 'Ka_guest')
+    assert line.endswith('too few fits finished to work it out.')
+    assert 'nan' not in line.lower()
+    # With no variance there is no share for the sources to leave over, and a
+    # row of "0" beside sources that all read n/a would state one.
+    assert _cells(_budget_tables(w)[0])[-1] == ['Interactions', '–', '–', 'n/a', '–', '–']
+
+
+_KNOWN_WHAT_IF = WhatIf(sd=0.056, sd_reweighted=0.057, effective_samples=573.4, largest_after='h0')
+
+
+def test_the_what_if_sentence_reads_the_answer_it_was_given(qapp, monkeypatch):
+    """The row states the reduction asked for, both spreads, the cross-check and what would then be largest."""
+    from gui.plotting import sensitivity_widget as widget_module
+    from gui.plotting.labels import fmt_param
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    asked = []
+
+    def fake_what_if(result, ka_key, source, ratio):
+        asked.append((ka_key, source, ratio))
+        return _KNOWN_WHAT_IF
+
+    monkeypatch.setattr(widget_module, 'what_if', fake_what_if)
+    w = SensitivityWidget()
+    w.update_result(_sobol_result())
+
+    combo, spin, sentence = w._what_if['Ka_guest']
+    spin.setValue(1.0)
+    # The core call gets the reduction as a share of what was stated: 1 % of 5 %.
+    assert asked[-1] == ('Ka_guest', 'Ka_dye', 0.2)
+    assert sentence.text() == (
+        f'Reducing {w._input_label(AssayType.IDA, "Ka_dye")} from 5 % to 1 % would shrink the input-limited '
+        f'spread of {fmt_param("Ka_guest")} from 0.084 decades (×/÷&nbsp;1.21) to 0.056 decades '
+        '(×/÷&nbsp;1.14). Cross-check by re-weighting the samples: 0.057 (573 effective samples). '
+        f'{w._input_label(AssayType.IDA, "h0")} would then be the largest item.'
+    )
+
+
+def test_the_what_if_sentence_says_when_no_cross_check_backs_it(qapp, monkeypatch):
+    """Too few samples carrying weight and a source made exact are different reasons, and read as different ones."""
+    from dataclasses import replace as replace_dc
+
+    from gui.plotting import sensitivity_widget as widget_module
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    answers = iter(
+        [
+            replace_dc(_KNOWN_WHAT_IF, sd_reweighted=None, effective_samples=31.0),
+            replace_dc(_KNOWN_WHAT_IF, sd_reweighted=None, effective_samples=None),
+        ]
+    )
+    monkeypatch.setattr(widget_module, 'what_if', lambda *args: next(answers))
+    w = SensitivityWidget()
+    w.update_result(_sobol_result())
+    _, spin, sentence = w._what_if['Ka_guest']
+
+    assert '(no cross-check: too few samples carry weight at this reduction).' in sentence.text()
+    spin.setValue(0.0)
+    assert '(no cross-check: with the source exact there is no sample left to re-weight).' in sentence.text()
+
+
+def test_the_what_if_row_only_offers_a_reduction_of_a_single_source(qapp):
+    """The spin is bounded by the stated uncertainty, and the random error of each addition is no single offset."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_shared_source_result())
+    combo, spin, _ = w._what_if['Ka_guest']
+
+    assert [combo.itemData(i) for i in range(combo.count())] == ['h0', shared_key('Stock A')]
+    assert (spin.minimum(), spin.maximum()) == (0.0, 4.0)  # [Host]₀ was stated as σ 4 %
+    combo.setCurrentIndex(1)
+    assert spin.maximum() == 3.0  # the shared stock, stated as σ 3 %
+
+
+_SHARED = shared_key('Stock A')
+
+
+def _shared_source_result() -> SensitivityResult:
+    """An IDA run over [Host]₀'s own error, a stock both concentrations share, and the additions."""
+    rng = np.random.default_rng(3)
+    n = 40
+    sources = ('h0', _SHARED, ADDITIONS)
+    offsets = {'h0': rng.normal(0.0, 4.0, n), _SHARED: rng.normal(0.0, 3.0, n)}
+    ka = 2e8 * (1 + 0.01 * offsets['h0'])
+    s1 = {'h0': 0.3, _SHARED: 0.5, ADDITIONS: 0.1}
+    variance = 0.01
+    return replace(
+        _sobol_result(),
+        config=SensitivityConfig(
+            SensitivityMode.SOBOL,
+            n // 2,
+            ErrorModel(
+                specs={'h0': InputSpec.sigma_pct(4.0)},
+                shared=(SharedSource('Stock A', 3.0, ('h0', 'd0')),),
+                additions=AdditionError(1.0, sequential=False),
+            ),
+            seed=0,
+        ),
+        sobol_s1={'Ka_guest': s1},
+        sobol_st={'Ka_guest': s1},
+        sobol_s1_ci={'Ka_guest': {k: (v - 0.05, v + 0.05) for k, v in s1.items()}},
+        sobol_st_ci={'Ka_guest': {k: (v - 0.05, v + 0.05) for k, v in s1.items()}},
+        sample_offsets_pct=offsets,
+        sample_ka={'Ka_guest': ka},
+        sample_r2=np.full(n, 0.99),
+        sample_params={'Ka_guest': ka},
+        budget={
+            'Ka_guest': Budget(
+                variance=variance,
+                variance_ci=(0.008, 0.012),
+                rows=(
+                    BudgetRow('h0', 0.3 * variance, (0.002, 0.004), 0.0837, (0.08, 0.087), -1.2),
+                    BudgetRow(_SHARED, 0.5 * variance, (0.004, 0.006), 0.0707, (0.067, 0.074), -0.6),
+                    BudgetRow(ADDITIONS, 0.1 * variance, (0.0005, 0.0015), 0.0949, (0.092, 0.097), None),
+                ),
+            )
+        },
+        elasticity={'Ka_guest': {'h0': -1.2, 'd0': 0.6, 'Ka_dye': 0.3, TITRANT: 0.95}},
+        sources=sources,
+        source_inputs={'h0': ('h0',), _SHARED: ('h0', 'd0'), ADDITIONS: ()},
+    )
+
+
+def test_a_shared_source_and_the_additions_are_listed_beside_the_inputs(qapp):
+    """Both are sources of the spread, so both get a bar and a budget row; neither is an input offset panel.
+
+    A shared source goes by the name it was given and moves several inputs at
+    once, so its elasticity is the sum over them. The additions are one item
+    standing for every addition: no single offset, so no elasticity and no
+    "Ka vs source" panel.
+    """
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    result = _shared_source_result()
+    w.update_result(result)
+
+    (bars,) = [plot for plot in _plots(w) if 'Sobol indices' in plot.titleLabel.text]
+    axis = bars.getAxis('bottom')
+    axis.resize(2000, axis.height())
+    assert axis.tickStrings([0.0, 1.0, 2.0], 1, 1) == ['[Host]₀', 'Stock A', 'Each addition (random)']
+
+    rows = _cells(_budget_tables(w)[0])
+    assert [row[0] for row in rows] == ['[Host]<sub>0</sub>', 'Stock A', 'Each addition (random)', 'Interactions']
+    assert rows[1][1:3] == ['3 % (1 SD)', '−0.60']
+    assert rows[2][1:3] == ['1 % each addition', '–']
+
+    # One panel per source that has an offset of its own; the additions have none.
+    panels = [plot.getAxis('bottom').labelText for plot in _plots(w) if plot.getAxis('bottom').labelText]
+    assert 'Δ Stock A [%]' in panels
+    assert not any('addition' in label for label in panels)
+
+
+def test_a_source_name_wider_than_its_bar_slot_is_cut_to_it(qapp):
+    """A shared source carries the name the user typed, and two full names would be drawn over each other."""
+    from gui.plotting.sensitivity_widget import _SourceAxis
+
+    names = ('Host and dye stock', 'Each addition (random)')
+    axis = _SourceAxis(names)
+
+    axis.resize(2000, 30)
+    assert axis.tickStrings([0.0, 1.0], 1, 1) == list(names)
+
+    axis.resize(140, 30)
+    cut = axis.tickStrings([0.0, 1.0], 1, 1)
+    assert [len(text) for text in cut] < [len(name) for name in names]
+    assert all(text.endswith('…') for text in cut)
+
+    # One tick per source, wherever the view sits.
+    assert axis.tickValues(-0.5, 1.5, 140) == [(1.0, [0.0, 1.0])]
+
+
+def test_the_additions_row_says_it_is_already_inside_the_interval_the_fit_reports(qapp):
+    """The scatter of the points is what the fit's interval is built from, so this entry is not added to it."""
+    from PyQt6.QtWidgets import QLabel
+
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_shared_source_result())
+    texts = [label.text() for label in w._results_host.widget().findChildren(QLabel)]
+    assert any('already inside the interval the fit reports' in text for text in texts)
+
+    # A run with no additions has nothing to say about them.
+    other = SensitivityWidget()
+    other.update_result(_sobol_result())
+    texts = [label.text() for label in other._results_host.widget().findChildren(QLabel)]
+    assert not any('already inside the interval' in text for text in texts)
+
+
+def _labels(widget) -> list[str]:
+    """The text of every label on the results page."""
+    from PyQt6.QtWidgets import QLabel
+
+    return [label.text() for label in widget._results_host.widget().findChildren(QLabel)]
+
+
+def test_a_baseline_on_the_ka_bounds_replaces_the_spread_line_and_every_number(qapp):
+    """With the fit at the entered inputs on a bound, the spread is of the edge of the box, not of the inputs.
+
+    Every elasticity is then zero and the spread comes out as none, which reads
+    as "the inputs do not matter" where it means "the data do not limit Ka".
+    The tab has to say the second, and print no figure that says the first.
+    """
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    result = _sobol_result()
+    result.baseline_on_bound = {'Ka_guest': True}
+    w = SensitivityWidget()
+
+    w.update_result(result)
+
+    line = w._budget_header(result, 'Ka_guest')
+    assert 'The data do not limit' in line and 'ran to the edge of its bounds' in line
+    assert 'Identifiability' in line
+    assert 'spread' not in line.lower() and 'SD' not in line
+    # No budget number for it, exactly as a run with too few fits reports none.
+    rows = _cells(_budget_tables(w)[0])
+    assert [row[2:] for row in rows[:-1]] == [['n/a'] * 4] * len(_INPUTS)
+    assert rows[-1] == ['Interactions', '–', '–', 'n/a', '–', '–']
+    # Nor a what-if row: there is no spread of the inputs for a smaller one to shrink.
+    assert w._what_if == {}
+    # The exported file carries the same sentence beside the same rows.
+    note = next(row for row in w.budget_rows() if row['Kind'] == 'note')
+    assert 'The data do not limit' in note['Item'] and '<' not in note['Item']
+
+
+def test_a_share_of_the_fits_on_the_ka_bounds_is_counted_in_a_note_above_the_budget(qapp):
+    """Those fits sit decades from the rest, so the spread beside them is theirs rather than the inputs'."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    result = _sobol_result()
+    # 40 A+B samples: a design of 20 rows per matrix, five matrices, 100 fits.
+    result.n_on_bound = {'Ka_guest': 3}
+    w = SensitivityWidget()
+
+    w.update_result(result)
+
+    note = next(text for text in _labels(w) if 'ran to the edge of its bounds' in text)
+    assert note.startswith('In 3 of 100 fits (3 %)')
+    assert 'those fits jump by many decades and inflate the spread and the budget' in note
+    assert 'unidentifiable over part of their range' in note
+    # The numbers stay: the spread is inflated, not unknowable.
+    assert w._budget_header(result, 'Ka_guest').startswith('Input-limited spread')
+    assert _cells(_budget_tables(w)[0])[0][-1] == '0.082 [0.079, 0.084]'
+    assert list(w._what_if) == ['Ka_guest']
+    assert any(row['Kind'] == 'note' for row in w.budget_rows())
+
+
+def test_one_fit_on_the_ka_bounds_is_counted_in_the_singular(qapp):
+    """A note that says "1 fits jump" reads as a bug and is skimmed past."""
+    from gui.plotting.sensitivity_widget import _on_bound_note
+
+    result = _sobol_result()
+    result.n_on_bound = {'Ka_guest': 1}
+
+    note = _on_bound_note(result, 'Ka_guest')
+
+    assert note.startswith('In 1 of 100 fits (1 %)')
+    assert 'that fit jumps by many decades and inflates' in note
+
+
+def test_a_large_count_of_fits_on_the_ka_bounds_is_written_for_reading(qapp):
+    """A run of thousands of fits reports thousands; four digits in a row are read wrong."""
+    from gui.plotting.sensitivity_widget import _on_bound_note
+
+    result = _sobol_result()
+    result.config = replace(result.config, n_samples=1024)
+    result.n_on_bound = {'Ka_guest': 1230}
+
+    assert _on_bound_note(result, 'Ka_guest').startswith('In 1,230 of 5,120 fits (24 %)')
+
+
+def test_a_run_that_stayed_inside_the_ka_bounds_carries_no_note(qapp):
+    """A note on every run is a note nobody reads; a clean run gets the budget alone."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget, _on_bound_note
+
+    result = _sobol_result()
+    w = SensitivityWidget()
+
+    w.update_result(result)
+
+    assert _on_bound_note(result, 'Ka_guest') is None
+    assert not any('edge of its bounds' in text for text in _labels(w))
+    assert not any(row['Kind'] == 'note' for row in w.budget_rows())
+
+
+def test_each_binding_constant_gets_its_own_budget(qapp):
+    """A 1:2 model has two constants, each with its own spread and its own sources."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_two_ka_result())
+
+    assert len(_budget_tables(w)) == 2
+    assert sorted(w._what_if) == ['Ka_HG', 'Ka_HG2']
+
+
+def test_the_heatmap_has_no_budget_to_show(qapp):
+    """A heatmap sweeps a grid; it runs no Sobol design, so there are no shares to split a variance into."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_heatmap_result())
+
+    assert _budget_tables(w) == []
+    assert w._what_if == {}
+    assert w.budget_rows() == []
+
+
+def test_the_exported_budget_carries_the_numbers_the_table_rounds(qapp):
+    """The CSV is for a spreadsheet: the analysis's own floats, the elasticity of every input, and the seed."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    result = _sobol_result()
+    w.update_result(result)
+    rows = w.budget_rows()
+
+    by_kind = {}
+    for row in rows:
+        by_kind.setdefault(row['Kind'], []).append(row)
+    assert set(by_kind) == {'total', 'source', 'interactions', 'input'}
+    assert all(row['Seed'] == result.seed_used for row in rows)
+    assert all(row['Ka'] == 'Ka(G)' for row in rows)
+
+    (total,) = by_kind['total']
+    assert total['Variance (decades^2)'] == result.budget['Ka_guest'].variance
+    assert (total['Variance (decades^2) low'], total['Variance (decades^2) high']) == (0.006561, 0.007569)
+    assert total['S1'] == ''  # a total is not a share of itself
+
+    dye = next(row for row in by_kind['source'] if row['Item'] == 'Ka,dye')
+    assert dye['Elasticity'] == 0.31
+    assert dye['Variance (decades^2)'] == 0.05 * result.budget['Ka_guest'].variance
+    assert dye['Spread if exact (decades)'] == 0.081873
+
+    # Every perturbable input is there, [Dye]₀ included, although no source of
+    # its own moves it: a source's elasticity is the sum over the inputs it moves.
+    assert {row['Item']: row['Elasticity'] for row in by_kind['input']} == {
+        'Ka,dye': 0.31,
+        '[Host]₀': -1.2,
+        '[Dye]₀': 0.62,
+        'Guest': 0.95,
+    }
+
+
+def test_the_exported_budget_leaves_out_what_the_run_could_not_pin_down(qapp):
+    """A cell the analysis has no number for is empty in the file, never the text 'nan'."""
+    from core.pipeline.sensitivity import Budget, BudgetRow
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    result = _sobol_result()
+    result.sources = ('h0',)
+    result.budget = {
+        'Ka_guest': Budget(
+            variance=0.007056,
+            variance_ci=(np.nan, np.nan),
+            rows=(BudgetRow('h0', np.nan, (np.nan, np.nan), np.nan, (np.nan, np.nan), None),),
+        )
+    }
+    w = SensitivityWidget()
+    w.update_result(result)
+
+    values = [value for row in w.budget_rows() for value in row.values()]
+    assert not any(isinstance(value, float) and np.isnan(value) for value in values)
+    assert 'nan' not in ' '.join(str(value) for value in values).lower()

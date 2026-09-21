@@ -2,11 +2,12 @@
 
 The panel exposes the knobs of :class:`~core.pipeline.sensitivity.SensitivityConfig`
 that belong to the run itself: the analysis *mode* (Sobol indices / heatmap), the
-SOBOL sample size, the two heatmap axes, and an optional fixed seed. The uncertainty
-of each input is stated once in
+SOBOL sample size, the two heatmap axes, and an optional fixed seed. The error sources
+are stated once in
 :class:`~gui.widgets.input_uncertainty_panel.InputUncertaintyPanel`, which also feeds
-the interval of every fit; the owning session passes those specs to
-:meth:`SensitivityPanel.run_problems` and :meth:`SensitivityPanel.current_config`.
+the interval of every fit; the owning session passes that
+:class:`~core.pipeline.inputs.ErrorModel` to :meth:`SensitivityPanel.run_problems` and
+:meth:`SensitivityPanel.current_config`.
 
 It emits :attr:`run_requested` / :attr:`cancel_requested`; the owning session runs the
 worker and calls :meth:`set_running` to flip the button. An assay whose signal the
@@ -15,8 +16,6 @@ constant to report, so the whole panel is disabled with a sentence saying why.
 """
 
 from __future__ import annotations
-
-from typing import Mapping
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
@@ -31,7 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.pipeline.inputs import InputSpec, SpecKind, axis_reaches_zero
+from core.pipeline.inputs import ErrorModel, InputSpec, SpecKind, axis_reaches_zero
 from core.pipeline.sensitivity import (
     _SOBOL_BLOCKS,
     _SOBOL_SAMPLE_SIZES,
@@ -75,9 +74,10 @@ _MODE_HELP_HTML = """
   <li><b>Heatmap</b> — sweep two chosen inputs on a regular grid and fit at
       every cell, giving a 2-D K<sub>a</sub> surface.</li>
 </ul>
-<p>Each input is drawn on its own, so the shares assume the inputs' errors are
-unrelated. Inputs that share a stock, a pipette or a calibration move together, and
-the shares do not separate them.</p>
+<p>The shares are shares of the error sources you stated under <i>Input Uncertainty</i>.
+An error several inputs share is one source of its own, reported as one item: its share
+is what re-making that one stock, or recalibrating that one pipette, would take
+away.</p>
 <p>S<sub>T</sub> covers S<sub>1</sub>, so it cannot really be smaller. Drawn below
 S<sub>1</sub>, the input acts almost entirely on its own: the two are equal to within
 sampling noise, and either can come out on top in any run, at any sample size. Where
@@ -193,20 +193,20 @@ class SensitivityPanel(InfoGroupBox):
             key: float(value.magnitude) for key, value in conditions.items() if isinstance(value, Quantity)
         }
 
-    def run_problems(self, specs: Mapping[str, InputSpec]) -> list[str]:
-        """Why the analysis cannot run on *specs* as set, one sentence per problem; empty when it can.
+    def run_problems(self, errors: ErrorModel) -> list[str]:
+        """Why the analysis cannot run on *errors* as stated, one sentence per problem; empty when it can.
 
-        *specs* are the uncertainties of the inputs that are not fixed
-        (:meth:`~gui.widgets.input_uncertainty_panel.InputUncertaintyPanel.current_specs`);
-        whether each one can be read at all is that panel's own check. Sensitivity
-        indices split the spread of Ka between the inputs that vary, so at least one
-        must. A heatmap sweeps its two axes and holds every other input at its set
-        value, so only the axes are checked here.
+        *errors* is the stated error model
+        (:meth:`~gui.widgets.input_uncertainty_panel.InputUncertaintyPanel.current_errors`);
+        whether each source can be read at all is that panel's own check. Sensitivity
+        indices split the spread of Ka between the sources, so at least one must vary. A
+        heatmap sweeps two inputs on a grid and holds everything else at its set value,
+        so only the two axes are checked here.
         """
         if not self._labels:
             raise RuntimeError('set_inputs() must name the assay’s inputs before the analysis is configured.')
         if self._mode_combo.currentData() is not SensitivityMode.HEATMAP:
-            if specs:
+            if errors.varies:
                 return []
             return [
                 'No input varies, so there is no spread to split. Set an uncertainty for at least one input '
@@ -215,29 +215,35 @@ class SensitivityPanel(InfoGroupBox):
         x_key, y_key = self._x_combo.currentData(), self._y_combo.currentData()
         if x_key == y_key:
             return [f'{self._labels[x_key]} is both heatmap axes: choose another input for one of them.']
-        return [problem for key in (x_key, y_key) if (problem := self._axis_problem(key, specs.get(key)))]
+        return [problem for key in (x_key, y_key) if (problem := self._axis_problem(key, errors.specs.get(key)))]
 
-    def current_config(self, specs: Mapping[str, InputSpec]) -> SensitivityConfig:
-        """Build a :class:`SensitivityConfig` for *specs* from the current widget state.
+    def current_config(self, errors: ErrorModel) -> SensitivityConfig:
+        """Build a :class:`SensitivityConfig` for *errors* from the current widget state.
 
-        A heatmap takes only its two axes, holding every other input at its set value.
+        Sensitivity indices take the whole model. A heatmap is a grid over two inputs,
+        so it takes those two inputs' own uncertainties and nothing else: a source
+        several inputs share moves them together and is no axis of a grid.
 
         Raises
         ------
         ValueError
             When :meth:`run_problems` finds a reason the analysis cannot run.
         """
-        problems = self.run_problems(specs)
+        problems = self.run_problems(errors)
         if problems:
             raise ValueError(' '.join(problems))
         mode: SensitivityMode = self._mode_combo.currentData()
         x_key, y_key = self._x_combo.currentData(), self._y_combo.currentData()
-        used = {key: specs[key] for key in (x_key, y_key)} if mode is SensitivityMode.HEATMAP else dict(specs)
+        used = (
+            ErrorModel(specs={key: errors.specs[key] for key in (x_key, y_key)})
+            if mode is SensitivityMode.HEATMAP
+            else errors
+        )
         seed = int(self._seed_spin.value()) if self._seed_check.isChecked() else None
         return SensitivityConfig(
             mode=mode,
             n_samples=self._samples_combo.currentData(),
-            input_specs=used,
+            errors=used,
             seed=seed,
             x_key=x_key,
             y_key=y_key,

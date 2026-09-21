@@ -31,7 +31,7 @@ import pytest
 
 from core.pipeline.diagnostics import Conflict, FitDiagnostics, InputShift, MisfitTest, Verdict
 from core.pipeline.fit_pipeline import ConditionalFit, FitResult
-from core.pipeline.inputs import TITRANT, InputSpec, specs_to_dict
+from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec, SharedSource, shared_key, specs_to_dict
 from core.pipeline.varpro import KaInterval
 from core.units import Q_
 from gui.session import export_results, export_results_csv, export_results_txt, import_results
@@ -130,6 +130,31 @@ def _input_aware_result(
         ),
     )
     result.fit_config['input_uncertainty'] = specs_to_dict(_SPECS)
+    return result
+
+
+#: The source two stocks of one titration share, and the shift the fit put on it.
+_SHARED = SharedSource('Host and dye stock', 4.0, ('h0', 'd0'))
+_SHARED_KEY = shared_key(_SHARED.name)
+
+
+def _diluted_shared_result() -> FitResult:
+    """A fit of a titration whose additions diluted the sample, with one error the host and dye stocks share."""
+    shifts = {
+        'h0': InputShift(key='h0', fraction=-0.02, z=-0.67, at_edge=False),
+        _SHARED_KEY: InputShift(key=_SHARED_KEY, fraction=-0.041, z=-1.02, at_edge=False),
+    }
+    result = replace(
+        _input_aware_result(shifts=shifts),
+        conditions={
+            'Ka_dye': Q_(1.68e7, '1/M'),
+            'h0': Q_(4.3e-6, 'M'),
+            'd0': Q_(6.0e-6, 'M'),
+            'titrant_stock': Q_(1.0e-3, 'M'),
+            'stock_contains': ('d0',),
+        },
+    )
+    result.fit_config.update(ErrorModel(specs={'h0': InputSpec.sigma_pct(3.0)}, shared=(_SHARED,)).to_dict())
     return result
 
 
@@ -493,7 +518,7 @@ def test_txt_report_tables_what_was_stated_and_where_the_fit_put_each_input(tmp_
     """The stated uncertainty and the fitted shift belong side by side: the shift only means something against it."""
     text = _txt(tmp_path, [_input_aware_result()])
 
-    rows = _table_rows(text, '  Input ')
+    rows = _table_rows(text, '  Source ')
     assert set(rows) == {'[Host]₀', 'Guest', '[Dye]₀'}  # the titrant is named as the panel names it
     assert 'σ 3 %' in rows['[Host]₀'] and '−11.4 %' in rows['[Host]₀'] and '3.8 σ' in rows['[Host]₀']
     assert 'σ 5 %' in rows['Guest'] and '+9.3 %' in rows['Guest'] and '1.9 σ' in rows['Guest']
@@ -508,10 +533,54 @@ def test_txt_report_writes_an_uncertainty_in_the_input_s_own_unit_the_way_it_wri
     result = replace(_input_aware_result(), conditions={'h0': Q_(4.3e-6, 'M')})
     result.fit_config['input_uncertainty'] = specs_to_dict({**_SPECS, 'h0': InputSpec.sigma_abs(2e-7)})
 
-    rows = _table_rows(_txt(tmp_path, [result]), '  Input ')
+    rows = _table_rows(_txt(tmp_path, [result]), '  Source ')
 
     assert 'σ 2.0×10⁻⁷ M' in rows['[Host]₀']
     assert 'e-07' not in rows['[Host]₀']
+
+
+def test_txt_report_lists_a_shared_source_after_the_inputs_with_the_inputs_it_moves(tmp_path: Path) -> None:
+    """A shift against a source several inputs share means nothing without knowing which inputs it moved."""
+    text = _txt(tmp_path, [_diluted_shared_result()])
+
+    lines = text.splitlines()
+    own = next(i for i, line in enumerate(lines) if line.startswith('  [Host]₀'))
+    shared = next(i for i, line in enumerate(lines) if line.startswith('  Host and dye stock'))
+    assert shared > own, 'the inputs come first, then what they share'
+    assert 'Host and dye stock (shared by [Host]₀, [Dye]₀)' in lines[shared]
+    assert 'σ 4 %' in lines[shared] and '−4.1 %' in lines[shared] and '1.0 σ' in lines[shared]
+    assert 'one stock, balance or pipette behind all of them' in _prose(text)
+
+
+def test_txt_report_says_the_titrant_diluted_the_sample_and_what_the_stock_held(tmp_path: Path) -> None:
+    """Which concentrations fell with each addition is part of the model the numbers come from."""
+    text = _txt(tmp_path, [_diluted_shared_result()])
+
+    # In the unit the stock was entered in, not in raw molar.
+    assert 'Titrant stock: 1 mM; fixed concentrations diluted by each addition' in text
+    assert 'also in the stock: [Dye]₀' in text
+    # The two are stated in words; their keys are not conditions a reader enters.
+    assert 'titrant_stock:' not in text and 'stock_contains:' not in text
+
+
+def test_txt_report_of_a_fit_with_constant_totals_says_nothing_about_dilution(tmp_path: Path) -> None:
+    """Samples made up to the same volume have no stock to report."""
+    text = _txt(tmp_path, [replace(_result(), conditions={'h0': Q_(4.3e-6, 'M')})])
+
+    assert 'Titrant stock' not in text and 'diluted by each addition' not in text
+
+
+def test_csv_gives_a_shared_source_its_own_row_after_the_inputs(tmp_path: Path) -> None:
+    """The table is joined on the source key, so a shared source is one row like any input the fit could move."""
+    path = tmp_path / 'r.csv'
+    export_results_csv([_diluted_shared_result()], path)
+
+    moved = [row for row in _csv_rows(path) if row['unit'] == '% of entered']
+    assert [row['parameter'] for row in moved] == ['h0', _SHARED_KEY]
+    shared = moved[-1]
+    assert float(shared['estimate']) == pytest.approx(-4.1)
+    assert float(shared['input_z']) == pytest.approx(-1.02)
+    assert shared['input_at_edge'] == 'false'
 
 
 def test_txt_report_gives_the_verdict_with_both_misfit_tests_and_the_conflict(tmp_path: Path) -> None:
