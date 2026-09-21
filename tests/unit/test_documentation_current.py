@@ -98,7 +98,7 @@ def test_the_scan_reaches_the_texts_a_reader_and_the_program_depend_on():
         'gui/assay_descriptions.py',
         'core/pipeline/varpro.py',
         'core/pipeline/fit_pipeline.py',
-        'scripts/README.md',
+        'validation/README.md',
     }
     assert expected <= set(LIVE_TEXTS), f'not scanned: {sorted(expected - set(LIVE_TEXTS))}'
 

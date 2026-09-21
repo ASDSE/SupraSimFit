@@ -17,7 +17,7 @@ Rules:
 
 ## Project Overview
 
-SupraSimFit — a desktop toolkit that fits equilibrium binding models to fluorescence titration data by variable projection, extracting association constants (Ka) with a profile-likelihood confidence interval via rigorous forward-modelling rather than linearised transforms. Assay types: `GDA`, `IDA`, `DBA_HtoD`, `DBA_DtoH`, `DBA_HG2`, `DBA_H2G`, `DYE_ALONE`.
+SupraSimFit — a desktop toolkit that fits equilibrium binding models to fluorescence titration data by variable projection, extracting association constants (Ka) with a profile-likelihood confidence interval — optionally input-aware, covering the uncertainty of the entered conditions as well — via rigorous forward-modelling rather than linearised transforms. Assay types: `GDA`, `IDA`, `DBA_HtoD`, `DBA_DtoH`, `DBA_HG2`, `DBA_H2G`, `DYE_ALONE`.
 
 PyQt6 GUI + PyQtGraph plots, packaged as a standalone PyInstaller binary (no Python required by end users). Single-developer research codebase — backwards compatibility and GUI stability are **not** constraints. Python **3.13+**, package manager is **uv** (not pip/poetry).
 
@@ -86,40 +86,51 @@ All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY:
 | **Assays** | `core/assays/` | `BaseAssay` ABC + subclasses; each wraps a forward model reference |
 | **Models** | `core/models/` | Pure, unit-free math: `equilibrium.py`, `linear.py` |
 | **Optimizer** | `core/optimizer/` | Numerical helpers around the fit: `calculate_fit_metrics` (filters.py), `describe`/`describe_log10` summary stats (ensemble.py), `linear_regression` (linear_fit.py) |
-| **Fit engine** | `core/pipeline/varpro.py` | Variable projection: `Projection` (bounded linear solve of the signal parameters at a fixed Ka, log-grid search + refinement over the Ka, profile, `KaInterval`), `replicate_outliers()`, `projectable()`. Pure numerics on an assay, its bounds and one or more signal rows |
-| **Pipeline** | `core/pipeline/` | Orchestration: `fit_assay()`, `fit_measurement_set()`, `FitConfig`, `FitResult`, `summarize_parameters()` (`fit_pipeline.py`) |
-| **Ka profile** | `core/pipeline/profile.py` | Curves for the Identifiability tab, built on the engine: `fit_profile()` → `ProfileSet` (one `ProfileResult` per Ka plus the two-Ka `JointRegion`) |
-| **Ka sensitivity** | `core/pipeline/sensitivity.py` | `run_sensitivity()` → `SensitivityResult`: Sobol' (`sobol_design`, `sobol_indices_with_ci`) and heatmap runs over perturbed inputs; `perturbable_inputs()`, `InputSpec`, worker-process fan-out |
+| **Fit engine** | `core/pipeline/varpro.py` | Variable projection: `Projection` (bounded linear solve of the signal parameters at a fixed Ka, log-grid search + refinement over the Ka, profile, `KaInterval`, `residual()` / `inner_start()` at shifted inputs), `replicate_outliers()`, `projectable()`. Pure numerics on an assay, its bounds and one or more signal rows |
+| **Inputs** | `core/pipeline/inputs.py` | What the user states about each entered input: `InputSpec` (σ or range, relative or absolute), `perturbable_inputs()`, `TITRANT`, and the `InputConstraint` tuple `constraints()` hands to the fit; `specs_to_dict()` / `specs_from_dict()` for the results file. Shared by the interval and the sensitivity analysis |
+| **Input-aware interval** | `core/pipeline/input_aware.py` | `input_aware()` → `AwareResult`: the penalised profile of each Ka with the entered inputs free inside their stated uncertainties (`AwareFit`, `AwareProfile`), `fit_jacobian()`, `conflict()`, `input_shifts()` |
+| **Diagnostics** | `core/pipeline/diagnostics.py` | Pure functions on arrays: `lack_of_fit()` / `runs_test()` (does the curve miss the data), `conflict_reference()` / `conflict_test()` / `conflict_p_value()` (did the inputs move further than stated), `verdict()` → `FitDiagnostics` |
+| **Pipeline** | `core/pipeline/` | Orchestration: `fit_assay()`, `fit_measurement_set()`, `FitConfig`, `FitResult`, `ConditionalFit`, `summarize_parameters()` (`fit_pipeline.py`) |
+| **Ka profile** | `core/pipeline/profile.py` | Curves for the Identifiability tab, built on the engine: `fit_profile()` → `ProfileSet` (one `ProfileResult` per Ka, each carrying the conditional curve and the `AwareProfile` beside it, plus the two-Ka `JointRegion`) |
+| **Ka sensitivity** | `core/pipeline/sensitivity.py` | `run_sensitivity()` → `SensitivityResult`: Sobol' (`sobol_design`, `sobol_indices_with_ci`) and heatmap runs over inputs drawn from the same `InputSpec`s (re-exported from `inputs.py`), each sample one fixed-input fit; worker-process fan-out |
 | **Data Processing** | `core/data_processing/` | `MeasurementSet` (immutable 2D container), Z-score replica filter, concentration helpers, `prepare_plot_data()` (`plotting.py`) |
 | **I/O** | `core/io/` | Strategy pattern with explicit dict registries (no decorators); readers per format under `io/formats/` (BMG/csv/ensight/jasco/txt/xlsx) + measurement writer |
 | **Units** | `core/units.py` | pint `UnitRegistry` singleton; plain `dict[str,str]` unit tables (`PARAM_UNITS`, `CONDITION_UNITS`); custom `au` unit for signals |
 | **GUI shell** | `gui/main_window.py` | `FittingMainWindow` + `launch()` entry point; sets `QLocale` (English/US) before `QApplication`; triggers a silent update check on startup |
 | **GUI session** | `gui/fitting_session.py` | `FittingSession` — one tab: owns state, wires all panels, dispatches the fit |
 | **GUI state** | `gui/app_state.py` | `AppState` dataclass — mutable session state (`ms`, `fit_results`, …) |
-| **GUI workers** | `gui/workers.py` | `FitWorker`, `ProfileWorker`, `SensitivityWorker` QThreads — run the fit, the Ka profile and the sensitivity analysis off the main thread; each emits `finished`/`error`, and `SensitivityWorker` also emits `progress(done, total)` and `stopped()` (a cancel that lands before the baseline fit) |
-| **GUI widgets** | `gui/widgets/` | `AssayConfigPanel`, `BoundsPanel`, `DataPanel`, `FitConfigPanel`, `PreprocessingPanel`, `ReplicaPanel`, `SensitivityPanel` (per-input uncertainties, mode and sample size) + shared inputs (`numeric_inputs.py`, `info_button.py`) |
+| **GUI workers** | `gui/workers.py` | `FitWorker`, `ProfileWorker`, `SensitivityWorker` QThreads — run the fit (interval, input-aware interval and diagnostics together), the Ka profile and the sensitivity analysis off the main thread; each emits `finished`/`error`, `ProfileWorker` takes the fit's own `AwareResult`, and `SensitivityWorker` also emits `progress(done, total)` and `stopped()` (a cancel that lands before the baseline fit) |
+| **GUI widgets** | `gui/widgets/` | `AssayConfigPanel`, `BoundsPanel`, `DataPanel`, `FitConfigPanel`, `InputUncertaintyPanel` (per-input σ / range / fixed, shared by the interval and the sensitivity analysis), `PreprocessingPanel`, `ReplicaPanel`, `SensitivityPanel` (mode, sample size, heatmap axes, seed) + shared inputs (`numeric_inputs.py`, `info_button.py`) |
 | **GUI plotting** | `gui/plotting/` | `PlotWidget`, `FitSummaryWidget`, `PlotStyleWidget`, `IdentifiabilityWidget` (Ka profiles and the joint region), `SensitivityWidget` (Ka Sensitivity tab); labels and interval formatters in `labels.py`, colors in `colors.py`, image export in `export.py` (PyQtGraph native) |
 | **GUI dialogs** | `gui/dialogs/` | `ExportMultipleDialog`, `PreferencesDialog`, `PlotGuideDialog` — modal dialogs invoked from the toolbar and menus |
 | **GUI help** | `gui/plot_guide.py`, `gui/dialogs/plot_guide_dialog.py` | "Reading the plots" guide: one HTML section per plot tab, opened from the Help menu |
-| **Calibration scripts** | `scripts/` | Standalone coverage checks of the profile interval and the Sobol' index intervals; see `scripts/README.md` |
+| **Validation** | `validation/` | The synthetic-data generators, the scoring and the result store behind every rate the app states: `python -m validation run <check>` computes rows, `python -m validation tables` renders them; see `validation/README.md` |
 | **Auto-update** | `gui/update_check.py`, `gui/update_dialog.py`, `gui/download_worker.py` | Compares latest GitHub release against `_version.py`; prompts and downloads if newer |
 
 ### Fitting Pipeline Flow
 
-`load_measurements()` → `MeasurementSet` → `.to_assay()` → `BaseAssay` → `fit_assay(assay, FitConfig)` → `Projection` (signal parameters by bounded linear least squares, Ka by log-grid search + refinement) → profile-likelihood interval per Ka → `FitResult`
+`load_measurements()` → `MeasurementSet` → `.to_assay()` → `BaseAssay` → `fit_assay(assay, FitConfig)` → `Projection` (signal parameters by bounded linear least squares, Ka by log-grid search + refinement) → profile-likelihood interval per Ka (the **conditional** fit and interval, every entered input taken as exact) → `input_aware()` with the `InputSpec`s of `FitConfig.input_specs` (penalised profile: each Ka against the best fit reachable while the inputs move inside their stated uncertainties) → `diagnostics` (misfit test at both fits, conflict statistic, `verdict()`) → `FitResult`
+
+With no uncertainty stated — how the Input Uncertainty panel opens — `input_aware()`
+returns the conditional interval objects themselves, so a fit of exact inputs costs
+nothing extra and reports one interval.
 
 A per-replicate fit (`fit_measurement_set_per_replica`) builds one `Projection` over all
 replicate rows, runs `replicate_outliers()` to decide which replicates share a Ka, and
 reports the fit of the average of the ones kept, with each replicate's own fit in
-`replica_fits`.
+`replica_fits`; those per-replicate fits stay conditional. In either mode the signals of
+the replicates used reach `fit_assay` as `replicate_signals`, which is what the
+lack-of-fit F test measures the noise from.
 
-**Reporting is derived, never stored.** `FitResult` keeps the fit's `parameters` and the
-`KaInterval` of each binding constant; every reported row comes from
-`summarize_parameters(result)` (`core/pipeline/fit_pipeline.py`), which the plot
-annotation, the summary table and the TXT/CSV exports all render from. The headline form
-is **`Estimate [low, high]`** — the fit, and the range of values the same data do not
-reject at the stated level. Both come from one projection of one set of replicates; a
-centre from one estimator paired with a spread from another describes no distribution.
+**Reporting is derived, never stored.** `FitResult` keeps the fit's `parameters`, the
+`KaInterval` of each binding constant and the `ConditionalFit` beside it; every reported
+row comes from `summarize_parameters(result)` (`core/pipeline/fit_pipeline.py`), which
+the plot annotation, the summary table and the TXT/CSV exports all render from. The
+headline form is **`Estimate [low, high]`** — the input-aware fit and its interval
+wherever an input may move, the conditional ones otherwise — and the conditional
+`estimate [low, high]` is filled in beside it whenever an input was free to move. Both ends of a pair
+come from one projection of one set of replicates; a centre from one estimator paired
+with a spread from another describes no distribution.
 
 ### GUI Plotting Flow
 
@@ -138,6 +149,8 @@ Parameters use **string keys**, not positional indices. `FitConfig.custom_bounds
 - **4-parameter signal model:** `Signal = I0 + I_dye_free·[D_free] + I_dye_bound·[HD]`.
 - Signal coefficients (`I0`, `I_dye_free`, `I_dye_bound`) are **structurally degenerate** in DBA/IDA — only Ka is identifiable. Tests verify Ka recovery + signal reconstruction, never the individual coefficients.
 - Concentrations are stored internally in **Molar**; GUI inputs (nM/µM/mM/M, M⁻¹/kM⁻¹/MM⁻¹) convert to base units at the boundary.
+- **Entered inputs are exact until the user says otherwise.** Every row of the Input Uncertainty panel opens *fixed*, so a fit reports the conditional interval as its headline until an uncertainty is stated for at least one input. The sensitivity analysis needs at least one varying input and says so in plain language when none is set.
+- **A conflict is a statement about the inputs together.** The per-input shift says where the fit put the correction, not which input is wrong — several inputs move the curve almost alike, and a significant conflict can come with every shift under one σ. No message, help text or document may name one input as the cause.
 - Example datasets with reference parameters live in `data/` (see `data/Readme.md`).
 
 ## Testing
@@ -154,7 +167,10 @@ Tests verify **scientific correctness first** — reproduce a bug as a failing t
 
 A model with one or two binding constants whose other parameters are all signal
 offset or signal coefficient fits with no engine change: `projectable()` reads that
-off the registry. Anything else it refuses by name.
+off the registry. Anything else it refuses by name. The input-aware interval and the
+sensitivity analysis need no assay code either — `perturbable_inputs()` classifies
+the assay's own Quantity conditions by dimension (M → concentration, M⁻¹ → binding
+constant) and adds the titrant, and `BaseAssay.with_inputs()` moves them generically.
 
 ## GUI Conventions
 
@@ -164,6 +180,7 @@ off the registry. Anything else it refuses by name.
 - **Locale:** `QLocale.setDefault(English/US)` in `launch()` before `QApplication` — guarantees dot decimal separators in all spinboxes.
 - **HTML labels:** `ConditionField.label` is HTML; render with `lbl.setTextFormat(Qt.TextFormat.RichText)`. Use subscript/superscript consistently.
 - The outlier-removal panel is labelled **"Outlier Removal"**. "Load Data" (Ctrl+O) on the toolbar is the only load entry point.
+- The uncertainties of the entered inputs are stated once, in the **"Input Uncertainty"** panel (sidebar, under Assay Configuration), and feed both the headline interval and the Ka Sensitivity tab. The Sensitivity panel keeps only mode, sample size, heatmap axes and seed.
 
 ## Code Style
 

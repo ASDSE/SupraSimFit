@@ -189,21 +189,29 @@ $$P_j(k) \;\le\; \mathrm{SSR}_{\min}\left(1 + \frac{F(\alpha;\, 1,\, n - p)}{n -
 - $p = (\text{association constants fitted}) + \operatorname{rank} X(\hat{K})$ — the **numerical rank** of the free coefficient columns at the best fit, plus one per association constant that was free to move; a constant pinned by equal bounds is not fitted and adds nothing. Counting the nominal number of coefficients would be wrong here: the signal coefficients are structurally degenerate (Section 5), so two columns the data cannot separate must contribute one degree of freedom, not two. The rank is taken from the singular values of the norm-scaled design, at a relative cut-off of $10^{-8}$: measured over synthetic GDA, IDA and DBA titrations with the constant swept over the whole default range, exact dependencies carry relative singular values of $2\times10^{-17}$ to $2\times10^{-15}$ while a direction the signal does separate stays above $7\times10^{-7}$, and nothing falls between.
 - $\mathrm{SSR}_{\min}$ is floored at $10^{-10}$ of the total sum of squares. An $R^2$ above $1 - 10^{-10}$ means a scatter below $10^{-5}$ of the signal range, which no instrument delivers; without the floor, data reproduced to rounding would return a zero-width interval whose ends are arithmetic.
 
-The edges are located by root-finding on the exact curve. An edge that reaches a $K_a$ bound without crossing the threshold is reported as **open**: the measurement places no limit on $K_a$ on that side, and the result is a limit rather than an interval. A model with two association constants has one more way of producing a crossing that is not a limit: along the profile of one constant the other compensates until it reaches its own bound, and from there the residual rises and crosses the threshold although the data would accept the pair further out. Such a crossing moves decade for decade with that bound. It is recognised at the edge itself — the minimum over the other constant lies on its bound and the residual still falls towards it, by more than $10^{-3}$ of the rise the $F$ test allows over the last quarter decade — and the side is then reported as open, naming the constant whose bound it rests on. On 120 random HG2/H2G designs this rule marks all 93 closed edges that move when both $K_a$ bounds are widened by three decades and none of the 76 that stay (the two groups lie at $\ge 1.6\times10^{-2}$ and $\le 1.6\times10^{-4}$ of the allowed rise). This is the practical-identifiability reading of a profile likelihood in the sense of Raue et al. (2009).
+**Bounded signal parameters.** The $F$ test compares two nested fits, and its numerator counts the parameters the best fit has and the fit at the tested constant has not. With $\mathbf{c}$ free that is the tested constant alone. With $\mathbf{c}$ inside bounds — non-negative by default — the bounded solve at a tested $k$ often holds a coefficient *on* a bound that the best fit leaves free, typically the coefficient of a weakly emitting species; a coefficient on its bound is not fitted, so that fit has given up more than one parameter. With $r(K)$ the numerical rank of the design columns whose coefficient lies inside its bounds at $K$, read at the profile point of $k$ (the other constant at its minimiser),
+
+$$m(k) = 1 + \max\big(0,\; r(\hat{K}) - r(K(k))\big), \qquad P_j(k) \;\le\; \mathrm{SSR}_{\min}\left(1 + \frac{m(k)\,F(\alpha;\, m(k),\, n - p)}{n - p}\right),$$
+
+with $n - p$ that of the best fit throughout. Wherever the tested constant pins nothing the best fit leaves free, $m = 1$ and the rule is the one above; elsewhere the cut-off steps up, and the Identifiability tab draws it as a stepped line. A parameter on the boundary of its range makes the exact reference a mixture of $F$ distributions with 1 to $m$ numerator degrees of freedom (Self & Liang 1987), so taking $m$ is conservative, which is the side an interval may err on. A coefficient counts as on its bound when its distance from the bound, times the norm of its design column, is below $10^{-8}$ of the signal's variation about its mean (the square root of the total sum of squares) — the resolution the rank is read at, on a scale that a constant background under the signal leaves unchanged. Over 86 400 tests of the true constants of synthetic 1:2 and 2:1 titrations, the plain test ($m = 1$) accepts the truth in 92.7 % of the cases where the fit at the true constant pins one coefficient more than the best fit, in 86.4 % where it pins two and in 75.1 % where it pins three; judged with $m$ these are 97.7, 97.5 and 97.0 %. Of the 216 intervals-by-scenario of that study (two constants each in 108 cells of 400 titrations: both models, $K_1 h_0$ 0.3–3, $K_1/K_2$ 10–1000, 12 and 30 points, noise 0.5–3 %) 22 cover significantly below 95 % with the plain test, the worst at 87.5 %, and none with the count, the worst at 93.5 % [90.6, 95.7]. In six cells the plain test already covers, 88–99 % of the intervals closed at both ends stay closed, at a median width ratio of 1.00–1.05. For one association constant (32 cells of 500, half with a dark free dye) the plain test has no cell below 94.0 %, and the count widens the mean interval by 2.3 %.
+
+Every entered condition enters $A(K)$ as the number the user typed, so this is the interval **conditional on the entered inputs**: what the data leave for $K_j$ when $h_0$, $d_0$, $K_{a,\text{dye}}$ and the titrant concentrations are exactly right. Section 7 states what they are known to within and carries that into the interval; the app reports the conditional interval beside the result whenever the two differ.
+
+The edges are located by root-finding on the exact curve. An edge that reaches a $K_a$ bound without crossing the cut-off is reported as **open**: the measurement places no limit on $K_a$ on that side, and the result is a limit rather than an interval. A model with two association constants has one more way of producing a crossing that is not a limit: along the profile of one constant the other compensates until it reaches its own bound, and from there the residual rises and crosses the threshold although the data would accept the pair further out. Such a crossing moves decade for decade with that bound. It is recognised at the edge itself — the minimum over the other constant lies on its bound and the residual still falls towards it, by more than $10^{-3}$ of the rise the $F$ test allows over the last quarter decade — and the side is then reported as open, naming the constant whose bound it rests on. On 120 random HG2/H2G designs this rule marks all 93 closed edges that move when both $K_a$ bounds are widened by three decades and none of the 76 that stay (the two groups lie at $\ge 1.6\times10^{-2}$ and $\le 1.6\times10^{-4}$ of the allowed rise). This is the practical-identifiability reading of a profile likelihood in the sense of Raue et al. (2009).
 
 ### 6.3. Two Association Constants: Intervals and the Joint Region
 
 A model with two stepwise constants gets one interval per constant, each read off that constant's own profile — with the other constant refitted at every point, so the interval is what the data say about that constant alone. The pair additionally has a **joint 95 % confidence region**, the same test with two degrees of freedom:
 
-$$S(K_1, K_2) \;\le\; \mathrm{SSR}_{\min}\left(1 + \frac{2\,F(\alpha;\, 2,\, n - p)}{n - p}\right)$$
+$$S(K_1, K_2) \;\le\; \mathrm{SSR}_{\min}\left(1 + \frac{m\,F(\alpha;\, m,\, n - p)}{n - p}\right), \qquad m = 2 + \max\big(0,\; r(\hat{K}) - r(K_1, K_2)\big),$$
 
-drawn as a filled region in $(\log_{10} K_1, \log_{10} K_2)$ with the two one-dimensional intervals as bands across it. The two readings answer different questions, and the region is not the rectangle the intervals span: it extends past them along the direction in which one constant compensates the other, and rejects pairs that lie inside both. Stepwise constants are correlated almost by construction — a titration that resolves only the product $K_1K_2$ leaves a ridge along which the two exchange — so the region, not the pair of intervals, is what says whether a reported pair is supported.
+the count of Section 6.2 with two constrained constants — on the same synthetic titrations the region holds the true pair in 90.7–91.5 % of fits with $m = 2$ throughout and in 95.0–95.8 % with the count — drawn as a filled region in $(\log_{10} K_1, \log_{10} K_2)$ with the two one-dimensional intervals as bands across it. The two readings answer different questions, and the region is not the rectangle the intervals span: it extends past them along the direction in which one constant compensates the other, and rejects pairs that lie inside both. Stepwise constants are correlated almost by construction — a titration that resolves only the product $K_1K_2$ leaves a ridge along which the two exchange — so the region, not the pair of intervals, is what says whether a reported pair is supported.
 
 ### 6.4. Replicates Are Averaged, Not Pooled
 
 The profile, the best fit and the interval describe the **average of the replicates the fit used** (Section 4.3). Replicates of one titration share their systematic departure from the model: if the model misses a point, it misses that point in every replicate. Treating $m$ replicates as $m \times n$ independent observations counts one shared miss $m$ times as independent evidence: the interval narrows — by up to about $\sqrt{m}$ where that miss dominates the scatter — while the miss itself, the dominant error, stays exactly where it was.
 
-`scripts/profile_interval_coverage.py` measures the interval on synthetic IDA data, 200 designs per scenario, nominal 95 %:
+Measured on synthetic IDA data, 200 designs per scenario, nominal 95 %. `python -m validation tables replicate-pooling` prints the same comparison for every assay, with each kind of scatter a row of its own:
 
 | Scenario | Coverage of the true $K_a$ |
 |---|---|
@@ -214,20 +222,129 @@ The profile, the best fit and the interval describe the **average of the replica
 
 Constant-variance scatter is the assumption the F test is built on, and it is met. Proportional noise breaks it mildly and costs a few points of coverage. A shared systematic misfit breaks it badly — and the last row is why the app averages: pooling would make the same data look more informative while being less accurate.
 
-## 7. Input Sensitivity: Sobol' Variance Decomposition
+## 7. The Entered Inputs as Constrained Nuisance Parameters
 
-The interval of Section 6 conditions on the entered experimental conditions being correct. The sensitivity analysis removes that condition: each input is given a stated uncertainty, and the fit is repeated over the resulting input distribution.
+### 7.1. What a Stated Uncertainty Means
 
-### 7.1. Inputs and Their Distributions
+Every projectable model reads a set of entered inputs $\theta$: the fixed conditions of the assay ($h_0$, $d_0$, $K_{a,\text{dye}}$, the fixed concentration of the stepwise models) and the titrant concentration vector, which enters as a single scale factor — a stock or dilution error displaces every titration point by the same fraction. Input $j$ is written relative to what was entered,
 
-The perturbable inputs are the fixed conditions ($h_0$, $d_0$, $K_{a,\text{dye}}$, …) and the titrant concentration vector. Each is drawn independently, through its inverse CDF, so the same definition of an input's distribution serves plain random draws and a low-discrepancy sequence alike:
+$$\theta_j = \theta_{e,j}\,(1 + e_j),$$
+
+and the user states, per input, one of three things:
+
+- a **standard deviation** $s_j$ of $e_j$ (in percent of the entered value, or in the input's own unit converted through it): the input becomes a parameter carrying a pseudo-observation $z_j = e_j / s_j \sim N(0, 1)$;
+- a **range** $[lo_j, hi_j]$ of offsets: a box constraint on $e_j$ and no penalty — every value inside is equally acceptable and none outside, which is the form in which a $K_{a,\text{dye}}$ carried over from an earlier fit, or a tolerance quoted by a supplier, naturally arrives;
+- **fixed**: $e_j = 0$, the input is not a parameter. This is where every input starts, so a fit reports the interval of Section 6 until an uncertainty is stated.
+
+The statements are independent per input, and the same statements feed the sensitivity analysis of Section 9, which samples from them instead of fitting them.
+
+### 7.2. The Penalised Profile and Its Threshold
+
+With the projected residual sum of squares at shifted inputs
+
+$$S(K, \mathbf{e}) \;=\; \min_{\mathbf{lb}\,\le\,\mathbf{c}\,\le\,\mathbf{ub}} \lVert \mathbf{y} - A(K, \theta(\mathbf{e}))\,\mathbf{c} \rVert^2$$
+
+— the bounded solve of Section 4.1 on the design built at the shifted inputs — Gaussian noise of unknown variance $\sigma^2$ and the pseudo-observations above, minus twice the log likelihood is $n \log \sigma^2 + S/\sigma^2 + \mathbf{z}'\mathbf{z}$. Profiling $\sigma^2 = S/n$ leaves, up to a constant, the objective $n \log S + \mathbf{z}'\mathbf{z}$, so the profile of one association constant and its interval are
+
+$$P_j(k) = \min_{K_j = k,\; \mathbf{e} \in \text{box}} \Big[\, n \log S(K, \mathbf{e}) + \mathbf{z}'\mathbf{z} \,\Big], \qquad
+P_j(k) - P_{\min} \;\le\; n \log\!\left(1 + \frac{m(k)\,F(\alpha;\,m(k),\,\nu)}{\nu}\right)$$
+
+$$\nu \;=\; n - p - \sum_i w_i, \qquad p = (\text{association constants fitted}) + \operatorname{rank} X(\hat{K}) + (\text{inputs stated as a range}).$$
+
+$m(k)$ is the count of Section 6.2, read at each profile point's own solution — its constants and its shifted inputs — against the optimum's: one, plus every signal parameter the optimum fits and that solution holds on a bound.
+
+**Why the degrees of freedom are effective ones.** An input stated with a $\sigma$ adds one parameter *and* one observation, which leaves the $\chi^2$ part of the test alone — but the noise variance is profiled from $S$ alone, and every input direction the data themselves determine takes a residual degree of freedom out of $S$. The weights $w_i \in [0, 1)$ of Section 8.2 measure exactly that: 1 where the data determine an input, 0 along a direction they cannot see, and their sum is the effective number of parameters of a penalised fit (Hodges & Sargent 2001). An input stated as a range adds a parameter and no observation, so it counts in $p$ — conservatively, when it comes to rest on an end of its range. Over 2400 synthetic one-constant titrations of 5, 6, 8 and 12 points (GDA, IDA, both DBA directions, every entered input drawn at the $\sigma$ stated for it) the nominal 95 % interval covered the true $K_a$ in 98.3, 98.0, 97.5 and 96.3 % of them, and in 98.4, 96.9, 96.6 and 95.9 % of the fits whose interval is closed at both ends. With $n - p$ in place of $\nu$ the same runs cover 85–93 %, and 73 % among the closed intervals of fits where $n - p - \sum w < 1$.
+
+**It reduces to the conditional interval.** With no input varying, $\mathbf{z}'\mathbf{z} = 0$, $\nu = n - p$ and $P_j(k) - P_{\min} = n \log\big(S(k)/S_{\min}\big)$, so the rule reads $S(k) \le S_{\min}(1 + m F/(n-p))$ — Section 6.2 exactly, and the app returns those objects rather than recomputing them. Driving a stated $\sigma$ to zero converges onto the same edges quadratically: $3.6\times10^{-4}$, $3.6\times10^{-8}$ and $3.5\times10^{-12}$ decades away at $\sigma = 10^{-3}$, $10^{-5}$ and $10^{-7}$.
+
+**The curve that is drawn.** $\exp(P(k)/n)$ is a residual sum of squares inflated by the input penalty, so
+
+$$R^2_{\text{aware}}(k) = 1 - \frac{\exp\big(P(k)/n\big)}{\mathrm{SS}_{\text{tot}}}$$
+
+is drawn on the $R^2$ axis of Section 6.1 beside the conditional profile and never below it — $\mathbf{e} = 0$ is always feasible — with its own cut-off $1 - \exp(P_{\min}/n)\,(1 + m F(\alpha; m, \nu)/\nu)/\mathrm{SS}_{\text{tot}}$, stepped like the conditional one.
+
+**What it delivers.** Coverage of the nominal 95 %, measured on about 6000 synthetic titrations across GDA, IDA and both DBA directions, 5 to 20 points, noise of 0.5–3 % of the signal range and one scenario with noise proportional to the signal, $K_a c$ from 0.1 to 1000, four inputs stated at 3–10 % and every entered value drawn at exactly the $\sigma$ stated for it:
+
+| Assay | fits | input-aware | conditional | closed intervals only (aware / conditional) |
+|---|---|---|---|---|
+| GDA | 1440 | 0.986 | 0.926 | 0.972 / 0.799 |
+| IDA | 1559 | 0.965 | 0.720 | 0.966 / 0.717 |
+| DBA host→dye | 1440 | 0.958 | 0.801 | 0.949 / 0.776 |
+| DBA dye→host | 1549 | 0.974 | 0.923 | 0.963 / 0.870 |
+
+The conditional interval is not wrong in these runs; it answers the narrower question, and the gap is the price of taking entered numbers as exact when they are not. Where the entry error is larger than stated, the input-aware interval degrades gracefully rather than collapsing: with an error of three times the stated $\sigma$ planted in $h_0$ (IDA, 20 points, 0.5 % noise, 100 datasets) it covered 0.94 against 0.49 for the conditional one. It is usually the wider of the two, and comes out narrower in a small minority of consistent fits, where moving an input explains a departure the entered values could not.
+
+**When it is refused.** $\nu < 1$ — the data cannot support the model *and* the inputs they are asked to free — is refused in plain language naming the inputs, the continuous form of the $n - p < 1$ rule of Section 6.2. Holding an input at its entered value, or measuring more points, is what that message asks for.
+
+**Replicates** are handled as in Section 6.4: the interval is computed on the average of the replicates used, in the same residual-variance form, which is what makes it reduce to the conditional interval when nothing varies. The replicates' own scatter is used instead for the lack-of-fit test of Section 8.1.
+
+### 7.3. How the Profile Is Computed
+
+At a fixed $k$ the inner problem over $x = (\text{the other free } \log_{10} K,\ \mathbf{e})$ is solved by a bounded trust-region least-squares solve (`scipy.optimize.least_squares`, TRF, finite-difference Jacobian) on the stacked residual $[\,\mathbf{r}(k, x)/s\ ;\ \mathbf{z}(x)\,]$, where $\mathbf{r}$ is the projected residual $\mathbf{y} - A\mathbf{c}$ at the shifted inputs. That objective is $S/s^2 + \mathbf{z}'\mathbf{z}$, which equals the profile objective only at the fixed point $s^2 = S/n$; the fixed point is found by a bracketed secant iteration on $g(u) = \log(S/n) - u$ with $u = \log s^2$, each step one warm-started solve. $g$ decreases in $u$ with slope in $[-1, -\tfrac{1}{2}]$, so the sign of $g$ at every visited $u$ brackets the root, and a secant step is taken only inside the bracket and clipped to between one and two Picard steps. Two to six steps reach $|g| < 10^{-6}$; the profile value is stationary in $x$, so an error $\delta$ in the scale moves $P$ by $O(\delta^2)$, and $P$ is converged to $10^{-9}$ there.
+
+The profile is traced rather than swept: from the search-grid node nearest the conditional fit outwards in both directions on the four-per-decade grid of Section 4.1, each node started from its neighbour's solution, the trace stopping two acceptance excesses above the running minimum; the optimum by bounded Brent between the neighbours of the best node; the edges by root-finding on $P(k) - \text{threshold}$ between the outermost accepted point and the first rejected node; and a coarse continuation of one node per decade to the ends of the $K_a$ box, which fills its decade at full resolution wherever it finds a second stretch below the threshold. Against a full double-continuation scan of every node of the box on 60 random IDA designs, the trace agreed on every edge to $3.5\times10^{-11}$ decades, on the optimum to $1.2\times10^{-6}$ (the resolution of Brent itself) and on every split flag, at a median 24 of 81 nodes solved. A second accepted region narrower than one decade and more than two excesses beyond the traced stretch is the resolution this trades away; the conditional profile is swept across the whole box and carries such a split where it exists.
+
+Every profile value is a pure function of the $k$ it is asked at and of the start points it is solved from, and the start points come only from the table of solved nodes — never from the previous evaluation — so root finding cannot change a value through the order of its calls, and the construction draws no random numbers. Cost, one process per core: a residual evaluation is one moved copy of the assay, one species solve and one bounded linear solve, and an interval takes 5000 to 15 000 of them. Over 5760 random one-constant titrations of 8 and 20 points the input-aware part took a median of 0.4–1.8 s depending on the assay (99th percentile 2.0–5.0 s, maximum 20.5 s), and over 1080 stepwise fits a median of 3.7 s (99th percentile 9.5 s, maximum 47 s). The tail is fits whose interval edge sits where a signal coefficient reaches its bound and the solver creeps; capping its evaluations halves the tail and moves an edge by up to $1.6\times10^{-3}$ decades, so they are not capped. Cancellation is checked before every evaluation.
+
+## 8. Model Checking and the Consistency of the Inputs
+
+An interval is a statement made *within* a model. Two questions are asked beside it and answered from the fit itself: does the curve miss the data by more than the data's own scatter allows, and did the inputs have to move further than the user said they could? Both tests are computed at the conditional fit and at the input-aware fit, which is what separates *the inputs explain the miss* from *the model misses whatever the inputs do*. The level of both is $1 - \alpha = 5\,\%$, the convention of the interval read from the other side.
+
+### 8.1. Does the Model Describe the Data
+
+**With two or more replicates** the scatter of the replicates about their mean estimates the noise without using the model at all, and the lack-of-fit $F$ test (Draper & Smith 1998) compares the misfit of the fitted curve with it:
+
+$$F = \frac{m\,S_{\text{mean}} / (n - p)}{s_{\text{pe}}^2}, \qquad s_{\text{pe}}^2 = \frac{1}{n(m-1)}\sum_{i,r}\big(y_{ri} - \bar{y}_i\big)^2, \qquad \text{d.f. } (n - p,\; n(m-1)),$$
+
+with $S_{\text{mean}}$ the residual sum of squares of the fit against the averaged signal. The parameter count $p$ is the one of Section 7.2 at both fits: the inputs the data determine are not subtracted, which makes the test at the input-aware fit slightly lenient ($E[F] \le 1$ under the null) rather than falsely alarming.
+
+**With a single replicate** there is no model-free noise estimate, and the question falls to the *signs* of the residuals along the titration: a systematic departure leaves long runs of one sign, so few runs speak against the model. Residuals of a fitted curve are not exchangeable — the fit removes what its parameters can follow, which makes their signs alternate more than independent ones — so the reference is the fitted model's own: the number of runs of $(I - JJ^{+})\mathbf{e}$ for standard normal $\mathbf{e}$, with $J$ the Jacobian of the whole fit (free signal columns, association constants, and the inputs with their penalty rows), 100 000 draws at a fixed seed, and the $p$-value the mid-$p$ $P(\text{fewer}) + P(\text{as many})/2$ because the statistic takes few values. Measured on 4800 fits of correct one-constant models, this reference raises a false alarm at the 5 % level in 2.3, 5.6, 4.7 and 3.8 % of fits at 8, 12, 20 and 30 points and detects a 15 % error in the titrant scale in 13, 24, 31 and 35 %; the permutation distribution of the same statistic (Wald & Wolfowitz 1940), which assumes exchangeable signs, rejects 0.0–1.5 % of those correct fits and detects 1–28 %. A Durbin–Watson statistic against the same reference has more power against smooth misfit (19–24 % against a 2 % sinusoidal departure at 20–30 points, where the runs test reaches 12–14 %) and less against a step.
+
+### 8.2. Did the Inputs Have to Move Too Far
+
+The fitted shifts $\hat{e}_j$ are reported per input, in percent of the entered value and — for an input stated with a $\sigma$ — in units of that $\sigma$, $\hat{z}_j = \hat{e}_j / s_j$. Whether they agree with what was stated is one statistic. Linearised at the optimum, the penalised estimate satisfies
+
+$$\hat{\mathbf{z}} \sim N(0, V), \qquad V = I - \big[H^{-1}\big]_{zz}, \qquad H = J'J,$$
+
+with $J$ the Jacobian of the stacked residual over the free association constants and the varying inputs, its residual rows in units of the fit's own noise scale $s = \sqrt{S_{\min}/n}$ — the Jacobian the last inner solve has already computed, since the projected residual's Jacobian carries the same $(K, \mathbf{e})$ block as the full one (Golub & Pereyra 1973). An input stated as a range that the fit left on an end of that range is held there, like a signal parameter on its bound, and its column stays out of $J$: free, it would absorb part of what the data say about the other inputs, and the weights would come out too small for the shifts the fit actually made. The eigenvalues of $V$ are $g/(1+g)$ for the information $g$ the data hold about each input direction: 1 where the data determine an input, 0 along a direction they cannot see, such as a common scale of every concentration. The statistic is the squared length of $\hat{\mathbf{z}}$ along the informed directions,
+
+$$q = \sum_{i:\,w_i \ge 0.01} \big(\mathbf{v}_i'\hat{\mathbf{z}}\big)^2 \;\sim\; \sum_i w_i\,\chi^2_1 \quad\text{under the null,}$$
+
+and its $p$-value is $P(q_{\text{null}} \ge q)$ from 200 000 draws of that weighted sum at a fixed seed — a deterministic quadrature of the distribution of a quadratic form in normal variables (Imhof 1961), with Monte Carlo error $5\times10^{-4}$ at $p = 0.05$ and the noise scale estimated from the fit's own residual. It costs one Jacobian and no refit.
+
+Directions of weight below 0.01 are left out: such a direction's whole null range is under $0.1\,\sigma$ — the last digit a shift is reported to — and what the fit shows along it is model curvature and the solver's stopping point rather than evidence. Taken into the statistic, they made 21–37 % of consistent fits look like conflicts in stoichiometric DBA and in the stepwise models. A specification of ranges only, or one in which no direction is informed, has no statistic at all, and the report then says the data cannot check the entered inputs.
+
+Referring $q$ to $\chi^2_k$ instead, as if every direction were fully informed, is what makes that test dead: on a calibration run (IDA, 12 points, 0.5 % noise, inputs stated at 10/3/3/3 %, 300 datasets per row) the mean weights were $(0,\,0,\,0.23,\,0.92)$ — with 12 points the data inform two of the four input directions — and $\chi^2_4$ rejected 0.3 % of consistent fits and 25 % of fits entered three $\sigma$ off, where the reference above rejected 6.3 % and 53 %.
+
+Measured across the validation sweep (8 to 30 points, 0.5–3 % noise, $K_a c$ from 0.1 to 1000, inputs entered at exactly their stated $\sigma$), among the fits that have a direction to test — 44–57 % of the one-constant fits, 38 % of H2G and 61 % of HG2 — the 5 % level rejects 3.1 % (GDA), 4.9 % (IDA), 5.6 and 3.2 % (DBA host-to-dye and dye-to-host; 6468 fits), 6.4 and 7.8 % (HG2, H2G; 1080 fits). With the inputs entered three times their stated $\sigma$ off it flags 7–34 % of fits, depending on how much the design says about the inputs.
+
+**The statistic judges the inputs together.** A titration usually determines one or two *combinations* of the inputs — $h_0$ and the titrant scale move the curve almost alike — so the shift reported against a single input says where the fit put the correction, not which stock is wrong. With a three-$\sigma$ error planted in $h_0$, the largest $|z|$ sat on $h_0$ in well under two thirds of the fits that flagged a conflict, and a conflict can be significant with every individual $|z|$ below 1. Every user-facing sentence is worded that way: the app asks for the stated inputs to be checked, and names none of them as the cause.
+
+### 8.3. The Verdict
+
+The three results — the misfit test at the conditional fit, the misfit test at the input-aware fit, and the conflict statistic — are read in one fixed order:
+
+1. **The model does not describe the data**, when the misfit test fails at the input-aware fit (with no varying input: at the conditional fit).
+2. **The inputs conflict with what was stated**, when $q$ is significant.
+3. **The inputs explain the misfit**, when the misfit test fails at the conditional fit and passes at the input-aware fit.
+4. **Model and inputs are consistent with the data**, otherwise.
+
+The interval is reported in every case, with the verdict beside it. Withholding it under the first verdict would blank one good fit in twenty on a false alarm of the misfit test, and an interval that is correct conditional on the model, shown with a sentence saying the model is in doubt, states more than an empty cell. All three inputs of the decision are stored with the result, so what is shown can change without recomputing anything.
+
+## 9. Input Sensitivity: Sobol' Variance Decomposition
+
+The interval of Section 7 says how wide the uncertainty of $K_a$ is when the entered inputs are uncertain. The sensitivity analysis answers the other question about that statement: *which* input it comes from. Each input is drawn from the uncertainty stated for it in Section 7.1, and the fit is repeated over the resulting input distribution, every sample holding its own drawn inputs as exact.
+
+### 9.1. Inputs and Their Distributions
+
+The perturbable inputs are those of Section 7.1 — the fixed conditions ($h_0$, $d_0$, $K_{a,\text{dye}}$, …) and the titrant concentration vector — under the same statements, read here as distributions to draw from rather than as constraints to fit under. Each is drawn independently, through its inverse CDF, so the same definition of an input's distribution serves plain random draws and a low-discrepancy sequence alike:
 
 - a $\sigma$ spec (in percent of nominal, or in the input's own unit) draws from a normal distribution truncated at zero, so a concentration never goes negative;
 - an interval spec draws uniformly between its ends, the form in which a $K_a$ carried over from an earlier fit naturally arrives.
 
 The titrant enters as **one common factor**: a single draw scales the whole concentration vector, which is how a mis-calibrated stock solution acts — it displaces every titration point together, not each one independently.
 
-### 7.2. Estimators
+### 9.2. Estimators
 
 For output $Y = \log_{10} K_a$ and inputs $X_1 \dots X_k$, the first-order and total-order Sobol' indices (Sobol' 2001) are
 
@@ -241,7 +358,7 @@ The outputs are centred on the mean of $A$ and $B$ before either estimator is ap
 
 $\log_{10} K_a$ rather than $K_a$ is decomposed because an association constant varies multiplicatively over orders of magnitude; a variance decomposition of $K_a$ itself would be dominated by whichever input happens to push it highest.
 
-### 7.3. Sampling Error of an Index
+### 9.3. Sampling Error of an Index
 
 The design is built from $B = 8$ **independently scrambled** Sobol' blocks (Owen 1997; L'Ecuyer & Lemieux 2002), each the first $N/B$ points of its own scrambled sequence. The indices come from all usable rows pooled; leaving each block out in turn gives a delete-one-block jackknife standard error (Archer, Saltelli & Sobol' 1997),
 
@@ -249,14 +366,14 @@ $$\mathrm{SE} = \sqrt{\frac{B-1}{B}\sum_j \big(\hat{\theta}_{(j)} - \bar{\hat{\t
 
 The blocks are independent replicates of one design; the rows *inside* a scrambled block are not independent draws and cannot stand in for them. The interval covers the Monte Carlo sampling error of one index at a time — not error in the stated input uncertainties, and not model error. It is symmetric and is not clipped to $[0, 1]$, so a small index can show a negative lower end.
 
-`scripts/sobol_interval_coverage.py` reproduces the calibration, and `scripts/README.md` carries the table it prints. Over 1000 designs each of the Ishigami function and of a six-input g-function at $N = 1024$, the nominal 95 % intervals covered the analytically known index in 94.2–97.1 % of designs, and the estimator's bias stayed within 0.07 standard deviations. The same script measures the price of blocking: at a fixed budget, eight blocks raise the root-mean-square error of an index by up to a factor of about five, index by index — a few indices are barely affected — over a single undivided scramble, which is the cost of having an error bar at all.
+`python -m validation run sobol-coverage` measures the calibration and `validation/README.md` carries the table it prints: up to 400 designs each of the Ishigami function and of a six-input g-function at the sizes the analysis offers, how often the nominal 95 % interval held the analytically known index, and the signed error of every estimate, whose median over the designs is the estimator's bias and whose root mean square is the scatter the interval has to cover. `python -m validation run sobol-blocking` measures the price of blocking: at a fixed budget, eight blocks raise the root-mean-square error of an index by up to a factor of about five, index by index — a few indices are barely affected — over a single undivided scramble, which is the cost of having an error bar at all.
 
-### 7.4. Every Sample Is Kept
+### 9.4. Every Sample Is Kept
 
-Each sample is refitted by the projection of Section 4.1, on the average of the replicates the reported fit used, so its $K_a$ is the best the model can do for its perturbed inputs. Every sample counts, however poorly it describes the data. Discarding the poor ones would remove precisely the input combinations the data disagree with, which would bias the sampled distribution back towards the inputs as entered and make the analysis look more reassuring than the evidence allows.
+Each sample is refitted by the projection of Section 4.1, on the average of the replicates the reported fit used and with its own drawn inputs held exact, so its $K_a$ is the best the model can do for them; the run's baseline is that same projection at the inputs as entered. Every sample counts, however poorly it describes the data. Discarding the poor ones would remove precisely the input combinations the data disagree with, which would bias the sampled distribution back towards the inputs as entered and make the analysis look more reassuring than the evidence allows.
 
 Because every refit is one deterministic projection, the spread the analysis reports is the effect of the stated input uncertainties and nothing else — there is no search scatter mixed into it. The analysis therefore covers every assay with an association constant, the stepwise two-constant models included; a model with no association constant has nothing to decompose.
 
-## 8. General Theoretical Workflow Diagram
+## 10. General Theoretical Workflow Diagram
 
 ![Workflow Diagram](fitting_workflow.jpg)

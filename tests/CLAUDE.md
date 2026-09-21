@@ -68,13 +68,45 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
   two fits of the same input exactly. Still assert the recovered *physics* against
   independent ground truth, not a number copied from a previous run — a pinned
   number passes a fit that is wrong in the same way twice. Only the sensitivity
-  analysis samples, and it takes a `seed`.
+  analysis samples, and it takes a `seed`. The reference distributions of the
+  runs test and of the conflict statistic are drawn at a fixed seed, which makes
+  each p-value a function of its arguments like any other computed number.
+- **An input-aware fit costs seconds.** Letting the inputs move turns each point
+  of a profile into a small bounded optimisation: typically 1–2 s per fit, up to
+  about 20 s for one association constant and 45 s for two on hard designs with
+  few points. A test that states an input uncertainty belongs in
+  `tests/integration/`; the fast layer states none, or drives
+  `core.pipeline.input_aware` on a handful of points.
 - **Intervals are a claim to check, not a field to echo.** A test of a confidence
   interval either verifies the property that defines it — the endpoint is where
-  the profile crosses the F threshold, the interval contains the fit, coverage
-  over many synthetic datasets is near the nominal level — or it is testing
-  nothing. Asserting that the reported interval equals what the same call returns
-  is a tautology.
+  the profile crosses the threshold, the interval contains the fit, coverage over
+  many synthetic datasets is near the nominal level — or it is testing nothing.
+  Asserting that the reported interval equals what the same call returns is a
+  tautology.
+- **Two intervals, two claims.** A fit reports the interval *conditional on the
+  entered inputs* and, when an uncertainty is stated for an input, the
+  *input-aware* one that lets the inputs move inside it. Their defining
+  properties differ and are tested separately: the conditional edge is where the
+  profile crosses `SSR_min (1 + m F(m, n − p)/(n − p))`; the input-aware edge is
+  where the penalised profile `n log S + z'z` rises by `n log(1 + m F(m, ν)/ν)`
+  above its minimum, with the effective residual degrees of freedom
+  `ν = n − p − Σw`. `m` is 1 plus the signal parameters the best fit determines
+  and the fit at that Ka holds on a bound, so it is 1 wherever none is. Two
+  reductions are worth pinning cheaply: with every input fixed the input-aware
+  result *is* the conditional one, and as a stated σ goes to zero the two edges
+  converge. Coverage — the property the interval is for — is a sweep over
+  synthetic datasets with the inputs drawn at their stated uncertainty, and
+  belongs in `tests/integration/`.
+- **A diagnostic is a rate, not a p-value.** The misfit tests and the conflict
+  statistic claim a false-alarm rate at their level and some power against a real
+  fault. A unit test pins what is checkable fast — the runs test on residuals of
+  one sign, the F ratio against a hand-computed pure-error variance, a verdict
+  read from given test results — and the rates come from the checks in
+  `validation/`. Never assert that a single dataset gets a particular verdict
+  because a run once produced it.
+- **A conflict names no input.** The statistic judges the stated inputs together,
+  so a test may assert that a planted input error raises the statistic, never
+  that the shift lands on the input that was planted.
 - **Signal coefficients are degenerate.** In DBA/IDA only `Ka` is identifiable
   (`I0`, `I_dye_free`, `I_dye_bound` trade off). Test `Ka` recovery and signal
   reconstruction — never the individual signal coefficients.
