@@ -138,16 +138,21 @@ def test_the_examples_still_describe_the_demo_data():
     conditions = {'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M'), 'Ka_dye': Q_(16.8e6, '1/M')}
     config = FitConfig(per_replica=False)
     result = fit_measurement_set(ms, IDAAssay, conditions, config)
-    profile = fit_profile(ms, IDAAssay, conditions, config).profiles['Ka_guest']
+    profiles = fit_profile(ms, IDAAssay, conditions, config)
+    profile = profiles.profiles['Ka_guest']
 
-    # The guide quotes the R² at exactly half and twice the best Ka, which the
-    # nearest drawn point misses by enough to move the fourth decimal.
+    # The demo data carry replicates, so they show a noise law and the fit is
+    # weighted by it: the tab's axis is the weighted R², and this projection has
+    # to carry the same weights or its ss_tot and row_ssr describe another fit.
     assay = ms.to_assay(IDAAssay, conditions=conditions, use_average=True)
-    projection = Projection(assay, _resolve_bounds(assay, None))
+    assert profiles.weighted, "the guide names the tab's axis after this"
+    projection = Projection(
+        assay, _resolve_bounds(assay, None), point_weights=result.noise.weights(assay.y_data.magnitude)
+    )
     ss_tot = float(projection.ss_tot[0])
 
     def at(factor: float) -> float:
-        """The best R² the profile reaches at *factor* times the best Ka."""
+        """The best weighted R² the profile reaches at *factor* times the best Ka."""
         return 1.0 - float(projection.row_ssr({'Ka_guest': profile.best_ka * factor})[0]) / ss_tot
 
     interval = result.intervals['Ka_guest']
@@ -155,18 +160,28 @@ def test_the_examples_still_describe_the_demo_data():
     best = float(result.parameters['Ka_guest'].magnitude)
     assert (profile.best_ka, profile.interval.low) == (best, lo), 'the tab and the fit report the same numbers'
 
+    # Where the cut-off steps down because the fit holds the signal offset on
+    # its bound, and whether that lower level sets the end of the interval.
+    grid, cut = np.asarray(profile.grid, dtype=float), np.asarray(profile.r2_cut, dtype=float)
+    (step,) = np.flatnonzero(np.diff(cut) != 0)
+    edge = float(np.sqrt(grid[step] * grid[step + 1]))  # the step falls between two drawn Ka
+
     identifiability = re.sub(r'\s+', ' ', PLOT_GUIDE[IDENTIFIABILITY][1])
     for phrase in (
         f'Best fit {best / 1e8:.2f}&times;10<sup>8</sup>',
-        f'(R&sup2; {result.r_squared:.4f})',
+        f'(weighted R&sup2; {profile.best_r2:.4f})',
         f'CI {lo / 1e8:.1f}&ndash;{hi / 1e8:.1f}&times;10<sup>8</sup>',
         f'(&minus;{round(100 * (1 - lo / best))}&thinsp;% / +{round(100 * (hi / best - 1))}',
         f'cut-off {profile.r2_threshold:.4f} from {profile.n_points} data points '
         f'and {profile.n_params} fitted parameters.',
         f'is {at(2.0):.4f} at twice the best K<sub>a</sub> and {at(0.5):.4f} at half',
+        f'set a {hi / lo:.0f}-fold interval',
+        f'Below {edge / 1e8:.1f}&times;10<sup>8</sup>',
+        f'steps down to {cut[step]:.4f}',
         f'by {result.rmse / 1e3:.1f}&times;10<sup>3</sup> a.u. (RMSE)',
     ):
         assert phrase in identifiability
+    assert lo > grid[step + 1], 'the interval no longer ends above the step the guide describes'
 
     # The headline the Fit Curve and the summary panel quote is the same fit.
     headline = (
@@ -174,15 +189,25 @@ def test_the_examples_still_describe_the_demo_data():
         f'{hi / 1e8:.1f}&times;10<sup>8</sup>]'
     )
     used = len(result.metadata['active_replica_ids'])
+    signals = ms.signals[[ms.replica_ids.index(r) for r in ms.active_replica_ids]]
+    # How many concentrations the Fit Curve example calls a systematic miss:
+    # every replicate on one side of the curve the fit drew.
+    fitted = assay.y_data.magnitude - projection.residual({'Ka_guest': best}) / np.sqrt(projection.point_weights)
+    one_sided = int(np.sum(np.all(signals > fitted, axis=0) | np.all(signals < fitted, axis=0)))
     for key, extra in (
-        (FIT_CURVE, (f'R&sup2; {result.r_squared:.4f}.',)),
+        (
+            FIT_CURVE,
+            (
+                f'R&sup2; {result.r_squared:.4f}.',
+                f'At {one_sided} of the {fitted.size} concentrations all {used} replicates',
+            ),
+        ),
         (SUMMARY, (f'R&sup2; {result.r_squared:.4f}, {used} of {used} replicates used',)),
     ):
         text = re.sub(r'\s+', ' ', PLOT_GUIDE[key][1])
         assert headline in text
         for phrase in extra:
             assert phrase in text
-    signals = ms.signals[[ms.replica_ids.index(r) for r in ms.active_replica_ids]]
     summary = re.sub(r'\s+', ' ', PLOT_GUIDE[SUMMARY][1])
     assert f'{np.max(signals) / 1e5:.1f}&times;10<sup>5</sup> a.u.' in summary
     assert f'{result.rmse / 1e3:.2f}&times;10<sup>3</sup> a.u.' in summary

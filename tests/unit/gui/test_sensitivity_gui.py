@@ -162,6 +162,9 @@ def _sobol_result():
         values[5] = np.nan
     r2 = np.where(np.arange(n) % 3 == 0, 0.95, 0.995)
     r2[5] = np.nan
+    # Each sample's place on the Identifiability tab's axis: the objective its
+    # fit minimised, a different number from the unweighted R² beside it.
+    profile_r2 = r2 + 0.002
     s1 = {'Ka_dye': 0.05, 'h0': 0.2, TITRANT: 0.6}
     st = {'Ka_dye': 0.08, 'h0': 0.25, TITRANT: np.nan}
     return SensitivityResult(
@@ -188,6 +191,7 @@ def _sobol_result():
         # or dropped together, so sample 5 takes its partner 25 with it.
         sample_usable={'Ka_guest': np.tile(np.isfinite(ka[: n // 2]) & np.isfinite(ka[n // 2 :]), 2)},
         sample_r2=r2,
+        sample_profile_r2=profile_r2,
         baseline_fit=_baseline_fit(),
         sample_params={'Ka_guest': ka, **signal},
         degenerate_keys=('I0', 'I_dye_free', 'I_dye_bound'),
@@ -1802,11 +1806,15 @@ def test_a_budget_no_run_could_pin_down_says_so_instead_of_writing_nan(qapp):
     assert _cells(_budget_tables(w)[0])[-1] == ['Interactions', '–', '–', 'n/a', '–', '–']
 
 
-_KNOWN_WHAT_IF = WhatIf(sd=0.056, sd_reweighted=0.057, effective_samples=573.4, largest_after='h0')
+_KNOWN_WHAT_IF = WhatIf(sd=0.056, sd_reweighted=0.057, effective_samples=1111.4, largest_after='h0')
 
 
-def test_the_what_if_sentence_reads_the_answer_it_was_given(qapp, monkeypatch):
-    """The row states the reduction asked for, both spreads, the cross-check and what would then be largest."""
+def test_the_what_if_sentence_leads_with_the_re_weighted_answer(qapp, monkeypatch):
+    """With enough samples carrying it, the spread after the reduction is the re-weighted one.
+
+    The re-weighted value is the more accurate of the two, so it is the spread
+    the sentence states and the formula is the number behind it.
+    """
     from gui.plotting import sensitivity_widget as widget_module
     from gui.plotting.labels import fmt_param
     from gui.plotting.sensitivity_widget import SensitivityWidget
@@ -1827,10 +1835,32 @@ def test_the_what_if_sentence_reads_the_answer_it_was_given(qapp, monkeypatch):
     assert asked[-1] == ('Ka_guest', 'Ka_dye', 0.2)
     assert sentence.text() == (
         f'Reducing {w._input_label(AssayType.IDA, "Ka_dye")} from 5 % to 1 % would shrink the input-limited '
-        f'spread of {fmt_param("Ka_guest")} from 0.084 decades (×/÷&nbsp;1.21) to 0.056 decades '
-        '(×/÷&nbsp;1.14). Cross-check by re-weighting the samples: 0.057 (573 effective samples). '
+        f'spread of {fmt_param("Ka_guest")} from 0.084 decades (×/÷&nbsp;1.21) to 0.057 decades '
+        '(×/÷&nbsp;1.14), read from the samples re-weighted towards the narrower uncertainty '
+        '(1,111 effective samples). Cross-check by the formula: 0.056. '
         f'{w._input_label(AssayType.IDA, "h0")} would then be the largest item.'
     )
+
+
+def test_the_what_if_sentence_leads_with_the_formula_when_too_few_samples_carry_the_re_weighting(qapp, monkeypatch):
+    """Under _REWEIGHT_MIN_EFFECTIVE the re-weighted variance is no more certain than the formula it would check.
+
+    So the formula states the spread, and the sentence says the re-weighted
+    number is missing rather than quietly leading with it.
+    """
+    from dataclasses import replace as replace_dc
+
+    from gui.plotting import sensitivity_widget as widget_module
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    monkeypatch.setattr(widget_module, 'what_if', lambda *args: replace_dc(_KNOWN_WHAT_IF, effective_samples=150.0))
+    w = SensitivityWidget()
+    w.update_result(_sobol_result())
+    _, _, sentence = w._what_if['Ka_guest']
+
+    assert 'to 0.056 decades (×/÷&nbsp;1.14). ' in sentence.text()
+    assert '0.057' not in sentence.text()
+    assert '(no cross-check: too few samples carry weight at this reduction).' in sentence.text()
 
 
 def test_the_what_if_sentence_says_when_no_cross_check_backs_it(qapp, monkeypatch):
@@ -1851,6 +1881,8 @@ def test_the_what_if_sentence_says_when_no_cross_check_backs_it(qapp, monkeypatc
     w.update_result(_sobol_result())
     _, spin, sentence = w._what_if['Ka_guest']
 
+    # With no re-weighting the formula states the spread, as it did before it.
+    assert 'to 0.056 decades (×/÷&nbsp;1.14). ' in sentence.text()
     assert '(no cross-check: too few samples carry weight at this reduction).' in sentence.text()
     spin.setValue(0.0)
     assert '(no cross-check: with the source exact there is no sample left to re-weight).' in sentence.text()

@@ -134,9 +134,9 @@ def _profile(ka_key='Ka_guest', *, per_replica=False, interval=..., centre=8.5, 
     )
 
 
-def _profile_set(**kwargs):
+def _profile_set(*, weighted=False, **kwargs):
     profile = _profile(**kwargs)
-    return ProfileSet(profiles={profile.ka_key: profile}, region=None)
+    return ProfileSet(profiles={profile.ka_key: profile}, region=None, weighted=weighted)
 
 
 #: log10 Ka of the two-Ka region's centre, and the radius of its accepted disc.
@@ -197,8 +197,11 @@ NO_FIT = 10  # the sample at offset 0 produced no fit
 
 def _sensitivity():
     ka = 10 ** np.linspace(8.2, 8.8, N_SAMPLES)
-    r2 = np.linspace(0.97, 0.999, N_SAMPLES)
-    ka[NO_FIT] = r2[NO_FIT] = np.nan
+    # The cloud sits on the profiles' own scale, which the run records beside
+    # the unweighted R² each sample's fit reports as its quality.
+    profile_r2 = np.linspace(0.97, 0.999, N_SAMPLES)
+    r2 = profile_r2 - 0.02
+    ka[NO_FIT] = r2[NO_FIT] = profile_r2[NO_FIT] = np.nan
     return SensitivityResult(
         mode=SensitivityMode.SOBOL,
         assay_type='IDA',
@@ -218,6 +221,7 @@ def _sensitivity():
         sample_offsets_pct={'h0': np.linspace(-10, 10, N_SAMPLES), TITRANT: np.linspace(5, -5, N_SAMPLES)},
         sample_ka={'Ka_guest': ka},
         sample_r2=r2,
+        sample_profile_r2=profile_r2,
     )
 
 
@@ -1207,6 +1211,72 @@ def test_colour_by_input_uses_the_diverging_scale(qapp):
     w.apply_style(DEFAULT_STYLE)
     assert w._colour_combo.currentText() == '[Host]₀'
     assert w._items['Ka_guest']['colour_bar'] is not None
+
+
+def test_the_cloud_is_drawn_on_the_scale_the_profiles_are_drawn_on(qapp):
+    """A sample scored on another scale would sit above or below the curve for no reason the reader can see."""
+    sens = _sensitivity()
+    w = _widget(_fit(), _profile_set())
+    w.update_sensitivity(sens)
+    drawn = w._items['Ka_guest']['samples'].getData()[1]
+    kept = np.isfinite(sens.sample_profile_r2)
+
+    assert np.allclose(drawn, sens.sample_profile_r2[kept])
+    assert not np.allclose(drawn, sens.sample_r2[kept])
+
+
+# ---------------------------------------------------------------------------
+# Which R² the page is showing
+# ---------------------------------------------------------------------------
+
+
+def _r2_names(w):
+    """Every place this page names its vertical scale, with the legend's hard spaces read as spaces."""
+    places = {
+        'axis': w._items['Ka_guest']['main'].getAxis('left').labelText,
+        'caption': w._summary.text(),
+        'legend': w._legend.text(),
+        'tooltip': w.toolTip(),
+        'note': w._notes.text(),
+    }
+    return {place: text.replace('&nbsp;', ' ') for place, text in places.items()}
+
+
+@pytest.mark.parametrize('weighted', [False, True])
+def test_every_place_the_page_names_its_scale_says_which_r2_it_is(qapp, weighted):
+    """The axis, the caption, the legend, the hover text and the hidden-samples note are one name.
+
+    A page that calls the weighted profile R² on the axis and the unweighted one
+    in the caption invites the reader to compare two different numbers.
+    """
+    from gui.plotting.identifiability_widget import _WEIGHTED_R2_NOTE
+
+    w = _widget(_fit(), _profile_set(weighted=weighted))
+    w.update_sensitivity(_sensitivity())
+    named = _r2_names(w)
+
+    assert '1 of 21 sensitivity samples not shown' in named['note']
+    for place, text in named.items():
+        # The one sentence that explains the two names is the one place both
+        # appear; everywhere else the page names its own scale and no other.
+        text = text.replace(_WEIGHTED_R2_NOTE, '')
+        if weighted:
+            assert 'weighted R²' in text, place
+            assert 'R²' not in text.replace('weighted R²', ''), place
+        else:
+            assert 'R²' in text, place
+            assert 'weighted' not in text, place
+
+
+def test_the_caption_says_what_the_weighted_r2_means_only_where_the_page_shows_one(qapp):
+    """One plain sentence, so a reader comparing it with Fit Quality knows why the two differ."""
+    from gui.plotting.identifiability_widget import _WEIGHTED_R2_NOTE
+
+    weighted = _widget(_fit(), _profile_set(weighted=True))
+    unweighted = _widget(_fit(), _profile_set())
+
+    assert _WEIGHTED_R2_NOTE in weighted._summary.text()
+    assert _WEIGHTED_R2_NOTE not in unweighted._summary.text()
 
 
 def test_a_run_for_another_assay_is_not_drawn(qapp):

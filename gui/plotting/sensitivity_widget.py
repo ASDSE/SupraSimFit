@@ -188,6 +188,15 @@ _ADDITIONS_NOTE = (
 # start without favouring any particular one.
 _WHAT_IF_START = 0.5
 
+# Effective sample size from which the re-weighted what-if is the answer the row
+# leads with rather than the first-order formula. The relative error of a
+# variance re-weighted from m samples is about sqrt(2 / m), which is 10 % at 200
+# — the accuracy the formula itself reaches (the `what-if-accuracy` check
+# measures its relative error against a second analysis at the reduced
+# uncertainty at an rms of 5–15 %). Above 200 the re-weighted value is the
+# better of the two, measured there at an rms of 0.9–1.5 %.
+_REWEIGHT_MIN_EFFECTIVE = 200
+
 
 def _wire_x_exponent(plot_item: pg.PlotItem, axis: ScientificAxisItem, base_label: str) -> None:
     """Re-apply *plot_item*'s x-label with a ``×10ⁿ`` suffix when *axis* factors one out.
@@ -1694,7 +1703,13 @@ class SensitivityWidget(QWidget):
         sentence.setText(self._what_if_sentence(ka_key, combo.currentData(), spin.value()))
 
     def _what_if_sentence(self, ka_key: str, source: str, reduced_pct: float) -> str:
-        """What reducing *source* to *reduced_pct* would do to the spread, and what would then be largest."""
+        """What reducing *source* to *reduced_pct* would do to the spread, and what would then be largest.
+
+        The spread after the reduction is the one re-weighted from the samples
+        wherever ``_REWEIGHT_MIN_EFFECTIVE`` of them effectively carry it, with
+        the first-order formula behind it as the cross-check; otherwise the
+        formula is the answer and the sentence says what is missing.
+        """
         result = self._result
         assay_type = self._assay_type(result)
         label = self._input_label(assay_type, source)
@@ -1703,20 +1718,26 @@ class SensitivityWidget(QWidget):
         answer = what_if(result, ka_key, source, min(reduced_pct / stated, 1.0) if stated > 0 else 0.0)
         if not (np.isfinite(before) and np.isfinite(answer.sd)):
             return f'Too few fits finished to say what a smaller uncertainty on {label} would do.'
-        if answer.sd_reweighted is not None:
-            cross = (
-                'Cross-check by re-weighting the samples: '
-                f'{_budget_cell(answer.sd_reweighted)} ({answer.effective_samples:,.0f} effective samples).'
+        carried = answer.sd_reweighted is not None and (answer.effective_samples or 0.0) >= _REWEIGHT_MIN_EFFECTIVE
+        if carried:
+            after = fmt_spread(answer.sd_reweighted, html=True)
+            tail = (
+                f', read from the samples re-weighted towards the narrower uncertainty '
+                f'({answer.effective_samples:,.0f} effective samples). '
+                f'Cross-check by the formula: {_budget_cell(answer.sd)}.'
             )
-        elif answer.effective_samples is None:
-            cross = '(no cross-check: with the source exact there is no sample left to re-weight).'
         else:
-            cross = '(no cross-check: too few samples carry weight at this reduction).'
+            after = fmt_spread(answer.sd, html=True)
+            tail = '. ' + (
+                '(no cross-check: with the source exact there is no sample left to re-weight).'
+                if answer.effective_samples is None
+                else '(no cross-check: too few samples carry weight at this reduction).'
+            )
         sign = _stated_prefix(result, source)
         return (
             f'Reducing {label} from {sign}{_pct(stated)} to {sign}{_pct(reduced_pct)} would shrink the input-limited '
             f'spread of {fmt_param(ka_key)} from {fmt_spread(before, html=True)} to '
-            f'{fmt_spread(answer.sd, html=True)}. {cross} '
+            f'{after}{tail} '
             f'{self._input_label(assay_type, answer.largest_after)} would then be the largest item.'
         )
 

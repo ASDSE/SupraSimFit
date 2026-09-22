@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.assays.registry import AssayType
 from core.optimizer.ensemble import describe, describe_log10
 from core.pipeline.fit_pipeline import (
     FitResult,
@@ -196,6 +197,13 @@ the table, not R&sup2;.</p>
 them &mdash; which are the values you entered unless you gave an input an
 uncertainty under <b>Input Uncertainty</b>.</p>
 
+<p><b>Noise</b> &mdash; how large the scatter of your measurements is and how it
+grows with the signal, read from how far your replicates fall from the curve
+each of them traces. The fit uses it to weight the titration points: a point the
+replicates show to be twice as precise counts four times as much. One titration
+cannot show how the noise varies, so it is fitted with the noise taken as
+constant, which the row says.</p>
+
 <p><b>Replicates used</b> &mdash; how many of the replicates you switched on
 entered the fit. A replicate is left out when its own best fit needs a
 K<sub>a</sub> the others do not share; the tooltip names each one and why. The
@@ -268,6 +276,15 @@ _LEGACY_NOTE = (
 )
 
 _NO_VALUE = '—'
+
+#: The Noise row of a result that names no law: a file written before the law
+#: was recorded. Saying so is not the same as saying the noise was constant.
+_NO_NOISE = 'not recorded in this result'
+
+
+def _noise_row(law: str) -> str:
+    """The Noise row's text: the row spans the box, so it carries its own name."""
+    return f'Noise: {law}'
 
 
 def _fmt(magnitude: float, unit_str: str) -> str:
@@ -910,10 +927,17 @@ class FitSummaryWidget(QWidget):
         self._r2_range_label = QLabel()
         self._fit_rows = (self._rmse_label, self._r2_label, self._replicates_label)
         self._sample_rows = (self._fitted_label, self._median_r2_label, self._r2_range_label)
-        for text, label in zip(
-            ('RMSE:', 'R²:', 'Replicates used:', 'Samples with a fit:', 'Median R²:', 'R² range:'),
-            self._fit_rows + self._sample_rows,
-        ):
+        for text, label in zip(('RMSE:', 'R²:', 'Replicates used:'), self._fit_rows):
+            self._quality_form.addRow(text, label)
+        # The law is a sentence, so it takes a row of its own across the whole
+        # box, under the readings, and carries its own name. The value column
+        # beside the readings holds a number's width, which a sentence wraps
+        # into some seven lines — more than the box is tall.
+        self._noise_label = QLabel(_noise_row(_NO_VALUE))
+        self._noise_label.setWordWrap(True)
+        self._noise_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._quality_form.addRow(self._noise_label)
+        for text, label in zip(('Samples with a fit:', 'Median R²:', 'R² range:'), self._sample_rows):
             self._quality_form.addRow(text, label)
 
         page = QWidget()
@@ -923,8 +947,11 @@ class FitSummaryWidget(QWidget):
         # what each pane prefers, and the plot tabs above have none to spare.
         inset = page_layout.contentsMargins().left()
         page_layout.setContentsMargins(inset, 0, inset, 0)
-        page_layout.addWidget(self._params_group, stretch=3)
-        page_layout.addWidget(self._quality_group, stretch=1)
+        # The quality box takes two parts to the table's five: its readings are
+        # short, but the noise law under them is a sentence, and two parts is
+        # the width that keeps that sentence to three lines in the pane.
+        page_layout.addWidget(self._params_group, stretch=5)
+        page_layout.addWidget(self._quality_group, stretch=2)
         self._page = QScrollArea()
         self._page.setWidgetResizable(True)
         self._page.setFrameShape(QFrame.Shape.NoFrame)
@@ -1019,6 +1046,7 @@ class FitSummaryWidget(QWidget):
         self._quality_group.set_info('Fit Quality', quality_help)
         for label in self._fit_rows:
             self._quality_form.setRowVisible(label, not samples)
+        self._quality_form.setRowVisible(self._noise_label, not samples)
         for label in self._sample_rows:
             self._quality_form.setRowVisible(label, samples)
 
@@ -1026,6 +1054,11 @@ class FitSummaryWidget(QWidget):
         """The fit view; any note on the fit itself leads the caption, followed by *note* (possibly empty)."""
         self._set_view(_PARAMS_TITLE, ('Fitted Parameters — columns', _PARAMS_HELP_HTML), _FIT_QUALITY_HELP_HTML, False)
         result = self._fit
+        # A dye-alone calibration is a line fitted by fit_linear_assay, which
+        # reads no noise law and needs none: the row has nothing to say.
+        self._quality_form.setRowVisible(
+            self._noise_label, result is None or result.assay_type != AssayType.DYE_ALONE.name
+        )
         hidden = self._fit_note if result is not None else None
         block = hidden or (self._unchecked if result is not None else None)
         self._footnote.hide()
@@ -1041,6 +1074,7 @@ class FitSummaryWidget(QWidget):
             self._table.setColumnCount(0)
             for label in self._fit_rows:
                 label.setText(_NO_VALUE)
+            self._noise_label.setText(_noise_row(_NO_VALUE))
             return
 
         rows = summarize_parameters(result)
@@ -1066,6 +1100,7 @@ class FitSummaryWidget(QWidget):
         self._show_diagnostics(result)
         self._rmse_label.setText(f'{Q_(result.rmse, "au"):.3g~H}')
         self._r2_label.setText(fmt_r2(result.r_squared))
+        self._noise_label.setText(_noise_row(_NO_NOISE if result.noise is None else result.noise.describe()))
         self._show_replicates_used(result)
         self._show_replicates_table(result)
 

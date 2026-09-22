@@ -389,6 +389,124 @@ def test_the_quality_panel_reports_rmse_and_r2(qapp):
     assert widget._r2_label.text() == '0.9980'
 
 
+def _law(**overrides):
+    """A noise law read from replicates, with the shape the overrides ask for."""
+    from core.pipeline.noise import NoiseBasis, NoiseLaw
+
+    fields = dict(
+        basis=NoiseBasis.REPLICATES, share=0.5, floor=890.0, proportional=0.011, reference=1.2e5, n_replicates=8
+    )
+    fields.update(overrides)
+    return NoiseLaw(**fields)
+
+
+@pytest.mark.parametrize(
+    ('law', 'expected'),
+    [
+        pytest.param(dict(share=0.5), 'about 1.1 % of the signal plus 890 a.u. (scatter of 8 replicates', id='mixed'),
+        pytest.param(dict(share=0.0), 'constant, about 890 a.u. (scatter of 8 replicates', id='constant'),
+        pytest.param(dict(share=1.0), 'proportional to the signal, about 1.1 % of it (scatter of 8', id='proportional'),
+    ],
+)
+def test_the_quality_panel_says_what_the_replicates_showed_the_noise_to_be(qapp, law, expected):
+    """The row is the law in words: the reader has to see which part of it the fit was weighted by."""
+    widget = _widget(noise=_law(**law))
+
+    assert widget._noise_label.text().startswith(f'Noise: {expected}')
+
+
+@pytest.mark.parametrize(
+    ('basis', 'expected'),
+    [
+        ('SINGLE_TITRATION', 'taken as constant — one titration cannot show how the noise varies'),
+        ('TOO_FEW_POINTS', 'taken as constant — the replicates scatter at too few titration points'),
+    ],
+)
+def test_one_titration_says_the_noise_was_taken_as_constant_and_why(qapp, basis, expected):
+    from core.pipeline.noise import NoiseBasis
+
+    widget = _widget(noise=_law(basis=NoiseBasis[basis], share=0.0, floor=0.0, proportional=0.0, n_replicates=1))
+
+    assert widget._noise_label.text().startswith(f'Noise: {expected}')
+
+
+def test_the_samples_view_shows_no_noise_row_and_the_fit_view_gets_it_back(qapp):
+    """The law is the one fit's, read off the replicates of the data; the samples box reports the samples."""
+    widget = _samples_widget(_sobol_run({'I0': [1.0, 2.0, 3.0]}))
+
+    assert widget._noise_label.isHidden()
+
+    widget.show_samples(False)
+    assert not widget._noise_label.isHidden()
+
+
+def test_the_noise_law_spans_the_box_under_the_readings(qapp):
+    """A sentence in the narrow value column wraps to seven lines and pushes the readings out of the pane."""
+    from PyQt6.QtWidgets import QFormLayout
+
+    widget = _widget(noise=_law())
+    form = widget._quality_form
+
+    noise_row, role = form.getWidgetPosition(widget._noise_label)
+    readings = [form.getWidgetPosition(label)[0] for label in widget._fit_rows]
+
+    assert role is QFormLayout.ItemRole.SpanningRole
+    assert noise_row > max(readings)
+
+
+def test_a_result_written_before_the_law_existed_says_so_rather_than_guessing(qapp):
+    """An imported file with no noise key: the row states that this result does not record one."""
+    widget = _widget(noise=None)
+
+    assert widget._noise_label.text() == 'Noise: not recorded in this result'
+    assert not widget._noise_label.isHidden()
+
+
+def _dye_alone_result():
+    """A dye-alone calibration: a line, fitted by ``fit_linear_assay``, which estimates no noise law."""
+    from core.assays.registry import AssayType
+    from core.pipeline.fit_pipeline import FitResult
+    from core.units import Q_
+
+    x = np.linspace(0, 1e-4, 5)
+    return FitResult(
+        parameters={'slope': Q_(1.5, 'au/M'), 'intercept': Q_(0.2, 'au')},
+        rmse=0.01,
+        r_squared=0.99,
+        x_fit=Q_(x, 'M'),
+        y_fit=Q_(x * 1.5, 'au'),
+        assay_type=AssayType.DYE_ALONE.name,
+        model_name='linear',
+    )
+
+
+def test_a_dye_alone_calibration_shows_no_noise_row(qapp):
+    """A calibration line is fitted with no noise law and needs none, so the row is not on screen."""
+    widget = _widget(_dye_alone_result())
+
+    assert widget._noise_label.isHidden()
+
+
+def test_the_noise_row_comes_back_for_the_next_fit_of_a_binding_assay(qapp):
+    """The row is hidden by the result on screen, not for good."""
+    widget = _widget(_dye_alone_result())
+    widget.update_result(_result(noise=_law()))
+
+    assert not widget._noise_label.isHidden()
+    assert '890 a.u.' in widget._noise_label.text()
+
+
+def test_the_fit_quality_help_explains_the_noise_row(qapp):
+    """Whatever the row says, the info button has to say where the law comes from and what it does."""
+    from gui.plotting.fit_summary_widget import _FIT_QUALITY_HELP_HTML
+
+    text = ' '.join(_FIT_QUALITY_HELP_HTML.split())
+
+    assert '<b>Noise</b>' in text
+    assert 'replicates' in text
+    assert 'One titration cannot show how the noise varies' in text
+
+
 def test_clear_resets_state(qapp):
     widget = _widget()
     widget.clear()
@@ -396,6 +514,7 @@ def test_clear_resets_state(qapp):
     assert widget._table.rowCount() == 0
     assert widget._rmse_label.text() == '—'
     assert widget._r2_label.text() == '—'
+    assert widget._noise_label.text() == 'Noise: —'
     assert widget._replicates_label.text() == '—'
     assert widget._replicates_table.isHidden()
 

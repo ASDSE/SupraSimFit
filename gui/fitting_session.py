@@ -462,6 +462,11 @@ class FittingSession(QWidget):
             return _SENSITIVITY_RUNNING_NOTE
         return None
 
+    def running_work(self) -> str:
+        """What this session has running, named for a message, or ``''`` when nothing is."""
+        running = ('fit', self.fit_running()), ('sensitivity analysis', self.sensitivity_running())
+        return ' and '.join(name for name, is_running in running if is_running)
+
     def plot_export_note(self) -> str | None:
         """Why the plot on the tab on screen cannot be saved — or ``None`` when it can."""
         widget = self._plot_tabs.currentWidget()
@@ -1140,14 +1145,9 @@ class FittingSession(QWidget):
     # Slots
     # ------------------------------------------------------------------
 
-    def _running_work(self) -> str:
-        """What this session has running, named for a message, or ``''`` when nothing is."""
-        running = ('fit', self.fit_running()), ('sensitivity analysis', self.sensitivity_running())
-        return ' and '.join(name for name, is_running in running if is_running)
-
     def _on_data_loaded(self, ms: MeasurementSet) -> None:
         # Both describe the data being replaced, so neither can be left running.
-        stopped = self._running_work()
+        stopped = self.running_work()
         self._stop_fit()
         self._state.measurement_set = ms
         self._state.source_file = self._data_panel.current_path()
@@ -1166,7 +1166,7 @@ class FittingSession(QWidget):
         self.status_message.emit(f'{loaded} — the running {stopped} was stopped' if stopped else loaded)
 
     def _on_data_cleared(self) -> None:
-        stopped = self._running_work()
+        stopped = self.running_work()
         self._stop_fit()
         self._state.measurement_set = None
         self._state.source_file = None

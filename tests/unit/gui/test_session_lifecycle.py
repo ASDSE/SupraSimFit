@@ -187,6 +187,24 @@ def test_closing_a_tab_mid_sensitivity_stops_the_run_and_its_worker_processes(
     assert dialogs == []
 
 
+def test_closing_a_tab_mid_run_takes_its_progress_off_the_status_bar(qapp, monkeypatch, dialogs, watchful_sensitivity):
+    """The status bar belongs to the window: a closed session's count left standing reads as a run still going."""
+    window = _window(monkeypatch)
+    window._new_session()
+    session = window.active_session()
+    _load(session)
+    session.run_sensitivity()
+    _wait_until(qapp, session._sensitivity_worker.isRunning)
+    session._on_sensitivity_progress(12207, 16393)
+    assert 'Analysing' in window._statusbar.currentMessage()
+
+    window._close_tab(window._tabs.indexOf(session))
+    _settle(qapp)
+
+    assert 'Analysing' not in window._statusbar.currentMessage()
+    assert 'the running sensitivity analysis was stopped' in window._statusbar.currentMessage()
+
+
 def test_closing_the_window_stops_the_work_in_every_session(qapp, monkeypatch, dialogs, watchful_fit):
     window = _window(monkeypatch)
     first = window.active_session()

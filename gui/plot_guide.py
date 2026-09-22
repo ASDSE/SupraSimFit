@@ -63,8 +63,8 @@ Identifiability tab shows where it comes from. The fit is deterministic: the sam
 bounds and input uncertainties always give the same numbers.</p>
 
 <p><b>Example</b></p>
-<p>With every input fixed: K<sub>a(G)</sub> = 3.14&times;10<sup>8</sup> M<sup>&minus;1</sup>
-[1.6&times;10<sup>8</sup>, 8.8&times;10<sup>8</sup>], R&sup2; 0.9941. At 10 of the 12 concentrations
+<p>With every input fixed: K<sub>a(G)</sub> = 2.78&times;10<sup>8</sup> M<sup>&minus;1</sup>
+[1.9&times;10<sup>8</sup>, 4.0&times;10<sup>8</sup>], R&sup2; 0.9897. At 11 of the 12 concentrations
 all 7 replicates sit on the same side of the curve: a systematic miss, which no width of interval
 accounts for.</p>
 """
@@ -80,7 +80,10 @@ for the pair.</p>
 with how far it reaches from the best fit, followed by the number of data points and fitted
 parameters the test is worked out from.</li>
 <li>Black line: the best R&sup2; reachable with that K<sub>a</sub> held at each value, every other
-parameter refitted. It breaks where the binding model has no solution.</li>
+parameter refitted. It breaks where the binding model has no solution. With replicates the axis,
+and every number read off it, is the <i>weighted</i> R&sup2;, and the tab says so: weighted R&sup2;
+counts each titration point by how precise the replicates show it to be, while the R&sup2; under
+Fit Quality counts every point equally. Both describe the same fit and they differ.</li>
 <li>Dotted line: the CI cut-off. Where the black line stays above it, the fit is not significantly
 worse than the best (F test); the grey band spans that K<sub>a</sub> range. The line steps down
 where a signal parameter reaches its bound: a fit that has to hold one there gives up that
@@ -129,13 +132,14 @@ since changed inputs can absorb a systematic miss. <i>Show sensitivity samples</
 <i>Colour by</i> shades it by one input&rsquo;s change (blue lower, red higher).</p>
 
 <p><b>Example</b></p>
-<p>Best fit 3.14&times;10<sup>8</sup> M<sup>&minus;1</sup> (R&sup2; 0.9941); CI
-1.6&ndash;8.8&times;10<sup>8</sup> M<sup>&minus;1</sup> (&minus;48&thinsp;% / +182&thinsp;%), cut-off
-0.9908 from 12 data points and 3 fitted parameters. The best R&sup2; is 0.9925 at twice the best
-K<sub>a</sub> and 0.9868 at half: small R&sup2; differences set a 5-fold interval. Below
-2.1&times;10<sup>8</sup> M<sup>&minus;1</sup> the fit holds the signal offset on zero, so the
-cut-off steps down to 0.9886 there, and that level sets the lower end of the interval.</p>
-<p>The curve misses the replicates&rsquo; mean by 5.7&times;10<sup>3</sup> a.u. (RMSE) while they
+<p>Best fit 2.78&times;10<sup>8</sup> M<sup>&minus;1</sup> (weighted R&sup2; 0.9959); CI
+1.9&ndash;4.0&times;10<sup>8</sup> M<sup>&minus;1</sup> (&minus;31&thinsp;% / +44&thinsp;%), cut-off
+0.9935 from 12 data points and 3 fitted parameters. The best weighted R&sup2; is 0.9875 at twice the
+best K<sub>a</sub> and 0.9861 at half: small R&sup2; differences set a 2-fold interval. Below
+1.5&times;10<sup>8</sup> M<sup>&minus;1</sup> the fit holds the signal offset on zero, so the
+cut-off steps down to 0.9920 there; the interval ends above that step, at the level where nothing is
+held.</p>
+<p>The curve misses the replicates&rsquo; mean by 7.6&times;10<sup>3</sup> a.u. (RMSE) while they
 scatter by about 1.0&times;10<sup>3</sup> a.u.: they depart from the model in the same way (see Fit
 Curve), so the true uncertainty is wider than this interval.</p>
 """
@@ -234,11 +238,12 @@ budget up, which means the uncertainties you stated reach into a region where th
 K<sub>a</sub> down.</p>
 <p><b>What if</b> &mdash; the row under the table asks what reducing one source would buy: pick the
 source, set the uncertainty you could reach (a reduction only), and the sentence gives the spread
-before and after, which source would then be the largest item, and a cross-check. The cross-check
-re-weights the samples you already have towards the narrower distribution instead of using the
-formula, so it rests on no assumption about how K<sub>a</sub> depends on the source; it is reported
-with the number of samples that effectively carry the weight, and left out when too few of them do.
-No fit is run for a what-if.</p>
+before and after, which source would then be the largest item, and a cross-check. The spread after
+is read from the samples you already have, re-weighted towards the narrower distribution, so it
+rests on no assumption about how K<sub>a</sub> depends on the source; it is given with the number of
+samples that effectively carry the weight, and a first-order formula follows it as the cross-check.
+Where too few samples carry the weight, or you take the source as exact and leave none to re-weight,
+the formula gives the spread instead and the sentence says so. No fit is run for a what-if.</p>
 <p>The additions row is listed with the others but is not added to them: the random error of each
 addition scatters the measured points, and that scatter is what the interval of the fit is built
 from, so it is already inside it. It is here to be ranked &mdash; to say how much of the spread
@@ -259,20 +264,21 @@ neighbouring cells. The axes are inputs, each swept over its own stated range.</
 
 <p><b>Example</b></p>
 <p>&sigma; 5&thinsp;% on each of the four inputs and nothing shared, sample size 1024, which costs
-6152 fits: median 3.08&times;10<sup>8</sup> M<sup>&minus;1</sup> against a baseline of
-3.14&times;10<sup>8</sup>, middle 90&thinsp;% within 1.9-fold. Every sample produced a fit. The draws
+6152 fits: median 2.77&times;10<sup>8</sup> M<sup>&minus;1</sup> against a baseline of
+2.78&times;10<sup>8</sup>, middle 90&thinsp;% within 2.3-fold. Every sample produced a fit. The draws
 are fresh each run unless you tick <i>Fixed seed</i>, so a repeat run lands near these numbers rather
 than on them.</p>
-<p>S<sub>1</sub> / S<sub>T</sub>: Guest 0.58 / 0.62, [Host]<sub>0</sub> 0.18 / 0.23,
-[Dye]<sub>0</sub> 0.13 / 0.14, K<sub>a,dye</sub> 0.06 / 0.06, whiskers within &plusmn;0.04. For
+<p>S<sub>1</sub> / S<sub>T</sub>: Guest 0.60 / 0.61, [Host]<sub>0</sub> 0.29 / 0.30,
+[Dye]<sub>0</sub> 0.05 / 0.05, K<sub>a,dye</sub> 0.04 / 0.04, whiskers within &plusmn;0.03. For
 these uncertainties the titrant causes most of the spread, so a better titrant stock would narrow
 K<sub>a</sub> most.</p>
-<p>+1&thinsp;% Guest lowers K<sub>a</sub> by about 2.9&thinsp;%; +1&thinsp;% [Host]<sub>0</sub>
-raises it by about 1.5&thinsp;%, [Dye]<sub>0</sub> by 1.4&thinsp;% and K<sub>a,dye</sub> by
-1.0&thinsp;%. The draws reached &plusmn;16&ndash;21&thinsp;%, so the panels open there. A source
-shared by the host and the dye stock would carry the sum of the first two, 2.9; one common to all
-three concentrations would carry 1.5 + 1.4 &minus; 2.9 = 0, which is the cancellation a displacement
-assay gives. In a direct-binding assay the same source would carry exactly &minus;1.</p>
+<p>+1&thinsp;% Guest lowers K<sub>a</sub> by about 3.9&thinsp;%; +1&thinsp;% [Host]<sub>0</sub>
+raises it by about 2.7&thinsp;%, [Dye]<sub>0</sub> by 1.1&thinsp;% and K<sub>a,dye</sub> by
+1.0&thinsp;%. The draws reached &plusmn;16&ndash;18&thinsp;%, so the panels open there. A source
+shared by the host and the dye stock would carry the sum of the first two, 3.8; one common to all
+three concentrations would carry 2.7 + 1.1 &minus; 3.9 &asymp; 0, which is the cancellation a
+displacement assay gives. In a direct-binding assay the same source would carry exactly
+&minus;1.</p>
 """
 
 _SUMMARY_HTML = """
@@ -303,8 +309,18 @@ the average or was left out. The test can only notice a replicate whose own data
 down: where the replicates&rsquo; own K<sub>a</sub> values already spread over decades, a replicate
 that disagrees will not stand out, and the min&ndash;max column is what tells you so.</p>
 <p><b>Fit Quality</b>: <i>RMSE</i> is the typical distance between curve and data, in signal units;
-<i>R&sup2;</i> the fraction of the data&rsquo;s variance the fit explains; <i>Replicates used</i>
-how many of the replicates you switched on entered the fit.</p>
+<i>R&sup2;</i> the fraction of the data&rsquo;s variance the fit explains; <i>Noise</i> how large
+your scatter is and how it grows with the signal; <i>Replicates used</i> how many of the replicates
+you switched on entered the fit.</p>
+<p>The noise law behind that row is read from your replicates: how far each of them falls from the
+curve it traces itself, written as a constant part in signal units plus a part proportional to the
+signal. The fit weights the titration points by it &mdash; a point the replicates show to be twice
+as precise counts four times &mdash; which is why the Identifiability tab calls its axis
+<i>weighted R&sup2;</i>: weighted R&sup2; counts each point by that precision, while the R&sup2;
+here counts every point equally. One titration cannot show how the noise varies with the signal, so
+it is fitted with the noise taken as constant, and the row says so. Where the noise really is
+proportional to the signal, that costs precision at the low end of the curve and gives an interval
+somewhat wider than replicates would have earned.</p>
 <p><b>Model and inputs</b>: whether the curve misses the data by more than the replicates&rsquo; own
 scatter allows (or, with one signal, whether the residuals change sign as often as noise would),
 where the fit put each input it was free to move and how far that is against what you stated, and a
@@ -321,9 +337,9 @@ every sample&rsquo;s best fit. Rows marked * are values the data fix only in com
 spread, even 0 &plusmn; 0, says nothing about precision.</p>
 
 <p><b>Example</b></p>
-<p>RMSE 5.72&times;10<sup>3</sup> a.u. on signals up to 2.9&times;10<sup>5</sup> a.u., R&sup2;
-0.9941, 7 of 7 replicates used; K<sub>a(G)</sub> = 3.14&times;10<sup>8</sup> M<sup>&minus;1</sup>
-[1.6&times;10<sup>8</sup>, 8.8&times;10<sup>8</sup>].</p>
+<p>RMSE 7.57&times;10<sup>3</sup> a.u. on signals up to 2.9&times;10<sup>5</sup> a.u., R&sup2;
+0.9897, 7 of 7 replicates used; K<sub>a(G)</sub> = 2.78&times;10<sup>8</sup> M<sup>&minus;1</sup>
+[1.9&times;10<sup>8</sup>, 4.0&times;10<sup>8</sup>].</p>
 """
 
 PLOT_GUIDE: dict[str, tuple[str, str]] = {

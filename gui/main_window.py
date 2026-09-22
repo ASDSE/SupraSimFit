@@ -403,16 +403,24 @@ class FittingMainWindow(QMainWindow):
             action.setToolTip(note or self._action_tips[action])
 
     def _close_tab(self, idx: int) -> None:
-        """Close one session tab, stopping the work it started before its widgets go."""
+        """Close one session tab, stopping the work it started before its widgets go, and say so on the status bar."""
         if self._tabs.count() == 1:
             # Keep at least one tab
             QMessageBox.information(self, 'Cannot Close', 'At least one session must remain open.')
             return
         session = self._tabs.widget(idx)
+        name = self._tabs.tabText(idx)
         self._tabs.removeTab(idx)
         if session is not None:
             if isinstance(session, FittingSession):
+                stopped = session.running_work()
                 session.shutdown()
+                # The line on the status bar is the closed session's last word.
+                # Left standing, its progress count reads as a run still going
+                # in a window where nothing is running any more.
+                self._statusbar.showMessage(
+                    f'Closed {name} — the running {stopped} was stopped' if stopped else 'Ready'
+                )
             session.deleteLater()
 
     def _rename_tab(self, session: FittingSession, title: str) -> None:

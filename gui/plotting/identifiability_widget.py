@@ -23,6 +23,13 @@ The R² axis is linear: for one signal the squared misfit is linear in R², so
 equal R² gaps are equal misfit gaps. The peak and the cut-off sit close together
 near 1, so the default view frames every peak and cut-off drawn and View All
 shows the full range.
+
+Where the replicates showed a noise law (:attr:`~core.pipeline.profile.ProfileSet.weighted`),
+that axis is ``1 - S_w / SS_tot,w`` — every titration point counted by the law
+the fit was weighted by — which is a different number from the unweighted R² the
+fit reports as its quality. The page then calls it ``weighted R²`` everywhere it
+names it (:meth:`IdentifiabilityWidget._r2_name`) and says once, in plain words,
+what the two names mean.
 """
 
 from __future__ import annotations
@@ -127,6 +134,14 @@ _NO_PROFILE = (
 )
 _READING_POINTER = 'How to read this plot: the ? button above.'
 
+#: What the page's own scale is, said once where the replicates showed a noise
+#: law. Both numbers are honest and they differ, so the reader is told which
+#: question each of them answers rather than left to reconcile them.
+_WEIGHTED_R2_NOTE = (
+    'Weighted R² counts each titration point by how precise the replicates show it to be; the R² under '
+    'Fit Quality counts every point equally.'
+)
+
 
 def _pct(ratio: float) -> str:
     """Signed percent change for a ratio to the best fit, with a real minus sign.
@@ -226,14 +241,6 @@ class IdentifiabilityWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setToolTip(
-            '<qt>The line is the best R² any fit can reach at each K<sub>a</sub>; the shaded band is '
-            'the range of K<sub>a</sub> the data support.<br>Where you stated an uncertainty for an input, '
-            'a second line and band show what the data support once the inputs may move within it.'
-            '<br>With two binding constants the last panel shows which pairs of them the data support '
-            'together, at the inputs as entered.<br>Scroll to zoom, drag to pan, right-click for the '
-            'full view.</qt>'
-        )
         self._style: dict = dict(DEFAULT_STYLE)
         self._fit: FitResult | None = None
         self._profile: ProfileSet | None = None
@@ -243,6 +250,7 @@ class IdentifiabilityWidget(QWidget):
         self._fit_note: str | None = None  # why the fit is hidden
         self._sensitivity_note: str | None = None  # why the sensitivity overlay is hidden
         self._replica_ids: list[str] | None = None
+        self._set_tooltip()
         self._colour_key: str | None = None
         # Drawn items per Ka key, for tests and restyling: main plot, curves, scatters.
         self._items: dict[str, dict] = {}
@@ -643,6 +651,28 @@ class IdentifiabilityWidget(QWidget):
     # Rendering
     # ------------------------------------------------------------------
 
+    def _r2_name(self) -> str:
+        """What this page calls its vertical scale, wherever it names it.
+
+        Where the replicates showed a noise law, every curve, cut-off and level
+        here is ``1 - S_w / SS_tot,w``: each titration point counted by that
+        law. That is a different number from the unweighted R² the fit reports
+        as its quality, so the page never calls the two by one name.
+        """
+        return 'weighted R²' if self._profile is not None and self._profile.weighted else 'R²'
+
+    def _set_tooltip(self) -> None:
+        """The hover text of the page, which names the scale the line and the band are read on."""
+        name = self._r2_name()
+        self.setToolTip(
+            f'<qt>The line is the best {name} any fit can reach at each K<sub>a</sub>; the shaded band is '
+            'the range of K<sub>a</sub> the data support.<br>Where you stated an uncertainty for an input, '
+            'a second line and band show what the data support once the inputs may move within it.'
+            '<br>With two binding constants the last panel shows which pairs of them the data support '
+            'together, at the inputs as entered.<br>Scroll to zoom, drag to pan, right-click for the '
+            'full view.</qt>'
+        )
+
     def _show_message(self, text: str) -> None:
         self._message.setText(text)
         self._stack.setCurrentWidget(self._message)
@@ -650,6 +680,7 @@ class IdentifiabilityWidget(QWidget):
 
     def _render(self) -> None:
         """Rebuild the page from the stored fit, profiles and sensitivity result."""
+        self._set_tooltip()
         self._glw.clear()
         self._items = {}
         self._region_items = {}
@@ -695,6 +726,10 @@ class IdentifiabilityWidget(QWidget):
         drawn = [profiles[key] for key in ka_keys]
         if any(profile.interval is not None for profile in drawn):
             summary.append(self._interval_note(drawn))
+        if self._profile.weighted:
+            # The page says once which of the two R² the reader is looking at:
+            # the panels name it, this says what the name means.
+            summary.append(f'<span style="color:{INK_2}">{_WEIGHTED_R2_NOTE}</span>')
         if self._profile.region is not None:
             self._render_region(2 * len(ka_keys), meta, self._profile.region, profiles)
             if any(profile.aware is not None for profile in profiles.values()):
@@ -765,12 +800,14 @@ class IdentifiabilityWidget(QWidget):
                 'to see its fits here.'
             )
             return None
-        r2 = np.asarray(result.sample_r2, dtype=float)
+        # The samples are drawn against the profiles, so they are read on the
+        # profiles' own scale, not on the unweighted R² the fit reports.
+        r2 = np.asarray(result.sample_profile_r2, dtype=float)
         hidden = int(np.sum(~(r2 >= 0)))
         if hidden:
             sample_notes.append(
                 f'{hidden} of {r2.size} sensitivity samples not shown: no fit could be made, or it fit worse '
-                'than a flat line (R² &lt; 0).'
+                f'than a flat line ({self._r2_name()} &lt; 0).'
             )
         offsets = result.sample_offsets_pct.get(self._colour_key) if self._colour_key is not None else None
         return {'ka': result.sample_ka, 'r2': r2, 'offsets': offsets}
@@ -823,7 +860,7 @@ class IdentifiabilityWidget(QWidget):
         best = profile.best_ka
         best_txt = f'{fmt_sci(best, 3)} {unit_html}'.strip()
         average = " of the replicates' average" if profile.per_replica else ''
-        fit_txt = f'best fit{average} {best_txt} (R² {fmt_r2(profile.best_r2)})'
+        fit_txt = f'best fit{average} {best_txt} ({self._r2_name()} {fmt_r2(profile.best_r2)})'
         interval = profile.interval
         if interval is None:
             return (
@@ -943,7 +980,7 @@ class IdentifiabilityWidget(QWidget):
         for name in ('left', 'bottom'):
             main.getAxis(name).enableAutoSIPrefix(False)
         main.getViewBox().setMinimumSize(_MAIN_MIN_WIDTH, _MAIN_MIN_HEIGHT)
-        main.setLabel('left', 'R²')
+        main.setLabel('left', self._r2_name())
         main.setLabel('bottom', f'{fmt_param(ka_key)} [{unit_html}]' if unit_html else fmt_param(ka_key))
         main.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
         self._style_axes(main, tick_font, label_font)
@@ -1015,7 +1052,7 @@ class IdentifiabilityWidget(QWidget):
         entered = ' with the inputs as entered' if aware is not None else ''
         legend['profile'] = (
             f'<span style="color:{INK}">&#9473;</span>',
-            'best R² reachable at each K<sub>a</sub>'
+            f'best {self._r2_name()} reachable at each K<sub>a</sub>'
             + (" on the replicates' average" if profile.per_replica else '')
             + entered,
         )

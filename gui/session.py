@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
+from core.assays.registry import AssayType
 from core.pipeline.diagnostics import MisfitTest
 from core.pipeline.fit_pipeline import (
     FitResult,
@@ -424,11 +425,13 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
     many stated standard deviations that is (blank for an input stated as a
     range, where ``input_at_edge`` says whether the fit took it to an end of
     that range). Which inputs a shared source moves is in the TXT report and
-    in the results file's ``fit_config``. The ``verdict``, ``misfit_p``,
-    ``cond_misfit_p``, ``conflict_q`` and ``conflict_p`` columns describe the
-    fit as a whole and repeat on every one of its rows; ``misfit_p`` is the
-    misfit test of the fit the interval comes from and ``cond_misfit_p`` the
-    one at the inputs exactly as entered.
+    in the results file's ``fit_config``. The ``noise``, ``verdict``,
+    ``misfit_p``, ``cond_misfit_p``, ``conflict_q`` and ``conflict_p`` columns
+    describe the fit as a whole and repeat on every one of its rows;
+    ``misfit_p`` is the misfit test of the fit the interval comes from and
+    ``cond_misfit_p`` the one at the inputs exactly as entered. ``noise`` is
+    the law the replicates showed, the one the fit weighted its titration
+    points by, and is blank where the result records none.
 
     Parameters
     ----------
@@ -472,6 +475,7 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'n_replicates',
         'rmse',
         'r_squared',
+        'noise',
         'replicates_used',
         'replicates_left_out',
         'verdict',
@@ -517,7 +521,10 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
             n_used = len(fit_replica_ids(result) or ())
             intervals = result.intervals or {}
             diagnostics = diagnostic_cells(result)
-            quality = [f'{result.rmse:.6e}', f'{result.r_squared:.6f}', used, left_out]
+            # The noise law describes the fit, like the verdict beside it, so it
+            # repeats on every row of that fit; blank where none was recorded.
+            noise = '' if result.noise is None else result.noise.describe()
+            quality = [f'{result.rmse:.6e}', f'{result.r_squared:.6f}', noise, used, left_out]
             for spec in summarize_parameters(result):
                 ci = spec.interval
                 dof = intervals[spec.key].dof if spec.key in intervals else None
@@ -788,6 +795,11 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
         lines.append('-' * 60)
         lines.append(f'  RMSE:          {result.rmse:.4g} {fmt_unit_pretty("au")}')
         lines.append(f'  R²:            {fmt_r2(result.r_squared)}')
+        # A dye-alone calibration is a line fitted by fit_linear_assay, which
+        # reads no noise law and needs none.
+        if result.assay_type != AssayType.DYE_ALONE.name:
+            noise = 'not recorded in this result.' if result.noise is None else result.noise.describe()
+            lines.append(f'  Noise:         {noise}')
         record = _replicate_record(result, replica_ids)
         if record is None:
             lines.append('  Replicates:    not recorded in this result.')

@@ -366,6 +366,72 @@ def test_txt_report_of_a_fit_of_one_signal_has_no_replicate_table(tmp_path: Path
     assert 'Left out of the fit:  none' in text
 
 
+def _law(**overrides):
+    """The noise law the replicates of a titration showed."""
+    from core.pipeline.noise import NoiseBasis, NoiseLaw
+
+    fields = dict(
+        basis=NoiseBasis.REPLICATES, share=0.5, floor=890.0, proportional=0.011, reference=1.2e5, n_replicates=8
+    )
+    fields.update(overrides)
+    return NoiseLaw(**fields)
+
+
+def test_txt_report_puts_the_noise_law_under_the_r2_of_the_fit_quality_block(tmp_path: Path) -> None:
+    """The law says what the fit weighted the points by, so it is read beside the scores it produced."""
+    law = _law()
+    text = _txt(tmp_path, [replace(_result(), noise=law)])
+    lines = text.splitlines()
+    r2 = next(i for i, line in enumerate(lines) if line.startswith('  R²:'))
+
+    assert lines[r2 + 1] == f'  Noise:         {law.describe()}'
+
+
+def test_txt_report_of_a_result_that_records_no_law_says_so(tmp_path: Path) -> None:
+    """A file written before the law existed is not a file that says the noise was constant."""
+    text = _txt(tmp_path, [_result()])
+
+    assert '  Noise:         not recorded in this result.' in text
+
+
+def test_txt_report_of_a_dye_alone_calibration_has_no_noise_line(tmp_path: Path) -> None:
+    """A calibration line is fitted with no noise law and needs none; an empty line would invite a question."""
+    calibration = FitResult(
+        parameters={'slope': Q_(1.5, 'au/M'), 'intercept': Q_(0.2, 'au')},
+        rmse=0.01,
+        r_squared=0.99,
+        x_fit=Q_(_X, 'M'),
+        y_fit=Q_(_X, 'au'),
+        assay_type='DYE_ALONE',
+        model_name='linear',
+    )
+    text = _txt(tmp_path, [calibration])
+
+    assert 'FIT QUALITY' in text
+    assert 'Noise:' not in text
+
+
+def test_csv_carries_the_noise_law_on_every_row_of_the_fit(tmp_path: Path) -> None:
+    """It describes the fit, like the verdict, so it repeats on each of that fit's rows."""
+    path = tmp_path / 'r.csv'
+    law = _law()
+    export_results_csv([replace(_result(), noise=law)], path)
+    rows = _csv_rows(path)
+    header = path.read_text(encoding='utf-8').splitlines()[0].split(',')
+
+    assert header[header.index('r_squared') + 1] == 'noise'
+    assert header[header.index('noise') + 1] == 'replicates_used'
+    assert {r['noise'] for r in rows} == {law.describe()}
+
+
+def test_csv_leaves_the_noise_column_empty_where_no_law_is_recorded(tmp_path: Path) -> None:
+    """Blank is what the table already writes for a fit that recorded no diagnostics."""
+    path = tmp_path / 'r.csv'
+    export_results_csv([_result()], path)
+
+    assert {r['noise'] for r in _csv_rows(path)} == {''}
+
+
 def test_csv_is_one_row_per_reported_parameter(tmp_path: Path) -> None:
     path = tmp_path / 'r.csv'
     export_results_csv([_result()], path)
