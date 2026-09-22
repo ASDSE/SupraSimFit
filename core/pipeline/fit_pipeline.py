@@ -49,6 +49,7 @@ from core.pipeline.input_aware import (
     input_shifts,
 )
 from core.pipeline.inputs import TITRANT, ErrorModel, constraints
+from core.pipeline.noise import NoiseLaw, noise_law
 from core.pipeline.varpro import (
     LEVEL,
     FitRefused,
@@ -213,6 +214,14 @@ class FitResult:
         The penalised profiles the headline interval was cut from, for the
         Identifiability tab. It is the fit's own working, not part of what a
         results file holds, so it is ``None`` after an import.
+    noise : NoiseLaw | None
+        The noise law the replicates behind the fitted signal showed
+        (:mod:`core.pipeline.noise`), which is what weighted the fit's
+        titration points; where they could not show one, the statement that
+        the noise was taken as constant. ``None`` on a dye-alone calibration,
+        which estimates no law, on a replicate's own fit inside
+        ``replica_fits``, where the sentence belongs to the reported fit, and
+        on a result imported from a file written before the law was recorded.
     """
 
     parameters: Dict[str, Quantity]
@@ -236,6 +245,7 @@ class FitResult:
     input_shifts: Dict[str, InputShift] = field(default_factory=dict)
     diagnostics: Optional[FitDiagnostics] = None
     aware: Optional[AwareResult] = None
+    noise: Optional[NoiseLaw] = None
 
     @property
     def per_replica(self) -> bool:
@@ -304,6 +314,7 @@ class FitResult:
             'conditional': None if self.conditional is None else self.conditional.to_dict(),
             'input_shifts': {k: v.to_dict() for k, v in self.input_shifts.items()},
             'diagnostics': None if self.diagnostics is None else self.diagnostics.to_dict(),
+            'noise': None if self.noise is None else self.noise.to_dict(),
         }
 
     @classmethod
@@ -314,7 +325,10 @@ class FitResult:
         with no entry at all — a file written before intervals were reported.
         A file of the current layout that holds no conditional fit, no input
         shifts and no diagnostics was written by a fit whose inputs could not
-        move, and reads with those fields empty.
+        move, and reads with those fields empty. One that names no noise law,
+        either because it holds ``null`` there or because it was written
+        before the law was recorded, reads with :attr:`FitResult.noise`
+        ``None``.
 
         Raises
         ------
@@ -333,6 +347,7 @@ class FitResult:
         replica_fits = d.get('replica_fits')
         conditional = d.get('conditional')
         diagnostics = d.get('diagnostics')
+        noise = d.get('noise')
         return cls(
             **_common_fields(d),
             intervals=None if intervals is None else {k: KaInterval.from_dict(v) for k, v in intervals.items()},
@@ -341,6 +356,7 @@ class FitResult:
             conditional=None if conditional is None else ConditionalFit.from_dict(conditional),
             input_shifts={k: InputShift.from_dict(v) for k, v in (d.get('input_shifts') or {}).items()},
             diagnostics=None if diagnostics is None else FitDiagnostics.from_dict(diagnostics),
+            noise=None if noise is None else NoiseLaw.from_dict(noise),
         )
 
     @classmethod
@@ -827,6 +843,15 @@ def fit_assay(
     misfit tests and the conflict statistic of
     :mod:`core.pipeline.diagnostics` are run and recorded.
 
+    How precisely each titration point was measured is read off the replicates
+    behind the fitted signal (:func:`~core.pipeline.noise.noise_law`) and
+    carried through every projection here as point weights, so the fit, its
+    profiles, both intervals and the lack-of-fit test count each point by the
+    precision the replicates show it to have. The law is recorded on the
+    result. One signal cannot show how the noise varies with the signal, and is
+    fitted with weights of exactly one: every number is then that of a fit made
+    without a law.
+
     Parameters
     ----------
     assay : BaseAssay
@@ -841,9 +866,10 @@ def fit_assay(
         Asked before every equilibrium solve whether to stop.
     replicate_signals : np.ndarray, optional
         The replicates the fitted signal is the average of, shape ``(m, n)``.
-        With two or more of them the misfit test is the replicate lack-of-fit
-        F test, which measures the fit against the scatter of the data
-        themselves; otherwise it is the runs test on the residuals.
+        They are what the noise law is read from, and with two or more of them
+        the misfit test is the replicate lack-of-fit F test, which measures the
+        fit against the scatter of the data themselves; otherwise it is the
+        runs test on the residuals.
 
     Returns
     -------
@@ -865,7 +891,13 @@ def fit_assay(
     """
     if config is None:
         config = FitConfig()
-    projection = Projection(assay, _resolve_bounds(assay, config.custom_bounds), should_cancel=should_cancel)
+    law = noise_law(replicate_signals)
+    projection = Projection(
+        assay,
+        _resolve_bounds(assay, config.custom_bounds),
+        should_cancel=should_cancel,
+        point_weights=law.weights(assay.y_data.magnitude),
+    )
     fit = projection.fit()
     params = projection.params(fit)
     rmse, r_squared, x_fit, y_fit = fit_view(assay, params)
@@ -914,6 +946,7 @@ def fit_assay(
         input_shifts=shifts,
         diagnostics=_diagnose(projection, fit, aware, replicate_signals, intervals, should_cancel),
         aware=aware,
+        noise=law,
     )
 
 
@@ -968,12 +1001,18 @@ def _misfit(
 
     The F test is given the parameter count :func:`_fitted_params`, the
     parameters the fit moved; the runs test takes its own reference from the
-    Jacobian of those same parameters (:func:`fit_jacobian`).
+    Jacobian of those same parameters (:func:`fit_jacobian`). Both tests are
+    run in the whitened space the projection's point weights define: the F test
+    weights the misfit of the curve and the scatter it is judged against by the
+    same weights, and the runs test reads the signs of the whitened residual,
+    which are the signs of the residual itself. The projection hands out the
+    whitened residual, so the fitted curve the F test takes is read back from
+    it in signal units.
     """
     residual = projection.residual(aware.fit.ka, 0, aware.fit.input_offsets)
     if replicate_signals is not None and np.shape(replicate_signals)[0] >= 2:
-        fitted = projection.signals[0] - residual
-        return lack_of_fit(replicate_signals, fitted, _fitted_params(projection, aware))
+        fitted = projection.signals[0] - residual / np.sqrt(projection.point_weights)
+        return lack_of_fit(replicate_signals, fitted, _fitted_params(projection, aware), projection.point_weights)
     if projection.n_points - aware.fit.n_params < _RUNS_TEST_DOF:
         return None
     return runs_test(residual, projection.assay.x_data.magnitude, fit_jacobian(projection, aware))
@@ -1245,8 +1284,12 @@ def fit_measurement_set_per_replica(
         replicates given (``active_replica_ids``), used (``replica_ids_fit``),
         left out (``replica_failures``) and the test that decided
         (``replicate_test``). The reported fit carries the interval, the input
-        shifts and the diagnostics; a replicate's own fit is the search over
-        its own signal at the inputs as entered and carries none of them.
+        shifts, the diagnostics and the noise law, read there from the
+        replicates it kept; a replicate's own fit is the search over its own
+        signal at the inputs as entered and carries none of them — a law read
+        from the scatter of several replicates describes the set, not the one
+        row — though the rows are fitted with the weights of the law of the
+        replicates given.
 
     Raises
     ------
@@ -1277,11 +1320,17 @@ def fit_measurement_set_per_replica(
         )
 
     grid_assay = ms.to_assay(assay_cls, conditions=conditions, use_average=True)
+    # One noise law for the replicates given, so every row of the shared
+    # projection — each replicate's own fit and the test between them — counts
+    # a titration point by the same precision.
+    given_signals = ms.signals[rows]
+    law = noise_law(given_signals)
     projection = Projection(
         grid_assay,
         _resolve_bounds(grid_assay, config.custom_bounds),
-        signals=ms.signals[rows],
+        signals=given_signals,
         should_cancel=should_cancel,
+        point_weights=law.weights(given_signals.mean(axis=0)),
     )
     # Each row's own fit is both the replicate's reported fit and the residual
     # the shared-Ka test weights it by, so it is searched once and used twice.

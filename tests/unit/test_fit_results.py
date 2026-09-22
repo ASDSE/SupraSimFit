@@ -17,6 +17,7 @@ from core.pipeline.fit_pipeline import (
     summarize_parameters,
 )
 from core.pipeline.inputs import TITRANT, AdditionError, ErrorModel, InputSpec, SharedSource, specs_to_dict
+from core.pipeline.noise import NoiseBasis, NoiseLaw
 from core.pipeline.varpro import LEVEL, KaInterval
 from core.units import Q_, Quantity
 
@@ -175,6 +176,42 @@ class TestSerialization:
         restored = FitResult.from_dict(json.loads(json.dumps(original.to_dict())))
 
         assert restored.intervals['Ka_guest'] == original.intervals['Ka_guest']
+
+    def test_the_noise_law_survives_the_file(self):
+        """Its basis is written as its token and every number comes back as it was."""
+        law = NoiseLaw(
+            NoiseBasis.REPLICATES, share=0.4, floor=12.5, proportional=0.011, reference=880.0, n_replicates=4
+        )
+        original = _sample_fit_result(noise=law)
+
+        written = json.loads(json.dumps(original.to_dict()))
+
+        assert written['noise']['basis'] == 'replicates'
+        assert FitResult.from_dict(written).noise == law
+
+    def test_a_law_taken_as_constant_survives_the_file_saying_so(self):
+        """One titration shows no law, and the file records that rather than a share of zero."""
+        original = _sample_fit_result(noise=NoiseLaw(NoiseBasis.SINGLE_TITRATION))
+
+        restored = FitResult.from_dict(json.loads(json.dumps(original.to_dict())))
+
+        assert restored.noise.basis is NoiseBasis.SINGLE_TITRATION
+        assert not restored.noise.estimated
+        np.testing.assert_array_equal(restored.noise.weights(np.array([1.0, 2.0, 3.0])), np.ones(3))
+
+    def test_a_file_of_this_layout_that_names_no_noise_law_reads_as_none(self):
+        """Nothing was recorded, and nothing is invented: the row that renders it says so."""
+        without = _sample_fit_result(noise=NoiseLaw(NoiseBasis.REPLICATES, share=0.2, n_replicates=3)).to_dict()
+        del without['noise']
+
+        restored = FitResult.from_dict(json.loads(json.dumps(without)))
+
+        assert restored.noise is None
+        assert restored.parameters['Ka_guest'].magnitude == pytest.approx(1.5e6)
+
+    def test_the_key_is_written_even_where_there_is_no_law(self):
+        """It is an optional block like the others, so a reader finds it in every file of this layout."""
+        assert _sample_fit_result().to_dict()['noise'] is None
 
     def test_a_file_written_before_intervals_keeps_its_fit_and_carries_none(self):
         """The multi-start pool, its attempts and the mode it was summarised through are read past."""

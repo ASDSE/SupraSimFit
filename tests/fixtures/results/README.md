@@ -72,12 +72,16 @@ with the conditions above, 40 trials, a minimum R² of 0.95 and seed 20260917;
 `input_aware_ida.json` is a fit of the average of three replicates whose host
 concentration was entered 8 % above the value the data were made at, with that
 stock stated to 10 % and the titrant to 3 %. The fit moves the host
-concentration by −8.7 % and reports a Ka of 1.89 MM⁻¹ against the 2 MM⁻¹ the
+concentration by −8.6 % and reports a Ka of 1.88 MM⁻¹ against the 2 MM⁻¹ the
 data carry, where the interval that holds the entered inputs exact — the file's
-`conditional` block — runs from 2.19 to 2.82 MM⁻¹ and does not reach the truth.
+`conditional` block — runs from 2.14 to 2.60 MM⁻¹ and does not reach the truth.
 Its `diagnostics` say `inputs_explain`: at the entered inputs the replicates
-reject the curve (lack of fit p = 7e-11) and once the inputs move they do not
-(p = 0.53).
+reject the curve (lack of fit p = 1e-7) and once the inputs move they do not
+(p = 0.55).
+
+Its `noise` block holds the law the three replicates show, a share of 0.56
+between a floor of 3.2 au and 0.6 % of the signal, and the fit counts each
+titration point by the weight that law gives it.
 
 An import scores the reported parameters where the fit put the inputs, so the
 file verifies; strip its `input_shifts` and the same numbers no longer describe
@@ -104,7 +108,10 @@ and the stock holds neither of them. `[Host]₀` carries an uncertainty of its o
 (σ 3 %) and one source named *Host and dye stock* (σ 4 %) moves `[Host]₀` and
 `[Dye]₀` together, so the file's `fit_config` carries a `shared_sources` entry
 and its `input_shifts` report the shared source under its own key beside the
-host's own shift. The reported interval holds the 2 MM⁻¹ the data carry.
+host's own shift. The reported interval, 1.84 to 2.13 MM⁻¹, holds the 2 MM⁻¹
+the data carry. Its `noise` block reads the replicates' scatter as
+proportional to the signal, 0.9 % of it, the structure the data were made
+with.
 
 An import rebuilds the diluted assay from the file's own `titrant_stock` and
 `stock_contains` conditions and scores the reported parameters where the fit put

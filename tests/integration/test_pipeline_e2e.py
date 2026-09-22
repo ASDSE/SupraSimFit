@@ -529,8 +529,11 @@ class TestInputsFreeWithinTheirUncertainty:
         """Three replicates give the scatter the misfit is judged against, at both fits."""
         diagnostics = uncertain.diagnostics
         assert diagnostics.conditional_misfit.kind == 'lack_of_fit'
-        # n - p against n (m - 1): 12 points, 3 parameters the data determine, three replicates.
-        assert diagnostics.conditional_misfit.dof == (12 - 3, 12 * 2)
+        # n - p against (m - 1)(n - 2): 12 points, 3 parameters the data
+        # determine, and the scatter of three replicates about their own line
+        # in the mean curve, which the line costs two points and the mean one
+        # replicate.
+        assert diagnostics.conditional_misfit.dof == (12 - 3, 2 * 10)
         assert diagnostics.conditional_misfit.p_value < 0.001
         assert diagnostics.misfit.p_value > 0.05
         assert diagnostics.conflict.p_value > 0.05, 'the shift stays within what was stated, so nothing conflicts'

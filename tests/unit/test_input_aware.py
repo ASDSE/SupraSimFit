@@ -57,7 +57,7 @@ def _noisy(y: np.ndarray, frac: float, seed: int) -> np.ndarray:
     return y + np.random.default_rng(seed).normal(0.0, frac * np.ptp(y), y.size)
 
 
-def _ida(n: int, noise: float, seed: int, *, h0_factor: float = 1.0, ka_box=(1e5, 1e8)):
+def _ida(n: int, noise: float, seed: int, *, h0_factor: float = 1.0, ka_box=(1e5, 1e8), point_weights=None):
     """IDA on the conftest truth, the host optionally entered wrong, Ka searched in a narrow box."""
     x, y = _make_ida_data(IDA_TRUE, n_points=n)
     assay = IDAAssay(
@@ -68,7 +68,7 @@ def _ida(n: int, noise: float, seed: int, *, h0_factor: float = 1.0, ka_box=(1e5
         d0=Q_(IDA_TRUE['d0'], 'M'),
     )
     bounds = {**GDA_IDA_RECOVERY_BOUNDS, 'Ka_guest': (Q_(ka_box[0], '1/M'), Q_(ka_box[1], '1/M'))}
-    return assay, Projection(assay, bounds)
+    return assay, Projection(assay, bounds, point_weights=point_weights)
 
 
 def _sigma_constraints(assay, sigmas: dict):
@@ -94,7 +94,10 @@ def ida_case():
 # ---------------------------------------------------------------------------
 
 
-def _reference_ssr(columns: np.ndarray, y: np.ndarray, lb: np.ndarray, ub: np.ndarray) -> float:
+def _reference_ssr(columns: np.ndarray, y: np.ndarray, lb: np.ndarray, ub: np.ndarray, weights=None) -> float:
+    """Best ``sum_i w_i (y_i - (A c)_i)²`` over the coefficient box, by a bounded solve of the whitened problem."""
+    root = 1.0 if weights is None else np.sqrt(weights)[:, np.newaxis]
+    columns, y = columns * root, y * np.ravel(root)
     norm = np.linalg.norm(columns, axis=0)
     solved = lsq_linear(columns / norm, y, bounds=(lb * norm, ub * norm), method='bvls')
     return float(np.sum((columns @ np.clip(solved.x / norm, lb, ub) - y) ** 2))
@@ -117,7 +120,7 @@ def _reference_minimum(objective, n_coords: int, seed: int, spread: np.ndarray) 
     return float(best)
 
 
-def _ida_reference(assay, projection, k: float) -> float:
+def _ida_reference(assay, projection, k: float, weights=None) -> float:
     x, y = assay.x_data.magnitude, assay.y_data.magnitude
     lb, ub = _coefficient_box(projection)
     sigma = np.array([_IDA_SIGMAS[key] for key in ('Ka_dye', 'h0', 'd0', TITRANT)])
@@ -127,7 +130,7 @@ def _ida_reference(assay, projection, k: float) -> float:
         ka_dye, h0, d0, scale = entered * (1.0 + sigma * z)
         species = ida_species(k, ka_dye, h0, d0, scale * x)
         columns = np.column_stack([np.ones(x.size), species['D'], species['HD']])
-        return x.size * np.log(_reference_ssr(columns, y, lb, ub)) + float(z @ z)
+        return x.size * np.log(_reference_ssr(columns, y, lb, ub, weights)) + float(z @ z)
 
     return _reference_minimum(objective, 4, seed=11, spread=np.ones(4))
 
@@ -282,6 +285,53 @@ def test_with_no_varying_input_the_result_is_the_fixed_input_fit_and_its_own_int
     assert conflict(result) is None and input_shifts(result) == {}
     # A spec that does not vary is no constraint at all.
     assert constraints(ErrorModel(specs={'h0': InputSpec.sigma_pct(0.0)}), assay.get_conditions()) == ()
+
+
+def test_weights_of_exactly_one_are_the_fit_without_weights_to_the_last_bit():
+    """A titration with no replicates behind it is fitted with weights of one, and nothing may move.
+
+    The whole input-aware path — the objective, the residual where the model
+    has no solution, the scale, the effective degrees of freedom and the
+    interval — has to come back with the numbers it had before there were any
+    weights.
+    """
+    assay, plain = _ida(12, 0.02, 5)
+    _, ones = _ida(12, 0.02, 5, point_weights=np.ones(12))
+
+    without = input_aware(plain, plain.fit(), _sigma_constraints(assay, _IDA_SIGMAS))
+    with_ones = input_aware(ones, ones.fit(), _sigma_constraints(assay, _IDA_SIGMAS))
+
+    assert with_ones.fit.ka == without.fit.ka
+    assert with_ones.fit.offsets == without.fit.offsets
+    assert with_ones.fit.objective == without.fit.objective
+    assert np.array_equal(with_ones.fit.coefficients, without.fit.coefficients)
+    assert with_ones.profiles['Ka_guest'].interval == without.profiles['Ka_guest'].interval
+
+
+def test_a_weighted_profile_value_is_the_minimum_of_the_independent_weighted_objective():
+    """With point weights the penalised objective is ``n log S_w + z'z``, and nothing of it is left unweighted.
+
+    The independent objective is the same four inputs moved by hand, the
+    species solved by the model's own function and the coefficients by a
+    bounded solve of the whitened problem, minimised by Nelder-Mead from
+    seeded random starts.
+    """
+    assay, _ = _ida(12, 0.02, 5)
+    signal = assay.y_data.magnitude
+    # The weights of a purely proportional noise law: the low end of the
+    # titration is the precise end, by a factor of fifteen here.
+    weights = np.mean(signal**2) / signal**2
+    assert weights.max() > 10 * weights.min()
+    _, projection = _ida(12, 0.02, 5, point_weights=weights)
+
+    result = input_aware(projection, projection.fit(), _sigma_constraints(assay, _IDA_SIGMAS))
+
+    profile = result.profiles['Ka_guest']
+    for ka in (result.fit.ka['Ka_guest'], float(profile.grid[0])):
+        engine = float(profile.objective[np.flatnonzero(profile.grid == ka)[0]])
+        assert engine == pytest.approx(_ida_reference(assay, projection, ka, weights), abs=1e-6)
+    # The unweighted objective is a different number, so the weights really reached it.
+    assert engine != pytest.approx(_ida_reference(assay, projection, ka), abs=1e-3)
 
 
 def test_vanishing_uncertainties_converge_to_the_fixed_input_profile_and_interval():

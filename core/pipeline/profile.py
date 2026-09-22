@@ -43,6 +43,7 @@ from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds
 from core.pipeline.input_aware import AwareProfile, AwareResult, input_aware
 from core.pipeline.inputs import constraints
+from core.pipeline.noise import noise_law
 from core.pipeline.varpro import (
     _PROFILE_PER_DECADE,
     _SEARCH_PER_DECADE,
@@ -106,6 +107,14 @@ _REGION_POINTS = 64
 @dataclass
 class ProfileResult:
     """Best achievable R² across one binding constant and the interval it implies.
+
+    Where the replicates behind the fit showed a noise law
+    (:attr:`ProfileSet.weighted`), every R² here — ``r2``, ``best_r2``,
+    ``r2_cut``, ``r2_threshold`` and each curve in ``replica_r2`` — is
+    ``1 - S_w / SS_tot,w``, measured with each titration point counted by its
+    weight. It is the scale the profile falls on and the cut-off is a level on,
+    and a different number from the unweighted R² the fit reports as its
+    quality.
 
     Attributes
     ----------
@@ -233,10 +242,21 @@ class ProfileSet:
     region : JointRegion | None
         The joint region of the pair; ``None`` unless the model has two free
         binding constants.
+    weighted : bool
+        Whether the replicates showed a noise law that weights the titration
+        points (:mod:`core.pipeline.noise`). Every R² here — the curves, the
+        best fit, the cut-offs and the threshold — is then ``1 - S_w /
+        SS_tot,w``, the scale the profile falls on and the cut-off is a level
+        on, which counts each point by the precision the replicates show it to
+        have. That is a different number from the unweighted R² a fit reports
+        as its quality, and the tab that draws these curves names it
+        accordingly. ``False`` where the weights are one, and the two numbers
+        are the same.
     """
 
     profiles: dict[str, ProfileResult]
     region: JointRegion | None
+    weighted: bool = False
 
 
 def fit_profile(
@@ -260,6 +280,13 @@ def fit_profile(
     applies throughout; with ``fit_config.per_replica`` a model with one free
     binding constant also carries each replicate's own curve in
     ``replica_r2``.
+
+    The curves carry the point weights of the noise law those replicates show
+    (:mod:`core.pipeline.noise`), as the fit does, so the R² axis here is the
+    weighted one wherever a law was read (:attr:`ProfileSet.weighted`). The
+    average, the law and therefore every number here are functions of the
+    active replicates of *ms* alone: they are a fit's own exactly when *ms*
+    holds the replicates that fit used, which is the caller's to arrange.
 
     Parameters
     ----------
@@ -302,9 +329,14 @@ def fit_profile(
         raise ValueError(f'The confidence level must lie between 0 and 1, got {level}.')
     assay = ms.to_assay(assay_cls, conditions=conditions, use_average=True)
     bounds = _resolve_bounds(assay, fit_config.custom_bounds)
+    # The weights the fit of these replicates is made with, read off the same
+    # rows their average came from, so the curves and the fit's own interval
+    # are one set of numbers.
+    law = noise_law(np.vstack([ms.get_replica_signal(rid) for rid in ms.active_replica_ids]))
+    point_weights = law.weights(assay.y_data.magnitude)
 
     # The fit itself: the calls a fit of the averaged signal makes, in the same order.
-    projection = Projection(assay, bounds, should_cancel=should_cancel)
+    projection = Projection(assay, bounds, should_cancel=should_cancel, point_weights=point_weights)
     fit = projection.fit()
     threshold = projection.threshold(fit, level)
     intervals = {key: projection.interval(key, fit, level) for key in projection.ka_keys}
@@ -406,7 +438,7 @@ def fit_profile(
         # Every drawn curve: the average first, then each active replicate's own.
         replica_ids = list(ms.active_replica_ids) if fit_config.per_replica else []
         rows = np.vstack([assay.y_data.magnitude, *(ms.get_replica_signal(rid) for rid in replica_ids)])
-        curves = Projection(assay, bounds, signals=rows, should_cancel=should_cancel)
+        curves = Projection(assay, bounds, signals=rows, should_cancel=should_cancel, point_weights=point_weights)
         for key in projection.ka_keys:
             if key not in projection.free_ka:
                 # Equal Ka bounds fix Ka: the fit was not free to move it, so
@@ -430,7 +462,7 @@ def fit_profile(
                 {rid: r2[:, i] for i, rid in enumerate(replica_ids, start=1)} if fit_config.per_replica else None
             )
             profiles[key] = result(key, grid, r2[:, 0], cuts, replica_r2)
-    return ProfileSet(profiles=profiles, region=region)
+    return ProfileSet(profiles=profiles, region=region, weighted=bool(np.any(projection.point_weights != 1.0)))
 
 
 def _draw(

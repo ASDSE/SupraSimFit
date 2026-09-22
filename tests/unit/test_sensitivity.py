@@ -56,6 +56,7 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measurement_set
+from core.pipeline.profile import fit_profile
 from core.pipeline.sensitivity import (
     LONG_RUN_SOLVES,
     TITRANT,
@@ -111,15 +112,18 @@ _IDA_CONDITIONS = {
 }
 
 
-def _noisy_ida_setup(n_replicas: int, *, per_replica: bool, noise_frac: float = 0.02):
+def _noisy_ida_setup(n_replicas: int, *, per_replica: bool, noise_frac: float = 0.02, proportional: bool = False):
     """(ms, assay_cls, conditions, fit_config) whose replicates carry independent noise.
 
     The noise has a constant sigma, *noise_frac* of the signal range, so the
-    best fit stays well below R² = 1 and moves with every input.
+    best fit stays well below R² = 1 and moves with every input. With
+    *proportional* its sigma is that fraction of the signal itself, which is
+    what several replicates can show, and the fit of them is then weighted.
     """
     x, y = _make_ida_data(IDA_TRUE, n_points=_N_POINTS)
     rng = np.random.default_rng(4)
-    signals = np.vstack([y + rng.normal(0.0, noise_frac * np.ptp(y), y.size) for _ in range(n_replicas)])
+    scale = np.abs(y) if proportional else np.full(y.size, np.ptp(y))
+    signals = np.vstack([y + rng.normal(0.0, 1.0, y.size) * noise_frac * scale for _ in range(n_replicas)])
     ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=tuple(f'r{i}' for i in range(n_replicas)))
     fit_config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=per_replica)
     return ms, IDAAssay, dict(_IDA_CONDITIONS), fit_config
@@ -261,9 +265,9 @@ def _ka_by_call(values: dict[int, float], otherwise: float):
     """
     calls = count()
 
-    def fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, deltas=None, sequential=False):
+    def fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
         ka = values.get(next(calls), otherwise)
-        return {'Ka_guest': ka, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0
+        return {'Ka_guest': ka, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
 
     return fit
 
@@ -442,7 +446,7 @@ def test_heatmap_axes_perturb_the_inputs_they_name(ida_setup, monkeypatch):
 
     def ka_from_h0_alone(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
         signal = dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)
-        return {'Ka_guest': 1e8 * (1 + 3 * offsets.get('h0', 0.0)), **signal}, 1.0
+        return {'Ka_guest': 1e8 * (1 + 3 * offsets.get('h0', 0.0)), **signal}, 1.0, 1.0
 
     monkeypatch.setattr(sens, '_fit_perturbed', ka_from_h0_alone)
     cfg = SensitivityConfig(
@@ -1182,15 +1186,21 @@ def test_entry_point_calls_freeze_support_before_importing_the_interface():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(('n_replicas', 'per_replica'), [(1, False), (4, True)], ids=['average', 'per_replicate'])
-def test_baseline_is_the_unperturbed_sample(n_replicas, per_replica):
+@pytest.mark.parametrize(
+    ('n_replicas', 'per_replica', 'proportional'),
+    [(1, False, False), (4, True, False), (4, False, True)],
+    ids=['average', 'per_replicate', 'weighted'],
+)
+def test_baseline_is_the_unperturbed_sample(n_replicas, per_replica, proportional):
     """The baseline is the fit a sample with no input offset gets.
 
     The grid's centre cell holds the inputs as entered, so its Ka reads no
     change against the baseline, and the report's Estimate comes from the
-    fitting method its spread comes from.
+    fitting method its spread comes from. Where the replicates showed a noise
+    law, that means the samples carry its weights: an unweighted refit of the
+    centre cell would land somewhere else.
     """
-    setup = _noisy_ida_setup(n_replicas, per_replica=per_replica)
+    setup = _noisy_ida_setup(n_replicas, per_replica=per_replica, proportional=proportional)
     result = _run(setup, _heatmap(3))
 
     assert (result.x_offsets_pct[1], result.y_offsets_pct[1]) == (0.0, 0.0)
@@ -1198,8 +1208,41 @@ def test_baseline_is_the_unperturbed_sample(n_replicas, per_replica):
     assert result.r2_grid[1, 1] == pytest.approx(result.baseline_fit.r_squared, abs=1e-12)
     ms, assay_cls, conditions, fit_config = setup
     used = ms.with_active(sens.fit_replica_ids(result.baseline_fit))
-    unperturbed, _ = sens._fit_perturbed(used, assay_cls, np.asarray(ms.concentrations), conditions, {}, fit_config)
+    weights = result.baseline_fit.noise.weights(used.average_signal())
+    assert proportional == (weights.max() > weights.min()), 'the weighted case has to weight the points differently'
+    unperturbed, r_squared, _ = sens._fit_perturbed(
+        used, assay_cls, np.asarray(ms.concentrations), conditions, {}, fit_config, point_weights=weights
+    )
     assert {key: value.magnitude for key, value in result.baseline_fit.parameters.items()} == unperturbed
+    assert r_squared == result.baseline_fit.r_squared
+    assert result.sample_profile_r2 is None, 'a heatmap reports cells, not samples'
+
+
+def test_a_samples_profile_r2_is_its_place_on_the_ka_profile():
+    """The Identifiability tab draws the samples against the Ka profile, so both are one number.
+
+    A sample's profile R² is the weighted objective its own fit minimised; the
+    sample that moves nothing minimises it at the peak of the fit's own
+    profile, and that is a different number from the R² the sample reports as
+    its quality, which counts every point equally.
+    """
+    ms, assay_cls, conditions, fit_config = _noisy_ida_setup(4, per_replica=False, proportional=True)
+    baseline = fit_measurement_set(ms, assay_cls, conditions, fit_config)
+
+    _, r_squared, profile_r2 = sens._fit_perturbed(
+        ms,
+        assay_cls,
+        np.asarray(ms.concentrations),
+        conditions,
+        {},
+        fit_config,
+        point_weights=baseline.noise.weights(ms.average_signal()),
+    )
+
+    profiles = fit_profile(ms, assay_cls, conditions, fit_config)
+    assert profiles.weighted
+    assert profile_r2 == pytest.approx(profiles.profiles['Ka_guest'].best_r2, abs=1e-12)
+    assert profile_r2 != pytest.approx(r_squared, abs=1e-9)
 
 
 @pytest.mark.parametrize('per_replica', [False, True], ids=['average', 'per_replicate'])
@@ -1348,7 +1391,7 @@ def test_samples_are_aligned_with_the_sobol_points(ida_setup, monkeypatch):
     for column, key in enumerate(specs):
         expected = [100 * spec_fraction(specs[key], nominal_value(key, conditions), key, q) for q in points[:, column]]
         np.testing.assert_allclose(result.sample_offsets_pct[key], expected, rtol=1e-12)
-    assert result.sample_ka['Ka_guest'].shape == result.sample_r2.shape == (8,)
+    assert result.sample_ka['Ka_guest'].shape == result.sample_r2.shape == result.sample_profile_r2.shape == (8,)
 
     for i in (0, 4):  # the first A row and the first B row
         h0_off = result.sample_offsets_pct['h0'][i] / 100
@@ -1362,6 +1405,11 @@ def test_samples_are_aligned_with_the_sobol_points(ida_setup, monkeypatch):
         _, r2 = calculate_fit_metrics(assay.y_data.magnitude, assay.forward_model(projection.params(fit)).magnitude)
         assert result.sample_ka['Ka_guest'][i] == pytest.approx(fit.ka['Ka_guest'], rel=1e-9)
         assert result.sample_r2[i] == pytest.approx(r2, abs=1e-12)
+        # The other R² of the same fit: the objective it minimised, as a
+        # fraction of the signal's total sum of squares — the axis the Ka
+        # profiles are drawn on.
+        profile_r2 = 1.0 - fit.objective / projection.ss_tot[0]
+        assert result.sample_profile_r2[i] == pytest.approx(profile_r2, abs=1e-12)
 
 
 def test_every_sample_keeps_the_whole_fit_behind_its_ka(monkeypatch):
@@ -1686,7 +1734,7 @@ def test_sobol_indices_split_the_variance_of_log_ka(ida_setup, monkeypatch):
     def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
         signal = dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)
         ka = 10.0 ** (8 + 40 * offsets.get('h0', 0.0) + 20 * offsets.get('d0', 0.0))  # no offset: the baseline
-        return {'Ka_guest': ka, **signal}, 1.0
+        return {'Ka_guest': ka, **signal}, 1.0, 1.0
 
     monkeypatch.setattr(sens, '_fit_perturbed', fake_fit)
     cfg = SensitivityConfig(
@@ -1721,7 +1769,7 @@ def test_run_intervals_leave_out_rows_without_a_fit(ida_setup, monkeypatch):
         h0, d0 = offsets.get('h0', 0.0), offsets.get('d0', 0.0)
         if h0 > 0.08:
             return None
-        return {'Ka_guest': 10.0 ** log_ka(h0, d0), **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0
+        return {'Ka_guest': 10.0 ** log_ka(h0, d0), **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
 
     monkeypatch.setattr(sens, '_fit_perturbed', fake_fit)
     cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs=specs), seed=4)

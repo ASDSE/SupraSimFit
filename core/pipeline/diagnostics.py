@@ -7,8 +7,9 @@ Misfit tests, run at the fit with the inputs as entered and at the fit with the
 inputs free to move:
 
 - :func:`lack_of_fit` when two or more replicates were measured: the scatter of
-  the replicates about their mean is a model-free estimate of the noise, and the
-  F test compares the misfit of the averaged signal with it;
+  each replicate about its own affine image of the mean curve is a model-free
+  estimate of the noise, and the F test compares the misfit of the averaged
+  signal with it;
 - :func:`runs_test` otherwise: a systematic deviation leaves long runs of
   residuals of one sign along the titration, fewer runs than the fitted model
   leaves of pure noise.
@@ -36,6 +37,7 @@ from typing import Sequence
 import numpy as np
 from scipy.stats import f as f_dist
 
+from core.pipeline.noise import replicate_scatter
 from core.pipeline.varpro import _RANK_RTOL, LEVEL
 
 #: Level of every test here: the 5 % convention of the confidence intervals
@@ -100,9 +102,10 @@ class MisfitTest:
     def to_dict(self) -> dict:
         """Every field, as written to a results file.
 
-        The F ratio is infinite where the replicates agree exactly, and that
-        is written as null (see :func:`_finite_or_none`); the p-value, the
-        degrees of freedom and the expected number of runs are always finite.
+        The F ratio is infinite where the replicates leave no scatter at
+        all, and that is written as null (see :func:`_finite_or_none`); the
+        p-value, the degrees of freedom and the expected number of runs are
+        always finite.
         """
         return {
             **asdict(self),
@@ -122,40 +125,97 @@ class MisfitTest:
         )
 
 
-def lack_of_fit(signals: np.ndarray, fitted: np.ndarray, n_params: int) -> MisfitTest:
+def lack_of_fit(
+    signals: np.ndarray, fitted: np.ndarray, n_params: int, weights: np.ndarray | None = None
+) -> MisfitTest:
     """Replicate lack-of-fit F test of a curve fitted to the mean of the replicates.
 
-    ``F = [m S_mean / (n - p)] / s_pe²`` on ``(n - p, n (m - 1))`` degrees of
-    freedom, with ``S_mean`` the residual sum of squares of *fitted* against the
-    mean signal and ``s_pe² = sum (y_ri - ybar_i)² / (n (m - 1))`` the pure-error
-    variance. Inputs a fit determines from the data are not counted in *p*, so
-    at such a fit the test is slightly lenient and never falsely alarming.
+    ``F = [m Σ_i w_i (ybar_i - fitted_i)² / (n - p)] / [Σ_ri e_ri² / ((m - 1)(n - 2))]``
+    on ``(n - p, (m - 1)(n - 2))`` degrees of freedom, with ``ybar`` the mean of
+    the replicates, ``w`` the point weights the fit was run with, and ``e`` the
+    whitened scatter of each replicate about its OWN affine image of the mean
+    curve (:func:`~core.pipeline.noise.replicate_scatter`).
+
+    That scatter, and not the raw spread ``y_ri - ybar_i``, is the noise the
+    curve is judged against. An affine image ``alpha + beta·signal`` of any
+    registered forward model is a member of the same model — the offset and the
+    signal coefficients absorb it — so a replicate run at a slightly different
+    lamp intensity or background has not measured any less precisely, and the
+    model follows it wherever it went. Taken for noise, that difference
+    inflates the denominator until the test cannot fire: with a replicate scale
+    factor of 3 %, the size of the ones the replicated datasets in ``data/``
+    show, the raw pure error rejects 1.3 % (m = 2) to 0.1 % (m = 8) of
+    consistent fits at the 5 % level, where the scatter used here rejects 4.7
+    to 5.6 % (4 000 linearised draws per cell, 12 points, three parameters,
+    the weights known).
+
+    The ratio is exactly F under normal noise of the variance the weights
+    state, for weights fixed beforehand. A fit passes the weights of the law
+    read from these same replicates (:func:`~core.pipeline.noise.noise_law`),
+    so numerator and denominator share one estimated share and the ratio is F
+    only approximately: in the same linearised construction, under constant
+    noise, proportional noise and a 3 % replicate scale factor, it rejects 4.7
+    to 7.5 % of consistent fits at the 5 % level, the most at two replicates
+    (3 000 draws per cell, m = 2, 4, 8). The rate through the whole fit is what
+    the validation check ``noise-law-lof-null`` measures. The deviations of the replicates from their mean are independent of
+    the mean, so numerator and denominator are independent; ``e`` is those
+    deviations projected off the two columns ``[1, ybar]``, which leaves
+    ``n - 2`` dimensions per replicate, less the one replicate the mean costs
+    — the mean's own residual about the line is zero, so the ``e`` sum to zero
+    across replicates. The weights enter both sums, so only their ratios
+    matter: scaling them all by the same factor leaves the statistic where it
+    was, and omitting them is the unweighted test.
+
+    Inputs a fit determines from the data are not counted in *p*, so at such a
+    fit the test is slightly lenient and never falsely alarming.
 
     Parameters
     ----------
     signals : np.ndarray
         The replicates, shape ``(m, n)`` with ``m >= 2``.
     fitted : np.ndarray
-        The fitted signal at the ``n`` titration points.
+        The fitted signal at the ``n`` titration points, in signal units.
     n_params : int
         Parameter count ``p`` of the fit.
+    weights : np.ndarray or None
+        Weight of every titration point, from the noise law the replicates
+        showed (:meth:`~core.pipeline.noise.NoiseLaw.weights`); equal weights
+        when omitted.
 
     Raises
     ------
     ValueError
-        With fewer than two replicates, or when ``n - p < 1``.
+        With fewer than two replicates, with fewer than three titration points
+        (the scatter has no dimension left once the line is removed), or when
+        ``n - p < 1``; and, from
+        :func:`~core.pipeline.noise.replicate_scatter`, with weights of the
+        wrong shape or a mean signal that does not vary.
     """
     y = np.asarray(signals, dtype=float)
     if y.ndim != 2 or y.shape[0] < 2:
         raise ValueError(f'The lack-of-fit test needs two or more replicates; the signals have shape {y.shape}.')
     m, n = y.shape
-    dof = (n - n_params, n * (m - 1))
+    dof = (n - n_params, (m - 1) * (n - 2))
     if dof[0] < 1:
         raise ValueError(f'The lack-of-fit test needs more points ({n}) than fitted parameters ({n_params}).')
-    mean = y.mean(axis=0)
-    misfit = m * float(np.sum((mean - np.asarray(fitted, dtype=float)) ** 2)) / dof[0]
-    pure_error = float(np.sum((y - mean) ** 2)) / dof[1]
-    if pure_error > 0:
+    if dof[1] < 1:
+        raise ValueError(f'The lack-of-fit test needs three or more titration points; the signals have {n}.')
+    scatter, _ = replicate_scatter(y, weights)
+    # Ones multiply exactly, so the numerator without weights is the plain sum
+    # of the squared deviations and needs no branch of its own.
+    w = np.ones(n) if weights is None else np.asarray(weights, dtype=float)
+    misfit = m * float(np.sum(w * (y.mean(axis=0) - np.asarray(fitted, dtype=float)) ** 2)) / dof[0]
+    # Replicates that agree to the last bit leave the rounding error of the
+    # projection, not zero. Each of its m·n residuals is accurate to about eps
+    # times the norm of the whitened data, so a scatter whose norm is below
+    # m·n times that is no scatter at all, and the ratio over it is infinite:
+    # the same verdict, and a statistic that is not a rounding artefact.
+    # Replicates that are exact affine images of one another leave at most
+    # 0.5 of that bound (20 000 random designs, 2 to 9 replicates of 3 to 39
+    # points); measured scatter stands many decades above it.
+    rounding = m * n * np.finfo(float).eps * float(np.linalg.norm(y * np.sqrt(w)))
+    pure_error = float(np.sum(scatter**2)) / dof[1]
+    if np.linalg.norm(scatter) > rounding:
         ratio = misfit / pure_error
     else:
         ratio = math.inf if misfit > 0 else 0.0

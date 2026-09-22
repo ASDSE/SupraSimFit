@@ -40,6 +40,7 @@ from core.pipeline.fit_pipeline import (
     verify_imported_result,
 )
 from core.pipeline.inputs import ErrorModel, shared_key
+from core.pipeline.noise import NoiseBasis
 from core.units import Q_
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -366,6 +367,36 @@ def test_a_fit_that_moved_its_inputs_verifies_where_it_put_them(aware_data):
     # covers the truth, the one that holds it as entered does not.
     assert released.intervals['Ka_guest'].low < _AWARE_TRUE_KA < released.intervals['Ka_guest'].high
     assert released.conditional.intervals['Ka_guest'].low > _AWARE_TRUE_KA
+
+
+def test_a_file_records_the_noise_law_its_fit_was_weighted_by(aware_data):
+    """Three replicates show how the noise grows with the signal, and the file keeps what they showed."""
+    released = _released('input_aware_ida')
+
+    assert released.noise.basis is NoiseBasis.REPLICATES
+    assert released.noise.n_replicates == 3
+    # A law between the two extremes: a floor in au and a part proportional to
+    # the signal, so the weights really vary across the titration.
+    assert 0.0 < released.noise.share < 1.0
+    weights = released.noise.weights(np.asarray(aware_data.signals).mean(axis=0))
+    assert weights.max() > 2 * weights.min()
+
+
+def test_a_file_of_this_layout_without_a_noise_law_is_imported_and_verified(aware_data):
+    """Nothing about the noise is invented for it, and its stored scores still reproduce.
+
+    RMSE and R² are measured against the averaged signal with every point
+    counted equally, whatever weighted the fit, so a file that records no law
+    is checked exactly as one that does.
+    """
+    without = json.loads((_FIXTURES / 'input_aware_ida.json').read_text())
+    del without['noise']
+
+    status, shown = verify_imported_result(FitResult.from_dict(without), aware_data)
+
+    assert status == 'verified'
+    assert shown.noise is None
+    assert (shown.rmse, shown.r_squared) == (_released('input_aware_ida').rmse, _released('input_aware_ida').r_squared)
 
 
 def test_a_file_that_reports_no_shifts_for_a_fit_that_made_them_describes_other_data(aware_data):

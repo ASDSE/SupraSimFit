@@ -26,6 +26,7 @@ import core.pipeline.sensitivity as sens
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig
+from core.pipeline.noise import NoiseBasis, NoiseLaw
 from core.pipeline.sensitivity import TITRANT
 from core.units import Q_
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
@@ -65,7 +66,7 @@ def batch():
     }
 
 
-def _evaluate(batch, *, on_result, should_cancel, max_workers=2):
+def _evaluate(batch, *, on_result, should_cancel, max_workers=2, point_weights=None):
     """Run the batch, over worker processes or — with one core, or too few jobs — in this process."""
     return sens._evaluate_batch(
         batch['ms'],
@@ -78,6 +79,7 @@ def _evaluate(batch, *, on_result, should_cancel, max_workers=2):
         max_workers=max_workers,
         on_result=on_result,
         should_cancel=should_cancel,
+        point_weights=point_weights,
     )
 
 
@@ -157,6 +159,40 @@ def test_a_job_that_fails_outright_stops_the_batch_at_once_in_plain_words(batch,
     assert isinstance(raised.value.__cause__, TypeError)  # the real failure is kept for the log
     assert len(finished) < n_jobs / 2  # the rest were dropped rather than fitted first
     assert not multiprocessing.active_children()
+
+
+def test_the_point_weights_of_the_run_reach_every_worker_process(batch):
+    """Every fit of a run carries the noise law of the baseline, wherever the fit is made.
+
+    The weights are handed to the pool once, with the rest of the batch's
+    state; a worker that started without them would fit its perturbations
+    unweighted and report other binding constants for them — the samples and
+    the estimate they are read against would then come from two estimators.
+    """
+    batch['perturbations'] = batch['perturbations'][: 4 * sens._PARALLEL_MIN_JOBS]
+    signal = batch['ms'].average_signal()
+    # Proportional noise: the weights fall as the square of the signal, which
+    # is as far from equal weighting as this law goes.
+    law = NoiseLaw(NoiseBasis.REPLICATES, share=1.0, reference=float(np.sqrt(np.mean(signal**2))), n_replicates=3)
+    weights = law.weights(signal)
+
+    weighted = _evaluate(batch, on_result=lambda value: None, should_cancel=lambda: False, point_weights=weights)
+    equal = _evaluate(batch, on_result=lambda value: None, should_cancel=lambda: False)
+
+    assert len(weighted) == len(batch['perturbations'])
+    for (offsets, _), in_pool, unweighted in zip(batch['perturbations'], weighted, equal):
+        here = sens._fit_perturbed(
+            batch['ms'],
+            batch['assay_cls'],
+            batch['x_base'],
+            batch['base_conditions'],
+            offsets,
+            batch['fit_config'],
+            point_weights=weights,
+        )
+        assert in_pool[0]['Ka_guest'] == here[0]['Ka_guest']
+        assert in_pool[2] == here[2]
+        assert in_pool[0]['Ka_guest'] != unweighted[0]['Ka_guest']
 
 
 def _thread_limits() -> dict[str, str | None]:

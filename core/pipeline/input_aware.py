@@ -311,8 +311,11 @@ class _Problem:
         # Residual the least-squares solver is given where the model has no solution: that of a
         # fit by the mean alone, finite so that the solver's differences stay finite and as poor
         # as a fit without a binding model, so that a step into such a region is turned down. A
-        # solve that ends there is reported unsolvable.
-        self._no_model = projection.signals[0] - projection.signals[0].mean()
+        # solve that ends there is reported unsolvable. It is whitened like every other residual
+        # the projection hands out, by the point weights and about the mean they weight.
+        weights = projection.point_weights
+        signal = projection.signals[0]
+        self._no_model = np.sqrt(weights) * (signal - np.average(signal, weights=weights))
         self._should_cancel = should_cancel
 
     def start_coords(self) -> np.ndarray:

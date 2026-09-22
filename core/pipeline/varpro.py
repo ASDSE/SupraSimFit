@@ -15,6 +15,20 @@ two dimensions of log Ka. For several signal rows with row weights ``w_r``
 (replicates) the objective is ``Q(K) = sum_r w_r S_r(K)``: one shared K, each
 row its own coefficients.
 
+The titration points carry weights ``omega_i``, the inverse relative variance of
+the signal at each point and one at every point unless the caller hands some in.
+Written out, the objective is
+
+    Q(K) = sum_r w_r sum_i omega_i (y_ri - (A(K) c_r)_i)²
+
+and the engine reaches it by whitening: the inner solve multiplies the signal
+rows and the design by ``sqrt(omega)``, so every residual sum of squares, the
+total sum of squares they are measured against and every residual vector the
+engine hands out are those of the whitened problem, whose noise has one variance
+at every point. The F tests below are functions of those sums alone. Ranks are
+read on the design as the model gives it; a positive scaling of its rows leaves
+them as they are.
+
 The profile ``P_j(k) = min over the other binding constants of Q`` bounds every
 fit at that value of one Ka, so an F test on it gives a profile-likelihood
 confidence interval per Ka, and the same test on the rows of a replicate set
@@ -289,7 +303,8 @@ class ProjectedFit:
         ``ka``. Where the design is rank deficient this is one member of a
         family that reconstructs the same signal.
     row_ssr : np.ndarray
-        Residual sum of squares of every row at ``ka``, shape ``(rows,)``.
+        Residual sum of squares of every row at ``ka``, shape ``(rows,)``,
+        each titration point counted with its weight.
     objective : float
         ``sum_r w_r row_ssr[r]`` for the weights the fit was made with.
     rank : int
@@ -353,13 +368,27 @@ class Projection:
     should_cancel : Callable[[], bool], optional
         Asked before every equilibrium solve whether to stop; a ``True`` raises
         :class:`FitCancelled` there.
+    point_weights : np.ndarray, optional
+        Weight of every titration point, shape ``(n_points,)``, shared by all
+        rows: the inverse of the signal's relative variance there. Only their
+        ratios matter. Ones when omitted.
+
+    Attributes
+    ----------
+    point_weights : np.ndarray
+        The weights ``omega`` of the titration points, shape ``(n_points,)``.
+    ss_tot : np.ndarray
+        Each row's weighted total sum of squares about its weighted mean,
+        ``sum_i omega_i (y_i - ybar_omega)²``: the scale every residual sum of
+        squares of the projection is a fraction of.
 
     Raises
     ------
     ValueError
         For an assay that is not projectable, Ka bounds that are not positive
         or are inverted, signal rows of another length than the titrant grid,
-        or a signal row that is the same at every titration point.
+        a signal row that is the same at every titration point, or point
+        weights that are not one positive finite number per titration point.
     """
 
     def __init__(
@@ -368,6 +397,7 @@ class Projection:
         bounds: dict[str, tuple[Quantity, Quantity]],
         signals: np.ndarray | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        point_weights: np.ndarray | None = None,
     ):
         if not projectable(assay.assay_type):
             raise ValueError(
@@ -405,7 +435,16 @@ class Projection:
                 f'the rows given have shape {rows.shape}.'
             )
         self.signals = rows
-        self.ss_tot = np.sum((rows - rows.mean(axis=1, keepdims=True)) ** 2, axis=1)
+        omega = np.ones(assay.n_points) if point_weights is None else np.asarray(point_weights, dtype=float)
+        if omega.shape != (assay.n_points,) or not np.isfinite(omega).all() or (omega <= 0).any():
+            raise ValueError(
+                f'The point weights must be one positive, finite number per titration point ({assay.n_points}); '
+                f'got {omega!r}.'
+            )
+        self.point_weights = omega
+        self._whiten = np.sqrt(omega)
+        centre = np.average(rows, axis=1, weights=omega)[:, np.newaxis]
+        self.ss_tot = np.sum(omega * (rows - centre) ** 2, axis=1)
         # A signal that never changes says nothing about Ka: every binding
         # constant reproduces it equally well, its total sum of squares is zero
         # and every quantity measured as a fraction of it — R², the F test's
@@ -447,14 +486,18 @@ class Projection:
         )
 
     def _solve(self, design: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Each signal row's best SSR and coefficients on one design.
+        """Each signal row's best weighted SSR and coefficients on one design.
 
-        A pinned coefficient (equal lower and upper bound) contributes a fixed
-        signal and leaves the solve; the others are solved by bounded least
-        squares on norm-scaled columns, which keeps coefficients spanning many
-        orders of magnitude well conditioned. The solver can return a
-        coefficient a rounding step beyond its bound, so each is clipped to its
-        bounds after unscaling and the SSR is that of the clipped coefficients.
+        The signal rows and the design are whitened, every titration point
+        multiplied by the square root of its weight, so the SSR is
+        ``sum_i omega_i (y_i - (A c)_i)²`` and the coefficients are those that
+        minimise it. A pinned coefficient (equal lower and upper bound)
+        contributes a fixed signal and leaves the solve; the others are solved
+        by bounded least squares on norm-scaled columns, which keeps
+        coefficients spanning many orders of magnitude well conditioned. The
+        solver can return a coefficient a rounding step beyond its bound, so
+        each is clipped to its bounds after unscaling and the SSR is that of
+        the clipped coefficients.
 
         A design the equilibrium model could not fill in is not a model signal
         at all, so it fits nothing: its SSR is infinite and its coefficients
@@ -472,8 +515,8 @@ class Projection:
         if not np.isfinite(design).all():
             return np.full(y.shape[0], np.inf), coef
         pinned = lb == ub
-        target = y - design[:, pinned] @ lb[pinned]
-        free, scale = self._free_columns(design)
+        target = (y - design[:, pinned] @ lb[pinned]) * self._whiten
+        free, scale = self._free_columns(design * self._whiten[:, np.newaxis])
         if free.shape[1] == 0:
             return np.sum(target**2, axis=1), coef
         scaled = free / scale
@@ -485,12 +528,16 @@ class Projection:
         return ssr, coef
 
     def _free_columns(self, design: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Columns of the coefficients that are not pinned, and each column's norm (one for a zero column)."""
+        """Columns of *design* whose coefficient is not pinned, and each column's norm (one for a zero column).
+
+        Of the design it is handed: the whitened one where a solve or a
+        distance from a bound is read, the model's own where a rank is.
+        """
         free = design[:, self._lb != self._ub]
         return free, _norms(free)
 
     def row_ssr(self, ka: Mapping[str, float]) -> np.ndarray:
-        """Best residual sum of squares of every row at the binding constants *ka*.
+        """Best weighted residual sum of squares of every row at the binding constants *ka*.
 
         Infinite where the equilibrium model has no solution at *ka*. A pinned
         Ka may be left out of *ka*.
@@ -505,17 +552,19 @@ class Projection:
         return (design, *self._solve(design))
 
     def residual(self, ka: Mapping[str, float], row: int = 0, offsets: Mapping[str, float] | None = None) -> np.ndarray:
-        """Projected residual ``y - A c`` of *row* at the binding constants *ka*.
+        """Whitened projected residual ``sqrt(omega) (y - A c)`` of *row* at the binding constants *ka*.
 
-        The design is that of ``assay.with_inputs(offsets)`` — the entered
-        inputs when *offsets* is ``None`` or empty — and ``c`` the bounded
+        Its sum of squares is the row's :meth:`row_ssr`, and under the noise
+        law the point weights state, every entry has the same variance. The
+        design is that of ``assay.with_inputs(offsets)`` — the entered inputs
+        when *offsets* is ``None`` or empty — and ``c`` the bounded
         least-squares coefficients of :meth:`row_ssr` on it. Every entry is
         infinite where the equilibrium model has no solution.
         """
         design, ssr, coef = self._solve_at(ka, offsets)
         if not np.isfinite(ssr[row]):
             return np.full(self.n_points, np.inf)
-        return self.signals[row] - design @ coef[row]
+        return (self.signals[row] - design @ coef[row]) * self._whiten
 
     # ------------------------------------------------------------------
     # Search
@@ -651,7 +700,7 @@ class Projection:
         def residual(t: np.ndarray) -> np.ndarray:
             design = self._design({k: 10.0 ** t[j] for j, k in enumerate(self.free_ka)})
             _, coef = self._solve(design)
-            return (((design @ coef[used].T).T - y_used) * sqrt_w[:, None]).ravel()
+            return (((design @ coef[used].T).T - y_used) * sqrt_w[:, None] * self._whiten[None, :]).ravel()
 
         best: tuple[float, dict[str, float]] | None = None
         for i, j in starts:
@@ -678,19 +727,22 @@ class Projection:
         return fit.n_free_ka + fit.rank
 
     def fitted_columns(self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None) -> np.ndarray:
-        """Design columns of the signal parameters the bounded solve of the first row fits at *ka*.
+        """Whitened design columns of the signal parameters the bounded solve of the first row fits at *ka*.
 
-        The columns, with the inputs moved by *offsets*, of the free
+        The columns, with the inputs moved by *offsets* and every titration
+        point multiplied by the square root of its weight, of the free
         coefficients that lie inside their bounds; a coefficient held on a
-        bound is not fitted. None where the model has no solution.
+        bound is not fitted. They are the derivatives of minus the whitened
+        :meth:`residual` with respect to those coefficients. None where the
+        model has no solution.
 
-        A coefficient is on a bound when moving it there changes the curve by
-        less than ``_RANK_RTOL`` of the signal's variation about its mean, the
-        scale ``_R2_RESOLUTION`` reads a residual on, so a constant background
-        under the signal leaves the count as it is. The change is the
-        coefficient's distance from the bound times the norm of its column,
-        which is the coefficient in the norm-scaled variables the solve works
-        in. The solver puts a bounded
+        A coefficient is on a bound when moving it there changes the whitened
+        curve by less than ``_RANK_RTOL`` of the signal's weighted variation
+        about its weighted mean, the scale ``_R2_RESOLUTION`` reads a residual
+        on, so a constant background under the signal leaves the count as it
+        is. The change is the coefficient's distance from the bound times the
+        norm of its whitened column, which is the coefficient in the
+        norm-scaled variables the solve works in. The solver puts a bounded
         coefficient exactly on its bound in those variables, and unscaling,
         like the solve of the free ones, is good to rounding times the
         condition of a design whose rank is read at the same ``_RANK_RTOL``;
@@ -698,28 +750,38 @@ class Projection:
         point in those variables, lands that close to a bound by chance in
         under 1e-5 of fits at a noise of 0.1 % of the signal.
         """
-        return self._fitted(*self._solve_at(ka, offsets))
+        design, ssr, coef = self._solve_at(ka, offsets)
+        free, _ = self._free_columns(design * self._whiten[:, np.newaxis])
+        return free[:, self._fitted(design, ssr, coef)]
 
     def _fitted(self, design: np.ndarray, ssr: np.ndarray, coef: np.ndarray) -> np.ndarray:
-        """:meth:`fitted_columns` of a solve :meth:`_solve_at` has made."""
-        free, scale = self._free_columns(design)
+        """Which free coefficients the first row's solve fits: a mask over the columns of :meth:`_free_columns`.
+
+        The reading of "inside its bounds" is that of :meth:`fitted_columns`,
+        on a solve :meth:`_solve_at` has made. All ``False`` where the model
+        has no solution.
+        """
+        free = self._lb != self._ub
         if not np.isfinite(ssr[0]):
-            return free[:, :0]
-        fitted = self._lb != self._ub
-        margin = np.minimum(coef[0] - self._lb, self._ub - coef[0])[fitted] * scale
-        return free[:, margin > _RANK_RTOL * np.sqrt(self.ss_tot[0])]
+            return np.zeros(np.count_nonzero(free), dtype=bool)
+        _, scale = self._free_columns(design * self._whiten[:, np.newaxis])
+        margin = np.minimum(coef[0] - self._lb, self._ub - coef[0])[free] * scale
+        return margin > _RANK_RTOL * np.sqrt(self.ss_tot[0])
 
     def solved(self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None) -> tuple[np.ndarray, int]:
-        """Each row's SSR at *ka* and the fitted rank of the first row, both from one bounded solve.
+        """Each row's weighted SSR at *ka* and the fitted rank of the first row, both from one bounded solve.
 
-        The fitted rank is the rank of :meth:`fitted_columns`, the count
-        :meth:`cut_off` takes. A rank and not a count of columns, because a
+        The fitted rank is the rank of the design columns of the coefficients
+        :meth:`fitted_columns` names, the count :meth:`cut_off` takes. It is
+        read on the columns as the model gives them, the design ``_RANK_RTOL``
+        is measured on; whitening scales the rows by positive factors, which
+        leaves a rank as it is. A rank and not a count of columns, because a
         mass balance ties columns together and the solve then returns one
         member of a family in which any of the tied coefficients may be the
         one inside its bounds.
         """
         design, ssr, coef = self._solve_at(ka, offsets)
-        columns = self._fitted(design, ssr, coef)
+        columns = self._free_columns(design)[0][:, self._fitted(design, ssr, coef)]
         return ssr, _rank(columns / _norms(columns))
 
     def fitted_rank(self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None) -> int:

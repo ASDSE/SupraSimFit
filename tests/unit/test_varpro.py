@@ -19,7 +19,11 @@ least-squares solve. These tests pin what makes the engine trustworthy:
   is honoured;
 - the projected residual at moved inputs is that of an assay entered at those
   values, and the start a search over the other Ka is given is where a dense
-  independent scan puts the minimum.
+  independent scan puts the minimum;
+- weights of the titration points: weights of one change no bit of a fit or an
+  interval, a weighted solve is the bounded least squares of the whitened
+  arrays, only the ratios of the weights matter, ranks are those of the
+  unweighted design, and a point the weights call imprecise steers Ka less.
 """
 
 import numpy as np
@@ -920,3 +924,202 @@ def test_the_test_never_removes_half_of_the_replicates():
     x, rows = _replicates(20, 0.02, 40, ka_factors=(10.0, 10.0, 1.0, 1.0))
     test = replicate_outliers(_replicate_projection(x, rows))
     assert len(test.excluded) <= 1
+
+
+# ---------------------------------------------------------------------------
+# Weights of the titration points
+# ---------------------------------------------------------------------------
+
+
+def _uneven_weights(n: int, seed: int = 0, decades: float = 4.0) -> np.ndarray:
+    """Weights spread log-uniformly over *decades*, both ends present."""
+    w = 10.0 ** np.random.default_rng(seed).uniform(-decades / 2, decades / 2, n)
+    w[0], w[-1] = 10.0 ** (-decades / 2), 10.0 ** (decades / 2)
+    return w
+
+
+def _noisy_hg2():
+    """A noisy 1:2 titration with both binding constants free.
+
+    The Ka box is five decades about the truth, not the registry's twenty: the
+    two-constant search costs the square of the decades it covers, and what
+    these tests pin — the arithmetic of the weights — is the same in any box.
+    """
+    x = np.linspace(0.0, 5e-5, 20)
+    y = _homoscedastic(_hg2_truth_signal(x, 1e-5, 1e6, 1e5), 0.01, 6)
+    box = (Q_(1e3, '1/M'), Q_(1e8, '1/M'))
+    bounds = {**ASSAY_REGISTRY[AssayType.DBA_HG2].default_bounds, 'Ka_HG': box, 'Ka_HG2': box}
+    return _assay(AssayType.DBA_HG2, x, y), bounds
+
+
+def _same_bits(first: Projection, second: Projection) -> None:
+    assert np.array_equal(first.ss_tot, second.ss_tot)
+    fits = first.fit(), second.fit()
+    assert fits[0].ka == fits[1].ka
+    assert fits[0].objective == fits[1].objective
+    assert np.array_equal(fits[0].coefficients, fits[1].coefficients)
+    assert np.array_equal(fits[0].row_ssr, fits[1].row_ssr)
+    assert fits[0].rank == fits[1].rank
+    assert np.array_equal(first.residual(fits[0].ka), second.residual(fits[1].ka))
+    assert np.array_equal(first.fitted_columns(fits[0].ka), second.fitted_columns(fits[1].ka))
+    for key in first.free_ka:
+        assert first.interval(key, fits[0]) == second.interval(key, fits[1]), key
+
+
+def test_weights_of_one_change_no_bit_of_a_one_ka_fit_or_its_interval():
+    x, y = _make_ida_data(IDA_TRUE, n_points=15)
+    assay = _assay(AssayType.IDA, x, _homoscedastic(y, 0.02, 3), **_IDA_CONDITIONS)
+    _same_bits(
+        Projection(assay, GDA_IDA_RECOVERY_BOUNDS),
+        Projection(assay, GDA_IDA_RECOVERY_BOUNDS, point_weights=np.ones(15)),
+    )
+
+
+def test_weights_of_one_change_no_bit_of_a_two_ka_fit_or_its_intervals():
+    assay, bounds = _noisy_hg2()
+    _same_bits(Projection(assay, bounds), Projection(assay, bounds, point_weights=np.ones(20)))
+
+
+def test_a_weighted_solve_is_bounded_least_squares_on_the_whitened_arrays():
+    """At a fixed Ka: BVLS of sqrt(w) y on sqrt(w) times the raw species columns."""
+    x, y = _make_gda_data(GDA_TRUE, n_points=15)
+    y = _homoscedastic(y, 0.03, 4)
+    w = _uneven_weights(15, seed=1, decades=2.0)
+    ka = 8e5
+    bounds = {**GDA_IDA_RECOVERY_BOUNDS, 'Ka_guest': (Q_(ka, '1/M'), Q_(ka, '1/M'))}
+    projection = Projection(_assay(AssayType.GDA, x, y, **_GDA_CONDITIONS), bounds, point_weights=w)
+    species = gda_species(ka, GDA_TRUE['Ka_dye'], GDA_TRUE['h0'], x, GDA_TRUE['g0'])
+    root = np.sqrt(w)
+    columns = np.column_stack([np.ones(x.size), species['D'], species['HD']]) * root[:, None]
+    lb = np.array([bounds[k][0].magnitude for k in ('I0', 'I_dye_free', 'I_dye_bound')])
+    ub = np.array([bounds[k][1].magnitude for k in ('I0', 'I_dye_free', 'I_dye_bound')])
+    norms = np.linalg.norm(columns, axis=0)
+    independent = lsq_linear(columns / norms, root * y, bounds=(lb * norms, ub * norms), method='bvls', tol=1e-14)
+    expected = independent.x / norms
+    fit = projection.fit()
+    assert fit.row_ssr[0] == pytest.approx(float(np.sum((columns @ expected - root * y) ** 2)), rel=1e-8)
+    assert fit.objective == pytest.approx(fit.row_ssr[0], rel=1e-12)
+    # Free and bound dye sum to the dye total, so only the signal is determined, not each coefficient.
+    assert columns @ fit.coefficients[0] == pytest.approx(columns @ expected, rel=1e-6)
+    # The total sum of squares is the residual of the weighted fit of a constant alone.
+    constant = np.linalg.lstsq(root[:, None], root * y, rcond=None)[0]
+    assert projection.ss_tot[0] == pytest.approx(float(np.sum((root * y - root * constant) ** 2)), rel=1e-12)
+    # The weights do change the answer: this is not the unweighted residual under another name.
+    unweighted = Projection(projection.assay, bounds).fit()
+    assert not np.allclose(unweighted.coefficients[0], fit.coefficients[0], rtol=1e-6)
+
+
+@pytest.mark.parametrize('two_ka', [False, True], ids=['one-ka', 'two-ka'])
+def test_only_the_ratios_of_the_weights_matter(two_ka):
+    if two_ka:
+        assay, bounds = _noisy_hg2()
+    else:
+        x, y = _make_ida_data(IDA_TRUE, n_points=15)
+        assay = _assay(AssayType.IDA, x, _homoscedastic(y, 0.02, 3), **_IDA_CONDITIONS)
+        bounds = GDA_IDA_RECOVERY_BOUNDS
+    w = _uneven_weights(assay.n_points, seed=2, decades=2.0)
+    results = []
+    for factor in (1.0, 37.5):
+        projection = Projection(assay, bounds, point_weights=factor * w)
+        fit = projection.fit()
+        results.append((fit, {k: projection.interval(k, fit) for k in projection.free_ka}))
+    (fit_a, intervals_a), (fit_b, intervals_b) = results
+    assert fit_b.objective == pytest.approx(37.5 * fit_a.objective, rel=1e-6)
+    for key in intervals_a:
+        assert abs(np.log10(fit_b.ka[key] / fit_a.ka[key])) < 1e-6, key
+        a, b = intervals_a[key], intervals_b[key]
+        assert (a.open_low, a.open_high, a.split) == (b.open_low, b.open_high, b.split)
+        assert abs(np.log10(b.low / a.low)) < 1e-6 and abs(np.log10(b.high / a.high)) < 1e-6, key
+
+
+def test_the_residual_is_the_whitened_distance_of_the_signal_from_the_forward_model():
+    x, y = _make_ida_data(IDA_TRUE, n_points=15)
+    assay = _assay(AssayType.IDA, x, _homoscedastic(y, 0.02, 8), **_IDA_CONDITIONS)
+    w = _uneven_weights(15, seed=3, decades=2.0)
+    projection = Projection(assay, GDA_IDA_RECOVERY_BOUNDS, point_weights=w)
+    fit = projection.fit()
+    model = assay.forward_model(projection.params(fit)).magnitude
+    expected = np.sqrt(w) * (assay.y_data.magnitude - model)
+    assert projection.residual(fit.ka) == pytest.approx(expected, rel=1e-9, abs=1e-9 * np.abs(expected).max())
+    assert float(np.sum(projection.residual(fit.ka) ** 2)) == pytest.approx(fit.objective, rel=1e-9)
+    # Two-Ka search: the residual its refinement minimises is the same whitened one.
+    assay2, bounds2 = _noisy_hg2()
+    w2 = _uneven_weights(20, seed=4, decades=2.0)
+    weighted = Projection(assay2, bounds2, point_weights=w2)
+    fit2 = weighted.fit()
+    assert float(np.sum(weighted.residual(fit2.ka) ** 2)) == pytest.approx(fit2.objective, rel=1e-9)
+    # A refined optimum of the weighted objective: no grid node of the search lies below it.
+    assert fit2.objective <= weighted._weighted_grid(np.ones(1)).min()
+
+
+def test_ranks_are_those_of_the_unweighted_design(monkeypatch):
+    t = np.linspace(0.1, 0.9, 9)
+    w = _uneven_weights(9, seed=5)
+    ka = {'Ka_dye': 1e5}
+    # A mass balance ties free and bound dye to the offset: two directions under any weights.
+    tied = np.column_stack([np.ones(9), t, 1.0 - t])
+    # A falling slope is held on its bound of zero: two of three coefficients are fitted.
+    powers = np.column_stack([np.ones(9), t, t**2])
+    floor = {
+        'I0': (Q_(-1e3, 'au'), Q_(1e3, 'au')),
+        'I_dye_free': (Q_(0.0, 'au/M'), Q_(1e3, 'au/M')),
+        'I_dye_bound': (Q_(0.5, 'au/M'), Q_(1e3, 'au/M')),
+    }
+    cases = [(tied, 5 + 2 * t + 7 * (1 - t), {}, 2, 2), (powers, 2 - 0.2 * t + 3 * t**2, floor, 3, 2)]
+    for design, y, bounds, rank, fitted_rank in cases:
+        readings = []
+        for weights in (None, w):
+            assay = _assay(AssayType.DBA_HtoD, np.linspace(1e-6, 2e-5, 9), y)
+            limits = {**ASSAY_REGISTRY[AssayType.DBA_HtoD].default_bounds, **bounds}
+            projection = Projection(assay, limits, point_weights=weights)
+            monkeypatch.setattr(projection, '_design', lambda ka, assay=None, design=design: design)
+            fit = projection.fit()
+            readings.append((fit.rank, projection.fitted_rank(ka), projection.degenerate_keys(fit)))
+            # The fitted columns are those of the whitened residual, one per fitted coefficient.
+            columns = projection.fitted_columns(ka)
+            inside = (fit.coefficients[0] - projection._lb > 1e-6) & (projection._ub - fit.coefficients[0] > 1e-6)
+            assert np.array_equal(columns, (design * np.sqrt(projection.point_weights)[:, None])[:, inside])
+        assert readings[0] == readings[1]
+        assert readings[0][:2] == (rank, fitted_rank)
+
+
+def test_a_point_the_weights_call_imprecise_steers_ka_less():
+    # Noise-free IDA data whose brightest point is displaced by 15 % of itself. Counted like the
+    # others it drags Ka; counted at a hundredth it barely does.
+    x, y = _make_ida_data(IDA_TRUE, n_points=15)
+    top = int(np.argmax(y))
+    y = y.copy()
+    y[top] *= 1.15
+    assay = _assay(AssayType.IDA, x, y, **_IDA_CONDITIONS)
+    w = np.ones(15)
+    w[top] = 1e-2
+    truth = np.log10(IDA_TRUE['Ka_guest'])
+    equal = abs(np.log10(Projection(assay, GDA_IDA_RECOVERY_BOUNDS).fit().ka['Ka_guest']) - truth)
+    weighted = abs(np.log10(Projection(assay, GDA_IDA_RECOVERY_BOUNDS, point_weights=w).fit().ka['Ka_guest']) - truth)
+    assert equal > 0.01
+    assert weighted < 0.2 * equal
+
+
+@pytest.mark.parametrize(
+    'bad',
+    [np.ones(14), np.ones((1, 15))] + [np.r_[np.ones(14), last] for last in (np.nan, np.inf, 0.0, -1.0)],
+    ids=['too-few', 'two-dimensional', 'nan', 'infinite', 'zero', 'negative'],
+)
+def test_point_weights_that_are_not_one_positive_number_per_point_are_refused(bad):
+    x, y = _make_ida_data(IDA_TRUE, n_points=15)
+    assay = _assay(AssayType.IDA, x, y, **_IDA_CONDITIONS)
+    with pytest.raises(ValueError, match='point weights'):
+        Projection(assay, GDA_IDA_RECOVERY_BOUNDS, point_weights=bad)
+
+
+@pytest.mark.parametrize('seed', [0, 1, 2])
+def test_with_point_weights_a_replicate_that_needs_another_ka_is_still_excluded(seed):
+    x, rows = _replicates(20, 0.02, seed, ka_factors=(1.0, 1.0, 10.0, 1.0))
+    mean = rows.mean(axis=0)
+    # The weights of noise half constant, half proportional to the signal.
+    w = 1.0 / (0.5 + 0.5 * mean**2 / np.mean(mean**2))
+    assay = _assay(AssayType.IDA, x, mean, **_IDA_CONDITIONS)
+    projection = Projection(assay, ASSAY_REGISTRY[AssayType.IDA].default_bounds, signals=rows, point_weights=w)
+    test = replicate_outliers(projection)
+    assert test.tested
+    assert test.excluded == (2,)

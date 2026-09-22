@@ -578,14 +578,59 @@ def test_per_replicate_profile_describes_the_average_and_adds_each_replicates_cu
     assert profile.per_replica and not averaged.per_replica
     assert averaged.replica_r2 is None
 
+    # Every curve is drawn on the weighted R² axis the fit's own noise law
+    # defines, so a replicate's curve is that replicate's signal projected
+    # under those weights — here through a projection of its own row alone.
+    weights = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE).noise.weights(ms.average_signal())
     assert list(profile.replica_r2) == active
     for rid in active:
-        own = fit_profile(_single(x, ms.get_replica_signal(rid)), IDAAssay, _IDA_CONDITIONS, _AVERAGE).profiles[
-            'Ka_guest'
-        ]
-        shared, in_profile, in_own = np.intersect1d(profile.grid, own.grid, return_indices=True)
-        assert shared.size >= _regular_grid_size(own)
-        np.testing.assert_allclose(profile.replica_r2[rid][in_profile], own.r2[in_own], rtol=0, atol=1e-12)
+        row = _single(x, ms.get_replica_signal(rid))
+        assay = row.to_assay(IDAAssay, conditions=_IDA_CONDITIONS, use_average=True)
+        own = Projection(assay, _resolve_bounds(assay, None), point_weights=weights)
+        drawn = profile.replica_r2[rid]
+        expected = np.array([1.0 - own.row_ssr({'Ka_guest': ka})[0] / own.ss_tot[0] for ka in profile.grid.tolist()])
+        np.testing.assert_allclose(drawn, expected, rtol=0, atol=1e-12)
+
+
+def test_the_profile_of_replicated_data_is_the_weighted_one_the_fit_was_made_on():
+    """Replicates that scatter with the signal weight the curve, and the tab shows the fit's own numbers.
+
+    The R² axis is then ``1 - S_w / SS_tot,w`` — a different number from the
+    Fit Quality R², which counts every point equally — while the best fit and
+    the interval are the ones the fit of the same replicates reports.
+    """
+    x, y = _make_ida_data(IDA_TRUE, n_points=15)
+    rng = np.random.default_rng(3)
+    signals = np.vstack([y * (1.0 + rng.normal(0.0, 0.03, y.size)) for _ in range(4)])
+    ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c', 'd'))
+
+    fit = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+    profiles = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+    profile = profiles.profiles['Ka_guest']
+
+    assert fit.noise.estimated and fit.noise.share > 0.0
+    assert profiles.weighted
+    assert profile.best_ka == fit.parameters['Ka_guest'].magnitude
+    assert profile.interval == fit.intervals['Ka_guest']
+    # The curve's peak is the weighted R² of that fit, read off a projection
+    # built here with the law's weights, and it is not the reported R².
+    assay = ms.to_assay(IDAAssay, conditions=_IDA_CONDITIONS, use_average=True)
+    weighted = Projection(assay, _resolve_bounds(assay, None), point_weights=fit.noise.weights(ms.average_signal()))
+    peak = 1.0 - weighted.row_ssr({'Ka_guest': profile.best_ka})[0] / weighted.ss_tot[0]
+    assert profile.best_r2 == pytest.approx(peak, abs=1e-12)
+    assert profile.best_r2 != pytest.approx(fit.r_squared, abs=1e-9)
+
+
+def test_a_single_titration_is_profiled_with_no_weights_at_all():
+    """One signal cannot show how the noise varies, so the axis is the plain R² and the tab says so."""
+    x, y = _make_ida_data(IDA_TRUE, n_points=15)
+    ms = _single(x, _homoscedastic(y, 0.02, 7))
+
+    profiles = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+
+    assert not profiles.weighted
+    fit = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+    assert profiles.profiles['Ka_guest'].best_r2 == pytest.approx(fit.r_squared, abs=1e-12)
 
 
 def test_pinned_coefficients_make_the_profile_the_model_at_those_values(dba_clean):

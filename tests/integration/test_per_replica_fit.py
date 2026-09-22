@@ -226,6 +226,10 @@ class TestReportedFitWithUncertainInputs:
             assert own.conditional is None
             assert own.diagnostics is None
             assert own.intervals is None
+            # A noise law is read from the scatter between replicates, so it
+            # describes the set and belongs to the fit of their average.
+            assert own.noise is None
+        assert result.noise.n_replicates == len(result.replica_fits)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +248,9 @@ class TestReplicateExclusion:
 
         assert fit_replica_ids(result) == ['r0', 'r1', 'r3', 'r4']
         assert list(result.metadata['replica_failures']) == ['r2']
+        # The reported fit is the fit of the four that agree, and its noise law
+        # is read from those four alone.
+        assert result.noise.n_replicates == 4
         assert_within_tolerance(result.parameters['Ka_guest'], IDA_TRUE['Ka_guest'], CLEAN_TOL, 'Ka_guest')
         # The replicate columns follow the exclusion: the odd replicate's own Ka
         # is outside the range they report.

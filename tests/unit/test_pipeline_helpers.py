@@ -21,6 +21,7 @@ from core.pipeline.fit_pipeline import (
 )
 from core.pipeline.input_aware import input_aware
 from core.pipeline.inputs import TITRANT
+from core.pipeline.noise import NoiseBasis
 from core.pipeline.varpro import FitCancelled, Projection
 from core.units import Q_
 from tests.conftest import (
@@ -213,7 +214,10 @@ class TestTheParametersTheLackOfFitTestCounts:
         found = _misfit(projection, aware, replicates)
         curve = projection.signals[0] - projection.residual(aware.fit.ka, 0, aware.fit.offsets)
         every_free = lack_of_fit(replicates, curve, aware.fit.n_params)
-        assert found.dof == (12 - aware.fit.n_params, 12 * 2)
+        # The scatter of three replicates about their own line in the mean
+        # curve, at 12 points: two of the twelve dimensions go to the line and
+        # one of the three replicates to the mean.
+        assert found.dof == (12 - aware.fit.n_params, 2 * 10)
         assert (found.statistic, found.p_value) == (every_free.statistic, every_free.p_value)
 
     def test_a_coefficient_the_solve_holds_on_its_bound_is_not_counted(self):
@@ -242,9 +246,14 @@ class TestTheParametersTheLackOfFitTestCounts:
         mean = replicates.mean(axis=0)
         curve = projection.signals[0] - projection.residual(aware.fit.ka, 0, aware.fit.offsets)
         misfit_mean_square = rows * float(np.sum((mean - curve) ** 2)) / (points - count)
-        pure_error_mean_square = float(np.sum((replicates - mean) ** 2)) / (points * (rows - 1))
-        assert found.dof == (points - count, points * (rows - 1))
-        assert found.statistic == pytest.approx(misfit_mean_square / pure_error_mean_square, rel=1e-12)
+        # The noise the curve is judged against: what is left of each replicate
+        # once its own straight line in the mean curve is taken out, solved
+        # here by a plain least-squares fit of that line.
+        line = np.column_stack([np.ones(points), mean])
+        scatter = replicates - (np.linalg.lstsq(line, replicates.T, rcond=None)[0].T @ line.T)
+        pure_error_mean_square = float(np.sum(scatter**2)) / ((rows - 1) * (points - 2))
+        assert found.dof == (points - count, (rows - 1) * (points - 2))
+        assert found.statistic == pytest.approx(misfit_mean_square / pure_error_mean_square, rel=1e-9)
 
     def test_a_ka_estimate_on_its_bound_is_not_counted(self):
         """Bounds that stop below where the data put Ka leave the estimate on the upper one, held there."""
@@ -278,6 +287,57 @@ _IDA_CONDITIONS = {
 }
 
 
+class TestTheNoiseLawTheFitCarries:
+    """What the replicates behind a fit say about its noise, and what that does to the numbers."""
+
+    @staticmethod
+    def _ida_assay(signal: np.ndarray, x: np.ndarray) -> IDAAssay:
+        return IDAAssay(x_data=Q_(x, 'M'), y_data=Q_(signal, 'au'), **_IDA_CONDITIONS)
+
+    def test_a_single_titration_is_fitted_with_no_weights_and_records_why(self):
+        """One signal cannot show how the noise varies, so the fit is the unweighted one, to the last bit."""
+        x, y = _make_ida_data(IDA_TRUE, n_points=15)
+        assay = self._ida_assay(y + np.random.default_rng(2).normal(0.0, 0.01 * np.ptp(y), y.size), x)
+
+        result = fit_assay(assay, FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS))
+
+        assert result.noise.basis is NoiseBasis.SINGLE_TITRATION
+        assert not result.noise.estimated
+        np.testing.assert_array_equal(result.noise.weights(assay.y_data.magnitude), np.ones(15))
+        # The same assay through the engine with no weights at all: the same
+        # numbers, exactly, not to a tolerance.
+        projection = Projection(assay, _resolve_bounds(assay, GDA_IDA_RECOVERY_BOUNDS))
+        params = projection.params(projection.fit())
+        assert [result.parameters[k].magnitude for k in assay.parameter_keys] == list(params)
+
+    def test_a_fit_of_replicates_that_scatter_with_the_signal_is_weighted_by_their_law(self):
+        """The law the replicates show is recorded, and it is what the fit was made with.
+
+        Replicates whose noise grows with the signal make the low end of the
+        titration the precise end, and the fit that counts it so is a different
+        fit from the one that counts every point equally.
+        """
+        x, y = _make_ida_data(IDA_TRUE, n_points=15)
+        rng = np.random.default_rng(5)
+        signals = np.vstack([y * (1.0 + rng.normal(0.0, 0.03, y.size)) for _ in range(4)])
+        ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c', 'd'))
+        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False)
+
+        result = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, config)
+
+        assert result.noise.estimated and result.noise.n_replicates == 4
+        assert 0.0 < result.noise.share <= 1.0
+        assay = self._ida_assay(ms.average_signal(), x)
+        bounds = _resolve_bounds(assay, GDA_IDA_RECOVERY_BOUNDS)
+        weights = result.noise.weights(assay.y_data.magnitude)
+        assert weights.max() > 2 * weights.min(), 'the law has to weight the points differently to be tested'
+        weighted = Projection(assay, bounds, point_weights=weights)
+        equal = Projection(assay, bounds)
+        reported = result.parameters['Ka_guest'].magnitude
+        assert reported == weighted.fit().ka['Ka_guest']
+        assert reported != equal.fit().ka['Ka_guest']
+
+
 class TestDispatch:
     """Which fit :func:`fit_measurement_set` runs for the data and the configuration it is given."""
 
@@ -296,6 +356,9 @@ class TestDispatch:
             assert result.model_name == 'linear'
             assert result.intervals is None
             assert result.parameters['slope'].to('au/M').magnitude == pytest.approx(DYE_ALONE_TRUE['slope'], rel=0.05)
+            # A calibration line is a linear regression, not a projection: it
+            # reads no noise law off its replicates and needs none.
+            assert result.noise is None
 
     def test_a_fit_of_one_signal_does_not_claim_to_have_tested_replicates(self):
         # ``per_replica`` on a result says what the fit did, and the panels read

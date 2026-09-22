@@ -223,12 +223,12 @@ def ida_setup():
 _POWERS = {'h0': 2.0, 'd0': -3.0, TITRANT: 0.5}
 
 
-def _power_law_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, deltas=None, sequential=False):
+def _power_law_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, deltas=None, *_):
     """``Ka = 1e8 x prod (1 + offset_j)^p_j x 10^(3 x mean delta)``: elasticities ``p_j``, exactly."""
     log_ka = 8.0 + sum(p * math.log10(1 + offsets.get(key, 0.0)) for key, p in _POWERS.items())
     if deltas is not None:
         log_ka += 3.0 * float(np.sum(deltas)) / math.sqrt(len(deltas))
-    return {'Ka_guest': 10.0**log_ka, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0
+    return {'Ka_guest': 10.0**log_ka, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
 
 
 def test_budget_rows_of_a_run_with_known_elasticities(ida_setup, monkeypatch):

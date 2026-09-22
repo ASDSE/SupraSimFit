@@ -3,7 +3,9 @@
 - the runs test has the binomial distribution of sign changes when nothing is
   fitted, the hand-derived distribution for three residuals about a fitted
   offset, and its stated level on a fitted curve;
-- the lack-of-fit F is the hand-computed ratio on a 3 x 4 toy;
+- the lack-of-fit F is the hand-computed ratio on a 2 x 4 toy, weighted and
+  unweighted, and it fires on replicates that differ by a scale and a
+  background where the raw spread between them hides the misfit entirely;
 - the weights of the conflict reference are g / (1 + g) for the information g
   the data hold on an input: 1 for an input the data determine, 0 for one the
   residual does not depend on;
@@ -102,19 +104,115 @@ def test_runs_test_orders_by_x_leaves_out_zeros_and_carries_penalty_rows():
         runs_test(residuals, x, jacobian[:4])
 
 
-def test_lack_of_fit_is_the_hand_computed_f_on_a_three_by_four_toy():
+def test_lack_of_fit_is_the_hand_computed_f_on_a_two_by_four_toy():
+    """Two replicates about the mean curve 0, 1, 2, 3, which is a straight line in the point index.
+
+    Their difference from the mean, d = (1, -1, -1, 1), has zero sum and zero
+    slope against that line, so the line each replicate is detrended against is
+    the mean curve itself and the scatter is d: SS = 2 * 4 = 8 on
+    (m - 1)(n - 2) = 2 degrees of freedom, a pure-error variance of 4. The
+    fitted curve 1, 1, 2, 2 misses the mean by (-1, 0, 0, 1), so with one
+    fitted parameter F = (2 * 2 / 3) / 4 = 1/3 on (3, 2).
+    """
+    mean = np.array([0.0, 1.0, 2.0, 3.0])
+    signals = np.vstack([mean + np.array([1.0, -1.0, -1.0, 1.0]), mean - np.array([1.0, -1.0, -1.0, 1.0])])
+    found = lack_of_fit(signals, np.array([1.0, 1.0, 2.0, 2.0]), n_params=1)
+    assert (found.kind, found.dof, found.expected) == ('lack_of_fit', (3, 2), None)
+    assert found.statistic == pytest.approx(1 / 3, rel=1e-12)
+    assert found.p_value == pytest.approx(f_dist.sf(1 / 3, 3, 2), rel=1e-12)
+
+
+def test_lack_of_fit_weighs_every_titration_point_by_what_the_noise_law_says_about_it():
+    """The same toy with weights, built so that the weighted detrending is exact by hand.
+
+    The mean curve (-3, -1, 1, 3) and the weights (1, 4, 4, 1) make the two
+    columns 1 and ybar orthogonal in the weighted inner product, and the
+    difference d = (4, -3, 3, -4) is weight-orthogonal to both (sum w d = 0,
+    sum w d ybar = -24 + 24 = 0), so again the scatter is d: SS = 2 sum w d² =
+    208 on 2 degrees of freedom. A fitted curve that misses the mean by
+    (2, 1, -1, -2) misses it by sum w f² = 16 in the same metric, so with one
+    fitted parameter F = (2 * 16 / 3) / 104 = 4/39.
+
+    Only the ratios of the weights matter: both sums are linear in their scale.
+    """
+    mean = np.array([-3.0, -1.0, 1.0, 3.0])
+    weights = np.array([1.0, 4.0, 4.0, 1.0])
+    d = np.array([4.0, -3.0, 3.0, -4.0])
+    signals = np.vstack([mean + d, mean - d])
+    fitted = mean + np.array([2.0, 1.0, -1.0, -2.0])
+    found = lack_of_fit(signals, fitted, n_params=1, weights=weights)
+    assert (found.kind, found.dof) == ('lack_of_fit', (3, 2))
+    assert found.statistic == pytest.approx(4 / 39, rel=1e-12)
+    assert found.p_value == pytest.approx(f_dist.sf(4 / 39, 3, 2), rel=1e-12)
+    rescaled = lack_of_fit(signals, fitted, n_params=1, weights=7.5 * weights)
+    assert rescaled.statistic == pytest.approx(found.statistic, rel=1e-12)
+    # Weights of exactly one are the unweighted test.
+    assert lack_of_fit(signals, fitted, 1, np.ones(4)).statistic == lack_of_fit(signals, fitted, 1).statistic
+
+
+def test_lack_of_fit_judges_the_curve_against_the_scatter_within_a_replicate_not_between_them():
+    """Three replicates of one curve, each at its own gain and background, plus noise of 0.5 au.
+
+    An affine image of a registered model is a member of the same model, so a
+    replicate measured 3 % brighter is not a replicate measured less precisely:
+    what its points scatter by about its own image of the mean curve is 0.5 au,
+    and a curve missing the mean by 2 au everywhere it bends is a real misfit.
+    The raw spread between the replicates is the gains and the backgrounds,
+    tens of au, and a test that calls that noise cannot see the misfit at all.
+    """
+    rng = np.random.default_rng(0)
+    t = np.linspace(0.0, 1.0, 12)
+    curve = 1000.0 * t / (0.2 + t)
+    gain = np.array([0.97, 1.0, 1.03])  # mean exactly one, so the mean curve is the curve
+    background = np.array([-5.0, 0.0, 5.0])
+    signals = gain[:, None] * curve + background[:, None] + 0.5 * rng.standard_normal((3, 12))
+    fitted = curve + 2.0 * np.sin(2 * np.pi * t)
+
+    found = lack_of_fit(signals, fitted, n_params=3)
+    assert found.dof == (9, 20) and found.statistic > 15.0 and found.p_value < 1e-3
+
+    # The raw pure error of the same data and the same misfit, on its own degrees of freedom.
+    raw_dof = (12 - 3, 12 * (3 - 1))
+    raw = (3 * np.sum((signals.mean(axis=0) - fitted) ** 2) / raw_dof[0]) / (
+        np.sum((signals - signals.mean(axis=0)) ** 2) / raw_dof[1]
+    )
+    assert raw < 0.2 and f_dist.sf(raw, *raw_dof) > 0.9
+
+
+def test_lack_of_fit_refuses_data_that_cannot_carry_the_test():
     signals = np.array([[1.0, 2.0, 3.0, 4.0], [2.0, 2.0, 5.0, 4.0], [3.0, 2.0, 4.0, 7.0]])
     fitted = np.array([2.5, 2.0, 3.0, 5.5])
-    # Means 2, 2, 4, 5: S_mean = 0.25 + 0 + 1 + 0.25 = 1.5; pure error SS = 2 + 0 + 2 + 6 = 10 on 4 * 2 = 8 dof.
-    # One fitted parameter: F = (3 * 1.5 / 3) / (10 / 8) = 1.2 on (3, 8).
-    found = lack_of_fit(signals, fitted, n_params=1)
-    assert (found.kind, found.dof, found.expected) == ('lack_of_fit', (3, 8), None)
-    assert found.statistic == pytest.approx(1.2, rel=1e-12)
-    assert found.p_value == pytest.approx(f_dist.sf(1.2, 3, 8), rel=1e-12)
     with pytest.raises(ValueError, match='two or more replicates'):
         lack_of_fit(signals[:1], fitted, 1)
     with pytest.raises(ValueError, match='more points'):
         lack_of_fit(signals, fitted, 4)
+    # Two points: the line through the mean curve leaves the replicates no scatter to be judged against.
+    with pytest.raises(ValueError, match='three or more titration points'):
+        lack_of_fit(signals[:, :2], fitted[:2], 1)
+    with pytest.raises(ValueError, match='one value per titration point'):
+        lack_of_fit(signals, fitted, 1, weights=np.ones(3))
+
+
+def test_replicates_that_leave_only_the_rounding_error_of_the_projection_have_no_scatter():
+    """Identical replicates, and exact affine images of one curve, are an infinite ratio, not a rounding artefact.
+
+    Detrending them leaves what the projection rounds off — about 1e-31 of the
+    data's squared norm — and a finite F over that would be floating-point
+    noise shown to the user as a statistic. Scatter of one part in 1e9, far
+    below any instrument, is still scatter and gives a finite ratio.
+    """
+    fitted = np.array([1.0, 2.0, 3.0, 5.0])
+    agreeing = np.vstack([[1.0, 2.0, 3.0, 4.0]] * 3)
+    found = lack_of_fit(agreeing, fitted, n_params=1)
+    assert found.statistic == math.inf and found.p_value == 0.0
+
+    images = np.array([[0.97], [1.0], [1.04]]) * agreeing[0] + np.array([[0.3], [0.0], [-0.2]])
+    assert lack_of_fit(images, fitted, n_params=1).statistic == math.inf
+    assert lack_of_fit(images, fitted, n_params=1, weights=np.array([4.0, 2.0, 1.0, 0.5])).statistic == math.inf
+
+    rng = np.random.default_rng(2)
+    barely = agreeing * (1.0 + 1e-9 * rng.standard_normal(agreeing.shape))
+    assert math.isfinite(lack_of_fit(barely, fitted, n_params=1).statistic)
 
 
 def test_conflict_weights_are_one_for_a_determined_input_and_zero_for_an_unseen_one():
@@ -281,7 +379,8 @@ def test_the_verdict_without_a_test_or_without_varying_inputs():
 
 
 def test_a_value_json_cannot_hold_is_written_as_null_and_read_back_as_what_it_stood_for():
-    """The lack-of-fit ratio is infinite where the replicates agree exactly, and JSON has no token for it.
+    """The lack-of-fit ratio is infinite where the replicates leave no scatter at all, and JSON has no
+    token for it.
 
     Everything else a results file holds here is finite: the p-values are
     proportions, the degrees of freedom are counts, and the weights lie in

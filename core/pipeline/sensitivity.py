@@ -92,6 +92,7 @@ from core.pipeline.inputs import (  # noqa: F401
     spec_fraction,
     validate,
 )
+from core.pipeline.noise import noise_law
 from core.pipeline.varpro import _SEARCH_PER_DECADE, FitCancelled, FitRefused, Projection, _ka_grid, on_ka_bound
 
 
@@ -202,7 +203,17 @@ class SensitivityResult:
         :func:`what_if` re-weights, so its answer and the budget it is compared
         against describe the same rows.
     sample_r2 : np.ndarray or None
-        SOBOL only — R² of each sample's best fit, aligned the same way.
+        SOBOL only — R² of each sample's best fit, aligned the same way:
+        the unweighted R² against the averaged signal that a fit reports as its
+        quality.
+    sample_profile_r2 : np.ndarray or None
+        SOBOL only — each sample's place on the Identifiability tab's axis,
+        ``1 - S_w / SS_tot,w`` of its best fit: the objective that fit
+        minimised, with every titration point counted by the weight of the
+        baseline's noise law, which is the scale the Ka profiles are drawn on.
+        A sample above the profile there has moved the inputs to something
+        that fits better at that Ka than the entered ones do. ``None`` for a
+        heatmap run, like ``sample_r2``.
     r2_grid : np.ndarray or None
         HEATMAP only — R² of each cell's best fit, aligned with ``ka_grid``.
     baseline_fit : FitResult or None
@@ -284,6 +295,7 @@ class SensitivityResult:
     sample_ka: Optional[dict[str, np.ndarray]] = None
     sample_usable: Optional[dict[str, np.ndarray]] = None
     sample_r2: Optional[np.ndarray] = None
+    sample_profile_r2: Optional[np.ndarray] = None
     r2_grid: Optional[np.ndarray] = None
     baseline_fit: FitResult | None = None
     sample_params: dict[str, np.ndarray] | None = None
@@ -1035,7 +1047,7 @@ def _thread_capped_children() -> Iterator[None]:
 _WORKER_STATE: dict = {}
 
 
-def _init_worker(ms, assay_cls, x_base, base_conditions, fit_config, sequential) -> None:
+def _init_worker(ms, assay_cls, x_base, base_conditions, fit_config, sequential, point_weights) -> None:
     """Hand a worker process the data every job in the batch needs."""
     _WORKER_STATE.update(
         ms=ms,
@@ -1044,6 +1056,7 @@ def _init_worker(ms, assay_cls, x_base, base_conditions, fit_config, sequential)
         base_conditions=base_conditions,
         fit_config=fit_config,
         sequential=sequential,
+        point_weights=point_weights,
     )
 
 
@@ -1059,6 +1072,7 @@ def _run_job(state: dict, job):
         state['fit_config'],
         deltas,
         state['sequential'],
+        state['point_weights'],
     )
 
 
@@ -1092,15 +1106,17 @@ def _evaluate_batch(
     max_workers,
     on_result,
     should_cancel,
+    point_weights=None,
 ):
     """Fit a batch of perturbations, in parallel when that is worthwhile.
 
     A perturbation is ``(input offsets, addition errors or None)``, what
     :func:`_fit_perturbed` takes; *sequential* says how the addition errors of
-    the batch accumulate. Results come back in the order of *perturbations*
-    however the work was scheduled, so a Sobol' row pairing or a heatmap cell
-    index stays valid. A perturbation has one fit, so the answer does not
-    depend on which worker ran it.
+    the batch accumulate and *point_weights* is the weight of every titration
+    point, the same for every fit of the batch. Results come back in the order
+    of *perturbations* however the work was scheduled, so a Sobol' row pairing
+    or a heatmap cell index stays valid. A perturbation has one fit, so the
+    answer does not depend on which worker ran it.
 
     ``spawn`` is used on every platform. Workers start from a Qt application
     that already runs threads, and forking such a process is unsafe, so the
@@ -1129,6 +1145,7 @@ def _evaluate_batch(
         'base_conditions': base_conditions,
         'fit_config': fit_config,
         'sequential': sequential,
+        'point_weights': point_weights,
     }
 
     if max_workers <= 1 or len(jobs) < _PARALLEL_MIN_JOBS:
@@ -1152,7 +1169,7 @@ def _evaluate_batch(
             max_workers=max_workers,
             mp_context=mp.get_context('spawn'),
             initializer=_init_worker,
-            initargs=(ms, assay_cls, x_base, base_conditions, fit_config, sequential),
+            initargs=(ms, assay_cls, x_base, base_conditions, fit_config, sequential, point_weights),
         )
         # Submitting inside the cap: the pool starts a process per job until it
         # is full, so the first round starts every worker under the cap.
@@ -1204,8 +1221,10 @@ def _stock_magnitude(base_conditions: Mapping) -> Optional[float]:
     return None if stock is None else float(stock.to('M').magnitude)
 
 
-def _fit_perturbed(ms, assay_cls, x_base, base_conditions, offsets, fit_config, deltas=None, sequential=False):
-    """Fit of one perturbation → ``({parameter key: value}, R²)``.
+def _fit_perturbed(
+    ms, assay_cls, x_base, base_conditions, offsets, fit_config, deltas=None, sequential=False, point_weights=None
+):
+    """Fit of one perturbation → ``({parameter key: value}, R², profile R²)``.
 
     *offsets* is the relative offset per input key. Every entered condition
     takes its own; the ``TITRANT`` offset is the error of the stock's
@@ -1222,6 +1241,15 @@ def _fit_perturbed(ms, assay_cls, x_base, base_conditions, offsets, fit_config, 
     comes back in its canonical registry unit, the unit ``FitResult.parameters``
     carries, and the R² is measured against that averaged signal.
 
+    *point_weights* is the weight of every titration point, from the noise law
+    the replicates showed at the entered inputs. The law is a function of the
+    measured replicates, which moving the inputs leaves untouched, so every fit
+    of a run carries the same weights and a sample with no offset is the
+    baseline fit. Beside the R² above, which counts every point equally, the
+    fit's place on the Identifiability tab's axis comes back as
+    ``1 - S_w / SS_tot,w``: the weighted objective this fit minimised, on the
+    scale the Ka profiles are drawn on.
+
     ``None`` when the perturbed inputs leave the model with no solution
     anywhere in the Ka box: that is one sample without a fit, which the caller
     records as NaN, and the other thousands of samples stand. Quality is not
@@ -1234,14 +1262,15 @@ def _fit_perturbed(ms, assay_cls, x_base, base_conditions, offsets, fit_config, 
     if TITRANT in offsets and TITRANT_STOCK in conditions:
         conditions[TITRANT_STOCK] = conditions[TITRANT_STOCK] * (1 + offsets[TITRANT])
     assay = perturbed.to_assay(assay_cls, conditions=conditions, use_average=True)
-    projection = Projection(assay, _resolve_bounds(assay, fit_config.custom_bounds))
+    projection = Projection(assay, _resolve_bounds(assay, fit_config.custom_bounds), point_weights=point_weights)
     try:
         fit = projection.fit()
     except FitRefused:
         return None
     params = projection.params(fit)
     _, r_squared = calculate_fit_metrics(assay.y_data.magnitude, assay.forward_model(params).magnitude)
-    return dict(zip(assay.parameter_keys, params.tolist())), float(r_squared)
+    profile_r2 = 1.0 - fit.objective / float(projection.ss_tot[0])
+    return dict(zip(assay.parameter_keys, params.tolist())), float(r_squared), float(profile_r2)
 
 
 #: Relative step of the central difference behind an elasticity. The slope of
@@ -1284,9 +1313,10 @@ def input_elasticities(
 
     A central difference at ``±_ELASTICITY_STEP`` around the entered inputs: two
     refits per input of the average of the active replicates of *ms*, made the
-    way every sample of :func:`run_sensitivity` is, whether or not an
-    uncertainty is stated for the input. An elasticity of −1 says a 1 % error
-    of the input is a 1 % error of Ka the other way.
+    way every sample of :func:`run_sensitivity` is — the point weights of the
+    noise law those replicates show included — whether or not an uncertainty is
+    stated for the input. An elasticity of −1 says a 1 % error of the input is
+    a 1 % error of Ka the other way.
 
     Parameters
     ----------
@@ -1315,6 +1345,7 @@ def input_elasticities(
     """
     workers = default_worker_count() if max_workers is None else max(1, int(max_workers))
     probe_assay = ms.to_assay(assay_cls, conditions=base_conditions, use_average=True)
+    law = noise_law(np.vstack([ms.get_replica_signal(rid) for rid in ms.active_replica_ids]))
 
     def cancelled() -> bool:
         return should_cancel is not None and should_cancel()
@@ -1330,6 +1361,7 @@ def input_elasticities(
         max_workers=workers,
         on_result=lambda value: None,
         should_cancel=cancelled,
+        point_weights=law.weights(probe_assay.y_data.magnitude),
     )
     if cancelled():
         raise FitCancelled('The elasticities were stopped before every refit finished.')
@@ -1553,6 +1585,15 @@ def run_sensitivity(
     # spread around it come from one fitting method.
     ms = ms.with_active(fit_replica_ids(baseline_result))
     probe_assay = ms.to_assay(assay_cls, conditions=base_conditions, use_average=True)
+    # Every fit of the run carries the weights of the baseline's noise law,
+    # read off the replicates it used. The law describes the measured
+    # replicates, which moving the inputs leaves untouched, so re-reading it
+    # per sample would return the same numbers; re-using it is what makes the
+    # baseline the sample with no offset. An imported baseline that records no
+    # law is fitted with equal weights, as it was.
+    point_weights = (
+        None if baseline_result.noise is None else baseline_result.noise.weights(probe_assay.y_data.magnitude)
+    )
     baseline_ka = {k: baseline_result.parameters[k].to('1/M').magnitude for k in ka_keys}
     degenerate_keys = baseline_result.degenerate_keys
     # The Ka box every fit of the run searches, and where the baseline landed in
@@ -1566,8 +1607,8 @@ def run_sensitivity(
 
     def _evaluate(
         perturbations: list[tuple[dict, np.ndarray | None]],
-    ) -> tuple[dict[str, np.ndarray], np.ndarray, dict]:
-        """Fit every perturbation → (value per parameter key, R²), NaN where no fit was produced."""
+    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, dict]:
+        """Fit every perturbation → (value per parameter key, R², profile R²), NaN where no fit was produced."""
         counters = {'total': 0, 'success': 0, 'done': done}
         values = _evaluate_batch(
             ms,
@@ -1580,12 +1621,14 @@ def run_sensitivity(
             max_workers=workers,
             on_result=_tally(counters),
             should_cancel=_cancelled,
+            point_weights=point_weights,
         )
         params = {
             key: np.array([np.nan if v is None else v[0][key] for v in values]) for key in probe_assay.parameter_keys
         }
         r2 = np.array([np.nan if v is None else v[1] for v in values])
-        return params, r2, counters
+        profile_r2 = np.array([np.nan if v is None else v[2] for v in values])
+        return params, r2, profile_r2, counters
 
     # --- Dispatch on mode ------------------------------------------------
     if sens_config.mode is SensitivityMode.SOBOL:
@@ -1603,7 +1646,7 @@ def run_sensitivity(
         # One batch: every matrix of the design in the order A, B, AB_1 … AB_g,
         # then the refits of the elasticities.
         perturbations = design.jobs + _elasticity_perturbations(base_conditions)
-        params, r2, counters = _evaluate(perturbations)
+        params, r2, profile_r2, counters = _evaluate(perturbations)
         n_samples = 2 * n_base  # the A and B rows
         n_design = len(design.jobs)
         elasticity = _elasticities(base_conditions, {key: params[key][n_design:] for key in ka_keys})
@@ -1674,6 +1717,7 @@ def run_sensitivity(
             sample_ka={key: params[key][:n_samples] for key in ka_keys},
             sample_usable=usable,
             sample_r2=r2[:n_samples],
+            sample_profile_r2=profile_r2[:n_samples],
             baseline_fit=baseline_result,
             sample_params={key: values[:n_samples] for key, values in params.items()},
             degenerate_keys=degenerate_keys,
@@ -1701,7 +1745,7 @@ def run_sensitivity(
     perturbations = [
         ({sens_config.x_key: float(x_offsets[ix]), sens_config.y_key: float(y_offsets[iy])}, None) for iy, ix in cells
     ]
-    params, r2, counters = _evaluate(perturbations)
+    params, r2, _, counters = _evaluate(perturbations)
     shape = (len(y_offsets), len(x_offsets))
     r2_grid = r2.reshape(shape)
 
