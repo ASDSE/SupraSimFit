@@ -12,10 +12,16 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from scipy.optimize import lsq_linear, minimize_scalar
+from scipy.stats import f as f_dist
 
 from core.pipeline.inputs import TITRANT
+from core.pipeline.noise import noise_law
 from core.pipeline.profile import JointRegion
-from core.pipeline.varpro import KaInterval
+from core.pipeline.varpro import KaInterval, Projection
+from validation import checks, reference
+from validation.generate import dataset
+from validation.reference import agreement_row, pooling_row, reference_intervals
 from validation.scenarios import Scenario, SharedEntry, SpecEntry
 from validation.score import _profile_accepts, interval_facts, region_excess, score
 
@@ -155,3 +161,169 @@ def test_declaring_the_stock_is_what_puts_the_estimate_on_the_truth():
     ignored = score(NEW_SCENARIOS['ignored'], 0)
     assert abs(declared['err']['Ka_dye']) < 0.05
     assert abs(ignored['err']['Ka_dye']) > 5 * abs(declared['err']['Ka_dye'])
+
+
+#: A replicated titration whose noise grows with the signal, and the same
+#: design measured once. Eight points keeps both fits in the fast layer.
+REPLICATED = Scenario(assay='GDA', regime=10.0, n_points=8, noise=0.02, proportional=True, replicates=4)
+
+
+def test_a_row_says_what_the_replicates_showed_about_the_noise():
+    """Every rate the noise-law checks report is read beside this share; a row without it says nothing."""
+    replicated = score(REPLICATED, 0)
+    assert replicated['refused'] is None and replicated['error'] is None
+    assert replicated['noise_basis'] == 'replicates'
+    assert 0.0 <= replicated['noise_share'] <= 1.0
+    # The scenario's noise grows with the signal, so the law should not read it
+    # as flat; the share is what the weights are built from.
+    assert replicated['noise_share'] > 0.0
+
+
+def test_a_single_titration_reports_that_its_noise_was_taken_as_constant():
+    """One curve cannot show how the noise varies, and the row has to say so rather than leave it open."""
+    row = score(replace_replicates(REPLICATED, 1), 0)
+    assert row['refused'] is None and row['error'] is None
+    assert row['noise_basis'] == 'single_titration'
+    assert row['noise_share'] == 0.0
+
+
+def replace_replicates(scenario: Scenario, m: int) -> Scenario:
+    """*scenario* measured *m* times."""
+    from dataclasses import replace
+
+    return replace(scenario, replicates=m)
+
+
+#: One single titration, the kind every stored agreement row was computed from.
+SINGLE = Scenario(assay='GDA', regime=10.0, n_points=8, noise=0.01)
+
+
+def test_a_single_titration_agreement_row_is_the_unweighted_comparison():
+    """A titration with no law behind it is fitted with weights of one, which is arithmetic unchanged.
+
+    The row is computed against a projection and a reference that are handed no
+    weights at all; equality has to be exact, since multiplying by one is the
+    only thing the weighted path does more.
+    """
+    row = agreement_row(SINGLE, 0)
+    data = dataset(SINGLE, 0)
+    assert noise_law(data.signals).weights(data.signals[0]).tolist() == [1.0] * data.x.size
+    projection = Projection(data.assay, data.assay.get_default_bounds())
+    fit = projection.fit()
+    key = projection.free_ka[0]
+    interval = projection.interval(key, fit)
+    low, high = reference_intervals(data.assay, data.signals, SINGLE.error_model, 0, SINGLE.id)[key]
+    apart = max(abs(np.log10(low / interval.low)), abs(np.log10(high / interval.high)))
+    assert row['apart'][key] == apart
+    assert row['engine_width'][key] == float(np.log10(interval.high / interval.low))
+    assert row['ref_width'][key] == float(np.log10(high / low))
+
+
+#: A replicated titration whose law the reference and the engine both carry, and
+#: along whose profile no signal parameter runs to a bound, so the cut-off is
+#: the constant one on both sides and the weights are all the case asks about.
+WEIGHTED = Scenario(assay='IDA', regime=1000.0, n_points=12, noise=0.02, proportional=True, replicates=4)
+WEIGHTED_SEED = 2
+
+
+def test_the_weighted_reference_places_the_weighted_engine_s_edges():
+    """Both carry the law the replicates show, so an edge that moved would be a defect in one of them."""
+    data = dataset(WEIGHTED, WEIGHTED_SEED)
+    law = noise_law(data.signals)
+    weights = law.weights(data.signals.mean(axis=0))
+    assert law.estimated and law.share > 0.0
+    assert weights.max() / weights.min() > 3.0, 'the weights have to vary for this to say anything'
+    projection = Projection(data.assay, data.assay.get_default_bounds(), point_weights=weights)
+    fit = projection.fit()
+    key = projection.free_ka[0]
+    interval = projection.interval(key, fit)
+    ranks = {projection.fitted_rank({key: ka}) for ka in (fit.ka[key], interval.low, interval.high)}
+    assert len(ranks) == 1, 'the weights, and not a stepping cut-off, are what this case is about'
+    row = agreement_row(WEIGHTED, WEIGHTED_SEED)
+    assert row['agrees'] == {key: True}, row['apart']
+
+
+#: A single GDA titration whose bounded solve gives one signal coefficient up
+#: above a Ka the interval still accepts: I_dye_bound reaches its lower bound of
+#: zero on the way to the high edge, and not on the way to the low one, so one
+#: dataset shows the reference's cut-off both stepped and flat.
+STEPPED = Scenario(assay='GDA', regime=10.0, n_points=12, noise=0.01)
+STEPPED_SEED = 1
+
+
+def _bounded_solve(assay, y: np.ndarray, ka: float) -> tuple[float, np.ndarray, np.ndarray]:
+    """The signal coefficients at one Ka by a hand-written bounded least squares.
+
+    One column per signal parameter — a constant for the offset, the species it
+    multiplies for the others — fitted inside the app's own bounds of ``0`` to
+    infinity. Returns the residual sum of squares, the design and the mask of
+    the coefficients the solve left strictly inside those bounds: a coefficient
+    is on its bound when the curve it still contributes is a vanishing fraction
+    of the signal.
+    """
+    species = assay.species(np.array([ka, 0.0, 0.0, 0.0]))
+    design = np.column_stack([np.ones(y.size), species['D'], species['HD']])
+    coefficients = lsq_linear(design, y, bounds=(0.0, np.inf)).x
+    residual = design @ coefficients - y
+    contribution = coefficients * np.linalg.norm(design, axis=0)
+    return float(residual @ residual), design, contribution > 1e-8 * float(np.linalg.norm(y))
+
+
+def _rank(columns: np.ndarray) -> int:
+    """Rank of *columns* scaled to unit length, so a short column counts like a long one."""
+    return int(np.linalg.matrix_rank(columns / np.linalg.norm(columns, axis=0)))
+
+
+def test_the_reference_edge_sits_where_its_own_fitted_rank_says_it_should():
+    """Each edge is where the SSR crosses ``S_min (1 + m F(m, nu)/nu)`` for the ``m`` that edge earns.
+
+    ``m`` counts the tested Ka plus the signal parameters the best fit fits and
+    the fit at the edge holds on a bound. The low edge gives none up and is the
+    plain F test; the high edge gives one up, and lands where the cut-off one
+    step higher puts it — a decade-wide difference in the threshold, so the two
+    readings cannot be confused.
+    """
+    data = dataset(STEPPED, STEPPED_SEED)
+    y = data.signals[0]
+    best = minimize_scalar(lambda t: _bounded_solve(data.assay, y, 10.0**t)[0], bounds=(-8.0, 12.0), method='bounded')
+    ssr_min, design, _ = _bounded_solve(data.assay, y, 10.0**best.x)
+    at_best = _rank(design)
+    nu = y.size - 1 - at_best  # the free Ka and the rank of the coefficient design
+
+    low, high = reference_intervals(data.assay, data.signals, STEPPED.error_model, STEPPED_SEED, STEPPED.id)['Ka_guest']
+    steps = {}
+    for edge in (low, high):
+        ssr, columns, fitted = _bounded_solve(data.assay, y, edge)
+        m = 1 + max(0, at_best - _rank(columns[:, fitted]))
+        steps[edge] = m
+        assert ssr / ssr_min == pytest.approx(1 + m * f_dist.ppf(0.95, m, nu) / nu, rel=1e-9)
+    assert (steps[low], steps[high]) == (1, 2), 'the case has to show both readings for this to say anything'
+    # The flat cut-off would accept beyond the high edge, so the step is what placed it.
+    assert _bounded_solve(data.assay, y, high)[0] / ssr_min > 1 + f_dist.ppf(0.95, 1, nu) / nu
+
+
+def test_a_row_without_a_reference_carries_the_keys_of_the_question_it_was_asked(monkeypatch):
+    """The metric of each row reads the same fields whether or not the reference converged."""
+    monkeypatch.setattr(reference, 'reference_intervals', lambda *args, **kwargs: None)
+    pooled = pooling_row(REPLICATED, 0)
+    assert pooled['no_reference'] is True and pooled['error'] is None
+    assert {'ref_covers', 'engine_covers', 'equal_covers', 'ref_width', 'engine_width', 'equal_width'} <= set(pooled)
+    assert 'agrees' not in pooled
+    assert checks.pooling({**pooled, 'case': REPLICATED.id}) == {'~no_reference': True}
+    agreement = agreement_row(SINGLE, 0)
+    assert agreement['no_reference'] is True and agreement['agrees'] == agreement['apart'] == {}
+    assert 'equal_covers' not in agreement
+
+
+def test_a_pooling_row_carries_the_three_intervals_its_table_reads():
+    """The table sets pooling against averaging and weighting against equal weights, all on one dataset."""
+    row = pooling_row(REPLICATED, 0)
+    assert row['refused'] is None and row['error'] is None
+    assert set(row['engine_covers']) == set(row['ref_covers']) == set(row['equal_covers'])
+    for key, width in row['engine_width'].items():
+        assert width > 0 and row['ref_width'][key] > 0 and row['equal_width'][key] > 0
+        assert isinstance(row['equal_covers'][key], bool)
+    # The weighted fit of the average and the unweighted one are different
+    # fits wherever the replicates showed a law.
+    assert noise_law(dataset(REPLICATED, 0).signals).share > 0.0
+    assert row['engine_width'] != row['equal_width']

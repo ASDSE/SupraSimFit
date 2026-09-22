@@ -135,20 +135,26 @@ def _reported_accepts(result: FitResult) -> dict[str, Callable[[float], bool]]:
     return {} if aware is None else {key: _profile_accepts(profile) for key, profile in aware.profiles.items()}
 
 
-def _entered_accepts(data: Dataset) -> Callable[[str], Callable[[float], bool]]:
+def _entered_accepts(data: Dataset, result: FitResult) -> Callable[[str], Callable[[float], bool]]:
     """A factory of acceptance tests for the interval at the inputs as entered.
 
     That interval is the profile interval of the entered inputs, so a
     projection of the same assay and bounds re-cuts the profile it came from.
-    The projection is built on the first call, which only a split interval
-    makes.
+    The projection carries the point weights of the noise law *result* was
+    fitted under, so what is re-cut is the profile the judged interval was cut
+    from rather than another one on the same data. It is built on the first
+    call, which only a split interval makes.
     """
     held: dict[str, Any] = {}
 
     def for_key(key: str) -> Callable[[float], bool]:
         def accepts(ka: float) -> bool:
             if not held:
-                projection = Projection(data.assay, data.assay.get_default_bounds())
+                projection = Projection(
+                    data.assay,
+                    data.assay.get_default_bounds(),
+                    point_weights=result.noise.weights(data.assay.y_data.magnitude),
+                )
                 held['projection'] = projection
                 held['threshold'] = projection.threshold(projection.fit())
             return bool(held['projection'].profile(key)(ka) <= held['threshold'])
@@ -199,9 +205,13 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
     as well: the signed error of log₁₀ of each binding constant, in decades,
     which is what the dilution checks report beside the coverage.
 
-    ``truth``, ``z``, ``rmse``, ``r_squared``, ``cond_misfit_p`` and
-    ``conflict_k`` are provenance: they are stored so a row can be read back
-    and questioned, and no check reads them today.
+    ``noise_share`` and ``noise_basis`` say what the replicates showed about
+    the noise and therefore how the fit was weighted; a single titration
+    carries no law and reads ``single_titration`` with a share of zero.
+
+    ``truth``, ``z``, ``rmse``, ``r_squared``, ``noise_basis``,
+    ``cond_misfit_p`` and ``conflict_k`` are provenance: they are stored so a
+    row can be read back and questioned, and no check reads them today.
     """
     started = time.perf_counter()
     data = dataset(scenario, seed)
@@ -219,7 +229,7 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
         truth = data.ka_truth
         conditional = result.conditional
         reported_accepts = _reported_accepts(result)
-        entered_accepts = _entered_accepts(data)
+        entered_accepts = _entered_accepts(data, result)
         row: dict[str, Any] = {
             'truth': truth,
             'aware': {
@@ -245,6 +255,11 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
             'bound_active': _bound_active(result, data),
             'rmse': result.rmse,
             'r_squared': result.r_squared,
+            # The noise law the replicates showed, which is what the fit was
+            # weighted by: the share of the variance at the rms signal that
+            # grows with the signal, and what the law was read from.
+            'noise_share': None if result.noise is None else float(result.noise.share),
+            'noise_basis': None if result.noise is None else result.noise.basis.value,
             't_fit': t_fit,
         }
         if scenario.dilution is not None or scenario.shared_sources:

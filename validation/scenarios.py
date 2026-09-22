@@ -15,7 +15,7 @@ a row keeps its meaning across runs and across machines.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Any, Iterator
 
 from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec, SharedSource
 
@@ -39,6 +39,8 @@ __all__ = [
     'joint_grid',
     'lof_null_grid',
     'misfit_power_grid',
+    'noise_law_aware_grid',
+    'noise_law_grid',
     'owner_grid',
     'pooling_grid',
     'range_spec_grid',
@@ -206,8 +208,19 @@ class Scenario:
     proportional : bool
         Noise scales with the signal instead of being constant across the
         titration.
+    noise_floor : float
+        Constant part of the noise, as a fraction of the clean signal's range,
+        added in quadrature to the proportional part: a titration whose noise
+        neither vanishes with the signal nor stays flat along it. It says
+        nothing without *proportional* and is refused there.
     replicates : int
         Titrations measured; the fit is given their average and their scatter.
+    replicate_scale : float
+        Standard deviation of one scale factor per replicate, which multiplies
+        that replicate's whole clean signal — a lamp, gain or path-length
+        difference between runs. It is a difference between replicates rather
+        than noise within one, so it is not part of
+        :attr:`~validation.generate.Dataset.noise_sigma`.
     ratio : float | None
         Guest to dye binding constant of a competitive assay; drawn per seed
         from ``0.01, 1, 100`` when ``None``.
@@ -261,7 +274,9 @@ class Scenario:
     n_points: int = 12
     noise: float = 0.01
     proportional: bool = False
+    noise_floor: float = 0.0
     replicates: int = 1
+    replicate_scale: float = 0.0
     ratio: float | None = None
     k_ratio: float | None = None
     titrant_span: float | None = None
@@ -280,6 +295,11 @@ class Scenario:
     def __post_init__(self) -> None:
         if self.assay not in ASSAYS:
             raise ValueError(f'{self.assay!r} is not a validated assay; they are {", ".join(ASSAYS)}.')
+        if self.noise_floor > 0 and not self.proportional:
+            raise ValueError(
+                'noise_floor is the constant part of a noise that grows with the signal, so it says nothing '
+                'with proportional=False; state the size of a constant noise in noise itself.'
+            )
         keys = set(INPUT_KEYS[self.assay])
         unknown = {e.key for e in self.specs} - keys
         if unknown:
@@ -320,8 +340,12 @@ class Scenario:
         parts = [self.assay, f'K={self.regime:g}', f'n={self.n_points}', f'noise={self.noise:g}']
         if self.proportional:
             parts.append('prop')
+        if self.noise_floor:
+            parts.append(f'floor={self.noise_floor:g}')
         if self.replicates != 1:
             parts.append(f'm={self.replicates}')
+        if self.replicate_scale:
+            parts.append(f'rscale={self.replicate_scale:g}')
         if self.ratio is not None:
             parts.append(f'ratio={self.ratio:g}')
         if self.k_ratio is not None:
@@ -510,6 +534,64 @@ def lof_null_grid() -> list[Scenario]:
         for regime in (0.1, 10.0, 1000.0)
         for m in (2, 3, 8)
         for n in (8, 20)
+    ]
+
+
+#: The scatter the noise law is read off, one entry per structure a replicated
+#: titration can carry: noise of constant size, noise proportional to the
+#: signal, the two together, the proportional case at the two smallest
+#: replicate counts a law can be read from, and constant noise measured on
+#: replicates that differ by a scale factor of three percent — a lamp or gain
+#: difference, which is not noise about the curve and must not be weighted as
+#: if it were.
+_NOISE_LAW_SCATTER: tuple[dict[str, Any], ...] = (
+    {'noise': 0.02, 'replicates': 4},
+    {'noise': 0.02, 'proportional': True, 'replicates': 4},
+    {'noise': 0.02, 'proportional': True, 'noise_floor': 0.005, 'replicates': 4},
+    {'noise': 0.02, 'proportional': True, 'replicates': 2},
+    {'noise': 0.02, 'proportional': True, 'replicates': 3},
+    {'noise': 0.01, 'replicates': 4, 'replicate_scale': 0.03},
+)
+
+
+def noise_law_grid() -> list[Scenario]:
+    """Replicated titrations whose noise the fit reads a law off, inputs exact.
+
+    One assay of each family — a guest titrated into host and dye, a dye
+    displaced, a direct binding and a two-step model — in the medium and
+    strong regimes, against the six kinds of scatter in
+    :data:`_NOISE_LAW_SCATTER`. The inputs are exact, so the reported interval
+    is the conditional one and what the rows measure is the weighting alone.
+    """
+    return [
+        Scenario(assay=assay, regime=regime, n_points=12, **scatter)
+        for assay in ('GDA', 'IDA', 'DBA_HtoD', 'DBA_HG2')
+        for regime in (10.0, 1000.0)
+        for scatter in _NOISE_LAW_SCATTER
+    ]
+
+
+def noise_law_aware_grid() -> list[Scenario]:
+    """The same weighting with the inputs stated and entered as wrongly as stated.
+
+    Four replicates of a titration whose noise grows with the signal, with and
+    without a constant floor under it, so the reported interval and the check
+    on the entered inputs are both read on data that carry a noise law.
+    """
+    return [
+        Scenario(
+            assay=assay,
+            regime=regime,
+            n_points=12,
+            noise=0.02,
+            proportional=True,
+            noise_floor=floor,
+            replicates=4,
+            specs=stated_specs(assay),
+        )
+        for assay in ONE_KA
+        for regime in (10.0, 1000.0)
+        for floor in (0.0, 0.005)
     ]
 
 
@@ -722,14 +804,23 @@ def reference_grid() -> list[Scenario]:
     """Small designs solved twice: by the engine and by an independent profile.
 
     Short titrations of every assay, inputs exact, where the reference's own
-    grid-and-root-finding profile is cheap enough to run on every seed.
+    grid-and-root-finding profile is cheap enough to run on every seed. Beside
+    them six replicated titrations whose noise grows with the signal, where
+    both computations carry the law the replicates show: the agreement is then
+    stated for a weighted fit as well as for an unweighted one.
     """
-    return [
+    grid = [
         Scenario(assay=assay, regime=regime, n_points=n, noise=0.01)
         for assay in ASSAYS
         for regime in (0.1, 10.0, 1000.0)
         for n in (8, 12)
     ]
+    grid += [
+        Scenario(assay=assay, regime=regime, n_points=12, noise=0.02, proportional=True, replicates=4)
+        for assay in ('GDA', 'IDA', 'DBA_HG2')
+        for regime in (10.0, 1000.0)
+    ]
+    return grid
 
 
 def pooling_grid() -> list[Scenario]:
@@ -780,6 +871,8 @@ def all_scenarios() -> Iterator[Scenario]:
         input_aware_grid,
         range_spec_grid,
         lof_null_grid,
+        noise_law_grid,
+        noise_law_aware_grid,
         runs_null_grid,
         misfit_power_grid,
         robustness_grid,

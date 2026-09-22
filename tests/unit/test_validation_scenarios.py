@@ -7,6 +7,7 @@ coverage rate would silently mix two different titrations.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 
 import pytest
@@ -47,6 +48,7 @@ def test_a_field_that_changes_the_data_changes_the_id():
         ('dark_free_dye', True),
         ('misfit_sine', 0.02),
         ('titrant_error', 0.15),
+        ('replicate_scale', 0.03),
     ):
         changed = replace(base, **{field: value})
         assert changed.id != base.id, f'{field} does not reach the id'
@@ -110,7 +112,9 @@ GRID_IDS: dict[str, tuple[int, str]] = {
     'misfit_power_grid': (84, 'GDA,K=0.1,n=12,noise=0.01,m=4,sine=0.02,sig'),
     'robustness_grid': (66, 'GDA,K=0.1,n=12,noise=0.005,sig,ent=0.5'),
     'robustness_strained_grid': (72, 'GDA,K=0.1,n=12,noise=0.005,sig,ent=2'),
-    'reference_grid': (36, 'GDA,K=0.1,n=8,noise=0.01'),
+    'noise_law_grid': (48, 'GDA,K=10,n=12,noise=0.02,m=4'),
+    'noise_law_aware_grid': (16, 'GDA,K=10,n=12,noise=0.02,prop,m=4,sig'),
+    'reference_grid': (42, 'GDA,K=0.1,n=8,noise=0.01'),
     'pooling_grid': (36, 'GDA,K=0.1,n=12,noise=0.02,m=4'),
     'joint_grid': (48, 'DBA_HG2,K=0.3,n=12,noise=0.01,kr=10'),
     'before_after_grid': (72, 'GDA,K=0.1,n=8,noise=0.005'),
@@ -220,3 +224,103 @@ def test_the_independent_reference_refuses_a_scenario_it_cannot_answer_for():
     shared = ErrorModel(shared=(SharedSource('Host and dye stock', 4.0, ('h0', 'd0')),))
     with pytest.raises(ValueError, match='shared error source'):
         reference_intervals(None, None, shared, 0, 'reference-agreement')
+
+
+#: SHA-256 (first 16 digits) of the sorted case ids of each grid whose rows are
+#: already in the store. The size and the first id above pin the ends of a
+#: grid; this pins every id in it, which is what a row is addressed by.
+GRID_ID_DIGEST: dict[str, str] = {
+    'before_after_grid': '4c3e6f9fda897951',
+    'dilution_grid': '57a698a86be64b55',
+    'dilution_ignored_grid': 'bdee4cc96bc66bb2',
+    'input_aware_grid': '067dd7d0c5133343',
+    'joint_grid': 'b8e672fdfbf0aacf',
+    'lof_null_grid': '105e68d98227ba47',
+    'misfit_power_grid': 'b30f084e9aa06b5d',
+    'owner_grid': 'd6968a2d144c27d9',
+    'pooling_grid': 'b2787fb43cb2d554',
+    'range_spec_grid': '048584423a442086',
+    'robustness_grid': 'a98cf0f27c329c21',
+    'robustness_strained_grid': '2f2f2a33d523ece1',
+    'runs_null_grid': '852f2f20bd4e20f2',
+    'shared_source_grid': '3541d8a3a029fba0',
+    'two_ka_weak_grid': 'cafbb3bfe017efa2',
+}
+
+#: The same digest for the 36 single-titration cases of ``reference_grid``,
+#: which the replicated ones were added beside.
+REFERENCE_SINGLE_DIGEST = '695636a90bd7735d'
+
+
+def id_digest(ids) -> str:
+    """The digest :data:`GRID_ID_DIGEST` holds, over any collection of ids."""
+    return hashlib.sha256('\n'.join(sorted(ids)).encode()).hexdigest()[:16]
+
+
+def test_no_stored_grid_id_moves_when_a_scenario_gains_a_field():
+    """Every row on disk is addressed by one of these strings; one that moved would orphan its rows."""
+    for name, digest in GRID_ID_DIGEST.items():
+        assert id_digest(case.id for case in getattr(scenarios, name)()) == digest, f'{name} writes other ids'
+
+
+def test_the_reference_grid_keeps_its_single_titrations_and_adds_replicated_ones():
+    """The agreement rows already stored are single titrations; the new cases join them without moving them."""
+    grid = scenarios.reference_grid()
+    single = [case for case in grid if case.replicates == 1]
+    replicated = [case for case in grid if case.replicates > 1]
+    assert id_digest(case.id for case in single) == REFERENCE_SINGLE_DIGEST
+    assert len(replicated) == 6
+    assert all(case.proportional and case.replicates == 4 for case in replicated)
+
+
+def test_a_noise_floor_says_nothing_without_noise_that_grows_with_the_signal():
+    """A constant noise is stated in ``noise``; a floor under a flat noise would be read by nobody."""
+    with pytest.raises(ValueError, match='noise_floor') as refusal:
+        Scenario(assay='IDA', noise=0.02, noise_floor=0.005)
+    assert 'proportional' in str(refusal.value), 'the refusal has to name the field that is missing'
+    Scenario(assay='IDA', noise=0.02, noise_floor=0.005, proportional=True)
+
+
+def test_the_noise_structure_of_a_titration_reaches_the_key_its_measurements_hang_on():
+    """Two titrations whose noise is built differently are different measurements and may not share a key."""
+    base = Scenario(assay='IDA', noise=0.02, proportional=True, replicates=4)
+    assert replace(base, noise_floor=0.005).data_id != base.data_id
+    assert replace(base, replicate_scale=0.03).data_id != base.data_id
+    assert replace(base, noise_floor=0.005, replicate_scale=0.03).data_id not in (
+        replace(base, noise_floor=0.005).data_id,
+        replace(base, replicate_scale=0.03).data_id,
+    )
+
+
+def test_the_noise_law_grid_runs_every_structure_the_replicates_can_carry():
+    """The claim is about the law under each of them; a structure left out is a claim nobody measured."""
+    grid = scenarios.noise_law_grid()
+    assert {
+        (case.noise, case.proportional, case.noise_floor, case.replicates, case.replicate_scale) for case in grid
+    } == {
+        (0.02, False, 0.0, 4, 0.0),
+        (0.02, True, 0.0, 4, 0.0),
+        (0.02, True, 0.005, 4, 0.0),
+        (0.02, True, 0.0, 2, 0.0),
+        (0.02, True, 0.0, 3, 0.0),
+        (0.01, False, 0.0, 4, 0.03),
+    }
+    # The inputs are exact, so the judged interval is the conditional one and
+    # what the rows measure is the weighting alone.
+    assert all(not case.specs and case.replicates >= 2 for case in grid)
+
+
+def test_the_input_aware_noise_law_grid_states_its_inputs_and_replicates_them():
+    """The reported interval is only a different number from the conditional one where an input may move."""
+    grid = scenarios.noise_law_aware_grid()
+    assert all(case.specs == stated_specs(case.assay) for case in grid)
+    assert all(case.entry_multiple == 1.0 and case.replicates == 4 and case.proportional for case in grid)
+    assert {case.noise_floor for case in grid} == {0.0, 0.005}
+
+
+def test_the_conflict_rate_on_single_titrations_reads_the_rows_it_names():
+    """Where no law can be read the rate is described, and it is described on fits that were run."""
+    check = CHECKS['conflict-single-proportional']
+    assert check.criterion is None
+    assert {case.id for case in check.cases} <= {case.id for case in CHECKS['robustness'].cases}
+    assert all(case.proportional and case.replicates == 1 for case in check.cases)

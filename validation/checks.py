@@ -173,6 +173,27 @@ def aware_coverage(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _noise_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    """The share of the variance the replicates showed to grow with the signal.
+
+    Zero is a fit weighted equally and one a fit weighted by the inverse square
+    of the signal, so the distribution of this number says what the weighting
+    did on a grid, beside what it did to the coverage. A single titration shows
+    no law and reports nothing here.
+    """
+    return {'~noise_share': row.get('noise_share')}
+
+
+def noise_law_conditional(row: dict[str, Any]) -> dict[str, Any]:
+    """The conditional interval of a weighted fit, with the share the law read beside it."""
+    return {**conditional_coverage(row), **_noise_metrics(row)}
+
+
+def noise_law_aware(row: dict[str, Any]) -> dict[str, Any]:
+    """The reported interval of a weighted fit, with the share the law read beside it."""
+    return {**aware_coverage(row), **_noise_metrics(row)}
+
+
 def _rejects(p_value: float | None) -> bool | None:
     """Whether a test rejects at the level the application runs it at."""
     return None if p_value is None else bool(p_value < DIAGNOSTIC_LEVEL)
@@ -265,19 +286,24 @@ def scatter_kind(case_id: str) -> str:
 
 
 def pooling(row: dict[str, Any]) -> dict[str, Any]:
-    """The interval of the replicates averaged, against the interval of their points pooled.
+    """The interval of the replicates averaged, against their points pooled and against equal weights.
 
     Every series names the scatter the replicates carry, so the three kinds are
     separate rows of the table rather than one rate read off three different
-    experiments.
+    experiments. The averaged and the pooled interval both carry the law the
+    replicates show, so what stands between them is the pooling; the
+    ``equal_`` series is the same average with every point counted equally, so
+    what stands between it and the averaged one is the weighting.
     """
     out: dict[str, Any] = {'~no_reference': row.get('no_reference')}
     kind = scatter_kind(row['case'])
     for key, covers in (row.get('engine_covers') or {}).items():
         out[f'~averaged_cov.{kind}.{key}'] = covers
         out[f'~pooled_cov.{kind}.{key}'] = row['ref_covers'][key]
+        out[f'~equal_cov.{kind}.{key}'] = row['equal_covers'][key]
         out[f'~averaged_width.{kind}.{key}'] = row['engine_width'][key]
         out[f'~pooled_width.{kind}.{key}'] = row['ref_width'][key]
+        out[f'~equal_width.{kind}.{key}'] = row['equal_width'][key]
     return out
 
 
@@ -563,7 +589,7 @@ CHECKS: dict[str, Check] = {
         ),
         metrics=agreement,
         cases=tuple(scenarios.reference_grid()),
-        row=reference.row,
+        row=reference.agreement_row,
         criterion=AGREEMENT,
         criterion_reason=(
             'The two computations answer the same definition on the same data, so every dataset should '
@@ -592,14 +618,16 @@ CHECKS: dict[str, Check] = {
         name='replicate-pooling',
         claim=(
             'What the app gains by fitting the average of the replicates rather than pooling their '
-            'points: the coverage and the width of both intervals on the same data, under independent '
-            'noise, under noise that grows with the signal, and under one departure the replicates '
-            'share. Reported, not required — under a shared departure neither holds its level, which is '
-            'the point.'
+            'points, and what weighting the points by the law the replicates show buys: the coverage and '
+            'the width of the averaged interval, of the pooled one — both carrying that same law — and '
+            'of the same average fitted with every point counted equally, on the same data, under '
+            'independent noise, under noise that grows with the signal, and under one departure the '
+            'replicates share. Reported, not required — under a shared departure none of the three holds '
+            'its level, which is the point.'
         ),
         metrics=pooling,
         cases=tuple(scenarios.pooling_grid()),
-        row=reference.row,
+        row=reference.pooling_row,
         stages=(200,),
     ),
     'before-after': Check(
@@ -676,6 +704,93 @@ CHECKS: dict[str, Check] = {
             'the same criterion applies; what this grid adds is that the entries carry exactly the '
             "correlation the fit is told about, which is the model's own premise."
         ),
+    ),
+    'noise-law-coverage': Check(
+        name='noise-law-coverage',
+        claim=(
+            'The interval reported when every entered input is taken as exact holds the true binding '
+            'constant as often as its 95 % level says on replicated titrations, whatever the noise does '
+            'along them: constant, growing with the signal, the two together, at two, three and four '
+            'replicates, and with whole replicates differing by a scale factor of three percent.'
+        ),
+        metrics=noise_law_conditional,
+        cases=tuple(scenarios.noise_law_grid()),
+        row=score,
+        criterion=COVERAGE,
+        criterion_reason=(
+            _COVERAGE_REASON + ' The weights the fit uses are read off the same replicates the interval '
+            'is computed from, so a law read too eagerly — or read off differences between whole '
+            'replicates that are not noise about the curve at all — shows up here as an interval that '
+            'no longer holds its level. The share each fit read is reported beside the rate.'
+        ),
+    ),
+    'noise-law-lof-null': Check(
+        name='noise-law-lof-null',
+        claim=(
+            'On the same replicated titrations, every one of which the model does describe, the '
+            'lack-of-fit F test calls the model inadequate about as often as its level allows — with the '
+            'fit weighted by the law the replicates show and the pure error taken as their scatter about '
+            'their own image of the mean curve.'
+        ),
+        metrics=lof_rate,
+        cases=tuple(scenarios.noise_law_grid()),
+        criterion=NULL_RATE,
+        criterion_reason=(
+            _NULL_REASON + ' Both halves of this F ratio are affected by the weights: a law that '
+            'misweights the points inflates the numerator, and a pure error that counted the difference '
+            'between whole replicates as noise inflates the denominator until the test cannot fire at '
+            'all. The rate says whether the two are the quantities the F distribution describes.'
+        ),
+        derived_from='noise-law-coverage',
+    ),
+    'noise-law-aware': Check(
+        name='noise-law-aware',
+        claim=(
+            'The reported interval, which lets every entered input move within the uncertainty stated '
+            'for it, holds its level on replicated titrations whose noise grows with the signal, with '
+            'and without a constant floor under it, when the inputs are entered exactly as wrongly as '
+            'stated.'
+        ),
+        metrics=noise_law_aware,
+        cases=tuple(scenarios.noise_law_aware_grid()),
+        row=score,
+        criterion=COVERAGE,
+        criterion_reason=(
+            _COVERAGE_REASON + ' The weights reach more than the profile here: the residual scale the '
+            'stated uncertainties are penalised against and the degrees of freedom left to the interval '
+            'are both read in the weighted space, so the reported interval needs saying separately from '
+            'the conditional one.'
+        ),
+    ),
+    'noise-law-conflict-null': Check(
+        name='noise-law-conflict-null',
+        claim=(
+            'On the same fits, the check on the entered inputs calls them in conflict about as often as '
+            'its level allows when they are entered exactly as wrongly as stated and the noise grows '
+            'with the signal.'
+        ),
+        metrics=conflict_rate,
+        cases=tuple(scenarios.noise_law_aware_grid()),
+        criterion=NULL_RATE,
+        criterion_reason=(
+            _NULL_REASON + ' The reference the statistic is read against assumes residual rows of equal '
+            'variance. Weighting by the law the replicates show is what makes that true of data whose '
+            'noise grows with the signal, and this rate is what says so.'
+        ),
+        derived_from='noise-law-aware',
+    ),
+    'conflict-single-proportional': Check(
+        name='conflict-single-proportional',
+        claim=(
+            'How often the same check fires on single titrations whose noise grows with the signal. One '
+            'curve cannot show how the noise varies along it, so the fit takes the noise as constant and '
+            'the statistic is read against a reference that assumes it. Reported, not required: it is '
+            'the rate that stays where no law can be estimated, and the summary and the plot guide say '
+            'the noise was taken as constant.'
+        ),
+        metrics=conflict_rate,
+        cases=tuple(case for case in scenarios.robustness_grid() if case.proportional),
+        derived_from='robustness',
     ),
     'budget-coverage': Check(
         name='budget-coverage',

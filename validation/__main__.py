@@ -16,11 +16,12 @@
 repeated; a case is taken when one of them matches. A fix round re-runs and
 prints the cells it touched and nothing else.
 
-``python -m validation compare CODE_A [CODE_B] [<check>...]``
+``python -m validation compare CODE_A [CODE_B] [<check>...] [--ignore FIELD]``
     Compare the rows two code hashes stored for the same cases and seeds, field
     by field. ``CODE_B`` is the current hash when it is left out. Exits 1 as
     soon as one field differs, or when a check named on the command line holds
-    no row under both hashes.
+    no row under both hashes. ``--ignore`` may be repeated and names a field
+    left out of the comparison: one that only one of the two hashes writes.
 
 ``python -m validation prune``
     Drop the rows an earlier version of the code produced.
@@ -30,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import re
+from collections import Counter
 
 from validation import run as runner
 from validation import store
@@ -69,19 +71,26 @@ def _list_cases(patterns: list[str]) -> None:
             print(f'  {case.id}')
 
 
-def _compare(code_a: str, code_b: str, names: list[str]) -> int:
+def _compare(code_a: str, code_b: str, names: list[str], ignore: list[str]) -> int:
     """Print what the rows of two code hashes disagree on, and return the exit status.
 
     Every named check, or every check whose file holds rows, is compared over
     the ``(case, seed)`` keys both hashes hold. Zero differing rows over rows
     that exist is the pass; a check named on the command line with no common
     rows is a failure, because the comparison it was asked for did not happen.
+
+    A check that differs names every field it differs on and how many keys
+    each one moved on. A field only one of the hashes writes differs on every
+    key; *ignore* names such fields, so that the exit status is decided by the
+    fields both sides carry.
     """
     print(f'comparing {code_a} against {code_b}\n')
+    if ignore:
+        print(f'not compared: {", ".join(ignore)}\n')
     failed = False
     compared_anything = False
     for name in names or list(CHECKS):
-        compared, found = store.differences(name, code_a, code_b)
+        compared, found = store.differences(name, code_a, code_b, ignore=(*store.UNCOMPARED, *ignore))
         compared_anything = compared_anything or compared > 0
         if not compared:
             if names:
@@ -91,6 +100,8 @@ def _compare(code_a: str, code_b: str, names: list[str]) -> int:
         differing = {(case, seed) for case, seed, _ in found}
         print(f'{name:22s} {compared} rows compared, {len(differing)} differing')
         if found:
+            tally = Counter(field for _, _, field in found)
+            print('  fields: ' + ', '.join(f'{field} ({count})' for field, count in sorted(tally.items())))
             case, seed, field = found[0]
             print(f'  first difference: {case} seed {seed} field {field}')
             failed = True
@@ -128,6 +139,13 @@ def main() -> None:
         metavar='CODE_B | check',
         help='the second code hash (default: the current one), then the checks to compare (default: all)',
     )
+    compare_parser.add_argument(
+        '--ignore',
+        action='append',
+        default=[],
+        metavar='FIELD',
+        help='a row field to leave out of the comparison; may be repeated',
+    )
 
     commands.add_parser('prune', help='drop rows from another code hash')
 
@@ -145,7 +163,7 @@ def main() -> None:
         except re.error as bad:
             raise SystemExit(f'--cases {pattern!r} is not a regular expression: {bad}') from bad
     if args.command == 'compare':
-        raise SystemExit(_compare(args.code_a, code_b, args.checks))
+        raise SystemExit(_compare(args.code_a, code_b, args.checks, args.ignore))
     if args.command == 'run':
         runner.run(args.checks, jobs=args.jobs, max_n=args.max_n, time_limit_min=args.time_limit_min, cases=args.cases)
     elif args.command == 'tables':

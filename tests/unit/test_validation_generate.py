@@ -303,3 +303,51 @@ def test_a_shared_source_comes_out_at_the_spread_it_states():
     # 200 draws: the sample standard deviation is within about 15 % of the true one.
     assert drawn.std(ddof=1) == pytest.approx(0.04, rel=0.2)
     assert abs(drawn.mean()) < 0.01
+
+
+#: One dataset of the noise-law grid, spelled out: the first three signals of
+#: its first replicate, the last signal of its last one, and the binding
+#: constant they were drawn around. The truth and the noise come from the first
+#: two children of the data stream, and the scale factor of a replicate from a
+#: third that is only drawn from where a scenario states one — so these numbers
+#: are what every stored row of every replicated grid was computed from. A
+#: changed stream moves them by order one; the tolerance is there for the last
+#: bits of a platform, since the release builds run on three of them.
+NOISE_LAW_CASE = Scenario(assay='IDA', regime=10.0, n_points=12, noise=0.02, proportional=True, replicates=4)
+NOISE_LAW_FIRST = [187610.22265797152, 130755.45764137199, 96888.4453711552]
+NOISE_LAW_LAST = 48981.393649496604
+NOISE_LAW_KA = 216209.1393077571
+
+
+def test_a_replicated_dataset_draws_the_measurement_its_rows_were_computed_from():
+    """A third stream for the replicate scale factors must leave the truth and the noise where they were."""
+    data = dataset(NOISE_LAW_CASE, 7)
+    assert data.signals[0, :3] == pytest.approx(NOISE_LAW_FIRST, rel=1e-9)
+    assert data.signals[-1, -1] == pytest.approx(NOISE_LAW_LAST, rel=1e-9)
+    assert data.truth['Ka_guest'] == pytest.approx(NOISE_LAW_KA, rel=1e-9)
+
+
+def test_a_noise_floor_joins_the_proportional_part_in_quadrature():
+    """The mixed cases claim a noise that neither vanishes with the signal nor stays flat along it."""
+    data = dataset(replace(CASE, n_points=30, noise=0.02, proportional=True, noise_floor=0.005, replicates=2), 1)
+    floor = 0.005 * np.ptp(data.clean)
+    grows = 0.02 * np.abs(data.clean)
+    assert np.all(data.noise_sigma == pytest.approx(np.hypot(floor, grows)))
+    assert np.all(data.noise_sigma > grows), 'a floor has to add to the part that grows with the signal'
+    # A scenario that states no floor keeps the noise it always had, to the
+    # last bit: the rows of every proportional grid were computed from it.
+    plain = dataset(replace(CASE, n_points=30, noise=0.02, proportional=True, replicates=2), 1)
+    assert np.array_equal(plain.noise_sigma, 0.02 * np.abs(plain.clean))
+
+
+def test_a_replicate_scale_factor_multiplies_one_replicate_and_is_not_noise():
+    """A lamp or gain difference is an affine image of the whole curve, which no point's noise describes."""
+    data = dataset(replace(CASE, noise=0.0, replicates=4, replicate_scale=0.03), 2)
+    assert np.all(data.noise_sigma == 0.0)
+    # Each replicate is one factor times the clean curve, so every point of it
+    # gives the same ratio, and the four factors differ.
+    factors = data.signals / data.clean
+    assert np.allclose(factors, factors[:, :1], rtol=1e-12, atol=0)
+    drawn = factors[:, 0]
+    assert len(set(drawn.tolist())) == 4
+    assert np.std(drawn) > 0.005

@@ -35,10 +35,12 @@ was narrowed by — the cases left out are cases nobody asked about, not cases t
 A full run is hours of processor time. A smoke run is `--max-n 2` on one check.
 
 `compare CODE_A [CODE_B] [<check>...]` reads the rows two code hashes stored for the same
-`(case, seed)` and prints, per check, how many were compared, how many differ and the first
-`(case, seed, field)` that does; it exits 1 on any difference. Everything but `code`, `t_fit`
-and `t_total` is compared, and a value is equal only when it is the same number, so it is the
-guard behind a change that was meant to leave a path alone: run the checks that cover that path
+`(case, seed)` and prints, per check, how many were compared, how many differ, every field they
+differ on with the number of keys it moved on, and the first `(case, seed, field)` that does; it
+exits 1 on any difference. Everything but `code`, `t_fit`, `t_total` and the fields named with
+`--ignore FIELD` (repeatable) is compared, and a value
+is equal only when it is the same number, so it is the guard behind a change that was meant to
+leave a path alone: run the checks that cover that path
 before the change, run the same command after it into the same store — never `prune` in between,
 since both hashes have to be on disk — and compare. Zero differing rows over some thousands of
 fits is the pass; a check named on the command line with no rows under both hashes is a failure,
@@ -57,7 +59,16 @@ stated uncertainty does to a fit is read off the same measurement.
 The fit goes through the calls the interface makes — `fit_measurement_set` on a
 `MeasurementSet` — so what is scored is what ships. The row holds the truth, the reported
 interval, the interval conditional on the entered inputs, where the fit put the inputs, what the
-misfit tests and the conflict statistic say, and the wall time.
+misfit tests and the conflict statistic say, what the replicates showed about the noise
+(`noise_share`, `noise_basis` — the share of the variance that grows with the signal, and what
+the law was read from), and the wall time.
+
+A scenario says what the noise does as well as how big it is: `proportional` makes it grow with
+the signal, `noise_floor` puts a constant part under it in quadrature, and `replicate_scale`
+gives each replicate one scale factor of its own — a lamp or gain difference between runs, which
+is a difference between whole replicates and not noise about the curve. The last two enter a
+scenario's key only where they are stated, so every id an earlier run stored still names the same
+titration.
 
 A fit the application declines is stored with the message a user would see and counted as
 **refused**; anything else that escapes is stored with its type and counted as an **error**.
@@ -73,6 +84,21 @@ them once nobody wants the record of what the previous engine did.
 
 The hash does **not** cover this package. When a change here alters what a row holds rather than
 how it is computed, delete the check's file rather than letting old and new rows be read together.
+
+**Rows a changed row function retires.** `replicate-pooling` is computed by `reference.pooling_row`
+and `reference-agreement` by `reference.agreement_row`, which were one function before the point
+weights: the agreement is now read on the average of the replicates and the pooling comparison
+carries the same weights on both sides and a third, unweighted interval beside them. Every stored
+`replicate-pooling` row, and every stored `reference-agreement` row of a replicated case, therefore
+answers a question that is no longer asked and is deleted before the checks are re-run. The
+single-titration agreement rows keep their meaning: one signal shows no noise law, its weights are
+exactly one, and the row is the row that was stored.
+
+**Rows a new field changes.** Every `score` row now carries `noise_share` and `noise_basis`, which
+rows written before them do not; `compare` counts a field present on one side only as a difference,
+so a comparison against such rows names them: `compare CODE_A --ignore noise_share --ignore
+noise_basis`. The exit status is then decided by the fields both sides carry. The two fields say
+what the fit was weighted by, and on a single titration they say it was weighted by nothing.
 
 Each row is one unbuffered append of the whole encoded line, so a process killed between two rows
 leaves whole lines behind it. A line that is nonetheless unreadable — a full disk, a kill landing
@@ -227,9 +253,16 @@ robustness-strained    72 cases                                 reported
   What the interval does when its premise is broken: entries twice as wrong as stated, and one
   stock error shared by two inputs that were each stated on their own. Described, not required.
 
-reference-agreement    36 cases                                 >= 0.99
+reference-agreement    42 cases                                 >= 0.99
   The engine places both edges of its interval where an independent profile — its own design,
   its own search and its own root finding — places them, to a ten-thousandth of a decade of Ka.
+  The reference writes the acceptance rule itself as well: a Ka is accepted where its profile
+  stays under `S_min (1 + m F(0.95; m, nu) / nu)` with `m = 1 + max(0, r(k_hat) - r(k))`, and
+  `r(k)` the rank of the columns whose coefficient the reference's own bounded solve leaves
+  strictly inside its bounds at `k`. A coefficient on a bound is not fitted, so the cut-off steps
+  up wherever the profile gives one up and is the plain F test wherever it does not. The rank is
+  counted on the reference's own design columns; nothing of the engine's is imported for it, so
+  the step is a second statement of the rule and not a copy of it.
 
 joint-region           48 cases                                 95 % interval
   The joint confidence region of a two-constant model holds the true pair as often as its level
@@ -237,10 +270,13 @@ joint-region           48 cases                                 95 % interval
   each other and neither interval alone settles the pair.
 
 replicate-pooling      36 cases                                 reported
-  What the app gains by fitting the average of the replicates rather than pooling their points:
-  the coverage and the width of both intervals on the same data, under independent noise, under
-  noise that grows with the signal, and under one departure the replicates share. Reported, not
-  required — under a shared departure neither holds its level, which is the point.
+  What the app gains by fitting the average of the replicates rather than pooling their points,
+  and what weighting the points by the law the replicates show buys: the coverage and the width
+  of the averaged interval, of the pooled one — both carrying that same law — and of the same
+  average fitted with every point counted equally, on the same data, under independent noise,
+  under noise that grows with the signal, and under one departure the replicates share.
+  Reported, not required — under a shared departure none of the three holds its level, which is
+  the point.
 
 before-after           72 cases                                 reported
   What the same datasets gave before the engine: how often the range spanned by the pool of
@@ -266,6 +302,35 @@ shared-source-coverage 36 cases                                 95 % interval
   The reported interval holds its level when one error of four percent is common to every
   concentration of the sample — one stock behind the host, the fixed partner and the titrant —
   the entries are drawn from exactly that model and the fit is told it.
+
+noise-law-coverage     48 cases                                 95 % interval
+  The interval reported when every entered input is taken as exact holds the true binding
+  constant as often as its 95 % level says on replicated titrations, whatever the noise does
+  along them: constant, growing with the signal, the two together, at two, three and four
+  replicates, and with whole replicates differing by a scale factor of three percent.
+
+noise-law-lof-null     reads 48 cases of noise-law-coverage     5 % test
+  On the same replicated titrations, every one of which the model does describe, the lack-of-fit
+  F test calls the model inadequate about as often as its level allows — with the fit weighted
+  by the law the replicates show and the pure error taken as their scatter about their own image
+  of the mean curve.
+
+noise-law-aware        16 cases                                 95 % interval
+  The reported interval, which lets every entered input move within the uncertainty stated for
+  it, holds its level on replicated titrations whose noise grows with the signal, with and
+  without a constant floor under it, when the inputs are entered exactly as wrongly as stated.
+
+noise-law-conflict-null reads 16 cases of noise-law-aware        5 % test
+  On the same fits, the check on the entered inputs calls them in conflict about as often as its
+  level allows when they are entered exactly as wrongly as stated and the noise grows with the
+  signal.
+
+conflict-single-proportional reads 18 cases of robustness             reported
+  How often the same check fires on single titrations whose noise grows with the signal. One
+  curve cannot show how the noise varies along it, so the fit takes the noise as constant and
+  the statistic is read against a reference that assumes it. Reported, not required: it is the
+  rate that stays where no law can be estimated, and the summary and the plot guide say the
+  noise was taken as constant.
 
 budget-coverage        4 cases                                  95 % interval
   The 95 % intervals the Ka uncertainty budget draws — around the variance of the output, around
@@ -317,6 +382,15 @@ that were left out beside it; `what-if-accuracy` keeps every row and gives its t
 second time over the clean ones, `~formula_err_clean.KEY` and `~reweighted_err_clean.KEY`. A case
 whose regime leaves most rows on a bound therefore says little: widen the Ka bounds or move the
 case to a regime the default box contains.
+
+The five `noise-law-*` and `conflict-single-proportional` entries read one change from two sides.
+`noise-law-coverage` and `noise-law-aware` run replicated titrations whose noise the fit reads a
+law off, and `noise-law-lof-null` and `noise-law-conflict-null` ask the two tests of the same fits
+what they do on data the model describes and inputs entered as wrongly as stated.
+`conflict-single-proportional` reads the proportional cases of `robustness`, which are single
+titrations: one curve cannot show how the noise varies along it, so there the noise is taken as
+constant, and the rate is reported rather than judged — it is what the fit does where no law can be
+estimated, and the summary and the plot guide say so.
 
 `before-after` runs the release before the engine. It extracts that commit with `git archive`
 into a directory of its own and runs it in a subprocess with that directory on the path, so the

@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from validation import store
+from validation.__main__ import _compare
 from validation.checks import CHECKS
 from validation.run import pending_jobs
 
@@ -184,3 +185,16 @@ def test_a_key_only_one_run_holds_is_not_compared(results):
     compared, found = store.differences('demo', 'old', 'new')
     assert (compared, found) == (1, [])
     assert store.differences('demo', 'old', 'missing') == (0, [])
+
+
+def test_a_field_named_as_ignored_does_not_decide_the_exit_status(results, capsys):
+    """A field only the newer code writes differs on every key; the gate has to be readable past it."""
+    store.append('demo', [{'case': 'A', 'seed': 0, 'code': 'old', 'width': 0.25}])
+    store.append('demo', [{'case': 'A', 'seed': 0, 'code': 'new', 'width': 0.25, 'noise_basis': 'single_titration'}])
+    assert _compare('old', 'new', ['demo'], []) == 1
+    assert _compare('old', 'new', ['demo'], ['noise_basis']) == 0
+    store.append('demo', [{'case': 'B', 'seed': 0, 'code': 'old', 'width': 0.25}])
+    store.append('demo', [{'case': 'B', 'seed': 0, 'code': 'new', 'width': 0.26, 'noise_basis': 'single_titration'}])
+    capsys.readouterr()
+    assert _compare('old', 'new', ['demo'], ['noise_basis']) == 1
+    assert 'first difference: B seed 0 field width' in capsys.readouterr().out

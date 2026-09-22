@@ -3,11 +3,11 @@
 The truth is drawn inside the scenario: the concentration scale, the titrant
 span, the signal coefficients and the exact binding constants that put the
 model in the scenario's regime. The randomness comes only from
-``np.random.default_rng``, in three independent streams — the truth, the
-measurement noise and the entry errors — each seeded from the seed and a key of
-the scenario: the titration for the first two
-(:attr:`~validation.scenarios.Scenario.data_id`) and the titration with the
-uncertainties stated for its inputs for the third
+``np.random.default_rng``, in four independent streams — the truth, the
+measurement noise, the scale factor of each replicate and the entry errors —
+each seeded from the seed and a key of the scenario: the titration for the
+first three (:attr:`~validation.scenarios.Scenario.data_id`) and the titration
+with the uncertainties stated for its inputs for the last
 (:attr:`~validation.scenarios.Scenario.entry_id`). A dataset is reproducible
 from ``(scenario.id, seed)`` alone; its noise does not change when the entered
 inputs start moving, and its entry errors are one draw scaled by the multiple.
@@ -83,7 +83,9 @@ class Dataset:
     signals : np.ndarray
         Measured signals, shape ``(replicates, points)``.
     noise_sigma : np.ndarray
-        Standard deviation of the noise at each point.
+        Standard deviation of the independent noise at each point of one
+        replicate. A replicate scale factor is a difference between whole
+        replicates rather than noise within one, so it is not in this.
     entry_errors : dict[str, float]
         Relative error of each entered input: its true value is the entered one
         times ``1 + e``.
@@ -316,7 +318,9 @@ def dataset(scenario: Scenario, seed: int) -> Dataset:
     # measurement; the entries have a stream of their own, keyed by the
     # titration and the uncertainties stated for it but not by the multiple, so
     # the entries at 2 sigma are the entries at 1 sigma doubled.
-    truth_rng, noise_rng = (np.random.default_rng(child) for child in stream_seed(scenario.data_id, seed).spawn(2))
+    truth_rng, noise_rng, scale_rng = (
+        np.random.default_rng(child) for child in stream_seed(scenario.data_id, seed).spawn(3)
+    )
     entry_rng = np.random.default_rng(stream_seed(f'{scenario.entry_id}|entry', seed))
     truth, conditions, conc, x, stock = _truth(scenario, truth_rng)
     bare = _clean_signal(scenario, truth, _point_totals(scenario, conditions, x, stock), x)
@@ -330,9 +334,22 @@ def dataset(scenario: Scenario, seed: int) -> Dataset:
 
     if scenario.proportional:
         sigma = scenario.noise * np.abs(clean)
+        if scenario.noise_floor:
+            # The two parts of the noise are independent, so they add in
+            # quadrature; a floor of zero is the proportional part itself.
+            sigma = np.hypot(scenario.noise_floor * float(np.ptp(clean)), sigma)
     else:
         sigma = np.full(x.size, scenario.noise * float(np.ptp(clean)))
-    signals = np.vstack([clean + sigma * noise_rng.standard_normal(x.size) for _ in range(scenario.replicates)])
+    # One scale factor per replicate multiplies its whole clean signal, offset
+    # and planted misfit included, as a lamp or gain difference between runs
+    # does. Without one the factors are exactly one and the stream is not drawn
+    # from at all.
+    factors = (
+        1.0 + scenario.replicate_scale * scale_rng.standard_normal(scenario.replicates)
+        if scenario.replicate_scale
+        else np.ones(scenario.replicates)
+    )
+    signals = np.vstack([factor * clean + sigma * noise_rng.standard_normal(x.size) for factor in factors])
 
     errors = _entry_errors(scenario, entry_rng)
     titrant_factor = 1.0 + errors.get(TITRANT, 0.0)
