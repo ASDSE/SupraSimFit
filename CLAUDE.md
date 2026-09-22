@@ -87,6 +87,7 @@ All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY:
 | **Models** | `core/models/` | Pure, unit-free math: `equilibrium.py`, `linear.py` |
 | **Optimizer** | `core/optimizer/` | Numerical helpers around the fit: `calculate_fit_metrics` (filters.py), `describe`/`describe_log10` summary stats (ensemble.py), `linear_regression` (linear_fit.py) |
 | **Fit engine** | `core/pipeline/varpro.py` | Variable projection: `Projection` (bounded linear solve of the signal parameters at a fixed Ka, log-grid search + refinement over the Ka, profile, `KaInterval`, `residual()` / `inner_start()` at shifted inputs), `replicate_outliers()`, `projectable()`. Pure numerics on an assay, its bounds and one or more signal rows |
+| **Noise law** | `core/pipeline/noise.py` | What the replicates say about how precise each titration point is: `replicate_scatter()` (each replicate about its own affine image of the mean curve, whitened, with the leverages) and `noise_law()` → `NoiseLaw` — the `NoiseBasis` it rests on, the `share` of the two-component law `var(y) = floor² + (proportional·y)²`, `weights()` (one vector over the titration points, `np.ones` where no law could be read), `describe()` (the `Noise:` sentence the summary, the report and the CSV carry) and `to_dict()` / `from_dict()`. Deterministic, drawn before the fit |
 | **Inputs** | `core/pipeline/inputs.py` | What the user states about the entered inputs, as one `ErrorModel` of independent sources: each input's own `InputSpec` (σ or range, relative or absolute), the named `SharedSource`s that move two or more inputs together (`shared_key()`, `input_offsets()` maps source offsets to input offsets), and the `AdditionError` of each titrant addition (`perturb_titrant()`, sensitivity only — `for_fit()` drops it). Plus `perturbable_inputs()`, `TITRANT`, `TITRANT_STOCK`, `ADDITIONS`, the `InputConstraint` tuple `constraints()` hands to the fit (one per source), `validate()`, `source_name()`, and `to_dict()` / `from_dict()` for the results file. Shared by the interval and the sensitivity analysis |
 | **Input-aware interval** | `core/pipeline/input_aware.py` | `input_aware()` → `AwareResult`: the penalised profile of each Ka with the entered inputs free inside their stated uncertainties (`AwareFit`, `AwareProfile`), `fit_jacobian()`, `conflict()`, `input_shifts()` |
 | **Diagnostics** | `core/pipeline/diagnostics.py` | Pure functions on arrays: `lack_of_fit()` / `runs_test()` (does the curve miss the data), `conflict_reference()` / `conflict_test()` / `conflict_p_value()` (did the inputs move further than stated), `verdict()` → `FitDiagnostics` |
@@ -109,7 +110,7 @@ All assay types are registered in `core/assays/registry.py` via `ASSAY_REGISTRY:
 
 ### Fitting Pipeline Flow
 
-`load_measurements()` → `MeasurementSet` → `.to_assay()` → `BaseAssay` → `fit_assay(assay, FitConfig)` → `Projection` (signal parameters by bounded linear least squares, Ka by log-grid search + refinement) → profile-likelihood interval per Ka (the **conditional** fit and interval, every entered input taken as exact) → `input_aware()` with the constraints of `FitConfig.errors.for_fit()` — one per error source, an input's own or a shared one (penalised profile: each Ka against the best fit reachable while the inputs move inside their stated uncertainties, a `loading` map turning source offsets into input offsets) → `diagnostics` (misfit test at both fits, conflict statistic, `verdict()`) → `FitResult`
+`load_measurements()` → `MeasurementSet` → `.to_assay()` → `BaseAssay` → `fit_assay(assay, FitConfig)` → `noise_law(replicate_signals)` → `Projection` (point weights from that law, signal parameters by bounded weighted linear least squares, Ka by log-grid search + refinement) → profile-likelihood interval per Ka (the **conditional** fit and interval, every entered input taken as exact) → `input_aware()` with the constraints of `FitConfig.errors.for_fit()` — one per error source, an input's own or a shared one (penalised profile: each Ka against the best fit reachable while the inputs move inside their stated uncertainties, a `loading` map turning source offsets into input offsets) → `diagnostics` (misfit test at both fits, conflict statistic, `verdict()`) → `FitResult`
 
 With no uncertainty stated — how the Input Uncertainty panel opens — `input_aware()`
 returns the conditional interval objects themselves, so a fit of exact inputs costs
@@ -120,12 +121,20 @@ the same order; `input_offsets()` is the identity; and `get_conditions()` / `fit
 carry no dilution or shared-source key. Any change on that path has to preserve all
 three.
 
+The same holds for the weights. A single titration, and any set of replicates whose
+noise law comes out constant, gets `np.ones` from `NoiseLaw.weights()`; `Projection`
+whitens by `sqrt` of that, so every solve multiplies by exactly 1.0 and the fit, the
+interval and the diagnostics are those of an engine with no weights at all, to the last
+bit. Arithmetic on that path is not to be reordered.
+
 A per-replicate fit (`fit_measurement_set_per_replica`) builds one `Projection` over all
 replicate rows, runs `replicate_outliers()` to decide which replicates share a Ka, and
 reports the fit of the average of the ones kept, with each replicate's own fit in
-`replica_fits`; those per-replicate fits stay conditional. In either mode the signals of
-the replicates used reach `fit_assay` as `replicate_signals`, which is what the
-lack-of-fit F test measures the noise from.
+`replica_fits`; those per-replicate fits stay conditional, and are made with the weights
+of the shared law while carrying no `noise` of their own — a sentence about the scatter
+of several replicates does not describe a result whose data are one of them. In either
+mode the signals of the replicates used reach `fit_assay` as `replicate_signals`, which
+is what the noise law and the lack-of-fit F test are read from.
 
 **Reporting is derived, never stored.** `FitResult` keeps the fit's `parameters`, the
 `KaInterval` of each binding constant and the `ConditionalFit` beside it; every reported

@@ -87,6 +87,7 @@ and $(\hat{K}, \hat{\mathbf{c}})$ is the least-squares fit of the full model.
 - **Why exhaust the range rather than start somewhere.** The residual as a function of $K$ can have more than one basin, and the isotherm responds to $\log K$ on a scale of about half a decade, so four points per decade put a node inside every basin with room to spare — which is what the brute-force comparison above measures. The fit is then a property of the data and the bounds alone: it draws no random numbers, and the same input gives the same answer on every run and every machine.
 - **Cost.** Covering the range instead of starting from a guess costs little: for 30 points over the default bounds, a one-constant fit with its confidence interval takes about 0.1 s, and a two-constant fit about one second, with three to five seconds more for both of its intervals.
 - **Replicates.** With several replicate signal rows and row weights $w_r$ the objective is $Q(K) = \sum_r w_r S_r(K)$ — one shared $K$, each row its own coefficients. Section 4.3 says what that is used for.
+- **Points.** Each titration point carries a weight $\omega_i$ of its own, read from the noise law the replicates show, so $S(K)$ above is $\min_\mathbf{c} \sum_i \omega_i (y_i - (A(K)\mathbf{c})_i)^2$. Section 4.4 derives the law and states where the whitening happens; with one titration, and wherever the replicates show constant noise, $\boldsymbol\omega = \mathbf{1}$ and the solve is the unweighted one.
 
 ### 4.2. Root-Finding Algorithms
 
@@ -114,7 +115,65 @@ Calibration is done per assay type, on synthetic data of that assay (replicate a
 
 Every excluded replicate is named in the report with its $p$-value and the reason, and plays no part in the reported parameters, RMSE or R².
 
-### 4.4. Physical Constraints: Non-Negative Signal Intensities
+### 4.4. The Noise Law the Replicates Show
+
+The $F$ tests of Sections 6 and 8 rest on scatter of one size across the titration. A fluorescence titration rarely has that: at the bright end the noise is a percentage of the signal, at the dark end it is the detector's own floor. Where two or more replicates were measured the app reads where between those two regimes the data lie and weights the fit accordingly; with one titration it cannot, and says so instead of assuming.
+
+**What replicate scatter is, and what it is not.** Two runs of one titration differ by the noise of each measurement *and* by an affine image of the whole curve — a lamp, a gain, a path length, a background. The second is not error about the model. For every registered assay
+
+$$\alpha + \beta\Big(I_0 + \sum_i I_i [C_i]\Big) = (\alpha + \beta I_0) + \sum_i (\beta I_i)\,[C_i],$$
+
+the same model with different signal parameters, so a replicate measured 3 % brighter is a curve the fit reproduces exactly and has not measured any less precisely. The noise is therefore read from the residuals of each replicate about its **own** affine image of the mean curve,
+
+$$\mathbf{e}_r \;=\; \mathbf{y}_r - \big(\hat\alpha_r + \hat\beta_r\,\bar{\mathbf{y}}\big), \qquad r = 1 \dots m,$$
+
+each fitted by weighted least squares on the two columns $[\mathbf{1}, \bar{\mathbf{y}}]$ — one thin QR for all of them, and the residuals read whitened by those same weights — and not from the raw deviations $y_{ri} - \bar{y}_i$. The replicates of the datasets shipped in `data/` differ by scale factors of 0.97 to 1.03, and read raw that structure alone makes their scatter grow with the signal: the raw spread of `data/DBA_system_host_to_dye.txt` reads a proportional share of 0.97 (0.94 once the default outlier removal has run) where the detrended scatter reads 0.20 (0.37), and the data would be weighted as though their noise were proportional to the signal when most of it is not.
+
+**The law.** The two-component model of analytical chemistry (Rocke & Lorenzato 1995),
+
+$$\operatorname{var}(y_i) \;=\; a^2 + \big(b\,\bar{y}_i\big)^2 \;=\; c\,g_i(\lambda), \qquad g_i(\lambda) = (1 - \lambda) + \lambda\,\frac{\bar{y}_i^2}{\mathrm{ref}^2}, \qquad \mathrm{ref}^2 = \frac{1}{n}\sum_i \bar{y}_i^2,$$
+
+a constant floor $a$ in signal units and a part $b$ proportional to the signal, written as a level $c$ times a relative variance $g$ that is 1 at the root-mean-square signal. The **share** $\lambda \in [0, 1]$ is the fraction of the variance at that signal which grows with the signal squared: $\lambda = 0$ is constant noise, $\lambda = 1$ proportional noise, and $a = \sqrt{c(1 - \lambda)}$, $b = \sqrt{c\lambda}/\mathrm{ref}$. It is preferred to a power law $c\,\bar{y}^{2\theta}$ on four counts: it contains constant, proportional and mixed noise exactly rather than approximately; its share is confined to $[0, 1]$ by the non-negativity of the two variances, so no exponent has to be clipped at a chosen value; the signal enters squared, so a blank-subtracted point at or below zero is harmless where $\log \bar{y}$ is undefined; and the weights it implies are bounded, where a power law's grow without limit as the signal goes to zero.
+
+**The estimator.** Only $\lambda$ is searched. For a candidate share, every replicate is detrended as above with the points weighted by $1/g_i(\lambda)$, giving whitened residuals $e_{ri}$ and the leverages $h_i$ of the two-column fit, and
+
+$$t_i \;=\; \frac{1}{1 - h_i}\sum_{r=1}^{m} e_{ri}^2, \qquad \mathbb{E}\,t_i = c\,(m-1) \ \text{ at the true } \lambda,$$
+
+the leverage correction undoing what the line removed and the one missing replicate being what the mean costs. Under the right share the whitened scatter is flat along the titration, so
+
+$$\hat\lambda \;=\; \arg\min_{\lambda \in [0,1]} \ \sum_{i \,:\, t_i > 0} \big(\log t_i - \overline{\log t}\,\big)^2,$$
+
+over the points whose $t_i$ stands above the rounding error of the projection that produced it. The spread of $\log t_i$ does not depend on the size of the noise, and a least-squares fit of logarithms is not carried away by the single wild value of one replicate at one point that a real titration has. A whole replicate that runs apart from the others raises the scatter wherever it goes, and the law is read from the replicates it is handed: removing such a replicate is the outlier step's business, before the fit. The points that scatter are decided once, with equal weights, so that every share is judged on the same points. The detrending is weighted by the same share it is judged at, so there is one objective and no fixed-point iteration. The minimum is taken on a grid of 101 nodes across $[0, 1]$ — the objective need not be unimodal with a handful of replicates — and refined by bounded Brent between the best node's neighbours, kept only if lower; a refinement that ends within its tolerance of 0 or 1 is that end, so a share of zero is exactly zero. Nothing in it draws a random number. The level follows from the same scatter as the mean of $\log t_i$ corrected for the bias of a log $\chi^2$ on $m - 1$ degrees of freedom,
+
+$$c \;=\; \exp\!\Big(\overline{\log\big(t_i/(m-1)\big)} \;-\; \psi\big(\tfrac{m-1}{2}\big) \;+\; \log \tfrac{m-1}{2}\Big).$$
+
+**One shape parameter, and no degrees of freedom charged for it.** Only the shape of the variance reaches the fit: the interval's threshold is a residual-variance $F$ threshold, which profiles the noise level out, so $c$ is reported and never inferred against. And $\hat\lambda$ is a function of the deviations $y_r - \bar{y}$, which under normal noise are independent of $\bar{y}$ — the only thing the fit sees — so the fit's residual degrees of freedom are those of Section 6.2 unchanged.
+
+**The weights.** The fit is handed one weight per titration point,
+
+$$\omega_i \;=\; \frac{1}{g_i(\hat\lambda)} \;=\; \frac{1}{(1 - \hat\lambda) + \hat\lambda\,\bar{y}_i^2/\mathrm{ref}^2},$$
+
+computed once, before the fit, from the measured means. Consequences: there is no reweighting loop around the $K_a$ search, and the conditional fit, the input-aware fit, every profile point and every sensitivity sample see one and the same vector. $\operatorname{var}(\bar{y}_i) = c\,g_i/m$ with the same $m$ at every point, so $m$ cancels out of the relative weights and the weighted fit of the average *is* the weighted fit of the pooled replicates. Taking the weights from the observed responses rather than the fitted curve biases the fitted mean by a relative $2\lambda\,\mathrm{CV}^2/m$ (Carroll & Ruppert 1988) — $10^{-4}$ at a coefficient of variation of 2 % with four replicates — and a common relative shift of the curve is absorbed by the signal coefficients rather than by $K_a$. Their size is bounded by the law itself: $\omega_{\max}/\omega_{\min} \le (\max_i|\bar{y}_i| / \min_i|\bar{y}_i|)^2$, reached only at $\lambda = 1$, and below that every weight is under $1/(1 - \lambda)$. The extreme is not reached by accident, so nothing floors the weights: constant noise at a point far down the signal range leaves its whitened $t_i$ at $\lambda = 1$ larger than the others by that same factor, which the objective charges as a squared logarithm and so stops the share short of 1 — exactly where a floor would have acted.
+
+**Where the whitening happens.** In one place. The bounded solve of Section 4.1 multiplies the signal rows and the free design columns by $\sqrt{\boldsymbol\omega}$ before scaling and solving, so
+
+$$S(K) = \min_{\mathbf{lb} \le \mathbf{c} \le \mathbf{ub}} \sum_i \omega_i\big(y_i - (A(K)\mathbf{c})_i\big)^2, \qquad \mathrm{SS}_{\text{tot}} = \sum_i \omega_i\big(y_i - \bar{y}_\omega\big)^2,$$
+
+and the residual the projection returns is the whitened one $\sqrt{\omega_i}(y_i - (A\mathbf{c})_i)$, which is in units of one noise everywhere. Everything downstream — the profile, both thresholds, the input-aware objective and its Jacobian, the runs test and the conflict reference — is that same code path, and is thereby in the space its derivation assumes. Ranks are read on the unwhitened design, where a positive row scaling cannot change them and the cut-offs of Sections 5 and 6.2 keep the scale they were measured on. With $\boldsymbol\omega = \mathbf{1}$ the whitening multiplies by exactly 1.0: a single titration is fitted with the arithmetic of an engine that has no weights, to the last bit.
+
+**When no law can be read.** Two cases, each a state of the result rather than a silent default, and each worded in the fit summary, the text report and the CSV export:
+
+| Case | Basis | Weights | What the summary says |
+|---|---|---|---|
+| One signal — a single titration, or one replicate fitted on its own | `single_titration` | $\mathbf{1}$ | taken as constant — one titration cannot show how the noise varies with the signal |
+| Two or more replicates, scattering at fewer than three titration points | `too_few_points` | $\mathbf{1}$ | taken as constant — the replicates scatter at too few titration points to show how it varies |
+| Otherwise | `replicates` | $1/g(\hat\lambda)$ | the law, as a floor in signal units and a percentage of the signal |
+
+A variance function is not estimable from the residuals of a single titration — a dozen points against three or four parameters (Carroll & Ruppert 1988) — so nothing is guessed there.
+
+**Two numbers called $R^2$.** The $R^2$ and RMSE a fit reports are unweighted, in signal units, against the averaged data, which is what their labels say and what keeps them comparable between fits and between versions of the app. The vertical axis of the Identifiability tab is the surface the fit minimises, $1 - S/\mathrm{SS}_{\text{tot}}$ with both weighted; where a law was read, that is a different number and the tab names it *weighted $R^2$*.
+
+### 4.5. Physical Constraints: Non-Negative Signal Intensities
 
 All parameters representing physical signal intensities or association constants are **strictly non-negative**:
 
@@ -195,7 +254,7 @@ Holding one association constant $K_j$ at a value $k$ and minimising over everyt
 
 $$P_j(k) = \min_{K:\,K_j = k} S(K)$$
 
-the smallest residual the model can reach with that constant held there. It is built from the same calls as the fit, so its minimum *is* the reported fit, and its shape is the profile likelihood of $K_j$ under Gaussian errors. A curve drawn across the bounds in force therefore bounds every fit of these data at every value of that constant; the Identifiability tab draws it, adding points wherever straight lines between them would miss the exact curve.
+the smallest residual the model can reach with that constant held there — $S$ weighted by the point weights of Section 4.4 throughout, and unweighted wherever no noise law could be read. It is built from the same calls as the fit, so its minimum *is* the reported fit, and its shape is the profile likelihood of $K_j$ under Gaussian errors of the variance the law states. A curve drawn across the bounds in force therefore bounds every fit of these data at every value of that constant; the Identifiability tab draws it as $1 - P_j(k)/\mathrm{SS}_{\text{tot}}$, adding points wherever straight lines between them would miss the exact curve. Numerator and denominator carry the same weights, so that axis is the weighted $R^2$ of Section 4.4 wherever a law was read, and the plain $R^2$ otherwise.
 
 ### 6.2. The F-Test Interval
 
@@ -229,16 +288,9 @@ the count of Section 6.2 with two constrained constants — on the same syntheti
 
 The profile, the best fit and the interval describe the **average of the replicates the fit used** (Section 4.3). Replicates of one titration share their systematic departure from the model: if the model misses a point, it misses that point in every replicate. Treating $m$ replicates as $m \times n$ independent observations counts one shared miss $m$ times as independent evidence: the interval narrows — by up to about $\sqrt{m}$ where that miss dominates the scatter — while the miss itself, the dominant error, stays exactly where it was.
 
-Measured on synthetic IDA data, 200 designs per scenario, nominal 95 %. `python -m validation tables replicate-pooling` prints the same comparison for every assay, with each kind of scatter a row of its own:
+`python -m validation tables replicate-pooling` prints the comparison for every assay, on synthetic data with each kind of scatter a row of its own: independent noise of constant size, noise proportional to the signal, and replicates sharing a smooth systematic misfit, each read once from the average and once with the replicates' points pooled as independent.
 
-| Scenario | Coverage of the true $K_a$ |
-|---|---|
-| Independent noise of constant size | 0.96 |
-| Noise proportional to the signal | 0.91 |
-| Four replicates sharing a smooth 2 % misfit | 0.77 |
-| The same, with the replicates' points pooled as independent | 0.67 |
-
-Constant-variance scatter is the assumption the F test is built on, and it is met. Proportional noise breaks it mildly and costs a few points of coverage. A shared systematic misfit breaks it badly — and the last row is why the app averages: pooling would make the same data look more informative while being less accurate.
+Constant-variance scatter is the assumption the $F$ test is built on. Noise proportional to the signal breaks it, which is what the weights of Section 4.4 repair wherever the replicates can show the law. A misfit the replicates share breaks something the weights cannot repair — it is not noise — and it is the case the averaging protects against: pooling would make the same data look more informative while being less accurate.
 
 ## 7. The Entered Inputs as Constrained Nuisance Parameters
 
@@ -268,9 +320,9 @@ The statements are independent per source, and the same error model feeds the se
 
 With the projected residual sum of squares at shifted inputs
 
-$$S(K, \mathbf{e}) \;=\; \min_{\mathbf{lb}\,\le\,\mathbf{c}\,\le\,\mathbf{ub}} \lVert \mathbf{y} - A(K, \theta(\mathbf{e}))\,\mathbf{c} \rVert^2$$
+$$S(K, \mathbf{e}) \;=\; \min_{\mathbf{lb}\,\le\,\mathbf{c}\,\le\,\mathbf{ub}} \sum_i \omega_i \big(y_i - \big(A(K, \theta(\mathbf{e}))\,\mathbf{c}\big)_i\big)^2$$
 
-— the bounded solve of Section 4.1 on the design built at the shifted inputs — Gaussian noise of unknown variance $\sigma^2$ and the pseudo-observations above, minus twice the log likelihood is $n \log \sigma^2 + S/\sigma^2 + \mathbf{z}'\mathbf{z}$. Profiling $\sigma^2 = S/n$ leaves, up to a constant, the objective $n \log S + \mathbf{z}'\mathbf{z}$, so the profile of one association constant and its interval are
+— the bounded solve of Section 4.1 on the design built at the shifted inputs, weighted by the point weights of Section 4.4 — Gaussian noise of unknown scale, of variance $\sigma^2/\omega_i$ at point $i$, and the pseudo-observations above make minus twice the log likelihood $n \log \sigma^2 + S/\sigma^2 + \mathbf{z}'\mathbf{z}$, up to the constant $-\sum_i \log \omega_i$ that the known weights contribute. Profiling $\sigma^2 = S/n$ leaves, up to a constant, the objective $n \log S + \mathbf{z}'\mathbf{z}$, so the profile of one association constant and its interval are
 
 $$P_j(k) = \min_{K_j = k,\; \mathbf{e} \in \text{box}} \Big[\, n \log S(K, \mathbf{e}) + \mathbf{z}'\mathbf{z} \,\Big], \qquad
 P_j(k) - P_{\min} \;\le\; n \log\!\left(1 + \frac{m(k)\,F(\alpha;\,m(k),\,\nu)}{\nu}\right)$$
@@ -318,11 +370,15 @@ An interval is a statement made *within* a model. Two questions are asked beside
 
 ### 8.1. Does the Model Describe the Data
 
-**With two or more replicates** the scatter of the replicates about their mean estimates the noise without using the model at all, and the lack-of-fit $F$ test (Draper & Smith 1998) compares the misfit of the fitted curve with it:
+**With two or more replicates** the scatter of the replicates estimates the noise without using the model at all, and the lack-of-fit $F$ test (Draper & Smith 1998) compares the misfit of the fitted curve with it:
 
-$$F = \frac{m\,S_{\text{mean}} / (n - p)}{s_{\text{pe}}^2}, \qquad s_{\text{pe}}^2 = \frac{1}{n(m-1)}\sum_{i,r}\big(y_{ri} - \bar{y}_i\big)^2, \qquad \text{d.f. } (n - p,\; n(m-1)),$$
+$$F = \frac{m \sum_i \omega_i \big(\bar{y}_i - f_i\big)^2 \big/ (n - p)}{\sum_{r,i} e_{ri}^2 \big/ \big((m-1)(n-2)\big)}, \qquad \text{d.f. } \big(n - p,\; (m-1)(n-2)\big),$$
 
-with $S_{\text{mean}}$ the residual sum of squares of the fit against the averaged signal. The parameter count $p$ is the one of Section 7.2 at both fits: the inputs the data determine are not subtracted, which makes the test at the input-aware fit slightly lenient ($E[F] \le 1$ under the null) rather than falsely alarming.
+with $f$ the fitted curve, $\boldsymbol\omega$ the point weights and $\mathbf{e}$ the whitened scatter of each replicate about its own affine image of the mean curve, both from Section 4.4. Numerator and denominator carry the same weights, so only their ratios matter, and with $\boldsymbol\omega = \mathbf{1}$ this is the unweighted test. The numerator has expectation $(n-p)$ times the noise variance because $\operatorname{var}(\bar{y}_i) = \sigma^2/(m\,\omega_i)$; the denominator counts $n - 2$ dimensions per replicate, the two columns $[\mathbf{1}, \bar{\mathbf{y}}]$ being projected out, less the one replicate the mean costs, since the $\mathbf{e}_r$ sum to zero across replicates. The deviations of the replicates from their mean are independent of the mean, so the two are independent and the ratio is exactly $F$ under normal noise of the variance the law states.
+
+**Why the detrended scatter and not the raw spread.** $\sum_{r,i}(y_{ri} - \bar{y}_i)^2$ counts the affine difference between replicates — a lamp or gain difference the model follows exactly (Section 4.4) — as noise, and inflates the denominator until the test cannot fire. With a replicate scale factor of 3 %, the size of the ones the datasets in `data/` show, the raw pure error rejects 1.3 % ($m = 2$) to 0.1 % ($m = 8$) of consistent fits at the 5 % level, where the scatter used here rejects 4.7 to 5.6 % (4 000 linearised draws per cell, 12 points, three parameters, the weights known). Those are the rates for weights fixed beforehand, where the ratio is exactly $F$. A fit takes its weights from the law of Section 4.4, read from the same replicates, so numerator and denominator share one estimated share and the ratio is $F$ only approximately: in the same linearised construction — constant noise, proportional noise, and constant noise with the 3 % scale factor — it rejects 4.7 to 7.5 % of consistent fits at the 5 % level, the most at $m = 2$ (3 000 draws per cell, $m = 2, 4, 8$). The rate through the whole fit is measured by the validation check `noise-law-lof-null`.
+
+The parameter count $p$ is the one of Section 7.2 at both fits: the inputs the data determine are not subtracted, which makes the test at the input-aware fit slightly lenient ($E[F] \le 1$ under the null) rather than falsely alarming.
 
 **With a single replicate** there is no model-free noise estimate, and the question falls to the *signs* of the residuals along the titration: a systematic departure leaves long runs of one sign, so few runs speak against the model. Residuals of a fitted curve are not exchangeable — the fit removes what its parameters can follow, which makes their signs alternate more than independent ones — so the reference is the fitted model's own: the number of runs of $(I - JJ^{+})\mathbf{e}$ for standard normal $\mathbf{e}$, with $J$ the Jacobian of the whole fit (free signal columns, association constants, and the inputs with their penalty rows), 100 000 draws at a fixed seed, and the $p$-value the mid-$p$ $P(\text{fewer}) + P(\text{as many})/2$ because the statistic takes few values. Measured on 4800 fits of correct one-constant models, this reference raises a false alarm at the 5 % level in 2.3, 5.6, 4.7 and 3.8 % of fits at 8, 12, 20 and 30 points and detects a 15 % error in the titrant scale in 13, 24, 31 and 35 %; the permutation distribution of the same statistic (Wald & Wolfowitz 1940), which assumes exchangeable signs, rejects 0.0–1.5 % of those correct fits and detects 1–28 %. A Durbin–Watson statistic against the same reference has more power against smooth misfit (19–24 % against a 2 % sinusoidal departure at 20–30 points, where the runs test reaches 12–14 %) and less against a step.
 
@@ -399,7 +455,7 @@ The blocks are independent replicates of one design; the rows *inside* a scrambl
 
 ### 9.4. Every Sample Is Kept
 
-Each sample is refitted by the projection of Section 4.1, on the average of the replicates the reported fit used and with its own drawn inputs held exact, so its $K_a$ is the best the model can do for them; the run's baseline is that same projection at the inputs as entered. Every sample counts, however poorly it describes the data. Discarding the poor ones would remove precisely the input combinations the data disagree with, which would bias the sampled distribution back towards the inputs as entered and make the analysis look more reassuring than the evidence allows.
+Each sample is refitted by the projection of Section 4.1, on the average of the replicates the reported fit used and with its own drawn inputs held exact, so its $K_a$ is the best the model can do for them; the run's baseline is that same projection at the inputs as entered, and with the point weights of the baseline's noise law: a perturbation of the entered inputs leaves the measured replicates untouched, so the law is a constant of the run and re-using it makes the baseline the sample with no offset by construction. Each sample's place on the weighted axis of Section 6.1 is recorded beside its unweighted $R^2$, so the samples the Identifiability tab draws sit on the same scale as the profile there. Every sample counts, however poorly it describes the data. Discarding the poor ones would remove precisely the input combinations the data disagree with, which would bias the sampled distribution back towards the inputs as entered and make the analysis look more reassuring than the evidence allows.
 
 Because every refit is one deterministic projection, the spread the analysis reports is the effect of the stated input uncertainties and nothing else — there is no search scatter mixed into it. The analysis therefore covers every assay with an association constant, the stepwise two-constant models included; a model with no association constant has nothing to decompose.
 

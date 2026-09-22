@@ -106,8 +106,8 @@ def test_the_scan_reaches_the_texts_a_reader_and_the_program_depend_on():
 def test_the_documents_name_the_fit_the_app_performs():
     """Both user-facing documents state the method and what is reported."""
     for relative, required in (
-        ('Readme.md', ('variable projection', 'profile', 'confidence interval')),
-        ('docs/scientific-summary.md', ('variable projection', 'profile', 'joint')),
+        ('Readme.md', ('variable projection', 'profile', 'confidence interval', 'noise law')),
+        ('docs/scientific-summary.md', ('variable projection', 'profile', 'joint', 'noise law')),
     ):
         lowered = (ROOT / relative).read_text(encoding='utf-8').lower()
         missing = [term for term in required if term not in lowered]

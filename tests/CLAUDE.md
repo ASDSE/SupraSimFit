@@ -71,6 +71,18 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
   analysis samples, and it takes a `seed`. The reference distributions of the
   runs test and of the conflict statistic are drawn at a fixed seed, which makes
   each p-value a function of its arguments like any other computed number.
+- **Weights of one are no weights.** Where two or more replicates were measured,
+  a fit reads a noise law off their scatter (`core.pipeline.noise`) and hands
+  `Projection` one weight per titration point. A single titration, and replicates
+  whose law comes out constant, get exactly `np.ones`: whitening multiplies by
+  1.0, so the fit, its interval and its diagnostics are those of an engine
+  without weights *to the last bit*. Tests pin that by comparing the two
+  projections' numbers exactly — `==`, not `approx` — and they are what a change
+  that reorders the arithmetic of the unweighted path has to answer to. The law
+  itself draws no random numbers either, but a test of it asserts a property —
+  proportional noise gives a share near one, a replicate measured at a slightly
+  different gain is not read as noise — against independently generated data,
+  never a share copied from a run.
 - **An input-aware fit costs seconds.** Letting the inputs move turns each point
   of a profile into a small bounded optimisation: typically 1–2 s per fit, up to
   about 20 s for one association constant and 45 s for two on hard designs with
@@ -100,8 +112,8 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
 - **A diagnostic is a rate, not a p-value.** The misfit tests and the conflict
   statistic claim a false-alarm rate at their level and some power against a real
   fault. A unit test pins what is checkable fast — the runs test on residuals of
-  one sign, the F ratio against a hand-computed pure-error variance, a verdict
-  read from given test results — and the rates come from the checks in
+  one sign, the lack-of-fit F ratio against a hand-computed replicate scatter, a
+  verdict read from given test results — and the rates come from the checks in
   `validation/`. Never assert that a single dataset gets a particular verdict
   because a run once produced it.
 - **A conflict names no input.** The statistic judges the stated inputs together,

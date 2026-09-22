@@ -6,7 +6,8 @@ model and those inputs. None of that is imported by a paragraph, so the
 documents can keep describing the older, single interval and stay green.
 
 These tests read the live texts and cross-check them against the code: the
-modules the pipeline actually has, the verdicts a fit can report, the checks the
+modules the pipeline actually has, the verdicts a fit can report, the noise law
+the fit is weighted by and what it says when it cannot be read, the checks the
 validation package runs and the claim each one makes, and the name the panel the
 uncertainties are entered in gives itself.
 """
@@ -49,6 +50,41 @@ def test_the_readme_explains_every_verdict_a_fit_can_report():
     assert not unexplained, f'Readme.md is not known to explain these verdicts: {unexplained}'
     missing = [name for name, clause in _VERDICT_IN_THE_README.items() if clause not in readme]
     assert not missing, f'Readme.md no longer explains these verdicts: {missing}'
+
+
+#: The clause Readme.md carries for each basis a noise law can report. Keyed by
+#: the enum, so a basis added to the code without a paragraph fails here rather
+#: than reaching the fit summary as a sentence no document explains.
+_NOISE_BASIS_IN_THE_README = {
+    'REPLICATES': 'the scatter of each replicate about its own line in the mean curve',
+    'SINGLE_TITRATION': 'one titration cannot show how the noise varies with the signal',
+    'TOO_FEW_POINTS': 'the replicates scatter at too few titration points to show how it varies',
+}
+
+
+def test_the_readme_explains_every_basis_a_noise_law_can_report():
+    """The weights a fit is run with rest on one of these, and each one is a paragraph a reader can find."""
+    from core.pipeline.noise import NoiseBasis
+
+    readme = ' '.join((ROOT / 'Readme.md').read_text(encoding='utf-8').split())
+    unexplained = [b.name for b in NoiseBasis if b.name not in _NOISE_BASIS_IN_THE_README]
+    assert not unexplained, f'Readme.md is not known to explain these bases: {unexplained}'
+    missing = [name for name, clause in _NOISE_BASIS_IN_THE_README.items() if clause not in readme]
+    assert not missing, f'Readme.md no longer explains these bases: {missing}'
+
+
+def test_the_readme_carries_the_words_a_fit_prints_where_no_law_can_be_read():
+    """The sentence the summary shows instead of a law is the one the document explains, word for word."""
+    from core.pipeline.noise import NoiseBasis, NoiseLaw
+
+    for basis in NoiseBasis:
+        law = NoiseLaw(basis)
+        if law.estimated:
+            continue
+        clause = _NOISE_BASIS_IN_THE_README[basis.name]
+        assert clause in law.describe(), (
+            f'{basis.name}: the app prints "{law.describe()}", which the document does not explain'
+        )
 
 
 def test_the_validation_readme_names_every_check_the_package_runs():
