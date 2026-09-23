@@ -308,3 +308,80 @@ class TestLoadConcentrationVectorUnits:
         assert loaded_panel._imported_unit == 'M'
         np.testing.assert_allclose(loaded_panel.measurement_set().concentrations, [1e-9, 2e-9, 5e-9])
         assert infos, 'expected an information dialog explaining the unit conversion'
+
+
+@pytest.fixture
+def warnings(monkeypatch):
+    """Every warning the panel shows, as (title, text)."""
+    from gui.widgets import data_panel
+
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(data_panel.QMessageBox, 'warning', lambda _parent, title, text: shown.append((title, text)))
+    return shown
+
+
+class TestRefusedConcentrations:
+    """A value that is not a concentration never reaches the MeasurementSet; the user is told which and why."""
+
+    @pytest.mark.parametrize('typed', ['nan', '-1e-6', 'inf'])
+    def test_a_cell_edit_that_is_not_a_concentration_is_reverted(self, loaded_panel, warnings, typed):
+        emissions = []
+        loaded_panel.data_loaded.connect(emissions.append)
+
+        loaded_panel._conc_table.item(1, 0).setText(typed)
+
+        assert emissions == []
+        np.testing.assert_allclose(loaded_panel.measurement_set().concentrations, [1e-6, 2e-6, 3e-6])
+        assert loaded_panel._conc_table.item(1, 0).text() == '2e-06'
+        assert len(warnings) == 1
+        assert 'point 2 of 3' in warnings[0][1]
+        assert 'zero or more' in warnings[0][1]
+
+    def test_a_loaded_vector_with_a_negative_value_is_refused_whole(
+        self, loaded_panel, warnings, tmp_path, monkeypatch
+    ):
+        import json
+
+        from gui.widgets import data_panel
+
+        p = tmp_path / 'bad.json'
+        p.write_text(json.dumps({'concentrations': [1.0, -2.0, 3.0], 'unit': 'µM'}))
+        monkeypatch.setattr(data_panel.QFileDialog, 'getOpenFileName', lambda *a, **k: (str(p), ''))
+
+        loaded_panel._on_load_concentrations()
+
+        np.testing.assert_allclose(loaded_panel.measurement_set().concentrations, [1e-6, 2e-6, 3e-6])
+        assert loaded_panel._imported_unit == 'M'
+        assert [loaded_panel._conc_table.item(r, 0).text() for r in range(3)] == ['1e-06', '2e-06', '3e-06']
+        assert len(warnings) == 1
+        assert 'point 2 of 3 in bad.json' in warnings[0][1]
+        assert '-2 µM' in warnings[0][1]
+
+    def test_a_file_with_a_negative_concentration_is_refused_by_name(self, qapp, warnings, tmp_path):
+        from gui.widgets.data_panel import DataPanel
+
+        path = tmp_path / 'negative.csv'
+        path.write_text('concentration,signal\n0,10\n1e-6,12\n-2e-6,14\n3e-6,15\n4e-6,16\n')
+        panel = DataPanel()
+        emissions = []
+        panel.data_loaded.connect(emissions.append)
+
+        panel.load_file(str(path))
+
+        assert panel.measurement_set() is None
+        assert emissions == []
+        assert len(warnings) == 1
+        assert 'negative.csv' in warnings[0][1] and '-2 µM' in warnings[0][1]
+
+    def test_switching_to_a_channel_with_a_missing_well_says_which(self, multi_channel_panel, warnings):
+        df = multi_channel_panel._multi_channel_df
+        gap = (df['channel'] == 'chB') & (df['replica'] == 1) & (df['concentration'] == 2.0)
+        multi_channel_panel._multi_channel_df = df[~gap].copy()
+        multi_channel_panel._multi_channel_df.attrs.update(df.attrs)
+        before = multi_channel_panel.measurement_set()
+
+        multi_channel_panel._channel_combo.setCurrentIndex(1)
+
+        assert multi_channel_panel.measurement_set() is before
+        assert len(warnings) == 1
+        assert "Replicate '1'" in warnings[0][1] and 'plate column 2' in warnings[0][1]

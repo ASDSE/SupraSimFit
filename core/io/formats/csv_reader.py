@@ -190,7 +190,7 @@ class CsvReader:
                 'replica': (df[replica_col].astype(int) if replica_col is not None else 0),
             }
         )
-        return result.dropna(subset=['concentration', 'signal']).reset_index(drop=True)
+        return result.dropna(subset=['concentration', 'signal'], how='all').reset_index(drop=True)
 
     @staticmethod
     def _wide_format(df, conc_col, signal_cols) -> pd.DataFrame:
@@ -206,7 +206,7 @@ class CsvReader:
                 )
             )
         result = pd.concat(frames, ignore_index=True)
-        return result.dropna(subset=['concentration', 'signal']).reset_index(drop=True)
+        return result.dropna(subset=['concentration', 'signal'], how='all').reset_index(drop=True)
 
 
 register_reader(CsvReader)

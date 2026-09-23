@@ -107,8 +107,8 @@ def test_duplicate_stems_disambiguated(tmp_path):
     """Same file name in different folders → distinct replica IDs, no collision."""
     (tmp_path / 'one').mkdir()
     (tmp_path / 'two').mkdir()
-    p1 = _write(tmp_path / 'one' / 'rep.csv', [0.0, 1.0], [1.0, 2.0])
-    p2 = _write(tmp_path / 'two' / 'rep.csv', [0.0, 1.0], [3.0, 4.0])
+    p1 = _write(tmp_path / 'one' / 'rep.csv', [0.0, 1.0, 2.0], [1.0, 2.0, 3.0])
+    p2 = _write(tmp_path / 'two' / 'rep.csv', [0.0, 1.0, 2.0], [3.0, 4.0, 5.0])
 
     ms = MeasurementSet.from_dataframe(load_measurements_multi([p1, p2]))
     assert ms.n_replicas == 2

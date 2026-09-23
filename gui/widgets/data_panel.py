@@ -25,7 +25,7 @@ from core.data_processing.concentration import (
     read_raw_concentrations,
     save_concentration_vector,
 )
-from core.data_processing.measurement_set import MeasurementSet
+from core.data_processing.measurement_set import MIN_POINTS, InvalidData, MeasurementSet, concentration_problem
 from core.io import load_measurements, load_measurements_multi
 from core.io.formats.bmg_reader import BMG_METADATA_KEY, BMG_PLACEHOLDER_KEY
 from core.io.formats.ensight_reader import (
@@ -83,6 +83,12 @@ header+data block. Headers are matched loosely
 (<code>conc</code>/<code>x</code>/<code>titrant</code>,
 <code>signal</code>/<code>intensity</code>/<code>fluorescence</code>) and
 European <code>;</code>/<code>,</code> files are read automatically.</p>
+
+<p><b>What a fit can use:</b> every concentration is a number of zero or more,
+every replicate has a signal at every concentration (the replicates are averaged
+point by point), and the titration has at least {MIN_POINTS} points. Data that
+break one of these are refused when they are loaded or typed in, with a message
+naming the file, the replicate and the point.</p>
 
 <p><b>Units:</b> <b>Imported Unit</b> declares what unit the loaded numbers
 are in (it reinterprets them, it does not convert). <b>Display Unit</b> only
@@ -393,6 +399,9 @@ class DataPanel(InfoGroupBox):
                 self._slice_channel(self._multi_channel_df, channel),
                 self._source_path or '',
             )
+        except InvalidData as exc:
+            QMessageBox.warning(self, 'Channel Error', str(exc))
+            return
         except Exception:
             QMessageBox.warning(
                 self,
@@ -490,12 +499,7 @@ class DataPanel(InfoGroupBox):
         try:
             value = float(text)
         except ValueError:
-            # Revert the cell to the last good value and warn.
-            self._suppress_cell_signal = True
-            try:
-                item.setText(_fmt_cell(self._face_values[row]))
-            finally:
-                self._suppress_cell_signal = False
+            self._revert_cell(row)
             QMessageBox.warning(
                 self,
                 'Invalid Number',
@@ -504,8 +508,23 @@ class DataPanel(InfoGroupBox):
             return
         if value == self._face_values[row]:
             return
-        self._face_values[row] = value
+        edited = self._face_values.copy()
+        edited[row] = value
+        problem = concentration_problem(Q_(edited, self._imported_unit))
+        if problem:
+            self._revert_cell(row)
+            QMessageBox.warning(self, 'Invalid Concentration', f'{problem} Reverted to previous value.')
+            return
+        self._face_values = edited
         self._push_buffer_to_ms()
+
+    def _revert_cell(self, row: int) -> None:
+        """Show the last committed value of *row* again, without treating it as an edit."""
+        self._suppress_cell_signal = True
+        try:
+            self._conc_table.item(row, 0).setText(_fmt_cell(self._face_values[row]))
+        finally:
+            self._suppress_cell_signal = False
 
     def _push_buffer_to_ms(self) -> None:
         """Write the face-value buffer into the current MeasurementSet and announce it."""
@@ -552,6 +571,10 @@ class DataPanel(InfoGroupBox):
                 'Mismatch',
                 f'Loaded vector has {values.size} points but the dataset has {self._ms.n_points}. They must match.',
             )
+            return
+        problem = concentration_problem(q, f' in {Path(path).name}')
+        if problem:
+            QMessageBox.warning(self, 'Invalid Concentration', f'{problem} Correct it in the file and load it again.')
             return
         # The Quantity carries its unit. Show its face numbers under that unit
         # when it is a selectable display unit (matched by pint identity so 'µM'
