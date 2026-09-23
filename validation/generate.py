@@ -30,9 +30,9 @@ from core.assays import ASSAY_CLASSES
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.models.equilibrium import dba_signal, gda_signal, h2g_signal, hg2_signal, ida_signal
-from core.pipeline.inputs import TITRANT, TITRANT_STOCK
+from core.pipeline.inputs import TITRANT, TITRANT_STOCK, shared_key
 from core.units import Q_
-from validation.scenarios import COMPETITIVE, TWO_KA, Scenario, fixed_concentrations
+from validation.scenarios import COMPETITIVE, NOISY_FACTOR, TWO_KA, Scenario, fixed_concentrations
 
 __all__ = ['Dataset', 'dataset', 'stream_seed']
 
@@ -84,11 +84,18 @@ class Dataset:
         Measured signals, shape ``(replicates, points)``.
     noise_sigma : np.ndarray
         Standard deviation of the independent noise at each point of one
-        replicate. A replicate scale factor is a difference between whole
-        replicates rather than noise within one, so it is not in this.
+        replicate; a noisy replicate (:attr:`~validation.scenarios.Scenario.noisy_rows`)
+        carries :data:`~validation.scenarios.NOISY_FACTOR` times it. A
+        replicate scale factor is a difference between whole replicates rather
+        than noise within one, so it is not in this.
     entry_errors : dict[str, float]
         Relative error of each entered input: its true value is the entered one
         times ``1 + e``.
+    entry_z : dict[str, float]
+        The same errors in units of what was stated: each own error stated as a
+        standard deviation, divided by it, and each shared source's draw, under
+        its source key. An entry stated as a range has none. Taken before the
+        floor of :data:`LOWEST_ENTRY_ERROR`, so it is the draw itself.
     entered_x : np.ndarray
         Titrant concentrations as entered.
     conditions : dict[str, Any]
@@ -108,6 +115,7 @@ class Dataset:
     signals: np.ndarray
     noise_sigma: np.ndarray
     entry_errors: dict[str, float]
+    entry_z: dict[str, float]
     entered_x: np.ndarray
     conditions: dict[str, Any]
     assay: BaseAssay
@@ -262,8 +270,8 @@ def _clean_signal(scenario: Scenario, truth: dict[str, float], conditions: dict[
     return np.asarray(y, dtype=float)
 
 
-def _entry_errors(scenario: Scenario, rng: np.random.Generator) -> dict[str, float]:
-    """Relative error of each entered input, at the scenario's multiple of what was stated.
+def _entry_errors(scenario: Scenario, rng: np.random.Generator) -> tuple[dict[str, float], dict[str, float]]:
+    """Relative error of each entered input, at the scenario's multiple of what was stated, and its standard score.
 
     A standard deviation draws the error Gaussian and a range draws it uniform
     over the range. Inputs named in ``shared_entries`` take the same quantile
@@ -273,22 +281,29 @@ def _entry_errors(scenario: Scenario, rng: np.random.Generator) -> dict[str, flo
     up at ``(1 + own)(1 + shared) - 1`` and an input only a source moves ends
     up at the source's own draw. An error below :data:`LOWEST_ENTRY_ERROR` is
     set to it.
+
+    The standard score of an own error stated as a standard deviation is that
+    error over it, and a shared source's is its own draw over its own standard
+    deviation, keyed as the fit keys the source (:func:`shared_key`).
     """
     common = rng.random()
-    errors = {}
+    errors, z = {}, {}
     for entry in scenario.specs:
         own = rng.random()
         quantile = common if entry.key in scenario.shared_entries else own
         if entry.sigma > 0:
+            z[entry.key] = scenario.entry_multiple * float(_normal_quantile(quantile))
             error = entry.sigma / 100 * float(_normal_quantile(quantile))
         else:
             error = (entry.lo + quantile * (entry.hi - entry.lo)) / 100
         errors[entry.key] = max(scenario.entry_multiple * error, LOWEST_ENTRY_ERROR)
     for source in scenario.shared_sources:
-        shift = scenario.entry_multiple * source.sigma / 100 * float(_normal_quantile(rng.random()))
+        draw = float(_normal_quantile(rng.random()))
+        z[shared_key(source.name)] = scenario.entry_multiple * draw
+        shift = scenario.entry_multiple * source.sigma / 100 * draw
         for key in source.keys:
             errors[key] = max((1 + errors.get(key, 0.0)) * (1 + shift) - 1, LOWEST_ENTRY_ERROR)
-    return errors
+    return errors, z
 
 
 def _normal_quantile(u: float) -> float:
@@ -323,14 +338,23 @@ def dataset(scenario: Scenario, seed: int) -> Dataset:
     )
     entry_rng = np.random.default_rng(stream_seed(f'{scenario.entry_id}|entry', seed))
     truth, conditions, conc, x, stock = _truth(scenario, truth_rng)
-    bare = _clean_signal(scenario, truth, _point_totals(scenario, conditions, x, stock), x)
+    totals = _point_totals(scenario, conditions, x, stock)
+    bare = _clean_signal(scenario, truth, totals, x)
     offset = (
         I0_FRACTION * float(np.ptp(bare)) if (truth_rng.integers(2) if scenario.i0 is None else scenario.i0) else 0.0
     )
     truth['I0'] = offset
+    sine = scenario.misfit_sine * float(np.ptp(bare)) * np.sin(np.pi * x / x.max()) if scenario.misfit_sine else None
     clean = bare + offset
-    if scenario.misfit_sine:
-        clean = clean + scenario.misfit_sine * float(np.ptp(bare)) * np.sin(np.pi * x / x.max())
+    if sine is not None:
+        clean = clean + sine
+    # A shifted replicate is the same titration on other binding constants:
+    # its signal coefficients, offset and planted misfit are the others'.
+    rows = np.tile(clean, (scenario.replicates, 1))
+    if scenario.shifted_replicates:
+        moved = {k: v * scenario.replicate_shift if k in ka_keys(scenario.assay) else v for k, v in truth.items()}
+        shifted = _clean_signal(scenario, moved, totals, x) + offset
+        rows[list(scenario.shifted_rows)] = shifted if sine is None else shifted + sine
 
     if scenario.proportional:
         sigma = scenario.noise * np.abs(clean)
@@ -349,9 +373,15 @@ def dataset(scenario: Scenario, seed: int) -> Dataset:
         if scenario.replicate_scale
         else np.ones(scenario.replicates)
     )
-    signals = np.vstack([factor * clean + sigma * noise_rng.standard_normal(x.size) for factor in factors])
+    scales = np.where(np.isin(np.arange(scenario.replicates), scenario.noisy_rows), NOISY_FACTOR, 1.0)
+    signals = np.vstack(
+        [
+            factor * row + scale * sigma * noise_rng.standard_normal(x.size)
+            for factor, row, scale in zip(factors, rows, scales)
+        ]
+    )
 
-    errors = _entry_errors(scenario, entry_rng)
+    errors, entry_z = _entry_errors(scenario, entry_rng)
     titrant_factor = 1.0 + errors.get(TITRANT, 0.0)
     if scenario.titrant_error:
         titrant_factor *= 1.0 + scenario.titrant_error * float(entry_rng.choice([-1.0, 1.0]))
@@ -385,6 +415,7 @@ def dataset(scenario: Scenario, seed: int) -> Dataset:
         signals=signals,
         noise_sigma=sigma,
         entry_errors=errors,
+        entry_z=entry_z,
         entered_x=entered_x,
         conditions=quantities,
         assay=assay,

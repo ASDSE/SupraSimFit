@@ -13,11 +13,15 @@ the package reads:
     the truth, over every draw. That is the property the level promises, and
     an interval that runs to a Ka bound covers that side by telling the user
     the data do not limit Ka there. Beside it the tables report
-    ``~closed_cov.KEY`` over the draws closed on both sides, ``~open.KEY``,
-    ``~split.KEY``, ``~limited.KEY`` and ``~width.KEY``. None of those five is
-    judged: conditioning on closure keeps the draws whose noise happened to
-    make the profile steep, which is a different population from the one the
-    level is about.
+    ``~open.KEY``, ``~split.KEY``, ``~limited.KEY``, ``~width.KEY`` and the
+    coverage over the draws closed on both sides, ``~closed_cov.KEY``.
+``closed_cov.KEY``
+    That coverage judged as well, where the claim is about the intervals a
+    user reads as finite — the conditional interval across the grid and in the weak two-Ka
+    regime. A closed interval is a subset of draws a user can recognise from
+    the interval itself, so its coverage is a claim of its own (Buehler 1959),
+    and where the data barely identify the constants it can fall far below the
+    level while the coverage over every draw holds. Elsewhere it is reported.
 
 A check with ``derived_from`` set computes nothing. It reads the rows of the
 check it names and asks a different question of them, so two claims that rest
@@ -32,8 +36,8 @@ from typing import Any, Callable, Sequence
 
 from core.pipeline.diagnostics import DIAGNOSTIC_LEVEL, Verdict
 from validation import budget, legacy, reference, scenarios, sobol
-from validation.criteria import AGREEMENT, COVERAGE, FALSE_ALARM, NULL_RATE, Criterion
-from validation.score import joint_region_row, score
+from validation.criteria import AGREEMENT, COVERAGE, FALSE_EXCLUSION, NULL_RATE, Criterion
+from validation.score import joint_region_row, score, score_replicates
 
 __all__ = ['CHECKS', 'Check', 'case_by_id', 'matches', 'matching_cases']
 
@@ -45,9 +49,16 @@ _COVERAGE_REASON = (
     'interval acceptable at a coverage of 0.925 or better, and only the anti-conservative side '
     'can fail: exact limits below 0.95 are a fail, limits at or above 0.925 a pass, a pass above '
     '0.975 is labelled conservative, and anything else is undecided. Beside the judged rate the '
-    'tables report the coverage over the closed draws alone, the fractions open, split and '
-    'bound-limited, and the median width — described, never judged, because conditioning on '
-    'closure keeps the draws whose noise made the profile steep.'
+    'tables report the fractions open, split and bound-limited, the median width and the coverage '
+    'over the closed draws alone.'
+)
+
+_CLOSED_REASON = (
+    ' Here the coverage over the draws closed on both sides is judged by the same rule, because the claim '
+    'is about the intervals a user reads as finite: a closed interval is a subset of draws the user can '
+    'recognise from the interval itself (Buehler 1959), so it has to hold the level on its own, and where '
+    'the data barely identify the constants it can fall far short of it while the rate over every draw '
+    'holds.'
 )
 
 _NULL_REASON = (
@@ -124,20 +135,23 @@ def matching_cases(check: Check, patterns: Sequence[str] | None) -> tuple[Any, .
 # --------------------------------------------------------------------------
 
 
-def _interval_metrics(row: dict[str, Any], field_name: str, prefix: str = '', judged: bool = True) -> dict[str, Any]:
+def _interval_metrics(
+    row: dict[str, Any], field_name: str, prefix: str = '', judged: bool = True, closed_judged: bool = False
+) -> dict[str, Any]:
     """What every binding constant's interval in *field_name* says, judged or reported.
 
-    The coverage over every draw is the judged series. The coverage over the
-    draws closed on both sides, the open, split and bound-limited fractions
-    and the width are reported beside it. With *judged* false every series is
-    reported, which is how the conditional interval appears beside a reported
-    one.
+    The coverage over every draw is the judged series, and with
+    *closed_judged* the coverage over the draws closed on both sides as well.
+    The open, split and bound-limited fractions and the width are reported
+    beside them. With *judged* false every series is reported, which is how
+    the conditional interval appears beside a reported one.
     """
     out: dict[str, Any] = {}
     cov = f'{prefix}cov' if judged else f'~{prefix}cov'
+    closed = f'{prefix}closed_cov' if judged and closed_judged else f'~{prefix}closed_cov'
     for key, facts in (row.get(field_name) or {}).items():
         out[f'{cov}.{key}'] = facts['covers']
-        out[f'~{prefix}closed_cov.{key}'] = None if facts['open'] else facts['covers']
+        out[f'{closed}.{key}'] = None if facts['open'] else facts['covers']
         out[f'~{prefix}open.{key}'] = facts['open']
         out[f'~{prefix}split.{key}'] = facts['split']
         out[f'~{prefix}limited.{key}'] = facts['limited']
@@ -164,6 +178,11 @@ def conditional_coverage(row: dict[str, Any]) -> dict[str, Any]:
     return {**_interval_metrics(row, 'cond'), **_fit_metrics(row)}
 
 
+def closed_coverage(row: dict[str, Any]) -> dict[str, Any]:
+    """The interval at the inputs as entered, judged over every draw and over the closed draws alone."""
+    return {**_interval_metrics(row, 'cond', closed_judged=True), **_fit_metrics(row)}
+
+
 def aware_coverage(row: dict[str, Any]) -> dict[str, Any]:
     """The reported interval, with the conditional one beside it."""
     return {
@@ -171,6 +190,33 @@ def aware_coverage(row: dict[str, Any]) -> dict[str, Any]:
         **_interval_metrics(row, 'cond', prefix='cond_', judged=False),
         **_fit_metrics(row),
     }
+
+
+#: Upper edges of the bins the largest standard score of the entry errors is
+#: read in, and how a series names each bin; the last bin is open.
+_Z_BINS = ((1.0, '0-1'), (2.0, '1-2'), (2.5, '2-2.5'), (float('inf'), '2.5+'))
+
+
+def coverage_by_entry_error(row: dict[str, Any]) -> dict[str, Any]:
+    """The reported interval's coverage in the bin of the largest standard score of the row's entry errors.
+
+    The level of the input-aware interval is an average over the entry errors
+    the stated uncertainties describe — the reading of a Type B uncertainty —
+    and it is not the same at every entry: a draw whose entries lie far out in
+    the stated distribution is covered less often than one near its centre.
+    Reported, never judged: it says for which entries the average holds.
+    """
+    z = row.get('z_true')
+    if not z:
+        return {}
+    largest = max(abs(value) for value in z.values())
+    label = next(name for edge, name in _Z_BINS if largest < edge)
+    return {f'~cov_zmax_{label}.{key}': facts['covers'] for key, facts in (row.get('aware') or {}).items()}
+
+
+def aware_coverage_by_entry_error(row: dict[str, Any]) -> dict[str, Any]:
+    """The reported interval with the conditional one beside it, and its coverage by the size of the entry error."""
+    return {**aware_coverage(row), **coverage_by_entry_error(row)}
 
 
 def _noise_metrics(row: dict[str, Any]) -> dict[str, Any]:
@@ -229,12 +275,41 @@ def misfit_power(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def false_alarm(row: dict[str, Any]) -> dict[str, Any]:
-    """Whether a fit of data the model describes is nonetheless blamed on the model or the inputs."""
+    """Whether a fit of data the model describes is nonetheless blamed on the model, the inputs or both.
+
+    Every verdict but *consistent* and *inputs explain* blames something:
+    the entered inputs explaining a misfit is a finding about the entries a
+    user made, not an alarm about the model or the stated uncertainties.
+    """
     verdict = row.get('verdict')
     if verdict is None:
         return {'alarm': None}
-    blamed = (Verdict.MODEL_INADEQUATE.value, Verdict.INPUTS_CONFLICT.value)
-    return {'alarm': verdict in blamed, '~inputs_explain': verdict == Verdict.INPUTS_EXPLAIN.value}
+    quiet = (Verdict.CONSISTENT.value, Verdict.INPUTS_EXPLAIN.value)
+    return {'alarm': verdict not in quiet, '~inputs_explain': verdict == Verdict.INPUTS_EXPLAIN.value}
+
+
+def replicate_exclusion(row: dict[str, Any]) -> dict[str, Any]:
+    """Which replicates a per-replicate fit left out, against which ones departed from the rest.
+
+    ``clean_excluded`` is whether the fit left out any replicate measured like
+    the others — one per fit, so a fit that lost two counts once and the rate
+    is the chance a fit loses a good replicate at all. ``~departed_excluded``
+    is whether it left out every replicate that departed, where one did. The
+    shares say how many of each, and ``~cov.KEY`` whether the reported
+    interval still held the truth.
+    """
+    if row.get('excluded') is None:
+        return {}
+    departed = set(row['departed'])
+    excluded = set(row['excluded'])
+    clean = row['replicates'] - len(departed)
+    return {
+        'clean_excluded': bool(excluded - departed),
+        '~clean_excluded_share': len(excluded - departed) / clean,
+        '~departed_excluded': departed <= excluded if departed else None,
+        '~departed_excluded_share': len(excluded & departed) / len(departed) if departed else None,
+        **{f'~cov.{key}': facts['covers'] for key, facts in (row.get('aware') or {}).items()},
+    }
 
 
 def runtime(row: dict[str, Any]) -> dict[str, Any]:
@@ -424,36 +499,37 @@ CHECKS: dict[str, Check] = {
         claim=(
             'The interval reported when every entered input is taken as exact holds the true binding '
             'constant as often as its 95 % level says, across every assay, regime, design and noise '
-            'size, over every draw — with the fraction of draws in which the data limit Ka on both '
-            'sides beside it.'
+            'size, over every draw and over the draws in which the data limit Ka on both sides.'
         ),
-        metrics=conditional_coverage,
+        metrics=closed_coverage,
         cases=tuple(scenarios.owner_grid()),
         row=score,
         criterion=COVERAGE,
-        criterion_reason=_COVERAGE_REASON,
+        criterion_reason=_COVERAGE_REASON + _CLOSED_REASON,
     ),
     'two-ka-weak': Check(
         name='two-ka-weak',
         claim=(
-            'What the interval does for the two stepwise models in the weak regime, where the host is '
-            'dark and the two binding constants are separated by one to three orders of magnitude: how '
-            'often the interval holds a constant, and how often the data limit it on both sides at all.'
+            'The interval of the two stepwise models holds each true binding constant as often as its '
+            '95 % level says in the weak regime, where the host is dark and the two constants are '
+            'separated by one to three orders of magnitude — over every draw, and over the draws in '
+            'which the data limit the constant on both sides.'
         ),
-        metrics=conditional_coverage,
+        metrics=closed_coverage,
         cases=tuple(scenarios.two_ka_weak_grid()),
         row=score,
         criterion=COVERAGE,
-        criterion_reason=_COVERAGE_REASON,
+        criterion_reason=_COVERAGE_REASON + _CLOSED_REASON,
     ),
     'input-aware-coverage': Check(
         name='input-aware-coverage',
         claim=(
             'The reported interval, which lets every entered input move within the uncertainty stated '
             'for it, holds the true binding constant as often as its level says when the inputs are '
-            'entered exactly as wrongly as stated.'
+            'entered exactly as wrongly as stated — on average over those entry errors, with the coverage '
+            'by the largest standard score among them reported beside it.'
         ),
-        metrics=aware_coverage,
+        metrics=aware_coverage_by_entry_error,
         cases=tuple(scenarios.input_aware_grid()),
         row=score,
         criterion=COVERAGE,
@@ -539,17 +615,17 @@ CHECKS: dict[str, Check] = {
         name='verdict-false-alarm',
         claim=(
             'A fit of data the model describes, with the inputs entered as wrongly as stated, is blamed '
-            'on the model or on the inputs in at most one fit in seven.'
+            'on the model, on the inputs or on both about as often as the 5 % family-wise level of the '
+            'verdict allows.'
         ),
         metrics=false_alarm,
-        criterion=FALSE_ALARM,
+        criterion=NULL_RATE,
         criterion_reason=(
-            'The verdict is the first of several tests that fires, so its false-alarm rate is the union '
-            'of their levels rather than any one of them: two misfit tests and the conflict statistic at '
-            '5 % each bound it near 15 %. It is an upper limit and not a level, so exact limits at or '
-            'below 0.15 are a pass and limits above it a fail, with nothing to call conservative: a '
-            'verdict that never fires on good data is what is wanted, and the power checks say whether '
-            'it still fires on bad.'
+            _NULL_REASON + ' The verdict reads the misfit test and the conflict statistic together and '
+            'holds them to one 5 % level between them by the Holm step-down, so the rate at which it '
+            'blames good data is the family-wise error of the two tests, and it is judged as the rate of '
+            'one test would be. A verdict that never fires on good data is what is wanted; the power '
+            'checks say whether it still fires on bad.'
         ),
         derived_from='input-aware-coverage',
     ),
@@ -854,6 +930,39 @@ CHECKS: dict[str, Check] = {
         metrics=sobol_error,
         cases=tuple(sobol.blocking_cases()),
         row=sobol.blocking_row,
+        stages=(200,),
+    ),
+    'replicate-exclusion-null': Check(
+        name='replicate-exclusion-null',
+        claim=(
+            'Fitted replicate by replicate, a set of replicates measured alike — or alike but for one '
+            'that carries three times the noise of the others — loses a replicate that agrees with the '
+            'rest in at most one fit in twenty.'
+        ),
+        metrics=replicate_exclusion,
+        cases=tuple(scenarios.replicate_grid(shifted=False)),
+        row=score_replicates,
+        criterion=FALSE_EXCLUSION,
+        criterion_reason=(
+            'A replicate left out of the average is a measurement thrown away and a sentence telling the '
+            'user it disagreed, so on replicates that agree it is a false alarm. The rate is one per fit — '
+            'whether the fit lost any good replicate at all — so its rows are independent draws and the '
+            'exact limits apply. It is an upper limit and not a level: exact limits at or below 0.05 are a '
+            'pass and limits above it a fail, with nothing to call conservative. How often a noisy '
+            'replicate itself is left out is reported beside it.'
+        ),
+    ),
+    'replicate-exclusion-power': Check(
+        name='replicate-exclusion-power',
+        claim=(
+            'How often a per-replicate fit leaves out a replicate measured at three times or a third of '
+            'the binding constant the others share, one of three, five or eight or two of five or eight, '
+            'and how often it loses a good replicate beside it — what the replicate test gains a user, '
+            'reported rather than required.'
+        ),
+        metrics=replicate_exclusion,
+        cases=tuple(scenarios.replicate_grid(shifted=True)),
+        row=score_replicates,
         stages=(200,),
     ),
     'runtime': Check(

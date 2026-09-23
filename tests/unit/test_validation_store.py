@@ -9,6 +9,7 @@ it had already finished.
 
 from __future__ import annotations
 
+import ast
 import json
 import shutil
 from pathlib import Path
@@ -94,8 +95,12 @@ def test_pruning_repairs_a_damaged_file(results):
 @pytest.fixture
 def code_copy(tmp_path):
     """A copy of the modules the hash covers, to edit without touching the repository."""
-    for package in store.CODE_ROOTS:
-        shutil.copytree(ROOT / package, tmp_path / package)
+    for root in store.CODE_ROOTS:
+        if (ROOT / root).is_dir():
+            shutil.copytree(ROOT / root, tmp_path / root)
+        else:
+            (tmp_path / root).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / root, tmp_path / root)
     return tmp_path
 
 
@@ -123,13 +128,75 @@ def test_changing_what_the_code_does_retires_the_rows(code_copy):
 def test_the_hash_covers_every_package_a_fit_goes_through(code_copy):
     """A root left out would let a change there pass unnoticed and keep rows it invalidates."""
     for package in store.CODE_ROOTS:
-        files = sorted((code_copy / package).rglob('*.py'))
+        root = code_copy / package
+        files = sorted(root.rglob('*.py')) if root.is_dir() else [root]
         assert files, f'{package} holds no modules'
         before = store.code_hash(code_copy)
         text = files[0].read_text(encoding='utf-8')
         files[0].write_text(text + '\nUNREACHED = 1\n', encoding='utf-8')
         assert store.code_hash(code_copy) != before, f'a change in {package} does not reach the hash'
         files[0].write_text(text, encoding='utf-8')
+
+
+def test_a_change_in_how_a_row_is_generated_or_scored_retires_the_rows(code_copy):
+    """The generator and the scoring decide what a row holds as much as the engine does.
+
+    A dataset drawn differently, or an interval scored against another
+    acceptance rule, is a row of another question under the same key.
+    """
+    for module in ('generate.py', 'score.py', 'reference.py', 'scenarios.py'):
+        target = code_copy / 'validation' / module
+        text = target.read_text(encoding='utf-8')
+        before = store.code_hash(code_copy)
+        target.write_text(text + '\nUNREACHED = 1\n', encoding='utf-8')
+        assert store.code_hash(code_copy) != before, f'a change in validation/{module} does not reach the hash'
+        target.write_text(text, encoding='utf-8')
+
+
+def test_the_whole_engine_package_is_hashed_and_not_only_the_fit_path():
+    """A unit table or a helper outside the fit packages still decides the numbers a fit gives."""
+    assert 'core' in store.CODE_ROOTS
+
+
+@pytest.mark.parametrize('library', ['numpy', 'scipy'])
+def test_another_numpy_or_scipy_retires_the_rows(library, monkeypatch):
+    """A library release may change a random stream or a solver, and so every dataset and fit under one key."""
+    module = __import__(library)
+    before = store.code_hash()
+    monkeypatch.setattr(module, '__version__', module.__version__ + '.other')
+    assert store.code_hash() != before
+
+
+def _validation_imports(file: Path) -> set[str]:
+    """The ``validation`` modules *file* imports, by file name."""
+    tree = ast.parse(file.read_text(encoding='utf-8'))
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == 'validation':
+            found |= {f'{alias.name}.py' for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and (node.module or '').startswith('validation.'):
+            found.add(node.module.split('.')[1] + '.py')
+    return found
+
+
+def test_every_module_a_row_is_computed_in_is_hashed_with_everything_it_imports():
+    """A row function outside the hash could change what a row holds and keep the rows it invalidates.
+
+    The modules that only read rows — the registry of metrics, the criteria,
+    the tables, the runner and the command line — stay outside, so that
+    rewording a claim or re-rendering a table costs no stored row.
+    """
+    hashed = {Path(root).name for root in store.CODE_ROOTS if root.startswith('validation/')}
+    for name, check in CHECKS.items():
+        if check.row is None:
+            continue
+        module = check.row.__module__
+        assert module.startswith('validation.'), f'{name} computes its rows outside the package'
+        assert module.split('.')[1] + '.py' in hashed, f'{name} computes its rows in {module}, outside the hash'
+    for module in hashed:
+        missing = _validation_imports(ROOT / 'validation' / module) - hashed
+        assert not missing, f'validation/{module} imports {sorted(missing)}, which the hash does not cover'
+    assert not hashed & {'checks.py', 'criteria.py', 'tables.py', 'run.py', '__main__.py', 'store.py'}
 
 
 def test_two_runs_of_the_same_code_differ_in_nothing(results):

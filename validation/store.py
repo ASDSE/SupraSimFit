@@ -1,11 +1,18 @@
 """Append-only rows, one file per check, keyed by scenario, seed and the code that produced them.
 
 A row is valid for the code it was computed with. :func:`code_hash` reads
-every module the fit goes through, strips the docstrings and hashes what is
-left, so reformatting or rewording keeps a run's rows and any change of
-executable code retires them. Retired rows stay on disk — they are the record
-of what the previous code did — until ``python -m validation prune`` removes
-them.
+every module that decides what a row holds — the whole of ``core/`` and the
+modules of this package that generate, fit and score a dataset — strips the
+docstrings and hashes what is left together with the numpy and scipy
+versions, so reformatting or rewording keeps a run's rows and any change of
+executable code or of those libraries retires them. Retired rows stay on
+disk — they are the record of what the previous code did — until
+``python -m validation prune`` removes them.
+
+The modules that only read rows — the metrics and the registry in
+:mod:`validation.checks`, the criteria, the tables, the runner and the
+command line — are outside the hash: a change there alters how a row is read
+and never what it holds.
 
 A row is written as one unbuffered append of the whole encoded line, and a
 line that is nonetheless unreadable is skipped with a count rather than
@@ -23,6 +30,9 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy
+import scipy
+
 __all__ = [
     'CODE_ROOTS',
     'RESULTS_DIR',
@@ -39,14 +49,19 @@ __all__ = [
 #: Where the rows live: one JSON Lines file per check.
 RESULTS_DIR = Path(__file__).resolve().parent / 'results'
 
-#: The packages a fit goes through. A change anywhere in them can move any
+#: What a row is computed by: the engine package whole, and the modules of
+#: this package that draw a dataset, fit it and score the fit, each with every
+#: module of the package it imports. A change anywhere in them can move any
 #: number in any check, so every row names the hash of all of them together.
 CODE_ROOTS = (
-    'core/models',
-    'core/assays',
-    'core/pipeline',
-    'core/optimizer',
-    'core/data_processing',
+    'core',
+    'validation/budget.py',
+    'validation/generate.py',
+    'validation/legacy.py',
+    'validation/reference.py',
+    'validation/scenarios.py',
+    'validation/score.py',
+    'validation/sobol.py',
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -64,23 +79,33 @@ def _without_docstrings(tree: ast.AST) -> ast.AST:
     return tree
 
 
+def _files(base: Path, root: str) -> list[Path]:
+    """The ``.py`` files of one entry of :data:`CODE_ROOTS`: a package's, or the one module named."""
+    path = base / root
+    return sorted(path.rglob('*.py')) if path.is_dir() else [path]
+
+
 def code_hash(root: Path | None = None) -> str:
     """Short hash of the executable code of :data:`CODE_ROOTS` under *root* (the repository by default).
 
     Every ``.py`` file is parsed, its docstrings are dropped and the remaining
     syntax tree is dumped, so comments, docstrings and formatting are outside
-    the hash and anything the interpreter runs is inside it.
+    the hash and anything the interpreter runs is inside it. The numpy and
+    scipy versions are hashed with it: numpy guarantees a random stream only
+    within one build, and a scipy release can move a solver or a
+    distribution, so a dataset or a fit is not pinned by the code alone.
 
     Returns
     -------
     str
-        The first 12 hexadecimal digits of the SHA-256 of the dumped trees,
-        each preceded by its path.
+        The first 12 hexadecimal digits of the SHA-256 of the two library
+        versions and the dumped trees, each tree preceded by its path.
     """
     base = _REPO_ROOT if root is None else Path(root)
     digest = hashlib.sha256()
+    digest.update(f'numpy {numpy.__version__} scipy {scipy.__version__}'.encode('utf-8'))
     for package in CODE_ROOTS:
-        for file in sorted((base / package).rglob('*.py')):
+        for file in _files(base, package):
             digest.update(file.relative_to(base).as_posix().encode('utf-8'))
             tree = _without_docstrings(ast.parse(file.read_text(encoding='utf-8')))
             digest.update(ast.dump(tree).encode('utf-8'))

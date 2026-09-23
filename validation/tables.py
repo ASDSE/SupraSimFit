@@ -13,6 +13,7 @@ import collections
 import csv
 import dataclasses
 import datetime
+import functools
 import io
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
@@ -21,7 +22,7 @@ import numpy as np
 
 from validation import store
 from validation.checks import CHECKS, Check, matches
-from validation.criteria import Criterion, clopper_pearson
+from validation.criteria import Criterion, clopper_pearson, operating_characteristic
 
 __all__ = ['Rate', 'Spread', 'render', 'summarise', 'summarise_group', 'tables']
 
@@ -149,9 +150,14 @@ class Summary:
     rates, spreads : list
         Per case.
     pooled_rates, pooled_spreads : list
-        Per assay family. A family whose cases are unevenly sampled carries
-        the verdict ``'partial'``, because an unbalanced pool is the rate of
-        whichever cases happened to finish and not the family's.
+        Per assay family, over the seeds every case of the family reached
+        (:attr:`pooled_seeds`), so every case weighs the same. A family one of
+        whose cases has no rows carries the verdict ``'partial'``, because a
+        pool over the cases that happened to run is their rate and not the
+        family's.
+    pooled_seeds : dict[str, tuple[int, int]]
+        Per family, how many cases were pooled and how many seeds of each:
+        the seeds ``0 .. N-1`` that every one of them holds.
     seeds : dict[str, int]
         Rows per case, for the cases that have any.
     declared : int
@@ -162,6 +168,10 @@ class Summary:
         Rows that carry a refusal message and rows that carry an exception.
     messages : list[tuple[str, int]]
         The three commonest of those messages, with their counts.
+    chance_fails : float
+        How many of the judged case rates would fail were every case exactly
+        at its nominal rate: the sum of each one's chance of failing at the
+        draws it has. A few case fails among hundreds are what chance gives.
     patterns : tuple[str, ...]
         The expressions the cases were filtered by, empty for the whole
         check. A table rendered from a filtered summary says so, because the
@@ -178,6 +188,8 @@ class Summary:
     refused: int
     errors: int
     messages: list[tuple[str, int]]
+    pooled_seeds: dict[str, tuple[int, int]]
+    chance_fails: float
     patterns: tuple[str, ...] = ()
 
     @property
@@ -217,18 +229,18 @@ def summarise(
         rates.extend(case_rates)
         spreads.extend(case_spreads)
 
-    by_family: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
-    for case, found in by_case.items():
-        by_family[_family(case)].extend(found)
-    balanced = _balanced_families(declared, {case: len(found) for case, found in by_case.items()})
     pooled_rates: list[Rate] = []
     pooled_spreads: list[Spread] = []
-    for family in sorted(by_family):
-        family_rates, family_spreads = summarise_group(check, family, by_family[family])
-        if family not in balanced:
+    pooled_seeds: dict[str, tuple[int, int]] = {}
+    for family, (cases, complete) in sorted(_families(declared, by_case).items()):
+        common = min(_seed_prefix(by_case[case]) for case in cases)
+        pooled = [row for case in cases for row in by_case[case] if int(row['seed']) < common]
+        family_rates, family_spreads = summarise_group(check, family, pooled)
+        if not complete:
             family_rates = [dataclasses.replace(rate, criterion=None, verdict='partial') for rate in family_rates]
         pooled_rates.extend(family_rates)
         pooled_spreads.extend(family_spreads)
+        pooled_seeds[family] = (len(cases), common)
 
     messages = collections.Counter(row['refused'] for row in kept.values() if row.get('refused')) + collections.Counter(
         row['error'] for row in kept.values() if row.get('error')
@@ -244,26 +256,41 @@ def summarise(
         refused=sum(1 for row in kept.values() if row.get('refused')),
         errors=sum(1 for row in kept.values() if row.get('error')),
         messages=messages.most_common(3),
+        pooled_seeds=pooled_seeds,
+        chance_fails=sum(_chance_fail(rate.criterion, rate.n) for rate in rates if rate.criterion is not None),
         patterns=tuple(patterns or ()),
     )
 
 
-def _balanced_families(declared: set[str], seeds: dict[str, int]) -> set[str]:
-    """The families every declared case of which has rows, all at the same seed count.
+def _seed_prefix(rows: list[dict[str, Any]]) -> int:
+    """How many seeds ``0, 1, 2 ...`` *rows* hold without a gap."""
+    seeds = {int(row['seed']) for row in rows}
+    count = 0
+    while count in seeds:
+        count += 1
+    return count
 
-    A pooled rate over an uneven set of cases is the rate of the cases that
-    finished, weighted by how far each got, which is nobody's claim. With no
-    declared cases — a derived check reading its parent whole — a family is
-    balanced when its cases agree on their seed count.
+
+def _families(declared: set[str], by_case: dict[str, list[dict[str, Any]]]) -> dict[str, tuple[list[str], bool]]:
+    """Each family's cases that have rows, and whether every declared case of the family has some.
+
+    With no declared cases — a derived check reading its parent whole — the
+    family is the cases that have rows.
     """
-    by_family: dict[str, list[str]] = collections.defaultdict(list)
-    for case in declared or seeds:
-        by_family[_family(case)].append(case)
+    members: dict[str, list[str]] = collections.defaultdict(list)
+    for case in declared or by_case:
+        members[_family(case)].append(case)
     return {
-        family
-        for family, cases in by_family.items()
-        if all(case in seeds for case in cases) and len({seeds[case] for case in cases}) <= 1
+        family: (sorted(case for case in cases if case in by_case), all(case in by_case for case in cases))
+        for family, cases in members.items()
+        if any(case in by_case for case in cases)
     }
+
+
+@functools.lru_cache(maxsize=None)
+def _chance_fail(criterion: Criterion, n: int) -> float:
+    """The chance *criterion* fails a rate that is exactly nominal, at *n* draws."""
+    return operating_characteristic(criterion, n, criterion.nominal)[1]
 
 
 def _criterion_text(criterion: Criterion | None) -> str:
@@ -271,15 +298,17 @@ def _criterion_text(criterion: Criterion | None) -> str:
     return '' if criterion is None else criterion.text
 
 
-def _rate_table(rates: list[Rate], first: str) -> list[str]:
-    """One markdown table of rates."""
+def _rate_table(rates: list[Rate], first: str, sizes: dict[str, tuple[int, int]] | None = None) -> list[str]:
+    """One markdown table of rates; *sizes* adds the cases and seeds each pooled row was read over."""
+    pooled = sizes is not None
     lines = [
-        f'| {first} | series | N | rate | 95 % exact | criterion | verdict |',
-        '| --- | --- | ---: | ---: | --- | --- | --- |',
+        f'| {first} |{" cases x seeds |" if pooled else ""} series | N | rate | 95 % exact | criterion | verdict |',
+        f'| --- |{" ---: |" if pooled else ""} --- | ---: | ---: | --- | --- | --- |',
     ]
     for rate in rates:
+        size = f' {sizes[rate.case][0]} x {sizes[rate.case][1]} |' if pooled else ''
         lines.append(
-            f'| {rate.case} | {rate.series} | {rate.n} | {rate.rate:.3f} | '
+            f'| {rate.case} |{size} {rate.series} | {rate.n} | {rate.rate:.3f} | '
             f'[{rate.low:.3f}, {rate.high:.3f}] | {_criterion_text(rate.criterion)} | {rate.verdict} |'
         )
     return lines
@@ -305,8 +334,9 @@ def render(summary: Summary, code: str, fmt: str = 'md') -> str:
         return _render_csv(summary, code)
     check = summary.check
     seeds = summary.seeds.values()
-    failing = [r for r in summary.rates if r.verdict == 'fail']
-    undecided = [r for r in summary.rates if r.verdict == 'undecided']
+    judged = [r for r in summary.rates if r.criterion is not None]
+    failing = [r for r in judged if r.verdict == 'fail']
+    undecided = [r for r in judged if r.verdict == 'undecided']
     lines = [
         f'## {check.name}',
         '',
@@ -320,7 +350,12 @@ def render(summary: Summary, code: str, fmt: str = 'md') -> str:
     if summary.patterns:
         lines += [
             f'> **Filtered.** Only the cases matching {", ".join(f"`{p}`" for p in summary.patterns)} are '
-            f'shown; the check defines {len(check.cases)} cases in all.',
+            'shown; '
+            + (
+                f'the check defines {len(check.cases)} cases in all.'
+                if check.cases
+                else f'the check reads every case of `{check.derived_from}`.'
+            ),
             '',
         ]
     lines += [
@@ -328,10 +363,17 @@ def render(summary: Summary, code: str, fmt: str = 'md') -> str:
         f'{sum(seeds) if summary.seeds else 0} rows in all, '
         f'{min(summary.seeds.values()) if summary.seeds else 0} to '
         f'{max(summary.seeds.values()) if summary.seeds else 0} seeds per case; '
-        f'{summary.refused} refused, {summary.errors} errors; '
-        f'{len(failing)} failing and {len(undecided)} undecided rates.',
+        f'{summary.refused} refused, {summary.errors} errors.',
         '',
     ]
+    if judged:
+        lines += [
+            f'{len(judged)} case rates judged: {len(failing)} failing and {len(undecided)} undecided. Were every '
+            f'case exactly at its nominal rate, about {summary.chance_fails:.2f} of them would fail by chance, so a '
+            'fail or two among many cases is not evidence on its own; the pooled rows below are what a claim '
+            'rests on.',
+            '',
+        ]
     if not summary.complete:
         lines += [
             f'> **Partial.** {summary.declared - len(summary.seeds)} of the '
@@ -344,7 +386,16 @@ def render(summary: Summary, code: str, fmt: str = 'md') -> str:
     if summary.messages:
         lines.append('')
     if summary.pooled_rates:
-        lines += ['### Pooled per assay', ''] + _rate_table(summary.pooled_rates, 'family') + ['']
+        lines += (
+            [
+                '### Pooled per assay',
+                '',
+                'Each family is read over the seeds every one of its cases reached, so each case weighs the same.',
+                '',
+            ]
+            + _rate_table(summary.pooled_rates, 'family', summary.pooled_seeds)
+            + ['']
+        )
     if summary.pooled_spreads:
         lines += _spread_table(summary.pooled_spreads, 'family') + ['']
     if summary.rates:
@@ -355,13 +406,18 @@ def render(summary: Summary, code: str, fmt: str = 'md') -> str:
     return '\n'.join(lines)
 
 
+def _size(summary: Summary, scope: str, name: str) -> tuple[int, int]:
+    """How many cases and seeds per case a CSV row was read over."""
+    return summary.pooled_seeds[name] if scope == 'family' else (1, summary.seeds[name])
+
+
 def _render_csv(summary: Summary, code: str) -> str:
     """The same numbers as CSV rows, one per series."""
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(
-        ['check', 'scope', 'case', 'series', 'n', 'hits', 'rate', 'low', 'high', 'criterion', 'verdict']
-        + ['median', 'p99', 'max', 'rms', 'code']
+        ['check', 'scope', 'case', 'cases', 'seeds', 'series', 'n', 'hits', 'rate', 'low', 'high', 'criterion']
+        + ['verdict', 'median', 'p99', 'max', 'rms', 'code']
     )
     for scope, rates in (('case', summary.rates), ('family', summary.pooled_rates)):
         for rate in rates:
@@ -370,6 +426,7 @@ def _render_csv(summary: Summary, code: str) -> str:
                     summary.check.name,
                     scope,
                     rate.case,
+                    *_size(summary, scope, rate.case),
                     rate.series,
                     rate.n,
                     rate.hits,
@@ -388,7 +445,8 @@ def _render_csv(summary: Summary, code: str) -> str:
     for scope, spreads in (('case', summary.spreads), ('family', summary.pooled_spreads)):
         for spread in spreads:
             writer.writerow(
-                [summary.check.name, scope, spread.case, spread.series, spread.n, '', '', '', '', '', '']
+                [summary.check.name, scope, spread.case, *_size(summary, scope, spread.case), spread.series]
+                + [spread.n, '', '', '', '', '', '']
                 + [f'{spread.median:.6g}', f'{spread.p99:.6g}', f'{spread.largest:.6g}', f'{spread.rms:.6g}', code]
             )
     return out.getvalue()

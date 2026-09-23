@@ -66,9 +66,10 @@ the law was read from), and the wall time.
 A scenario says what the noise does as well as how big it is: `proportional` makes it grow with
 the signal, `noise_floor` puts a constant part under it in quadrature, and `replicate_scale`
 gives each replicate one scale factor of its own — a lamp or gain difference between runs, which
-is a difference between whole replicates and not noise about the curve. The last two enter a
-scenario's key only where they are stated, so every id an earlier run stored still names the same
-titration.
+is a difference between whole replicates and not noise about the curve. A replicated scenario can also
+make some replicates depart from the rest: `shifted_replicates` measured at `replicate_shift` times
+every binding constant the fit moves, and `noisy_replicates` at three times the noise. Each of these
+enters a scenario's key only where it is stated.
 
 A fit the application declines is stored with the message a user would see and counted as
 **refused**; anything else that escapes is stored with its type and counted as an **error**.
@@ -76,29 +77,18 @@ Neither is dropped, and `tables` prints both counts beside every rate.
 
 ## The store
 
-Rows are appended to `validation/results/<check>.jsonl`, keyed by `(case, seed, code)`. The code
-hash is taken over the executable code — docstrings stripped, formatting gone — of `core/models`,
-`core/assays`, `core/pipeline`, `core/optimizer` and `core/data_processing`. Rewording a
-docstring keeps a run's rows; changing what the engine does retires them, and `prune` removes
-them once nobody wants the record of what the previous engine did.
-
-The hash does **not** cover this package. When a change here alters what a row holds rather than
-how it is computed, delete the check's file rather than letting old and new rows be read together.
-
-**Rows a changed row function retires.** `replicate-pooling` is computed by `reference.pooling_row`
-and `reference-agreement` by `reference.agreement_row`, which were one function before the point
-weights: the agreement is now read on the average of the replicates and the pooling comparison
-carries the same weights on both sides and a third, unweighted interval beside them. Every stored
-`replicate-pooling` row, and every stored `reference-agreement` row of a replicated case, therefore
-answers a question that is no longer asked and is deleted before the checks are re-run. The
-single-titration agreement rows keep their meaning: one signal shows no noise law, its weights are
-exactly one, and the row is the row that was stored.
-
-**Rows a new field changes.** Every `score` row now carries `noise_share` and `noise_basis`, which
-rows written before them do not; `compare` counts a field present on one side only as a difference,
-so a comparison against such rows names them: `compare CODE_A --ignore noise_share --ignore
-noise_basis`. The exit status is then decided by the fields both sides carry. The two fields say
-what the fit was weighted by, and on a single titration they say it was weighted by nothing.
+Rows are appended to `validation/results/<check>.jsonl`, keyed by `(case, seed, code)`; the
+directory is ignored by git. The code hash is taken over the executable code — docstrings stripped,
+formatting gone — of the whole `core/` package and of the modules here that generate, fit and score
+a dataset (`generate`, `scenarios`, `score`, `reference`, `legacy`, `sobol`, `budget`), together with
+the numpy and scipy versions: numpy promises a random stream only within one build, and a scipy
+release can move a solver. Rewording a docstring keeps a run's rows; changing what the engine does,
+how a dataset is drawn or how a fit is scored, or the libraries under them, retires them, and
+`prune` removes them once nobody wants the record of what the previous code did. The modules that
+only read rows — the metrics and the registry in `checks.py`, the criteria, the tables, the runner
+and the command line — are outside the hash, so rewording a claim or re-rendering a table costs no
+stored row. A test holds the two sides apart: every row function lives in a hashed module, and a
+hashed module imports nothing outside the hash.
 
 Each row is one unbuffered append of the whole encoded line, so a process killed between two rows
 leaves whole lines behind it. A line that is nonetheless unreadable — a full disk, a kill landing
@@ -114,12 +104,31 @@ resubmitting it is free.
 
 Seeds are always 0, 1, 2 … in order, so extending a case re-uses every row it already has. Every
 case runs the first stage (100 seeds for most checks); a case stops there once every rate judged
-of it has **passed**, and every other case goes on to 200 and then 400 seeds. A pass at 100 seeds
-would be a pass at 400, so stopping on it changes no decision. A fail and an undecided both go on,
-which is what puts every published failure on the full 400 draws and keeps the chance of failing a
-case whose procedure is exactly nominal at the 2 % the exact limits carry, rather than
-accumulating it over the three looks. Each table states the N it reached, and an undecided rate at
-the end of the ladder is printed as it stands, with its limits.
+of it has **passed**, and every other case goes on to 200 and then 400 seeds. A fail and an
+undecided both go on, which puts every published failure on the full 400 draws and keeps the
+chance of failing a case whose procedure is exactly nominal at the 1.9 % the exact limits carry at
+400 draws.
+
+Stopping on a pass is three looks at a pass, though, and that **raises the chance of passing a case
+that is anti-conservative** (`validation.criteria.ladder_operating_characteristic`, exactly from the
+binomial):
+
+| true coverage | P(pass), ladder 100 → 200 → 400 | P(pass), one look at 400 | P(fail), either |
+| ---: | ---: | ---: | ---: |
+| 0.925 | 0.040 | 0.018 | 0.53 |
+| 0.930 | 0.073 | 0.042 | 0.37 |
+| 0.950 | 0.515 | 0.468 | 0.019 |
+
+The 5 % test rule is the mirror image of it. A case-level pass therefore says less than a pass on one
+look would, and the rates a document quotes rest on the **pooled family rows**, which read the same
+seeds of every case of a family (see *A table reads the same seeds of every case* below), not on the
+count of cases that passed.
+
+**Chance fails.** A full run judges several hundred case rates, and at 400 draws an exactly nominal
+procedure fails about 1.9 % of them by chance alone — some fifteen of eight hundred. Every table says
+how many of its own case rates chance would fail (the sum of each rate's chance at the draws it
+has), so a fail or two among many cases is read against that number and is not evidence on its own;
+a check whose failing cases far outnumber it, or whose pooled row fails, is.
 
 ## How a rate is judged
 
@@ -137,7 +146,7 @@ of the observed rate, `[CP low, CP high]`:
 | --- | --- | --- | --- |
 | coverage of a 95 % interval | `CP high < 0.95` | `CP low >= 0.925` | undecided |
 | rate of a 5 % test on the null | `CP low > 0.05` | `CP high <= 0.075` | undecided |
-| the verdict's false alarms, claimed `<= 0.15` | `CP low > 0.15` | `CP high <= 0.15` | undecided |
+| a clean replicate left out, claimed `<= 0.05` | `CP low > 0.05` | `CP high <= 0.05` | undecided |
 | the two profiles agree, claimed `>= 0.99` | `CP high < 0.99` | `CP low >= 0.99` | undecided |
 
 A pass the limits also put past the far end of Bradley's range is labelled **conservative** and is
@@ -147,7 +156,7 @@ conservative there. Fail is read first; the two conditions of a level can both h
 exact limits are narrower than the gap between the thresholds, which needs some two thousand
 draws — five times what the ladder reaches.
 
-**What the rule can decide.** Exactly from the binomial, at the 400 draws the ladder ends on
+**What the rule can decide.** Exactly from the binomial, on one look at 400 draws
 (`validation.criteria.operating_characteristic`):
 
 | true coverage | P(pass) | P(fail) | P(undecided) |
@@ -158,34 +167,54 @@ draws — five times what the ladder reaches.
 | 0.970 | 0.980 | 0.000 | 0.020 |
 
 The 5 % test rule is the mirror image of it, term for term: 0.997 / 0.000 at a true rate of 0.025,
-0.468 / 0.019 at 0.05, 0.018 / 0.527 at 0.075 and 0.000 / 0.964 at 0.10. The false-alarm rule
-passes a verdict that fires on 5 % of good data with probability 1.000 and fails one that fires on
-20 % with probability 0.752. The agreement rule passes two computations that always agree with
-probability 1.000 and fails a pair that disagrees on 3 % of datasets with probability 0.849.
+0.468 / 0.019 at 0.05, 0.018 / 0.527 at 0.075 and 0.000 / 0.964 at 0.10. The agreement rule passes
+two computations that always agree with probability 1.000 and fails a pair that disagrees on 3 % of
+datasets with probability 0.849.
 
-A procedure that is exactly nominal is therefore passed about half the time and otherwise left
-undecided, never failed on the strength of the draws alone; one a full Bradley step
-anti-conservative is failed almost always. An undecided rate at 400 draws is a statement about
-what 400 draws can settle, and the honest thing to print.
+A procedure that is exactly nominal is therefore passed about half the time, failed about one time
+in fifty and otherwise left undecided; one a full Bradley step anti-conservative is failed almost
+always. A fail means the draws put the rate demonstrably on the wrong side of the nominal one, which
+is stricter than Bradley's range: a procedure at 0.94 lies inside the range and still fails one
+time in eight. An undecided rate at 400 draws is a statement about what 400 draws can settle, and
+the honest thing to print.
 
-**What is judged is the coverage over every draw.** That is the frequentist property the level
+**What is judged is the coverage over every draw**, and where the claim is about closed intervals,
+the coverage over those as well. The coverage over every draw is the frequentist property the level
 promises, and an interval that runs to a Ka bound covers that side by telling the user the data do
-not limit Ka there — which is what the application reports and how a reader acts on it. Beside the
-judged `cov.KEY` the tables report `closed_cov.KEY` over the draws closed on both sides, the
-fractions `open.KEY`, `split.KEY` and `limited.KEY`, the median `width.KEY` and `bound_active`.
-None of those is judged: conditioning on closure keeps the draws whose noise happened to make the
-profile steep, which is a different population from the one the level is about.
+not limit Ka there — which is what the application reports and how a reader acts on it. A closed
+interval, though, is a subset of draws a user can recognise from the interval itself (R. J. Buehler,
+*Some validity criteria for statistical inferences*, Annals of Mathematical Statistics **30**,
+845-863, 1959),
+and a user reads it as a finite guarantee; where the data barely identify the constants — two
+stepwise constants a decade or more apart on a dark host — its coverage can fall far below the level
+while the rate over every draw holds, because the open draws cover by construction. So
+`conditional-coverage` and `two-ka-weak` judge `closed_cov.KEY` beside `cov.KEY`, and a case passes
+only when both do. Everywhere else `closed_cov.KEY` is reported, with the fractions `open.KEY`,
+`split.KEY` and `limited.KEY`, the median `width.KEY` and `bound_active`.
+
+**The input-aware level is an average over the entry errors.** `input-aware-coverage` draws each
+entered input from the distribution its stated uncertainty describes — the reading of a Type B
+uncertainty — and its judged rate is the coverage averaged over those draws. It is not the same at
+every entry: beside it the table reports `cov_zmax_<bin>.KEY`, the coverage in bins of the largest
+standard score among a draw's entry errors (below 1, 1 to 2, 2 to 2.5, 2.5 and above), which says
+how far the rate falls for a draw whose entries lie far out in the stated distribution. The level is
+a statement about inputs whose errors are what was stated, on average, and not about one entry that
+happens to be several standard deviations off.
 
 **Reported, not judged.** A check with no criterion describes what happens — the power of a test,
 the price of blocking a Sobol' design, what the previous release gave on the same data. A series
 whose name the tables print without a criterion is reported for the same reason: calling any of it
 a pass or a failure would be an invention.
 
+**A table reads the same seeds of every case.** A pooled per-assay rate is read over the seeds
+`0 … N-1` that every case of the family holds, `N` being the fewest any of them reached — the
+`cases x seeds` column says which — so a case the ladder carried to 400 seeds weighs no more than
+one it stopped at 100, and the pool is the family's rate over a balanced design. It is judged by the
+same rule as a case. A family one of whose cases has no rows at all is marked `partial` and not
+judged, because a pool over the cases that happened to run is their rate and not the family's.
+
 **A partial store says so.** Every table's header states how many of the check's cases have rows,
-and a check that is not finished carries a warning line above its tables. A pooled per-assay rate
-is judged by the same rule as a case, and is marked `partial` unless every case of that family has
-rows at the same seed count, because a pool over whichever cases happened to finish is not the
-family's rate.
+and a check that is not finished carries a warning line above its tables.
 
 ## Adding to it
 
@@ -199,50 +228,52 @@ Generated by `python -m validation list`; the claim and the criterion of each li
 
 ```
 conditional-coverage   180 cases                                95 % interval
-  The interval reported when every entered input is taken as exact holds the true binding
-  constant as often as its 95 % level says, across every assay, regime, design and noise size,
-  over every draw — with the fraction of draws in which the data limit Ka on both sides beside
-  it.
+  The interval reported when every entered input is taken as exact holds the true binding constant
+  as often as its 95 % level says, across every assay, regime, design and noise size, over every
+  draw and over the draws in which the data limit Ka on both sides.
 
 two-ka-weak            108 cases                                95 % interval
-  What the interval does for the two stepwise models in the weak regime, where the host is dark
-  and the two binding constants are separated by one to three orders of magnitude: how often the
-  interval holds a constant, and how often the data limit it on both sides at all.
+  The interval of the two stepwise models holds each true binding constant as often as its 95 %
+  level says in the weak regime, where the host is dark and the two constants are separated by one
+  to three orders of magnitude — over every draw, and over the draws in which the data limit the
+  constant on both sides.
 
 input-aware-coverage   144 cases                                95 % interval
-  The reported interval, which lets every entered input move within the uncertainty stated for
-  it, holds the true binding constant as often as its level says when the inputs are entered
-  exactly as wrongly as stated.
+  The reported interval, which lets every entered input move within the uncertainty stated for it,
+  holds the true binding constant as often as its level says when the inputs are entered exactly
+  as wrongly as stated — on average over those entry errors, with the coverage by the largest
+  standard score among them reported beside it.
 
 range-spec-coverage    36 cases                                 95 % interval
   The same holds when an input is stated as a range rather than a standard deviation, with the
   entered value drawn uniformly over that range.
 
 conflict-null          reads 72 cases of input-aware-coverage   5 % test
-  On the grid conflict-power runs, the check on the entered inputs calls them in conflict about
-  as often as its level allows when they are entered exactly as wrongly as stated, over the fits
+  On the grid conflict-power runs, the check on the entered inputs calls them in conflict about as
+  often as its level allows when they are entered exactly as wrongly as stated, over the fits
   whose data inform an input direction at all.
 
 conflict-power         216 cases                                reported
-  How often the same check fires when the inputs are entered two, three and five times as
-  wrongly as stated, on the grid its null rate is measured on — what a user gains from it,
-  reported rather than required.
+  How often the same check fires when the inputs are entered two, three and five times as wrongly
+  as stated, on the grid its null rate is measured on — what a user gains from it, reported rather
+  than required.
 
 lof-null               72 cases                                 5 % test
   The replicate lack-of-fit F test calls the model inadequate about as often as its level allows
   on replicated data the model does describe.
 
 runs-null              48 cases                                 5 % test
-  The runs test on the residuals fires about as often as its level allows on single titrations
-  the model does describe.
+  The runs test on the residuals fires about as often as its level allows on single titrations the
+  model does describe.
 
 misfit-power           84 cases                                 reported
-  How often the misfit tests see a departure the model cannot follow: a smooth sine of 2 % of
-  the signal range shared by every replicate, and a titrant series entered 15 % off.
+  How often the misfit tests see a departure the model cannot follow: a smooth sine of 2 % of the
+  signal range shared by every replicate, and a titrant series entered 15 % off.
 
-verdict-false-alarm    reads every case of input-aware-coverage <= 0.15
+verdict-false-alarm    reads every case of input-aware-coverage 5 % test
   A fit of data the model describes, with the inputs entered as wrongly as stated, is blamed on
-  the model or on the inputs in at most one fit in seven.
+  the model, on the inputs or on both about as often as the 5 % family-wise level of the verdict
+  allows.
 
 robustness             66 cases                                 95 % interval
   The reported interval still holds its level when the entries are half as wrong as stated, when
@@ -254,29 +285,21 @@ robustness-strained    72 cases                                 reported
   stock error shared by two inputs that were each stated on their own. Described, not required.
 
 reference-agreement    42 cases                                 >= 0.99
-  The engine places both edges of its interval where an independent profile — its own design,
-  its own search and its own root finding — places them, to a ten-thousandth of a decade of Ka.
-  The reference writes the acceptance rule itself as well: a Ka is accepted where its profile
-  stays under `S_min (1 + m F(0.95; m, nu) / nu)` with `m = 1 + max(0, r(k_hat) - r(k))`, and
-  `r(k)` the rank of the columns whose coefficient the reference's own bounded solve leaves
-  strictly inside its bounds at `k`. A coefficient on a bound is not fitted, so the cut-off steps
-  up wherever the profile gives one up and is the plain F test wherever it does not. The rank is
-  counted on the reference's own design columns; nothing of the engine's is imported for it, so
-  the step is a second statement of the rule and not a copy of it.
+  The engine places both edges of its interval where an independent profile — its own design, its
+  own search and its own root finding — places them, to a ten-thousandth of a decade of Ka.
 
 joint-region           48 cases                                 95 % interval
   The joint confidence region of a two-constant model holds the true pair as often as its level
-  says — the reading the Identifiability tab offers where the two constants trade off against
-  each other and neither interval alone settles the pair.
+  says — the reading the Identifiability tab offers where the two constants trade off against each
+  other and neither interval alone settles the pair.
 
 replicate-pooling      36 cases                                 reported
   What the app gains by fitting the average of the replicates rather than pooling their points,
-  and what weighting the points by the law the replicates show buys: the coverage and the width
-  of the averaged interval, of the pooled one — both carrying that same law — and of the same
-  average fitted with every point counted equally, on the same data, under independent noise,
-  under noise that grows with the signal, and under one departure the replicates share.
-  Reported, not required — under a shared departure none of the three holds its level, which is
-  the point.
+  and what weighting the points by the law the replicates show buys: the coverage and the width of
+  the averaged interval, of the pooled one — both carrying that same law — and of the same average
+  fitted with every point counted equally, on the same data, under independent noise, under noise
+  that grows with the signal, and under one departure the replicates share. Reported, not required
+  — under a shared departure none of the three holds its level, which is the point.
 
 before-after           72 cases                                 reported
   What the same datasets gave before the engine: how often the range spanned by the pool of
@@ -284,8 +307,8 @@ before-after           72 cases                                 reported
   attempt at all, beside the present interval on the same data.
 
 sobol-coverage         4 cases                                  95 % interval
-  The 95 % interval the Ka sensitivity analysis draws around a Sobol' index holds the
-  analytically known index of two test functions as often as it says.
+  The 95 % interval the Ka sensitivity analysis draws around a Sobol' index holds the analytically
+  known index of two test functions as often as it says.
 
 dilution-coverage      40 cases                                 95 % interval
   The interval holds the true binding constant as often as its 95 % level says when the titrant
@@ -300,25 +323,25 @@ dilution-ignored       12 cases                                 reported
 
 shared-source-coverage 36 cases                                 95 % interval
   The reported interval holds its level when one error of four percent is common to every
-  concentration of the sample — one stock behind the host, the fixed partner and the titrant —
-  the entries are drawn from exactly that model and the fit is told it.
+  concentration of the sample — one stock behind the host, the fixed partner and the titrant — the
+  entries are drawn from exactly that model and the fit is told it.
 
 noise-law-coverage     48 cases                                 95 % interval
-  The interval reported when every entered input is taken as exact holds the true binding
-  constant as often as its 95 % level says on replicated titrations, whatever the noise does
-  along them: constant, growing with the signal, the two together, at two, three and four
-  replicates, and with whole replicates differing by a scale factor of three percent.
+  The interval reported when every entered input is taken as exact holds the true binding constant
+  as often as its 95 % level says on replicated titrations, whatever the noise does along them:
+  constant, growing with the signal, the two together, at two, three and four replicates, and with
+  whole replicates differing by a scale factor of three percent.
 
 noise-law-lof-null     reads 48 cases of noise-law-coverage     5 % test
-  On the same replicated titrations, every one of which the model does describe, the lack-of-fit
-  F test calls the model inadequate about as often as its level allows — with the fit weighted
-  by the law the replicates show and the pure error taken as their scatter about their own image
-  of the mean curve.
+  On the same replicated titrations, every one of which the model does describe, the lack-of-fit F
+  test calls the model inadequate about as often as its level allows — with the fit weighted by
+  the law the replicates show and the pure error taken as their scatter about their own image of
+  the mean curve.
 
 noise-law-aware        16 cases                                 95 % interval
-  The reported interval, which lets every entered input move within the uncertainty stated for
-  it, holds its level on replicated titrations whose noise grows with the signal, with and
-  without a constant floor under it, when the inputs are entered exactly as wrongly as stated.
+  The reported interval, which lets every entered input move within the uncertainty stated for it,
+  holds its level on replicated titrations whose noise grows with the signal, with and without a
+  constant floor under it, when the inputs are entered exactly as wrongly as stated.
 
 noise-law-conflict-null reads 16 cases of noise-law-aware        5 % test
   On the same fits, the check on the entered inputs calls them in conflict about as often as its
@@ -326,36 +349,46 @@ noise-law-conflict-null reads 16 cases of noise-law-aware        5 % test
   signal.
 
 conflict-single-proportional reads 18 cases of robustness             reported
-  How often the same check fires on single titrations whose noise grows with the signal. One
-  curve cannot show how the noise varies along it, so the fit takes the noise as constant and
-  the statistic is read against a reference that assumes it. Reported, not required: it is the
-  rate that stays where no law can be estimated, and the summary and the plot guide say the
-  noise was taken as constant.
+  How often the same check fires on single titrations whose noise grows with the signal. One curve
+  cannot show how the noise varies along it, so the fit takes the noise as constant and the
+  statistic is read against a reference that assumes it. Reported, not required: it is the rate
+  that stays where no law can be estimated, and the summary and the plot guide say the noise was
+  taken as constant.
 
 budget-coverage        4 cases                                  95 % interval
   The 95 % intervals the Ka uncertainty budget draws — around the variance of the output, around
   the variance one source explains, around the spread left once that source is exact, and around
-  the two indices of a group of inputs taken together — hold the analytically known values of
-  two test functions as often as they say.
+  the two indices of a group of inputs taken together — hold the analytically known values of two
+  test functions as often as they say.
 
 source-variance-exact  4 cases                                  95 % interval
-  On a direct-binding titration, where one error common to every concentration moves log10 of
-  the binding constant by exactly minus log10 of itself, the budget's 95 % interval for that
-  source's variance holds the value the identity gives it. The identity holds where every fit of
-  the analysis lies strictly inside the Ka bounds; a draw where one ran to a bound reports the
-  edge of the box, where the output is constant, and is left out of the rate and counted beside
-  it.
+  On a direct-binding titration, where one error common to every concentration moves log10 of the
+  binding constant by exactly minus log10 of itself, the budget's 95 % interval for that source's
+  variance holds the value the identity gives it. The identity holds where every fit of the
+  analysis lies strictly inside the Ka bounds; a draw where one ran to a bound reports the edge of
+  the box, where the output is constant, and is left out of the rate and counted beside it.
 
 what-if-accuracy       3 cases                                  reported
   How far the what-if line lands from the truth: the first-order formula and the re-weighted
   cross-check against a second analysis run at the reduced uncertainty on the same data and the
-  same design, with the effective sample size the cross-check carried. Both errors are given
-  again over the draws where no fit ran to a Ka bound, since a fit that did reports the edge of
-  the box rather than a spread of the inputs.
+  same design, with the effective sample size the cross-check carried. Both errors are given again
+  over the draws where no fit ran to a Ka bound, since a fit that did reports the edge of the box
+  rather than a spread of the inputs.
 
 sobol-blocking         10 cases                                 reported
-  What splitting one budget into independently scrambled blocks costs: the root-mean-square
-  error of each index, block count by block count, at a fixed budget. Reported, not required.
+  What splitting one budget into independently scrambled blocks costs: the root-mean-square error
+  of each index, block count by block count, at a fixed budget. Reported, not required.
+
+replicate-exclusion-null 72 cases                                 <= 0.05
+  Fitted replicate by replicate, a set of replicates measured alike — or alike but for one that
+  carries three times the noise of the others — loses a replicate that agrees with the rest in at
+  most one fit in twenty.
+
+replicate-exclusion-power 96 cases                                 reported
+  How often a per-replicate fit leaves out a replicate measured at three times or a third of the
+  binding constant the others share, one of three, five or eight or two of five or eight, and how
+  often it loses a good replicate beside it — what the replicate test gains a user, reported
+  rather than required.
 
 runtime                reads every case of input-aware-coverage reported
   How long one fit takes, per assay family: the median, the 99th percentile and the worst seen.
@@ -374,7 +407,7 @@ checks state rests on the definitions in `checks.py` and on the rows they produc
 
 `source-variance-exact` and `what-if-accuracy` both rest on fits that stayed inside the Ka box.
 A fit that ran to a bound reports that bound: the output is constant there, so the variance the
-shared source really carries is no longer the quadrature the first check compares against, and the
+shared source really carries is not the quadrature the first check compares against, and the
 spread the second one measures is a jump of decades rather than the movement of the inputs. Each
 row records whether the baseline ran there and how many of the design's fits did. The judged
 coverage of `source-variance-exact` is over the rows where none did, with `~on_bound.KEY` the share
@@ -391,6 +424,15 @@ what they do on data the model describes and inputs entered as wrongly as stated
 titrations: one curve cannot show how the noise varies along it, so there the noise is taken as
 constant, and the rate is reported rather than judged — it is what the fit does where no law can be
 estimated, and the summary and the plot guide say so.
+
+`replicate-exclusion-null` and `replicate-exclusion-power` run the per-replicate mode, the fit of
+every replicate on its own followed by the test of whether they share their binding constants, through
+`fit_measurement_set_per_replica` — the call the interface makes. Every other check fits the average
+of the replicates. The null check judges, per fit, whether a replicate measured like the others was
+left out; one noisy replicate among them is part of the null, since it shares the binding constant
+and leaving a clean replicate out because of it is a false exclusion all the same. How often the
+noisy or the shifted replicates themselves are left out is reported, with the coverage of the
+interval the fit reports.
 
 `before-after` runs the release before the engine. It extracts that commit with `git archive`
 into a directory of its own and runs it in a subprocess with that directory on the path, so the

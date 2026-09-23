@@ -3,10 +3,12 @@
 Seeds are always 0, 1, 2 … in order, so extending a case re-uses every row it
 already has and a run that is killed loses nothing. Every case runs the first
 stage of the ladder; a case stops there once every rate judged of it has
-passed, and every other case goes on to the next stage. A pass at 100 seeds
-would be a pass at 400, so stopping on it changes no decision; a fail and an
+passed, and every other case goes on to the next stage. A fail and an
 undecided go on, which is what puts every published fail on the full number of
-draws the ladder reaches.
+draws the ladder reaches. Stopping on a pass saves the fits a passing case
+would spend and raises its chance of passing a little
+(:func:`~validation.criteria.ladder_operating_characteristic`); the pooled
+rows a claim rests on read the same seeds of every case either way.
 
 A job that raises inside its worker is stored as an error row. A worker
 process that dies outright takes its pool with it; the jobs that had not

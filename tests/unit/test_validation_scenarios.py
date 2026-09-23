@@ -324,3 +324,45 @@ def test_the_conflict_rate_on_single_titrations_reads_the_rows_it_names():
     assert check.criterion is None
     assert {case.id for case in check.cases} <= {case.id for case in CHECKS['robustness'].cases}
     assert all(case.proportional and case.replicates == 1 for case in check.cases)
+
+
+def test_a_replicate_that_departs_from_the_rest_reaches_the_key_its_measurements_hang_on():
+    """A shifted or a noisy replicate is another measurement, so it cannot share the clean one's rows."""
+    base = Scenario(assay='IDA', regime=10.0, replicates=5)
+    shifted = replace(base, shifted_replicates=2, replicate_shift=3.0)
+    lowered = replace(base, shifted_replicates=2, replicate_shift=1 / 3)
+    noisy = replace(base, noisy_replicates=1)
+    ids = {base.data_id, shifted.data_id, lowered.data_id, noisy.data_id}
+    assert len(ids) == 4
+    assert shifted.data_id == 'IDA,K=10,n=12,noise=0.01,m=5,shift=2x3'
+    assert noisy.data_id == 'IDA,K=10,n=12,noise=0.01,m=5,noisy=1'
+    assert shifted.shifted_rows == (3, 4) and shifted.noisy_rows == ()
+    assert replace(noisy, shifted_replicates=1, replicate_shift=3.0).noisy_rows == (3,)
+
+
+@pytest.mark.parametrize(
+    ('fields', 'message'),
+    [
+        ({'shifted_replicates': 1}, 'shift other than 1'),
+        ({'replicate_shift': 3.0}, 'shift other than 1'),
+        ({'shifted_replicates': 2, 'replicate_shift': 3.0}, 'fewer than half'),
+        ({'shifted_replicates': 1, 'replicate_shift': 3.0, 'noisy_replicates': 1}, 'fewer than half'),
+    ],
+)
+def test_a_scenario_refuses_departing_replicates_that_are_not_a_minority(fields, message):
+    """The replicate test asks which replicates disagree with the rest; with no majority there is no rest."""
+    with pytest.raises(ValueError, match=message):
+        Scenario(assay='IDA', replicates=3, **fields)
+
+
+def test_the_replicate_grids_hold_the_clean_sets_apart_from_the_shifted_ones():
+    """The false-exclusion rate is judged where no replicate is shifted; a shifted case there would be power."""
+    null = CHECKS['replicate-exclusion-null'].cases
+    power = CHECKS['replicate-exclusion-power'].cases
+    assert null and power
+    assert all(case.shifted_replicates == 0 for case in null)
+    assert all(case.shifted_replicates > 0 for case in power)
+    assert {case.replicates for case in null} == {case.replicates for case in power} == {3, 5, 8}
+    assert {case.noisy_replicates for case in null} == {0, 1}
+    assert {case.replicate_shift for case in power} == {3.0, 1 / 3}
+    assert not {case.data_id for case in null} & {case.data_id for case in power}

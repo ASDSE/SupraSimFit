@@ -22,13 +22,13 @@ import numpy as np
 from core.assays import ASSAY_CLASSES
 from core.assays.registry import AssayType
 from core.data_processing.measurement_set import MeasurementSet
-from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set
+from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set, fit_measurement_set_per_replica
 from core.pipeline.profile import JointRegion, fit_profile
 from core.pipeline.varpro import FitRefused, KaInterval, Projection
 from validation.generate import Dataset, dataset
 from validation.scenarios import Scenario
 
-__all__ = ['guard', 'interval_facts', 'joint_region_row', 'region_excess', 'score']
+__all__ = ['guard', 'interval_facts', 'joint_region_row', 'region_excess', 'score', 'score_replicates']
 
 
 def guard(work) -> dict[str, Any]:
@@ -203,7 +203,10 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
 
     A scenario that states a dilution or a shared error source carries ``err``
     as well: the signed error of log₁₀ of each binding constant, in decades,
-    which is what the dilution checks report beside the coverage.
+    which is what the dilution checks report beside the coverage. A scenario
+    that states an uncertainty carries ``z_true``, the standard score each
+    entry error was drawn at (:attr:`~validation.generate.Dataset.entry_z`),
+    which the coverage is read against beside the fit's own shifts ``z``.
 
     ``noise_share`` and ``noise_basis`` say what the replicates showed about
     the noise and therefore how the fit was weighted; a single titration
@@ -270,6 +273,8 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
                 key: float(np.log10(float(result.parameters[key].to('1/M').magnitude) / value))
                 for key, value in truth.items()
             }
+        if scenario.specs or scenario.shared_sources:
+            row['z_true'] = data.entry_z
         diagnostics = result.diagnostics
         misfit = None if diagnostics is None else diagnostics.misfit
         conditional_misfit = None if diagnostics is None else diagnostics.conditional_misfit
@@ -286,6 +291,59 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
             }
         )
         return row
+
+    row = guard(work)
+    row['t_total'] = time.perf_counter() - started
+    return row
+
+
+def score_replicates(scenario: Scenario, seed: int) -> dict[str, Any]:
+    """Fit one replicated dataset replicate by replicate, as the application does, and score what it left out.
+
+    The fit is :func:`~core.pipeline.fit_pipeline.fit_measurement_set_per_replica`,
+    the call the per-replicate mode makes: every replicate's own fit, the test
+    of whether they share their binding constants, and the fit of the average
+    of the ones kept.
+
+    Returns
+    -------
+    dict
+        ``replicates`` given, ``departed`` — the ids of the replicates the
+        scenario measured on shifted binding constants or at raised noise —
+        ``excluded``, the ids the fit left out of the average, ``aware``
+        holding :func:`interval_facts` of the reported interval, and the wall
+        time.
+    """
+    started = time.perf_counter()
+    data = dataset(scenario, seed)
+
+    def work() -> dict[str, Any]:
+        fit_started = time.perf_counter()
+        result = fit_measurement_set_per_replica(
+            measurement_set(data),
+            ASSAY_CLASSES[AssayType[scenario.assay]],
+            dict(data.conditions),
+            FitConfig(per_replica=True, errors=scenario.error_model),
+        )
+        t_fit = time.perf_counter() - fit_started
+        used = set(result.metadata['replica_ids_fit'])
+        given = list(result.metadata['active_replica_ids'])
+        reported_accepts = _reported_accepts(result)
+        return {
+            'replicates': len(given),
+            'departed': [f'r{row}' for row in (*scenario.noisy_rows, *scenario.shifted_rows)],
+            'excluded': [rid for rid in given if rid not in used],
+            'aware': {
+                key: interval_facts(
+                    (result.intervals or {}).get(key),
+                    value,
+                    float(result.parameters[key].to('1/M').magnitude),
+                    reported_accepts.get(key),
+                )
+                for key, value in data.ka_truth.items()
+            },
+            't_fit': t_fit,
+        }
 
     row = guard(work)
     row['t_total'] = time.perf_counter() - started

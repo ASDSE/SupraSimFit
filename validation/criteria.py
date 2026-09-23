@@ -30,13 +30,8 @@ gives four verdicts:
 limits are narrower than the gap between the thresholds, which needs some two
 thousand draws - five times what the ladder reaches.
 
-The ladder is 100 -> 200 -> 400 draws. A pass stops a case; a fail and an
-undecided go on, so every published fail rests on the full 400. That keeps the
-chance of failing a case whose procedure is exactly nominal at the one-sided
-2 % the limits carry, rather than accumulating it over the three looks.
-
-What the rule can decide at the end of the ladder, exactly from the binomial
-(:func:`operating_characteristic`, N = 400):
+What the rule can decide on one look at 400 draws, exactly from the binomial
+(:func:`operating_characteristic`):
 
 =================  =========  =========
 true coverage      P(pass)    P(fail)
@@ -47,25 +42,37 @@ true coverage      P(pass)    P(fail)
 0.97               0.980      0.000
 =================  =========  =========
 
-A procedure that is exactly nominal passes about half the time and is
-otherwise left undecided; one that is a full Bradley step anti-conservative
-fails almost always.
+A procedure that is exactly nominal passes about half the time, fails about
+one time in fifty and is otherwise left undecided; one that is a full Bradley
+step anti-conservative fails almost always.
+
+The ladder is 100 -> 200 -> 400 draws. A pass stops a case; a fail and an
+undecided go on, so every fail rests on the full 400 and the chance of failing
+a case whose procedure is exactly nominal stays at the 2 % above. Stopping on a
+pass is three looks at a pass, though, and that raises the chance of passing a
+case that is anti-conservative (:func:`ladder_operating_characteristic`): a
+true coverage of 0.93 passes 7.3 % of the time on the ladder against 4.2 % on
+one look, 0.925 passes 4.0 % against 1.8 %. A case-level pass therefore says
+less than a pass on one look would, and the rates a document quotes are the
+pooled family rows, which read the same seeds of every case of a family.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 from scipy.stats import beta, binom
 
 __all__ = [
     'AGREEMENT',
     'COVERAGE',
-    'FALSE_ALARM',
+    'FALSE_EXCLUSION',
     'NULL_RATE',
     'PASSING',
     'Criterion',
     'clopper_pearson',
+    'ladder_operating_characteristic',
     'operating_characteristic',
     'stops_early',
 ]
@@ -158,10 +165,10 @@ COVERAGE = Criterion(text='95 % interval', safe_high=True, nominal=0.95, accepta
 #: Bradley's range is [0.025, 0.075].
 NULL_RATE = Criterion(text='5 % test', safe_high=False, nominal=0.05, acceptable=0.075, conservative=0.025)
 
-#: An upper-limit claim: the verdict blames good data on the model or on the
-#: inputs in at most one fit in seven. The claim is the threshold, so there is
-#: no Bradley step around it and nothing to call conservative.
-FALSE_ALARM = Criterion(text='<= 0.15', safe_high=False, nominal=0.15, acceptable=0.15)
+#: An upper-limit claim: a replicate that agrees with the others is left out
+#: of the average in at most one fit in twenty. The claim is the threshold, so
+#: there is no Bradley step around it and nothing to call conservative.
+FALSE_EXCLUSION = Criterion(text='<= 0.05', safe_high=False, nominal=0.05, acceptable=0.05)
 
 #: A lower-limit claim: two computations of the same definition agree on all
 #: but one dataset in a hundred.
@@ -193,4 +200,32 @@ def operating_characteristic(criterion: Criterion, n: int, rate: float) -> tuple
     verdicts = [criterion.verdict(hits, n) for hits in range(n + 1)]
     passed = float(sum(w for w, v in zip(weights, verdicts) if v in PASSING))
     failed = float(sum(w for w, v in zip(weights, verdicts) if v == 'fail'))
+    return passed, failed
+
+
+def ladder_operating_characteristic(criterion: Criterion, stages: tuple[int, ...], rate: float) -> tuple[float, float]:
+    """The chance *criterion* passes and fails a procedure of true rate *rate* on the ladder *stages*.
+
+    A case stops at the first stage whose count passes; every other case draws
+    the next stage's seeds on top of the ones it has, and at the last stage it
+    is passed, failed or left undecided. Exact: the distribution of the count
+    among the cases still running is carried from stage to stage.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``P(pass)`` at any stage and ``P(fail)`` at the last. What is left
+        over is undecided.
+    """
+    running = np.array([1.0])
+    drawn = 0
+    passed = 0.0
+    for stage in stages:
+        running = np.convolve(running, binom.pmf(np.arange(stage - drawn + 1), stage - drawn, rate))
+        drawn = stage
+        verdicts = [criterion.verdict(hits, stage) for hits in range(stage + 1)]
+        stops = np.array([verdict in PASSING for verdict in verdicts])
+        passed += float(running[stops].sum())
+        running = np.where(stops, 0.0, running)
+    failed = float(sum(w for w, verdict in zip(running, verdicts) if verdict == 'fail'))
     return passed, failed

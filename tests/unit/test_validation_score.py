@@ -23,7 +23,7 @@ from validation import checks, reference
 from validation.generate import dataset
 from validation.reference import agreement_row, pooling_row, reference_intervals
 from validation.scenarios import Scenario, SharedEntry, SpecEntry
-from validation.score import _profile_accepts, interval_facts, region_excess, score
+from validation.score import _profile_accepts, interval_facts, region_excess, score, score_replicates
 
 
 def interval(low: float, high: float, split: bool = False) -> KaInterval:
@@ -237,7 +237,7 @@ def test_the_weighted_reference_places_the_weighted_engine_s_edges():
     fit = projection.fit()
     key = projection.free_ka[0]
     interval = projection.interval(key, fit)
-    ranks = {projection.fitted_rank({key: ka}) for ka in (fit.ka[key], interval.low, interval.high)}
+    ranks = {projection.fitted_parameters({key: ka}).rank for ka in (fit.ka[key], interval.low, interval.high)}
     assert len(ranks) == 1, 'the weights, and not a stepping cut-off, are what this case is about'
     row = agreement_row(WEIGHTED, WEIGHTED_SEED)
     assert row['agrees'] == {key: True}, row['apart']
@@ -286,9 +286,9 @@ def test_the_reference_edge_sits_where_its_own_fitted_rank_says_it_should():
     data = dataset(STEPPED, STEPPED_SEED)
     y = data.signals[0]
     best = minimize_scalar(lambda t: _bounded_solve(data.assay, y, 10.0**t)[0], bounds=(-8.0, 12.0), method='bounded')
-    ssr_min, design, _ = _bounded_solve(data.assay, y, 10.0**best.x)
-    at_best = _rank(design)
-    nu = y.size - 1 - at_best  # the free Ka and the rank of the coefficient design
+    ssr_min, design, fitted = _bounded_solve(data.assay, y, 10.0**best.x)
+    at_best = _rank(design[:, fitted])
+    nu = y.size - 1 - at_best  # the free Ka and the rank of what the best fit fitted
 
     low, high = reference_intervals(data.assay, data.signals, STEPPED.error_model, STEPPED_SEED, STEPPED.id)['Ka_guest']
     steps = {}
@@ -300,6 +300,65 @@ def test_the_reference_edge_sits_where_its_own_fitted_rank_says_it_should():
     assert (steps[low], steps[high]) == (1, 2), 'the case has to show both readings for this to say anything'
     # The flat cut-off would accept beyond the high edge, so the step is what placed it.
     assert _bounded_solve(data.assay, y, high)[0] / ssr_min > 1 + f_dist.ppf(0.95, 1, nu) / nu
+
+
+#: A GDA titration of the reference grid whose best fit holds the offset on its
+#: bound of zero: the best fit fits two signal parameters of three.
+HELD = Scenario(assay='GDA', regime=10.0, n_points=8, noise=0.01)
+HELD_SEED = 2
+
+
+def test_the_reference_counts_in_n_minus_p_only_what_its_best_fit_fitted():
+    """A coefficient the best fit holds on its bound takes no dimension from the residual, so ``p`` leaves it out.
+
+    ``nu = n - 1 - r(k_hat)`` with ``r`` the rank of the columns the best fit
+    leaves strictly inside their bounds; counting the held offset would take
+    one more degree of freedom than the residual gives up, and the cut-off of
+    the eight-point titration would be read at ``nu = 4`` instead of 5.
+    """
+    data = dataset(HELD, HELD_SEED)
+    y = data.signals[0]
+    best = minimize_scalar(lambda t: _bounded_solve(data.assay, y, 10.0**t)[0], bounds=(-8.0, 12.0), method='bounded')
+    ssr_min, design, fitted = _bounded_solve(data.assay, y, 10.0**best.x)
+    assert not fitted.all(), 'the case has to hold a coefficient on its bound for this to say anything'
+    at_best = _rank(design[:, fitted])
+    assert at_best < _rank(design)
+    nu = y.size - 1 - at_best
+
+    high = reference_intervals(data.assay, data.signals, HELD.error_model, HELD_SEED, HELD.id)['Ka_guest'][1]
+    assert high < reference.float_bounds(data.assay)['Ka_guest'][1], 'the high edge has to be closed'
+    ssr, columns, fitted_here = _bounded_solve(data.assay, y, high)
+    m = 1 + max(0, at_best - _rank(columns[:, fitted_here]))
+    # Two minimisers of one SSR agree to about 1e-9; the two readings of nu are a third apart.
+    assert ssr / ssr_min == pytest.approx(1 + m * f_dist.ppf(0.95, m, nu) / nu, rel=1e-7)
+
+
+#: A GDA titration of the reference grid whose best fit runs to the lower bound
+#: of the Ka box while the data still close the interval above it.
+AT_BOX = Scenario(assay='GDA', regime=0.1, n_points=8, noise=0.01)
+AT_BOX_SEED = 30
+
+
+def test_the_reference_counts_no_binding_constant_its_best_fit_left_on_a_bound_of_the_box():
+    """A binding constant on the edge of its box is held there, like a coefficient on its bound.
+
+    The fit does not place it, so ``nu = n - r(k_hat)`` with no binding
+    constant in ``p``, while ``m`` still counts the tested one: the closed high
+    edge is where the SSR crosses ``S_min (1 + m F(m, nu) / nu)`` for that ``nu``.
+    """
+    data = dataset(AT_BOX, AT_BOX_SEED)
+    y = data.signals[0]
+    box = reference.float_bounds(data.assay)['Ka_guest']
+    ssr_min, design, fitted = _bounded_solve(data.assay, y, box[0])
+    at_best = _rank(design[:, fitted])
+    nu = y.size - at_best
+
+    low, high = reference_intervals(data.assay, data.signals, AT_BOX.error_model, AT_BOX_SEED, AT_BOX.id)['Ka_guest']
+    assert low == box[0] and high < box[1], 'the case has to be open below and closed above for this to say anything'
+    ssr, columns, fitted_here = _bounded_solve(data.assay, y, high)
+    m = 1 + max(0, at_best - _rank(columns[:, fitted_here]))
+    # Two minimisers of one SSR agree to about 1e-9; the two readings of nu are a third apart.
+    assert ssr / ssr_min == pytest.approx(1 + m * f_dist.ppf(0.95, m, nu) / nu, rel=1e-7)
 
 
 def test_a_row_without_a_reference_carries_the_keys_of_the_question_it_was_asked(monkeypatch):
@@ -327,3 +386,74 @@ def test_a_pooling_row_carries_the_three_intervals_its_table_reads():
     # fits wherever the replicates showed a law.
     assert noise_law(dataset(REPLICATED, 0).signals).share > 0.0
     assert row['engine_width'] != row['equal_width']
+
+
+def test_a_row_of_stated_inputs_carries_the_standard_score_each_entry_was_drawn_at():
+    """Coverage read by how far the entries were off needs the true entry errors on the row, not the fitted shifts."""
+    scenario = Scenario(
+        assay='DBA_DtoH',
+        regime=10.0,
+        n_points=8,
+        noise=0.005,
+        specs=(SpecEntry('fixed_conc', sigma=3.0), SpecEntry(TITRANT, sigma=3.0)),
+    )
+    row = score(scenario, 0)
+    assert row['z_true'] == pytest.approx(dataset(scenario, 0).entry_z)
+    assert set(row['z_true']) == {'fixed_conc', TITRANT}
+    assert 'z_true' not in score(Scenario(assay='DBA_DtoH', regime=10.0, n_points=8, noise=0.005), 0)
+
+
+def test_the_reported_coverage_is_read_by_the_largest_entry_error_and_never_judged():
+    """The level is an average over the entry errors; how it varies with them is described beside it."""
+    facts = {'covers': False, 'open': False, 'split': False, 'limited': False, 'width': 0.3}
+    metrics = checks.coverage_by_entry_error({'aware': {'Ka_dye': facts}, 'z_true': {'fixed_conc': -2.7, 'x': 0.4}})
+    assert metrics == {'~cov_zmax_2.5+.Ka_dye': False}
+    near = checks.coverage_by_entry_error({'aware': {'Ka_dye': {**facts, 'covers': True}}, 'z_true': {'a': 0.3}})
+    assert near == {'~cov_zmax_0-1.Ka_dye': True}
+    assert checks.coverage_by_entry_error({'aware': {'Ka_dye': facts}}) == {}
+
+
+#: Five replicates of a strong direct binding, the last two measured at three
+#: times the true Ka, twelve points: the smallest set the replicate test can
+#: hold a minority against, kept in the fast layer.
+SHIFTED = Scenario(
+    assay='DBA_HtoD', regime=1000.0, n_points=12, noise=0.01, replicates=5, shifted_replicates=2, replicate_shift=3.0
+)
+
+
+def test_a_replicate_row_names_the_replicates_the_fit_left_out_and_the_ones_that_departed():
+    """The exclusion rates are counts of these two lists, so both have to come from the fit and the scenario."""
+    row = score_replicates(SHIFTED, 0)
+    assert row['refused'] is None and row['error'] is None
+    assert row['departed'] == ['r3', 'r4']
+    assert set(row['excluded']) <= {'r0', 'r1', 'r2', 'r3', 'r4'}
+    assert set(row['aware']) == {'Ka_dye'}
+    assert row['replicates'] == 5
+
+
+def test_the_replicate_metrics_count_a_fit_that_lost_a_clean_replicate_once():
+    """The judged rate is per fit, so a fit that lost two clean replicates is one false exclusion, not two."""
+    facts = {'covers': True, 'open': False, 'split': False, 'limited': False, 'width': 0.3}
+    row = {'replicates': 5, 'departed': ['r4'], 'excluded': ['r0', 'r1'], 'aware': {'Ka_dye': facts}}
+    metrics = checks.replicate_exclusion(row)
+    assert metrics['clean_excluded'] is True
+    assert metrics['~clean_excluded_share'] == pytest.approx(0.5)
+    assert metrics['~departed_excluded'] is False
+    assert metrics['~departed_excluded_share'] == 0.0
+    assert metrics['~cov.Ka_dye'] is True
+    clean = checks.replicate_exclusion({**row, 'departed': [], 'excluded': []})
+    assert clean['clean_excluded'] is False and clean['~departed_excluded'] is None
+
+
+def test_a_verdict_that_blames_the_model_the_inputs_or_both_is_a_false_alarm_on_good_data():
+    """The judged rate is the family-wise error of the verdict's tests, so every verdict that blames counts.
+
+    Blaming both at once is the outcome where both tests reject; leaving it out
+    would hide exactly the draws in which the two errors coincide. The inputs
+    explaining a misfit is a finding about the entries, not an alarm.
+    """
+    blamed = {'model_inadequate', 'inputs_conflict', 'model_and_inputs'}
+    for verdict in (*blamed, 'consistent', 'inputs_explain'):
+        assert checks.false_alarm({'verdict': verdict})['alarm'] is (verdict in blamed)
+    assert checks.false_alarm({'verdict': None}) == {'alarm': None}
+    assert checks.CHECKS['verdict-false-alarm'].criterion is checks.NULL_RATE

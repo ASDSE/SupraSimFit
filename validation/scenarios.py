@@ -23,6 +23,7 @@ __all__ = [
     'ASSAYS',
     'COMPETITIVE',
     'DILUTION',
+    'NOISY_FACTOR',
     'ONE_KA',
     'SHARED_STOCK',
     'STATED_SIGMA',
@@ -45,6 +46,7 @@ __all__ = [
     'pooling_grid',
     'range_spec_grid',
     'reference_grid',
+    'replicate_grid',
     'robustness_grid',
     'robustness_strained_grid',
     'runs_null_grid',
@@ -66,6 +68,11 @@ TWO_KA = ('DBA_HG2', 'DBA_H2G')
 COMPETITIVE = ('GDA', 'IDA')
 
 ASSAYS = ONE_KA + TWO_KA
+
+#: How much noisier than the others a replicate :attr:`Scenario.noisy_replicates`
+#: names is: three times the standard deviation, a replicate measured with a
+#: lamp or a detector out of its usual state.
+NOISY_FACTOR = 3.0
 
 #: Stated standard deviation of each entered input, in percent of the entered
 #: value: a binding constant carried over from an earlier fit is known to about
@@ -221,6 +228,18 @@ class Scenario:
         difference between runs. It is a difference between replicates rather
         than noise within one, so it is not part of
         :attr:`~validation.generate.Dataset.noise_sigma`.
+    shifted_replicates : int
+        Replicates measured on other binding constants than the rest: every
+        binding constant the fit is free to move is *replicate_shift* times its
+        truth in them. They are the last replicates (:attr:`shifted_rows`).
+    replicate_shift : float
+        The factor those replicates' binding constants carry; 1 unless some
+        replicate is shifted.
+    noisy_replicates : int
+        Replicates whose noise is :data:`NOISY_FACTOR` times the others', the
+        ones just before the shifted ones (:attr:`noisy_rows`). Shifted and
+        noisy replicates together are fewer than half, so the rest are a
+        majority the replicate test can hold them against.
     ratio : float | None
         Guest to dye binding constant of a competitive assay; drawn per seed
         from ``0.01, 1, 100`` when ``None``.
@@ -277,6 +296,9 @@ class Scenario:
     noise_floor: float = 0.0
     replicates: int = 1
     replicate_scale: float = 0.0
+    shifted_replicates: int = 0
+    replicate_shift: float = 1.0
+    noisy_replicates: int = 0
     ratio: float | None = None
     k_ratio: float | None = None
     titrant_span: float | None = None
@@ -326,6 +348,15 @@ class Scenario:
             raise ValueError('a stock carrying every fixed concentration dilutes nothing; leave the dilution out.')
         if self.dilution is None and (self.stock_contains or not self.declare_stock):
             raise ValueError('a titrant stock is stated only where the scenario states a dilution.')
+        if (self.shifted_replicates > 0) != (self.replicate_shift != 1.0):
+            raise ValueError(
+                'a shifted replicate needs a shift other than 1, and a shift other than 1 needs a shifted replicate.'
+            )
+        if 2 * (self.shifted_replicates + self.noisy_replicates) >= self.replicates:
+            raise ValueError(
+                'shifted and noisy replicates have to be fewer than half of the replicates, so that the rest are '
+                'a majority to hold them against.'
+            )
 
     @property
     def data_id(self) -> str:
@@ -346,6 +377,10 @@ class Scenario:
             parts.append(f'm={self.replicates}')
         if self.replicate_scale:
             parts.append(f'rscale={self.replicate_scale:g}')
+        if self.shifted_replicates:
+            parts.append(f'shift={self.shifted_replicates}x{self.replicate_shift:g}')
+        if self.noisy_replicates:
+            parts.append(f'noisy={self.noisy_replicates}')
         if self.ratio is not None:
             parts.append(f'ratio={self.ratio:g}')
         if self.k_ratio is not None:
@@ -410,6 +445,17 @@ class Scenario:
         return ','.join(parts)
 
     @property
+    def shifted_rows(self) -> tuple[int, ...]:
+        """Replicate rows measured on shifted binding constants: the last :attr:`shifted_replicates`."""
+        return tuple(range(self.replicates - self.shifted_replicates, self.replicates))
+
+    @property
+    def noisy_rows(self) -> tuple[int, ...]:
+        """Replicate rows carrying :data:`NOISY_FACTOR` times the noise: the ones just before the shifted rows."""
+        end = self.replicates - self.shifted_replicates
+        return tuple(range(end - self.noisy_replicates, end))
+
+    @property
     def input_specs(self) -> dict[str, InputSpec]:
         """The stated uncertainties, as the fit configuration takes them."""
         return {e.key: e.to_spec() for e in self.specs}
@@ -452,8 +498,9 @@ def two_ka_weak_grid() -> list[Scenario]:
     """The weak two-Ka regime: both stepwise models, a dark host, inputs exact.
 
     ``K1*h0`` of 0.3, 1 and 3 against first-to-second ratios of 10, 100 and
-    1000, at 12 and 30 points and three noise sizes — the scenarios of the
-    weak-regime study, where the interval was found to undercover.
+    1000, at 12 and 30 points and three noise sizes: the regime where the
+    data limit a constant on both sides least often, and where a closed
+    interval is the hardest to trust.
     """
     return [
         Scenario(assay=assay, regime=regime, k_ratio=k_ratio, n_points=n, noise=noise)
@@ -841,6 +888,34 @@ def pooling_grid() -> list[Scenario]:
     return grid
 
 
+def replicate_grid(shifted: bool) -> list[Scenario]:
+    """Replicated titrations fitted replicate by replicate, some replicates departing from the rest.
+
+    Three, five and eight replicates of every one-Ka assay across the three
+    regimes, inputs exact. With *shifted* false, either every replicate is
+    measured alike or one carries three times the noise of the others: any
+    replicate the test leaves out of the average there is a false exclusion.
+    With *shifted* true, one replicate measured at three times or a third of
+    the true binding constant, and at five and eight replicates two at three
+    times: how often the test finds them is its power.
+    """
+    if shifted:
+        departures = [
+            (m, {'shifted_replicates': count, 'replicate_shift': factor})
+            for m in (3, 5, 8)
+            for count, factor in ((1, 3.0), (1, 1 / 3), (2, 3.0))
+            if 2 * count < m
+        ]
+    else:
+        departures = [(m, {'noisy_replicates': noisy}) for m in (3, 5, 8) for noisy in (0, 1)]
+    return [
+        Scenario(assay=assay, regime=regime, n_points=12, noise=0.01, replicates=m, **departure)
+        for assay in ONE_KA
+        for regime in (0.1, 10.0, 1000.0)
+        for m, departure in departures
+    ]
+
+
 def joint_grid() -> list[Scenario]:
     """Two-constant models across the regimes, for the joint region of the pair."""
     return [
@@ -888,3 +963,5 @@ def all_scenarios() -> Iterator[Scenario]:
         yield from grid()
     yield from conflict_grid((1.0,))
     yield from conflict_grid((2.0, 3.0, 5.0))
+    yield from replicate_grid(shifted=False)
+    yield from replicate_grid(shifted=True)

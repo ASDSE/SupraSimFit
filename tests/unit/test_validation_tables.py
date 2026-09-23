@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from validation.checks import Check, conditional_coverage
-from validation.criteria import COVERAGE
+import pytest
+
+from validation.checks import Check, closed_coverage, conditional_coverage
+from validation.criteria import COVERAGE, operating_characteristic
 from validation.scenarios import Scenario
 from validation.tables import render, summarise
 
@@ -63,8 +65,8 @@ def test_the_judged_rate_counts_every_draw_including_the_open_ones():
     assert open_rate.rate == 1.0 and open_rate.criterion is None
 
 
-def test_the_coverage_over_the_closed_draws_is_reported_beside_the_verdict_and_never_judged():
-    """Conditioning on closure keeps the draws whose noise made the profile steep, a different population."""
+def test_the_coverage_over_the_closed_draws_is_reported_beside_a_verdict_that_is_about_every_draw():
+    """Where the claim is the coverage over every draw, the closed draws are described beside it."""
     summary = summarise(CHECK, rows([True] * 80 + [False] * 20, [False] * 50 + [True] * 50))
     judged = {rate.series: rate for rate in summary.rates}
     assert judged['cov.Ka_guest'].n == 100
@@ -98,11 +100,66 @@ def test_cases_of_one_assay_are_pooled_under_its_name():
     assert pooled.verdict == 'fail'
 
 
-def test_an_unevenly_sampled_family_is_not_published_as_the_family_s_rate():
-    """Pooling whichever cases happened to finish would print one case's rate under the family's name."""
+def test_a_family_is_pooled_over_the_seeds_every_one_of_its_cases_reached():
+    """A case the ladder carried further must not weigh more in the family's rate than one it stopped early.
+
+    Case one reached ten seeds and case two four, so the family is read over
+    seeds 0 to 3 of each: eight draws, four of them covered, and judged.
+    """
     store = {**rows([True] * 10, [False] * 10, CASES[0].id), **rows([False] * 4, [False] * 4, CASES[1].id)}
-    (pooled,) = [r for r in summarise(CHECK, store).pooled_rates if r.series == 'cov.Ka_guest']
+    summary = summarise(CHECK, store)
+    (pooled,) = [r for r in summary.pooled_rates if r.series == 'cov.Ka_guest']
+    assert (pooled.n, pooled.hits) == (8, 4)
+    assert pooled.criterion == COVERAGE
+    assert pooled.verdict == COVERAGE.verdict(4, 8)
+    assert summary.pooled_seeds == {'IDA': (2, 4)}
+    table = render(summary, 'c0ffee')
+    assert '| IDA | 2 x 4 | cov.Ka_guest | 8 | 0.500 |' in table
+
+
+def test_a_gap_in_a_case_s_seeds_ends_the_prefix_the_family_is_pooled_over():
+    """Seeds past a missing one are not the same seeds in every case, so they stay out of the pool."""
+    store = {**rows([True] * 10, [False] * 10, CASES[0].id), **rows([True] * 6, [False] * 6, CASES[1].id)}
+    del store[(CASES[1].id, 3)]
+    summary = summarise(CHECK, store)
+    assert summary.pooled_seeds == {'IDA': (2, 3)}
+    (pooled,) = [r for r in summary.pooled_rates if r.series == 'cov.Ka_guest']
+    assert pooled.n == 6
+
+
+def test_a_family_one_of_whose_cases_has_no_rows_is_not_published_as_the_family_s_rate():
+    """A pool over the cases that happened to run is the rate of those cases, not of the family."""
+    view = replace(CHECK, cases=CASES + (Scenario(assay='IDA', regime=1000.0),))
+    store = {**rows([True] * 10, [False] * 10, CASES[0].id), **rows([False] * 4, [False] * 4, CASES[1].id)}
+    (pooled,) = [r for r in summarise(view, store).pooled_rates if r.series == 'cov.Ka_guest']
     assert (pooled.verdict, pooled.criterion) == ('partial', None)
+    assert pooled.n == 8
+
+
+def test_a_table_says_how_many_case_fails_chance_alone_would_give():
+    """Hundreds of judged cases fail a few by chance; the table has to say how many before any is read.
+
+    Two coverage rates at 400 draws, each failed by an exactly nominal
+    procedure with probability 0.019, expect 0.04 fails between them.
+    """
+    store = {**rows([True] * 400, [False] * 400, CASES[0].id), **rows([True] * 400, [False] * 400, CASES[1].id)}
+    summary = summarise(CHECK, store)
+    table = render(summary, 'c0ffee')
+    _, nominal_fail = operating_characteristic(COVERAGE, 400, 0.95)
+    assert summary.chance_fails == pytest.approx(2 * nominal_fail)
+    assert '2 case rates judged: 0 failing and 0 undecided' in table
+    assert f'about {2 * nominal_fail:.2f} of them would fail by chance' in table
+
+
+def test_where_the_claim_is_about_closed_intervals_their_coverage_is_judged_as_well():
+    """A finite interval is what a user reads as a guarantee, so where it undercovers the check has to fail."""
+    check = replace(CHECK, metrics=closed_coverage)
+    summary = summarise(check, rows([True] * 80 + [False] * 20, [True] * 80 + [False] * 20))
+    judged = {rate.series: rate for rate in summary.rates}
+    assert judged['cov.Ka_guest'].n == 100
+    assert judged['closed_cov.Ka_guest'].n == 20
+    assert judged['closed_cov.Ka_guest'].criterion == COVERAGE
+    assert judged['closed_cov.Ka_guest'].verdict == 'fail'
 
 
 def test_a_table_says_how_many_of_the_check_s_cases_it_read():
@@ -152,3 +209,10 @@ def test_a_filter_that_matches_nothing_reads_no_rows_at_all():
     """An expression nobody's case matches must print an empty table, never the whole check."""
     store = rows([True] * 10, [False] * 10)
     assert summarise(CHECK, store, ['DBA_HG2']).seeds == {}
+
+
+def test_a_filtered_check_that_reads_its_parent_whole_says_so_rather_than_naming_no_cases():
+    """A derived check with no cases of its own reads every case of its parent; 'defines 0 cases' would misread."""
+    view = replace(CHECK, cases=(), derived_from='demo')
+    table = render(summarise(view, rows([True] * 10, [False] * 10), ['K=10']), 'c0ffee')
+    assert 'the check reads every case of `demo`.' in table

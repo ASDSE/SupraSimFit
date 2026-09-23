@@ -74,6 +74,20 @@ _RANK_RTOL = 1e-8
 #: from the scatter a fitted coefficient keeps.
 _ON_BOUND_RTOL = 1e-8
 
+#: Distance from an end of the Ka box, in decades, within which the reference's
+#: best fit counts as resting on that end: ten times the tolerance of the
+#: bounded Brent refinement (1e-5 in log10 Ka), which is as close as the
+#: refinement comes to an end it runs to, and far below any distance an
+#: optimum inside a box of twenty decades is found at.
+_ON_BOX_DECADES = 1e-4
+
+#: Distance from an end of its range, as a fraction of the range's width,
+#: within which an input stated as a range counts as resting on that end:
+#: a hundred times the Nelder-Mead tolerance on the coordinate, whose range is
+#: two units wide, and the bounded simplex puts an input it runs to an end
+#: exactly on it.
+_ON_EDGE = 1e-6
+
 #: How far apart, in decades of Ka, an edge of the two intervals may lie and
 #: still count as the same edge. The two agree to about 1e-6 decades where they
 #: were measured, so this is a wide margin on a difference that should be
@@ -97,6 +111,11 @@ def _column_rank(columns: np.ndarray) -> int:
     norms = np.linalg.norm(columns, axis=0)
     scaled = columns / np.where(norms == 0, 1.0, norms)
     return int(np.linalg.matrix_rank(scaled, tol=_RANK_RTOL * np.linalg.norm(scaled, 2)))
+
+
+def _on_box(ka: float, bounds: tuple[float, float]) -> bool:
+    """Whether *ka* rests on an end of its box, to ``_ON_BOX_DECADES``."""
+    return bool(min(np.log10(ka / bounds[0]), np.log10(bounds[1] / ka)) <= _ON_BOX_DECADES)
 
 
 def _refine(fn: Callable[[float], float], grid: np.ndarray, on_grid: np.ndarray) -> tuple[float, float]:
@@ -147,14 +166,19 @@ def reference_intervals(
     threshold and ``nu`` keep their form — the ``sum log w`` term of the log
     likelihood is the same at every Ka.
 
+    ``p`` counts what the best fit placed itself: the free Ka it leaves off
+    the ends of the box (``_ON_BOX_DECADES``), ``r(k_hat)``, and every input
+    stated as a range it leaves off the ends of that range (``_ON_EDGE``). A
+    parameter held on an end takes no dimension from the residual.
+
     With no uncertain input the minimum over a second Ka is a scan of the SSR
     grid refined by Brent and ``nu = N - p``: the F test on the SSR. With
     uncertain inputs it is Nelder-Mead over (the other Ka, the offsets) from
     ``_STARTS`` start points drawn from *stream* and the seed, each run
     restarted where it stopped until it gains nothing, and
-    ``nu = N - p - sum w``, ``p`` counting every input stated as a range and
-    ``w`` the eigenvalues of ``I - [H⁻¹]_zz`` from a central-difference
-    Jacobian of ``[r / s ; z]`` at the optimum, ``s² = S_w / N``.
+    ``nu = N - p - sum w``, ``w`` the eigenvalues of ``I - [H⁻¹]_zz`` from a
+    central-difference Jacobian of ``[r / s ; z]`` at the optimum,
+    ``s² = S_w / N``, over the Ka and the inputs ``p`` counts.
 
     Parameters
     ----------
@@ -338,9 +362,13 @@ def reference_intervals(
     on_first = np.array([point[0] for point in node_points[first]])
     best_ka1, p_min = _refine(lambda k: profile(first, k)[0], axes[first], on_first)
     _, best_ka, best_coords = profile(first, best_ka1)
-    rank = _column_rank(design(best_ka, best_coords)[:, ~pinned])
     best_fitted = fitted_rank(best_ka, best_coords)
-    dof = n - len(free_ka) - rank - int(np.sum(~is_sigma))
+    # What the best fit placed itself: a Ka off the ends of its box and an input stated as a range off
+    # the ends of its range. One held on an end, like a coefficient on its bound, takes no dimension
+    # from the residual and moves nothing the Jacobian could read.
+    ka_placed = np.array([not _on_box(best_ka[k], bounds[k]) for k in free_ka], dtype=bool)
+    input_placed = is_sigma | (np.minimum(best_coords - box_lo, box_hi - best_coords) > _ON_EDGE * (box_hi - box_lo))
+    dof = n - int(ka_placed.sum()) - best_fitted - int(np.sum(input_placed & ~is_sigma))
     if is_sigma.any() and dof >= 1:
         # What the data, and not the penalty, determine of each input stated with a standard deviation.
         at = np.array([*(np.log10(best_ka[k]) for k in free_ka), *best_coords])
@@ -350,12 +378,17 @@ def reference_intervals(
             ka = {k: 10.0 ** v[i] for i, k in enumerate(free_ka)}
             return np.concatenate([residual(ka, v[len(free_ka) :]) / s, v[len(free_ka) :][is_sigma]])
 
-        steps = _JACOBIAN_STEP * np.eye(at.size)
+        steps = _JACOBIAN_STEP * np.eye(at.size)[np.concatenate([ka_placed, input_placed])]
         jac = np.column_stack(
             [(stacked_residual(at + h) - stacked_residual(at - h)) / (2 * _JACOBIAN_STEP) for h in steps]
         )
-        z_columns = len(free_ka) + np.flatnonzero(is_sigma)
-        covariance = np.linalg.pinv(jac.T @ jac)[np.ix_(z_columns, z_columns)]
+        z_columns = int(ka_placed.sum()) + np.flatnonzero(is_sigma[input_placed])
+        # (J'J)⁻¹ from the pseudo-inverse of J with unit-length columns: the units of a column do not
+        # decide which directions count, and the condition number of J is not squared.
+        norms = np.linalg.norm(jac, axis=0)
+        norms[norms == 0] = 1.0
+        root = np.linalg.pinv(jac / norms) / norms[:, np.newaxis]
+        covariance = (root @ root.T)[np.ix_(z_columns, z_columns)]
         dof -= float(np.clip(np.linalg.eigvalsh(np.eye(z_columns.size) - covariance), 0.0, 1.0).sum())
     if dof < 1:
         return None

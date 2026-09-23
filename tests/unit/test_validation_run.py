@@ -84,7 +84,7 @@ def coverage_rows(covers: list[bool]) -> list[dict]:
 
 
 def test_a_case_whose_rate_has_passed_stops_where_it_is():
-    """A pass at 100 seeds would be a pass at 400, so running it on buys nothing."""
+    """A case whose every judged rate has passed spends no more fits; the pooled rows read its first seeds."""
     assert runner._case_passed(LADDER, CASES[0].id, coverage_rows([True] * 100), [])
 
 

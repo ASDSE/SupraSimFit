@@ -351,3 +351,54 @@ def test_a_replicate_scale_factor_multiplies_one_replicate_and_is_not_noise():
     drawn = factors[:, 0]
     assert len(set(drawn.tolist())) == 4
     assert np.std(drawn) > 0.005
+
+
+def test_a_shifted_replicate_is_the_model_at_its_own_binding_constant():
+    """A replicate measured on another Ka is what the replicate test has to see; anything else is not that case.
+
+    Without noise every replicate is its clean signal: the shifted ones the
+    one-to-one binding curve at three times the true Ka, the others the curve
+    at the truth itself.
+    """
+    scenario = Scenario(
+        assay='DBA_DtoH', regime=10.0, n_points=12, noise=0.0, replicates=5, shifted_replicates=2, replicate_shift=3.0
+    )
+    data = dataset(scenario, 4)
+    host = np.full(data.x.shape, data.fixed_conc)
+    bound = dba_complex(3.0 * data.truth['Ka_dye'], data.x, host)
+    moved = data.truth['I0'] + data.truth['I_dye_free'] * (data.x - bound) + data.truth['I_dye_bound'] * bound
+    assert np.allclose(data.signals[3:], moved, rtol=1e-10, atol=0)
+    assert np.allclose(data.signals[:3], dba_signal_at(data, data.x, host), rtol=1e-10, atol=0)
+    assert np.max(np.abs(moved - data.clean)) > 0.05 * np.ptp(data.clean)
+
+
+def test_a_noisy_replicate_carries_three_times_the_noise_of_the_others():
+    """The noisy case is one replicate at three times the noise; a different factor would test another claim."""
+    scenario = Scenario(assay='IDA', regime=10.0, n_points=30, noise=0.02, replicates=4, noisy_replicates=1)
+    assert scenario.noisy_rows == (3,)
+    spread = []
+    for seed in range(30):
+        data = dataset(scenario, seed)
+        spread.append((data.signals - data.clean).std(axis=1, ddof=1))
+    spread = np.array(spread)
+    assert np.median(spread[:, 3] / spread[:, :2].mean(axis=1)) == pytest.approx(3.0, rel=0.15)
+    assert np.median(spread[:, 2] / spread[:, :2].mean(axis=1)) == pytest.approx(1.0, rel=0.15)
+
+
+def test_the_standardised_entry_error_is_the_draw_the_entry_was_made_from():
+    """Coverage by the size of the entry error is read off these numbers, so they must be the entry errors."""
+    scenario = replace(CASE, specs=(SpecEntry('h0', sigma=3.0), SpecEntry('Ka_dye', sigma=10.0)))
+    for seed in range(5):
+        data = dataset(scenario, seed)
+        assert set(data.entry_z) == {'h0', 'Ka_dye'}
+        assert data.entry_z['h0'] == pytest.approx(data.entry_errors['h0'] / 0.03)
+        assert data.entry_z['Ka_dye'] == pytest.approx(data.entry_errors['Ka_dye'] / 0.10)
+    doubled = dataset(replace(scenario, entry_multiple=2.0), 2).entry_z
+    assert doubled['h0'] == pytest.approx(2 * dataset(scenario, 2).entry_z['h0'])
+    assert dataset(CASE, 2).entry_z == {}
+
+
+def test_an_entry_stated_as_a_range_has_no_standard_score():
+    """A uniform draw over a range has no standard deviation stated for it to be measured in."""
+    data = dataset(replace(CASE, specs=(SpecEntry('h0', lo=-5.0, hi=5.0), SpecEntry('d0', sigma=3.0))), 1)
+    assert set(data.entry_z) == {'d0'}
