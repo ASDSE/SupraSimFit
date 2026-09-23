@@ -28,19 +28,11 @@ import pandas as pd
 
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY
+from core.io import InvalidData
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.units import Q_, Quantity
 
 logger = logging.getLogger(__name__)
-
-
-class InvalidData(ValueError):
-    """Data no fit can use, refused where they enter, with a message written for the user.
-
-    The message names the file, the replicate and the titration point that
-    stand in the way and what to do about them, so the interface shows it as
-    it is.
-    """
 
 
 #: Fewest titration points a fit can use: one more than the fewest parameters

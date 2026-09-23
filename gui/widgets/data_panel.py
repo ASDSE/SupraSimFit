@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -38,9 +39,25 @@ from core.io.registry import READERS
 from core.units import Q_
 from gui.widgets.info_button import InfoGroupBox
 
+logger = logging.getLogger(__name__)
+
 UNITS: tuple[str, ...] = ('nM', 'µM', 'mM', 'M')
 DEFAULT_IMPORTED_UNIT = 'M'
 DEFAULT_DISPLAY_UNIT = 'µM'
+
+
+def _unreadable(paths: list[str]) -> str:
+    """Why *paths* did not load, in plain words that name them: for an error no reader wrote for the user."""
+    names = ', '.join(Path(p).name for p in paths)
+    if len(paths) == 1:
+        return (
+            f'Could not read the measurements in {names}. Check that it is a measurement file in one of the '
+            "formats the Data panel's help lists, then load it again."
+        )
+    return (
+        f'Could not load {names} as replicates of one measurement. Check that each is a measurement file in one '
+        "of the formats the Data panel's help lists and that all come from the same titration, then load them again."
+    )
 
 
 def _build_file_filter() -> str:
@@ -265,17 +282,17 @@ class DataPanel(InfoGroupBox):
         """
         try:
             df = load_measurements(path)
-        except Exception as exc:
-            QMessageBox.warning(self, 'Load Error', f'Could not load file:\n{exc}')
-            return
-
-        has_channels = ENSIGHT_CHANNEL_COLUMN in df.columns
-        channels = list(df[ENSIGHT_CHANNEL_COLUMN].unique()) if has_channels else []
-        try:
+            has_channels = ENSIGHT_CHANNEL_COLUMN in df.columns
+            channels = list(df[ENSIGHT_CHANNEL_COLUMN].unique()) if has_channels else []
             df_used = self._slice_channel(df, channels[0]) if channels else df
             ms = self._make_ms(df_used, str(path))
-        except Exception as exc:
-            QMessageBox.warning(self, 'Load Error', f'Could not load file:\n{exc}')
+        except InvalidData as exc:
+            # Written for the user: it names the file, the replicate and the point, and the fix.
+            QMessageBox.warning(self, 'Load Error', str(exc))
+            return
+        except Exception:
+            logger.exception('Could not load %s', path)
+            QMessageBox.warning(self, 'Load Error', _unreadable([str(path)]))
             return
 
         # Commit state only after a successful parse + build.
@@ -317,8 +334,12 @@ class DataPanel(InfoGroupBox):
                 source_file=str(paths[0]),
                 source_files=[str(p) for p in paths],
             )
-        except Exception as exc:
+        except InvalidData as exc:
             QMessageBox.warning(self, 'Load Error', str(exc))
+            return
+        except Exception:
+            logger.exception('Could not load %s as replicates', paths)
+            QMessageBox.warning(self, 'Load Error', _unreadable([str(p) for p in paths]))
             return
 
         self._multi_channel_df = None
