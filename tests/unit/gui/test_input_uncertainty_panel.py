@@ -194,7 +194,7 @@ def test_the_help_tells_an_input_own_error_from_a_shared_one_and_says_what_each_
     # An own entry against a shared one, and where a shared one comes from.
     assert 'the error <b>only that input</b> has' in text
     assert 'come from one stock, were weighed on one balance or pipetted with one pipette' in text
-    # Both readers use the model as stated — the analysis no longer assumes unrelated inputs.
+    # Both readers use the model as stated, shared sources included.
     assert 'Both the interval of every fit and the K<sub>a</sub> Sensitivity analysis use exactly this model' in text
     assert 'take their errors to be unrelated' not in text
     # A binding constant measured with a shared stock moves the other way from the concentrations made from it.
@@ -213,9 +213,12 @@ def test_the_help_says_what_the_uncertainties_feed_and_what_each_kind_means_for_
     from gui.widgets.input_uncertainty_panel import _UNCERTAINTY_HELP_HTML
 
     text = ' '.join(_UNCERTAINTY_HELP_HTML.split())
-    # The two things a stated uncertainty feeds.
+    # The two things a stated uncertainty feeds, and how they differ: the analysis propagates the
+    # statement with every draw alike, the interval also weighs what the data say about the inputs.
     assert 'The interval of every fit.' in text
     assert 'K<sub>a</sub> Sensitivity analysis' in text
+    assert 'with every draw counted the same, whereas the interval also weighs what the data say' in text
+    assert 'splits' not in text
     # A σ is a penalty the fit pays, a range is a box, fixed is exact.
     assert 'moving it by <i>e</i> costs (<i>e</i>/σ)<sup>2</sup>' in text
     assert 'every value between them is equally acceptable and none outside' in text

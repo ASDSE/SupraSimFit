@@ -14,7 +14,8 @@ What the panel collects feeds two things: the confidence interval of every fit
 (:func:`core.pipeline.input_aware.input_aware` lets the fit move each input inside
 its uncertainty) and the Ka sensitivity analysis
 (:class:`~core.pipeline.sensitivity.SensitivityConfig`), which draws the sources from
-the same model. The panel itself runs neither — it emits :attr:`specs_changed` and
+the same model; the random error of each addition feeds the analysis only. The panel
+itself runs neither — it emits :attr:`specs_changed` and
 the owning session reads :meth:`current_errors` and :meth:`problems`.
 
 An assay whose signal the engine cannot project onto binding constants

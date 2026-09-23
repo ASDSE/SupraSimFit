@@ -214,6 +214,34 @@ def test_the_examples_still_describe_the_demo_data():
     assert f'{result.rmse / 1e3:.2f}&times;10<sup>3</sup> a.u.' in summary
 
 
+def test_the_demo_note_states_what_demo_ida_sets():
+    """The note names the replicates Outlier Removal keeps and the uncertainties the Demo IDA button states."""
+    from collections import defaultdict
+
+    from core.data_processing.measurement_set import MeasurementSet
+    from core.data_processing.preprocessing import get_step
+    from core.io import load_measurements
+    from core.pipeline.inputs import SpecKind
+    from gui.fitting_session import _DEMO_UNCERTAINTIES
+    from gui.plot_guide import DEMO_NOTE
+
+    ms = MeasurementSet.from_dataframe(load_measurements(str(_IDA_DATA)))
+    get_step('zscore_replica_filter', {'threshold': 3.5, 'min_replicas': 3})(ms)
+    dropped = [chr(ord('A') + i) for i, rid in enumerate(ms.replica_ids) if rid not in ms.active_replica_ids]
+    note = re.sub(r'\s+', ' ', DEMO_NOTE)
+    assert f'{len(ms.active_replica_ids)} of its {ms.n_replicas} replicates averaged' in note
+    assert f'(Outlier Removal drops {", ".join(dropped)})' in note
+
+    named = {'Ka_dye': 'K<sub>a,dye</sub>', 'h0': '[Host]<sub>0</sub>', 'd0': '[Dye]<sub>0</sub>'}
+    by_sigma = defaultdict(list)
+    for key, spec in _DEMO_UNCERTAINTIES.items():
+        assert (spec.kind, spec.relative) == (SpecKind.SIGMA, True), 'the note states each as a σ in percent'
+        by_sigma[spec.sigma].append(named.get(key, 'the titrant'))
+    for sigma, inputs in by_sigma.items():
+        on = inputs[0] if len(inputs) == 1 else f'{", ".join(inputs[:-1])} and {inputs[-1]}'
+        assert f'&sigma; {sigma:g}&thinsp;% on {on}' in note
+
+
 #: What the Ka Sensitivity entry says about each column of the budget table,
 #: keyed by the header the widget draws. Written out here rather than matched
 #: loosely, so a column renamed or added in the widget fails until the guide
@@ -260,19 +288,18 @@ def test_the_sensitivity_entry_calls_the_per_addition_item_what_the_widget_label
 
 
 def test_the_sensitivity_example_quotes_the_fit_count_its_own_run_would_cost():
-    """The example names four sources and a sample size; the run's own estimate has to match it.
+    """The example runs the demo's four stated sources at a sample size; the run's own estimate has to match it.
 
     The elasticity refits are part of that estimate, so a guide written before
     them would quote the older, smaller number and fail here.
     """
-    from core.pipeline.inputs import ErrorModel, InputSpec
+    from core.pipeline.inputs import ErrorModel
     from core.pipeline.sensitivity import SensitivityConfig, SensitivityMode, estimated_fit_count
+    from gui.fitting_session import _DEMO_UNCERTAINTIES
 
-    inputs = ('h0', 'd0', 'Ka_dye', 'titrant')
+    inputs = tuple(_DEMO_UNCERTAINTIES)
     config = SensitivityConfig(
-        mode=SensitivityMode.SOBOL,
-        n_samples=1024,
-        errors=ErrorModel(specs={key: InputSpec.sigma_pct(5.0) for key in inputs}),
+        mode=SensitivityMode.SOBOL, n_samples=1024, errors=ErrorModel(specs=dict(_DEMO_UNCERTAINTIES))
     )
 
     fits = estimated_fit_count(config, len(inputs))
