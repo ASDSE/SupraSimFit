@@ -79,12 +79,14 @@ and the fit absorbs it by shifting the K<sub>a</sub> it reports.</p>
       It narrows it where moving the inputs explains a misfit the entered values
       could not.</li>
   <li><b>The K<sub>a</sub> Sensitivity analysis</b>, which re-fits over many draws of
-      these inputs and splits the resulting spread of K<sub>a</sub> between them. It
-      needs at least one input that is not fixed.</li>
+      these inputs and ranks the sources of the resulting spread of K<sub>a</sub>. It
+      propagates what you state here with every draw counted the same, whereas the
+      interval also weighs what the data say about the inputs, so the two can differ.
+      It needs at least one input that is not fixed.</li>
 </ul>
 <p>Choose a kind for each input:</p>
 <ul>
-  <li><b>± σ %</b> and <b>± σ</b> — σ is one standard deviation of a normal
+  <li><b>σ %</b> and <b>σ</b> — σ is one standard deviation of a normal
       distribution, in percent of the input's set value or in the input's own unit.
       The fit may put the input anywhere, but moving it by <i>e</i> costs
       (<i>e</i>/σ)<sup>2</sup>: one σ is cheap, three σ is not. Each sample of the
@@ -119,7 +121,10 @@ literature K<sub>a,dye</sub> may be uncertain by 10–20%.</p>
 inputs have in common — their solutions come from one stock, were weighed on one balance
 or pipetted with one pipette — is a <b>shared error source</b>: name it, state its σ in
 percent, and tick every input it moves. The sources are independent and multiply, so an
-input with an entry of its own and a shared source carries both.</p>
+input with an entry of its own and a shared source carries both. A shared source moves
+every concentration made from that stock by the same percentage, and a binding constant
+measured with it (such as a K<sub>a,dye</sub> fitted with the same stock) by the same
+percentage the other way.</p>
 <p>Both the interval of every fit and the K<sub>a</sub> Sensitivity analysis use exactly
 this model. The analysis reports a shared source as one item, which is what you can act
 on: one stock to re-make, one pipette to recalibrate.</p>
@@ -129,12 +134,11 @@ error that shifts every concentration by the same fraction. The scatter of the i
 additions is stated here instead. Choose <i>sequential additions into one cuvette</i>,
 where every point carries the errors of the additions before it as well as its own, or
 <i>separately prepared samples</i>, where each point is pipetted on its own.</p>
-<p>This entry feeds the K<sub>a</sub> Sensitivity analysis only. A random error in the
-titrant concentrations is, point by point, scatter in the signal, which the residual
-scatter behind the interval of a fit already measures; the analysis shows how much of
-that spread the pipetting explains. With <i>m</i> replicates the analysis draws it at
-σ/√<i>m</i>, which takes the replicates to be separate titrations, each pipetted on its
-own.</p>
+<p>This entry feeds the K<sub>a</sub> Sensitivity analysis only: the interval the fit
+reports does not include the random error of each addition. The analysis ranks it against
+the other sources. It is applied to the average of the replicates as σ/√<i>m</i> for
+<i>m</i> replicates, which assumes the replicates are separate titrations, each pipetted on
+its own.</p>
 """
 
 #: Significant figures an absolute value is shown and kept with.
@@ -380,11 +384,11 @@ class _InputSpecRow(QWidget):
         self._nominal: float | None = None if field is None else field.default
 
         choices: list[tuple[str, tuple[SpecKind, bool] | None]] = [
-            ('± σ %', (SpecKind.SIGMA, True)),
+            ('σ %', (SpecKind.SIGMA, True)),
             ('range %', (SpecKind.INTERVAL, True)),
         ]
         if field is not None:
-            choices += [('± σ', (SpecKind.SIGMA, False)), ('range', (SpecKind.INTERVAL, False))]
+            choices += [('σ', (SpecKind.SIGMA, False)), ('range', (SpecKind.INTERVAL, False))]
         choices.append(('fixed', None))
 
         self.kind = QComboBox()
@@ -641,6 +645,9 @@ class _SharedSourceRow(QWidget):
             line.setContentsMargins(_VALUE_INDENT, 0, 0, 0)
             line.setSpacing(4)
             tick = QCheckBox()
+            # The macOS style lays a check box out by a rectangle narrower than the
+            # one it paints, which puts the label beside it on the box.
+            tick.setAttribute(Qt.WidgetAttribute.WA_LayoutUsesWidgetRect)
             tick.toggled.connect(self.changed)
             label = QLabel(html)
             label.setTextFormat(Qt.TextFormat.RichText)
@@ -786,21 +793,24 @@ class InputUncertaintyPanel(InfoGroupBox):
         found = [problem for row in self._rows.values() if (problem := row.problem())]
         return found + source_problems(self.current_errors(), self._base, self._labels)
 
-    def reset_to_defaults(self) -> None:
-        """State nothing about the inputs again, as the panel opens.
+    def set_specs(self, specs: dict[str, InputSpec]) -> None:
+        """State *specs* on the inputs they name, and nothing else.
 
-        Every input exact, no shared source, and no error on the additions. These are
-        settings of the fit, like the parameter bounds, so whatever resets a session to
-        its defaults resets them too.
+        Every other input exact, no shared source, and no error on the additions:
+        what the panel states afterwards is exactly ``ErrorModel(specs=specs)``.
+        A key naming no input of the assay shown is an error of the caller.
         """
+        unknown = set(specs) - set(self._rows)
+        if unknown:
+            raise KeyError(f'no uncertainty row for {sorted(unknown)}')
         blocked = self.blockSignals(True)
-        for row in self._rows.values():
-            row.set_spec(None)
+        for key, row in self._rows.items():
+            row.set_spec(specs.get(key))
         self._clear_shared()
         self._set_additions_state(_NO_ADDITIONS)
         self.blockSignals(blocked)
-        # Reported once, when nothing is stated any more: a half-reset panel describes
-        # no state a reader of the signal should act on.
+        # Reported once, when the whole statement is in place: a half-set panel
+        # describes no state a reader of the signal should act on.
         self.specs_changed.emit()
 
     def set_running(self, running: bool) -> None:

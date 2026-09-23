@@ -24,19 +24,30 @@ from core.pipeline.fit_pipeline import (
 from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, InputSpec, SpecKind, shared_key
 from core.pipeline.sensitivity import SensitivityMode
 from core.units import Quantity
+from gui.plotting.export import ExportRefused
 from gui.plotting.labels import (
     NO_UNCERTAINTY,
-    RANGES_ONLY,
+    NOT_RUN,
     SPLIT_NOTE,
+    fmt_against,
     fmt_bound_note,
     fmt_concentration,
+    fmt_estimate,
     fmt_interval_plain,
     fmt_log10,
     fmt_misfit,
     fmt_p,
+    fmt_percent,
     fmt_r2,
     fmt_sci,
+    fmt_stat,
     fmt_unit_pretty,
+    fmt_value,
+    not_run_reason,
+    own_estimates,
+    replicate_summary,
+    stated_uncertainty,
+    verdict_headline,
     verdict_sentence,
 )
 from gui.widgets.assay_conditions import result_input_labels
@@ -173,14 +184,20 @@ def _row_unit(spec: ParameterSummary) -> str:
 
 
 def _fmt_report(spec: ParameterSummary, value: float) -> str:
-    """One number of *spec*'s row as the text report writes it.
+    """One number of *spec*'s row as the text report writes it, the way the summary table on screen writes it.
 
-    A log₁₀ row goes through :func:`~gui.plotting.labels.fmt_log10`, the same
-    rule the summary table on screen follows, so a value is never written
-    coarser than the interval or the replicate spread printed beside it: four
-    significant figures would turn 8.496983 ± 0.000096 into 8.497 ± 9.6e-05.
+    A log₁₀ row goes through :func:`~gui.plotting.labels.fmt_log10`, so a
+    value is never written coarser than the spread of the replicates' own
+    fits: four significant figures would turn 8.496983 ± 0.000096 into 8.497 ±
+    9.6e-05. Every other number goes through
+    :func:`~gui.plotting.labels.fmt_value`.
     """
-    return fmt_log10(value, spec.replicates) if spec.is_log else f'{value:.4g}'
+    return fmt_log10(value, spec.replicates) if spec.is_log else fmt_value(value)
+
+
+def _estimate_text(spec: ParameterSummary, value: float, interval, open_ends, at_bound: str) -> str:
+    """An estimate as the report writes it: its value, or in words where it sits on an end of its Ka search box."""
+    return fmt_estimate(value, at_bound, interval, open_ends, lambda number: _fmt_report(spec, number), html=False)
 
 
 def _ka_keys(specs: list[ParameterSummary]) -> set[str]:
@@ -207,33 +224,12 @@ _CONDITIONAL_NOTE = (
     'The interval above covers the input uncertainties stated below; the one here takes every input exactly as entered.'
 )
 
-#: Said when the data inform no direction of the inputs, so the fit has nothing
-#: to check the entered values against.
-_NO_CONFLICT_TEST = (
-    'These data do not tell the stated inputs apart from the binding constant they are fitted with, so they '
-    'cannot check the values you entered. Where the fit put each shift is above; whether the inputs are right '
-    'is not something this fit can say.'
+#: Said after the reason the inputs were not tested against what was stated:
+#: the shifts are reported, and what they mean for the entered values is not
+#: something the fit can say.
+_NOT_TESTED_TAIL = (
+    'Where the fit put each shift is above; whether the inputs are right is not something this fit can say.'
 )
-
-#: Said when every varying input is stated as a range, which the fit treats as a
-#: hard limit rather than as a distribution to weigh a shift against.
-_RANGES_ONLY = (
-    f'These inputs are not tested against what you stated: {RANGES_ONLY}. '
-    'A shift resting at the edge of its range is marked above.'
-)
-
-
-def stated_uncertainty(spec: InputSpec, unit: str) -> str:
-    """One input's uncertainty as the user stated it: a standard deviation or a range, in percent or in its own unit.
-
-    A value in the input's own unit is written in ``×10ⁿ`` notation, as every
-    other concentration a report shows is, so no reader meets ``2e-07``.
-    """
-    if spec.kind is SpecKind.SIGMA:
-        return f'σ {spec.sigma:g} %' if spec.relative else f'σ {fmt_sci(spec.sigma, 2)} {unit}'.rstrip()
-    if spec.relative:
-        return f'{spec.lo:+g} % to {spec.hi:+g} %'.replace('-', '−')
-    return f'{fmt_sci(spec.lo, 2)} to {fmt_sci(spec.hi, 2)} {unit}'.rstrip()
 
 
 def _input_uncertainty_block(result: FitResult) -> list[str]:
@@ -259,11 +255,7 @@ def _input_uncertainty_block(result: FitResult) -> list[str]:
             moved, against = '—', '—'
         else:
             # The same percentage and σ the summary block and the plot show.
-            moved = f'{100 * shift.fraction:+.1f} %'.replace('-', '−')
-            if shift.z is not None:
-                against = f'{abs(shift.z):.1f} σ'
-            else:
-                against = 'at the edge of its range' if shift.at_edge else '—'
+            moved, against = fmt_percent(shift.fraction), fmt_against(shift) or '—'
         rows.append(
             (labels.get(key, key), stated_uncertainty(spec, fmt_unit_pretty(unit) if unit else ''), moved, against)
         )
@@ -294,6 +286,31 @@ def _input_uncertainty_block(result: FitResult) -> list[str]:
 _DILUTION_KEYS = (TITRANT_STOCK, 'stock_contains')
 
 
+def _conditions_lines(result: FitResult) -> list[str]:
+    """The entered conditions, named as the Assay Configuration panel names them and in the unit they read in.
+
+    A concentration reads in the largest unit the form offers that leaves it
+    at 1 or more, and a binding constant in M⁻¹ with ``×10ⁿ`` notation, both
+    to the four figures an entered value is read back to, so no key and no
+    ``1/M`` reaches the report. A condition the panel has no label
+    for — one a newer file carries — is named by its key rather than left out.
+    """
+    labels = result_input_labels(result.assay_type, result.fit_config)
+    lines = []
+    for key, value in result.conditions.items():
+        if key in _DILUTION_KEYS:
+            continue
+        if isinstance(value, Quantity):
+            if value.check('[concentration]'):
+                text = fmt_concentration(value)
+            else:
+                text = f'{fmt_sci(float(value.magnitude), 4)} {fmt_unit_pretty(str(value.units))}'.rstrip()
+        else:
+            text = str(value)
+        lines.append(f'  {labels.get(key, key)}: {text}')
+    return lines
+
+
 def _dilution_lines(result: FitResult) -> list[str]:
     """How the titrant diluted the sample, as the CONDITIONS block states it; empty when the totals stayed constant."""
     stock = result.conditions.get(TITRANT_STOCK)
@@ -311,10 +328,10 @@ def _dilution_lines(result: FitResult) -> list[str]:
 _TEST_LABEL_WIDTH = 32
 
 
-def _misfit_line(test: MisfitTest | None) -> str:
+def _misfit_line(diagnostics, test: MisfitTest | None) -> str:
     """One misfit test as the report quotes it, or why there was none to run."""
     if test is None:
-        return 'not tested — the data hold too few points beyond the fitted parameters to judge the residuals.'
+        return f'not tested — {not_run_reason(diagnostics, "misfit")}.'
     return fmt_misfit(test)
 
 
@@ -329,13 +346,17 @@ def _model_and_inputs_block(result: FitResult) -> list[str]:
         return []
     labels = result_input_labels(result.assay_type, result.fit_config)
     lines = ['MODEL AND INPUTS', '-' * 60]
+    lines.append(f'  Verdict: {verdict_headline(diagnostics)[0]}.')
     lines.extend(_wrapped(verdict_sentence(diagnostics, result.input_shifts, labels, html=False)))
     lines.append('')
     lines.append(
-        f'  {"Model at the entered inputs:":<{_TEST_LABEL_WIDTH}}{_misfit_line(diagnostics.conditional_misfit)}'
+        f'  {"Model at the entered inputs:":<{_TEST_LABEL_WIDTH}}'
+        f'{_misfit_line(diagnostics, diagnostics.conditional_misfit)}'
     )
     if result.input_shifts:
-        lines.append(f'  {"Model with the inputs moved:":<{_TEST_LABEL_WIDTH}}{_misfit_line(diagnostics.misfit)}')
+        lines.append(
+            f'  {"Model with the inputs moved:":<{_TEST_LABEL_WIDTH}}{_misfit_line(diagnostics, diagnostics.misfit)}'
+        )
     conflict = diagnostics.conflict
     specs = ErrorModel.from_dict(result.fit_config).source_specs()
     # What the block's readings are conditioned on, so a printed report says it
@@ -344,11 +365,14 @@ def _model_and_inputs_block(result: FitResult) -> list[str]:
     lines.append(f'  {"Input uncertainties used:":<{_TEST_LABEL_WIDTH}}{stated}')
     if conflict is not None:
         lines.append(
-            f'  {"Inputs against what you stated:":<{_TEST_LABEL_WIDTH}}q = {conflict.q:.3g}, {fmt_p(conflict.p_value)}'
+            f'  {"Inputs against what you stated:":<{_TEST_LABEL_WIDTH}}'
+            f'q = {fmt_stat(conflict.q)}, {fmt_p(conflict.p_value)}'
         )
         lines.append('')
         directions = 'the one combination' if conflict.k == 1 else f'the {conflict.k} combinations'
-        if len(result.input_shifts) == 1:
+        # q weighs the inputs stated with a standard deviation; a range enters it not at all.
+        judged = sum(1 for shift in result.input_shifts.values() if shift.z is not None)
+        if judged == 1:
             lines.extend(
                 _wrapped(
                     f'q judges the stated input against what you said you knew, over {directions} these data '
@@ -364,12 +388,13 @@ def _model_and_inputs_block(result: FitResult) -> list[str]:
                 )
             )
     elif specs:
+        # A result that records no reason is read from what was stated: with
+        # every uncertainty a range there is nothing stated with a σ to test.
+        ranges = all(spec.kind is SpecKind.INTERVAL for spec in specs.values())
+        recorded = not_run_reason(diagnostics, 'conflict')
+        reason = recorded or NOT_RUN[('conflict', 'no_uncertainty' if ranges else 'no_informed_direction')]
         lines.append('')
-        lines.extend(
-            _wrapped(
-                _RANGES_ONLY if all(spec.kind is SpecKind.INTERVAL for spec in specs.values()) else _NO_CONFLICT_TEST
-            )
-        )
+        lines.extend(_wrapped(f'The inputs were not tested against what you stated: {reason}. {_NOT_TESTED_TAIL}'))
     lines.append('')
     return lines
 
@@ -406,32 +431,46 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
 
     Complements the TXT report: same numbers, but machine-readable so the
     values can go straight into a spreadsheet or a plotting script. Magnitudes
-    are in the stored base units, named per row in the ``unit`` column. The
+    are in the stored base units, named per row in the ``unit`` column.
+
+    An empty cell is a number there is none of, never a stand-in for one. The
     interval columns are filled for every binding constant the fit was free to
-    move — its endpoints, whether each side is open, whether an open side is
-    open because the binding model has no solution past it, and whether the
-    accepted values come in separate stretches — and the replicate columns for
-    every parameter whose own fits at least
-    two replicates contributed. RMSE and R² are measured against the average of
-    the replicates the fit used, listed (``;``-separated) with the ones it left
-    out; both are blank when the result does not record its replicates.
+    move: its ends, whether each side is open, whether an open side is open
+    because the binding model has no solution past it, which other binding
+    constant's bound ends it, and whether the accepted values come in separate
+    stretches. The end of an open side is empty — the profile stopped at the
+    search box there, which is not a limit — and ``ci_open_low`` /
+    ``ci_open_high`` say so. An estimate that sits on an end of its Ka search
+    box is empty too, and ``estimate_at_bound`` names the end (``low`` or
+    ``high``): the value is the box, not a measurement. The results file (JSON)
+    keeps every raw number, and these flags follow from it.
 
     Where the fit was free to move an input, the ``cond_`` columns carry the
-    same binding constant with every input held as entered, and one row per
-    source it could move carries where the fit put it: ``parameter`` is the
-    source's key — the input's own key, and ``shared:<name>`` for a source
-    several inputs share, listed after the inputs — ``unit`` is
-    ``% of entered``, ``estimate`` the shift in percent, and ``input_z`` how
-    many stated standard deviations that is (blank for an input stated as a
-    range, where ``input_at_edge`` says whether the fit took it to an end of
-    that range). Which inputs a shared source moves is in the TXT report and
-    in the results file's ``fit_config``. The ``noise``, ``verdict``,
-    ``misfit_p``, ``cond_misfit_p``, ``conflict_q`` and ``conflict_p`` columns
-    describe the fit as a whole and repeat on every one of its rows;
-    ``misfit_p`` is the misfit test of the fit the interval comes from and
-    ``cond_misfit_p`` the one at the inputs exactly as entered. ``noise`` is
-    the law the replicates showed, the one the fit weighted its titration
-    points by, and is blank where the result records none.
+    same binding constant with every input held as entered, under the same
+    rules (``cond_estimate_at_bound``), and one row per source it could move
+    carries where the fit put it: ``parameter`` is the source's key — the
+    input's own key, and ``shared:<name>`` for a source several inputs share,
+    listed after the inputs — ``unit`` is ``% of entered``, ``estimate`` the
+    shift in percent, and ``input_z`` how many stated standard deviations that
+    is (blank for an input stated as a range, where ``input_at_edge`` says
+    whether the fit took it to an end of that range). Which inputs a shared
+    source moves is in the TXT report and in the results file's
+    ``fit_config``.
+
+    The replicate columns summarise the own fits of the replicates the fit
+    used, for every parameter at least two of them contributed to; a
+    replicate whose own binding constant ran to a bound of its search box is
+    not a value of it, is left out of the median and range, and is counted in
+    ``replicates_at_bound``. RMSE and R² are measured against the average of
+    the replicates the fit used, listed (``;``-separated) with the ones it
+    left out; both lists are blank when the result does not record its
+    replicates. The ``noise``, ``verdict``, ``misfit_p``, ``cond_misfit_p``,
+    ``conflict_q`` and ``conflict_p`` columns describe the fit as a whole and
+    repeat on every one of its rows; ``misfit_p`` is the misfit test of the
+    fit the interval comes from and ``cond_misfit_p`` the one at the inputs
+    exactly as entered. ``noise`` is the law the replicates showed, the one
+    the fit weighted its titration points by, and is blank where the result
+    records none.
 
     Parameters
     ----------
@@ -451,6 +490,7 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'parameter',
         'unit',
         'estimate',
+        'estimate_at_bound',
         'ci_low',
         'ci_high',
         'ci_open_low',
@@ -463,6 +503,7 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'ci_level',
         'ci_dof',
         'cond_estimate',
+        'cond_estimate_at_bound',
         'cond_ci_low',
         'cond_ci_high',
         'cond_ci_open_low',
@@ -473,6 +514,7 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'replicate_min',
         'replicate_max',
         'n_replicates',
+        'replicates_at_bound',
         'rmse',
         'r_squared',
         'noise',
@@ -490,7 +532,14 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
     def flag(value: bool) -> str:
         return 'true' if value else 'false'
 
-    def diagnostic_cells(result: FitResult) -> tuple[str, ...]:
+    def number(value: float) -> str:
+        return f'{value:.6e}'
+
+    def ends(interval, open_ends) -> tuple[str, str]:
+        """The two ends of an interval, each empty where the data leave that side open."""
+        return tuple('' if is_open else number(edge) for edge, is_open in zip(interval, open_ends))
+
+    def diagnostic_cells(result: FitResult) -> dict[str, str]:
         """What the fit's diagnostics say, repeated on every row of that fit: they describe the fit, not a parameter.
 
         Both misfit tests are written. The verdict is read from the fit at the
@@ -499,110 +548,115 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         """
         diagnostics = result.diagnostics
         if diagnostics is None:
-            return ('', '', '', '', '')
-        conflict = diagnostics.conflict
+            return {}
 
         def p_value(test) -> str:
             return '' if test is None else f'{test.p_value:.6g}'
 
-        return (
-            diagnostics.verdict.value,
-            p_value(diagnostics.misfit),
-            p_value(diagnostics.conditional_misfit),
-            *(('', '') if conflict is None else (f'{conflict.q:.6e}', f'{conflict.p_value:.6g}')),
-        )
+        cells = {
+            'verdict': diagnostics.verdict.value,
+            'misfit_p': p_value(diagnostics.misfit),
+            'cond_misfit_p': p_value(diagnostics.conditional_misfit),
+        }
+        if diagnostics.conflict is not None:
+            cells |= {
+                'conflict_q': f'{diagnostics.conflict.q:.6e}',
+                'conflict_p': f'{diagnostics.conflict.p_value:.6g}',
+            }
+        return cells
 
     with path.open('w', encoding='utf-8', newline='') as handle:
-        writer = csv.writer(handle)
-        writer.writerow(columns)
+        writer = csv.DictWriter(handle, columns, restval='')
+        writer.writeheader()
         for index, result in enumerate(results):
             record = _replicate_record(result, replica_ids)
             used, left_out = ('', '') if record is None else (';'.join(record[0]), ';'.join(n for n, _ in record[1]))
             n_used = len(fit_replica_ids(result) or ())
             intervals = result.intervals or {}
-            diagnostics = diagnostic_cells(result)
             # The noise law describes the fit, like the verdict beside it, so it
             # repeats on every row of that fit; blank where none was recorded.
-            noise = '' if result.noise is None else result.noise.describe()
-            quality = [f'{result.rmse:.6e}', f'{result.r_squared:.6f}', noise, used, left_out]
+            whole_fit = {
+                'result_index': index,
+                'assay_type': result.assay_type,
+                'source_file': result.source_file or '',
+                'rmse': number(result.rmse),
+                'r_squared': f'{result.r_squared:.6f}',
+                'noise': '' if result.noise is None else result.noise.describe(),
+                'replicates_used': used,
+                'replicates_left_out': left_out,
+                **diagnostic_cells(result),
+            }
             for spec in summarize_parameters(result):
-                ci = spec.interval
-                dof = intervals[spec.key].dof if spec.key in intervals else None
-                across = spec.replicates
-                writer.writerow(
-                    [
-                        index,
-                        result.assay_type,
-                        result.source_file or '',
-                        _row_label(spec),
-                        # Log rows are dimensionless; the row they log is in
-                        # the same file, so its unit is one lookup away.
-                        '' if spec.is_log else spec.unit,
-                        f'{spec.estimate:.6e}',
-                        *(
-                            ('',) * 9
-                            if ci is None
-                            else (
-                                f'{ci[0]:.6e}',
-                                f'{ci[1]:.6e}',
-                                *map(flag, spec.interval_open),
-                                *map(flag, spec.interval_unsolvable),
-                                *spec.interval_limited_by,
-                                flag(spec.interval_split),
-                            )
-                        ),
-                        '' if spec.level is None else f'{spec.level:g}',
-                        # Residual degrees of freedom: a whole number where every
-                        # input was held as entered, and a fraction where the fit
-                        # was free to move one, since an input the data pin down
-                        # takes a residual degree of freedom with it.
-                        '' if dof is None else f'{dof:.6g}',
-                        *(
-                            ('', '', '', '', '', '')
-                            if spec.conditional_interval is None
-                            else (
-                                f'{spec.conditional_estimate:.6e}',
-                                f'{spec.conditional_interval[0]:.6e}',
-                                f'{spec.conditional_interval[1]:.6e}',
-                                *map(flag, spec.conditional_open),
-                                flag(spec.conditional_split),
-                            )
-                        ),
-                        flag(spec.degenerate),
-                        *(
-                            ('', '', '', '')
-                            if across is None
-                            else (f'{across["median"]:.6e}', f'{across["min"]:.6e}', f'{across["max"]:.6e}', n_used)
-                        ),
-                        *quality,
-                        *diagnostics,
-                        '',
-                        '',
-                    ]
-                )
+                row = {
+                    **whole_fit,
+                    'parameter': _row_label(spec),
+                    # Log rows are dimensionless; the row they log is in the
+                    # same file, so its unit is one lookup away.
+                    'unit': '' if spec.is_log else spec.unit,
+                    'estimate': '' if spec.estimate_at_bound else number(spec.estimate),
+                    'estimate_at_bound': spec.estimate_at_bound,
+                    'ci_level': '' if spec.level is None else f'{spec.level:g}',
+                    'degenerate': flag(spec.degenerate),
+                }
+                if spec.interval is not None:
+                    low, high = ends(spec.interval, spec.interval_open)
+                    row |= {
+                        'ci_low': low,
+                        'ci_high': high,
+                        'ci_open_low': flag(spec.interval_open[0]),
+                        'ci_open_high': flag(spec.interval_open[1]),
+                        'ci_unsolvable_low': flag(spec.interval_unsolvable[0]),
+                        'ci_unsolvable_high': flag(spec.interval_unsolvable[1]),
+                        'ci_limited_by_low': spec.interval_limited_by[0],
+                        'ci_limited_by_high': spec.interval_limited_by[1],
+                        'ci_split': flag(spec.interval_split),
+                    }
+                if spec.key in intervals:
+                    # Residual degrees of freedom: a whole number where every
+                    # input was held as entered, and a fraction where the fit
+                    # was free to move one, since an input the data pin down
+                    # takes a residual degree of freedom with it.
+                    row['ci_dof'] = f'{intervals[spec.key].dof:.6g}'
+                if spec.conditional_interval is not None:
+                    low, high = ends(spec.conditional_interval, spec.conditional_open)
+                    row |= {
+                        'cond_estimate': '' if spec.conditional_at_bound else number(spec.conditional_estimate),
+                        'cond_estimate_at_bound': spec.conditional_at_bound,
+                        'cond_ci_low': low,
+                        'cond_ci_high': high,
+                        'cond_ci_open_low': flag(spec.conditional_open[0]),
+                        'cond_ci_open_high': flag(spec.conditional_open[1]),
+                        'cond_ci_split': flag(spec.conditional_split),
+                    }
+                if spec.replicates is not None:
+                    across = spec.replicates
+                    row |= {
+                        'replicate_median': number(across['median']),
+                        'replicate_min': number(across['min']),
+                        'replicate_max': number(across['max']),
+                        'n_replicates': n_used,
+                    }
+                if spec.replicates_at_bound:
+                    row['replicates_at_bound'] = spec.replicates_at_bound
+                writer.writerow(row)
             # One row per source the fit was free to move: where it put that
             # source, in percent of the value entered, and how far that is
             # against the uncertainty stated for it. The source is named by its
             # key, as every other row of the column is, so a reader can join an
             # input to the condition of that name; the TXT report gives the
-            # names, a shared source's inputs included.
+            # names, a shared source's inputs included. The interval,
+            # conditional and replicate columns describe a fitted parameter;
+            # an input has none.
             for key, shift in result.input_shifts.items():
                 writer.writerow(
-                    [
-                        index,
-                        result.assay_type,
-                        result.source_file or '',
-                        key,
-                        '% of entered',
-                        f'{100 * shift.fraction:.6e}',
-                        # The interval, conditional and replicate columns
-                        # describe a fitted parameter; an input has none.
-                        *('',) * 22,
-                        *quality,
-                        *diagnostics,
-                        '' if shift.z is None else f'{shift.z:.6e}',
-                        flag(shift.at_edge),
-                    ]
+                    {
+                        **whole_fit,
+                        'parameter': key,
+                        'unit': '% of entered',
+                        'estimate': number(100 * shift.fraction),
+                        'input_z': '' if shift.z is None else number(shift.z),
+                        'input_at_edge': flag(shift.at_edge),
+                    }
                 )
 
 
@@ -629,7 +683,7 @@ def _replicates_block(result: FitResult, replica_ids: Sequence[str] | None) -> l
         own = fits.get(rid)
         if own is None:
             continue
-        values = [f'{float(own.parameters[key].magnitude):.4g}' if key in own.parameters else '—' for key in ka_keys]
+        values = own_estimates(own, ka_keys, html=False)
         p = p_values.get(rid)
         rows.append(
             (
@@ -734,7 +788,7 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 [
                     (
                         f'{_row_label(spec)}{" *" if spec.degenerate else ""}',
-                        _fmt_report(spec, spec.estimate),
+                        _estimate_text(spec, spec.estimate, spec.interval, spec.interval_open, spec.estimate_at_bound),
                         _interval_cell(spec, result, ka_keys),
                         _row_unit(spec),
                     )
@@ -749,12 +803,27 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
             for spec in conditional:
                 low, high = spec.conditional_interval
                 bracket = fmt_interval_plain(_fmt_report(spec, low), _fmt_report(spec, high), *spec.conditional_open)
-                estimate = _fmt_report(spec, spec.conditional_estimate)
+                estimate = _estimate_text(
+                    spec,
+                    spec.conditional_estimate,
+                    spec.conditional_interval,
+                    spec.conditional_open,
+                    spec.conditional_at_bound,
+                )
                 lines.append(
                     f'  Conditional on the entered inputs: {spec.key} = {estimate} {bracket} {_row_unit(spec)}'.rstrip()
                 )
                 if spec.conditional_split:
                     lines.extend(_wrapped(f'{spec.key} conditional on the entered inputs: {SPLIT_NOTE}'))
+        replicates = replicate_summary(
+            [spec for spec in specs if spec.key in ka_keys and not spec.is_log],
+            len(fit_replica_ids(result) or ()),
+            lambda spec: spec.key,
+            lambda spec: fmt_unit_pretty(spec.unit),
+        )
+        if replicates:
+            lines.append('')
+            lines.extend(_wrapped(replicates))
         if any(spec.degenerate for spec in specs):
             lines.append('')
             lines.extend(_wrapped(f'* {_DEGENERATE_NOTE}'))
@@ -820,13 +889,7 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
         if result.conditions:
             lines.append('CONDITIONS')
             lines.append('-' * 60)
-            for cond_key, cond_val in result.conditions.items():
-                if cond_key in _DILUTION_KEYS:
-                    continue
-                if isinstance(cond_val, Quantity):
-                    lines.append(f'  {cond_key}: {cond_val:.4g~P}')
-                else:
-                    lines.append(f'  {cond_key}: {cond_val}')
+            lines.extend(_conditions_lines(result))
             lines.extend(_dilution_lines(result))
             lines.append('')
 
@@ -940,11 +1003,17 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
 
     def _write_budget_csv(path: Path) -> None:
         """The budget table as the Ka Sensitivity tab reports it, one row per source and Ka."""
-        budgets = (state.sensitivity_result.budget or {}).values()
+        result = state.sensitivity_result
+        budgets = (result.budget or {}).values()
         # A Sobol run always has a budget per binding constant; whether it holds
         # a number is the question, and a file of empty cells answers nothing.
+        if result.budget and all((result.withheld or {}).get(key) for key in result.budget):
+            raise ExportRefused(
+                'This analysis gives no uncertainty budget: for every binding constant the Ka Sensitivity tab '
+                'says why its numbers are withheld. See that tab.'
+            )
         if not any(math.isfinite(budget.variance) for budget in budgets):
-            raise ValueError(
+            raise ExportRefused(
                 'This analysis reports no uncertainty budget: too few of its samples have a fit to split the '
                 'spread of Ka between the sources. Run the analysis again.'
             )

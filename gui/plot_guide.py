@@ -3,8 +3,9 @@
 ``PLOT_GUIDE`` maps a section key to a ``(title, html_body)`` tuple, in the order
 the guide lists them; the first three keys are the plot tabs.
 :class:`gui.dialogs.plot_guide_dialog.PlotGuideDialog` shows one section at a
-time under ``DEMO_NOTE``. Every example quotes the Demo IDA data with the app's
-default settings.
+time under ``DEMO_NOTE``. Every example quotes the Demo IDA data with every input
+held as entered: the fit the summary's *Conditional* column shows once Demo IDA has
+stated its input uncertainties.
 """
 
 from __future__ import annotations
@@ -17,7 +18,8 @@ SUMMARY = 'summary'
 DEMO_NOTE = (
     'Examples use <b>Demo IDA</b>: 7 of its 8 replicates averaged (Outlier Removal drops A), '
     'K<sub>a,dye</sub> 16.8 MM<sup>&minus;1</sup>, [Host]<sub>0</sub> 4.3 &micro;M, '
-    '[Dye]<sub>0</sub> 6 &micro;M.'
+    '[Dye]<sub>0</sub> 6 &micro;M. The numbers quoted are the fit with every input as entered, which the '
+    '<i>Conditional</i> column shows once Demo IDA has stated its input uncertainties.'
 )
 
 _FIT_CURVE_HTML = """
@@ -33,7 +35,9 @@ one the others share).</li>
 the replicates it used.</li>
 <li>Fit Summary box: each association constant as <i>estimate</i> followed by its 95&thinsp;%
 confidence interval in square brackets, the signal parameters as their fitted values, and
-R&sup2;. A value marked * is one the data fix only in combination with the others.</li>
+R&sup2;. A value marked * is one the data fix only in combination with the others. Under
+R&sup2; the verdict in a few words, coloured as in the summary, and &mdash; where the fit moved an
+input &mdash; <i>Curve drawn at the fitted input shifts</i>. A saved figure carries both.</li>
 </ul>
 
 <p><b>The interval and the inputs</b></p>
@@ -48,9 +52,14 @@ covers that freedom as well. It is usually wider &mdash; and can be narrower whe
 explains a miss the entered values could not. The summary shows the conditional interval beside it
 so you can see what the inputs cost.</li>
 </ul>
-<p>Under the table, <i>Model and inputs</i> reports what the fit found: whether the curve misses the
-data by more than their own scatter allows, and whether the inputs had to move further from your
-entered values than you said they could. The wording says what to check next. A conflict is a
+<p>The coloured line above the summary table gives the verdict in a few words; under the table,
+<i>Model and inputs</i> says what the fit found: whether the curve misses the data by more than their
+own scatter allows, and whether the inputs had to move further from your entered values than you
+said they could. The two tests share one 5&thinsp;% level between them instead of taking 5&thinsp;%
+each (Holm&rsquo;s procedure); how often the verdict then blames a correct model or correct inputs is
+measured by the validation check <i>verdict-false-alarm</i>. Where no test finds anything, the report says so and nothing more:
+that is no proof the model or the inputs are right, and a test that could not run is named with the
+reason. The wording says what to check next. A conflict is a
 statement about the inputs <i>together</i> &mdash; the shift printed against each one says where the
 fit put the correction, not which stock is off, because several inputs move the curve almost
 alike.</p>
@@ -64,7 +73,7 @@ bounds and input uncertainties always give the same numbers.</p>
 
 <p><b>Example</b></p>
 <p>With every input fixed: K<sub>a(G)</sub> = 2.78&times;10<sup>8</sup> M<sup>&minus;1</sup>
-[1.9&times;10<sup>8</sup>, 4.0&times;10<sup>8</sup>], R&sup2; 0.9897. At 11 of the 12 concentrations
+[1.91&times;10<sup>8</sup>, 4.00&times;10<sup>8</sup>], R&sup2; 0.9897. At 11 of the 12 concentrations
 all 7 replicates sit on the same side of the curve: a systematic miss, which no width of interval
 accounts for.</p>
 """
@@ -88,7 +97,8 @@ Fit Quality counts every point equally. Both describe the same fit and they diff
 worse than the best (F test); the grey band spans that K<sub>a</sub> range. The line steps down
 where a signal parameter reaches its bound: a fit that has to hold one there gives up that
 parameter as well as K<sub>a</sub>, so the test allows it a larger drop. The right-hand axis names
-the cut-off where nothing is held, and says so where the line steps to another level.</li>
+the cut-off where every signal parameter is free; where the line steps down, the legend says so, and
+hovering over that axis explains the step.</li>
 <li>Diamond: the best fit.</li>
 <li>A per-replicate fit of a model with one K<sub>a</sub> adds a thin grey line per replicate: that
 replicate on its own. The black line and the CI use their average.</li>
@@ -121,9 +131,10 @@ instead. Where the points run to one side of the curve, as in the example below,
 missing something the data contain &mdash; the scatter is not independent noise &mdash; and the
 interval is narrower than the data warrant.</p>
 <p>The lines under the panel say what the fit found: the interval, the one conditional on the
-entered inputs where they differ, and the verdict &mdash; whether the model and your inputs describe
-the data, whether a shift inside your stated uncertainties explains a miss, whether the inputs had
-to go further than you allowed, or whether no allowed shift rescues the model. A conflict is about
+entered inputs where they differ, and the verdict &mdash; whether any test found evidence against
+the model or your inputs, whether a shift inside your stated uncertainties explains a miss, whether
+the inputs had to go further than you allowed, whether no allowed shift rescues the model, or
+both of the last two. A conflict is about
 the inputs <i>together</i>; the shift listed against each one is where the fit put the correction,
 not the stock that is off.</p>
 <p>After a sensitivity run, a translucent blue cloud shows each sample&rsquo;s best fit. A sample
@@ -133,7 +144,7 @@ since changed inputs can absorb a systematic miss. <i>Show sensitivity samples</
 
 <p><b>Example</b></p>
 <p>Best fit 2.78&times;10<sup>8</sup> M<sup>&minus;1</sup> (weighted R&sup2; 0.9959); CI
-1.9&ndash;4.0&times;10<sup>8</sup> M<sup>&minus;1</sup> (&minus;31&thinsp;% / +44&thinsp;%), cut-off
+[1.91&times;10<sup>8</sup>, 4.00&times;10<sup>8</sup>] M<sup>&minus;1</sup> (&minus;31&thinsp;% / +44&thinsp;%), cut-off
 0.9935 from 12 data points and 3 fitted parameters. The best weighted R&sup2; is 0.9875 at twice the
 best K<sub>a</sub> and 0.9861 at half: small R&sup2; differences set a 2-fold interval. Below
 1.5&times;10<sup>8</sup> M<sup>&minus;1</sup> the fit holds the signal offset on zero, so the
@@ -165,6 +176,10 @@ every titration point on its own, and all of those movements are reported as thi
 <p>The sources are independent and multiply, so an input carrying both an entry of its own and a
 shared source carries both errors. At least one source has to be stated, or there is no spread to
 split. The dashed <i>baseline</i> is the fit with every input exactly as entered.</p>
+
+<p>The analysis propagates the uncertainties you stated (GUM Supplement 1): every sample counts the
+same, however well it fits the data. The input-aware interval on the Fit Curve tab also weighs what
+the data say about the inputs, so the two can differ.</p>
 
 <p><b>K<sub>a</sub> histogram</b>: every sample&rsquo;s best K<sub>a</sub>, each fitted with its
 own drawn inputs and its own K<sub>a</sub> alone. The title gives the median and how many-fold the
@@ -198,11 +213,12 @@ whisker is too wide to act on.</p>
 
 <p><b>The uncertainty budget</b></p>
 <p>Under the bars, for each association constant, the same run read as absolute numbers rather than
-shares. The line above the table &mdash; <i>Input-limited spread of log<sub>10</sub>(K<sub>a</sub>),
-1 SD</i> &mdash; is how far the stated uncertainties move the constant: in decades, and as the
-factor K<sub>a</sub> spreads by, with the 95&thinsp;% interval of the analysis&rsquo; own sampling
-error. It says nothing about how well the data pin K<sub>a</sub> down; that is the interval on the
-Fit Curve tab, which already covers these same uncertainties.</p>
+shares. The line above the table &mdash; <i>Spread of log<sub>10</sub>(K<sub>a</sub>) from the stated
+input uncertainties, 1 SD</i> &mdash; is how far the stated uncertainties move the constant: in
+decades, and as the factor K<sub>a</sub> spreads by, with the 95&thinsp;% interval of the
+analysis&rsquo; own sampling error. The input-aware interval on the Fit Curve tab uses the same
+uncertainties but also weighs what the data say about the inputs, so the two can differ; this tab
+propagates them with every draw counted the same (GUM Supplement 1).</p>
 <p>The table splits that spread by source:</p>
 <ul>
 <li><i>Stated uncertainty</i> &mdash; what you entered, in percent of the entered value however it
@@ -210,9 +226,11 @@ was stated, so the column compares.</li>
 <li><i>Elasticity</i> &mdash; how many percent K<sub>a</sub> moves per percent the source moves,
 measured by refitting a small step either side. A negative value means K<sub>a</sub> moves the other
 way. A shared source&rsquo;s elasticity is the sum of the elasticities of the inputs it moves, which
-is where cancellation becomes visible: in a displacement assay an error common to every
-concentration largely undoes itself, so its elasticity is small, while in a direct-binding assay the
-same error is passed on to K<sub>a</sub> one for one.</li>
+is where cancellation becomes visible. A source behind every concentration has elasticity &minus;1
+in direct binding; in a displacement assay it is s(K<sub>a,dye</sub>) &minus; 1, so it cancels only
+as far as the elasticity to K<sub>a,dye</sub> is close to 1 (strong dye binding), and if
+K<sub>a,dye</sub> was itself measured with the same stock it is &minus;1 there too. The Elasticity
+column shows the value for your data.</li>
 <li><i>Share of variance S<sub>1</sub></i> &mdash; the first-order index: the share of the spread
 this source explains on its own.</li>
 <li><i>Variance</i> &mdash; that share as an absolute number, in decades&sup2;. The column and the
@@ -229,10 +247,11 @@ error. A larger sample size shrinks both.</p>
 first-order shares. It is an estimate like the rest, so it can come out slightly negative when every
 source acts on its own.</p>
 <p><b>Fits that run to the edge of the K<sub>a</sub> bounds</b> are reported above the table, because
-the budget below them is then about that edge rather than about your inputs. If the fit with the
-inputs as entered ran there, the data do not limit K<sub>a</sub> at all under those inputs: the tab
-says so in place of the spread and leaves every number <i>n/a</i> &mdash; the <i>Identifiability</i>
-tab is where that fit is read. If instead a share of the samples ran there, the tab keeps the numbers
+the budget below them is then about that edge rather than about your inputs. A constant gets a
+reason in place of its indices, budget, what-if and elasticities when its fit at the entered inputs
+ran to an edge of its bounds, when its interval at the entered inputs is open, or when its refits
+do not follow the inputs smoothly (they break a scaling law every binding model obeys) &mdash; the
+<i>Identifiability</i> tab is where such a fit is read. If instead a share of the samples ran there, the tab keeps the numbers
 and says how many did: each of those fits sits decades from the rest and pushes the spread and the
 budget up, which means the uncertainties you stated reach into a region where the data stop pinning
 K<sub>a</sub> down.</p>
@@ -244,11 +263,10 @@ rests on no assumption about how K<sub>a</sub> depends on the source; it is give
 samples that effectively carry the weight, and a first-order formula follows it as the cross-check.
 Where too few samples carry the weight, or you take the source as exact and leave none to re-weight,
 the formula gives the spread instead and the sentence says so. No fit is run for a what-if.</p>
-<p>The additions row is listed with the others but is not added to them: the random error of each
-addition scatters the measured points, and that scatter is what the interval of the fit is built
-from, so it is already inside it. It is here to be ranked &mdash; to say how much of the spread
-pipetting explains &mdash; and with <i>m</i> replicates it is drawn at &sigma;/&radic;<i>m</i>, which
-takes the replicates to be separate titrations, each pipetted on its own.</p>
+<p>The interval the fit reports does not include the random error of each addition; here it is
+sampled and ranked against the other sources. With <i>m</i> replicates it is drawn at
+&sigma;/&radic;<i>m</i>, which takes the replicates to be separate titrations, each pipetted on its
+own.</p>
 <p><i>Export</i> &#9656; <i>Export All&hellip;</i> writes the whole table, the spread, the
 elasticity of every input and the run&rsquo;s seed as <i>Ka uncertainty budget (CSV)</i>.</p>
 
@@ -276,9 +294,9 @@ K<sub>a</sub> most.</p>
 raises it by about 2.7&thinsp;%, [Dye]<sub>0</sub> by 1.1&thinsp;% and K<sub>a,dye</sub> by
 1.0&thinsp;%. The draws reached &plusmn;16&ndash;18&thinsp;%, so the panels open there. A source
 shared by the host and the dye stock would carry the sum of the first two, 3.8; one common to all
-three concentrations would carry 2.7 + 1.1 &minus; 3.9 &asymp; 0, which is the cancellation a
-displacement assay gives. In a direct-binding assay the same source would carry exactly
-&minus;1.</p>
+three concentrations would carry 2.7 + 1.1 &minus; 3.9 &asymp; 0: it cancels here because the
+elasticity to K<sub>a,dye</sub> is close to 1. In a direct-binding assay the same source would carry
+exactly &minus;1.</p>
 """
 
 _SUMMARY_HTML = """
@@ -295,9 +313,16 @@ interval covers it too.</li>
 <li><i>Conditional on entered inputs</i>: the same interval with every input held exactly at the
 value you entered. The column appears only when you stated an uncertainty for at least one input,
 because otherwise it is the column before it.</li>
-<li><i>Replicates: median</i> and <i>Replicates: min - max</i>: across the replicates&rsquo; own
-fits, when each replicate was fitted separately and at least two entered the fit. That is how far
-your replicates disagree, which is a different question from the interval.</li>
+<li><i>Single-replicate fits</i>, the line under the table: the median and range of the
+replicates&rsquo; own fits, each made with the inputs as entered, when each replicate was fitted
+separately and at least two entered the fit. That is how far your replicates disagree, which is a
+different question from the interval, so a single replicate&rsquo;s value can fall outside it. A
+replicate whose own fit ran to a bound of the K<sub>a</sub> search is counted, not summarised.</li>
+<li>The coloured line above the table is the verdict in a few words: grey when there is nothing to
+act on, amber when something is worth checking, red when the result rests on something the data
+reject.</li>
+<li>An estimate that ran onto a bound of the K<sub>a</sub> search reads <i>not limited below</i> (or
+<i>above</i>) and the closed end of the interval: that bound is not a measurement.</li>
 <li>The log<sub>10</sub>(K<sub>a</sub>) row is the row above read on a log scale, estimate and
 interval alike.</li>
 <li>Rows marked * are values the data fix only in combination: each is one member of a family that
@@ -307,7 +332,8 @@ draws the same curve, not a measurement of that one coefficient.</li>
 K<sub>a</sub>, its own R&sup2;, its p-value in the shared-K<sub>a</sub> test, and whether it entered
 the average or was left out. The test can only notice a replicate whose own data pin K<sub>a</sub>
 down: where the replicates&rsquo; own K<sub>a</sub> values already spread over decades, a replicate
-that disagrees will not stand out, and the min&ndash;max column is what tells you so.</p>
+that disagrees will not stand out, and the single-replicate line under the table is what tells you
+so.</p>
 <p><b>Fit Quality</b>: <i>RMSE</i> is the typical distance between curve and data, in signal units;
 <i>R&sup2;</i> the fraction of the data&rsquo;s variance the fit explains; <i>Noise</i> how large
 your scatter is and how it grows with the signal; <i>Replicates used</i> how many of the replicates
@@ -329,7 +355,7 @@ landed, not which input is wrong: several of them move the curve almost alike.</
 
 <p><b>How to read it</b></p>
 <p>The interval says how precisely these data fix K<sub>a</sub>, given what you said you know about
-the inputs; the replicate columns say how reproducible your replicates are; the Ka Sensitivity tab
+the inputs; the single-replicate line says how reproducible your replicates are; the Ka Sensitivity tab
 splits the movement of K<sub>a</sub> among the inputs. They answer three different questions, and a
 narrow one does not make the others narrow.</p>
 <p>On Ka Sensitivity the Estimate is the fit with the inputs as entered, and the other columns cover
@@ -339,7 +365,7 @@ spread, even 0 &plusmn; 0, says nothing about precision.</p>
 <p><b>Example</b></p>
 <p>RMSE 7.57&times;10<sup>3</sup> a.u. on signals up to 2.9&times;10<sup>5</sup> a.u., R&sup2;
 0.9897, 7 of 7 replicates used; K<sub>a(G)</sub> = 2.78&times;10<sup>8</sup> M<sup>&minus;1</sup>
-[1.9&times;10<sup>8</sup>, 4.0&times;10<sup>8</sup>].</p>
+[1.91&times;10<sup>8</sup>, 4.00&times;10<sup>8</sup>].</p>
 """
 
 PLOT_GUIDE: dict[str, tuple[str, str]] = {

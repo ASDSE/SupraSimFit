@@ -250,6 +250,20 @@ def test_a_budget_with_no_number_in_it_is_refused_rather_than_written_empty(anal
     assert not path.exists()
 
 
+def test_a_budget_withheld_for_every_constant_is_refused_rather_than_written_as_notes(analysed_session, tmp_path):
+    """Every constant's numbers withheld leaves a file of reasons the tab already shows; the refusal points there."""
+    from tests.unit.gui.test_sensitivity_gui import _sobol_result
+
+    result = _sobol_result()
+    result.withheld = {key: 'open_interval' for key in result.budget}
+    artefact = _artefact(analysed_session(result), 'budget_csv')
+    path = tmp_path / f'run{artefact.suffix}'
+
+    with pytest.raises(ValueError, match='says why its numbers are withheld'):
+        artefact.writer(path)
+    assert not path.exists()
+
+
 def test_a_heatmap_has_no_budget_to_export_and_says_why(analysed_session):
     """A heatmap sweeps two inputs on a grid; it splits no variance between the sources."""
     from dataclasses import replace

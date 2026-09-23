@@ -45,7 +45,8 @@ AWARE_CUT = 0.9945
 def _fit(keys=IDA_KEYS, assay='IDA', *, per_replica=False, diagnostics=None, shifts=None):
     """A FitResult carrying only what the tab reads: the parameters, the assay and the replicate record."""
     return FitResult(
-        parameters={k: Q_(1.0 if k.startswith('Ka') else 0.5, 'dimensionless') for k in keys},
+        # A binding constant inside its search box, in the unit a fit reports it in.
+        parameters={k: Q_(BEST_KA, '1/M') if k.startswith('Ka') else Q_(0.5, 'au') for k in keys},
         rmse=0.1,
         r_squared=PEAK_R2,
         x_fit=Q_(np.zeros(3), 'M'),
@@ -356,12 +357,12 @@ def test_the_only_point_drawn_is_the_best_fit(qapp):
 
 def test_confidence_interval_is_stated(qapp):
     """Best Ka 10^8.5 with an interval of 1e8 to 1e9: −68 % and +216 % of the best fit."""
-    from gui.plotting.labels import fmt_interval_html, fmt_sci
+    from gui.plotting.labels import fmt_interval_html, fmt_value
 
     w = _widget(_fit(), _profile_set())
     text = w._summary.text()
     # The same bracket the summary table and the report write it in.
-    assert f'95% CI {fmt_interval_html(fmt_sci(1e8), fmt_sci(1e9), False, False)} M<sup>−1</sup>' in text
+    assert f'95% CI {fmt_interval_html(fmt_value(1e8), fmt_value(1e9), False, False)} M<sup>−1</sup>' in text
     assert '(−68% / +216%)' in text
     assert 'open' not in text
 
@@ -408,26 +409,26 @@ def test_an_r2_a_hair_below_one_does_not_read_as_one(qapp):
 
 def test_open_interval_says_open_and_says_what_would_close_it(qapp):
     """An open side reads as the words the whole app gives it, and only the closed end gets a distance."""
-    from gui.plotting.labels import fmt_interval_html, fmt_sci
+    from gui.plotting.labels import fmt_interval_html, fmt_value
 
     w = _widget(_fit(), _profile_set(interval=_interval(1e8, 1e12, open_high=True)))
     text = w._summary.text()
-    assert f'95% CI {fmt_interval_html(fmt_sci(1e8), fmt_sci(1e12), False, True)} M<sup>−1</sup>' in text
+    assert f'95% CI {fmt_interval_html(fmt_value(1e8), fmt_value(1e12), False, True)} M<sup>−1</sup>' in text
     # The open end lies no distance from the best fit, so only the closed one is quoted.
     assert '(lower end −68%)' in text
     assert 'cannot rule out a higher' in text
-    assert 'It reaches the bound of 1.0×10¹² M<sup>−1</sup>.' in text
+    assert 'It reaches the bound of 1.00×10¹² M<sup>−1</sup>.' in text
     assert 'before the signal levels off' in text
 
 
 def test_an_interval_the_data_close_at_neither_end_says_so_once(qapp):
     """Both sides open reads as one statement, not as two ends and two changes that are not numbers."""
-    from gui.plotting.labels import fmt_interval_html, fmt_sci
+    from gui.plotting.labels import fmt_interval_html, fmt_value
 
     w = _widget(_fit(), _profile_set(interval=_interval(1e-8, 1e12, open_low=True, open_high=True)))
     text = w._summary.text()
 
-    assert f'95% CI {fmt_interval_html(fmt_sci(1e-8), fmt_sci(1e12), True, True)}' in text
+    assert f'95% CI {fmt_interval_html(fmt_value(1e-8), fmt_value(1e12), True, True)}' in text
     assert '%)' not in text.split('<br>')[0]  # no change quoted for an end that is not there
     assert 'M<sup>−1</sup>]' not in text  # and no unit on a bracket holding no number
 
@@ -449,7 +450,7 @@ def test_an_edge_open_at_the_solver_wall_does_not_call_it_the_bound(qapp):
     w = _widget(_fit(), _profile_set(interval=interval))
     text = w._summary.text()
 
-    assert 'cannot be solved past 1.0×10¹²' in text
+    assert 'cannot be solved past 1.00×10¹²' in text
     assert 'reaches the bound of' not in text
 
 
@@ -461,9 +462,32 @@ def test_a_side_resting_on_the_other_constants_bound_names_it_and_gives_no_data_
     w = _widget(_fit(), _profile_set(interval=interval))
     text = w._summary.text()
 
-    assert 'rejected beyond 2.3×10³' in text and 'cannot go past its bound' in text
+    assert 'rejected beyond 2.30×10³' in text and 'cannot go past its bound' in text
     assert 'reaches the bound of' not in text
     assert 'higher titrant concentration' not in text
+
+
+def test_an_estimate_on_its_search_bound_is_the_limit_the_data_set_and_no_percentage_of_it(qapp):
+    """A Ka the search stopped at the bound of its box is the box: no view reads it as an estimate.
+
+    The interval's closed end is what the data say — Ka lies below it — and a
+    percentage of the bound (+24 135 990 455 885 %) would describe the box.
+    """
+    from dataclasses import replace
+
+    fit = _fit()
+    fit = replace(fit, parameters={**fit.parameters, 'Ka_guest': Q_(1e-8, '1/M')})
+    profile_set = _profile_set(interval=_interval(1e-8, 2413.6, open_low=True))
+    profile = profile_set.profiles['Ka_guest']
+    profile.best_ka = 1e-8
+    w = _widget(fit, profile_set)
+    text = w._summary.text()
+
+    assert '<i>not limited below</i> 2.41×10³ M<sup>−1</sup>' in text
+    assert '95% CI [<i>no lower limit</i>, 2.41×10³] M<sup>−1</sup>' in text
+    assert 'upper end' not in text and '%)' not in text
+    # The bound is named once, as the bound the open side reaches.
+    assert text.count('10⁻⁸') == 1 and 'It reaches the bound of 1.00×10⁻⁸' in text
 
 
 def test_a_drop_close_to_minus_100_percent_is_not_rounded_to_it(qapp):
@@ -509,8 +533,21 @@ def test_the_cut_off_line_steps_where_the_profile_says_a_signal_parameter_reache
     last_held = int(np.flatnonzero(held)[-1])
     assert steps[last_held + 1] == pytest.approx(0.5 * (log_grid[last_held] + log_grid[last_held + 1]))
     assert (steps[0], steps[-1]) == (log_grid[0], log_grid[-1])
-    # Two levels are drawn and the axis names one of them, so it says which.
-    assert items['main'].getAxis('right')._tickLevels == [[(CUT_R2, 'cut-off 0.9900 (nothing held)')]]
+    # Two levels are drawn and the axis names one of them in plain words; what
+    # the step is, is said in the legend and in the axis's hover text.
+    axis = items['main'].getAxis('right')
+    assert axis._tickLevels == [[(CUT_R2, 'cut-off 0.9900')]]
+    assert 'steps down' in axis.toolTip()
+    assert 'lower where a signal parameter sits on its bound' in w._legend.text().replace('&nbsp;', ' ')
+
+
+def test_a_cut_off_at_one_level_names_no_step(qapp):
+    w = _widget(_fit(), _profile_set())
+    axis = w._items['Ka_guest']['main'].getAxis('right')
+
+    assert axis._tickLevels == [[(CUT_R2, 'cut-off 0.9900')]]
+    assert 'steps down' not in axis.toolTip()
+    assert 'bound' not in w._legend.text()
 
 
 def test_r2_axis_is_linear(qapp):
@@ -644,24 +681,18 @@ def test_no_assay_makes_the_window_wider_than_a_laptop_screen(qapp, monkeypatch,
     window.close()
 
 
-def test_a_chart_too_wide_for_the_tab_does_not_take_the_text_with_it(qapp, monkeypatch):
+def test_a_chart_too_wide_for_the_tab_does_not_take_the_text_with_it(qapp):
     """Only the chart scrolls sideways: a sentence a reader has to scroll to finish is not readable.
 
     The text is laid out under a page as wide as the chart, so it has to be held
     to the tab's width and given the height that width needs — with no room
-    taken from the widget below it.
+    taken from the widget below it. A tab narrower than one panel is the case
+    where even panels standing one per row are wider than the page.
     """
-    from gui.main_window import FittingMainWindow
-
-    monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
-    window = FittingMainWindow()
-    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-    session = window.active_session()
-    w = session._identifiability_widget
-    w.update_fit(*_set_for(AssayType.DBA_HG2), 'DBA_HG2')
-    session._plot_tabs.setCurrentWidget(w)
-    window.resize(1100, 700)
-    window.show()
+    w = _widget(*_set_for(AssayType.DBA_HG2), 'DBA_HG2')
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.resize(320, 700)
+    w.show()
     for _ in range(8):
         qapp.processEvents()
 
@@ -673,7 +704,7 @@ def test_a_chart_too_wide_for_the_tab_does_not_take_the_text_with_it(qapp, monke
         assert widget.height() >= widget.heightForWidth(widget.width())  # every line of it is drawn
     for above, below in zip(stacked, stacked[1:]):
         assert above.geometry().bottom() < below.geometry().top()
-    window.close()
+    w.close()
 
 
 # ---------------------------------------------------------------------------
@@ -736,23 +767,23 @@ def test_without_stated_uncertainties_there_is_one_curve_and_no_conditional_line
 
 def test_the_headline_interval_is_the_input_aware_one_and_the_conditional_one_follows(qapp):
     """Both readings are on screen, the input-aware one first: it is what the fit reports."""
-    from gui.plotting.labels import fmt_interval_html, fmt_sci
+    from gui.plotting.labels import fmt_interval_html, fmt_value
 
     w = _widget(_fit(), _aware_set())
     text = w._summary.text()
 
-    headline = f'95% CI {fmt_interval_html(fmt_sci(10**7.8), fmt_sci(10**9.4), False, False)} M<sup>−1</sup>'
-    conditional = f'95% CI {fmt_interval_html(fmt_sci(1e8), fmt_sci(1e9), False, False)} M<sup>−1</sup>'
+    headline = f'95% CI {fmt_interval_html(fmt_value(10**7.8), fmt_value(10**9.4), False, False)} M<sup>−1</sup>'
+    conditional = f'95% CI {fmt_interval_html(fmt_value(1e8), fmt_value(1e9), False, False)} M<sup>−1</sup>'
     assert text.index(headline) < text.index('Conditional on the entered inputs') < text.index(conditional)
     # Each reading is quoted with the estimate it belongs to.
-    assert text.index(fmt_sci(10**AWARE_CENTRE, 3)) < text.index(fmt_sci(BEST_KA, 3))
+    assert text.index(fmt_value(10**AWARE_CENTRE)) < text.index(fmt_value(BEST_KA))
     # The widening is what usually happens, not what always happens.
     assert 'usually' in text
 
 
 def test_an_input_aware_side_the_data_leave_open_says_so_and_names_its_edge(qapp):
     """The open-side reading follows the headline interval, while the conditional one is closed at both ends."""
-    from gui.plotting.labels import fmt_sci
+    from gui.plotting.labels import fmt_value
 
     aware = _aware_profile(interval=_interval(10**7.8, 1e12, open_high=True))
     w = _widget(_fit(), _profile_set(aware=aware))
@@ -760,7 +791,7 @@ def test_an_input_aware_side_the_data_leave_open_says_so_and_names_its_edge(qapp
 
     assert text.count('Open: the data cannot rule out') == 1
     assert 'a higher K<sub>a</sub>' in text
-    assert f'It reaches the bound of {fmt_sci(1e12)}' in text
+    assert f'It reaches the bound of {fmt_value(1e12)}' in text
     assert 'no upper limit' in text
 
 
@@ -843,7 +874,7 @@ def test_two_binding_constants_get_a_panel_each_and_a_joint_region(qapp):
     # One summary line per binding constant, each with its own interval.
     summary = w._summary.text()
     assert summary.count('95% CI') == 2
-    assert '[3.2×10⁵, 3.2×10⁶]' in summary and '[3.2×10³, 3.2×10⁴]' in summary
+    assert '[3.16×10⁵, 3.16×10⁶]' in summary and '[3.16×10³, 3.16×10⁴]' in summary
 
     region = profile_set.region
     inside = np.isfinite(region.r2) & (region.r2 >= region.r2_cut)
@@ -937,13 +968,13 @@ def test_the_pair_panel_drops_below_the_others_where_the_three_do_not_fit_side_b
     w.show()
     for _ in range(8):
         qapp.processEvents()
-    assert not w._region_wrapped
+    assert w._arrangement == 'row'
 
     w.resize(1044, 573)  # the Identifiability tab of a 1440x900 window
     for _ in range(10):
         qapp.processEvents()
 
-    assert w._region_wrapped
+    assert w._arrangement == 'pair_below'
     assert w._content.horizontalScrollBar().maximum() == 0
     region = w._region_items['main']
     box = region.getViewBox()
@@ -959,12 +990,49 @@ def test_the_pair_panel_drops_below_the_others_where_the_three_do_not_fit_side_b
     w.resize(1560, 720)
     for _ in range(10):
         qapp.processEvents()
-    assert not w._region_wrapped  # back beside them once there is room again
+    assert w._arrangement == 'row'  # back beside them once there is room again
     w.close()
 
 
-def test_a_tab_too_narrow_for_two_panels_keeps_the_pair_beside_them(qapp):
-    """Shorter panels buy nothing where the page scrolls sideways either way, so the row is left alone."""
+@pytest.mark.parametrize('size', [(933, 546), (1044, 573)], ids=['native-1440x900', 'offscreen-1440x900'])
+def test_the_joint_region_is_in_view_without_scrolling_sideways_in_a_laptop_window(qapp, size):
+    """The Identifiability tab of a 1440×900 window, measured on the native style and offscreen.
+
+    Every panel is in the page's width — the pair included — and no axis label,
+    cut-off label or legend entry is cut off.
+    """
+    from gui.plotting.identifiability_widget import _MAIN_MIN_WIDTH
+
+    w = _widget(_fit(keys=HG2_KEYS, assay='DBA_HG2'), _two_ka_set(aware=True), 'DBA_HG2')
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    w.resize(*size)
+    w.show()
+    for _ in range(10):
+        qapp.processEvents()
+
+    assert w._content.horizontalScrollBar().maximum() == 0
+    region = w._region_items['main']
+    pair = region.mapRectToScene(region.boundingRect())
+    assert pair.right() <= w._glw.width()
+    assert region.getViewBox().width() >= _MAIN_MIN_WIDTH
+    for plot in [items['main'] for items in w._items.values()] + [region]:
+        for name in ('left', 'bottom', 'right'):
+            axis = plot.getAxis(name)
+            if not axis.isVisible():
+                continue
+            box = axis.mapRectToScene(axis.boundingRect())
+            assert box.left() >= 0 and box.right() <= w._glw.width() + 0.5, (name, box)
+        label = plot.getAxis('bottom').label
+        assert label.isVisible() and label.mapRectToScene(label.boundingRect()).bottom() <= w._glw.height()
+    legend = w._legend
+    assert legend.heightForWidth(legend.width()) <= legend.height()
+    w.close()
+
+
+def test_a_tab_too_narrow_for_two_panels_stands_every_panel_on_a_row_of_its_own(qapp):
+    """Where even the two Ka panels do not fit side by side, each takes a row, and nothing scrolls sideways."""
+    from gui.plotting.identifiability_widget import _MAIN_MIN_HEIGHT, _MAIN_MIN_WIDTH
+
     w = _widget(_fit(keys=HG2_KEYS, assay='DBA_HG2'), _two_ka_set(), 'DBA_HG2')
     w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     w.resize(738, 406)  # the Identifiability tab of an 1100x700 window
@@ -972,8 +1040,14 @@ def test_a_tab_too_narrow_for_two_panels_keeps_the_pair_beside_them(qapp):
     for _ in range(10):
         qapp.processEvents()
 
-    assert not w._region_wrapped
-    assert w._content.horizontalScrollBar().maximum() > 0
+    assert w._arrangement == 'column'
+    assert w._content.horizontalScrollBar().maximum() == 0
+    plots = [items['main'] for items in w._items.values()] + [w._region_items['main']]
+    boxes = [plot.mapRectToScene(plot.boundingRect()) for plot in plots]
+    for upper, lower in zip(boxes, boxes[1:]):
+        assert upper.bottom() <= lower.top()
+    for plot in plots:
+        assert plot.getViewBox().width() >= _MAIN_MIN_WIDTH and plot.getViewBox().height() >= _MAIN_MIN_HEIGHT
     w.close()
 
 
@@ -1306,7 +1380,7 @@ def test_renders_a_real_input_aware_fit_beside_its_conditional_one(qapp):
     from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
     from core.pipeline.inputs import ErrorModel, InputSpec
     from core.pipeline.profile import fit_profile
-    from gui.plotting.labels import fmt_sci, verdict_sentence
+    from gui.plotting.labels import fmt_value, verdict_sentence
     from gui.widgets.assay_conditions import result_input_labels
     from tests.conftest import IDA_TRUE, _make_ida_data
 
@@ -1341,8 +1415,8 @@ def test_renders_a_real_input_aware_fit_beside_its_conditional_one(qapp):
     text = w._summary.text()
     headline, entered = fit.intervals['Ka_guest'], fit.conditional.intervals['Ka_guest']
     head, _, conditional_line = text.partition('Conditional on the entered inputs')
-    assert f'95% CI [{fmt_sci(headline.low)}, {fmt_sci(headline.high)}]' in head
-    assert f'95% CI [{fmt_sci(entered.low)}, {fmt_sci(entered.high)}]' in conditional_line
+    assert f'95% CI [{fmt_value(headline.low)}, {fmt_value(headline.high)}]' in head
+    assert f'95% CI [{fmt_value(entered.low)}, {fmt_value(entered.high)}]' in conditional_line
     # The verdict this fit reached on the model and the inputs is here too.
     # Named from the fit's own assay, which is where the tab takes its names from.
     labels = result_input_labels(fit.assay_type, fit.fit_config)
@@ -1356,7 +1430,7 @@ def test_renders_a_real_ida_fit_and_its_profile(qapp):
     from core.io import load_measurements
     from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
     from core.pipeline.profile import fit_profile
-    from gui.plotting.labels import fmt_sci
+    from gui.plotting.labels import fmt_value
 
     ms = MeasurementSet.from_dataframe(load_measurements('data/IDA_system.txt'))
     conditions = {'Ka_dye': Q_(16.8e6, '1/M'), 'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M')}
@@ -1370,4 +1444,4 @@ def test_renders_a_real_ida_fit_and_its_profile(qapp):
     assert len(items['average'].getData()[0]) == profile.grid.size
     assert items['best'].getData()[0][0] == pytest.approx(np.log10(profile.best_ka))
     interval = profile.interval
-    assert f'95% CI [{fmt_sci(interval.low)}, {fmt_sci(interval.high)}]' in w._summary.text()
+    assert f'95% CI [{fmt_value(interval.low)}, {fmt_value(interval.high)}]' in w._summary.text()

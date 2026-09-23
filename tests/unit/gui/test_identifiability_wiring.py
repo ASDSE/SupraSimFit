@@ -146,7 +146,7 @@ def test_fit_then_profile_reach_identifiability_tab(qapp, make_session, warnings
     assert result is session._state.fit_results[-1]
     assert assay_type_name == 'IDA'
     assert isinstance(profile_set, ProfileSet)
-    assert profile_set is session._state.profile_result
+    assert profile_set is session._identifiability_widget._profile
     profile = profile_set.profiles['Ka_guest']
     assert profile.per_replica is per_replica
     # The profile was computed from the fit's own inputs: its interval is the
@@ -201,7 +201,7 @@ def test_an_assay_without_a_binding_constant_gets_no_profile(qapp, make_session,
     assert profile_set is None
     assert assay_type_name == 'DYE_ALONE'
     assert session._profile_worker is None
-    assert session._state.profile_result is None
+    assert session._identifiability_widget._profile is None
 
 
 def test_sensitivity_result_reaches_identifiability_tab(make_session):
@@ -234,5 +234,5 @@ def test_loading_data_clears_tab_and_discards_pending_profile(qapp, make_session
     assert warnings == []
     assert clears == [()]
     assert fits == []
-    assert session._state.profile_result is None
+    assert widget._profile is None
     assert widget._stack.currentWidget() is widget._message

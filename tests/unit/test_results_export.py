@@ -229,8 +229,10 @@ def test_txt_report_puts_the_interval_beside_the_estimate(tmp_path: Path) -> Non
     for header in ('Parameter', 'Estimate', '95% interval', 'Units'):
         assert header in text
     line = next(ln for ln in text.splitlines() if ln.strip().startswith('Ka_guest'))
-    assert '1.24e+06' in line
-    assert '[1.1e+06, 1.4e+06]' in line
+    # The numbers read as the summary table on screen writes them.
+    assert '1.24×10⁶' in line
+    assert '[1.10×10⁶, 1.40×10⁶]' in line
+    assert 'e+' not in text
 
 
 def test_txt_report_writes_an_open_side_in_words_and_says_what_would_close_it(tmp_path: Path) -> None:
@@ -238,8 +240,8 @@ def test_txt_report_writes_an_open_side_in_words_and_says_what_would_close_it(tm
     open_high = KaInterval(low=1.10e6, high=9.9e9, open_low=False, open_high=True, level=0.95, dof=7)
     text = _txt(tmp_path, [_result(interval=open_high)])
 
-    assert '[1.1e+06, no upper limit]' in text
-    assert '9.9e+09' not in text  # the bound the profile reached is not the interval's end
+    assert '[1.10×10⁶, no upper limit]' in text
+    assert '9.90×10⁹' not in text  # the bound the profile reached is not the interval's end
     assert 'the data cannot rule out a higher Ka' in text
     assert 'signal levels off' in text
 
@@ -263,7 +265,7 @@ def test_txt_report_names_the_bound_a_side_rests_on_instead_of_reporting_a_limit
     )
     text = _prose(_txt(tmp_path, [_result(interval=limited)]))
 
-    assert '[no lower limit, 1.4e+06]' in text
+    assert '[no lower limit, 1.40×10⁶]' in text
     assert 'only because Ka_HG2 cannot go past its bound' in text
     assert 'the data alone set no limit on this side' in text
     assert 'higher titrant concentration' not in text  # the advice for a side the data leave open does not apply
@@ -332,8 +334,8 @@ def test_txt_report_lists_every_replicate_with_its_own_fit_and_its_verdict(tmp_p
     assert 'REPLICATES' in text
     rows = _table_rows(text, '  Replicate ')
     assert set(rows) == {'A', 'B', 'C'}
-    assert '1.2e+06' in rows['A'] and rows['A'].endswith('used')
-    assert '4e+06' in rows['C'] and rows['C'].endswith('left out')
+    assert '1.20×10⁶' in rows['A'] and rows['A'].endswith('used')
+    assert '4.00×10⁶' in rows['C'] and rows['C'].endswith('left out')
     assert '0.0012' in rows['C']
     assert _EXCLUDED in _prose(text)
     assert 'Replicates used:      A, B' in text
@@ -567,8 +569,8 @@ def test_txt_report_puts_the_conditional_interval_under_the_headline_one(tmp_pat
     text = _txt(tmp_path, [_input_aware_result()])
 
     headline = next(ln for ln in text.splitlines() if ln.strip().startswith('Ka_guest'))
-    assert '[9e+05, 1.8e+06]' in headline  # the interval that covers the stated uncertainties
-    assert 'Conditional on the entered inputs: Ka_guest = 1.24e+06 [1.1e+06, 1.4e+06] M⁻¹' in text
+    assert '[9.00×10⁵, 1.80×10⁶]' in headline  # the interval that covers the stated uncertainties
+    assert 'Conditional on the entered inputs: Ka_guest = 1.24×10⁶ [1.10×10⁶, 1.40×10⁶] M⁻¹' in text
     assert 'takes every input exactly as entered' in _prose(text)
 
 
@@ -654,7 +656,12 @@ def test_txt_report_gives_the_verdict_with_both_misfit_tests_and_the_conflict(tm
     text = _prose(_txt(tmp_path, [_input_aware_result()]))
 
     assert 'MODEL AND INPUTS' in text
-    assert 'further from their entered values than their stated uncertainties allow (q = 24.2, p < 0.001)' in text
+    # Two inputs stated with a σ and one as a range: the statistic judged the two.
+    assert (
+        'The data fit only with the inputs you gave a standard deviation, taken together, further from their '
+        'entered values than those uncertainties allow (q = 24.2, p < 0.001)'
+    ) in text
+    assert 'Inside the range you stated it also moved [Dye]₀ −6.0 % (at the edge of its range)' in text
     assert 'Model at the entered inputs: lack-of-fit F(9, 72) = 200, p < 0.001' in text
     assert 'Model with the inputs moved: lack-of-fit F(9, 72) = 0.9, p = 0.55' in text
     assert 'Inputs against what you stated: q = 24.2, p < 0.001' in text
@@ -739,7 +746,7 @@ def test_txt_report_says_when_the_data_cannot_check_the_entered_inputs(tmp_path:
     )
     text = _prose(_txt(tmp_path, [_input_aware_result(diagnostics=untested)]))
 
-    assert 'cannot check the values you entered' in text
+    assert 'cannot check the entered values' in text
     assert 'q =' not in text
     assert 'runs test: 6 runs, 7.0 expected, p = 0.41' in text
 
@@ -845,3 +852,112 @@ def test_the_report_of_an_imported_result_says_what_the_fit_said(tmp_path: Path)
     # Every number and sentence below the header is the one the fit reported;
     # the header carries the times the report and the result were made.
     assert imported.split('FITTED PARAMETERS')[1] == direct.split('FITTED PARAMETERS')[1]
+
+
+# ---------------------------------------------------------------------------
+# An estimate on its search bound, open ends, the replicates' own fits and the
+# conditions as the panel names them
+# ---------------------------------------------------------------------------
+
+#: The Ka search box of an IDA fit with the registry's bounds, and a fit that ran
+#: onto its lower end: the data limit Ka only from above, at 2.41×10³ M⁻¹.
+_ON_BOUND = KaInterval(low=1e-8, high=2413.6, open_low=True, open_high=False, level=0.95, dof=7)
+
+
+def _on_bound_result() -> FitResult:
+    result = _result(interval=_ON_BOUND)
+    result.parameters['Ka_guest'] = Q_(1e-8, '1/M')
+    return result
+
+
+def test_csv_writes_no_number_for_an_estimate_on_its_search_bound_or_for_an_open_end(tmp_path: Path) -> None:
+    """The box edge is not a measurement: the cell is empty and a flag says which end the fit ran to."""
+    path = tmp_path / 'r.csv'
+    export_results_csv([_on_bound_result()], path)
+    rows = {r['parameter']: r for r in _csv_rows(path)}
+
+    for name in ('Ka_guest', 'log10(Ka_guest)'):
+        row = rows[name]
+        assert (row['estimate'], row['estimate_at_bound']) == ('', 'low')
+        assert (row['ci_low'], row['ci_open_low']) == ('', 'true')
+    assert float(rows['Ka_guest']['ci_high']) == pytest.approx(2413.6)
+    assert float(rows['log10(Ka_guest)']['ci_high']) == pytest.approx(np.log10(2413.6))
+    # A signal parameter has no search box of this kind and keeps its number.
+    assert rows['I0']['estimate_at_bound'] == '' and float(rows['I0']['estimate']) == pytest.approx(1000.0)
+
+
+def test_csv_leaves_the_conditional_end_empty_where_it_is_open(tmp_path: Path) -> None:
+    result = _input_aware_result()
+    result.conditional.intervals['Ka_guest'] = replace(result.conditional.intervals['Ka_guest'], open_high=True)
+    path = tmp_path / 'r.csv'
+    export_results_csv([result], path)
+    row = next(r for r in _csv_rows(path) if r['parameter'] == 'Ka_guest')
+
+    assert row['cond_ci_high'] == '' and row['cond_ci_open_high'] == 'true'
+    assert float(row['cond_ci_low']) == pytest.approx(1.10e6)
+    assert row['cond_estimate_at_bound'] == '' and float(row['cond_estimate']) == pytest.approx(1.24e6)
+
+
+def test_csv_counts_replicate_fits_that_ran_to_a_bound_and_leaves_them_out_of_the_statistics(tmp_path: Path) -> None:
+    result = _per_replicate_result()
+    result.metadata['replica_ids_fit'] = ['a', 'b', 'c']
+    result.replica_fits[2] = _replica('c', 1e-8, 0.95)
+    path = tmp_path / 'r.csv'
+    export_results_csv([result], path)
+    row = next(r for r in _csv_rows(path) if r['parameter'] == 'Ka_guest')
+
+    assert row['replicates_at_bound'] == '1'
+    assert float(row['replicate_min']) == pytest.approx(1.20e6)
+    assert float(row['replicate_max']) == pytest.approx(1.30e6)
+
+
+def test_txt_report_writes_an_estimate_on_its_search_bound_as_the_limit_the_data_set(tmp_path: Path) -> None:
+    text = _txt(tmp_path, [_on_bound_result()])
+    line = next(ln for ln in text.splitlines() if ln.strip().startswith('Ka_guest'))
+
+    assert 'not limited below 2.41×10³' in line
+    assert '[no lower limit, 2.41×10³]' in line
+    assert '10⁻⁸' not in line and 'e-08' not in line
+
+
+def test_txt_report_gives_the_single_replicate_fits_their_own_line(tmp_path: Path) -> None:
+    """They are fits at the entered inputs beside an interval that answers another question, and the report says so."""
+    result = _per_replicate_result()
+    result.metadata['replica_ids_fit'] = ['a', 'b', 'c']
+    text = _prose(_txt(tmp_path, [result], replica_ids=('a', 'b', 'c')))
+
+    assert (
+        'Single-replicate fits (inputs as entered): Ka_guest median 1.30×10⁶, range [1.20×10⁶, 4.00×10⁶] M⁻¹.'
+    ) in text
+    assert "a single replicate's value can fall outside it" in text
+
+
+def test_txt_report_leads_the_diagnostics_with_the_verdict_in_a_few_words(tmp_path: Path) -> None:
+    text = _txt(tmp_path, [_input_aware_result()])
+
+    block = text.split('MODEL AND INPUTS', 1)[1]
+    assert block.split('\n', 3)[2] == (
+        '  Verdict: The inputs together are further from their entered values than you stated.'
+    )
+
+
+def test_txt_report_names_the_conditions_as_the_panel_does_in_the_units_it_reads_them_in(tmp_path: Path) -> None:
+    """A report is read by a person: no condition key and no ``1/M`` reaches it."""
+    result = replace(_result(), conditions={'Ka_dye': Q_(1.68e7, '1/M'), 'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M')})
+    text = _txt(tmp_path, [result])
+    block = text.split('CONDITIONS', 1)[1].split('\n\n', 1)[0]
+
+    assert '  Ka,dye: 1.680×10⁷ M⁻¹' in block
+    assert '  [Host]₀: 4.3 µM' in block
+    assert '  [Dye]₀: 6 µM' in block
+    for raw in ('h0', 'd0', 'Ka_dye', '1/M'):
+        assert raw not in block
+
+
+def test_txt_report_names_a_replicate_fit_on_its_search_bound_in_words(tmp_path: Path) -> None:
+    result = _per_replicate_result()
+    result.replica_fits[2] = _replica('c', 1e-8, 0.95)
+    rows = _table_rows(_txt(tmp_path, [result], replica_ids=('a', 'b', 'c')), '  Replicate ')
+
+    assert 'at the lower end of its search range' in rows['C']
+    assert '10⁻⁸' not in rows['C']

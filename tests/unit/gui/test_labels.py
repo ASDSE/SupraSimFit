@@ -1,5 +1,7 @@
 """Tests for gui.plotting.labels — HTML and Unicode formatting."""
 
+import pytest
+
 from gui.plotting.labels import (
     fmt_interval_html,
     fmt_interval_plain,
@@ -73,6 +75,72 @@ def test_fmt_sci_reads_plainly_at_every_magnitude():
     assert fmt_sci(0.0123) == '0.012'
     assert fmt_sci(1.7e8) == '1.7×10⁸'
     assert fmt_sci(3.3e-6) == '3.3×10⁻⁶'
+
+
+def test_every_fitted_value_reads_to_three_significant_figures_with_its_zeros():
+    """One reading of a value and an edge in every view: 8×10⁴ and 8.0×10⁴ are the same edge written twice."""
+    from gui.plotting.labels import fmt_value
+
+    assert fmt_value(8e4) == '8.00×10⁴'
+    assert fmt_value(6.6e4) == '6.60×10⁴'
+    assert fmt_value(2413.6) == '2.41×10³'
+    assert fmt_value(150) == '150'
+    assert fmt_value(0.012) == '0.0120'
+
+
+class TestFmtBoundEstimate:
+    """An estimate on an end of its search box is the box, not a measurement, and reads in words."""
+
+    def test_an_estimate_on_the_lower_bound_reads_as_the_limit_the_data_set_above_it(self):
+        from gui.plotting.labels import fmt_bound_estimate
+
+        text = fmt_bound_estimate('low', '1.00×10⁻⁸', '2.41×10³', True, False, html=False)
+        assert text == 'not limited below 2.41×10³'
+        assert '10⁻⁸' not in text
+
+    def test_an_estimate_on_the_upper_bound_reads_as_the_limit_the_data_set_below_it(self):
+        from gui.plotting.labels import fmt_bound_estimate
+
+        assert fmt_bound_estimate('high', '5.00×10⁴', '1.00×10¹²', False, True, html=False) == (
+            'not limited above 5.00×10⁴'
+        )
+
+    def test_an_estimate_on_a_bound_of_an_interval_open_at_both_ends_says_nothing_is_limited(self):
+        from gui.plotting.labels import fmt_bound_estimate
+
+        assert fmt_bound_estimate('low', '1e-8', '1e12', True, True, html=False) == 'not limited by the data'
+
+    def test_the_rich_text_form_sets_the_words_as_prose(self):
+        from gui.plotting.labels import fmt_bound_estimate, plain_label
+
+        html = fmt_bound_estimate('low', '1e-8', '2.41×10³', True, False, html=True)
+        assert html == '<i>not limited below</i> 2.41×10³'
+        assert plain_label(html) == 'not limited below 2.41×10³'
+
+    def test_an_estimate_on_a_bound_with_no_interval_says_where_it_stopped_and_no_number(self):
+        from gui.plotting.labels import fmt_bound_estimate
+
+        assert fmt_bound_estimate('high', None, None, False, False, html=False) == (
+            'at the upper end of its search range'
+        )
+
+
+class TestStatedUncertainty:
+    """One notation for a stated uncertainty: σ for a standard deviation, the two ends for a range."""
+
+    def test_a_standard_deviation_reads_sigma_in_percent_or_in_the_input_s_unit(self):
+        from core.pipeline.inputs import InputSpec
+        from gui.plotting.labels import stated_uncertainty
+
+        assert stated_uncertainty(InputSpec.sigma_pct(10.0), '') == 'σ 10 %'
+        assert stated_uncertainty(InputSpec.sigma_abs(2e-7), 'M') == 'σ 2.0×10⁻⁷ M'
+
+    def test_a_range_reads_as_its_two_signed_ends(self):
+        from core.pipeline.inputs import InputSpec
+        from gui.plotting.labels import stated_uncertainty
+
+        assert stated_uncertainty(InputSpec.interval_pct(-5.0, 5.0), '') == '−5 % to +5 %'
+        assert stated_uncertainty(InputSpec.interval_abs(1e-6, 2e-6), 'M') == '1.0×10⁻⁶ to 2.0×10⁻⁶ M'
 
 
 class TestFmtR2:
@@ -155,10 +223,16 @@ def _shift(key, fraction, z=None, at_edge=False):
     return InputShift(key=key, fraction=fraction, z=z, at_edge=at_edge)
 
 
-def _diagnostics(verdict, *, conditional=None, misfit=None, conflict=None):
+def _diagnostics(verdict, *, conditional=None, misfit=None, conflict=None, skipped=None):
     from core.pipeline.diagnostics import FitDiagnostics, Verdict
 
-    return FitDiagnostics(conditional_misfit=conditional, misfit=misfit, conflict=conflict, verdict=Verdict(verdict))
+    return FitDiagnostics(
+        conditional_misfit=conditional,
+        misfit=misfit,
+        conflict=conflict,
+        verdict=Verdict(verdict),
+        skipped=skipped or {},
+    )
 
 
 def _f_test(statistic, p_value, dof=(9, 72)):
@@ -219,6 +293,13 @@ class TestFmtShift:
         text = fmt_shift(_shift('d0', -0.06, at_edge=True), '[Dye]₀', html=False)
         assert text == '[Dye]₀ −6.0 % (at the edge of its range)'
 
+    def test_a_shift_that_rounds_to_zero_carries_no_sign(self):
+        """−0.0 % claims a direction the digits shown do not have."""
+        from gui.plotting.labels import fmt_shift
+
+        assert fmt_shift(_shift('d0', -1.2e-10, z=-4e-9), '[Dye]₀', html=False) == '[Dye]₀ 0.0 % (0.0 σ)'
+        assert fmt_shift(_shift('d0', 4e-4), '[Dye]₀', html=False) == '[Dye]₀ 0.0 %'
+
     def test_a_range_input_inside_its_range_claims_no_multiple_of_a_sigma_it_has_none_of(self):
         from gui.plotting.labels import fmt_shift
 
@@ -233,7 +314,7 @@ class TestVerdictSentence:
 
         d = _diagnostics('consistent', conditional=_f_test(0.9, 0.55), misfit=_f_test(0.9, 0.55))
         assert verdict_sentence(d, {}, _LABELS, html=False) == (
-            'The model and the entered inputs describe the data (lack-of-fit F(9, 72) = 0.9, p = 0.55).'
+            'No test found evidence against the model or the entered inputs (lack-of-fit F(9, 72) = 0.9, p = 0.55).'
         )
 
     def test_consistent_with_one_signal_quotes_the_runs_test(self):
@@ -241,7 +322,8 @@ class TestVerdictSentence:
 
         d = _diagnostics('consistent', conditional=_runs(6, 7.0, 0.41), misfit=_runs(6, 7.0, 0.41))
         assert verdict_sentence(d, {}, _LABELS, html=False) == (
-            'The model and the entered inputs describe the data (runs test: 6 runs, 7.0 expected, p = 0.41).'
+            'No test found evidence against the model or the entered inputs '
+            '(runs test: 6 runs, 7.0 expected, p = 0.41).'
         )
 
     def test_inputs_explain_names_the_shifts_largest_first(self):
@@ -320,7 +402,12 @@ class TestVerdictSentence:
         assert 'so the correction landed where that combination points' in text
 
     def test_a_conflict_counts_only_the_inputs_the_statistic_tested(self):
-        """An input stated as a range carries no z and never enters q, so the sentence does not count it."""
+        """An input stated as a range carries no z and never enters q, so the sentence neither counts nor blames it.
+
+        One σ input and one range that moved: the sentence may not call the σ
+        input the only one the fit could move, and the range is reported as
+        moved inside what was stated, not further than it allows.
+        """
         from core.pipeline.diagnostics import Conflict
         from gui.plotting.labels import verdict_sentence
 
@@ -333,10 +420,61 @@ class TestVerdictSentence:
         shifts = {'h0': _shift('h0', -0.114, z=-3.8), 'd0': _shift('d0', -0.06, at_edge=True)}
         text = verdict_sentence(d, shifts, {**_LABELS, 'd0': '[Dye]₀'}, html=False)
 
-        # One input was stated with a σ, so it is the only input the statistic
-        # judged, and the sentence says the fit had no other it could move.
-        assert 'this is the only input the fit was free to move' in text
-        assert 'these 2 inputs' not in text
+        assert text == (
+            'The data fit only with [Host]₀ further from the value you entered than the uncertainty you stated '
+            'allows (q = 24.2, p < 0.001). The fit put the correction here: [Host]₀ −11.4 % (3.8 σ) — this is the '
+            'only input stated with a standard deviation, so the correction landed there whatever its real cause. '
+            'Inside the range you stated it also moved [Dye]₀ −6.0 % (at the edge of its range). An input at the '
+            'edge of its range is one the data would have moved further. Check the values you entered for all the '
+            'inputs listed, ranges included. The interval assumes the shifts are real.'
+        )
+        assert 'only input the fit was free to move' not in text
+
+    @pytest.mark.parametrize(
+        ('sigmas', 'ranges', 'k'),
+        [(1, 0, 1), (1, 1, 1), (1, 2, 1), (2, 0, 1), (2, 0, 2), (2, 1, 1), (2, 1, 2), (3, 1, 1), (3, 2, 2)],
+        ids=lambda v: str(v),
+    )
+    def test_every_count_of_a_conflict_is_the_count_of_inputs_it_names(self, sigmas, ranges, k):
+        """Every mix of σ and range inputs: the inputs the correction is read from are the σ ones, and so is every count.
+
+        The list after "correction here" names exactly the inputs stated with a
+        standard deviation; "these N inputs" and the singular or plural of the
+        advice agree with that list; every range is named once, as moved inside
+        its range.
+        """
+        import re
+
+        from core.pipeline.diagnostics import Conflict
+        from gui.plotting.labels import verdict_sentence
+
+        keys_sigma = [f's{i}' for i in range(sigmas)]
+        keys_range = [f'r{i}' for i in range(ranges)]
+        labels = {key: f'IN{key.upper()}' for key in keys_sigma + keys_range}
+        shifts = {key: _shift(key, -0.05 * (i + 1), z=-(i + 3.0)) for i, key in enumerate(keys_sigma)}
+        shifts |= {key: _shift(key, 0.02 * (i + 1), at_edge=i == 0) for i, key in enumerate(keys_range)}
+        d = _diagnostics(
+            'inputs_conflict',
+            conditional=_f_test(200.0, 1e-9),
+            misfit=_f_test(1.1, 0.4),
+            conflict=Conflict(q=24.2, k=k, p_value=1e-5, weights=tuple([0.9] * k)),
+        )
+        text = verdict_sentence(d, shifts, labels, html=False)
+
+        correction = text.split('The fit put the correction here: ', 1)[1].split(' — ', 1)[0]
+        assert sorted(re.findall(r'IN[SR]\d', correction)) == sorted(labels[key] for key in keys_sigma)
+        named = re.findall(r'these (\d+) inputs', text)
+        assert all(int(n) == sigmas for n in named)
+        # The advice covers every input that moved: a range resting on its edge may be the one that is off.
+        assert ('Check the value you entered for it.' in text) == (sigmas == 1 and not ranges)
+        assert ('Check the values you entered for them.' in text) == (sigmas > 1 and not ranges)
+        assert ('for all the inputs listed, ranges included.' in text) == bool(ranges)
+        if ranges:
+            inside = text.split('you stated it also moved ', 1)[1].split('. Check', 1)[0]
+            assert sorted(re.findall(r'IN[SR]\d', inside)) == sorted(labels[key] for key in keys_range)
+        else:
+            assert 'also moved' not in text
+        assert 'the only input the fit was free to move' not in text or (sigmas == 1 and not ranges)
 
     def test_the_advice_of_a_conflict_names_the_inputs_that_moved_and_no_others(self):
         """A carried-over constant is not a stock, and the fit that moved it is not told to check one."""
@@ -400,6 +538,94 @@ class TestVerdictSentence:
         assert 'describe the data (' not in text
         assert 'too few' in text
 
+    def test_both_tests_rejecting_name_the_inputs_first_and_the_model_after(self):
+        """An input that is off can by itself make the curve miss, so a rejected model is not blamed first."""
+        from core.pipeline.diagnostics import Conflict
+        from gui.plotting.labels import verdict_sentence
+
+        d = _diagnostics(
+            'model_and_inputs',
+            conditional=_f_test(300.0, 1e-9),
+            misfit=_f_test(40.0, 1e-9),
+            conflict=Conflict(q=30.1, k=2, p_value=1e-6, weights=(0.4, 0.9)),
+        )
+        shifts = {'h0': _shift('h0', -0.2, z=-4.0), '__titrant__': _shift('__titrant__', 0.1, z=3.3)}
+        text = verdict_sentence(d, shifts, _LABELS, html=False)
+
+        assert text.startswith(
+            'The data fit only with the inputs, taken together, further from their entered values than their '
+            'stated uncertainties allow (q = 30.1, p < 0.001), and even with them moved the model misses the '
+            'data (F(9, 72) = 40, p < 0.001 after the shifts).'
+        )
+        assert text.index('Check first the values you entered for them:') < text.index('try another binding model')
+        assert 'the statistic weighs them together' in text
+
+    @pytest.mark.parametrize(
+        ('skipped', 'expected'),
+        [
+            ({'misfit': 'no_scatter'}, 'The curve was not tested against the data: the data carry no scatter'),
+            ({'misfit': 'too_few_dof'}, 'The curve was not tested against the data: the data leave too few points'),
+        ],
+        ids=['no-scatter', 'too-few-points'],
+    )
+    def test_a_misfit_test_that_could_not_run_is_named_with_its_reason(self, skipped, expected):
+        """No evidence against a fit no test could look at is not the verdict of a test that passed."""
+        from gui.plotting.labels import verdict_sentence
+
+        text = verdict_sentence(_diagnostics('consistent', skipped=skipped), {}, _LABELS, html=False)
+
+        assert text.startswith('No test could be run on this fit, so nothing here speaks for or against it.')
+        assert expected in text
+        assert 'No test found evidence' not in text
+
+    @pytest.mark.parametrize(
+        ('reason', 'shift', 'expected'),
+        [
+            ('no_informed_direction', _shift('h0', -0.01, z=-0.2), 'do not determine any combination'),
+            ('no_uncertainty', _shift('h0', -0.05, at_edge=True), 'every uncertainty is stated as a range'),
+        ],
+        ids=['uninformed', 'ranges-only'],
+    )
+    def test_a_conflict_test_that_could_not_run_is_named_with_its_reason(self, reason, shift, expected):
+        from gui.plotting.labels import verdict_sentence
+
+        d = _diagnostics(
+            'consistent', conditional=_f_test(0.9, 0.55), misfit=_f_test(0.8, 0.6), skipped={'conflict': reason}
+        )
+        text = verdict_sentence(d, {'h0': shift}, _LABELS, html=False)
+
+        assert text.startswith('No test found evidence against the model or the entered inputs (lack-of-fit')
+        assert 'The entered inputs were not tested against what you stated: ' in text
+        assert expected in text
+
+    def test_inputs_taken_as_exact_are_not_said_to_have_gone_untested(self):
+        """With nothing stated there is no statistic to run; the misfit test at the entered inputs tests them."""
+        from gui.plotting.labels import verdict_sentence
+
+        d = _diagnostics(
+            'consistent',
+            conditional=_f_test(0.9, 0.55),
+            misfit=_f_test(0.9, 0.55),
+            skipped={'conflict': 'no_uncertainty'},
+        )
+        assert 'not tested' not in verdict_sentence(d, {}, _LABELS, html=False)
+
+    def test_a_consistent_verdict_quotes_the_conflict_statistic_it_ran(self):
+        from core.pipeline.diagnostics import Conflict
+        from gui.plotting.labels import verdict_sentence
+
+        d = _diagnostics(
+            'consistent',
+            conditional=_f_test(0.9, 0.55),
+            misfit=_f_test(0.8, 0.6),
+            conflict=Conflict(q=1.2, k=1, p_value=0.27, weights=(0.9,)),
+        )
+        text = verdict_sentence(d, {'h0': _shift('h0', -0.02, z=-1.1)}, _LABELS, html=False)
+        assert text == (
+            'No test found evidence against the model or the entered inputs '
+            '(lack-of-fit F(9, 72) = 0.8, p = 0.6; inputs q = 1.2, p = 0.27).'
+        )
+
     def test_the_html_form_escapes_the_less_than_of_a_small_p(self):
         """A rich-text label would swallow a bare '<' and everything after it."""
         from gui.plotting.labels import verdict_sentence
@@ -428,21 +654,6 @@ class TestFmtMisfit:
 
         assert 'e+' not in fmt_misfit(_f_test(1234.5, 1e-9))
         assert 'F(9, 72) = 1230' in fmt_misfit(_f_test(1234.5, 1e-9))
-
-    def test_an_f_ratio_with_no_finite_reading_is_said_in_words(self):
-        """The ratio is infinite exactly where the replicates carry no scatter, and that is what the reader needs."""
-        import math
-
-        from gui.plotting.labels import fmt_misfit
-
-        text = fmt_misfit(_f_test(math.inf, 0.0))
-
-        assert text == (
-            'lack-of-fit: the replicates agree exactly at every point, so any distance from the curve '
-            'counts against the model'
-        )
-        assert 'inf' not in text
-        assert fmt_misfit(_f_test(math.inf, 0.0), named=False).startswith('the replicates agree exactly')
 
     def test_no_report_can_print_a_statistic_that_is_not_a_number(self):
         """fmt_stat is the one place a statistic becomes text, so it refuses rather than writing 'inf'."""
@@ -504,3 +715,73 @@ def test_plain_label_gives_back_the_characters_html_escaped():
     """A source named by the user reaches a label escaped; flattening it has to undo that, not print '&amp;'."""
     assert plain_label('Host &amp; dye stock') == 'Host & dye stock'
     assert plain_label('a &lt; b') == 'a < b'
+
+
+class TestVerdictHeadline:
+    """The few words above the table and on the plot, and the tone they are shown in."""
+
+    @pytest.mark.parametrize(
+        ('verdict', 'tone'),
+        [
+            ('consistent', 'neutral'),
+            ('inputs_explain', 'amber'),
+            ('inputs_conflict', 'red'),
+            ('model_inadequate', 'red'),
+            ('model_and_inputs', 'red'),
+        ],
+    )
+    def test_every_verdict_has_a_headline_and_a_tone(self, verdict, tone):
+        from core.pipeline.diagnostics import Conflict
+        from gui.plotting.labels import VERDICT_TONES, verdict_headline
+
+        d = _diagnostics(
+            verdict,
+            conditional=_f_test(0.9, 0.55),
+            misfit=_f_test(0.9, 0.55),
+            conflict=Conflict(q=24.2, k=1, p_value=1e-5, weights=(0.9,)),
+        )
+        text, got = verdict_headline(d)
+        assert got == tone and got in VERDICT_TONES
+        assert text and '[' not in text, 'a headline names no input'
+
+    def test_a_fit_no_test_could_look_at_is_not_headlined_as_passing(self):
+        from gui.plotting.labels import verdict_headline
+
+        text, tone = verdict_headline(_diagnostics('consistent', skipped={'misfit': 'no_scatter'}))
+        assert text.startswith('Not tested')
+        assert tone == 'neutral'
+
+
+class TestReplicateSummary:
+    """Single-replicate fits beside the interval, with bound-valued fits counted, not summarised."""
+
+    @staticmethod
+    def _row(replicates, at_bound=0):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(key='Ka_guest', replicates=replicates, replicates_at_bound=at_bound)
+
+    def test_the_median_and_range_of_the_replicates_own_fits_and_what_they_are_beside_the_interval(self):
+        from gui.plotting.labels import replicate_summary
+
+        stats = {'median': 4.56e4, 'min': 4.49e4, 'max': 8.16e4}
+        text = replicate_summary([self._row(stats)], 3, lambda spec: 'Ka(G)', lambda spec: 'M⁻¹')
+
+        assert text.startswith(
+            'Single-replicate fits (inputs as entered): Ka(G) median 4.56×10⁴, range [4.49×10⁴, 8.16×10⁴] M⁻¹.'
+        )
+        assert 'can fall outside it' in text
+
+    def test_fits_that_ran_to_a_bound_are_counted_and_not_summarised(self):
+        from gui.plotting.labels import replicate_summary
+
+        stats = {'median': 4.56e4, 'min': 4.49e4, 'max': 4.6e4}
+        text = replicate_summary([self._row(stats, at_bound=1)], 3, lambda spec: 'Ka(G)', lambda spec: 'M⁻¹')
+
+        assert '1 of 3 single-replicate fits of Ka(G) ran to a bound of its search range' in text
+        assert 'left out of these figures' in text
+
+    def test_nothing_to_say_says_nothing(self):
+        from gui.plotting.labels import replicate_summary
+
+        assert replicate_summary([self._row(None)], 1, lambda spec: 'Ka(G)', lambda spec: 'M⁻¹') == ''

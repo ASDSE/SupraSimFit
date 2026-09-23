@@ -37,6 +37,15 @@ if TYPE_CHECKING:
     from PyQt6.QtWidgets import QGraphicsScene
 
 
+class ExportRefused(ValueError):
+    """An export that cannot be made, with a message written for the user.
+
+    The interface shows its text as it is. Every other error of an export
+    carries a library's or a programmer's wording and is replaced by a
+    sentence of the caller's.
+    """
+
+
 @contextmanager
 def _screen_space_items_to_scene_space(scene: 'QGraphicsScene'):
     """Temporarily flip every screen-space scene item into scene-space.
@@ -108,7 +117,9 @@ def export_plot_item(
         exporter = pg.exporters.SVGExporter(plot_item)
         exporter.export(str(path))
     else:
-        raise ValueError(f"A plot is saved as a picture or a drawing, so '{ext}' cannot be written. Use .png or .svg.")
+        raise ExportRefused(
+            f"A plot is saved as a picture or a drawing, so '{ext}' cannot be written. Use .png or .svg."
+        )
 
 
 @contextmanager
@@ -180,7 +191,7 @@ def export_widget(
 
     ext = _ext(path)
     if ext != '.png':
-        raise ValueError(f"A whole tab is saved as one picture, so '{ext}' cannot be written. Use .png.")
+        raise ExportRefused(f"A whole tab is saved as one picture, so '{ext}' cannot be written. Use .png.")
     scenes = [child.scene() for child in widget.findChildren(pg.GraphicsView) if child.scene() is not None]
     with ExitStack() as stack:
         stack.enter_context(_left_out(widget, without))
@@ -201,4 +212,7 @@ def export_widget(
         widget.render(painter, flags=QWidget.RenderFlag.DrawChildren)
         painter.end()
         if not image.save(str(path)):
-            raise ValueError(f'The image could not be written to {path}.')
+            raise ExportRefused(
+                f'The picture could not be written to {path}. Check that the folder exists and that you may '
+                'write there, then save it again.'
+            )

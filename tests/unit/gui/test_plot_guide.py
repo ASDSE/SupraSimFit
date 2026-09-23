@@ -170,7 +170,7 @@ def test_the_examples_still_describe_the_demo_data():
     for phrase in (
         f'Best fit {best / 1e8:.2f}&times;10<sup>8</sup>',
         f'(weighted R&sup2; {profile.best_r2:.4f})',
-        f'CI {lo / 1e8:.1f}&ndash;{hi / 1e8:.1f}&times;10<sup>8</sup>',
+        f'CI [{lo / 1e8:.2f}&times;10<sup>8</sup>, {hi / 1e8:.2f}&times;10<sup>8</sup>]',
         f'(&minus;{round(100 * (1 - lo / best))}&thinsp;% / +{round(100 * (hi / best - 1))}',
         f'cut-off {profile.r2_threshold:.4f} from {profile.n_points} data points '
         f'and {profile.n_params} fitted parameters.',
@@ -183,10 +183,11 @@ def test_the_examples_still_describe_the_demo_data():
         assert phrase in identifiability
     assert lo > grid[step + 1], 'the interval no longer ends above the step the guide describes'
 
-    # The headline the Fit Curve and the summary panel quote is the same fit.
+    # The headline the Fit Curve and the summary panel quote is the same fit, to the three
+    # significant figures every view writes a fitted value with.
     headline = (
-        f'{best / 1e8:.2f}&times;10<sup>8</sup> M<sup>&minus;1</sup> [{lo / 1e8:.1f}&times;10<sup>8</sup>, '
-        f'{hi / 1e8:.1f}&times;10<sup>8</sup>]'
+        f'{best / 1e8:.2f}&times;10<sup>8</sup> M<sup>&minus;1</sup> [{lo / 1e8:.2f}&times;10<sup>8</sup>, '
+        f'{hi / 1e8:.2f}&times;10<sup>8</sup>]'
     )
     used = len(result.metadata['active_replica_ids'])
     signals = ms.signals[[ms.replica_ids.index(r) for r in ms.active_replica_ids]]
@@ -246,14 +247,16 @@ def test_the_sensitivity_entry_explains_every_column_of_the_budget_table():
 
 
 def test_the_sensitivity_entry_calls_the_per_addition_item_what_the_widget_labels_it():
-    """The reader looks the item up by the name on screen, and is told why it is not added to the interval."""
-    from gui.plotting.sensitivity_widget import _ADDITIONS_LABEL
+    """The reader looks the item up by the name on screen, and reads what the widget says under the table."""
+    from gui.plotting.sensitivity_widget import _ADDITIONS_LABEL, _ADDITIONS_NOTE
 
     text = _sensitivity_text()
 
     assert f'<b>{_ADDITIONS_LABEL}</b>' in text
-    # Why it is listed but not added: the same reason the widget prints under the table.
-    assert 'already inside it' in text
+    # The fit's interval leaves the error of each addition out, and both texts say so.
+    statement = 'The interval the fit reports does not include the random error of each addition'
+    assert _ADDITIONS_NOTE.startswith(statement)
+    assert statement in text
 
 
 def test_the_sensitivity_example_quotes_the_fit_count_its_own_run_would_cost():

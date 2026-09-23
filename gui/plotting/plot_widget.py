@@ -26,12 +26,17 @@ from gui.plotting.colors import (
     rgba,
 )
 from gui.plotting.labels import (
+    SHIFTED_CURVE_NOTE,
     SPLIT_MARK,
+    VERDICT_TONES,
     _format_exponent_unicode,
+    fmt_estimate,
     fmt_interval_html,
     fmt_param,
     fmt_r2,
     fmt_unit_html,
+    fmt_value,
+    verdict_headline,
 )
 from gui.plotting.plot_style import DEFAULT_STYLE, line_style_to_qt
 from gui.widgets.replica_panel import _display_label, describe_replicates
@@ -197,6 +202,11 @@ class ScientificAxisItem(pg.AxisItem):
     Values in [0.01, 10 000] are displayed as plain numbers with no
     exponent factored out.  SI prefix auto-scaling is disabled.
 
+    One exponent holds for every tick level of a draw, and it is read from the
+    major level: pyqtgraph formats each level on its own, and a minor tick past
+    10 000 under major ticks that end at 10 000 would otherwise set an exponent
+    the major labels, written plain, do not carry.
+
     Parameters
     ----------
     use_exponent : bool
@@ -212,6 +222,10 @@ class ScientificAxisItem(pg.AxisItem):
         self.exponent: int | None = None
         self._use_exponent = use_exponent
         self.on_exponent_changed: Callable[[int | None], None] | None = None
+        # The major tick values of the draw in progress, which every level's
+        # labels take their exponent from; None until the axis draws ticks of
+        # its own choosing.
+        self._major_values: list[float] | None = None
 
     def _set_exponent(self, exp: int | None) -> None:
         """Update exponent, firing callback only on change.
@@ -225,41 +239,43 @@ class ScientificAxisItem(pg.AxisItem):
             if self.on_exponent_changed is not None:
                 self.on_exponent_changed(exp)
 
+    def tickValues(self, minVal, maxVal, size):
+        """The ticks of one draw; the first level holding any is the major one, which sets the exponent."""
+        levels = super().tickValues(minVal, maxVal, size)
+        self._major_values = next((list(values) for _, values in levels if len(values)), [])
+        return levels
+
+    @staticmethod
+    def _exponent_of(values, scale) -> int | None:
+        """The exponent factored out of *values*: none where the largest lies in [0.01, 10 000] or all are 0."""
+        abs_vals = [abs(v * scale) for v in values if v * scale != 0]
+        if not abs_vals:
+            return None
+        max_abs = max(abs_vals)
+        if 1e-2 <= max_abs <= 1e4:
+            return None
+        return int(np.floor(np.log10(max_abs)))
+
     def tickStrings(self, values, scale, spacing):
         if not values:
-            self._set_exponent(None)
+            # An empty minor level leaves the major level's exponent standing;
+            # an axis with no tick at all has none.
+            if not self._major_values:
+                self._set_exponent(None)
             return []
 
         if not self._use_exponent:
             self._set_exponent(None)
             return [f'{v * scale:g}' for v in values]
 
-        # Compute common exponent from the maximum absolute value
-        abs_vals = [abs(v * scale) for v in values if v * scale != 0]
-        if not abs_vals:
-            self._set_exponent(None)
-            return ['0'] * len(values)
-
-        max_abs = max(abs_vals)
-
-        # Only factor out exponent for values outside the "plain" range
-        if 1e-2 <= max_abs <= 1e4:
-            self._set_exponent(None)
-            return [f'{v * scale:g}' for v in values]
-
-        exp = int(np.floor(np.log10(max_abs)))
+        # Every level of a draw takes the major level's exponent; values given
+        # outside a draw (no major level known) set their own.
+        exp = self._exponent_of(self._major_values or values, scale)
         self._set_exponent(exp)
+        if exp is None:
+            return [f'{v * scale:g}' for v in values]
         divisor = 10**exp
-
-        strings = []
-        for v in values:
-            v_scaled = v * scale
-            if v_scaled == 0:
-                strings.append('0')
-            else:
-                mantissa = v_scaled / divisor
-                strings.append(f'{mantissa:g}')
-        return strings
+        return ['0' if v * scale == 0 else f'{v * scale / divisor:g}' for v in values]
 
 
 class PlotWidget(QWidget):
@@ -1078,21 +1094,29 @@ class PlotWidget(QWidget):
         return QRectF(self._legend.pos(), rect.size())
 
     def _annotation_html(self) -> str:
-        """Body of the fit-summary overlay.
+        """Body of the fit-summary overlay — what an exported figure says about the fit.
 
         Each binding constant reads ``estimate [low, high]``: the fit the curve
         is drawn from and the confidence interval of that same fit, which is
         the fit with every input the user gave an uncertainty free to move
-        inside it. The fit conditional on the entered inputs has its own column
-        in the summary table; printed here it would read as this curve's
-        interval. Every other parameter is its fitted value alone, starred
-        where the data determine it only in combination with others. Rows come
-        from
-        :func:`~core.pipeline.fit_pipeline.summarize_parameters`, so the plot,
-        the summary table and the exports quote the same numbers. RMSE is
-        omitted: it is already in the Fit Quality panel and is monotone in the
-        R² shown here. The log₁₀ twin rows stay in the table — repeating them
-        here would double the box height for no new information.
+        inside it. An estimate that sits on an end of its Ka search box reads
+        in words, as the limit the data set (``not limited below 2.41×10³``).
+        The fit conditional on the entered inputs has its own column in the
+        summary table; printed here it would read as this curve's interval.
+        Every other parameter is its fitted value alone, starred where the data
+        determine it only in combination with others. Rows come from
+        :func:`~core.pipeline.fit_pipeline.summarize_parameters` and numbers
+        from :func:`~gui.plotting.labels.fmt_value`, so the plot, the summary
+        table and the exports quote the same numbers the same way.
+
+        Under R² the verdict of the diagnostics in a few words, in the colour of
+        what it asks of the reader, and — where the fit moved an input — that
+        the curve is drawn at the inputs where it put them, so a saved figure
+        never shows a fit the app flags, or a curve at other inputs than the
+        entered ones, without saying so. RMSE is omitted: it is already in the
+        Fit Quality panel and is monotone in the R² shown here. The log₁₀ twin
+        rows stay in the table — repeating them here would double the box
+        height for no new information.
         """
         from core.pipeline.fit_pipeline import fit_replica_ids, summarize_parameters
 
@@ -1112,19 +1136,17 @@ class PlotWidget(QWidget):
             lines.append(f'<b>{title}</b>')
 
             for spec in rows:
-                # Pint's HTML formatter gives proper superscripts; the unit is
-                # stripped from each number and appended once at the end.
-                def fmt(magnitude: float, unit: str = spec.unit) -> str:
-                    if unit:
-                        return f'{Q_(magnitude, unit):.3g~H}'.rsplit(' ', 1)[0]
-                    return f'{magnitude:.3g}'
-
+                # The unit is appended once, after the numbers.
                 unit_html = f' {fmt_unit_html(spec.unit)}' if spec.unit else ''
                 star = '*' if spec.degenerate else ''
-                text = f'{fmt_param(spec.key)}{star} = {fmt(spec.estimate)}'
-                if spec.interval is not None:
-                    low, high = spec.interval
-                    text += f' {fmt_interval_html(fmt(low), fmt(high), *spec.interval_open)}'
+                ends = None if spec.interval is None else tuple(map(fmt_value, spec.interval))
+                estimate = fmt_estimate(
+                    spec.estimate, spec.estimate_at_bound, spec.interval, spec.interval_open, html=True
+                )
+                # Words read as a statement about the constant, a number as its value.
+                text = f'{fmt_param(spec.key)}{star}{": " if spec.estimate_at_bound else " = "}{estimate}'
+                if ends is not None:
+                    text += f' {fmt_interval_html(*ends, *spec.interval_open)}'
                     # A bracket that spans values the data reject must not read
                     # as one connected range; the Fit Summary explains the mark.
                     if spec.interval_split:
@@ -1132,6 +1154,11 @@ class PlotWidget(QWidget):
                 lines.append(f'{text}{unit_html}')
 
             lines.append(f'<b>R\u00b2:</b> {fmt_r2(result.r_squared)}')
+            if result.diagnostics is not None:
+                headline, tone = verdict_headline(result.diagnostics)
+                lines.append(f'<span style="color:{VERDICT_TONES[tone][0]}">{headline}</span>')
+            if result.input_shifts:
+                lines.append(SHIFTED_CURVE_NOTE)
 
             if idx < len(self._fit_results) - 1:
                 lines.append('')

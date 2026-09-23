@@ -313,8 +313,6 @@ def _ka_line(text):
 
 def test_annotation_reports_the_estimate_and_its_interval(qapp):
     """The binding constant reads 'estimate [low, high]' — the fit, and the interval of that same fit."""
-    import re
-
     pw = _binding_plot(qapp)
     text = pw._annotation_item.textItem.toPlainText()
 
@@ -323,12 +321,9 @@ def test_annotation_reports_the_estimate_and_its_interval(qapp):
     assert 'RMSE' not in text, 'RMSE duplicates the Fit Quality panel'
     assert 'R²: 0.9962' in text
 
-    # Parse the pair back out and compare to the interval the result carries.
+    # The pair is the interval the result carries, written as the table writes it.
     line = _ka_line(text)
-    lo, hi = re.search(r'\[([\d.]+)×10(\d+), ([\d.]+)×10(\d+)\]', line).group(1, 3)
-    assert (float(lo), float(hi)) == (9.0, 2.1)
-    # The overlay paints rich text; read as plain text the superscripts flatten.
-    assert line.startswith('Ka(G) = 1.24×106')
+    assert line.startswith('Ka(G) = 1.24×10⁶ [9.00×10⁵, 2.10×10⁶]')
 
 
 def test_the_annotation_quotes_the_headline_fit_and_not_the_conditional_one(qapp):
@@ -356,9 +351,9 @@ def test_the_annotation_quotes_the_headline_fit_and_not_the_conditional_one(qapp
     )
     line = _ka_line(pw._annotation_item.textItem.toPlainText())
 
-    assert line.startswith('Ka(G) = 1.3×106')
-    assert '[5×105, 3×106]' in line
-    assert '1.24' not in line and '2.1×106' not in line
+    assert line.startswith('Ka(G) = 1.30×10⁶')
+    assert '[5.00×10⁵, 3.00×10⁶]' in line
+    assert '1.24' not in line and '2.10×10⁶' not in line
 
 
 def test_annotation_writes_an_open_side_in_words(qapp):
@@ -369,7 +364,7 @@ def test_annotation_writes_an_open_side_in_words(qapp):
     line = _ka_line(pw._annotation_item.textItem.toPlainText())
 
     assert 'no upper limit' in line
-    assert '1012' not in line, 'the bound the profile ran to is not an upper limit'
+    assert '10¹²' not in line, 'the bound the profile ran to is not an upper limit'
 
 
 def test_annotation_marks_an_interval_that_spans_values_the_data_reject(qapp):
@@ -397,7 +392,7 @@ def test_an_imported_legacy_fit_shows_its_estimate_and_no_interval(qapp):
     pw = _binding_plot(qapp, intervals=None)
     line = _ka_line(pw._annotation_item.textItem.toPlainText())
 
-    assert line.startswith('Ka(G) = 1.24×106')
+    assert line.startswith('Ka(G) = 1.24×10⁶')
     assert '[' not in line
 
 
@@ -758,3 +753,89 @@ def test_overlaid_fits_on_different_replicates_are_noted(qapp):
 
     pw.update_plot(prepare_plot_data(ms, [some, some], show_dropped=True))
     assert pw._note.isHidden()
+
+
+# ---------------------------------------------------------------------------
+# What an exported figure says: a bound-valued estimate, the verdict, and a
+# curve drawn at shifted inputs
+# ---------------------------------------------------------------------------
+
+
+def test_an_estimate_on_its_search_bound_reads_as_the_limit_the_data_set(qapp):
+    """The 1e-8 the search stopped at is the box, not a Ka; the figure says what the data do limit."""
+    from core.pipeline.varpro import KaInterval
+    from core.units import Q_
+
+    pw = _binding_plot(
+        qapp,
+        parameters={'Ka_guest': Q_(1e-8, '1/M'), 'I_0': Q_(1000.0, 'au')},
+        intervals={'Ka_guest': KaInterval(1e-8, 2413.6, True, False, 0.95, 21)},
+    )
+    line = _ka_line(pw._annotation_item.textItem.toPlainText())
+
+    assert line == 'Ka(G): not limited below 2.41×10³ [no lower limit, 2.41×10³] M−1'
+
+
+def test_the_figure_carries_the_verdict_and_says_the_curve_is_drawn_at_moved_inputs(qapp):
+    """A saved figure is read on its own: a conflict and a curve at shifted inputs have to be on it."""
+    from core.pipeline.diagnostics import Conflict, FitDiagnostics, InputShift, MisfitTest, Verdict
+    from gui.plotting.labels import SHIFTED_CURVE_NOTE, verdict_headline
+
+    diagnostics = FitDiagnostics(
+        conditional_misfit=MisfitTest('lack_of_fit', 200.0, 1e-9, dof=(9, 72)),
+        misfit=MisfitTest('lack_of_fit', 1.1, 0.4, dof=(9, 72)),
+        conflict=Conflict(q=15.1, k=1, p_value=1e-4, weights=(0.9,)),
+        verdict=Verdict.INPUTS_CONFLICT,
+    )
+    pw = _binding_plot(qapp, diagnostics=diagnostics, input_shifts={'h0': InputShift('h0', -0.194, -3.9, False)})
+    text = pw._annotation_item.textItem.toPlainText()
+
+    assert verdict_headline(diagnostics)[0] in text
+    assert SHIFTED_CURVE_NOTE in text
+    assert text.index('R²') < text.index(SHIFTED_CURVE_NOTE)
+
+
+def test_a_fit_at_the_entered_inputs_does_not_claim_a_shifted_curve(qapp):
+    from gui.plotting.labels import SHIFTED_CURVE_NOTE
+
+    pw = _binding_plot(qapp)
+
+    assert SHIFTED_CURVE_NOTE not in pw._annotation_item.textItem.toPlainText()
+
+
+@pytest.mark.parametrize('top', [9900.0, 10300.0, 10800.0, 12000.0, 2.4e4])
+def test_the_axis_exponent_is_the_one_its_major_labels_are_written_with(qapp, top):
+    """Major ticks ending at 10 000 are written plain; a minor tick past it must not put ×10⁴ on the axis.
+
+    Every tick label is read back and multiplied by the exponent the axis
+    announces: the product has to be the tick's own value.
+    """
+    import numpy as np
+    import pyqtgraph as pg
+
+    from gui.plotting.plot_widget import ScientificAxisItem
+
+    axis = ScientificAxisItem(orientation='left')
+    pw = pg.PlotWidget(axisItems={'left': axis})
+    pw.resize(900, 560)
+    pw.plot(np.linspace(0, 600, 24), np.linspace(0, top, 24))
+    pw.getPlotItem().getViewBox().setYRange(0, top, padding=0)
+    written = []
+    original = axis.tickStrings
+
+    def spy(values, scale, spacing):
+        strings = original(values, scale, spacing)
+        written.extend(zip(values, strings))
+        return strings
+
+    axis.tickStrings = spy
+    pw.show()
+    qapp.processEvents()
+    pw.grab()
+    qapp.processEvents()
+
+    assert written
+    factor = 10.0 ** (axis.exponent or 0)
+    for value, text in written:
+        assert float(text) * factor == pytest.approx(value, rel=1e-9, abs=1e-9)
+    pw.close()

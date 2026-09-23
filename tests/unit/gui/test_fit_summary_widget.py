@@ -97,9 +97,10 @@ def test_the_table_reports_an_estimate_and_its_interval_per_binding_constant(qap
 
     assert f'{_LEVEL_TEXT} interval' in _headers(table)
     _, estimate, interval, _ = _ka_row(table)
-    assert estimate.startswith('1.24×10')
-    # Both endpoints are the interval's own, written like the estimate.
-    assert interval.startswith('[7×10') and '2.2×10' in interval
+    assert estimate == '1.24×10⁶'
+    # Both endpoints are the interval's own, written like the estimate: three
+    # significant figures with their zeros, so 7×10⁵ and 7.0×10⁵ never both appear.
+    assert interval == '[7.00×10⁵, 2.20×10⁶]'
     assert 'limit' not in interval
 
 
@@ -130,7 +131,8 @@ def test_an_open_side_is_written_in_words_not_as_the_bound_the_search_stopped_at
     interval = _ka_row(widget._table)[2]
 
     assert expected in interval
-    assert '10¹²' not in interval and '10⁻⁸' not in interval
+    assert ('10¹²' in interval) == (not open_high)
+    assert ('10⁻⁸' in interval) == (not open_low)
 
 
 def test_an_interval_that_spans_rejected_values_is_marked_and_says_why(qapp):
@@ -305,26 +307,51 @@ def _per_replica_result(p_values=None, excluded=(), ka_by_replicate=None):
     return replace(base, replica_fits=replica_fits, metadata=metadata)
 
 
-def test_the_replicate_columns_summarise_the_replicates_that_entered_the_fit(qapp):
-    """Median and min–max come from the used replicates' own fits — a left-out one describes data the fit does not."""
+def test_the_replicates_own_fits_are_a_line_under_the_table_not_columns_of_the_headline(qapp):
+    """Median and min–max come from the used replicates' own fits — a left-out one describes data the fit does not.
+
+    They are fits at the entered inputs and answer another question than the
+    headline, so they sit under the table with one sentence relating them to
+    the interval, not in the headline's row.
+    """
     from gui.plotting.fit_summary_widget import FitSummaryWidget
 
     widget = FitSummaryWidget()
     widget.set_replica_ids(['0', '1', '2', '3'])
     widget.update_result(_per_replica_result(excluded=('3',)))
-    table = widget._table
 
-    assert _headers(table)[3:5] == ['Replicates: median', 'Replicates: min - max']
-    _, _, _, median, span, _ = _ka_row(table)
+    assert _headers(widget._table) == ['Parameter', 'Estimate', '95 % interval', 'Units']
     # Used replicates hold 1.0, 1.2 and 1.4 ×10⁶ — the excluded 9.0×10⁶ is out.
-    assert median.startswith('1.2×10')
-    assert span == '[1×10<sup>6</sup>, 1.4×10<sup>6</sup>]'
+    footnote = widget._footnote.text()
+    assert (
+        'Single-replicate fits (inputs as entered): <b>K<sub>a(G)</sub></b> median 1.20×10⁶, '
+        'range [1.00×10⁶, 1.40×10⁶] M<sup>−1</sup>.'
+    ) in footnote
+    assert 'can fall outside it' in footnote
+
+
+def test_a_replicate_fit_that_ran_to_a_bound_is_counted_and_not_summarised(qapp):
+    """A single-replicate Ka on its search bound is the bound, not a value, and must not enter a median."""
+    from gui.plotting.fit_summary_widget import FitSummaryWidget
+
+    widget = FitSummaryWidget()
+    widget.set_replica_ids(['0', '1', '2', '3'])
+    widget.update_result(_per_replica_result(ka_by_replicate={'0': 1.0e6, '1': 1.2e6, '2': 1.4e6, '3': 1e-8}))
+    footnote = widget._footnote.text()
+
+    assert 'median 1.20×10⁶, range [1.00×10⁶, 1.40×10⁶]' in footnote
+    assert '1 of 4 single-replicate fits of <b>K<sub>a(G)</sub></b> ran to a bound of its search range' in footnote
+    assert '10⁻⁸' not in footnote
+    # The Replicates table names the bound, not a Ka.
+    own = _row(widget._replicates_table, 3)[1]
+    assert own == '<i>at the lower end of its search range</i>'
 
 
 def test_a_fit_of_one_signal_is_not_shown_two_empty_replicate_columns(qapp):
     widget = _widget()
 
     assert _headers(widget._table) == ['Parameter', 'Estimate', '95 % interval', 'Units']
+    assert 'Single-replicate' not in widget._footnote.text()
 
 
 def test_replicates_used_counts_the_ones_that_entered_and_names_the_rest(qapp):
@@ -354,7 +381,7 @@ def test_the_replicates_table_lists_every_replicate_with_its_own_fit_and_verdict
     assert not any('<' in header for header in _headers(table))
     assert [_row(table, r)[0] for r in range(4)] == ['A', 'B', 'C', 'D']
     assert [_row(table, r)[-1] for r in range(4)] == ['used', 'used', 'used', 'left out']
-    assert _row(table, 3)[1].startswith('9×10')
+    assert _row(table, 3)[1] == '9.00×10⁶'
     assert _row(table, 3)[3] == '0.0004'
     assert 'needs a different Ka' in table.cellWidget(3, 4).toolTip()
 
@@ -545,34 +572,63 @@ def _shown_tables(qapp, widget, size):
 
 
 def _too_narrow(table):
-    """Columns of *table* holding a cell wider than the column, as (column, needed, width)."""
+    """Cells of *table* whose text does not fit: a word wider than the column, or wrapped lines taller than the row."""
+    from gui.plotting.fit_summary_widget import _text_widths
+
     clipped = []
     for col in range(table.columnCount()):
-        needed = max((table.cellWidget(row, col).sizeHint().width() for row in range(table.rowCount())), default=0)
-        if needed > table.columnWidth(col):
-            clipped.append((table.horizontalHeaderItem(col).text(), needed, table.columnWidth(col)))
+        width = table.columnWidth(col)
+        for row in range(table.rowCount()):
+            label = table.cellWidget(row, col)
+            _, word = _text_widths(label)
+            if word > width or label.heightForWidth(width) > table.rowHeight(row):
+                clipped.append((table.horizontalHeaderItem(col).text(), row, width))
     return clipped
 
 
-@pytest.mark.parametrize('view', ['one-ka', 'two-ka', 'samples'])
-def test_no_column_is_narrower_than_the_widest_value_it_shows(qapp, view):
+def _overflow(table):
+    """How far the columns of *table* reach past its viewport, in pixels; 0 where they fit."""
+    return max(0, sum(table.columnWidth(c) for c in range(table.columnCount())) - table.viewport().width())
+
+
+def _at_its_least(table, col):
+    """Whether column *col* is as narrow as its header and its widest word let it be."""
+    from gui.plotting.fit_summary_widget import _text_widths
+
+    header = table.horizontalHeader().fontMetrics().horizontalAdvance(table.horizontalHeaderItem(col).text()) + 24
+    words = (_text_widths(table.cellWidget(row, col))[1] + 16 for row in range(table.rowCount()))
+    return table.columnWidth(col) <= max(header, *words)
+
+
+@pytest.mark.parametrize('view', ['one-ka', 'two-ka', 'samples', 'inputs-free'])
+@pytest.mark.parametrize('width', [560, 760, 1000])
+def test_every_value_can_be_read_whole_in_a_narrow_pane(qapp, view, width):
     """A value cut off mid-number still reads as a number, so a user can copy a wrong one.
 
-    The cells carry no ellipsis and no tooltip, and the scrollbar pans the table
-    rather than widening a column, so digits lost to a narrow column are lost
-    for good. Squeezed, the columns keep the width their contents need and the
-    overflow goes to the scrollbar.
+    Squeezed, the columns wrap their cells between words and the rows grow, so
+    every value stays whole, and the table stays as wide as the pane for as
+    long as its headers and its widest words fit: only past that does a
+    sideways scrollbar take over.
     """
     if view == 'samples':
         widget = _samples_widget(_sobol_run({'Ka_guest': [1e6, 1.2e6, 1.4e6], 'I0': [1.0, 2.0, 3.0]}))
+    elif view == 'inputs-free':
+        widget = _aware_widget()
     else:
         widget = _widget() if view == 'one-ka' else _widget(_two_ka_per_replica_result())
         widget.set_replica_ids(['0', '1', '2', '3'])
 
-    for table in _shown_tables(qapp, widget, (360, 400)):
+    for table in _shown_tables(qapp, widget, (width, 400)):
         assert _too_narrow(table) == []
-        # What the columns overflow by is what the scrollbar pans over, so the
-        # far end of the last column can be brought into view.
+        assert _overflow(table) == 0 or all(_at_its_least(table, col) for col in range(table.columnCount()))
+    widget.close()
+
+
+def test_a_pane_narrower_than_the_widest_words_scrolls_to_them(qapp):
+    """Below the widest word of every column the table cannot wrap further, and the scrollbar reaches the rest."""
+    widget = _aware_widget()
+    for table in _shown_tables(qapp, widget, (220, 400)):
+        assert _too_narrow(table) == []
         bar = table.horizontalScrollBar()
         bar.setValue(bar.maximum())
         qapp.processEvents()
@@ -581,8 +637,8 @@ def test_no_column_is_narrower_than_the_widest_value_it_shows(qapp, view):
     widget.close()
 
 
-def test_a_log10_row_is_never_written_coarser_than_the_replicate_spread_beside_it(qapp):
-    """8.9974 must not read as '9': the log₁₀ row's decimals follow the spread it reports beside it."""
+def test_a_log10_row_is_never_written_coarser_than_the_replicate_spread(qapp):
+    """8.9974 must not read as '9': the log₁₀ row's decimals follow the spread of the replicates' own fits."""
     from core.units import Q_
     from gui.plotting.fit_summary_widget import FitSummaryWidget
 
@@ -593,11 +649,9 @@ def test_a_log10_row_is_never_written_coarser_than_the_replicate_spread_beside_i
     widget = FitSummaryWidget()
     widget.set_replica_ids(['0', '1', '2', '3'])
     widget.update_result(result)
-    _, estimate, _, median, span, _ = _log_row(widget._table)
+    _, estimate, _, _ = _log_row(widget._table)
 
     assert estimate == '8.9974'
-    assert span == '[8.9940, 9.0008]'
-    assert float(median) == pytest.approx(8.9967, abs=1e-4)
 
 
 # ---------------------------------------------------------------------------
@@ -665,9 +719,9 @@ def test_the_samples_view_summarises_the_fitted_samples_around_the_run_s_own_fit
     assert _headers(widget._table) == list(_SAMPLE_HEADERS)
     _, estimate, median_mad, _, p68, span, _ = _named_row(widget._table, '<b>I<sub>0</sub>')
     assert estimate == '100'  # the run's own fit, not a statistic of the samples
-    assert median_mad == '2 ± 1'
+    assert median_mad == '2.00 ± 1.00'
     assert p68 == '[1.32, 2.68]'
-    assert span == '[1, 3]'
+    assert span == '[1.00, 3.00]'
 
 
 def test_the_samples_view_reports_how_many_samples_it_summarises(qapp):
@@ -919,11 +973,10 @@ def test_the_conditional_column_shows_the_fit_with_the_inputs_taken_as_entered(q
     column = _headers(table).index(_CONDITIONAL_HEADER)
     row = _ka_row(table)
 
-    assert row[1].startswith('1.3×10')  # the headline estimate, with the inputs free
-    assert row[column].startswith('1.24×10')  # the conditional one
-    assert '[7×10' in row[column] and '2.2×10' in row[column]
+    assert row[1] == '1.30×10⁶'  # the headline estimate, with the inputs free
+    assert row[column] == '1.24×10⁶ [7.00×10⁵, 2.20×10⁶]'  # the conditional one
     # The headline interval is the one the column of intervals carries.
-    assert '5×10' in row[2] and '3×10' in row[2]
+    assert row[2] == '[5.00×10⁵, 3.00×10⁶]'
 
 
 def test_a_split_conditional_interval_is_marked_like_any_other(qapp):
@@ -976,7 +1029,7 @@ def test_the_block_says_what_the_diagnostics_say_and_which_uncertainties_were_us
     # Both misfit tests are quoted: the fit as entered, and the fit that moved.
     assert 'F(9, 72) = 0.9' in text and 'F(9, 72) = 0.8' in text
     assert '[Host]₀ −4.1 % (1.4 σ)' in text
-    assert 'Input uncertainties used' in text and '[Host]₀ ± 3 %' in text
+    assert 'Input uncertainties used' in text and '[Host]₀ σ 3 %' in text
     assert not widget._diagnostics_label.isHidden()
 
 
@@ -992,7 +1045,7 @@ def test_the_block_names_a_shared_source_with_the_inputs_it_moves(qapp):
     text = _block(_aware_widget(result))
 
     assert 'Host and dye stock (shared by [Host]₀, [Dye]₀) −4.1 % (1.0 σ)' in text
-    assert 'Input uncertainties used: Host and dye stock (shared by [Host]₀, [Dye]₀) ± 4 %.' in text
+    assert 'Input uncertainties used: Host and dye stock (shared by [Host]₀, [Dye]₀) σ 4 %.' in text
 
 
 def test_the_block_says_that_the_titrant_diluted_the_sample(qapp):
@@ -1046,7 +1099,7 @@ def test_an_absolute_uncertainty_is_reported_in_the_input_s_own_unit(qapp):
         _aware_result(uncertainty={'h0': {'kind': 'sigma', 'sigma': 2e-7, 'lo': 0.0, 'hi': 0.0, 'relative': False}})
     )
 
-    assert '[Host]₀ ± 2.0×10⁻⁷ M' in _block(widget)
+    assert '[Host]₀ σ 2.0×10⁻⁷ M' in _block(widget)
 
 
 def test_a_conflict_is_reported_as_one_statement_about_the_inputs_together(qapp):
@@ -1109,3 +1162,139 @@ def test_the_samples_view_shows_no_model_and_inputs_block(qapp):
 
     widget.show_samples(False)
     assert not widget._diagnostics_label.isHidden()
+
+
+# ---------------------------------------------------------------------------
+# An estimate on its search bound, the verdict line, the samples caption and
+# the table at the size the window opens at on a laptop
+# ---------------------------------------------------------------------------
+
+
+def _weak_result(**overrides):
+    """A DBA fit whose Ka ran onto the lower bound of its search box, the registry's 1e-8 M⁻¹.
+
+    The data limit Ka only from above, at 2.41×10³ M⁻¹: the interval is open
+    below and closed above.
+    """
+    from core.pipeline.varpro import KaInterval
+    from core.units import Q_
+
+    return _result(
+        assay_type='DBA_HtoD',
+        parameters={
+            'Ka_dye': Q_(1e-8, '1/M'),
+            'I0': Q_(100.0, 'au'),
+            'I_dye_free': Q_(5e4, 'au/M'),
+            'I_dye_bound': Q_(2.37e19, 'au/M'),
+        },
+        intervals={'Ka_dye': KaInterval(1e-8, 2413.6, True, False, 0.95, 16)},
+        **overrides,
+    )
+
+
+def test_an_estimate_on_its_search_bound_is_written_as_the_limit_the_data_set(qapp):
+    """The value the search stopped at is the bound of the box, not a measurement, so no number stands for it."""
+    widget = _widget(_weak_result())
+    ka = _ka_row(widget._table)
+    log = _log_row(widget._table)
+
+    assert ka[1] == '<i>not limited below</i> 2.41×10³'
+    assert log[1] == f'<i>not limited below</i> {np.log10(2413.6):.4f}'
+    assert all('10⁻⁸' not in cell and '-8.0' not in cell for cell in ka + log)
+
+
+def test_a_conditional_estimate_on_its_search_bound_is_written_in_words_too(qapp):
+    from dataclasses import replace
+
+    from core.pipeline.varpro import KaInterval
+    from core.units import Q_
+    from gui.plotting.fit_summary_widget import _CONDITIONAL_HEADER
+
+    base = _aware_result()
+    conditional = replace(
+        base.conditional,
+        parameters={**base.conditional.parameters, 'Ka_guest': Q_(1e-8, '1/M')},
+        intervals={'Ka_guest': KaInterval(1e-8, 2.2e6, True, False, 0.95, 16)},
+    )
+    widget = _aware_widget(replace(base, conditional=conditional))
+    cell = _ka_row(widget._table)[_headers(widget._table).index(_CONDITIONAL_HEADER)]
+
+    assert cell == '<i>not limited below</i> 2.20×10⁶ [<i>no lower limit</i>, 2.20×10⁶]'
+
+
+@pytest.mark.parametrize(
+    ('verdict', 'tone'),
+    [('consistent', 'neutral'), ('inputs_explain', 'amber'), ('model_inadequate', 'red')],
+)
+def test_the_verdict_leads_the_box_above_the_table_in_the_colour_of_what_it_asks(qapp, verdict, tone):
+    """Whether the result can be taken as it stands is read before the numbers, not below the fold."""
+    from PyQt6.QtCore import Qt
+
+    from core.pipeline.diagnostics import FitDiagnostics, MisfitTest, Verdict
+    from gui.plotting.labels import VERDICT_TONES, verdict_headline
+
+    diagnostics = FitDiagnostics(
+        conditional_misfit=MisfitTest('lack_of_fit', 300.0, 1e-9, dof=(9, 72)),
+        misfit=MisfitTest('lack_of_fit', 0.9, 0.5, dof=(9, 72)),
+        conflict=None,
+        verdict=Verdict(verdict),
+    )
+    widget = _aware_widget(_aware_result(diagnostics=diagnostics))
+    widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    widget.resize(900, 400)
+    widget.show()
+    qapp.processEvents()
+
+    assert widget._verdict.text() == verdict_headline(diagnostics)[0]
+    assert widget._verdict.property('tone') == tone
+    assert VERDICT_TONES[tone][0] in widget._verdict.styleSheet()
+    assert widget._verdict.geometry().bottom() < widget._table.geometry().top()
+    widget.close()
+
+
+def test_a_result_without_diagnostics_shows_no_verdict_line(qapp):
+    widget = _widget()
+
+    assert widget._verdict.isHidden()
+
+
+def test_the_samples_caption_compares_the_run_with_the_fit_at_the_entered_inputs(qapp):
+    """The analysis fits at the entered inputs; the Fit Curve headline let them move, and the caption says so.
+
+    It never claims the two differ although they use the same data and inputs:
+    the headline differs because it moved the inputs.
+    """
+    from dataclasses import replace
+
+    fit = _aware_result()
+    baseline = replace(
+        fit,
+        parameters=fit.conditional.parameters,
+        intervals=fit.conditional.intervals,
+        input_shifts={},
+        conditional=None,
+        diagnostics=None,
+    )
+    run = replace(
+        _sobol_run({'Ka_guest': [1e6, 1.2e6, 1.4e6], 'I0': [1.0, 2.0, 3.0]}), assay_type='IDA', baseline_fit=baseline
+    )
+    widget = _samples_widget(run)
+    widget.update_result(fit)
+    caption = widget._caption.text()
+
+    assert 'match the fit at the entered inputs on the Fit Curve tab to the digits shown' in caption
+    assert 'lets the inputs move within the uncertainties you stated' in caption
+    assert 'although' not in caption
+
+
+@pytest.mark.parametrize('which', ['inputs-free', 'per-replicate'])
+def test_the_table_fits_the_pane_of_a_laptop_window(qapp, monkeypatch, which):
+    """At 1440×900 the table is as wide as the pane and every value reads whole, with no sideways scrolling."""
+    result = _aware_result() if which == 'inputs-free' else _two_ka_per_replica_result()
+    window, widget = _shown_summary(qapp, monkeypatch, result, (1440, 900))
+    table = widget._table
+
+    assert _overflow(table) == 0
+    assert _too_narrow(table) == []
+    assert not table.horizontalScrollBar().isVisible()
+    window.close()

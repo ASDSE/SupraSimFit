@@ -192,7 +192,9 @@ class FittingMainWindow(QMainWindow):
         tb.addWidget(self._import_btn)
 
         self._act_demo = QAction('Demo IDA', self)
-        self._act_demo.setToolTip('Load bundled IDA demo data and run a fit with default settings')
+        self._act_demo.setToolTip(
+            'Load the bundled IDA demo data and fit it with typical input uncertainties (the status bar lists them)'
+        )
         self._act_demo.triggered.connect(self._on_load_demo)
         tb.addAction(self._act_demo)
 
@@ -645,6 +647,10 @@ def launch() -> None:
             pass
 
     app = QApplication.instance() or QApplication(sys.argv)
+    # The stylesheet paints light toolbar buttons and navy group titles on the
+    # window colour, which a dark scheme would make unreadable: the app is drawn
+    # in the light scheme whatever the system uses.
+    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
     app.setStyleSheet(_APP_QSS)
 
     icon_path = _app_icon_path()

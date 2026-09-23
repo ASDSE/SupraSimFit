@@ -316,12 +316,12 @@ def test_cancelling_a_fit_leaves_the_tab_as_it_was_and_lets_the_next_fit_start(q
     from gui import workers
 
     session = _session(dialogs)
-    session._input_panel.reset_to_defaults()  # every input exact, so this first fit is the quick one
+    session._input_panel.set_specs({})  # every input exact, so this first fit is the quick one
     session.run_fit()
     _wait_until(qapp, lambda: session._state.fit_results)
-    _wait_until(qapp, lambda: session._state.profile_result is not None)
+    _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
     shown = [result.id for result in session._state.fit_results]
-    profile = session._state.profile_result
+    profile = session._identifiability_widget._profile
 
     def watchful(ms, assay_cls, conditions, config, should_cancel=None, **kwargs):
         while should_cancel is None or not should_cancel():
@@ -342,7 +342,7 @@ def test_cancelling_a_fit_leaves_the_tab_as_it_was_and_lets_the_next_fit_start(q
     assert said[-1].startswith('Fit cancelled')
     assert dialogs == []  # a cancel the user asked for is not a failure to warn about
     assert [result.id for result in session._state.fit_results] == shown
-    assert session._state.profile_result is profile
+    assert session._identifiability_widget._profile is profile
 
     session.run_fit()  # the next fit starts at once, with nothing left to wait for
 
@@ -382,17 +382,77 @@ def test_the_fit_action_stops_the_running_fit_and_follows_the_tab_on_screen(qapp
     window.close()
 
 
-def test_the_demo_takes_every_input_as_exact_again(qapp, dialogs, watchful_fit):
-    """Demo IDA promises the same run every time, so it resets the uncertainties as it resets the bounds."""
+def test_the_demo_states_typical_input_uncertainties_and_says_so(qapp, dialogs, watchful_fit):
+    """Demo IDA runs from its own settings whatever the session held, and its first fit shows an input-aware interval."""
+    from core.pipeline.inputs import TITRANT
+
     session = _session(dialogs)
-    assert session._input_panel.current_errors().varies  # the session states one on the host concentration
+    _state_shared_source(session, SharedSource('Host and dye stock', 4.0, ('h0', 'd0')))
+    session._bounds_panel._rows['Ka_guest']._hi.setText('1e9')
+    messages: list[str] = []
+    session.status_message.connect(messages.append)
 
     session.load_demo_ida()
 
-    assert session._input_panel.current_errors() == ErrorModel()
-    assert session.fit_running()  # the demo's own fit, made with the inputs as exact
-    assert session._fit_worker.config.errors == ErrorModel()
+    stated = ErrorModel(
+        specs={
+            'Ka_dye': InputSpec.sigma_pct(10.0),
+            'h0': InputSpec.sigma_pct(3.0),
+            'd0': InputSpec.sigma_pct(3.0),
+            TITRANT: InputSpec.sigma_pct(3.0),
+        }
+    )
+    assert session._input_panel.current_errors() == stated
+    assert session._bounds_panel.current_bounds() is None
+    assert session.fit_running()
+    assert session._fit_worker.config.errors == stated.for_fit()
+    assert messages[-1].startswith('Demo settings: ')
+    assert 'σ 10 %' in messages[-1] and 'σ 3 %' in messages[-1]
+    assert messages[-1].endswith('— fitting…')
     session.shutdown()
+
+
+def test_the_analysis_is_refused_while_a_bound_cannot_be_used(qapp, dialogs, watchful_sensitivity):
+    """The fit refuses such a bound; the analysis refuses it too rather than searching the default there."""
+    session = _session(dialogs)
+    session._bounds_panel._rows['Ka_guest']._lo.setText('abc')
+
+    session.run_sensitivity()
+
+    assert not session.sensitivity_running()
+    assert dialogs[-1][1] == 'Parameter Bounds'
+    assert dialogs[-1][2] == (
+        'The analysis cannot start:\n\n• Ka(G): the lower bound “abc” is not a number. Enter a number, such as 1e3.'
+    )
+
+
+def test_the_application_is_drawn_in_the_light_colour_scheme(qapp, monkeypatch):
+    """The stylesheet paints light toolbar buttons and navy group titles, which a dark scheme makes unreadable."""
+    from PyQt6.QtCore import QCoreApplication, QLocale, Qt
+    from PyQt6.QtGui import QStyleHints
+    from PyQt6.QtWidgets import QApplication
+
+    from gui import main_window
+
+    schemes = []
+    monkeypatch.setattr(QStyleHints, 'setColorScheme', lambda self, scheme: schemes.append(scheme))
+    # Everything else launch() does to the one application object of the test run is left out.
+    for owner, name in (
+        (QApplication, 'setStyleSheet'),
+        (QApplication, 'setWindowIcon'),
+        (QApplication, 'installEventFilter'),
+        (QApplication, 'exec'),
+        (QCoreApplication, 'setOrganizationName'),
+        (QCoreApplication, 'setApplicationName'),
+        (QLocale, 'setDefault'),
+    ):
+        monkeypatch.setattr(owner, name, lambda *args: 0)
+    monkeypatch.setattr(main_window, 'FittingMainWindow', lambda: type('Window', (), {'show': lambda self: None})())
+
+    with pytest.raises(SystemExit):
+        main_window.launch()
+
+    assert schemes == [Qt.ColorScheme.Light]
 
 
 def test_a_fit_and_an_analysis_never_run_at_the_same_time(qapp, dialogs, watchful_fit, watchful_sensitivity):
@@ -425,7 +485,7 @@ def test_a_finished_fit_leaves_neither_its_worker_nor_its_profile_worker_behind(
     fit_worker = session._fit_worker
     _wait_until(qapp, lambda: session._profile_worker is not None)
     profile_worker = session._profile_worker
-    _wait_until(qapp, lambda: session._state.profile_result is not None)
+    _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
     _settle(qapp)
 
     assert dialogs == []
@@ -844,3 +904,16 @@ def test_the_refusal_names_one_number_where_the_stock_reads_as_the_highest_point
     assert message.count(shown) == 1
     assert 'The titrant stock is no more concentrated than the highest titrant concentration' in message
     assert 'Check the stock concentration and its unit.' in message
+
+
+def test_the_status_bar_says_a_constant_on_an_end_of_its_search_box_is_not_limited_there():
+    """An estimate at the box is the box, not a measurement; a clean "Fit complete" would report it as one."""
+    from gui.fitting_session import _open_note, _verdict_note
+    from tests.unit.test_fit_results import _sample_fit_result
+
+    fitted = _sample_fit_result()
+    assert _open_note(fitted) == ''
+    at_floor = _sample_fit_result(parameters={**fitted.parameters, 'Ka_guest': Q_(1e-8, '1/M')})
+    assert _open_note(at_floor) == 'Ka(G) not limited below by the data'
+    # A fit with no diagnostics has no verdict to report.
+    assert _verdict_note(fitted) == ''

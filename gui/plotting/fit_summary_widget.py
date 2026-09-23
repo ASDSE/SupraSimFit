@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from html import escape
 
 import numpy as np
 from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QTextDocument
 from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
@@ -30,7 +32,7 @@ from core.pipeline.fit_pipeline import (
     parameters_on_bound,
     summarize_parameters,
 )
-from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, input_name, shared_key
+from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, InputSpec, input_name, shared_key
 from core.pipeline.sensitivity import SensitivityMode, SensitivityResult
 from core.pipeline.varpro import LEVEL
 from core.units import Q_, Quantity
@@ -41,20 +43,27 @@ from gui.plotting.labels import (
     SPLIT_MARK,
     SPLIT_NOTE,
     UNSOLVABLE_NOTE,
+    VERDICT_TONES,
     and_join,
     fmt_bound_note,
     fmt_concentration,
+    fmt_estimate,
     fmt_interval_html,
     fmt_log10,
     fmt_misfit,
     fmt_p,
     fmt_param,
     fmt_r2,
-    fmt_sci,
     fmt_shifts,
     fmt_stat,
     fmt_unit_html,
+    fmt_value,
+    not_run_reason,
+    own_estimates,
     plain_label,
+    replicate_summary,
+    stated_uncertainty,
+    verdict_headline,
     verdict_sentence,
 )
 from gui.widgets.assay_conditions import result_input_labels
@@ -114,17 +123,27 @@ the data</i> means neither end is closed, so the fit does not determine
 K<sub>a</sub> at all. A K<sub>a</sub> you held fixed reads <i>fixed</i> and has
 no interval, because it was not fitted.</p>
 
+<p><b>An estimate in words</b> &mdash; <i>not limited below 2.41&times;10<sup>3</sup></i>
+means the best fit ran onto the lower bound of the K<sub>a</sub> search: the
+data do not limit K<sub>a</sub> from below, so the value the search stopped at is
+the bound, not a measurement, and is not shown. What the data do say is the
+closed end of the interval: K<sub>a</sub> lies below it. <i>Not limited above</i>
+is the same upwards. The curve on the plot is still drawn from that fit.</p>
+
 <p><b>log<sub>10</sub>(K<sub>a</sub>) row</b> &mdash; each association constant
 is repeated as its log<sub>10</sub>. Its estimate and interval are the row above
 read on a log scale, which is exact.</p>
 
-<p><b>Replicates: median</b> and <b>Replicates: min - max</b> &mdash; shown when
+<p><b>Single-replicate fits</b> &mdash; the line under the table, shown when
 each replicate was fitted separately and at least two entered the fit: the
-middle, lowest and highest value across those replicates&rsquo; <i>own</i> fits.
-They say how far the replicates disagree, which is a different question from the
-interval: the interval says how well the fitted data pin K<sub>a</sub> down.
-Replicates left out of the fit are not counted here; the Replicates table below
-lists every replicate.</p>
+middle, lowest and highest K<sub>a</sub> across those replicates&rsquo;
+<i>own</i> fits, each made with the inputs as entered. They say how far the
+replicates disagree, which is a different question from the interval: the
+interval says how precisely the fit of their average pins K<sub>a</sub> down, so
+a single replicate&rsquo;s value can fall outside it. A replicate whose own fit
+ran to a bound of the K<sub>a</sub> search has no value to count and is counted
+separately. Replicates left out of the fit are not counted here; the Replicates
+table below lists every replicate.</p>
 
 <p><b>Rows marked *</b> &mdash; at the fitted K<sub>a</sub>, the data fix only a
 combination of these signal parameters, not each one on its own: many different
@@ -135,7 +154,9 @@ measurement of that one coefficient.</p>
 <h3>{_DIAGNOSTICS_TITLE}</h3>
 
 <p>Whether the curve actually describes your data, and whether the inputs you
-entered agree with it.</p>
+entered agree with it. The line above the table says it in a few words, in grey
+when there is nothing to act on, amber when something is worth checking, and red
+when the result rests on something the data reject.</p>
 
 <p><b>The misfit test</b> &mdash; with two or more replicates, the scatter
 between them measures your noise directly, and the <i>lack-of-fit F test</i>
@@ -156,22 +177,35 @@ combination at all, they cannot check your inputs and the line says so.</p>
 
 <p><b>What the verdict means</b></p>
 <ul>
-<li><i>The model and the entered inputs describe the data</i> &mdash; nothing to
-do: the curve fits within the noise and the inputs needed no correction beyond
-what you allowed.</li>
-<li><i>The inputs explain the misfit</i> &mdash; at the entered values the curve
-misses the data, and a shift inside the uncertainties you stated brings it back.
+<li><i>No test found evidence against the model or the entered inputs</i>
+&mdash; the curve fits within the noise and the inputs needed no correction
+beyond what you allowed. This is the absence of evidence against the fit, not
+proof of it: a test sees only as far as the noise and the number of points let
+it. A test that could not be run is named, with the reason.</li>
+<li><i>The data fit once the inputs move within their uncertainties</i> &mdash;
+at the entered values the curve misses the data, and a shift inside the
+uncertainties you stated brings it back.
 The reported interval already covers those shifts. Worth checking your stock
 concentrations, but the fit stands.</li>
-<li><i>The inputs conflict with the data</i> &mdash; the data fit only with the
-inputs further from the entered values than you said they could be. Re-check the
+<li><i>The inputs together are further from their entered values than you
+stated</i> &mdash; the data fit only with the inputs further from the entered
+values than you said they could be. Re-check the
 stocks and the instrument settings, or state a larger uncertainty if the entered
 values are less certain than you first said. The interval assumes the shifts are
 real.</li>
-<li><i>The model does not describe the data</i> &mdash; no allowed shift of the
-inputs rescues the curve. Try another binding model, or look at the data for a
+<li><i>The curve misses the data by more than their scatter allows</i> &mdash;
+no allowed shift of the inputs rescues the curve, so the model does not describe
+the data. Try another binding model, or look at the data for a
 bad point or a drifting baseline. The interval still assumes this model.</li>
+<li><i>The inputs together are further from their entered values than you
+stated, and the curve misses the data by more than their scatter allows</i>
+&mdash; both at once. Check the inputs first: an input that is off
+can by itself make the curve miss. If they are right, try another binding
+model.</li>
 </ul>
+
+<p>Where the fit moved an input, the curve on the Fit Curve tab is drawn at the
+inputs where the fit put them, and the plot says so.</p>
 
 <p><b>Input uncertainties used</b> &mdash; what the fit was told, so the numbers
 above can be read against it. Uncertainties are entered in the <b>Input
@@ -251,12 +285,10 @@ here, even 0&nbsp;&plusmn;&nbsp;0, does not mean the value is well determined.</
 """
 
 
-#: The summary table's columns in the fit view. The two replicate columns are
-#: dropped when no row has replicate statistics — a fit of one signal, or a
-#: per-replicate fit that used a single replicate.
+#: The summary table's columns in the fit view; the conditional column joins
+#: them before the units where an input was free to move.
 _FIT_HEADERS = ('Parameter', 'Estimate', f'{_LEVEL_TEXT} interval', 'Units')
-_REPLICATE_HEADERS = ('Replicates: median', 'Replicates: min - max')
-#: Where the interval sits in a fit table row; the replicate columns follow it.
+#: Where the interval sits in a fit table row.
 _INTERVAL_COLUMN = _FIT_HEADERS.index(f'{_LEVEL_TEXT} interval')
 
 # Merged stat columns of the samples view: (header, (central_key, spread_key))
@@ -287,18 +319,16 @@ def _noise_row(law: str) -> str:
     return f'Noise: {law}'
 
 
-def _fmt(magnitude: float, unit_str: str) -> str:
-    """Pint HTML value with the trailing unit stripped (units have a column)."""
-    if unit_str:
-        return f'{Q_(magnitude, unit_str):.3g~H}'.rsplit(' ', 1)[0]
-    return f'{magnitude:.3g}'
-
-
 def _row_formatter(spec: ParameterSummary, stats: dict | None) -> Callable[[float], str]:
-    """How every number of one row is written: a log₁₀ reading, or a value in the row's unit."""
+    """How every number of one row is written: a log₁₀ reading, or a value (its unit has a column)."""
     if spec.is_log:
         return lambda value: fmt_log10(value, stats)
-    return lambda value: _fmt(value, spec.unit)
+    return fmt_value
+
+
+def _estimate_cell(spec: ParameterSummary, fmt: Callable[[float], str]) -> str:
+    """The estimate of one row: its value, or in words where the fit ran onto an end of its Ka search box."""
+    return fmt_estimate(spec.estimate, spec.estimate_at_bound, spec.interval, spec.interval_open, fmt, html=True)
 
 
 def _row_label(spec: ParameterSummary) -> str:
@@ -348,7 +378,14 @@ def _conditional_cell(spec: ParameterSummary, fmt: Callable[[float], str]) -> st
     """
     if spec.conditional_estimate is None:
         return _NO_VALUE
-    text = fmt(spec.conditional_estimate)
+    text = fmt_estimate(
+        spec.conditional_estimate,
+        spec.conditional_at_bound,
+        spec.conditional_interval,
+        spec.conditional_open,
+        fmt,
+        html=True,
+    )
     if spec.conditional_interval is not None:
         low, high = spec.conditional_interval
         text += f' {fmt_interval_html(fmt(low), fmt(high), *spec.conditional_open)}'
@@ -379,28 +416,25 @@ def _interval_tooltip(spec: ParameterSummary, *, split: bool) -> str:
 def _fit_table(rows: list[ParameterSummary], ka_keys: set[str], reported: bool) -> tuple[list[str], list[list[str]]]:
     """Headers and cell texts of the fit view's table.
 
-    The conditional and replicate columns appear only where a row fills them,
-    so a fit of one signal, or one that took every input as entered, is not
-    shown empty columns.
+    The conditional column appears only where a row fills it, so a fit that
+    took every input as entered is not shown a column repeating its own
+    numbers. The replicates' own fits are a line under the table
+    (:func:`~gui.plotting.labels.replicate_summary`): they are fits at the
+    inputs as entered and answer another question than the headline beside
+    them.
     """
     with_conditional = any(spec.conditional_estimate is not None for spec in rows)
-    with_replicates = any(spec.replicates is not None for spec in rows)
     headers = [*_FIT_HEADERS[:-1]]
     if with_conditional:
         headers.append(_CONDITIONAL_HEADER)
-    if with_replicates:
-        headers += list(_REPLICATE_HEADERS)
     headers.append(_FIT_HEADERS[-1])
 
     cells = []
     for spec in rows:
         fmt = _row_formatter(spec, spec.replicates)
-        row = [_row_label(spec), fmt(spec.estimate), _interval_cell(spec, fmt, ka_keys, reported)]
+        row = [_row_label(spec), _estimate_cell(spec, fmt), _interval_cell(spec, fmt, ka_keys, reported)]
         if with_conditional:
             row.append(_conditional_cell(spec, fmt))
-        if with_replicates:
-            d = spec.replicates
-            row += [_NO_VALUE, _NO_VALUE] if d is None else [fmt(d['median']), _fmt_range(d['min'], d['max'], fmt)]
         # A log₁₀ row is dimensionless; its source unit only labels it.
         row.append(fmt_unit_html(spec.unit) if spec.unit and not spec.is_log else _NO_VALUE)
         cells.append(row)
@@ -430,6 +464,47 @@ def _sample_table(rows: list[ParameterSummary], samples: dict[str, np.ndarray]) 
     return cells
 
 
+#: Room a cell leaves around its text, across and up and down.
+_CELL_PAD_X = 16
+_CELL_PAD_Y = 8
+
+
+def _text_widths(label: QLabel) -> tuple[int, int]:
+    """Width *label*'s text needs on one line, and the width of its widest word: the least it can wrap to."""
+    doc = QTextDocument()
+    doc.setDefaultFont(label.font())
+    doc.setDocumentMargin(0)
+    doc.setHtml(label.text())
+    natural = math.ceil(doc.idealWidth())
+    doc.setTextWidth(1)
+    return natural, math.ceil(doc.idealWidth())
+
+
+def _share_widths(natural: list[int], least: list[int], room: int) -> list[int]:
+    """Column widths for *room* pixels: every column its one-line width and a share of what is left, or less.
+
+    Where the one-line widths do not fit, each column gives up width in
+    proportion to how much it can wrap — down to its widest word, never below
+    — so the columns meet the width of the table and the text wraps instead of
+    running behind a scrollbar. Only where even the widest words do not fit do
+    the columns stay wider than the table.
+    """
+    total = sum(natural)
+    if total <= room:
+        spare = (room - total) // len(natural)
+        return [width + spare for width in natural]
+    widths = list(natural)
+    # A column that reaches its widest word stops giving; the others share
+    # what is still over, so the pass repeats at most once per column.
+    for _ in natural:
+        excess = sum(widths) - room
+        slack = [w - m for w, m in zip(widths, least)]
+        if excess <= 0 or not sum(slack):
+            break
+        widths = [max(w - math.ceil(excess * s / sum(slack)), m) for w, s, m in zip(widths, slack, least)]
+    return widths
+
+
 class ParameterTable(QTableWidget):
     """Read-only table of HTML cells, sized to its contents.
 
@@ -438,7 +513,9 @@ class ParameterTable(QTableWidget):
 
     The table is as tall as its header and all of its rows, and the pane around
     it scrolls: a table that scrolled inside a scrolling pane would put a row
-    behind a scrollbar of its own.
+    behind a scrollbar of its own. It is as wide as the pane gives it: where
+    the cells do not fit on one line they wrap between words, so every value
+    can be read whole without scrolling sideways.
     """
 
     def __init__(self, parent=None):
@@ -448,8 +525,8 @@ class ParameterTable(QTableWidget):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Panning by pixel, not by column: a column wider than the table can
-        # still be read from end to end.
+        # Panning by pixel, not by column, where even the widest words of the
+        # cells are wider than the table: a column can still be read end to end.
         self.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -482,44 +559,56 @@ class ParameterTable(QTableWidget):
         self.autosize_columns()
 
     def set_cell(self, row: int, col: int, html: str) -> None:
-        """Put *html* in one cell, as a centred rich-text label."""
+        """Put *html* in one cell, as a centred rich-text label that wraps between words."""
         lbl = QLabel(html)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setTextFormat(Qt.TextFormat.RichText)
+        lbl.setWordWrap(True)
         self.setCellWidget(row, col, lbl)
 
     def autosize_columns(self) -> None:
-        """Give each column the width its own widest cell needs, and share out any width left over.
+        """Fit the columns to the width the table has, wrapping cells between words where they must.
 
-        A column is never narrower than its contents. A number cut off mid-digit
-        still reads as a number, and the horizontal scrollbar pans between whole
-        columns rather than widening one, so there would be no way back to the
-        rest of the value. Where the columns together outgrow the table, that
-        scrollbar reaches them.
+        Each column wants the width its widest cell needs on one line; with
+        room to spare it gets that and a share of the rest, and without, the
+        columns give up width by :func:`_share_widths` and each row grows as
+        tall as its wrapped cells. A column is never narrower than its widest
+        word: a number cut off mid-digit still reads as a number.
 
-        The spare width is measured against the width the table has now, so it
-        is shared out again whenever the table is resized.
+        The widths are measured against the width the table has now, so they
+        are shared out again whenever the table is resized.
         """
-        # resizeColumnsToContents() ignores widgets set via setCellWidget(),
-        # so we measure each QLabel's sizeHint() directly.
         n_cols = self.columnCount()
-        n_rows = self.rowCount()
         if not n_cols:
             return
         fm = self.horizontalHeader().fontMetrics()
-        widths = []
+        natural, least = [], []
         for col in range(n_cols):
             item = self.horizontalHeaderItem(col)
-            w = fm.horizontalAdvance(item.text() if item is not None else '') + 24
-            for row in range(n_rows):
+            head = fm.horizontalAdvance(item.text() if item is not None else '') + 24
+            wide = narrow = head
+            for row in range(self.rowCount()):
                 widget = self.cellWidget(row, col)
                 if widget is not None:
-                    w = max(w, widget.sizeHint().width() + 16)
-            widths.append(w)
-
-        spare = max((self.viewport().width() - sum(widths)) // n_cols, 0)
-        for col, w in enumerate(widths):
-            self.setColumnWidth(col, w + spare)
+                    one_line, word = _text_widths(widget)
+                    wide = max(wide, one_line + _CELL_PAD_X)
+                    narrow = max(narrow, word + _CELL_PAD_X)
+            natural.append(wide)
+            least.append(narrow)
+        widths = _share_widths(natural, least, self.viewport().width())
+        for col, width in enumerate(widths):
+            self.setColumnWidth(col, width)
+        default = self.verticalHeader().defaultSectionSize()
+        for row in range(self.rowCount()):
+            needed = max(
+                (
+                    self.cellWidget(row, col).heightForWidth(widths[col]) + _CELL_PAD_Y
+                    for col in range(n_cols)
+                    if self.cellWidget(row, col) is not None
+                ),
+                default=default,
+            )
+            self.setRowHeight(row, max(default, needed))
         self.updateGeometry()
 
 
@@ -553,23 +642,21 @@ _HEATMAP_WHY = (
 # Model and inputs: what the diagnostics of a fit say
 # ---------------------------------------------------------------------------
 
-#: What is reported where the data leave too few points beyond the fitted
-#: parameters for any misfit test.
-_NOT_TESTED = 'not tested: the data leave too few points beyond the fitted parameters.'
 
-
-def _test_text(test) -> str:
-    """One misfit test, ready for a rich-text label; what is missing is said, not left blank."""
-    return _NOT_TESTED if test is None else escape(fmt_misfit(test), quote=False)
+def _test_text(diagnostics, test) -> str:
+    """One misfit test, ready for a rich-text label; a test that was not run says why, rather than being left blank."""
+    if test is None:
+        return f'not tested: {escape(not_run_reason(diagnostics, "misfit"), quote=False)}.'
+    return escape(fmt_misfit(test), quote=False)
 
 
 def _misfit_lines(diagnostics, moved: bool) -> list[str]:
     """The misfit test at each fit: one line where every input was entered as exact, two where one could move."""
     if not moved:
-        return [f'Fit at the entered inputs — {_test_text(diagnostics.conditional_misfit)}']
+        return [f'Fit at the entered inputs — {_test_text(diagnostics, diagnostics.conditional_misfit)}']
     return [
-        f'Fit with the inputs as entered — {_test_text(diagnostics.conditional_misfit)}',
-        f'Fit with the inputs free to move — {_test_text(diagnostics.misfit)}',
+        f'Fit with the inputs as entered — {_test_text(diagnostics, diagnostics.conditional_misfit)}',
+        f'Fit with the inputs free to move — {_test_text(diagnostics, diagnostics.misfit)}',
     ]
 
 
@@ -602,35 +689,24 @@ def _inputs_line(diagnostics, shifts: dict, labels: dict[str, str]) -> str:
     return f'{head}Shifts: {fmt_shifts(shifts, labels, html=True)}.'
 
 
-def _signed_percent(value: float) -> str:
-    """An end of a stated range, signed, so a range that does not straddle the entered value reads as one."""
-    return f'{value:+g} %'.replace('-', '−')
-
-
-def _spec_text(spec: dict, value) -> str:
-    """One input's stated uncertainty as the panel took it: a ± in percent or in the input's own unit, or a range."""
-    unit = f' {fmt_unit_html(str(value.units))}' if hasattr(value, 'units') else ''
-    relative = spec.get('relative', True)
-    if spec.get('kind') == 'interval':
-        if relative:
-            return f'{_signed_percent(spec["lo"])} to {_signed_percent(spec["hi"])}'
-        return f'{fmt_sci(spec["lo"], 2)}{unit} to {fmt_sci(spec["hi"], 2)}{unit}'
-    if relative:
-        return f'± {spec["sigma"]:g} %'
-    return f'± {fmt_sci(spec["sigma"], 2)}{unit}'
-
-
 def _uncertainty_line(result: FitResult, labels: dict[str, str]) -> str:
     """What the fit was told about its inputs and about the sources they share, read back from the fit's own record."""
-    specs = (result.fit_config or {}).get('input_uncertainty') or {}
-    shared = ErrorModel.from_dict(result.fit_config or {}).shared
-    if not specs and not shared:
+    errors = ErrorModel.from_dict(result.fit_config or {})
+    if not errors.specs and not errors.shared:
         return f'Input uncertainties used: {NO_UNCERTAINTY}.'
     conditions = result.conditions or {}
-    stated = [f'{input_name(key, labels)} {_spec_text(spec, conditions.get(key))}' for key, spec in specs.items()]
+
+    def unit(key: str) -> str:
+        value = conditions.get(key)
+        return fmt_unit_html(str(value.units)) if isinstance(value, Quantity) else ''
+
+    stated = [f'{input_name(key, labels)} {stated_uncertainty(spec, unit(key))}' for key, spec in errors.specs.items()]
     # A shared source is a precision figure of one stock, balance or pipette,
     # so it is a standard deviation in percent and nothing else.
-    stated += [f'{labels.get(shared_key(source.name), source.name)} ± {source.sigma_pct:g} %' for source in shared]
+    stated += [
+        f'{labels.get(shared_key(source.name), source.name)} {stated_uncertainty(InputSpec.sigma_pct(source.sigma_pct), "")}'
+        for source in errors.shared
+    ]
     return f'Input uncertainties used: {", ".join(stated)}.'
 
 
@@ -711,11 +787,14 @@ def unfitted_sentence(result: SensitivityResult, n: int, total: int, noun: str) 
     """Why *n* of *total* samples (or grid cells, per *noun*) of *result* have no fit."""
     are = 'is' if n == 1 else 'are'
     if not result.stopped:
-        return f'{n} of {total} {noun} could not be fitted and {are} left out.'
+        return f'{n:,} of {total:,} {noun} could not be fitted and {are} left out.'
     if result.n_success == result.n_total:
-        return f'{n} of {total} {noun} {"was" if n == 1 else "were"} not fitted before the analysis was stopped and {are} left out.'
+        return (
+            f'{n:,} of {total:,} {noun} {"was" if n == 1 else "were"} not fitted before the analysis was stopped '
+            f'and {are} left out.'
+        )
     return (
-        f'{n} of {total} {noun} have no fit, either because the analysis was stopped before reaching them or '
+        f'{n:,} of {total:,} {noun} have no fit, either because the analysis was stopped before reaching them or '
         f'because they could not be fitted, and {are} left out.'
     )
 
@@ -790,24 +869,41 @@ def _comparison(
     return ' '.join(part for part in (_relation(rows, baseline, fit, starred), shared) if part)
 
 
+#: Why the headline on the Fit Curve tab is not the analysis's own fit: that
+#: fit is made with the inputs as entered, and the headline let them move.
+_HEADLINE_MOVED = (
+    'The headline there differs because it lets the inputs move within the uncertainties you stated; its '
+    'Conditional column is the fit at the entered inputs.'
+)
+
+
 def _relation(rows: list[ParameterSummary], baseline: FitResult, fit: FitResult, starred: list[str]) -> str:
-    """Whether the samples table's estimates match *fit*, or why they can differ."""
+    """Whether the samples table's estimates match *fit* at the entered inputs, or why they can differ.
+
+    The analysis's own fit takes every input as entered, so it is compared
+    with the fit the Fit Curve tab made at the entered inputs — its
+    conditional fit, wherever that fit let an input move.
+    """
     reasons = _differences(baseline, fit)
     if reasons:
         return f'It can differ from the fit on the Fit Curve tab because {and_join(reasons)}.'
-    theirs = {spec.key: _fmt(spec.estimate, spec.unit) for spec in summarize_parameters(fit) if not spec.is_log}
+    moved = bool(fit.input_shifts) and fit.conditional is not None
+    theirs = fit.conditional.parameters if moved else fit.parameters
     differing = [
         fmt_param(spec.key)
         for spec in rows
-        if not spec.is_log and spec.key not in starred and _fmt(spec.estimate, spec.unit) != theirs.get(spec.key)
+        if not spec.is_log
+        and spec.key not in starred
+        and spec.key in theirs
+        and fmt_value(spec.estimate) != fmt_value(float(theirs[spec.key].magnitude))
     ]
     which = 'unstarred estimates' if starred else 'estimates'
+    where = 'the fit at the entered inputs on the Fit Curve tab' if moved else 'the fit on the Fit Curve tab'
     if not differing:
-        return f'Its {which} match the fit on the Fit Curve tab to the digits shown.'
-    return (
-        f'Its estimate of {and_join(differing)} differs from the fit on the Fit Curve tab although the two use the '
-        'same data, inputs, bounds and replicate handling.'
-    )
+        text = f'Its {which} match {where} to the digits shown.'
+    else:
+        text = f'Its estimate of {and_join(differing)} differs from {where} in the digits shown.'
+    return f'{text} {_HEADLINE_MOVED}' if moved else text
 
 
 def _report_caption(
@@ -841,8 +937,9 @@ class FitSummaryWidget(QWidget):
 
     Layout
     ------
-    - ``InfoGroupBox`` with a caption, a :class:`ParameterTable`, a footnote and
-      — for a per-replicate fit — a Replicates table.
+    - ``InfoGroupBox`` with the verdict in a few words, a caption, a
+      :class:`ParameterTable`, a footnote and — for a per-replicate fit — a
+      Replicates table.
     - ``InfoGroupBox("Fit Quality")``.
 
     Both sit on a page that scrolls. The pane shares the height of the window
@@ -850,13 +947,15 @@ class FitSummaryWidget(QWidget):
     taller than the share it gets: the page scrolls so every row and the whole
     footnote can be read, at any height the pane is dragged to.
 
-    Two views share the layout. The *fit view* shows the fit: its estimate per
-    parameter, the confidence interval of every binding constant it was free to
-    move, the same pair with every input held where it was entered (where the
-    fit was allowed to move one), the spread of the replicates' own fits where
-    there are several, and a *Model and inputs* block saying whether the model
-    and the entered inputs describe the data and where the fit put the inputs
-    it could move. Fit Quality gives RMSE, R² and the replicates used. The *samples view*
+    Two views share the layout. The *fit view* shows the fit: the verdict of its
+    diagnostics on a strip coloured by what it asks of the reader, its estimate
+    per parameter, the confidence interval of every binding constant it was
+    free to move, the same pair with every input held where it was entered
+    (where the fit was allowed to move one), a line under the table with the
+    replicates' own fits where there are several, and a *Model and inputs*
+    block saying whether the model and the entered inputs describe the data
+    and where the fit put the inputs it could move. Fit Quality gives RMSE, R²
+    and the replicates used. The *samples view*
     (:meth:`show_samples` on, with a SOBOL result from :meth:`set_sensitivity`
     that holds fitted samples) shows the fitted parameters across that run's
     samples: ``Estimate`` is the run's own fit with the inputs as entered, the
@@ -888,6 +987,11 @@ class FitSummaryWidget(QWidget):
 
         self._params_group = InfoGroupBox(_PARAMS_TITLE, 'Fitted Parameters — columns', _PARAMS_HELP_HTML)
 
+        # The verdict in a few words, first in the box: whether the result can
+        # be taken as it stands is the first thing to read, above the numbers.
+        self._verdict = QLabel()
+        self._verdict.setWordWrap(True)
+        self._verdict.setTextFormat(Qt.TextFormat.PlainText)
         self._caption = QLabel()
         self._caption.setWordWrap(True)
         self._caption.setTextFormat(Qt.TextFormat.RichText)
@@ -906,6 +1010,7 @@ class FitSummaryWidget(QWidget):
         self._replicates_heading.setStyleSheet(f'color: {INK_2}; font-size: 13px;')
         params_layout = QVBoxLayout(self._params_group)
         for widget in (
+            self._verdict,
             self._caption,
             self._table,
             self._footnote,
@@ -1085,6 +1190,12 @@ class FitSummaryWidget(QWidget):
         headers, cells = _fit_table(rows, ka_keys, result.intervals is not None)
         self._table.show_rows(headers, cells)
         self._set_footnote(
+            replicate_summary(
+                [spec for spec in rows if spec.key in ka_keys and not spec.is_log],
+                len(fit_replica_ids(result) or ()),
+                lambda spec: fmt_param(spec.key),
+                lambda spec: fmt_unit_html(spec.unit),
+            ),
             self._star_rows(
                 rows, [spec.key for spec in rows if spec.degenerate and not spec.is_log], _FIT_DEGENERATE_TAIL
             ),
@@ -1165,15 +1276,32 @@ class FitSummaryWidget(QWidget):
         )
 
     def _hide_diagnostics(self) -> None:
+        self._verdict.hide()
         self._diagnostics_heading.hide()
         self._diagnostics_label.hide()
 
     def _show_diagnostics(self, result: FitResult) -> None:
-        """What the misfit tests and the conflict statistic say about *result*; hidden for a result with no tests."""
+        """What the misfit tests and the conflict statistic say about *result*; hidden for a result with no tests.
+
+        The verdict leads the box on a strip coloured by what it asks of the
+        reader (:data:`~gui.plotting.labels.VERDICT_TONES`); the block under
+        the table says the rest.
+        """
         lines = _diagnostics_lines(result)
         self._diagnostics_label.setText('<br>'.join(lines))
         self._diagnostics_heading.setVisible(bool(lines))
         self._diagnostics_label.setVisible(bool(lines))
+        if result.diagnostics is None:
+            self._verdict.hide()
+            return
+        text, tone = verdict_headline(result.diagnostics)
+        ink, strip = VERDICT_TONES[tone]
+        self._verdict.setText(text)
+        self._verdict.setProperty('tone', tone)
+        self._verdict.setStyleSheet(
+            f'color: {ink}; background: {strip}; font-size: 13px; font-weight: bold; padding: 4px 8px;'
+        )
+        self._verdict.show()
 
     def _hide_replicates_table(self) -> None:
         self._replicates_heading.hide()
@@ -1207,7 +1335,7 @@ class FitSummaryWidget(QWidget):
             rid = rf.metadata.get('replica_id')
             p = p_values.get(rid)
             row = [_replica_name(rid, self._replica_ids)]
-            row += [_fmt_own(rf, key, unit) for key, unit in ka]
+            row += own_estimates(rf, [key for key, _ in ka], html=True)
             row += [
                 fmt_r2(rf.r_squared),
                 _NO_VALUE if p is None else f'{p:.2g}',
@@ -1265,12 +1393,3 @@ def _replica_name(replica_id: str | None, order: Sequence[str] | None) -> str:
     if replica_id in order:
         return _display_label(order.index(replica_id))
     return _NO_VALUE if replica_id is None else str(replica_id)
-
-
-def _fmt_own(result: FitResult, key: str, unit: str) -> str:
-    """One replicate's own value of a parameter, with the unit stripped (the header names it)."""
-    value = result.parameters.get(key)
-    if value is None:
-        return _NO_VALUE
-    magnitude = float(value.magnitude) if hasattr(value, 'magnitude') else float(value)
-    return _fmt(magnitude, unit)

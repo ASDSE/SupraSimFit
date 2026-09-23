@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui.plotting.export import ExportRefused
 from gui.preferences import _settings
 from gui.session import ExportableArtefact, build_artefacts, export_batch
 
@@ -237,18 +238,37 @@ class ExportMultipleDialog(QDialog):
         folder = Path(folder_text)
         base = self._base_edit.text().strip() or 'output'
 
-        outcomes = export_batch(selected, folder, base)
+        try:
+            outcomes = export_batch(selected, folder, base)
+        except OSError:
+            QMessageBox.warning(
+                self,
+                'Export Error',
+                f'Could not create the folder {folder}. Check the folder name and that you may write there, '
+                'then export again.',
+            )
+            return
         self._save_settings()
 
         successes = [o for o in outcomes if o[2] is None]
         failures = [o for o in outcomes if o[2] is not None]
 
         if failures:
-            details = '\n'.join(f'  • {label}: {exc}' for label, _path, exc in failures)
+            # An ExportRefused carries a sentence the app wrote for the user; anything
+            # else carries a library's or a programmer's text, which is not shown.
+            details = '\n'.join(
+                f'  • {label}: {exc if isinstance(exc, ExportRefused) else "could not be written."}'
+                for label, _path, exc in failures
+            )
+            advice = (
+                ''
+                if all(isinstance(exc, ExportRefused) for _label, _path, exc in failures)
+                else '\n\nCheck that the folder exists and that you may write there.'
+            )
             QMessageBox.warning(
                 self,
                 'Export — some artefacts failed',
-                (f'Wrote {len(successes)}/{len(outcomes)} artefacts to:\n{folder}\n\nFailures:\n{details}'),
+                f'Wrote {len(successes)}/{len(outcomes)} artefacts to:\n{folder}\n\nFailures:\n{details}{advice}',
             )
         # Even on partial failure we close — the user has the message.
         self.accept()

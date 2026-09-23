@@ -53,19 +53,20 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
-from core.pipeline.fit_pipeline import FitResult, fit_replica_ids, input_replica_ids
+from core.pipeline.fit_pipeline import FitResult, fit_replica_ids, input_replica_ids, summarize_parameters
 from core.pipeline.input_aware import AwareProfile
 from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet
 from core.pipeline.sensitivity import TITRANT, SensitivityResult
 from core.pipeline.varpro import KaInterval
 from gui.plotting.colors import INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
 from gui.plotting.labels import (
+    fmt_estimate,
     fmt_interval_html,
     fmt_param,
     fmt_param_plain,
     fmt_r2,
-    fmt_sci,
     fmt_unit_html,
+    fmt_value,
     plain_label,
     verdict_sentence,
 )
@@ -123,6 +124,14 @@ _X_PAD = 0.2
 _R2_LIMITS = (-0.05, 1.05)
 # Below this height the chart stops shrinking and the page scrolls.
 _CANVAS_MIN_HEIGHT = 320
+# Height each row of panels keeps where the panels stand on more than one row:
+# a panel with its title, ticks and axis label over a readable data area.
+_ROW_MIN_HEIGHT = 220
+#: How the panels of a model with two binding constants can stand, widest
+#: first: all in one row; the pair on a row of its own below the Ka panels;
+#: every panel on a row of its own. :meth:`IdentifiabilityWidget._fit_canvas`
+#: takes the first that fits the tab.
+_ARRANGEMENTS = ('row', 'pair_below', 'column')
 # Qt's "no limit" for a widget dimension (``QWIDGETSIZE_MAX``), which PyQt does
 # not export: what a maximum width or height is set back to.
 _UNBOUNDED = (1 << 24) - 1
@@ -133,6 +142,18 @@ _NO_PROFILE = (
     'How well each Ka value can explain the data was not worked out for this fit. Run the fit again to see it.'
 )
 _READING_POINTER = 'How to read this plot: the ? button above.'
+
+#: What the dotted cut-off is, for the hover text of the axis that names its level.
+_CUT_NOTE = 'The dotted line is the cut-off: every Ka whose curve lies above it is inside the interval.'
+
+#: The same, where the line steps down: a fit that holds a signal parameter on
+#: its bound gives up that parameter as well as Ka, so the test allows it a
+#: larger drop.
+_CUT_STEP_NOTE = (
+    f'{_CUT_NOTE} Where the fit at a Ka has to hold a signal parameter at its bound, it gives up that '
+    'parameter as well as Ka, so the test allows it a larger drop and the line steps down. The level named '
+    'here is the one where every signal parameter is free.'
+)
 
 #: What the page's own scale is, said once where the replicates showed a noise
 #: law. Both numbers are honest and they differ, so the reader is told which
@@ -256,14 +277,12 @@ class IdentifiabilityWidget(QWidget):
         self._items: dict[str, dict] = {}
         # Drawn items of the joint-region panel, empty for a model with one binding constant.
         self._region_items: dict = {}
-        # The column that panel is drawn in beside the Ka panels, and whether it
-        # sits on a row of its own below them instead (:meth:`_wrap_region`).
-        self._region_col = 0
-        self._region_wrapped = False
-        # Width the chart needs with every panel in one row, and with the pair
-        # panel below the others; each measured while it is so (:meth:`_fit_canvas`).
+        # How the panels stand (one of _ARRANGEMENTS; :meth:`_arrange`), and the
+        # width the chart needs in each arrangement, measured once per render.
+        self._arrangement = 'row'
+        self._arrangement_widths: dict[str, int] = {}
+        # Width the chart needs with every panel in one row.
         self._row_width = 0
-        self._wrapped_width = 0
         self._legend_entries: dict[str, tuple[str, str]] = {}
         # The last render's notes: about the chart, and about the drawn sensitivity samples.
         self._note_lists: tuple[list[str], list[str]] = ([], [])
@@ -369,9 +388,9 @@ class IdentifiabilityWidget(QWidget):
         with two binding constants draws three panels, together wider than a
         laptop screen, and asking for all three would grow the window past the
         edge of the screen with no way to shrink it back. So the tab asks for one
-        panel with its data area at ``_MAIN_MIN_WIDTH``; :meth:`_fit_canvas` puts
-        the pair panel on a row of its own where the three do not fit side by
-        side, and lets the page scroll over whatever is still too wide.
+        panel with its data area at ``_MAIN_MIN_WIDTH``; :meth:`_fit_canvas`
+        stands the panels on more rows where they do not fit side by side, and
+        lets the page scroll over whatever is still too wide.
         """
         hint = super().minimumSizeHint()
         if self._stack.currentWidget() is not self._content:
@@ -399,14 +418,17 @@ class IdentifiabilityWidget(QWidget):
         chart takes the height left over; where even that is short, the chart
         shrinks with it, down to the height its own cells need — every plot
         keeps ``_MAIN_MIN_HEIGHT`` of data area under its Ka axis. Only below
-        that does the page scroll. The notes are always below the chart.
+        that does the page scroll. The notes are always below the chart. A
+        chart on several rows keeps ``_ROW_MIN_HEIGHT`` for each.
 
-        The chart also keeps the width it needs. Where the panels do not fit
-        side by side, the pair panel drops below the others; where even what is
-        left is too wide, the page scrolls sideways over it rather than
-        squeezing the panels. The text is held to the width of the tab even
-        then: a reader should never have to scroll sideways to finish a
-        sentence.
+        The chart also keeps the width it needs. The panels of a pair of
+        binding constants stand in the widest of :data:`_ARRANGEMENTS` that
+        fits the tab — the pair below the Ka panels, or every panel on a row of
+        its own — so the joint region is in view without scrolling sideways;
+        only where even one panel is wider than the tab does the page scroll
+        sideways over it rather than squeezing it. The text is held to the
+        width of the tab even then: a reader should never have to scroll
+        sideways to finish a sentence.
         """
         viewport = self._content.viewport()
         layout = self._content.widget().layout()
@@ -419,16 +441,16 @@ class IdentifiabilityWidget(QWidget):
             # viewport it wraps to one line fewer, and the chart it then sizes
             # runs a line past the bottom of the tab.
             width -= scrollbar.sizeHint().width()
-        if not self._region_wrapped:
+        if self._region_items:
+            if not self._arrangement_widths:
+                for arrangement in _ARRANGEMENTS:
+                    self._arrange(arrangement)
+                    self._arrangement_widths[arrangement] = self._chart_width()
+            widths = self._arrangement_widths
+            self._arrange(next((a for a in _ARRANGEMENTS if widths[a] <= width), _ARRANGEMENTS[-1]))
+            self._row_width = widths['row']
+        else:
             self._row_width = self._chart_width()
-        # The pair panel drops below the others where the three do not fit side
-        # by side — but only where the two that are left do fit, since a page
-        # that scrolls sideways either way gains nothing from shorter panels.
-        self._wrap_region(self._row_width > width and self._wrapped_width <= width)
-        if self._region_wrapped:
-            self._wrapped_width = self._chart_width()
-            if self._wrapped_width > width:
-                self._wrap_region(False)
         chart_width = self._chart_width()
         if chart_width != self._glw.minimumWidth():
             self._glw.setMinimumWidth(chart_width)
@@ -438,38 +460,62 @@ class IdentifiabilityWidget(QWidget):
             above += self._controls.sizeHint().height() + layout.spacing()
         room = viewport.height() - above
         needed = int(np.ceil(self._glw.ci.effectiveSizeHint(Qt.SizeHint.MinimumSize).height()))
-        roomy = max(_CANVAS_MIN_HEIGHT, needed)
+        rows = self._glw.ci.layout.rowCount()
+        roomy = max(_CANVAS_MIN_HEIGHT, needed, _ROW_MIN_HEIGHT * rows if rows > 1 else 0)
         with_legend = room - self._legend.heightForWidth(width) - layout.spacing()
         height = with_legend if with_legend >= roomy else min(max(room, needed), roomy)
+        if rows > 1:
+            height = max(height, _ROW_MIN_HEIGHT * rows)
         if height != self._glw.minimumHeight():
             self._glw.setMinimumHeight(height)
 
-    def _wrap_region(self, wrapped: bool) -> None:
-        """Put the joint-region panel on a row of its own below the Ka panels, or back beside them.
+    def _arrange(self, arrangement: str) -> None:
+        """Stand the panels of a pair of binding constants as *arrangement* of :data:`_ARRANGEMENTS` says.
 
         Three panels side by side are wider than a laptop screen, and the one
         that falls off the edge is the pair — the last column, and the one a
-        reader is least likely to go looking for behind a scrollbar. On its own
-        row it is in view at the full width of the page, and the page grows
-        downwards, which it scrolls in anyway. What the panels lose in height
-        buys nothing where the page scrolls sideways regardless, so
-        :meth:`_fit_canvas` wraps only where the rest of the chart fits.
+        reader is least likely to go looking for behind a scrollbar. On a row
+        of its own below the Ka panels it is in view at the full width of the
+        page; where even the two Ka panels do not fit side by side, each panel
+        takes a row of its own. The page grows downwards, which it scrolls in
+        anyway. A Ka panel keeps its colour bar beside it.
 
-        The panel keeps every curve, band and view range it was drawn with: it
-        is moved between cells of the chart's grid, not drawn again.
+        Every panel keeps every curve, band and view range it was drawn with:
+        it is moved between cells of the chart's grid, not drawn again.
         """
-        if not self._region_items or self._region_wrapped == wrapped:
+        if not self._region_items or arrangement == self._arrangement:
             return
-        plot = self._region_items['main']
-        self._glw.ci.removeItem(plot)
-        # The column it leaves behind takes no share of the width, or it would
-        # hold an empty gap as wide as a panel beside the Ka panels.
-        self._glw.ci.layout.setColumnStretchFactor(self._region_col, 0 if wrapped else 1)
-        if wrapped:
-            self._glw.ci.addItem(plot, row=1, col=0, colspan=self._region_col)
+        ci = self._glw.ci
+        panels = [(items['main'], items['colour_bar']) for items in self._items.values()]
+        region = self._region_items['main']
+        for main, bar in panels:
+            ci.removeItem(main)
+            if bar is not None:
+                ci.removeItem(bar)
+        ci.removeItem(region)
+        # A column left behind takes no share of the width, or it would hold an
+        # empty gap as wide as a panel.
+        for col in range(2 * len(panels) + 1):
+            ci.layout.setColumnStretchFactor(col, 0)
+        if arrangement == 'column':
+            for row, (main, bar) in enumerate(panels):
+                ci.addItem(main, row=row, col=0)
+                if bar is not None:
+                    ci.addItem(bar, row=row, col=1)
+            ci.addItem(region, row=len(panels), col=0)
+            ci.layout.setColumnStretchFactor(0, 1)
         else:
-            self._glw.ci.addItem(plot, row=0, col=self._region_col)
-        self._region_wrapped = wrapped
+            for index, (main, bar) in enumerate(panels):
+                ci.addItem(main, row=0, col=2 * index)
+                ci.layout.setColumnStretchFactor(2 * index, 1)
+                if bar is not None:
+                    ci.addItem(bar, row=0, col=2 * index + 1)
+            if arrangement == 'row':
+                ci.addItem(region, row=0, col=2 * len(panels))
+                ci.layout.setColumnStretchFactor(2 * len(panels), 1)
+            else:
+                ci.addItem(region, row=1, col=0, colspan=2 * len(panels))
+        self._arrangement = arrangement
 
     def _hold_text_to(self, width: int | None) -> None:
         """Hold the page's text to *width*; ``None`` lets it take the width the page gives it.
@@ -684,8 +730,8 @@ class IdentifiabilityWidget(QWidget):
         self._glw.clear()
         self._items = {}
         self._region_items = {}
-        self._region_wrapped = False
-        self._wrapped_width = 0
+        self._arrangement = 'row'
+        self._arrangement_widths = {}
         self._legend_entries = {}
         # The sample controls are offered only while there are sensitivity samples to draw.
         self._controls.setVisible(False)
@@ -718,11 +764,18 @@ class IdentifiabilityWidget(QWidget):
         self._replicate_notes(self._fit, samples is not None, notes, sample_notes)
 
         summary = []
+        # Which end of its search box each estimate sits on, if any: the
+        # headline's, and the one at the entered inputs where the two differ.
+        at_bound = {
+            spec.key: (spec.estimate_at_bound, spec.conditional_at_bound)
+            for spec in summarize_parameters(self._fit)
+            if not spec.is_log
+        }
         for index, ka_key in enumerate(ka_keys):
             profile = profiles[ka_key]
             unit_html = fmt_unit_html(meta.units.get(ka_key, ''))
             self._render_key(2 * index, ka_key, unit_html, profile, samples, notes, sample_notes)
-            summary.append(self._summary_line(ka_key, unit_html, profile))
+            summary.append(self._summary_line(ka_key, unit_html, profile, *at_bound.get(ka_key, ('', ''))))
         drawn = [profiles[key] for key in ka_keys]
         if any(profile.interval is not None for profile in drawn):
             summary.append(self._interval_note(drawn))
@@ -845,7 +898,9 @@ class IdentifiabilityWidget(QWidget):
             )
         return f'<span style="color:{INK_2}">{text}</span>'
 
-    def _summary_line(self, ka_key: str, unit_html: str, profile: ProfileResult) -> str:
+    def _summary_line(
+        self, ka_key: str, unit_html: str, profile: ProfileResult, headline_bound: str, conditional_bound: str
+    ) -> str:
         """One block per Ka key: the reported estimate and interval, and how far it reaches.
 
         Where the fit was given an uncertainty for an input, the block leads
@@ -855,39 +910,57 @@ class IdentifiabilityWidget(QWidget):
         what it stops at — the bound, the Ka the binding model cannot be solved
         past, or the Ka beyond which only the bound of the other binding
         constant rejects the fit — and says what would pin it down.
+
+        *headline_bound* and *conditional_bound* say which end of its search box
+        the reported and the conditional estimate sit on (``''`` for neither,
+        ``'low'`` or ``'high'``): such an estimate is the box, not a measurement,
+        and reads as the limit the data do set.
         """
         label = fmt_param(ka_key)
-        best = profile.best_ka
-        best_txt = f'{fmt_sci(best, 3)} {unit_html}'.strip()
         average = " of the replicates' average" if profile.per_replica else ''
-        fit_txt = f'best fit{average} {best_txt} ({self._r2_name()} {fmt_r2(profile.best_r2)})'
         interval = profile.interval
+        conditional_bound = conditional_bound if profile.aware is not None else headline_bound
+        best_txt = self._estimate_html(profile.best_ka, interval, unit_html, conditional_bound)
+        fit_txt = f'best fit{average} {best_txt} ({self._r2_name()} {fmt_r2(profile.best_r2)})'
         if interval is None:
             return (
                 f'{label}: {fit_txt}<br><span style="color:{INK_2}">{label} is fixed at {best_txt} by its '
                 'bounds, so there is no interval.</span>'
             )
-        conditional = self._ci_html(interval, best, unit_html)
+        conditional = self._ci_html(interval, profile.best_ka, unit_html, bool(conditional_bound))
         if profile.aware is None:
             return f'{label}: {fit_txt} · {conditional}{self._reach_html(interval, unit_html)}'
         estimate, _ = _aware_peak(profile.aware)
-        estimate_txt = f'{fmt_sci(estimate, 3)} {unit_html}'.strip()
         aware = profile.aware.interval
+        estimate_txt = self._estimate_html(estimate, aware, unit_html, headline_bound)
         return (
-            f'{label}: best fit{average} {estimate_txt} · {self._ci_html(aware, estimate, unit_html)}'
+            f'{label}: best fit{average} {estimate_txt} · {self._ci_html(aware, estimate, unit_html, bool(headline_bound))}'
             f'{self._reach_html(aware, unit_html)}'
             f'<br>Conditional on the entered inputs: {fit_txt} · {conditional}'
         )
 
     @staticmethod
-    def _ci_html(interval: KaInterval, estimate: float, unit_html: str) -> str:
-        """``95% CI [1.3×10⁸, 1.9×10⁸] M⁻¹ (−31% / +52%)``: the interval and how far each closed end lies."""
+    def _estimate_html(estimate: float, interval: KaInterval | None, unit_html: str, at_bound: str) -> str:
+        """``1.71×10⁸ M⁻¹``, or in words where the estimate sits on an end of its search box."""
+        bounds = None if interval is None else (interval.low, interval.high)
+        opens = (False, False) if interval is None else (interval.open_low, interval.open_high)
+        text = fmt_estimate(estimate, at_bound, bounds, opens, html=True)
+        # The unit follows a number; words with no number hold none.
+        return text if at_bound and (interval is None or all(opens)) else f'{text} {unit_html}'.strip()
+
+    @staticmethod
+    def _ci_html(interval: KaInterval, estimate: float, unit_html: str, at_bound: bool = False) -> str:
+        """``95% CI [1.30×10⁸, 1.90×10⁸] M⁻¹ (−31% / +52%)``: the interval and how far each closed end lies.
+
+        The ends are written by :func:`~gui.plotting.labels.fmt_value`, as the
+        summary table, the plot annotation and the report write them. How far
+        an end lies is a percentage of the estimate, which an estimate on an
+        end of its search box (*at_bound*) is not: there it is left out.
+        """
         lo, hi = interval.low, interval.high
         lo_open, hi_open = interval.open_low, interval.open_high
-        # The same bracket as the summary table, the plot annotation and the
-        # report, so one edge of one interval reads the same wherever it stands.
         # The unit follows the bracket, and is left off one holding no number.
-        ci_txt = fmt_interval_html(fmt_sci(lo), fmt_sci(hi), lo_open, hi_open)
+        ci_txt = fmt_interval_html(fmt_value(lo), fmt_value(hi), lo_open, hi_open)
         if not (lo_open and hi_open):
             ci_txt = f'{ci_txt} {unit_html}'.strip()
         # How far from the estimate each end the data close lies. An open end is
@@ -895,7 +968,7 @@ class IdentifiabilityWidget(QWidget):
         closed = [
             (side, _pct(edge / estimate))
             for edge, is_open, side in ((lo, lo_open, 'lower end'), (hi, hi_open, 'upper end'))
-            if not is_open
+            if not is_open and not at_bound
         ]
         if len(closed) == 2:
             change = f' ({closed[0][1]} / {closed[1][1]})'
@@ -934,7 +1007,7 @@ class IdentifiabilityWidget(QWidget):
         ):
             if not is_open:
                 continue
-            where = f'{fmt_sci(edge)} {unit_html}'.strip()
+            where = f'{fmt_value(edge)} {unit_html}'.strip()
             if limited_by:
                 # The crossing is a property of the other constant's bound, so
                 # it is named with its value and not given as a limit.
@@ -1073,21 +1146,24 @@ class IdentifiabilityWidget(QWidget):
             key = 'aware_cut' if aware is not None else 'cut'
             colour = _AWARE if aware is not None else INK
             items[key] = self._cut_line(main, np.log10(cut_profile.grid), cut_profile.r2_cut, colour)
-            # The axis names the level nothing is held at. Where the line drawn
-            # steps to another level as well, the number alone reads as a
-            # contradiction of the drawing, so it says which level it is.
+            # The axis names the level the line sits at wherever the fit holds
+            # every signal parameter free. Where the line steps down too — the
+            # fit pins a signal parameter at its bound there — the legend and
+            # the axis's hover text say what the step is.
             cuts = np.asarray(cut_profile.r2_cut, dtype=float)
             stepped = np.unique(cuts[np.isfinite(cuts)]).size > 1
-            label = f'cut-off {fmt_r2(cut_profile.r2_threshold)}{" (nothing held)" if stepped else ""}'
+            label = f'cut-off {fmt_r2(cut_profile.r2_threshold)}'
             axis = main.getAxis('right')
             axis.setTicks([[(cut_profile.r2_threshold, label)]])
             axis.setTickFont(tick_font)
             axis.setPen(pg.mkPen(INK_3, width=1))
             axis.setTextPen(pg.mkPen(INK_2))
             axis.setWidth(tick_fm.horizontalAdvance(label) + 14)
+            axis.setToolTip(_CUT_STEP_NOTE if stepped else _CUT_NOTE)
             main.showAxis('right')
             level = (aware.interval if aware is not None else interval).level
-            legend[key] = (f'<span style="color:{colour}">&#8943;</span>', f'{level:.0%} CI cut-off')
+            text = f'{level:.0%} CI cut-off' + ('; lower where a signal parameter sits on its bound' if stepped else '')
+            legend[key] = (f'<span style="color:{colour}">&#8943;</span>', text)
         items['best'] = self._best_marker(main, log_best, profile.best_r2)
         legend['best'] = (
             f'<span style="color:{INK}">&#9670;</span>',
@@ -1129,7 +1205,6 @@ class IdentifiabilityWidget(QWidget):
         legend = self._legend_entries
         tick_font, label_font = self._fonts()
         k1, k2 = region.ka_keys
-        self._region_col = col
         plot = self._glw.addPlot(row=0, col=col, axisItems={n: _LogKaAxis(n) for n in ('bottom', 'left')})
         for name in ('left', 'bottom'):
             axis = plot.getAxis(name)
@@ -1141,6 +1216,12 @@ class IdentifiabilityWidget(QWidget):
             plot.setLabel(name, f'{fmt_param(key)} [{unit_html}]' if unit_html else fmt_param(key))
         plot.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
         self._style_axes(plot, tick_font, label_font)
+        # Room for the widest tick and the axis title, as the Ka panels have, so
+        # neither is cut off whichever row the panel stands on.
+        tick_fm, label_fm = QFontMetrics(tick_font), QFontMetrics(label_font)
+        # The widest tick a log Ka axis writes is a mantissa over a negative exponent.
+        plot.getAxis('left').setWidth(tick_fm.horizontalAdvance('8×10⁻¹²') + label_fm.height() + 16)
+        plot.getAxis('bottom').setHeight(tick_fm.height() + label_fm.height() + 16)
         self._glw.ci.layout.setColumnStretchFactor(col, 1)
         if any(profile.aware is not None for profile in profiles.values()):
             # The panels beside this one carry two readings each; this one is

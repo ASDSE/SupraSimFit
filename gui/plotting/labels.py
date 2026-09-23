@@ -3,20 +3,21 @@
 Used by FitSummaryWidget and plot annotations to render math-style names
 in Qt widgets that support HTML (QLabel, QFormLayout, pg.TextItem).
 :func:`plain_label` flattens such a label for widgets that paint plain text,
-:func:`fmt_r2` renders a coefficient of determination for either, and
+:func:`fmt_r2` renders a coefficient of determination for either,
+:func:`fmt_value` writes every fitted value and interval edge, and
 :func:`fmt_interval_html` / :func:`fmt_interval_plain` write a confidence
-interval the same way wherever one is reported.
+interval the same way wherever one is reported. An estimate that sits on an
+end of its search box reads in words (:func:`fmt_bound_estimate`), and a stated
+input uncertainty in one notation (:func:`stated_uncertainty`).
 
-:func:`verdict_sentence`, :func:`fmt_shift`, :func:`fmt_misfit` and
-:func:`fmt_p` write what the diagnostics of a fit say — whether the model and
-the entered inputs describe the data, and where the fit put the inputs it was
-free to move — so the summary block, the Identifiability tab and the exported
-report say it in the same words.
+:func:`verdict_headline`, :func:`verdict_sentence`, :func:`fmt_shift`,
+:func:`fmt_misfit` and :func:`fmt_p` write what the diagnostics of a fit say —
+whether the model and the entered inputs describe the data, and where the fit
+put the inputs it was free to move — so the summary block, the plot, the
+Identifiability tab and the exported report say it in the same words.
 
-Value and unit formatting is handled by Pint's built-in formatters:
-  - ``f"{Q_(value, unit):.3g~H}"`` for HTML values+units
-  - ``f"{Q_(value, 'dimensionless'):.3g~P}"`` for pretty Unicode values
-  - ``f"{ureg.Unit(unit_str):~H}"`` for HTML unit display
+Units are formatted by Pint's built-in formatters (``f"{ureg.Unit(unit_str):~H}"``
+for HTML, ``~P`` for pretty Unicode).
 
 Reciprocal units (e.g. 1/M) are post-processed into negative-exponent
 notation (M⁻¹ / M<sup>−1</sup>) because Pint 0.25 does not have a
@@ -30,6 +31,7 @@ import re
 from html import escape, unescape
 
 from core.units import ureg
+from gui.plotting.colors import INK_2, NOTE_SURFACE
 
 _SUPERSCRIPT_DIGITS = str.maketrans('0123456789-−', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁻')
 _SUBSCRIPT_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
@@ -231,6 +233,151 @@ def fmt_sci(value: float, digits: int = 2) -> str:
     if -2 <= exp <= 2:
         return f'{rounded:.{max(digits - 1 - exp, 0)}f}'
     return f'{rounded / 10.0**exp:.{digits - 1}f}×10{_format_exponent_unicode(exp)}'
+
+
+#: Significant figures of every fitted value and interval edge a view shows.
+_VALUE_DIGITS = 3
+
+
+def fmt_value(value: float) -> str:
+    """A fitted value or an interval edge as every view writes it: ``8.00×10⁴``, ``2.41×10³``, ``150``, ``0.0120``.
+
+    Three significant figures with the trailing zeros kept, so the digits
+    shown are the digits meant. The summary table, the plot annotation, the
+    Identifiability header and the text report all write a number of a fit
+    through this, and one edge of one interval reads the same wherever it
+    stands.
+    """
+    return fmt_sci(value, _VALUE_DIGITS)
+
+
+def fmt_bound_estimate(
+    side: str, low: str | None, high: str | None, open_low: bool, open_high: bool, *, html: bool
+) -> str:
+    """An estimate that sits on an end of its Ka search box, in words: ``not limited below 2.41×10³``.
+
+    The search stopped at the box because the data do not limit Ka on that
+    side, so the value it stopped at is the box, not a measurement, and no view
+    prints it as one. What the data do say is the closed end of the interval:
+    Ka lies below it (``side == 'low'``) or above it (``'high'``). With no
+    closed end they say nothing either way.
+
+    Parameters
+    ----------
+    side : str
+        ``'low'`` or ``'high'``: which end of its box the estimate sits on.
+    low, high : str or None
+        The interval's ends, formatted by the caller as every other number of
+        the row is; ``None`` for a binding constant that carries no interval.
+    open_low, open_high : bool
+        Per end, whether the interval reaches as far as the profile goes.
+    html : bool
+        Whether the result goes into a rich-text widget, where the words are
+        set in italics so prose is not read as a number.
+    """
+    words = '<i>{}</i>' if html else '{}'
+    below = side == 'low'
+    if low is None and high is None:
+        return words.format(f'at the {"lower" if below else "upper"} end of its search range')
+    closed = (high, open_high) if below else (low, open_low)
+    if closed[1]:
+        return words.format(_UNLIMITED)
+    return f'{words.format("not limited below" if below else "not limited above")} {closed[0]}'
+
+
+def fmt_estimate(value: float, at_bound: str, interval, open_ends, fmt=fmt_value, *, html: bool) -> str:
+    """One estimate as every view writes it: its value, or in words where it sits on an end of its Ka search box.
+
+    Parameters
+    ----------
+    value : float
+        The estimate, in the row's own scale.
+    at_bound : str
+        ``''``, or which end of its search box the estimate sits on (``'low'``,
+        ``'high'``), as :class:`~core.pipeline.fit_pipeline.ParameterSummary`
+        records it.
+    interval : tuple[float, float] or None
+        The interval beside the estimate, in the same scale; ``None`` where
+        there is none.
+    open_ends : tuple[bool, bool]
+        Per end of *interval*, whether the data leave it open.
+    fmt : Callable[[float], str]
+        How the row writes a number: :func:`fmt_value`, or a log₁₀ reading.
+    html : bool
+        Whether the result goes into a rich-text widget.
+    """
+    if not at_bound:
+        return fmt(value)
+    ends = (None, None) if interval is None else (fmt(interval[0]), fmt(interval[1]))
+    return fmt_bound_estimate(at_bound, *ends, *open_ends, html=html)
+
+
+def own_estimates(result, keys, *, html: bool) -> list[str]:
+    """One replicate's own fit of each of *keys*, as the replicate tables write it; ``—`` for a key it lacks.
+
+    Read through :func:`~core.pipeline.fit_pipeline.summarize_parameters`, so a
+    replicate whose own binding constant ran to a bound of its search box reads
+    in words, as every other estimate does.
+    """
+    from core.pipeline.fit_pipeline import summarize_parameters
+
+    rows = {spec.key: spec for spec in summarize_parameters(result) if not spec.is_log}
+    return [
+        '—'
+        if key not in rows
+        else fmt_estimate(
+            rows[key].estimate, rows[key].estimate_at_bound, rows[key].interval, rows[key].interval_open, html=html
+        )
+        for key in keys
+    ]
+
+
+#: How the single-replicate fits relate to the interval beside them. Both are
+#: honest and they answer different questions, so the reader is told which.
+_REPLICATES_RELATION = (
+    "These show how far the replicates' own fits disagree. The interval says how precisely the fit of their "
+    "average pins Ka down, which is a different question, so a single replicate's value can fall outside it."
+)
+
+
+def replicate_summary(rows, n: int, name, unit) -> str:
+    """The binding constants' single-replicate fits, as one line beside the interval; ``''`` where there are none.
+
+    ``Single-replicate fits (inputs as entered): Ka(G) median 4.56×10⁴, range
+    [4.49×10⁴, 8.16×10⁴] M⁻¹.`` Each replicate the fit used, fitted on its own
+    with the inputs as entered; a fit that ran to a bound of its search range
+    is not a value of Ka and is counted instead of summarised. One sentence
+    then says how these figures relate to the interval.
+
+    Parameters
+    ----------
+    rows : Sequence[core.pipeline.fit_pipeline.ParameterSummary]
+        The binding-constant rows of the fit (no log₁₀ twins).
+    n : int
+        How many replicates the fit used, each of which has a fit of its own.
+    name, unit : Callable[[ParameterSummary], str]
+        The row's name and its unit, formatted for where the line goes.
+    """
+    figures, bounds = [], []
+    for spec in rows:
+        stats = spec.replicates
+        if stats is not None:
+            span = f'[{fmt_value(stats["min"])}, {fmt_value(stats["max"])}]'
+            figures.append(f'{name(spec)} median {fmt_value(stats["median"])}, range {f"{span} {unit(spec)}".strip()}')
+        count = spec.replicates_at_bound
+        if count:
+            if stats is None:
+                tail = 'so too few are left to summarise'
+            else:
+                tail = f'and {"is" if count == 1 else "are"} left out of these figures'
+            bounds.append(
+                f'{count} of {n} single-replicate fits of {name(spec)} ran to a bound of its search range, which '
+                f'is not a value of it, {tail}.'
+            )
+    if not figures and not bounds:
+        return ''
+    head = f'Single-replicate fits (inputs as entered): {"; ".join(figures)}.' if figures else ''
+    return ' '.join(part for part in (head, *bounds, _REPLICATES_RELATION if figures else '') if part)
 
 
 def fmt_spread(sd_decades: float, *, html: bool) -> str:
@@ -457,8 +604,8 @@ def fmt_stat(value: float) -> str:
     ------
     ValueError
         For a statistic that is not finite. ``inf`` is library phrasing, not a
-        reading a user can act on; what an infinite F ratio means is said in
-        words by :func:`fmt_misfit`, which is where one can arise.
+        reading a user can act on, and no test a fit runs produces one: data
+        with no scatter to judge a curve against are not tested at all.
     """
     if not math.isfinite(value):
         raise ValueError(f'A test statistic of {value} has no reading as a number; say in words what it means.')
@@ -467,19 +614,11 @@ def fmt_stat(value: float) -> str:
     return f'{float(f"{value:.3g}"):g}'
 
 
-#: What an infinite lack-of-fit F ratio says. The ratio divides the curve's
-#: distance from the mean signal by the scatter of the replicates about it, so
-#: it is infinite exactly where that scatter is zero — every replicate equal at
-#: every point — and the test then has no noise to judge the distance against.
-_NO_PURE_ERROR = 'the replicates agree exactly at every point, so any distance from the curve counts against the model'
-
-
 def fmt_misfit(test, *, named: bool = True) -> str:
     """One misfit test as a report quotes it, with its statistic and p-value.
 
     ``lack-of-fit F(9, 72) = 0.9, p = 0.55`` for the replicate F test and
-    ``runs test: 6 runs, 7.0 expected, p = 0.41`` for the runs test. An F ratio
-    with no finite reading is said in words instead (:data:`_NO_PURE_ERROR`).
+    ``runs test: 6 runs, 7.0 expected, p = 0.41`` for the runs test.
 
     Parameters
     ----------
@@ -493,17 +632,34 @@ def fmt_misfit(test, *, named: bool = True) -> str:
     if test.kind == 'runs':
         runs = int(round(test.statistic))
         head = f'runs test: {runs} run{"" if runs == 1 else "s"}, {test.expected:.1f} expected'
-    elif not math.isfinite(test.statistic):
-        return f'{"lack-of-fit: " if named else ""}{_NO_PURE_ERROR}'
     else:
         dof = '' if test.dof is None else f'({test.dof[0]}, {test.dof[1]})'
         head = f'{"lack-of-fit " if named else ""}F{dof} = {fmt_stat(test.statistic)}'
     return f'{head}, {fmt_p(test.p_value)}'
 
 
-def _fmt_percent(fraction: float) -> str:
-    """An offset from an entered value as a signed percentage of it, to one decimal."""
-    return f'{fraction * 100:+.1f} %'.replace('-', '−')
+def fmt_percent(fraction: float) -> str:
+    """An offset from an entered value as a signed percentage of it, to one decimal: ``−11.4 %``.
+
+    An offset that rounds to zero reads ``0.0 %``: a sign on it would claim a
+    direction the digits shown do not have.
+    """
+    text = f'{fraction * 100:+.1f}'
+    if float(text) == 0.0:
+        return '0.0 %'
+    return f'{text} %'.replace('-', '−')
+
+
+def fmt_against(shift) -> str:
+    """How one fitted offset compares with what was stated: ``3.8 σ``, ``at the edge of its range``, or ``''``.
+
+    An input stated with a standard deviation is measured in it; one stated as
+    a range has none, and the only thing to say is whether the fit took it to
+    an end of that range.
+    """
+    if shift.z is not None:
+        return f'{abs(shift.z):.1f} σ'
+    return 'at the edge of its range' if shift.at_edge else ''
 
 
 def fmt_shift(shift, label: str, *, html: bool) -> str:
@@ -525,17 +681,46 @@ def fmt_shift(shift, label: str, *, html: bool) -> str:
         Whether the result goes into a rich-text widget, which needs its
         markup characters escaped.
     """
-    text = f'{label} {_fmt_percent(shift.fraction)}'
-    if shift.z is not None:
-        text += f' ({abs(shift.z):.1f} σ)'
-    elif shift.at_edge:
-        text += ' (at the edge of its range)'
+    against = fmt_against(shift)
+    text = f'{label} {fmt_percent(shift.fraction)}{f" ({against})" if against else ""}'
     return _escape(text) if html else text
+
+
+def stated_uncertainty(spec, unit: str) -> str:
+    """One input's uncertainty as the user stated it: ``σ 10 %``, ``σ 2.0×10⁻⁷ M``, ``−5 % to +5 %``.
+
+    A standard deviation is written ``σ`` and a range as its two ends, in
+    percent of the entered value or in the input's own unit — one notation for
+    a stated uncertainty on screen and in every report. A value in the input's
+    own unit is written in ``×10ⁿ`` notation, as every other concentration a
+    report shows is, so no reader meets ``2e-07``.
+
+    Parameters
+    ----------
+    spec : core.pipeline.inputs.InputSpec
+        The stated uncertainty.
+    unit : str
+        The input's unit, already formatted for where the text goes (plain or
+        HTML); ``''`` for one with no unit.
+    """
+    from core.pipeline.inputs import SpecKind
+
+    if spec.kind is SpecKind.SIGMA:
+        return f'σ {spec.sigma:g} %' if spec.relative else f'σ {fmt_sci(spec.sigma, 2)} {unit}'.rstrip()
+    if spec.relative:
+        return f'{spec.lo:+g} % to {spec.hi:+g} %'.replace('-', '−')
+    return f'{fmt_sci(spec.lo, 2)} to {fmt_sci(spec.hi, 2)} {unit}'.rstrip()
 
 
 #: Why a conflict does not name the input that is wrong. Said of a fit whose
 #: only input free to move is the one the correction landed on.
 _ALIKE_ONE = 'this is the only input the fit was free to move, so the correction landed there whatever its real cause'
+
+#: The same, where inputs stated as a range moved as well: the statistic weighs
+#: only the inputs stated with a standard deviation, and there is one of those.
+_ALIKE_ONE_JUDGED = (
+    'this is the only input stated with a standard deviation, so the correction landed there whatever its real cause'
+)
 
 #: Said where the data do inform one direction per input stated with a standard
 #: deviation: the shifts are then each the fit's own reading, and what is left
@@ -543,29 +728,30 @@ _ALIKE_ONE = 'this is the only input the fit was free to move, so the correction
 _ALIKE_TOGETHER = 'the statistic weighs them together, so it does not say which of them is off'
 
 
-def _alike(conflict, shifts) -> str:
+def _alike(conflict, judged: int, ranged: bool) -> str:
     """Why the listed shifts do not name the input that is off, read from the fit's own weights.
 
-    ``conflict.k`` is how many combinations of the inputs stated with a
-    standard deviation these data pin down. Fewer than there are such inputs
-    and the fit could not tell them apart — the host concentration and the
-    titrant scale move the curve almost alike — so the correction landed where
-    the combinations it does see point, which need not be the input that is
-    off: with a planted 3 σ error in one input the largest shift sat on that
-    input in 27 to 58 % of the conflicts (design 1.5). As many directions as
-    inputs and the data do see each one, so no such claim is made.
+    ``conflict.k`` is how many combinations of the *judged* inputs — those
+    stated with a standard deviation — these data pin down. Fewer than there
+    are such inputs and the fit could not tell them apart — the host
+    concentration and the titrant scale move the curve almost alike — so the
+    correction landed where the combinations it does see point, which need not
+    be the input that is off: with a planted 3 σ error in one input the largest
+    shift sat on that input in 27 to 58 % of the conflicts (design 1.5). As
+    many directions as inputs and the data do see each one, so no such claim
+    is made.
 
     An input stated as a range carries no standard deviation and no ``z``, and
-    so enters neither the statistic nor this count.
+    so enters neither the statistic nor this count; *ranged* says whether one
+    moved, so a single judged input is not called the only one that could.
     """
-    stated = sum(1 for shift in shifts.values() if shift.z is not None)
-    if stated <= 1:
-        return _ALIKE_ONE
-    if conflict.k >= stated:
+    if judged <= 1:
+        return _ALIKE_ONE_JUDGED if ranged else _ALIKE_ONE
+    if conflict.k >= judged:
         return _ALIKE_TOGETHER
     one = conflict.k == 1
     return (
-        f'the data see only {"one combination" if one else f"{conflict.k} combinations"} of these {stated} '
+        f'the data see only {"one combination" if one else f"{conflict.k} combinations"} of these {judged} '
         f'inputs, so the correction landed where {"that combination points" if one else "those combinations point"}'
     )
 
@@ -594,20 +780,57 @@ RANGES_ONLY = (
 #: line, in the same words.
 NO_UNCERTAINTY = 'none — the interval takes the inputs as exact'
 
+#: Why a test of :class:`~core.pipeline.diagnostics.FitDiagnostics` was not
+#: run, per test and per reason token of ``FitDiagnostics.skipped``: a clause
+#: that follows "not tested —", so every report leads into it the same way.
+NOT_RUN = {
+    ('misfit', 'no_scatter'): (
+        'the data carry no scatter above rounding, as noise-free or identical replicates do, so there is no '
+        'noise to measure a distance from the curve against'
+    ),
+    ('misfit', 'too_few_dof'): 'the data leave too few points beyond the fitted parameters',
+    ('conflict', 'no_uncertainty'): RANGES_ONLY,
+    ('conflict', 'no_informed_direction'): (
+        'the data do not determine any combination of the inputs you gave a standard deviation, so they cannot '
+        'check the entered values'
+    ),
+}
+
+
+def not_run_reason(diagnostics, test: str) -> str:
+    """Why *test* (``'misfit'`` or ``'conflict'``) was not run on this fit, as a clause; ``''`` where it was.
+
+    Read from ``diagnostics.skipped``. A results file without a ``skipped``
+    entry for a missing misfit test had too few points for it: that is what
+    such a record means in the file format.
+    """
+    reason = diagnostics.skipped.get(test)
+    if reason is not None:
+        return NOT_RUN[(test, reason)]
+    if test == 'misfit' and diagnostics.misfit is None and diagnostics.conditional_misfit is None:
+        return NOT_RUN[('misfit', 'too_few_dof')]
+    return ''
+
 
 def verdict_sentence(diagnostics, shifts, labels, *, html: bool) -> str:
     """What the diagnostics of one fit say, in one plain-language sentence group.
 
-    The four verdicts read as design section 3 fixes them: the model and the
-    entered inputs describe the data; the entered inputs miss it and a shift
-    inside their stated uncertainties explains it; the data need the inputs,
-    *taken together*, further out than stated; or no allowed shift rescues the
-    model. The shifts are listed largest ``|z|`` first, the inputs stated as a
-    range after them — a range carries no ``z`` to rank by — and each by its
-    own key where two are equal, so the order is the same on every report.
+    The five verdicts read: no test found evidence against the model or the
+    entered inputs; the entered inputs miss the data and a shift inside their
+    stated uncertainties explains it; the data need the inputs, *taken
+    together*, further out than stated; no allowed shift rescues the model;
+    or both of the last two, the inputs named first, since an error in an input
+    can by itself make the curve miss. A test that could not be run is named
+    with the reason, so a verdict of no evidence is not read as one of a test
+    that passed. The shifts are listed largest ``|z|`` first, the inputs stated
+    as a range after them — a range carries no ``z`` to rank by — and each by
+    its own key where two are equal, so the order is the same on every report.
 
     The sentence never names one input as the cause of a conflict: the
-    statistic judges them together (:mod:`core.pipeline.diagnostics`).
+    statistic judges them together (:mod:`core.pipeline.diagnostics`), and it
+    judges only the inputs stated with a standard deviation, so every count and
+    every pronoun of a conflict refers to those, and an input stated as a range
+    is reported as moved inside that range.
 
     Parameters
     ----------
@@ -629,57 +852,175 @@ def _verdict_text(diagnostics, shifts, labels) -> str:
     """:func:`verdict_sentence` as plain text."""
     from core.pipeline.diagnostics import Verdict
 
-    listed = fmt_shifts(shifts, labels, html=False)
-    if diagnostics.verdict is Verdict.CONSISTENT:
-        test = diagnostics.misfit or diagnostics.conditional_misfit
-        if test is None:
-            return _NO_MISFIT_TEST
-        return f'The model and the entered inputs describe the data ({fmt_misfit(test)}).'
+    verdict = diagnostics.verdict
+    if verdict is Verdict.CONSISTENT:
+        return _consistent_text(diagnostics, shifts)
 
-    if diagnostics.verdict is Verdict.INPUTS_EXPLAIN:
+    if verdict is Verdict.INPUTS_EXPLAIN:
         return (
             f'At the entered inputs the model misses the data ({fmt_misfit(diagnostics.conditional_misfit, named=False)}). '
-            f'It fits once the inputs move within their stated uncertainties: {listed}. '
+            f'It fits once the inputs move within their stated uncertainties: {fmt_shifts(shifts, labels, html=False)}. '
             'The interval includes these shifts.'
         )
 
-    if diagnostics.verdict is Verdict.INPUTS_CONFLICT:
-        from core.pipeline.inputs import input_name
-
-        conflict = diagnostics.conflict
-        one = len(shifts) == 1
-        if one:
-            # One input free to move is one input the sentence can name: there
-            # are no others for the statistic to have weighed it against. Why
-            # naming it is not naming the cause is said by :func:`_alike`.
-            (shift,) = shifts.values()
-            lead = (
-                f'The data fit only with {input_name(shift.key, dict(labels))} further from the value you '
-                'entered than the uncertainty you stated allows'
-            )
-        else:
-            lead = (
-                'The data fit only with the inputs, taken together, further from their entered values than '
-                'their stated uncertainties allow'
-            )
-        return (
-            f'{lead} (q = {fmt_stat(conflict.q)}, {fmt_p(conflict.p_value)}). '
-            f'The fit put the correction here: {listed} — {_alike(conflict, shifts)}. '
-            f'Check the {"value" if one else "values"} you entered for {"it" if one else "them"}. '
-            f'The interval assumes the {"shift is" if one else "shifts are"} real.'
-        )
-
     test = diagnostics.misfit or diagnostics.conditional_misfit
-    if shifts:
+    if verdict is Verdict.INPUTS_CONFLICT:
+        lead, where, moved, checked = _conflict_text(diagnostics, shifts, labels)
+        many = len(shifts) > 1
+        return f'{lead}. {where} Check {checked}. The interval assumes the {"shifts are" if many else "shift is"} real.'
+
+    if verdict is Verdict.MODEL_INADEQUATE:
+        if shifts:
+            return (
+                'The model does not describe the data even with the inputs free to move within their uncertainties '
+                f'({fmt_misfit(test, named=False)} after the shifts). {_MODEL_TAIL}'
+            )
         return (
-            'The model does not describe the data even with the inputs free to move within their uncertainties '
-            f'({fmt_misfit(test, named=False)} after the shifts). {_MODEL_TAIL}'
+            f'The model does not describe the data at the entered inputs ({fmt_misfit(test, named=False)}). '
+            f'{_MODEL_TAIL} Enter the uncertainty of the inputs under Input Uncertainty to test whether the '
+            'inputs explain it.'
         )
+
+    # Both tests reject: the inputs lead, since an input that is off can by
+    # itself make the curve miss the data.
+    lead, where, moved, checked = _conflict_text(diagnostics, shifts, labels)
     return (
-        f'The model does not describe the data at the entered inputs ({fmt_misfit(test, named=False)}). '
-        f'{_MODEL_TAIL} Enter the uncertainty of the inputs under Input Uncertainty to test whether the '
-        'inputs explain it.'
+        f'{lead}, and even with {moved} moved the model misses the data '
+        f'({fmt_misfit(test, named=False)} after the shifts). {where} '
+        f'Check first {checked}: an input that '
+        'is off can by itself make the curve miss the data. If the entered values are right, try another binding '
+        'model or check the data. The interval assumes both the shifts and the model.'
     )
+
+
+def _consistent_text(diagnostics, shifts) -> str:
+    """No evidence against the fit: the tests that ran with their readings, then each test that could not run and why.
+
+    A test of the inputs against what was stated is named as not run only
+    where an input was free to move: with every input taken as exact there is
+    nothing stated for it to test, and the misfit test at the entered inputs is
+    what tests them.
+    """
+    test = diagnostics.misfit or diagnostics.conditional_misfit
+    conflict = diagnostics.conflict
+    readings = [] if test is None else [fmt_misfit(test)]
+    if conflict is not None:
+        readings.append(f'inputs q = {fmt_stat(conflict.q)}, {fmt_p(conflict.p_value)}')
+    not_run = []
+    misfit_reason = not_run_reason(diagnostics, 'misfit') if test is None else ''
+    if misfit_reason:
+        not_run.append(f'The curve was not tested against the data: {misfit_reason}.')
+    conflict_reason = not_run_reason(diagnostics, 'conflict') if shifts and conflict is None else ''
+    if conflict_reason:
+        not_run.append(f'The entered inputs were not tested against what you stated: {conflict_reason}.')
+    if not readings:
+        if not diagnostics.skipped:
+            return _NO_MISFIT_TEST
+        head = 'No test could be run on this fit, so nothing here speaks for or against it.'
+    else:
+        tested = 'the model or the entered inputs' if test is not None else 'the entered inputs'
+        head = f'No test found evidence against {tested} ({"; ".join(readings)}).'
+    return ' '.join([head, *not_run])
+
+
+def _conflict_text(diagnostics, shifts, labels) -> tuple[str, str, str, str]:
+    """A conflict's opening clause, where the fit put the correction, what moved, and which entered values to check.
+
+    The statistic judges the inputs stated with a standard deviation; the
+    opening clause and the list the correction is read from are those inputs.
+    The inputs stated as a range follow as moved inside what was stated, which
+    is what they did. The advice covers every input that moved, those stated
+    as a range included: one resting on the edge of its range is where the data
+    wanted more room, so it is as likely to be off as a judged one.
+    """
+    from core.pipeline.inputs import input_name
+
+    conflict = diagnostics.conflict
+    judged = {key: shift for key, shift in shifts.items() if shift.z is not None}
+    ranged = {key: shift for key, shift in shifts.items() if shift.z is None}
+    one = len(judged) == 1
+    if one:
+        # One judged input is one input the sentence can name: there are no
+        # others for the statistic to have weighed it against. Why naming it is
+        # not naming the cause is said by :func:`_alike`.
+        (shift,) = judged.values()
+        lead = (
+            f'The data fit only with {input_name(shift.key, dict(labels))} further from the value you entered '
+            'than the uncertainty you stated allows'
+        )
+    elif ranged:
+        lead = (
+            'The data fit only with the inputs you gave a standard deviation, taken together, further from their '
+            'entered values than those uncertainties allow'
+        )
+    else:
+        lead = (
+            'The data fit only with the inputs, taken together, further from their entered values than their '
+            'stated uncertainties allow'
+        )
+    lead += f' (q = {fmt_stat(conflict.q)}, {fmt_p(conflict.p_value)})'
+    where = (
+        f'The fit put the correction here: {fmt_shifts(judged, labels, html=False)} — '
+        f'{_alike(conflict, len(judged), bool(ranged))}.'
+    )
+    if ranged:
+        where += (
+            f' Inside the {"range" if len(ranged) == 1 else "ranges"} you stated it also moved '
+            f'{fmt_shifts(ranged, labels, html=False)}.'
+        )
+        if any(shift.at_edge for shift in ranged.values()):
+            where += ' An input at the edge of its range is one the data would have moved further.'
+        return lead, where, 'the inputs', 'the values you entered for all the inputs listed, ranges included'
+    return (
+        lead,
+        where,
+        'it' if one else 'them',
+        f'the {"value" if one else "values"} you entered for {"it" if one else "them"}',
+    )
+
+
+#: The colour of the text and of the strip behind it, per tone of a verdict's
+#: headline: nothing to act on, something to check, and a result that rests on
+#: an assumption the data reject.
+VERDICT_TONES = {
+    'neutral': (INK_2, NOTE_SURFACE),
+    'amber': ('#7a4a00', '#fcf1dc'),
+    'red': ('#a3221b', '#fce8e6'),
+}
+
+#: Said on the plot where the curve is drawn at the inputs the fit moved, not at the entered ones.
+SHIFTED_CURVE_NOTE = 'Curve drawn at the fitted input shifts'
+
+
+def verdict_headline(diagnostics) -> tuple[str, str]:
+    """What the diagnostics of one fit say in a few words, and the tone of :data:`VERDICT_TONES` to show it in.
+
+    The line a reader sees first — above the table, on the plot and on the
+    exported figure; :func:`verdict_sentence` says the rest. It never names an
+    input: a conflict is a statement about the inputs together. A rejected
+    model is named by what the test measured — the curve misses the data by
+    more than their scatter allows — rather than by the conclusion: replicates
+    that scatter little make the test strong enough to reject a curve that
+    follows the data closely. And no headline claims the model or the inputs
+    are right: a test that finds nothing says only that.
+    """
+    from core.pipeline.diagnostics import Verdict
+
+    verdict = diagnostics.verdict
+    if verdict is Verdict.CONSISTENT:
+        if diagnostics.misfit or diagnostics.conditional_misfit:
+            return 'No test found evidence against the model or the entered inputs', 'neutral'
+        if diagnostics.conflict:
+            return 'No test found evidence against the entered inputs; the curve was not tested', 'neutral'
+        return 'Not tested: nothing here speaks for or against the fit', 'neutral'
+    if verdict is Verdict.INPUTS_EXPLAIN:
+        return 'The data fit once the inputs move within their uncertainties', 'amber'
+    misses = 'the curve misses the data by more than their scatter allows'
+    if verdict is Verdict.INPUTS_CONFLICT:
+        return 'The inputs together are further from their entered values than you stated', 'red'
+    if verdict is Verdict.MODEL_INADEQUATE:
+        return f'{misses[0].upper()}{misses[1:]}', 'red'
+    return f'The inputs together are further from their entered values than you stated, and {misses}', 'red'
 
 
 def fmt_shifts(shifts, labels, *, html: bool) -> str:

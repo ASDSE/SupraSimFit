@@ -113,7 +113,7 @@ def test_every_input_starts_fixed_so_a_fit_takes_the_entered_inputs_as_exact(qap
     assert panel._additions_sigma_row.isHidden()
 
     # The kind a user then picks starts from a usable number rather than an empty box.
-    _choose(panel._rows['h0'], '± σ %')
+    _choose(panel._rows['h0'], 'σ %')
     assert panel.current_errors() == ErrorModel(specs={'h0': InputSpec.sigma_pct(5.0)})
 
 
@@ -138,7 +138,7 @@ def test_specs_changed_reports_an_edit_a_kind_and_a_rebuild(qapp):
     seen = []
     panel.specs_changed.connect(lambda: seen.append(panel.current_errors().specs))
 
-    _choose(panel._rows['h0'], '± σ %')
+    _choose(panel._rows['h0'], 'σ %')
     assert seen and seen[-1] == {'h0': InputSpec.sigma_pct(5.0)}
 
     (box,) = panel._rows['h0']._values.currentWidget()._boxes
@@ -155,15 +155,15 @@ def test_specs_changed_reports_an_edit_a_kind_and_a_rebuild(qapp):
     [
         # σ = 5 % of Ka,dye = 16.8e6 M⁻¹, stated four ways.
         (InputSpec.sigma_pct(5.0), 'range %', InputSpec.interval_pct(-5.0, 5.0)),
-        (InputSpec.sigma_pct(5.0), '± σ', InputSpec.sigma_abs(0.84e6)),
+        (InputSpec.sigma_pct(5.0), 'σ', InputSpec.sigma_abs(0.84e6)),
         (InputSpec.sigma_pct(5.0), 'range', InputSpec.interval_abs(15.96e6, 17.64e6)),
-        (InputSpec.sigma_abs(0.84e6), '± σ %', InputSpec.sigma_pct(5.0)),
+        (InputSpec.sigma_abs(0.84e6), 'σ %', InputSpec.sigma_pct(5.0)),
         (InputSpec.sigma_abs(0.84e6), 'range', InputSpec.interval_abs(15.96e6, 17.64e6)),
         (InputSpec.interval_abs(15.96e6, 17.64e6), 'range %', InputSpec.interval_pct(-5.0, 5.0)),
         # A lopsided range keeps its ends in the other unit; as a σ it keeps half its width.
         (InputSpec.interval_pct(-6.0, 4.0), 'range', InputSpec.interval_abs(15.792e6, 17.472e6)),
-        (InputSpec.interval_pct(-6.0, 4.0), '± σ %', InputSpec.sigma_pct(5.0)),
-        (InputSpec.interval_abs(15.792e6, 17.472e6), '± σ', InputSpec.sigma_abs(0.84e6)),
+        (InputSpec.interval_pct(-6.0, 4.0), 'σ %', InputSpec.sigma_pct(5.0)),
+        (InputSpec.interval_abs(15.792e6, 17.472e6), 'σ', InputSpec.sigma_abs(0.84e6)),
     ],
 )
 def test_choosing_another_kind_carries_the_numbers_over(qapp, start, kind, expected):
@@ -197,12 +197,15 @@ def test_the_help_tells_an_input_own_error_from_a_shared_one_and_says_what_each_
     # Both readers use the model as stated — the analysis no longer assumes unrelated inputs.
     assert 'Both the interval of every fit and the K<sub>a</sub> Sensitivity analysis use exactly this model' in text
     assert 'take their errors to be unrelated' not in text
-    # The additions feed the analysis alone, and why.
+    # A binding constant measured with a shared stock moves the other way from the concentrations made from it.
+    assert 'by the same percentage the other way' in text
+    # The additions feed the analysis alone, and the interval of a fit does not hold them.
     assert 'feeds the K<sub>a</sub> Sensitivity analysis only' in text
-    assert 'scatter in the signal, which the residual scatter behind the interval of a fit already measures' in text
-    # What the σ means with replicates, and what that takes them to be.
-    assert 'draws it at σ/√<i>m</i>' in text
-    assert 'takes the replicates to be separate titrations' in text
+    assert 'the interval the fit reports does not include the random error of each addition' in text
+    assert 'already measures' not in text
+    # What the σ means with replicates, and what that assumes of them.
+    assert 'as σ/√<i>m</i> for <i>m</i> replicates' in text
+    assert 'assumes the replicates are separate titrations' in text
 
 
 def test_the_help_says_what_the_uncertainties_feed_and_what_each_kind_means_for_the_fit():
@@ -234,9 +237,9 @@ def test_the_help_says_what_the_uncertainties_feed_and_what_each_kind_means_for_
             'range %',
             'Guest (titrant, whole series): “from” would be −150 %; this box can only show −100 %.',
         ),
-        ('Ka_dye', InputSpec.sigma_abs(2e8), '± σ %', 'Ka,dye: σ would be 1190.5 %; this box can only show 1000 %.'),
+        ('Ka_dye', InputSpec.sigma_abs(2e8), 'σ %', 'Ka,dye: σ would be 1190.5 %; this box can only show 1000 %.'),
         ('h0', InputSpec.sigma_pct(150.0), 'range', '[Host]₀: “from” would be −2.15 µM; this box can only show 0 µM.'),
-        ('h0', InputSpec.sigma_abs(2e-9), '± σ %', '[Host]₀: σ would be 0.046512 %; this box can only show 0 %.'),
+        ('h0', InputSpec.sigma_abs(2e-9), 'σ %', '[Host]₀: σ would be 0.046512 %; this box can only show 0 %.'),
     ],
 )
 def test_a_number_the_new_kind_cannot_hold_is_named_under_the_input(qapp, key, start, kind, note):
@@ -287,7 +290,7 @@ def test_percent_to_unit_uses_the_value_set_in_the_conditions_form(qapp):
     panel.set_nominal_values(assay_panel.current_conditions())
     row = panel._rows['h0']
 
-    _choose(row, '± σ')
+    _choose(row, 'σ')
     _assert_spec(row.spec(), InputSpec.sigma_abs(0.5e-6))
     _choose(row, 'range')
     _assert_spec(row.spec(), InputSpec.interval_abs(9.5e-6, 10.5e-6))
@@ -410,7 +413,7 @@ def test_each_assays_entries_come_back_on_switching_back_and_reach_no_other_assa
     assert h0._values.currentWidget()._unit_combo.currentText() == 'nM'
     d0 = panel._rows['d0']
     assert d0.spec() is None
-    _choose(d0, '± σ %')
+    _choose(d0, 'σ %')
     _assert_spec(d0.spec(), InputSpec.sigma_pct(3.0))
 
     panel.set_assay_type(AssayType.DBA_DtoH)
@@ -644,7 +647,7 @@ def test_the_panel_is_as_wide_whichever_kind_each_input_shows(qapp):
     panel.show()
     qapp.processEvents()
     widths = set()
-    for kind in ('± σ %', 'range %', '± σ', 'range', 'fixed'):
+    for kind in ('σ %', 'range %', 'σ', 'range', 'fixed'):
         for key, row in panel._rows.items():
             _choose(row, kind if row.kind.findText(kind) >= 0 else 'range %')
         qapp.processEvents()
@@ -664,7 +667,7 @@ def test_a_typed_value_counts_before_the_box_loses_focus(qapp):
 
     panel = _ida_panel()
     row = panel._rows['Ka_dye']
-    _choose(row, '± σ')
+    _choose(row, 'σ')
     (box,) = row._values.currentWidget()._boxes
     box.selectAll()
     QTest.keyClicks(box, '2e6')
@@ -679,7 +682,7 @@ def test_typed_text_that_is_not_a_number_is_named_as_a_problem(qapp):
 
     panel = _ida_panel()
     row = panel._rows['Ka_dye']
-    _choose(row, '± σ')
+    _choose(row, 'σ')
     (box,) = row._values.currentWidget()._boxes
     box.selectAll()
     QTest.keyClicks(box, '2e')
@@ -692,7 +695,7 @@ def test_a_typed_absolute_value_is_used_as_shown(qapp):
     """A value typed with more figures than the box shows is used as the box shows it."""
     panel = _ida_panel()
     row = panel._rows['Ka_dye']
-    _choose(row, '± σ')
+    _choose(row, 'σ')
     (box,) = row._values.currentWidget()._boxes
     box.setText('1234567')
     box.editingFinished.emit()
@@ -701,24 +704,41 @@ def test_a_typed_absolute_value_is_used_as_shown(qapp):
     _assert_spec(row.spec(), InputSpec.sigma_abs(1.2346e6))
 
 
-def test_reset_to_defaults_states_nothing_about_the_inputs_again(qapp):
-    """Demo IDA promises the same run every time, so it resets these settings as it resets the bounds."""
+def test_set_specs_states_those_uncertainties_and_nothing_else(qapp):
+    """What Demo IDA states: the uncertainties it names, every other input exact, no source beside them."""
     panel = _ida_panel()
-    _choose(panel._rows['h0'], '± σ %')
-    _choose(panel._rows[TITRANT], 'range %')
+    _choose(panel._rows['d0'], 'range %')
     _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
     _set_additions(panel, _SEQUENTIAL, 2.0)
     seen = []
     panel.specs_changed.connect(lambda: seen.append(panel.current_errors()))
+    specs = {'Ka_dye': InputSpec.sigma_pct(10.0), 'h0': InputSpec.sigma_pct(3.0)}
 
-    panel.reset_to_defaults()
+    panel.set_specs(specs)
 
-    assert [row.kind.currentText() for row in panel._rows.values()] == ['fixed'] * len(panel._rows)
-    assert panel._shared_rows == []
-    assert panel._additions_combo.currentText() == 'none'
-    # Reported once, when nothing is stated any more: a fit made with the old model is
-    # marked out of date, and a half-reset panel is no state to act on.
-    assert seen == [ErrorModel()]
+    assert seen == [ErrorModel(specs=specs)]
+    assert panel._rows['d0'].kind.currentText() == 'fixed'
+    assert panel._shared_rows == [] and panel._additions_combo.currentText() == 'none'
+
+
+def test_the_shared_source_ticks_stand_clear_of_their_labels(qapp):
+    """The macOS style lays a check box out by a rectangle narrower than the one it paints.
+
+    Unless the box is laid out by its own rectangle, the label beside it starts on
+    the box. Offscreen (Fusion) the two rectangles coincide; the native run is what
+    reproduces the overlap.
+    """
+    from PyQt6.QtCore import Qt
+
+    panel = _ida_panel()
+    row = _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
+    panel.resize(490, 900)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qapp.processEvents()
+
+    for key, tick in row._ticks.items():
+        assert row._labels[key].geometry().x() > tick.geometry().right(), key
 
 
 def _shown_problems(panel) -> list[str]:

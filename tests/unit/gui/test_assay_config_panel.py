@@ -379,3 +379,21 @@ def test_a_second_assay_leaves_the_dilution_controls_behind_its_conditions(qapp)
     expected += [panel._dilution_combo, *panel._stock_widget.focus_widgets(), *panel._contains_boxes.values()]
 
     assert _tab_order(panel._sub_combo, expected) == expected
+
+
+def test_the_species_ticks_stand_clear_of_their_sentences(qapp):
+    """The macOS style lays a check box out by a rectangle narrower than the one it paints.
+
+    Unless the box is laid out by its own rectangle, the sentence beside it starts on the
+    box. Offscreen (Fusion) the two rectangles coincide; the native run is what
+    reproduces the overlap.
+    """
+    panel = AssayConfigPanel()
+    panel.set_assay_type(AssayType.IDA)
+    panel._dilution_combo.setCurrentIndex(1)
+    _lay_out(panel, qapp)
+
+    for box in panel._contains_boxes.values():
+        (sentence,) = box.parentWidget().findChildren(QLabel)
+        assert box.geometry().x() >= 0
+        assert sentence.geometry().x() > box.geometry().right()

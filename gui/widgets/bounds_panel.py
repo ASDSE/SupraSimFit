@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import math
+from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QDoubleValidator
@@ -23,8 +25,10 @@ from PyQt6.QtWidgets import (
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.units import Q_, Quantity
 from gui.parameter_descriptions import PARAMETER_DESCRIPTIONS
-from gui.plotting.labels import fmt_param, plain_label
+from gui.plotting.labels import fmt_param, fmt_param_plain
 from gui.widgets.info_button import InfoButton, InfoGroupBox
+
+logger = logging.getLogger(__name__)
 
 _DYE_ALONE_PRIOR_HTML = """
 <h3>Use Dye-Alone Priors for Signal Bounds</h3>
@@ -101,7 +105,7 @@ class _BoundRow(QWidget):
     def __init__(self, key: str, lo: float, hi: float, parent=None):
         super().__init__(parent)
         self.key = key
-        self.name = plain_label(fmt_param(key))
+        self.name = fmt_param_plain(key)
         self._may_be_unbounded = math.isinf(hi)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -239,25 +243,26 @@ class BoundsPanel(InfoGroupBox):
         """
         return [problem for row in self._rows.values() if (problem := row.problem())]
 
+    def shown_bounds(self) -> dict[str, tuple[Quantity, Quantity] | None]:
+        """Every row's bounds as Quantities in the parameter's unit; ``None`` for a row :meth:`problems` names."""
+        shown: dict[str, tuple[Quantity, Quantity] | None] = {}
+        for key, row in self._rows.items():
+            unit = self._units.get(key, 'dimensionless')
+            values = None if row.problem() is not None else row.values()
+            shown[key] = None if values is None else (Q_(values[0], unit), Q_(values[1], unit))
+        return shown
+
     def current_bounds(self) -> dict[str, tuple[Quantity, Quantity]] | None:
         """The bounds that differ from the registry defaults, as Quantities; ``None`` when none does.
 
         A row :meth:`problems` names is left out; the panel shows why.
         """
-        result_floats = {}
-        for key, row in self._rows.items():
-            vals = row.values()
-            if vals is None or row.problem() is not None or vals == self._defaults[key]:
-                continue
-            result_floats[key] = vals
-        if not result_floats:
-            return None
-        # Wrap floats as Quantities
-        result = {}
-        for key, (lo, hi) in result_floats.items():
-            unit = self._units.get(key, 'dimensionless')
-            result[key] = (Q_(lo, unit), Q_(hi, unit))
-        return result
+        changed = {
+            key: bounds
+            for key, bounds in self.shown_bounds().items()
+            if bounds is not None and (bounds[0].magnitude, bounds[1].magnitude) != self._defaults[key]
+        }
+        return changed or None
 
     def apply_dye_alone_bounds(self, bounds: dict[str, tuple[Quantity, Quantity]]) -> None:
         """Apply dye-alone–derived bounds to I0 and I_dye_free rows."""
@@ -353,7 +358,11 @@ class BoundsPanel(InfoGroupBox):
         self._dye_alone_btn.setEnabled(checked)
 
     def _on_load_dye_alone(self) -> None:
+        from core.assays import DyeAloneAssay
+        from core.data_processing.measurement_set import InvalidData, MeasurementSet
+        from core.io import load_measurements
         from core.io.registry import READERS
+        from core.pipeline.fit_pipeline import bounds_from_dye_alone, fit_linear_assay
 
         exts = ' '.join(f'*{e}' for e in sorted(READERS.keys()))
         path, _ = QFileDialog.getOpenFileName(
@@ -362,13 +371,7 @@ class BoundsPanel(InfoGroupBox):
         if not path:
             return
         try:
-            from core.assays import DyeAloneAssay
-            from core.data_processing.measurement_set import MeasurementSet
-            from core.io import load_measurements
-            from core.pipeline.fit_pipeline import bounds_from_dye_alone, fit_linear_assay
-
-            df = load_measurements(path)
-            ms = MeasurementSet.from_dataframe(df)
+            ms = MeasurementSet.from_dataframe(load_measurements(path), source_file=path)
             assay = ms.to_assay(DyeAloneAssay, conditions={})
             result = fit_linear_assay(assay)
             bounds = bounds_from_dye_alone(result, margin=0.2)
@@ -378,5 +381,15 @@ class BoundsPanel(InfoGroupBox):
                 'Dye-Alone Loaded',
                 'Signal coefficient bounds updated from dye-alone fit.',
             )
-        except Exception as exc:
-            QMessageBox.warning(self, 'Dye-Alone Error', str(exc))
+        except InvalidData as exc:
+            # Written for the user: it names the file, the replicate and the point, and the fix.
+            QMessageBox.warning(self, 'Dye-Alone Error', f'{exc} The signal bounds were not changed.')
+        except Exception:
+            logger.exception('Could not fit the dye-alone data in %s', path)
+            QMessageBox.warning(
+                self,
+                'Dye-Alone Error',
+                f'Could not fit a straight line to the dye-alone data in {Path(path).name}. Check that the file '
+                'is a measurement of the dye alone, with its concentrations, then load it again. The signal bounds '
+                'were not changed.',
+            )

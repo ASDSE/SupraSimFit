@@ -110,3 +110,24 @@ def test_a_bound_box_takes_only_a_number_as_it_is_typed(qapp):
 
     assert box.text() == '1.5e7'
     assert panel.problems() == []
+
+
+def test_a_dye_alone_file_the_data_checks_refuse_is_named_with_the_refusal_itself(qapp, tmp_path, monkeypatch):
+    """The refusal names the file and the point and says what to do; a generic sentence would hide both."""
+    import gui.widgets.bounds_panel as module
+
+    path = tmp_path / 'dye_alone.csv'
+    rows = [f'{c:g},{100 - 10 * i + r},{r}' for r in (0, 1) for i, c in enumerate((0, 1e-6, 2e-6, 3e-6, 4e-6))]
+    path.write_text('concentration,signal,replica\n' + '\n'.join(rows) + '\n5e-6,,0\n5e-6,,1\n')
+    warnings = []
+    monkeypatch.setattr(module.QFileDialog, 'getOpenFileName', lambda *a, **k: (str(path), ''))
+    monkeypatch.setattr(module.QMessageBox, 'warning', lambda parent, title, text: warnings.append(text))
+    panel = _ida_panel()
+    before = panel.current_bounds()
+
+    panel._on_load_dye_alone()
+
+    (text,) = warnings
+    assert text.startswith('No replicate in dye_alone.csv has a signal at 5 µM')
+    assert 'delete that titration point' in text and 'The signal bounds were not changed.' in text
+    assert panel.current_bounds() == before

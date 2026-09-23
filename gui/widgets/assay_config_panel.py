@@ -45,7 +45,7 @@ def _set_form_geometry(form: QFormLayout) -> None:
     form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
 
-def _plain_number(value: float) -> str:
+def plain_number(value: float) -> str:
     """Up to four significant figures, with a power of ten written as ``1.68×10⁷``."""
     mantissa, _, exponent = f'{value:.4g}'.partition('e')
     return f'{mantissa}×10{str(int(exponent)).translate(_SUPERSCRIPT)}' if exponent else mantissa
@@ -131,7 +131,7 @@ class _UnitWidget(QWidget):
         """*value* in plain text in the unit this field shows now: ``4.3 µM``."""
         magnitude = value.to(self._base_unit).magnitude if self._base_unit else float(value.magnitude)
         unit = self._combo.currentText() if self._combo is not None else self._base_unit
-        return f'{_plain_number(magnitude / self._current_scale)} {unit}'.rstrip()
+        return f'{plain_number(magnitude / self._current_scale)} {unit}'.rstrip()
 
     def setValue(self, base_value: float) -> None:
         """Set widget from a base-unit value."""
@@ -224,8 +224,8 @@ class AssayConfigPanel(InfoGroupBox):
         Emitted when any condition field value changes, keystroke by keystroke.
     conditions_edited()
         Emitted once an edit is finished: Return or focus leaving a field, a
-        unit or assay switch, or a pause in typing or stepping. Typing a value
-        emits it once, not per keystroke.
+        unit or assay switch, a pause in typing or stepping, or
+        :meth:`finish_edit`. Typing a value emits it once, not per keystroke.
     """
 
     assay_type_changed = pyqtSignal(object)  # AssayType
@@ -303,6 +303,16 @@ class AssayConfigPanel(InfoGroupBox):
 
     def get_assay_class(self) -> type[BaseAssay]:
         return assay_class(self._current_type)
+
+    def finish_edit(self) -> None:
+        """Finish an edit still waiting for its pause, so what reads the form next sees it finished.
+
+        Emits ``conditions_edited`` when an edit is pending and nothing otherwise.
+        An action run from a shortcut leaves the focus in the field being typed
+        into, so no edit ends by itself before the action reads the form.
+        """
+        if self._settle_timer.isActive():
+            self._finish_edit()
 
     def condition_name(self, key: str) -> str | None:
         """Plain-text label of condition *key* (``[Host]₀``), or ``None`` when the form has no such field."""
@@ -559,6 +569,9 @@ class AssayConfigPanel(InfoGroupBox):
         row_layout.setSpacing(4)
 
         box = QCheckBox()
+        # The macOS style lays a check box out by a rectangle narrower than the
+        # one it paints, which puts the sentence beside it on the box.
+        box.setAttribute(Qt.WidgetAttribute.WA_LayoutUsesWidgetRect)
         box.toggled.connect(self._on_contains_toggled)
         # The label carries the species' HTML, which a check box paints as text.
         lbl = QLabel(f'the titrant stock also contains {field.label} at this concentration')
