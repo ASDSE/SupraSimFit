@@ -46,7 +46,7 @@ from core.pipeline.sensitivity import (
     estimated_fit_count,
     estimated_model_solves,
 )
-from core.pipeline.varpro import projectable
+from core.pipeline.varpro import REPLICATE_TEST_MIN, projectable
 from core.units import Q_, Quantity
 from gui import plot_guide, preferences
 from gui.app_state import SessionState
@@ -240,11 +240,6 @@ _DEMO_UNCERTAINTIES = {
     'd0': InputSpec.sigma_pct(3.0),
     TITRANT: InputSpec.sigma_pct(3.0),
 }
-
-#: The fewest replicates the test of whether they share their binding constants can
-#: judge (:func:`core.pipeline.varpro.replicate_outliers`): with two, nothing says
-#: which of them is the odd one.
-_REPLICATE_TEST_MIN = 3
 
 _UNCHECKED_NOTE = (
     'No data are loaded, so these numbers are shown as stored in the file and could not be checked against '
@@ -667,10 +662,10 @@ class FittingSession(QWidget):
         fitting = 'Fitting…'
         if (
             config.per_replica
-            and 1 < ms.n_active < _REPLICATE_TEST_MIN
+            and 1 < ms.n_active < REPLICATE_TEST_MIN
             and projectable(self._assay_panel.current_assay_type())
         ):
-            # With fewer replicates than the shared-Ka test can judge, every active
+            # With fewer replicates than the replicate test can judge, every active
             # one is averaged; said in the one message the bar keeps while it fits.
             fitting = (
                 f'Fitting {ms.n_active} replicates — too few to test against each other (the test needs three), '
@@ -1355,7 +1350,7 @@ class FittingSession(QWidget):
             if (
                 result.fit_config.get('per_replicate')
                 and 'replicate_test' not in result.metadata
-                and 1 < len(given) < _REPLICATE_TEST_MIN
+                and 1 < len(given) < REPLICATE_TEST_MIN
             ):
                 counted += ', too few to test against each other'
             on_bound = fmt_bound_note(parameters_on_bound(result))

@@ -240,8 +240,9 @@ constant, which the row says.</p>
 
 <p><b>Replicates used</b> &mdash; how many of the replicates you switched on
 entered the fit. A replicate is left out when its own best fit needs a
-K<sub>a</sub> the others do not share; the tooltip names each one and why. The
-test can only notice a replicate whose own data pin K<sub>a</sub> down &mdash;
+K<sub>a</sub> the others do not share, or when its points scatter about its own
+fit far more than the others&rsquo; do; the tooltip names each one and why. The
+K<sub>a</sub> test can only notice a replicate whose own data pin K<sub>a</sub> down &mdash;
 if the replicates&rsquo; own K<sub>a</sub> values spread over decades, one that
 disagrees will not stand out.</p>
 """
@@ -849,9 +850,18 @@ def _shared_left_out(baseline: FitResult, fit: FitResult, replica_ids: Sequence[
     if not left_out[1] or set(left_out[0]) != set(left_out[1]):
         return ''
     names = describe_replicates(left_out[1], replica_ids)
-    own = 'its own fit needs' if len(left_out[1]) == 1 else 'their own fits need'
     failed = all(set(left_out[1]) <= set(r.metadata.get('replica_failures') or {}) for r in (baseline, fit))
-    why = f', as {own} a different Ka than the other replicates share' if failed else ''
+    grounds = (fit.metadata.get('replicate_test') or {}).get('reasons') or {}
+    kinds = {grounds.get(rid, 'ka') for rid in left_out[1]}
+    one = len(left_out[1]) == 1
+    if not failed:
+        why = ''
+    elif kinds == {'ka'}:
+        why = f', as {"its own fit needs" if one else "their own fits need"} a different Ka than the other replicates share'
+    elif kinds == {'scatter'}:
+        why = f", as {'its' if one else 'their'} points scatter far more than the other replicates' do"
+    else:
+        why = ', as each needs a different Ka than the other replicates share or scatters far more than they do'
     return f'Both leave out {names}{why}.'
 
 
@@ -1312,7 +1322,7 @@ class FitSummaryWidget(QWidget):
 
         The p-value is the replicate's own share of the test that decides
         whether every replicate needs the same binding constants; a set too
-        small to test shows none.
+        small to test, and a replicate left out for its scatter, show none.
         """
         fits = result.replica_fits
         if not fits:

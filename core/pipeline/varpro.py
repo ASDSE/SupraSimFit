@@ -103,6 +103,10 @@ LEVEL = 0.95
 #: replicate significant at 5 % but not at 1 % is a "straggler" and is kept.
 REPLICATE_TEST_LEVEL = 0.01
 
+#: The fewest replicates the replicate test judges: with two, nothing says which
+#: of them is the odd one.
+REPLICATE_TEST_MIN = 3
+
 # Ka grid densities, in points per decade across the Ka bounds. The search grid
 # only has to land in the basin of the optimum: the refinement finds it from
 # there. Against a 16/decade brute force on 84 random HG2/H2G designs (K 1e1 to
@@ -331,26 +335,34 @@ class ProjectedFit:
 
 @dataclass(frozen=True)
 class ReplicateTest:
-    """Outcome of the shared-Ka test over the rows of a projection.
+    """Outcome of the test of whether the rows of a projection share their binding constants.
 
     Attributes
     ----------
     excluded : tuple[int, ...]
-        Row indices found to need another Ka than the others share, in the
-        order they were removed.
+        Rows left out: first those that need another Ka than the rows kept
+        share, in row order, then those whose scatter is too large, in the
+        order Cochran's test removed them (the keys of ``scatter``).
     p_values : dict[int, float]
-        The p-value of every row from the last round it was judged in.
+        The shared-Ka p-value of every row but those left out for their
+        scatter, against the rows kept: a kept row's for leaving it out of
+        them, a row left out for its Ka's for adding it to them.
     level : float
-        Family-wise level; each row is judged against ``level / rows``.
+        Family-wise level: each row's p-value is judged against
+        ``level / rows``, and Cochran's test runs at ``level``.
     tested : bool
-        ``False`` when the rows were not judged at all: fewer than three rows,
-        or no residual degree of freedom.
+        ``False`` when the rows were not judged at all: fewer than
+        :data:`REPLICATE_TEST_MIN` rows, or no residual degree of freedom.
+    scatter : dict[int, tuple[float, float]]
+        Every row left out for its scatter: Cochran's C when it was removed and
+        the limit that C exceeded.
     """
 
     excluded: tuple[int, ...]
     p_values: dict[int, float]
     level: float
     tested: bool
+    scatter: dict[int, tuple[float, float]]
 
 
 @dataclass(frozen=True)
@@ -1158,25 +1170,48 @@ def replicate_outliers(
     own_fits: Sequence[ProjectedFit] | None = None,
     level: float = REPLICATE_TEST_LEVEL,
 ) -> ReplicateTest:
-    """Rows of *projection* whose own best fit needs another Ka than the others share.
+    """Rows of *projection* that scatter far more than the others, or need another Ka than the others share.
 
     Each row r is fitted on its own, giving its own residual ``S_r`` and, with
     ``q`` the design rank at the shared optimum, ``k`` the free Ka and
-    ``nu = n - q - k``, its own variance ``s_r² = S_r / nu``. Rows are weighted
-    ``w_r = 1 / s_r²``, so each row's misfit is measured in units of its own
-    scatter and a noisier row is not penalised for being noisy. For a set A,
-    ``Qmin(A) = min_K sum_{r in A} w_r S_r(K)``; the leave-one-out statistic
-    ``T_r = Qmin(A) - Qmin(A \\ r) - nu`` is compared with ``F(k, nu)`` through
-    ``p_r = sf(T_r / k)``. While at least three rows remain, every row is
-    judged and the row with the smallest ``p_r`` is removed if
-    ``p_r < level / R`` (Bonferroni over the R rows given) and fewer than half
-    of the rows given would then be removed, else the test stops; the p-value
-    reported for a row is the one of the round it was last judged in.
-    Removal is sequential because a single pass lets one real
-    outlier drag the shared Ka of the others (measured: eight replicates with
-    one at three times the Ka give 12 % wrong exclusions in a single pass and
-    none sequentially; with four replicates the power rises from 10 % to
-    100 %). Fewer than three rows, or ``nu < 1``, cannot be judged.
+    ``nu = n - q - k``, its own variance ``s_r² = S_r / nu``. Of the R rows
+    given, fewer than half are ever left out — a majority is what defines the
+    consensus — and the two steps below share that allowance in their order: a
+    row that needs another Ka biases the average, while a noisy one only adds
+    to its scatter.
+
+    1. **Binding constants** — a clean-start forward search (Hadi & Simonoff
+       1993, JASA 88:1264; Atkinson & Riani 2000, *Robust Diagnostic
+       Regression Analysis*). Rows are weighted ``w_r = 1 / s_r²``, so each
+       row's misfit is measured in units of its own scatter. For a set A,
+       ``Qmin(A) = min_K sum_{r in A} w_r S_r(K)``, and a row r outside A is
+       judged by ``T_r = Qmin(A + r) - Qmin(A) - nu`` against ``F(k, nu)``
+       through ``p_r = sf(T_r / k)``. A starts as the smallest majority of the
+       R rows — those whose own log10 Ka lie nearest the median of the rows'
+       own fits, each Ka's distance scaled by its median absolute deviation.
+       Rows join A one per round: of those outside with ``p_r >= level / R``
+       (Bonferroni over the R rows given), the one that raises ``Qmin`` least,
+       so each is judged against every row that joined before it and the order
+       of the rows does not matter. When none can join and fewer than the
+       allowance are out, the row of A whose leave-one-out ``p_r`` (the same
+       statistic, for A without r) is smallest leaves if it is below
+       ``level / R`` and does not rejoin, as in Hadi & Simonoff's re-selection
+       of the subset; the search then resumes. The rows outside A at the end
+       are left out.
+    2. **Scatter** — Cochran's test (Cochran 1941, Ann. Eugen. 11:47;
+       ISO 5725-2:2019, 7.3.3) on the own variances of the rows kept: the
+       largest is left out when ``C = s_max² / sum_r s_r²`` exceeds
+       ``1 / (1 + (p - 1) / F⁻¹(1 - level/p; nu, (p - 1) nu))`` for the ``p``
+       rows still in — the Bonferroni bound, which reproduces Cochran's tables
+       to four decimals — and the test repeats on the rows left while at
+       least :data:`REPLICATE_TEST_MIN` remain.
+
+    Starting from the majority nearest the median is what keeps a minority
+    that shares another Ka from steering the test: a start from every row fits
+    the first shared Ka between the two groups, where a good row can look
+    worse than the shifted ones and be left out in their place. The level is
+    the ISO 5725-2 outlier level: a row significant at 5 % but not at 1 % is a
+    "straggler" and is kept.
 
     Each own residual is floored at ``_R2_RESOLUTION`` of the row's total sum
     of squares, so a row the model reproduces to rounding gets a finite weight.
@@ -1191,15 +1226,16 @@ def replicate_outliers(
         otherwise repeated here, which is the slowest part of a two-Ka
         per-replicate fit.
     level : float
-        Family-wise level of the test.
+        Family-wise level of each step.
 
     Returns
     -------
     ReplicateTest
     """
     rows = projection.signals.shape[0]
-    if rows < 3:
-        return ReplicateTest(excluded=(), p_values={}, level=level, tested=False)
+    untested = ReplicateTest(excluded=(), p_values={}, level=level, tested=False, scatter={})
+    if rows < REPLICATE_TEST_MIN:
+        return untested
     if own_fits is None:
         own_fits = [projection.fit(np.eye(rows)[r]) for r in range(rows)]
     own_ssr = np.array([own_fits[r].row_ssr[r] for r in range(rows)])
@@ -1210,29 +1246,67 @@ def replicate_outliers(
     k = shared.n_free_ka
     nu = projection.n_points - shared.rank - k
     if nu < 1 or k < 1:
-        return ReplicateTest(excluded=(), p_values={}, level=level, tested=False)
+        return untested
+    allowance = (rows - 1) // 2  # the most rows that are fewer than half
 
-    def q_min(keep: list[int]) -> float:
+    def q_min(members: list[int]) -> float:
         mask = np.zeros(rows)
-        mask[keep] = w[keep]
+        mask[members] = w[members]
         return nu * projection.fit(mask).objective
 
-    keep = list(range(rows))
-    excluded: list[int] = []
-    p_values: dict[int, float] = {}
-    while len(keep) >= 3:
-        q_all = q_min(keep)
-        p_round = {}
-        for r in keep:
-            t = max(q_all - q_min([s for s in keep if s != r]) - nu, 0.0)
-            p_round[r] = float(f_dist.sf(t / k, k, nu))
-        p_values.update(p_round)
-        worst = min(p_round, key=p_round.get)
-        if p_round[worst] >= level / rows or len(excluded) + 1 >= rows / 2:
+    def p_value(extra: float) -> float:
+        return float(f_dist.sf(max(extra - nu, 0.0) / k, k, nu))
+
+    own_log_ka = np.log10([[fit.ka[key] for key in projection.free_ka] for fit in own_fits])
+    deviation = np.abs(own_log_ka - np.median(own_log_ka, axis=0))
+    spread = np.median(deviation, axis=0)
+    distance = np.linalg.norm(deviation / np.where(spread > 0.0, spread, 1.0), axis=1)
+    clean = sorted(np.argsort(distance, kind='stable')[: rows - allowance].tolist())
+    left: set[int] = set()
+    while True:
+        q_clean = q_min(clean)
+        rise = {r: q_min(clean + [r]) - q_clean for r in range(rows) if r not in clean}
+        p_values = {r: p_value(extra) for r, extra in rise.items()}
+        joining = [r for r in rise if r not in left and p_values[r] >= level / rows]
+        if joining:
+            clean = sorted(clean + [min(joining, key=rise.get)])
+            continue
+        if len(rise) >= allowance:
             break
-        excluded.append(worst)
-        keep.remove(worst)
-    return ReplicateTest(excluded=tuple(excluded), p_values=p_values, level=level, tested=True)
+        drop = {r: q_clean - q_min([s for s in clean if s != r]) for r in clean}
+        worst = max(drop, key=drop.get)
+        if p_value(drop[worst]) >= level / rows:
+            break
+        clean.remove(worst)
+        left.add(worst)
+    shifted = list(p_values)
+
+    scatter: dict[int, tuple[float, float]] = {}
+    while len(clean) >= REPLICATE_TEST_MIN and len(shifted) + len(scatter) < allowance:
+        variances = own_ssr[clean]
+        c = float(variances.max() / variances.sum())
+        limit = _cochran_limit(level, len(clean), nu)
+        if c <= limit:
+            break
+        worst = clean[int(np.argmax(variances))]
+        scatter[worst] = (c, limit)
+        clean.remove(worst)
+    if scatter:
+        q_clean = q_min(clean)
+        p_values = {r: p_value(q_min(clean + [r]) - q_clean) for r in shifted}
+    p_values.update({r: p_value(q_clean - q_min([s for s in clean if s != r])) for r in clean})
+    return ReplicateTest(excluded=(*shifted, *scatter), p_values=p_values, level=level, tested=True, scatter=scatter)
+
+
+def _cochran_limit(level: float, groups: int, dof: int) -> float:
+    """Critical value of Cochran's C at *level* for *groups* variances of *dof* degrees of freedom each.
+
+    ``C_i = s_i² / sum s²`` exceeds ``c`` exactly when ``s_i²`` over the mean
+    of the others exceeds ``(groups - 1) c / (1 - c)``, an ``F(dof, (groups -
+    1) dof)`` variable; the Bonferroni bound over the groups gives
+    ``1 / (1 + (groups - 1) / F⁻¹(1 - level / groups))``.
+    """
+    return 1.0 / (1.0 + (groups - 1) / f_dist.isf(level / groups, dof, (groups - 1) * dof))
 
 
 # ----------------------------------------------------------------------

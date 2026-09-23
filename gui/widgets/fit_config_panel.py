@@ -30,15 +30,17 @@ looks like.</p>
 <p><b>On (default)</b></p>
 <p>Each replicate is also fitted on its own, and those fits are reported beside
 the main one: the <i>Replicates</i> table lists each replicate&rsquo;s own
-K<sub>a</sub> and R<sup>2</sup>, and the summary adds a median and a
-min&ndash;max column across them. That is real replicate-to-replicate spread,
-measured on your experiment.</p>
+K<sub>a</sub> and R<sup>2</sup>, and a line under the summary table gives the
+median and range of their own K<sub>a</sub>, each fitted with the inputs as
+entered. That is real replicate-to-replicate spread, measured on your
+experiment.</p>
 
-<p>Their own fits are also used to test the one assumption the average rests
-on: that every replicate is describing the same binding constant. A replicate
-whose own curve needs a different K<sub>a</sub> than the others agree on is
-left out of the average and named, with its p-value, in the Replicates table
-and in the report.</p>
+<p>Their own fits are also used to test the two assumptions the average rests
+on: that every replicate is describing the same binding constant, and that
+each one is about as precise as the others. A replicate whose own curve needs a
+different K<sub>a</sub> than the others agree on, or whose points scatter about
+its own curve far more than the others&rsquo; do, is left out of the average
+and named, with the reason, in the Replicates table and in the report.</p>
 
 <p><b>What the replicates also give the report</b></p>
 <p>With two or more replicates in the fit, their scatter about their mean
@@ -48,12 +50,21 @@ by more than that scatter allows. With a single replicate that question is
 answered instead from runs of points on one side of the curve.</p>
 
 <p><b>The test</b></p>
-<p>Replicates are removed one at a time, worst first, and only while a
-replicate is below a 1&thinsp;% level (the outlier level of ISO&nbsp;5725-2)
-shared out over the replicates you gave. The test never removes half or more of
-them &mdash; a majority is what defines the consensus &mdash; and it needs at
-least <b>three</b> replicates to run at all: with two, nothing says which of the
-two is the odd one.</p>
+<p>It starts from the majority of the replicates whose own K<sub>a</sub> lie
+closest to the middle of all of them, and adds back the others one at a time,
+the one that agrees best with their shared fit first, until none of the rest
+agrees. A replicate already in that the others then disagree with leaves again,
+and the ones outside at the end are left out. Starting from that majority means that two
+replicates which share a wrong K<sub>a</sub> cannot pull the shared fit their
+way and push a good replicate out instead. The replicates kept are then
+compared for scatter (Cochran&rsquo;s test), and one whose scatter is far larger
+than the others&rsquo; is left out as well.</p>
+<p>Both steps work at a 1&thinsp;% level (the outlier level of
+ISO&nbsp;5725-2): the K<sub>a</sub> step shares it out over the replicates you
+gave, Cochran&rsquo;s test over the replicates still in it. Together they never
+remove half or more of them &mdash; a majority is what defines the consensus
+&mdash; and the test needs at least <b>three</b> replicates to run at all: with
+two, nothing says which of the two is the odd one.</p>
 """
 
 
@@ -109,7 +120,8 @@ class FitConfigPanel(InfoGroupBox):
         self._per_replica_check.setChecked(FitConfig().per_replica)
         self._per_replica_check.setToolTip(
             'Also fit every replicate on its own: report their spread, and leave out a replicate whose own '
-            'fit needs a different Ka than the others share (needs at least three replicates).'
+            'fit needs a different Ka than the others share or whose scatter is far larger than theirs '
+            '(needs at least three replicates).'
         )
         self._per_replica_check.toggled.connect(self.config_changed)
 

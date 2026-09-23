@@ -13,8 +13,10 @@ least-squares solve. These tests pin what makes the engine trustworthy:
 - the interval edges lie exactly on the F-test cut-off, a saturated design is
   reported open on the side the data cannot close, and a pinned Ka has none;
 - structurally degenerate coefficients are named per assay;
-- the replicate test excludes a replicate that needs another Ka, keeps
-  replicates that merely scatter more, and does not judge two replicates;
+- the replicate test leaves out the replicates that need another Ka, even two
+  of five that share one, and a replicate whose scatter is far larger than the
+  others', keeps replicates that agree, does not depend on their order, and
+  does not judge two replicates; its scatter limit reproduces Cochran's table;
 - invalid inputs are refused with a plain-language message and a stop request
   is honoured;
 - the projected residual at moved inputs is that of an assay entered at those
@@ -40,6 +42,7 @@ from core.models.equilibrium import gda_species, hg2_signal, ida_signal
 from core.pipeline import varpro
 from core.pipeline.varpro import (
     LEVEL,
+    REPLICATE_TEST_MIN,
     FitCancelled,
     FitRefused,
     KaInterval,
@@ -957,37 +960,107 @@ def test_a_replicate_that_needs_another_ka_is_excluded_by_name(seed):
     test = replicate_outliers(_replicate_projection(x, rows))
     assert test.tested
     assert test.excluded == (0,)
+    assert test.scatter == {}  # left out for its binding constant, not for its scatter
     assert test.p_values[0] < 0.01 / 4
     assert all(p >= 0.01 / 4 for r, p in test.p_values.items() if r != 0)
     assert test.level == 0.01
 
 
-@pytest.mark.parametrize('seed', [10, 11, 12])
-def test_replicates_that_share_ka_are_all_kept(seed):
-    x, rows = _replicates(12, 0.02, seed)
-    test = replicate_outliers(_replicate_projection(x, rows))
-    assert test.tested and test.excluded == ()
-    assert set(test.p_values) == {0, 1, 2, 3}
+#: Datasets each rate below is read over: five replicates, twelve points, 2 % noise.
+_RATE_SEEDS = range(50)
 
 
-@pytest.mark.parametrize('seed', [20, 21, 22])
-def test_a_noisier_replicate_is_not_an_outlier(seed):
-    # Each replicate's misfit is measured in units of its own scatter, so
-    # scatter alone is no reason to leave a replicate out.
-    x, rows = _replicates(12, 0.02, seed, noise_factors=(1.0, 1.0, 1.0, 4.0))
-    test = replicate_outliers(_replicate_projection(x, rows))
-    assert test.tested and test.excluded == ()
+def test_two_replicates_that_share_a_shifted_ka_are_both_left_out_and_the_rest_kept():
+    """Two of five replicates at three times the Ka must not drag the shared fit and push a good one out.
+
+    A test that starts from every replicate and removes the worst one at a time
+    fits the first round's shared Ka between the two groups, where a good
+    replicate can look worse than the shifted pair; the clean start is the
+    majority nearest the median of the replicates' own fits, which a minority
+    cannot move.
+    """
+    both_out = good_lost = 0
+    for seed in _RATE_SEEDS:
+        x, rows = _replicates(12, 0.02, seed, ka_factors=(3.0, 3.0, 1.0, 1.0, 1.0))
+        test = replicate_outliers(_replicate_projection(x, rows))
+        both_out += {0, 1} <= set(test.excluded)
+        good_lost += bool(set(test.excluded) - {0, 1})
+    assert both_out >= 45
+    assert good_lost <= 1
+
+
+def test_every_replicate_kept_passes_the_limit_while_the_allowance_lasts():
+    """The table's p-values and its used / left-out column never contradict each other.
+
+    A replicate at twice the Ka can pass against a smaller set and fail once
+    another replicate joins; admitting several in one round would keep it with a
+    p-value below the limit although it could still have been left out.
+    """
+    for seed in _RATE_SEEDS:
+        x, rows = _replicates(12, 0.02, seed, ka_factors=(2.0, 1.0, 1.0, 1.0, 1.0))
+        test = replicate_outliers(_replicate_projection(x, rows))
+        limit = test.level / 5
+        for r, p in test.p_values.items():
+            if r in test.excluded:
+                assert p < limit, seed
+            elif len(test.excluded) < (5 - 1) // 2:
+                assert p >= limit, seed
+
+
+def test_a_replicate_three_times_noisier_than_the_others_is_left_out_for_its_scatter():
+    """Cochran's test at 1 %: a replicate with three times the noise enters the average at full weight otherwise."""
+    out = good_lost = 0
+    for seed in _RATE_SEEDS:
+        x, rows = _replicates(12, 0.02, seed, noise_factors=(3.0, 1.0, 1.0, 1.0, 1.0))
+        test = replicate_outliers(_replicate_projection(x, rows))
+        out += 0 in test.scatter
+        good_lost += bool(set(test.excluded) - {0})
+        # A replicate left out for its scatter is not judged on its binding constant.
+        assert set(test.scatter).isdisjoint(test.p_values)
+    assert out >= 35
+    assert good_lost <= 1
+
+
+def test_replicates_that_share_ka_and_scatter_are_all_kept():
+    """On replicates that agree, a left-out replicate is a false alarm: rare at a 1 % family-wise level."""
+    alarms = 0
+    for seed in _RATE_SEEDS:
+        x, rows = _replicates(12, 0.02, seed, ka_factors=(1.0,) * 5)
+        test = replicate_outliers(_replicate_projection(x, rows))
+        assert test.tested
+        alarms += bool(test.excluded)
+        if not test.excluded:
+            assert set(test.p_values) == set(range(5))
+    assert alarms <= 2
+
+
+def test_the_outcome_does_not_depend_on_the_order_of_the_replicates():
+    x, rows = _replicates(12, 0.02, 3, ka_factors=(3.0, 3.0, 1.0, 1.0, 1.0))
+    order = np.array([3, 0, 4, 1, 2])
+    given = replicate_outliers(_replicate_projection(x, rows))
+    shuffled = replicate_outliers(_replicate_projection(x, rows[order]))
+    assert {int(order[r]) for r in shuffled.excluded} == set(given.excluded)
+    assert {int(order[r]): p for r, p in shuffled.p_values.items()} == pytest.approx(given.p_values, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    ('level', 'groups', 'dof', 'table'),
+    # Cochran's table (Eisenhart, Hastay & Wallis 1947, ch. 15; ISO 5725-2 Table 4 for dof 1 and 2).
+    [(0.01, 4, 1, 0.9676), (0.01, 5, 2, 0.7885), (0.05, 5, 1, 0.8412), (0.01, 10, 10, 0.2704)],
+)
+def test_the_scatter_limit_is_cochrans_published_critical_value(level, groups, dof, table):
+    assert varpro._cochran_limit(level, groups, dof) == pytest.approx(table, abs=2e-4)
 
 
 def test_two_replicates_are_not_judged():
     x, rows = _replicates(12, 0.02, 30, ka_factors=(10.0, 1.0))
-    test = replicate_outliers(_replicate_projection(x, rows[:2]))
+    test = replicate_outliers(_replicate_projection(x, rows[: REPLICATE_TEST_MIN - 1]))
     assert not test.tested and test.excluded == () and test.p_values == {}
 
 
 def test_the_test_never_removes_half_of_the_replicates():
     # Two of four replicates at another Ka: a majority defines the consensus, so
-    # at most one may go, and with two candidates the rule stops at one.
+    # at most one may go.
     x, rows = _replicates(20, 0.02, 40, ka_factors=(10.0, 10.0, 1.0, 1.0))
     test = replicate_outliers(_replicate_projection(x, rows))
     assert len(test.excluded) <= 1

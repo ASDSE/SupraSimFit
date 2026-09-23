@@ -2,8 +2,9 @@
 
 Verifies, on synthetic IDA replicates with known ground truth:
 - Ka recovery from clean and from noisy replicates;
-- that a replicate needing another binding constant is left out and named,
-  and that the remaining replicates still recover the truth;
+- that a replicate needing another binding constant — or two sharing one — is
+  left out and named, that a replicate of pure noise is left out for its
+  scatter, and that the remaining replicates still recover the truth;
 - what the replicate columns report and what they are measured on;
 - the refusals a replicate set can run into.
 
@@ -260,14 +261,28 @@ class TestReplicateExclusion:
         )
         assert odd_ka > stats['max']
 
-    def test_a_replicate_of_pure_noise_is_kept_and_shows_itself_in_the_replicates_table(self):
-        """The test asks whether a replicate needs another Ka, not how noisy it is.
+    def test_two_replicates_of_another_ka_are_both_left_out_and_the_rest_recover_the_truth(self):
+        """'r0' and 'r1' are titrations of a guest binding three times as tightly: a minority sharing one Ka."""
+        ms = _ida_ms(noise_frac=0.01, seed=101)
+        for row in (0, 1):
+            rng = np.random.default_rng(500 + row)
+            _, odd = _make_ida_data({**IDA_TRUE, 'Ka_guest': 3 * IDA_TRUE['Ka_guest']}, noise_frac=0.01, rng=rng)
+            ms = _replaced(ms, row, odd)
 
-        A replicate of pure noise contradicts no binding constant — it says
-        nothing about any — so its misfit, measured in units of its own large
-        scatter, is unremarkable and the test keeps it. It is its row of the
-        Replicates table that shows what it is: an R² at zero and an own Ka
-        pinned to the edge of the search range.
+        result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _config())
+
+        assert fit_replica_ids(result) == ['r2', 'r3', 'r4']
+        assert result.metadata['replicate_test']['reasons'] == {'r0': 'ka', 'r1': 'ka'}
+        assert all('Ka' in reason for reason in result.metadata['replica_failures'].values())
+        assert_within_tolerance(result.parameters['Ka_guest'], IDA_TRUE['Ka_guest'], CLEAN_TOL, 'Ka_guest')
+
+    def test_a_replicate_of_pure_noise_is_left_out_for_its_scatter(self):
+        """A replicate of pure noise says nothing about Ka, and at full weight in the average it moves the fit.
+
+        Its misfit, measured in units of its own scatter, contradicts no binding
+        constant; what sets it apart is that scatter, 25 times the others', and
+        Cochran's test on the replicates' own residual variances leaves it out
+        and says so.
         """
         ms = _ida_ms(noise_frac=0.02, seed=37)
         rng = np.random.default_rng(999)
@@ -276,16 +291,13 @@ class TestReplicateExclusion:
 
         result = fit_measurement_set_per_replica(ms, IDAAssay, _ida_conditions(), _config())
 
-        assert fit_replica_ids(result) == list(ms.replica_ids)
-        assert result.metadata['replicate_test']['p_values']['r1'] > 0.01 / len(ms.replica_ids)
+        assert fit_replica_ids(result) == ['r0', 'r2', 'r3', 'r4']
+        assert result.metadata['replicate_test']['reasons'] == {'r1': 'scatter'}
+        assert 'scatter' in result.metadata['replica_failures']['r1']
+        # Its own fit is still reported: an R² near zero in the Replicates table.
         noise_fit = next(rf for rf in result.replica_fits if rf.metadata['replica_id'] == 'r1')
         assert noise_fit.r_squared < 0.1
-        assert float(noise_fit.parameters['Ka_guest'].magnitude) == pytest.approx(
-            GDA_IDA_RECOVERY_BOUNDS['Ka_guest'][1].magnitude
-        )
-        # Its scatter is 25 times the others', which the unweighted average of the
-        # replicates used carries into the reported fit.
-        assert not np.isclose(float(result.parameters['Ka_guest'].magnitude), IDA_TRUE['Ka_guest'], rtol=NOISY_TOL)
+        assert_within_tolerance(result.parameters['Ka_guest'], IDA_TRUE['Ka_guest'], NOISY_TOL, 'Ka_guest')
 
     def test_a_majority_is_never_removed(self):
         """Three of five replicates disagree with the other two: the test cannot call the majority wrong."""

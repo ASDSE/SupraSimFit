@@ -63,6 +63,7 @@ from core.pipeline.varpro import (
     KaInterval,
     ProjectedFit,
     Projection,
+    ReplicateTest,
     on_ka_bound,
     replicate_outliers,
 )
@@ -176,8 +177,10 @@ class FitResult:
         ``active_replica_ids`` (the replicates it was given),
         ``replica_ids_fit`` and ``replica_failures`` for a per-replicate fit
         (the replicates it used and those it left out, with the reason),
-        ``replicate_test`` (the level and each replicate's p-value in the
-        shared-Ka test, when the replicates were tested),
+        ``replicate_test`` (the level, each replicate's p-value in the
+        shared-Ka test and, for each replicate left out, whether for its
+        binding constants — ``'ka'`` — or its scatter — ``'scatter'`` — when
+        the replicates were tested),
         ``data_fingerprint`` (:meth:`MeasurementSet.fingerprint`),
         ``quality_scored_on`` (``'fitted_replicates'``: every RMSE and R² was
         measured against the replicates the fit used) and ``model_arithmetic``
@@ -1328,17 +1331,18 @@ def fit_measurement_set_per_replica(
     *,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> FitResult:
-    """Fit every active replicate on its own, test the ones that disagree out, and fit the rest together.
+    """Fit every active replicate on its own, leave out the ones that disagree, and fit the rest together.
 
     For replicates of equal scatter the joint least-squares fit of every
     replicate is the fit of their average, and the average of replicates that
     share their binding constants is itself a model signal. The reported fit is
     therefore the fit of the average of the replicates used, and what this
     function adds is the evidence behind it: every replicate's own fit, and an
-    explicit test of the one assumption the average rests on
+    explicit test of the two assumptions the average rests on
     (:func:`~core.pipeline.varpro.replicate_outliers`). A replicate whose own
-    signal needs a different binding constant than the others share is left out
-    of the average and reported by name.
+    signal needs a different binding constant than the others share, or whose
+    scatter about its own fit is far larger than theirs, is left out of the
+    average and reported by name, with the reason.
 
     The replicates' own fits and the rounds of the test are searches over one
     :class:`~core.pipeline.varpro.Projection`, whose per-row residuals on the
@@ -1443,14 +1447,13 @@ def fit_measurement_set_per_replica(
     result.metadata['replica_ids_fit'] = used
     if excluded:
         result.metadata['replica_failures'] = {
-            rid: _excluded_reason(test.p_values[row], test.level, len(given))
-            for row, rid in enumerate(given)
-            if rid in excluded
+            given[row]: _excluded_reason(test, row, len(given)) for row in sorted(test.excluded)
         }
     if test.tested:
         result.metadata['replicate_test'] = {
             'level': test.level,
             'p_values': {given[row]: p for row, p in test.p_values.items()},
+            'reasons': {given[row]: 'scatter' if row in test.scatter else 'ka' for row in sorted(test.excluded)},
         }
     _record_data(result, ms)
     return result
@@ -1497,11 +1500,17 @@ def _replica_fit(
     return result
 
 
-def _excluded_reason(p_value: float, level: float, n_replicates: int) -> str:
-    """Why a replicate was left out of the average, in plain words."""
+def _excluded_reason(test: ReplicateTest, row: int, n_replicates: int) -> str:
+    """Why replicate *row* was left out of the average, in plain words."""
+    if row in test.scatter:
+        c, limit = test.scatter[row]
+        return (
+            f"Its points scatter about its own best fit far more than the other replicates' do "
+            f"(Cochran's C = {c:.2f}, above the limit of {limit:.2f} at the {test.level:g} level)."
+        )
     return (
         f'Its own best fit needs a different Ka than the other replicates share '
-        f'(p = {p_value:.2g}; limit {level:g} shared across {n_replicates} replicates).'
+        f'(p = {test.p_values[row]:.2g}; limit {test.level:g} shared across {n_replicates} replicates).'
     )
 
 

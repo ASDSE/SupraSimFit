@@ -1298,3 +1298,24 @@ def test_the_table_fits_the_pane_of_a_laptop_window(qapp, monkeypatch, which):
     assert _too_narrow(table) == []
     assert not table.horizontalScrollBar().isVisible()
     window.close()
+
+
+@pytest.mark.parametrize(
+    ('reasons', 'why'),
+    [
+        ({'3': 'ka'}, 'as its own fit needs a different Ka than the other replicates share'),
+        ({'3': 'scatter'}, "as its points scatter far more than the other replicates' do"),
+    ],
+)
+def test_a_replicate_both_fits_leave_out_is_explained_by_the_reason_recorded_for_it(reasons, why):
+    """The sentence under the samples table gives the ground the replicate test left the replicate out on."""
+    from dataclasses import replace
+
+    from gui.plotting.fit_summary_widget import _shared_left_out
+
+    result = _per_replica_result(p_values={'0': 0.5, '1': 0.4, '2': 0.3}, excluded=('3',))
+    result = replace(result, metadata={**result.metadata, 'replicate_test': {'level': 0.01, 'reasons': reasons}})
+
+    sentence = _shared_left_out(result, result, None)
+
+    assert sentence.startswith('Both leave out') and sentence.endswith(f', {why}.')

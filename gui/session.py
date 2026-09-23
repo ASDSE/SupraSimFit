@@ -707,8 +707,10 @@ def _replicates_block(result: FitResult, replica_ids: Sequence[str] | None) -> l
     if test:
         lines.extend(
             _wrapped(
-                f'A replicate is left out when its own fit needs a different Ka than the others share, at a '
-                f'{test.get("level", 0.01):g} level shared across the {len(given)} replicates given.'
+                f'A replicate is left out when its own fit needs a different Ka than the others share, or when its '
+                f"points scatter about its own fit far more than the others' do (Cochran's test), each at a "
+                f'{test.get("level", 0.01):g} level: the Ka step shares it across the {len(given)} replicates '
+                "given, Cochran's test across the replicates still in it."
             )
         )
     lines.append('')
