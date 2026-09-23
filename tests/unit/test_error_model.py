@@ -3,7 +3,10 @@
 - ``ErrorModel.input_offsets`` multiplies the ``1 + e`` of the sources that move
   an input, checked against the perturbed input computed by hand; with no
   shared source it hands the offsets through float for float, which is what
-  keeps a fit without shared sources on the arithmetic it has always had.
+  keeps a fit without shared sources on the arithmetic it has always had. A
+  shared source moves a binding constant measured with it by ``1 / (1 + e)``,
+  checked against the association constant the law of mass action gives when
+  every concentration of its measurement is read off by the same factor.
 - ``validate`` refuses a source that states no error a titration can have, in a
   sentence that names it, and ``source_problems`` lists every fault of every
   source so the panel can state them all before a run.
@@ -47,7 +50,7 @@ def test_an_input_is_moved_by_the_product_of_its_sources():
         specs={'h0': InputSpec.sigma_pct(3), 'Ka_dye': InputSpec.sigma_pct(10)}, shared=(_STOCK, _BALANCE)
     )
     e = {'h0': 0.02, 'Ka_dye': -0.07, shared_key(_STOCK.name): -0.05, shared_key(_BALANCE.name): 0.011}
-    moved = errors.input_offsets(e)
+    moved = errors.input_offsets(e, _IDA)
 
     # The perturbed inputs written out by hand from entered * prod(1 + e).
     h0, d0 = 1e-5, 5e-6
@@ -61,9 +64,50 @@ def test_an_input_is_moved_by_the_product_of_its_sources():
 def test_without_a_shared_source_the_offsets_pass_float_for_float():
     errors = ErrorModel(specs={'h0': InputSpec.sigma_pct(3), TITRANT: InputSpec.interval_pct(-2, 2)})
     e = {'h0': 0.1 + 0.2, TITRANT: -1e-17, 'd0': 0.3}
-    moved = errors.input_offsets(e)
+    moved = errors.input_offsets(e, _IDA)
     assert moved == e and list(moved) == list(e) and moved is not e
     assert all(moved[key].hex() == e[key].hex() for key in e)
+
+
+def test_a_shared_source_moves_a_binding_constant_measured_with_it_the_other_way():
+    """A stock whose true concentration is ``1 + e`` times the one assumed, behind [Host]0 and an earlier Ka(dye).
+
+    The earlier measurement read every concentration ``1 / (1 + e)`` times its
+    true value, so the constant it reported, ``[HD] / ([H] [D])`` by the law of
+    mass action, is ``1 + e`` times the true one: the true Ka(dye) is the entered
+    one over ``1 + e``, while the true [Host]0 is the entered one times it.
+    """
+    e = 0.05
+    free_h, free_d, bound = 3e-6, 2e-6, 4e-6  # true equilibrium concentrations of that measurement
+    true_ka = bound / (free_h * free_d)
+    reported_ka = (bound / (1 + e)) / ((free_h / (1 + e)) * (free_d / (1 + e)))
+    entered = {**_IDA, 'Ka_dye': Q_(reported_ka, '1/M')}
+    stock = SharedSource('Host stock', 4.0, ('h0', 'Ka_dye'))
+    errors = ErrorModel(shared=(stock,))
+
+    moved = errors.input_offsets({shared_key(stock.name): e}, entered)
+
+    assert errors.powers(shared_key(stock.name), entered) == {'h0': 1, 'Ka_dye': -1}
+    assert reported_ka * (1 + moved['Ka_dye']) == pytest.approx(true_ka, rel=1e-12)
+    assert 1 + moved['h0'] == pytest.approx(1 + e, rel=1e-15)
+    # Its own error moves a binding constant as stated: only a shared stock inverts.
+    assert ErrorModel(specs={'Ka_dye': InputSpec.sigma_pct(5)}).powers('Ka_dye', entered) == {'Ka_dye': 1}
+
+
+def test_a_source_behind_every_input_is_a_change_of_the_concentration_unit():
+    """Every concentration times ``1 + e`` and every entered binding constant over it: the scaling the models are homogeneous in."""
+    everything = SharedSource('Everything', 4.0, ('Ka_dye', 'h0', 'd0', TITRANT))
+    errors = ErrorModel(specs={'h0': InputSpec.sigma_pct(3)}, shared=(everything,))
+
+    moved = errors.input_offsets({'h0': 0.02, shared_key(everything.name): 0.1}, _IDA)
+
+    assert 1 + moved['d0'] == pytest.approx(1.1, rel=1e-15) and 1 + moved[TITRANT] == pytest.approx(1.1, rel=1e-15)
+    assert 1 + moved['Ka_dye'] == pytest.approx(1 / 1.1, rel=1e-15)
+    assert 1 + moved['h0'] == pytest.approx(1.02 * 1.1, rel=1e-15)
+    assert errors.loading(_IDA)({shared_key(everything.name): 0.1}) == errors.input_offsets(
+        {shared_key(everything.name): 0.1}, _IDA
+    )
+    assert ErrorModel(specs={'h0': InputSpec.sigma_pct(3)}).loading(_IDA) is None
 
 
 def test_sources_are_listed_own_first_then_shared_and_say_what_they_move():
@@ -118,6 +162,11 @@ def test_the_fit_reads_every_source_but_the_additions():
         ),
         (ErrorModel(shared=(SharedSource('Host stock', 4.0, ('h0', 'h0')),)), "'Host stock' applies to one"),
         (ErrorModel(shared=(SharedSource('Host stock', 4.0, ()),)), "'Host stock' applies to none"),
+        (
+            ErrorModel(shared=(SharedSource('Host stock', 4.0, ('h0', 'h0', 'd0')),)),
+            "The shared error source 'Host stock' lists [Host]0 more than once, which would move it by the source "
+            'twice. List each input once.',
+        ),
         (ErrorModel(shared=(SharedSource('Guest stock', 4.0, ('h0', 'g0')),)), "'Guest stock' applies to an input"),
         (ErrorModel(additions=AdditionError(0.0, True)), 'error of each addition has to be above zero'),
     ],

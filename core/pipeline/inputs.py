@@ -9,7 +9,11 @@ error an input has alone is its own source, under the input's key. An error
 several inputs have in common, because they come from one stock, balance or
 pipette, is a :class:`SharedSource`. The sources are independent and multiply:
 
-    input_i = entered_i * prod over the sources s that move i of (1 + e_s)
+    input_i = entered_i * prod over the sources s that move i of (1 + e_s) ** p_si
+
+The power ``p_si`` is 1 for an input's own source and, for a shared source, the
+power of molar in the input's unit: +1 for a concentration made from the stock,
+-1 for a binding constant measured with it (:meth:`ErrorModel.powers`).
 
 :class:`ErrorModel` holds them all, with the random error of each titrant
 addition (:class:`AdditionError`, :func:`perturb_titrant`). The sensitivity
@@ -28,7 +32,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 from scipy.stats import truncnorm
@@ -176,7 +180,7 @@ class ErrorModel:
         The errors several inputs have in common.
     additions : AdditionError or None
         The random error of each titrant addition. The sensitivity analysis
-        samples it; a fit's residual scatter already contains it, so the fit
+        samples it; the interval of a fit does not include it, since the fit
         reads :meth:`for_fit`.
     """
 
@@ -207,23 +211,59 @@ class ErrorModel:
                 return s.inputs
         return (source,)
 
-    def input_offsets(self, e: Mapping[str, float]) -> dict[str, float]:
+    def powers(self, source: str, base_conditions: Mapping[str, Any]) -> dict[str, int]:
+        """Input key → the power of ``1 + e`` that *source*'s offset ``e`` moves the input by.
+
+        An input's own source and the additions move their input by ``1 + e``.
+        A shared source is one stock, balance or pipette whose true value is
+        ``1 + e`` times the one assumed: it moves a concentration made from it
+        by that factor, and a binding constant measured with it by its inverse,
+        since a constant fitted to concentrations read ``1 / (1 + e)`` too low
+        comes out ``1 + e`` too high. The power is that of molar in the input's
+        unit, which is what keeps a source loading every input of a titration
+        a change of the concentration unit (the homogeneity of the models).
+
+        Parameters
+        ----------
+        source : str
+            Source key.
+        base_conditions : Mapping[str, Any]
+            The entered assay conditions, which say what kind each input is.
+        """
+        kinds = dict(perturbable_inputs(base_conditions))
+        inverse = is_shared(source)
+        return {key: -1 if inverse and kinds.get(key) == 'binding_constant' else 1 for key in self.loaded(source)}
+
+    def input_offsets(self, e: Mapping[str, float], base_conditions: Mapping[str, Any]) -> dict[str, float]:
         """Relative offset of every input moved by the source offsets *e* (own and shared source keys).
 
-        An input one source moves takes that source's offset as it is, so with
-        no shared source the inputs' offsets are *e* itself, float for float;
-        an input several sources move takes ``prod(1 + e) - 1``.
+        An input one source moves by the power 1 takes that source's offset as
+        it is, so with no shared source the inputs' offsets are *e* itself,
+        float for float; any other input takes ``prod(1 + e) ** p - 1`` over
+        the sources that move it, with the powers of :meth:`powers`.
         """
         if not self.shared:
             return dict(e)
-        moved: dict[str, list[float]] = {}
+        moved: dict[str, list[tuple[float, int]]] = {}
         for source, offset in e.items():
-            for key in self.loaded(source):
-                moved.setdefault(key, []).append(offset)
+            for key, power in self.powers(source, base_conditions).items():
+                moved.setdefault(key, []).append((offset, power))
         return {
-            key: found[0] if len(found) == 1 else math.prod(1.0 + offset for offset in found) - 1.0
+            key: found[0][0]
+            if len(found) == 1 and found[0][1] == 1
+            else math.prod((1.0 + offset) ** power for offset, power in found) - 1.0
             for key, found in moved.items()
         }
+
+    def loading(self, base_conditions: Mapping[str, Any]) -> Callable[[Mapping[str, float]], dict[str, float]] | None:
+        """:meth:`input_offsets` at *base_conditions* as a function of the source offsets alone.
+
+        ``None`` without a shared source, where the source offsets are the
+        inputs' offsets and a fit takes them as they are.
+        """
+        if not self.shared:
+            return None
+        return lambda e: self.input_offsets(e, base_conditions)
 
     def for_fit(self) -> 'ErrorModel':
         """The sources a fit's interval reads: every one but the random error of the additions."""
@@ -501,6 +541,13 @@ def source_problems(
                 f'{"one" if source.inputs else "none"}: tick a second input, or remove it and enter the '
                 'uncertainty on the input itself.'
             )
+        repeated = [key for key in dict.fromkeys(source.inputs) if source.inputs.count(key) > 1]
+        if repeated:
+            labels = [(input_labels or {}).get(key) for key in repeated]
+            found.append(
+                f"The shared error source '{name}' lists {', '.join(labels) if all(labels) else 'an input'} more "
+                'than once, which would move it by the source twice. List each input once.'
+            )
     if errors.additions is not None and not errors.additions.sigma_pct > 0:
         found.append(
             "The random error of each addition has to be above zero. Enter it in percent, or set it to 'none'."
@@ -521,10 +568,11 @@ def validate(
         A ``ValueError`` written for the user, carrying the first sentence
         :func:`source_problems` finds: a shared source without a name, with a
         name another one has, with an uncertainty that is not above zero,
-        applied to fewer than two inputs or to an input the assay does not
-        have; an error of the additions that is not above zero. The panel that
-        states the sources shows every sentence, so a run is refused over what
-        is still unfixed rather than over something new.
+        applied to fewer than two inputs, to one input more than once or to an
+        input the assay does not have; an error of the additions that is not
+        above zero. The panel that states the sources shows every sentence, so
+        a run is refused over what is still unfixed rather than over something
+        new.
     """
     found = source_problems(errors, base_conditions, input_labels)
     if found:
@@ -541,8 +589,8 @@ def constraints(
     The inputs' own sources come first, in :func:`perturbable_inputs` order,
     each under its input key; then one per shared source, under
     :func:`shared_key` of its name and with no entered value of its own.
-    ``ErrorModel.input_offsets`` turns the offsets of these sources into the
-    offsets of the inputs.
+    ``ErrorModel.loading`` turns the offsets of these sources into the offsets
+    of the inputs.
 
     Parameters
     ----------

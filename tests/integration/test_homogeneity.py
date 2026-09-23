@@ -22,11 +22,14 @@ and with totals a titrant stock dilutes by 10 %:
   add up to ``-1`` over the concentrations, minus the entered binding constants
   (``homogeneity_sum``). With a stock declared this holds only if the titrant's
   elasticity moves the stock with the titrant, which is how the refits treat it.
+  The sum is read off a sensitivity run, which works it out from its own
+  elasticity refits on every run, and holds nothing back over it.
 """
 
 import numpy as np
 import pytest
 
+import core.pipeline.sensitivity as sens
 from core.assays.dba import DBAAssay
 from core.assays.gda import GDAAssay
 from core.assays.h2g import H2GAssay
@@ -35,8 +38,8 @@ from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measurement_set
-from core.pipeline.inputs import TITRANT_STOCK, perturbable_inputs
-from core.pipeline.sensitivity import homogeneity_sum, input_elasticities
+from core.pipeline.inputs import TITRANT, TITRANT_STOCK, ErrorModel, InputSpec, perturbable_inputs
+from core.pipeline.sensitivity import SensitivityConfig, SensitivityMode, homogeneity_sum, run_sensitivity
 from core.units import Q_, Quantity
 from tests.conftest import (
     DBA_TRUE,
@@ -111,7 +114,7 @@ def _scaled(ms: MeasurementSet, conditions: dict, c: float):
 
 @pytest.mark.parametrize('diluted', [False, True], ids=['constant-totals', 'diluted'])
 @pytest.mark.parametrize('name', list(_CASES))
-def test_fitted_constants_follow_the_concentration_unit(name, diluted):
+def test_fitted_constants_follow_the_concentration_unit(name, diluted, monkeypatch):
     ms, assay_cls, conditions = _experiment(name, diluted)
     fit_config = FitConfig()
     baseline = fit_measurement_set(ms, assay_cls, conditions, fit_config)
@@ -135,10 +138,25 @@ def test_fitted_constants_follow_the_concentration_unit(name, diluted):
             moved = np.log10(refit.parameters[key].to('1/M').magnitude) - log_ka[key]
             assert moved == pytest.approx(-np.log10(c), abs=1e-6 if one_ka else 1e-4), (key, c)
 
+    # The smallest design a run takes: the elasticities do not depend on it.
+    monkeypatch.setattr(sens, '_SOBOL_BLOCKS', 2)
+    monkeypatch.setattr(sens, '_SOBOL_SAMPLE_SIZES', (4,))
+    errors = ErrorModel(specs={TITRANT: InputSpec.sigma_pct(1.0)})
+    result = run_sensitivity(
+        ms,
+        assay_cls,
+        conditions,
+        fit_config,
+        SensitivityConfig(SensitivityMode.SOBOL, 4, errors, seed=1),
+        max_workers=1,
+    )
     kinds = dict(perturbable_inputs(conditions))
-    elasticity = input_elasticities(ms, assay_cls, conditions, fit_config, max_workers=1)
-    assert set(elasticity) == set(ka_keys)
+    assert set(result.elasticity) == set(ka_keys)
     for key in ka_keys:
-        assert set(elasticity[key]) == set(kinds)
-        size = 1.0 if one_ka else sum(abs(value) for value in elasticity[key].values())
-        assert homogeneity_sum(elasticity[key], kinds) == pytest.approx(-1.0, abs=1e-3 * size), (key, elasticity[key])
+        elasticity = result.elasticity[key]
+        assert set(elasticity) == set(kinds)
+        assert result.homogeneity[key] == homogeneity_sum(elasticity, kinds)
+        size = 1.0 if one_ka else sum(abs(value) for value in elasticity.values())
+        assert result.homogeneity[key] == pytest.approx(-1.0, abs=1e-3 * size), (key, elasticity)
+        # The identity holds, so the run holds nothing back over it (GDA's interval is open here, which it may).
+        assert result.withheld[key] != 'homogeneity', (key, result.homogeneity[key])

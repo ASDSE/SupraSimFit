@@ -14,7 +14,8 @@ takes it from the caller. Pins:
 - an assay that fits no association constant is closed with one sentence saying why;
 - a run that was never told its inputs fails loudly rather than guessing;
 - the run's controls lock while a run is live;
-- the help says what one sample is and where the uncertainties are set.
+- the help says what one sample is, where the uncertainties are set, that the
+  analysis propagates them, and when it gives a reason instead of numbers.
 
 Require a ``QApplication`` (the ``qapp`` fixture).
 """
@@ -249,14 +250,22 @@ def test_every_control_locks_while_a_run_is_live(qapp):
 
 
 def test_the_help_says_what_one_sample_is_and_where_the_uncertainties_are_set():
-    """Every sample is one exact fit of one signal, and the specs it draws are the ones that widen the interval."""
+    """Every sample is one exact fit of one signal, drawn from the uncertainties stated for the fit.
+
+    The analysis propagates those uncertainties, every draw counted the same;
+    the fit's interval also weighs what the data say about the inputs, so the
+    help says the two answer different questions and can differ.
+    """
     from gui.widgets import sensitivity_panel
 
     text = ' '.join(sensitivity_panel._SECTION_HELP_HTML.split())
     assert 'one exact fit of the averaged signal of the replicates your fit used' in text
     assert 'the same inputs always give the same K<sub>a</sub>' in text
     assert 'the uncertainty you set under <i>Input Uncertainty</i>' in text
-    assert 'the same uncertainties widen the interval of every fit' in text
+    assert 'a propagation of the uncertainties you stated (GUM Supplement 1)' in text
+    assert 'also weighs what the data say about the inputs, so the two can differ' in text
+    assert 'the same uncertainties widen the interval' not in text
+    assert 'instead of its shares, spread and elasticities' in text
     # The zero-offset sample is the fit at the entered inputs (the baseline of the run).
     assert 'The sample at no offset at all is the fit at the inputs you entered.' in text
     # The replicates each sample uses follow the fit; the panel offers no choice of its own.

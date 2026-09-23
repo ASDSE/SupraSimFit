@@ -11,12 +11,16 @@ and which of the sources that spread comes from.
 The error sources are the ones stated for the fit
 (:attr:`~core.pipeline.fit_pipeline.FitConfig.errors`, an
 :class:`~core.pipeline.inputs.ErrorModel`): the error each input has alone, the
-errors several inputs share, and the random error of each titrant addition. The
-reported interval of the fit itself already accounts for the first two
-(:mod:`core.pipeline.input_aware`) and, through its residual scatter, for the
-third. What this analysis adds is where the spread comes from: every sample
-here is a fit at inputs held at their sampled values, and the sample with no
-offset is the fit at the inputs as entered.
+errors several inputs share, and the random error of each titrant addition.
+The analysis is a propagation of those stated distributions (GUM Supplement 1,
+JCGM 101:2008): every sample is a fit at inputs held at their sampled values,
+each sample counts equally however well it fits the data, and the sample with
+no offset is the fit at the inputs as entered. The input-aware interval of a
+fit (:mod:`core.pipeline.input_aware`) also weighs what the data say about the
+inputs — an input value the titration rules out costs it — so the two answer
+different questions and can differ, the spread here being the wider where the
+data inform an input. That interval does not include the random error of each
+addition (:meth:`~core.pipeline.inputs.ErrorModel.for_fit`).
 
 Two analysis modes:
 
@@ -25,7 +29,8 @@ Two analysis modes:
   total-order Sobol' indices of log₁₀(Ka) per source with 95 % intervals for
   their Monte Carlo sampling error, each sample's source offsets, Ka and R²,
   and the absolute variance budget (:class:`Budget`, :func:`what_if`) with the
-  elasticity of Ka to every input (:func:`input_elasticities`).
+  elasticity of Ka to every input, and the homogeneity identity those
+  elasticities obey (:func:`homogeneity_sum`) checked on every run.
 - **HEATMAP** — sweep two chosen input offsets on a grid, fit at each cell →
   a 2D Ka surface with the R² of every cell.
 
@@ -92,8 +97,15 @@ from core.pipeline.inputs import (  # noqa: F401
     spec_fraction,
     validate,
 )
-from core.pipeline.noise import noise_law
-from core.pipeline.varpro import _SEARCH_PER_DECADE, FitCancelled, FitRefused, Projection, _ka_grid, on_ka_bound
+from core.pipeline.varpro import (
+    _LOG_KA_XTOL,
+    _SEARCH_PER_DECADE,
+    FitCancelled,
+    FitRefused,
+    Projection,
+    _ka_grid,
+    on_ka_bound,
+)
 
 
 class SensitivityMode(Enum):
@@ -249,23 +261,31 @@ class SensitivityResult:
         entry.
     n_on_bound : dict[str, int]
         Free binding constant → how many of the run's perturbed fits put it on a
-        bound: the samples of every matrix of the SOBOL design, or every cell of
-        a heatmap grid. The elasticity refits and the fits that produced no fit
-        at all are not counted (``n_total - n_success`` counts the latter). Such
-        a fit is the edge of the box rather than a value the data chose, and it
-        sits decades from the rest, so a share of them inflates the spread and
-        the budget.
+        bound: the samples of every matrix of the SOBOL design in the finished
+        sample blocks, or every cell of a heatmap grid. The elasticity refits
+        and the fits that produced no fit at all are not counted
+        (``n_total - n_success`` counts the latter). Such a fit is the edge of
+        the box rather than a value the data chose, and it sits decades from
+        the rest, so a share of them inflates the spread and the budget.
     stopped : bool
         Whether the run was stopped before every planned perturbed fit
         finished. The fits it never reached are ``NaN`` like the ones that
         could not be produced, and ``n_total`` counts only the fits that
-        finished.
+        finished. A SOBOL run fits its design sample block by sample block,
+        every matrix of a block together, and keeps only the blocks all of
+        whose fits finished (``n_blocks_finished``): the samples of the others
+        read ``NaN``, so the indices, the budget and the samples all describe
+        the same finished blocks.
+    n_blocks_finished : int
+        SOBOL only — the independent sample blocks (``_SOBOL_BLOCKS`` of them)
+        all of whose fits finished; every one of them unless ``stopped``.
     budget : dict[str, Budget] or None
         SOBOL only — ka_key → the absolute variance budget of log₁₀(Ka).
     elasticity : dict[str, dict[str, float]] or None
         SOBOL only — ka_key → input key → ``d ln Ka / d ln input`` at the
-        entered inputs, for every perturbable input whether it varies or not
-        (:func:`input_elasticities`); ``NaN`` where a refit gave no fit.
+        entered inputs, for every perturbable input whether it varies or not:
+        a central difference of two refits at ``±_ELASTICITY_STEP``, made
+        before the design; ``NaN`` where a refit gave no fit.
     sources : tuple[str, ...]
         SOBOL only — the reported source keys in the order of the design,
         ``ADDITIONS`` last.
@@ -274,6 +294,28 @@ class SensitivityResult:
     n_planned : int
         Perturbed fits the run planned, the elasticity refits included and the
         baseline excluded; ``n_total`` reaches it unless the run was stopped.
+    homogeneity : dict[str, float]
+        SOBOL only — ka_key → :func:`homogeneity_sum` of that constant's
+        elasticities, which the models make exactly ``−1``. ``NaN`` where the
+        identity does not apply to the fit (a binding constant pinned to one
+        value, or a signal coefficient at a bound other than zero or infinity,
+        which a change of the concentration unit would move), where one of the
+        elasticity refits gave no fit or was stopped before it ran, and for a
+        heatmap run, which makes no elasticity refits.
+    withheld : dict[str, str]
+        ka_key → why the indices, the budget, the what-if and the elasticities
+        of that constant are not to be reported, or ``''`` when they are:
+        ``'baseline_on_bound'`` — the fit at the inputs as entered rests on a
+        bound of the Ka box; ``'open_interval'`` — its conditional interval is
+        open on a side, so the data do not limit the constant there and the
+        refits land wherever its flat profile lets them; ``'homogeneity'`` — the
+        identity ``homogeneity`` checks misses ``−1`` by more than
+        :func:`homogeneity_tolerance`, or one of its refits gave no fit, so the
+        refits do not respond smoothly to the inputs. A run stopped before its
+        elasticity refits finished gives no reason: it has no finished sample
+        block, which ``stopped`` and ``n_blocks_finished`` already say. The
+        numbers stay in the result; this says they describe the search, not
+        the inputs.
     """
 
     mode: SensitivityMode
@@ -309,6 +351,9 @@ class SensitivityResult:
     sources: tuple[str, ...] = ()
     source_inputs: dict[str, tuple[str, ...]] = field(default_factory=dict)
     n_planned: int = 0
+    n_blocks_finished: int = 0
+    homogeneity: dict[str, float] = field(default_factory=dict)
+    withheld: dict[str, str] = field(default_factory=dict)
 
 
 def _reported_sources(errors: ErrorModel) -> tuple[str, ...]:
@@ -677,10 +722,12 @@ class BudgetRow:
     sd_if_exact_ci : tuple[float, float]
         Its jackknife interval.
     elasticity : float or None
-        ``d ln Ka / d ln`` of the inputs the source moves, summed over them: to
-        first order, the percent Ka moves per percent of this source, which is
-        where a source whose inputs pull Ka in opposite directions shows that it
-        cancels. ``None`` for ``ADDITIONS``, which is no single offset.
+        ``d ln Ka / d ln`` of the inputs the source moves, each times the power
+        the source moves it by (:meth:`~core.pipeline.inputs.ErrorModel.powers`)
+        and summed over them: to first order, the percent Ka moves per percent
+        of this source, which is where a source whose inputs pull Ka in
+        opposite directions shows how far it cancels. ``None`` for
+        ``ADDITIONS``, which is no single offset.
     """
 
     source: str
@@ -972,7 +1019,7 @@ def sobol_jobs(
     return SobolJobs(
         sources=_reported_sources(errors),
         source_offsets=source_offsets,
-        jobs=[(errors.input_offsets(offsets), row) for offsets, row in zip(source_offsets, deltas)],
+        jobs=[(errors.input_offsets(offsets, base_conditions), row) for offsets, row in zip(source_offsets, deltas)],
     )
 
 
@@ -1115,8 +1162,11 @@ def _evaluate_batch(
     the batch accumulate and *point_weights* is the weight of every titration
     point, the same for every fit of the batch. Results come back in the order
     of *perturbations* however the work was scheduled, so a Sobol' row pairing
-    or a heatmap cell index stays valid. A perturbation has one fit, so the
-    answer does not depend on which worker ran it.
+    or a heatmap cell index stays valid, and ``on_result(index, value)`` hears of
+    each fit as it finishes, *index* being its place in *perturbations*: a
+    perturbation never reached and one without a fit are both ``None`` in the
+    list, and only the second is ever reported. A perturbation has one fit, so
+    the answer does not depend on which worker ran it.
 
     ``spawn`` is used on every platform. Workers start from a Qt application
     that already runs threads, and forking such a process is unsafe, so the
@@ -1160,7 +1210,7 @@ def _evaluate_batch(
             except Exception as exc:
                 raise SensitivityRunError(_BATCH_FAILURE_MESSAGE) from exc
             results[index] = value
-            on_result(value)
+            on_result(index, value)
         return results
 
     queue = iter(jobs)
@@ -1189,7 +1239,7 @@ def _evaluate_batch(
                 except Exception as exc:
                     raise SensitivityRunError(_BATCH_FAILURE_MESSAGE) from exc
                 results[index] = value
-                on_result(value)
+                on_result(index, value)
             pending.update(executor.submit(_worker_fit, job) for job in islice(queue, len(finished)))
     finally:
         executor.shutdown(cancel_futures=True)
@@ -1283,6 +1333,26 @@ def _fit_perturbed(
 _ELASTICITY_STEP = 1e-3
 
 
+#: ``ln(1 + step) - ln(1 - step)``: the width in ``ln input`` the central difference spans.
+_ELASTICITY_SPAN = math.log1p(_ELASTICITY_STEP) - math.log1p(-_ELASTICITY_STEP)
+
+
+def homogeneity_tolerance(n_inputs: int) -> float:
+    """Largest ``|homogeneity_sum + 1|`` at which the elasticities of *n_inputs* inputs count as the refits' own.
+
+    A refit resolves log₁₀(Ka) to ``_LOG_KA_XTOL``, so the two refits behind
+    one elasticity differ by up to twice that from their true difference,
+    which is ``2 · _LOG_KA_XTOL · ln 10 / _ELASTICITY_SPAN`` ≈ 2.3e-4 on the
+    slope, and the sum over *n_inputs* inputs by *n_inputs* times it; the
+    truncation error of the step is below 1e-5 per slope. Ten times that
+    bound, 9e-3 for four inputs, leaves an identified fit (measured at most
+    6e-4 over the six binding assays, with and without dilution) well inside,
+    while a refit that jumps between fits or rides a flat profile misses by
+    0.8 to thousands.
+    """
+    return 10.0 * n_inputs * 2.0 * _LOG_KA_XTOL * math.log(10.0) / _ELASTICITY_SPAN
+
+
 def _elasticity_perturbations(base_conditions: Mapping) -> list[tuple[dict[str, float], None]]:
     """One step up and one step down for every perturbable input, in the order of :func:`perturbable_inputs`."""
     return [
@@ -1292,84 +1362,14 @@ def _elasticity_perturbations(base_conditions: Mapping) -> list[tuple[dict[str, 
 
 def _elasticities(base_conditions: Mapping, ka: Mapping[str, np.ndarray]) -> dict[str, dict[str, float]]:
     """ka key → input key → ``d ln Ka / d ln input`` from the fits of :func:`_elasticity_perturbations`."""
-    span = math.log1p(_ELASTICITY_STEP) - math.log1p(-_ELASTICITY_STEP)
     keys = [key for key, _ in perturbable_inputs(base_conditions)]
     return {
-        ka_key: {key: float(np.log(values[2 * i]) - np.log(values[2 * i + 1])) / span for i, key in enumerate(keys)}
+        ka_key: {
+            key: float(np.log(values[2 * i]) - np.log(values[2 * i + 1])) / _ELASTICITY_SPAN
+            for i, key in enumerate(keys)
+        }
         for ka_key, values in ka.items()
     }
-
-
-def input_elasticities(
-    ms,
-    assay_cls,
-    base_conditions: dict,
-    fit_config: FitConfig,
-    *,
-    max_workers: Optional[int] = None,
-    should_cancel: Optional[Callable[[], bool]] = None,
-) -> dict[str, dict[str, float]]:
-    """Elasticity ``d ln Ka / d ln input`` of every binding constant to every perturbable input.
-
-    A central difference at ``±_ELASTICITY_STEP`` around the entered inputs: two
-    refits per input of the average of the active replicates of *ms*, made the
-    way every sample of :func:`run_sensitivity` is — the point weights of the
-    noise law those replicates show included — whether or not an uncertainty is
-    stated for the input. An elasticity of −1 says a 1 % error of the input is
-    a 1 % error of Ka the other way.
-
-    Parameters
-    ----------
-    ms : MeasurementSet
-        Source data; its active replicates are averaged.
-    assay_cls : type[BaseAssay]
-        Concrete assay class.
-    base_conditions : dict
-        Entered assay conditions.
-    fit_config : FitConfig
-        Supplies the parameter bounds of the refits.
-    max_workers : int, optional
-        Worker processes, as :func:`run_sensitivity` takes it.
-    should_cancel : callable, optional
-        Polled between refits.
-
-    Returns
-    -------
-    dict[str, dict[str, float]]
-        ka key → input key → elasticity; ``NaN`` where a refit gave no fit.
-
-    Raises
-    ------
-    FitCancelled
-        If *should_cancel* stopped the refits.
-    """
-    workers = default_worker_count() if max_workers is None else max(1, int(max_workers))
-    probe_assay = ms.to_assay(assay_cls, conditions=base_conditions, use_average=True)
-    law = noise_law(np.vstack([ms.get_replica_signal(rid) for rid in ms.active_replica_ids]))
-
-    def cancelled() -> bool:
-        return should_cancel is not None and should_cancel()
-
-    fits = _evaluate_batch(
-        ms,
-        assay_cls,
-        np.asarray(ms.concentrations),
-        base_conditions,
-        fit_config,
-        _elasticity_perturbations(base_conditions),
-        sequential=False,
-        max_workers=workers,
-        on_result=lambda value: None,
-        should_cancel=cancelled,
-        point_weights=law.weights(probe_assay.y_data.magnitude),
-    )
-    if cancelled():
-        raise FitCancelled('The elasticities were stopped before every refit finished.')
-    ka_keys = ASSAY_REGISTRY[probe_assay.assay_type].log_scale_keys
-    return _elasticities(
-        base_conditions,
-        {key: np.array([np.nan if fit is None else fit[0][key] for fit in fits]) for key in ka_keys},
-    )
 
 
 def _free_ka_bounds(assay, fit_config: FitConfig, ka_keys: tuple[str, ...]) -> dict[str, tuple[float, float]]:
@@ -1388,6 +1388,70 @@ def _free_ka_bounds(assay, fit_config: FitConfig, ka_keys: tuple[str, ...]) -> d
 def _count_on_bound(values: np.ndarray, bounds: tuple[float, float]) -> int:
     """How many of the fitted *values* rest on a bound of *bounds*; a perturbation with no fit is not one."""
     return sum(on_ka_bound(float(value), bounds) for value in values if np.isfinite(value))
+
+
+def _identity_applies(
+    assay, fit_config: FitConfig, ka_box: Mapping[str, tuple[float, float]], baseline: FitResult
+) -> bool:
+    """Whether :func:`homogeneity_sum` has to be ``−1`` for the elasticities of *baseline*.
+
+    Summed as :func:`homogeneity_sum` sums them, the elasticities are the
+    response to a change of the concentration unit by ``1 ± _ELASTICITY_STEP``,
+    which divides every fitted binding constant and every signal coefficient by
+    that factor — as long as nothing holds them: every binding constant has to
+    be searched (a pinned one cannot follow), and no signal coefficient may sit
+    within ten steps of a bound other than zero or infinity, which read the
+    same in any unit. The edges of the Ka box are what the identity is there to
+    catch, so they do not count here.
+    """
+    meta = ASSAY_REGISTRY[assay.assay_type]
+    if set(ka_box) != set(meta.log_scale_keys):
+        return False
+    bounds = _resolve_bounds(assay, fit_config.custom_bounds)
+    margin = 10.0 * _ELASTICITY_STEP
+    for key, kind in meta.param_kinds.items():
+        if kind is not ParamKind.SIGNAL_COEFFICIENT:
+            continue
+        value = float(baseline.parameters[key].to(meta.units[key]).magnitude)
+        for end in (float(bound.to(meta.units[key]).magnitude) for bound in bounds[key]):
+            if math.isfinite(end) and end != 0.0 and not abs(value - end) > margin * abs(value):
+                return False
+    return True
+
+
+def _withheld(
+    ka_key: str,
+    baseline: FitResult,
+    baseline_on_bound: Mapping[str, bool],
+    homogeneity: float,
+    identity_applies: bool,
+    n_inputs: int,
+) -> str:
+    """Why *ka_key*'s indices, budget, what-if and elasticities describe the search rather than the inputs; ``''`` if not.
+
+    The reason tokens are those of ``SensitivityResult.withheld``, checked in
+    that order: the one that says most about the fit comes first.
+    """
+    if baseline_on_bound.get(ka_key):
+        return 'baseline_on_bound'
+    interval = baseline.intervals.get(ka_key)
+    if ka_key in baseline_on_bound and (interval is None or interval.open_low or interval.open_high):
+        return 'open_interval'
+    if identity_applies and not abs(homogeneity + 1.0) <= homogeneity_tolerance(n_inputs):
+        return 'homogeneity'
+    return ''
+
+
+def _block_order(n_base: int, n_matrices: int, n_blocks: int) -> np.ndarray:
+    """The rows of a design of *n_matrices* matrices in the order they are fitted: block by block.
+
+    Row ``m · n_base + i`` is row *i* of matrix *m*, the order
+    :class:`SobolJobs` lists them in. Every matrix of one sample block is fitted
+    before the next block starts, so a stopped run leaves whole blocks behind
+    it, and whole blocks are what the estimators and their jackknife take.
+    """
+    per_block = n_base // n_blocks
+    return np.arange(n_matrices * n_base).reshape(n_matrices, n_blocks, per_block).transpose(1, 0, 2).ravel()
 
 
 def run_sensitivity(
@@ -1428,7 +1492,9 @@ def run_sensitivity(
         Called ``progress(done, total)`` after every fit (baseline included).
     should_cancel : callable, optional
         Polled before the baseline fit, inside it and in the perturbation loop;
-        on ``True`` the run stops early and returns a partial result.
+        on ``True`` the run stops early and returns the result of what
+        finished: for SOBOL, the elasticities (fitted first) and the sample
+        blocks all of whose fits finished (``SensitivityResult.stopped``).
     max_workers : int, optional
         Worker processes to fit with. ``1`` keeps everything in this process;
         omitted uses :func:`default_worker_count`. Results are the same either
@@ -1550,10 +1616,11 @@ def run_sensitivity(
     seed_used = int(np.random.SeedSequence().generate_state(1)[0] % (MAX_SEED + 1))
     seed_used = seed_used if sens_config.seed is None else sens_config.seed
 
-    def _tally(counters: dict):
-        """Progress callback that counts a finished fit however it was scheduled."""
+    def _tally(counters: dict, finished: np.ndarray):
+        """Progress callback that counts a finished fit however it was scheduled, and marks it finished."""
 
-        def record(value) -> None:
+        def record(index: int, value) -> None:
+            finished[index] = True
             counters['total'] += 1
             counters['done'] += 1
             if value is not None:
@@ -1607,9 +1674,10 @@ def run_sensitivity(
 
     def _evaluate(
         perturbations: list[tuple[dict, np.ndarray | None]],
-    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, dict]:
-        """Fit every perturbation → (value per parameter key, R², profile R²), NaN where no fit was produced."""
+    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, dict, np.ndarray]:
+        """Fit every perturbation → (value per parameter key, R², profile R², counters, finished), NaN without a fit."""
         counters = {'total': 0, 'success': 0, 'done': done}
+        finished = np.zeros(len(perturbations), dtype=bool)
         values = _evaluate_batch(
             ms,
             assay_cls,
@@ -1619,7 +1687,7 @@ def run_sensitivity(
             perturbations,
             sequential=sobol_additions is not None and sobol_additions.sequential,
             max_workers=workers,
-            on_result=_tally(counters),
+            on_result=_tally(counters, finished),
             should_cancel=_cancelled,
             point_weights=point_weights,
         )
@@ -1628,7 +1696,10 @@ def run_sensitivity(
         }
         r2 = np.array([np.nan if v is None else v[1] for v in values])
         profile_r2 = np.array([np.nan if v is None else v[2] for v in values])
-        return params, r2, profile_r2, counters
+        return params, r2, profile_r2, counters, finished
+
+    kinds = dict(perturbable_inputs(base_conditions))
+    identity_applies = _identity_applies(probe_assay, fit_config, ka_box, baseline_result)
 
     # --- Dispatch on mode ------------------------------------------------
     if sens_config.mode is SensitivityMode.SOBOL:
@@ -1643,13 +1714,32 @@ def run_sensitivity(
             input_labels,
         )
         sources = design.sources
-        # One batch: every matrix of the design in the order A, B, AB_1 … AB_g,
-        # then the refits of the elasticities.
-        perturbations = design.jobs + _elasticity_perturbations(base_conditions)
-        params, r2, profile_r2, counters = _evaluate(perturbations)
-        n_samples = 2 * n_base  # the A and B rows
         n_design = len(design.jobs)
-        elasticity = _elasticities(base_conditions, {key: params[key][n_design:] for key in ka_keys})
+        # One batch: the refits of the elasticities first, a handful that every
+        # later statement about the run is checked against, then the design
+        # block by block (_block_order), so a stopped run keeps whole blocks.
+        elastic = _elasticity_perturbations(base_conditions)
+        order = _block_order(n_base, len(sources) + 2, _SOBOL_BLOCKS)
+        perturbations = elastic + [design.jobs[i] for i in order]
+        queued, queued_r2, queued_profile_r2, counters, queued_finished = _evaluate(perturbations)
+        elasticity = _elasticities(base_conditions, {key: queued[key][: len(elastic)] for key in ka_keys})
+
+        def in_design_order(values: np.ndarray) -> np.ndarray:
+            out = np.empty(n_design, dtype=values.dtype)
+            out[order] = values[len(elastic) :]
+            return out
+
+        params = {key: in_design_order(values) for key, values in queued.items()}
+        r2, profile_r2, finished = map(in_design_order, (queued_r2, queued_profile_r2, queued_finished))
+        # A block some fit of which never ran is dropped whole: its rows would
+        # otherwise enter the estimators as a part-block the jackknife would
+        # take for an independent replicate of the design.
+        block = (np.arange(n_design) % n_base) // (n_base // _SOBOL_BLOCKS)
+        blocks_finished = np.array([finished[block == j].all() for j in range(_SOBOL_BLOCKS)])
+        dropped = ~blocks_finished[block]
+        for values in (*params.values(), r2, profile_r2):
+            values[dropped] = np.nan
+        n_samples = 2 * n_base  # the A and B rows
 
         sobol_s1: dict[str, dict[str, float]] = {}
         sobol_st: dict[str, dict[str, float]] = {}
@@ -1658,12 +1748,13 @@ def run_sensitivity(
         rows_left_out: dict[str, int] = {}
         usable: dict[str, np.ndarray] = {}
         budget: dict[str, Budget] = {}
+        powers = {source: errors.powers(source, base_conditions) for source in sources}
         for key in ka_keys:
             # The indices split the variance of log10(Ka): Ka spans orders of
             # magnitude, and on the raw scale one far-off fit would own almost
             # all of the variance and push the indices far outside 0 to 1. A
             # row without a fit in every matrix is left out of the indices.
-            by_matrix = np.log10(params[key][:n_design]).reshape(len(sources) + 2, n_base)
+            by_matrix = np.log10(params[key]).reshape(len(sources) + 2, n_base)
             estimate = sobol_indices_with_ci(by_matrix[0], by_matrix[1], by_matrix[2:], _SOBOL_BLOCKS)
             sobol_s1[key] = {k: float(v) for k, v in zip(sources, estimate.s1)}
             sobol_st[key] = {k: float(v) for k, v in zip(sources, estimate.st)}
@@ -1685,14 +1776,18 @@ def run_sensitivity(
                         sd_if_exact=float(estimate.sd_if_exact[i]),
                         sd_if_exact_ci=tuple(map(float, estimate.sd_if_exact_ci[i])),
                         # To first order a source moves Ka by the sum of what
-                        # the inputs it moves do.
+                        # the inputs it moves do, each by the power it moves it by.
                         elasticity=None
                         if source == ADDITIONS
-                        else sum(elasticity[key][moved] for moved in errors.loaded(source)),
+                        else sum(power * elasticity[key][moved] for moved, power in powers[source].items()),
                     )
                     for i, source in enumerate(sources)
                 ),
             )
+        # A stop during the elasticity refits leaves them unrun, not failed:
+        # the identity was never checked, so it is no reason to withhold.
+        checked = identity_applies and bool(queued_finished[: len(elastic)].all())
+        homogeneity = {key: homogeneity_sum(elasticity[key], kinds) if checked else math.nan for key in ka_keys}
 
         return SensitivityResult(
             mode=sens_config.mode,
@@ -1723,13 +1818,19 @@ def run_sensitivity(
             degenerate_keys=degenerate_keys,
             sobol_rows_left_out=rows_left_out,
             baseline_on_bound=baseline_on_bound,
-            n_on_bound={key: _count_on_bound(params[key][:n_design], bounds) for key, bounds in ka_box.items()},
+            n_on_bound={key: _count_on_bound(params[key], bounds) for key, bounds in ka_box.items()},
             stopped=counters['total'] < len(perturbations),
             budget=budget,
             elasticity=elasticity,
             sources=sources,
             source_inputs={source: errors.loaded(source) for source in sources},
             n_planned=n_planned,
+            n_blocks_finished=int(blocks_finished.sum()),
+            homogeneity=homogeneity,
+            withheld={
+                key: _withheld(key, baseline_result, baseline_on_bound, homogeneity[key], checked, len(kinds))
+                for key in ka_keys
+            },
         )
 
     # --- HEATMAP ---------------------------------------------------------
@@ -1745,7 +1846,7 @@ def run_sensitivity(
     perturbations = [
         ({sens_config.x_key: float(x_offsets[ix]), sens_config.y_key: float(y_offsets[iy])}, None) for iy, ix in cells
     ]
-    params, r2, _, counters = _evaluate(perturbations)
+    params, r2, _, counters, _ = _evaluate(perturbations)
     shape = (len(y_offsets), len(x_offsets))
     r2_grid = r2.reshape(shape)
 
@@ -1768,4 +1869,6 @@ def run_sensitivity(
         n_on_bound={key: _count_on_bound(params[key], bounds) for key, bounds in ka_box.items()},
         stopped=counters['total'] < len(perturbations),
         n_planned=n_planned,
+        homogeneity=dict.fromkeys(ka_keys, math.nan),
+        withheld={key: _withheld(key, baseline_result, baseline_on_bound, math.nan, False, 0) for key in ka_keys},
     )

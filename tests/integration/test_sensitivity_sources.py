@@ -3,6 +3,11 @@
 - A source common to every concentration of a direct-binding assay moves Ka by
   exactly ``1 / (1 + e)`` (the homogeneity identity), so its row of the budget
   is ``Var(log10(1 + e))``, known in closed form, and it interacts with nothing.
+- A stock behind every concentration of a competitive assay and behind the
+  Ka_dye measured with it is a change of the concentration unit as well: every
+  refit moves Ka by exactly ``1 / (1 + e)``, which holds only if the shared
+  source moves Ka_dye by ``1 / (1 + e)`` while it moves the concentrations by
+  ``1 + e``.
 - In a competitive assay an error host and dye share moves Ka by the sum of
   both elasticities; every row of the budget agrees with the first-order figure
   from its elasticity, and the shared source outranks the own error of either.
@@ -22,6 +27,7 @@ import pytest
 from scipy.integrate import quad
 from scipy.stats import truncnorm
 
+import core.pipeline.sensitivity as sens
 from core.assays.dba import DBAAssay
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
@@ -86,6 +92,29 @@ def test_a_source_common_to_every_concentration_costs_exactly_its_own_variance()
     assert abs(row.variance - exact) <= 3 * half_width
     assert row.elasticity == pytest.approx(-1.0, abs=1e-3)
     assert abs(result.sobol_st['Ka_dye'][key] - result.sobol_s1['Ka_dye'][key]) <= 0.03
+
+
+def test_a_stock_behind_every_input_of_a_displacement_assay_moves_ka_as_a_change_of_unit(monkeypatch):
+    """IDA with one stock behind [Host]0, [Dye]0, the titrant and the Ka(dye) measured with it.
+
+    Every concentration ``1 + e`` times the entered value and Ka(dye) ``1 / (1 + e)``
+    times it is the same titration in another concentration unit, so every
+    refit's Ka_guest is the baseline's over ``1 + e`` and the source's elasticity
+    is exactly -1: in this case the error does not cancel.
+    """
+    monkeypatch.setattr(sens, '_SOBOL_BLOCKS', 2)
+    monkeypatch.setattr(sens, '_SOBOL_SAMPLE_SIZES', (4,))
+    ms = _noisy(*_make_ida_data(IDA_TRUE, n_points=_N_POINTS))
+    stock = SharedSource('Stock', 4.0, ('Ka_dye', 'h0', 'd0', TITRANT))
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(shared=(stock,)), seed=3)
+
+    result = run_sensitivity(ms, IDAAssay, _IDA_CONDITIONS, FitConfig(), cfg, max_workers=1)
+
+    e = result.sample_offsets_pct[shared_key(stock.name)] / 100
+    moved = np.log10(result.sample_ka['Ka_guest'] / result.baseline_ka['Ka_guest'])
+    np.testing.assert_allclose(moved, -np.log10(1 + e), rtol=0, atol=1e-5)
+    (row,) = result.budget['Ka_guest'].rows
+    assert row.elasticity == pytest.approx(-1.0, abs=1e-3)
 
 
 def test_an_error_host_and_dye_share_outranks_the_own_error_of_either():

@@ -11,12 +11,14 @@ Renders the output of :func:`core.pipeline.sensitivity.run_sensitivity`:
   as a whisker (a delete-one-block jackknife over the independent Sobol' sample
   blocks). The chart shows indices from -0.5 to 1.5; one beyond that is drawn to
   the edge and marked with an arrow. Under them stands that constant's
-  uncertainty budget: the spread the stated uncertainties leave log₁₀(Ka) with,
-  a table of what each source contributes to it, and a row that asks what
-  reducing one source would buy. Then one "Ka vs source" panel per source that
-  has an offset of its own plots every sample's best Ka against that offset.
-  Each panel opens on the input's range as entered, or for a σ source symmetric
-  about zero out to the farthest sampled offset.
+  uncertainty budget: the spread the stated uncertainties propagate to
+  log₁₀(Ka), a table of what each source contributes to it, and a row that asks
+  what reducing one source would buy. A constant the run withholds these for
+  (``SensitivityResult.withheld``) gets the reason in their place and no number.
+  Then one "Ka vs source" panel per source that has an offset of its own plots
+  every sample's best Ka against that offset. Each panel opens on the input's
+  range as entered, or for a σ source symmetric about zero out to the farthest
+  sampled offset.
 - **HEATMAP** — an image per Ka key over the two swept input offsets,
   coloured by the statistic chosen above the maps: the Ka change from the
   baseline fit (the default, on a diverging scale symmetric in
@@ -177,12 +179,28 @@ _BUDGET_CSV_COLUMNS = (
     'Spread if exact (decades) low',
     'Spread if exact (decades) high',
 )
-# Why the additions entry is not added to the interval the fit reports.
+# How the additions entry relates to the interval the fit reports.
 _ADDITIONS_NOTE = (
-    'The random error of each addition is already inside the interval the fit reports: it scatters the '
-    'measured points, and that scatter is what the interval is built from. It is listed here to be ranked '
-    'against the other sources, not to be added to that interval.'
+    'The interval the fit reports does not include the random error of each addition: it takes the titrant '
+    'concentrations as entered, apart from the uncertainties stated for them. Here that error is sampled and '
+    'ranked against the other sources.'
 )
+# What the numbers of a Sobol run are, said once above them: a propagation of the
+# stated uncertainties, and how that differs from the fit's input-aware interval.
+_PROPAGATION_NOTE = (
+    'The spread and the budget below propagate the uncertainties stated under Input Uncertainty (GUM Supplement 1): '
+    'every sample is a fit at inputs drawn from them, and each counts the same however well it fits the data. The '
+    'input-aware interval on the Fit Curve tab also weighs what the data say about the inputs, so the two can '
+    'differ, the spread here being the wider where the titration itself pins an input down.'
+)
+# Why a binding constant's indices, budget and elasticities are withheld, per
+# ``SensitivityResult.withheld`` reason: the short form stands in the empty index
+# chart, the whole sentence in place of the budget.
+_WITHHELD_SHORT = {
+    'baseline_on_bound': 'the fit at the entered inputs ran to the edge of its bounds',
+    'open_interval': 'the data do not limit it on every side',
+    'homogeneity': 'its refits do not follow the inputs smoothly',
+}
 # The fraction of the stated uncertainty the what-if row opens on: the middle of
 # the range it can be asked over, so the sentence shows a reduction from the
 # start without favouring any particular one.
@@ -480,11 +498,12 @@ def _stated_text(result: SensitivityResult, source: str) -> str:
     """The budget table's "Stated uncertainty" cell: what was entered under Input Uncertainty.
 
     In percent of the entered value, whichever way it was stated, so the column
-    compares. A range reads as its two ends, a standard deviation as itself.
+    compares. A range reads as its two ends, a standard deviation as ``σ``, the
+    notation of every other report of a stated uncertainty.
     """
     spec, nominal = _source_spec(result, source)
     if spec.kind is SpecKind.SIGMA:
-        return f'{_pct(_stated_pct(result, source))}{" each addition" if source == ADDITIONS else " (1 SD)"}'
+        return f'σ {_pct(_stated_pct(result, source))}{" each addition" if source == ADDITIONS else ""}'
     lo, hi = spec_bounds(spec, nominal, source_name(source))
     return f'{_pct_signed(100.0 * lo)} to {_pct_signed(100.0 * hi)}'
 
@@ -504,31 +523,63 @@ def _design_fits(result: SensitivityResult) -> int:
 
     The refits behind the elasticities are not part of it and neither is the
     baseline, so this is the number ``SensitivityResult.n_on_bound`` is counted
-    out of.
+    out of. A stopped run counts the fits it kept: the finished sample blocks
+    of a Sobol run, the cells a heatmap reached.
     """
     if result.mode is SensitivityMode.HEATMAP:
-        return result.config.n_steps**2
-    return result.config.n_samples * (len(result.sources) + 2)
+        return result.n_total if result.stopped else result.config.n_steps**2
+    blocks = result.n_blocks_finished if result.stopped else _SOBOL_BLOCKS
+    return result.config.n_samples * (len(result.sources) + 2) * blocks // _SOBOL_BLOCKS
+
+
+def _withheld_note(result: SensitivityResult, ka_key: str) -> Optional[str]:
+    """Why *ka_key*'s shares, spread and elasticities are not given, or ``None`` when they are.
+
+    The reason is the run's own (``SensitivityResult.withheld``); the sentence
+    says what it means for the numbers and where to look instead.
+    """
+    reason = (result.withheld or {}).get(ka_key, '')
+    label = fmt_param(ka_key)
+    withheld = f'so no share, spread or elasticity is given for {label}. See the Identifiability tab.'
+    if reason == 'baseline_on_bound':
+        return (
+            f'The data do not limit {label} at the inputs as entered — the fit ran to the edge of its bounds — '
+            f'{withheld}'
+        )
+    if reason == 'open_interval':
+        interval = (result.baseline_fit.intervals or {}).get(ka_key) if result.baseline_fit is not None else None
+        side = 'upper or lower'
+        if interval is not None and interval.open_low != interval.open_high:
+            side = 'lower' if interval.open_low else 'upper'
+        return (
+            f'The data give {label} no {side} limit at the inputs as entered, so its refits land wherever its flat '
+            f'profile lets them and describe the bounds of the search rather than the inputs: {withheld}'
+        )
+    if reason == 'homogeneity':
+        if not np.isfinite((result.homogeneity or {}).get(ka_key, np.nan)):
+            return (
+                f'One of the refits that check how {label} follows the inputs gave no fit. Whether its refits '
+                f'respond to the inputs smoothly cannot be told, {withheld}'
+            )
+        return (
+            f'The refits of {label} do not follow the inputs smoothly: raising every concentration by a percentage, '
+            f'and lowering every entered binding constant by it, should lower {label} by exactly that percentage, '
+            f'and here they do not. They jump between different fits, {withheld}'
+        )
+    return None
 
 
 def _on_bound_note(result: SensitivityResult, ka_key: str) -> Optional[str]:
-    """What fits that ran to the edge of the Ka box mean for *ka_key*'s budget, or ``None`` when none did.
+    """What the perturbed fits that ran to the edge of the Ka box mean for *ka_key*'s budget, or ``None`` when none did.
 
-    Two states, and they say different things. The fit at the inputs as entered
-    on a bound: the data do not limit the constant there at all, every
-    elasticity of it is zero and there is no budget to print. A share of the
-    perturbed fits on a bound: those fits sit decades from the rest, so the
-    spread and the budget carry them rather than the inputs.
+    Those fits sit decades from the rest, so the spread and the budget carry
+    them rather than the inputs. A baseline on a bound is a reason the whole
+    budget is withheld (:func:`_withheld_note`), not a share of fits.
     """
-    label = fmt_param(ka_key)
-    if (result.baseline_on_bound or {}).get(ka_key):
-        return (
-            f'The data do not limit {label} at the inputs as entered — the fit ran to the edge of its bounds — '
-            'so how the inputs move it cannot be worked out. See the Identifiability tab.'
-        )
     n = int((result.n_on_bound or {}).get(ka_key, 0))
     if not n:
         return None
+    label = fmt_param(ka_key)
     total = _design_fits(result)
     return (
         f'In {n:,} of {total:,} {"fit" if total == 1 else "fits"} ({_pct(100.0 * n / total)}) {label} ran to the '
@@ -543,10 +594,38 @@ def _budget_cell(value: float, digits: int = 2) -> str:
     return fmt_sci(value, digits).replace('-', '−') if np.isfinite(value) else 'n/a'
 
 
+#: Most significant figures a budget number is given to when two numbers of one
+#: cell need more than two to read apart.
+_MOST_DIGITS = 4
+
+
+def _digits_apart(numbers, digits: int = 2) -> int:
+    """The fewest significant figures, from *digits* up to ``_MOST_DIGITS``, at which *numbers* that differ read apart.
+
+    An interval printed to the figures of its estimate can show both ends equal
+    to it — ``0.050 [0.050, 0.050]`` — which reads as no uncertainty at all; one
+    or two more figures show what the interval is.
+    """
+    finite = [float(v) for v in numbers if np.isfinite(v)]
+    pairs = [(a, b) for i, a in enumerate(finite) for b in finite[i + 1 :] if a != b]
+    for d in range(digits, _MOST_DIGITS):
+        if all(_budget_cell(a, d) != _budget_cell(b, d) for a, b in pairs):
+            return d
+    return _MOST_DIGITS
+
+
 def _with_interval(value: float, interval: tuple[float, float], digits: int = 2) -> str:
-    """A budget number followed by its 95 % interval: ``0.60 [0.58, 0.63]``."""
+    """A budget number followed by its 95 % interval: ``0.60 [0.58, 0.63]``, with the figures that tell them apart."""
+    digits = _digits_apart((value, *interval), digits)
     low, high = (_budget_cell(end, digits) for end in interval)
     return f'{_budget_cell(value, digits)} {fmt_interval_html(low, high, False, False)}'
+
+
+def _spread_html(sd: float, digits: int) -> str:
+    """A spread in decades and as a factor, :func:`fmt_spread`'s reading with *digits* figures on the decades."""
+    if digits == 2:
+        return fmt_spread(sd, html=True)
+    return f'{fmt_sci(sd, digits)} decades (×/÷&nbsp;{fmt_sci(10.0**sd, digits + 1)})'
 
 
 def _csv_number(value: float) -> float | str:
@@ -732,19 +811,37 @@ def _quality_note(result: SensitivityResult) -> str:
         parts.append(inverted)
     # The counts describe the fits there are, which after a cancelled or partly
     # failed run is fewer than the run planned, so they agree with Fit Quality.
+    # A stopped Sobol run keeps whole sample blocks, so its counts are stated
+    # once, in blocks, and what could not be fitted is counted inside them.
     fitted = _fitted_mask(kas)
-    if fitted is not None and not fitted.all():
+    groups, dropped = result.config.n_samples, 0
+    if result.mode is SensitivityMode.SOBOL and result.stopped:
+        per_block = groups // _SOBOL_BLOCKS
+        kept = result.n_blocks_finished
+        dropped = per_block * (_SOBOL_BLOCKS - kept)
+        groups -= dropped
+        if kept:
+            parts.append(
+                f'The analysis was stopped after {kept} of {_SOBOL_BLOCKS} sample blocks had finished: everything on '
+                f'this tab rests on the {groups:,} sample groups of {"that block" if kept == 1 else "those blocks"}, '
+                'and a block left unfinished is left out whole.'
+            )
+        if fitted is not None:
+            missing = int((~fitted).sum()) - 2 * dropped
+            if missing > 0:
+                parts.append(f'{missing} of {2 * groups} samples in them could not be fitted and are left out.')
+    elif fitted is not None and not fitted.all():
         parts.append(unfitted_sentence(result, int((~fitted).sum()), fitted.size, noun))
-    counts = result.sobol_rows_left_out or {}
+    counts = {key: n - dropped for key, n in (result.sobol_rows_left_out or {}).items()}
     if len(set(counts.values())) == 1:
         counts = {None: next(iter(counts.values()))}
     for key, n in counts.items():
-        if n:
+        if n > 0 and groups:
             indices = 'The Sobol indices' if key is None else f'The Sobol indices for {plain_label(fmt_param(key))}'
             parts.append(
-                f'{indices} leave out {n:,} of the {result.config.n_samples:,} sample groups set by the sample size: '
-                f'at least one fit in {"that group" if n == 1 else "each of those groups"} '
-                f'{"is missing" if result.stopped else "could not be made"}.'
+                f'{indices} leave out {n:,} of the {groups:,} sample groups '
+                f'{"of the finished blocks" if dropped else "set by the sample size"}: at least one fit in '
+                f'{"that group" if n == 1 else "each of those groups"} could not be made.'
             )
     # The seed is what repeats the run, so it belongs on the tab — and, through
     # the tab's picture, in what the user keeps of the analysis.
@@ -795,13 +892,20 @@ def _no_index_reason(result: SensitivityResult) -> str:
 
     The indices need every fit of a sample group; a group missing one is left
     out, and with every group left out there is nothing to rank the sources by.
-    A run stopped before the first group finished is the common way there.
+    A run stopped before its first sample block finished is the common way
+    there, and it keeps no sample at all.
 
     Samples and sample groups are counted together here. A run can hold a fit
     for every sample these plots and Fit Quality count and still have no
     finished group, and the two counts read as contradicting each other unless
     they are given side by side.
     """
+    if result.stopped:
+        return (
+            f'No index: the analysis was stopped before any of its {_SOBOL_BLOCKS} sample blocks had finished, so '
+            'there is nothing yet to rank the sources by. Run it again and let it finish, or set a smaller sample '
+            'size.'
+        )
     groups = result.config.n_samples
     left_out = max((result.sobol_rows_left_out or {}).values(), default=groups)
     mask = _fitted_mask((result.sample_ka or {}).values())
@@ -809,12 +913,6 @@ def _no_index_reason(result: SensitivityResult) -> str:
     counts = f'{groups - left_out:,} of {groups:,} sample groups finished'
     if fitted:
         counts += f', although {fitted:,} sample{"" if fitted == 1 else "s"} {"was" if fitted == 1 else "were"} fitted'
-    if result.stopped:
-        return (
-            f'No index: {counts}. A group needs all of its fits, and the analysis was stopped before any group '
-            'had them, so there is nothing yet to rank the sources by. Run it again and let it finish, or set a '
-            'smaller sample size.'
-        )
     return (
         f'No index: {counts}. A group needs all of its fits, and none has them, so there is nothing to rank the '
         'sources by. Narrow the uncertainties under Input Uncertainty, or widen the bounds under Parameter '
@@ -858,8 +956,9 @@ class SensitivityWidget(QWidget):
         super().__init__(parent)
         self.setToolTip(
             '<qt>Spread of the fitted association constant when the input '
-            'concentrations (and any known K<sub>a</sub>) are perturbed within '
-            'the uncertainty you set.<br>Sobol indices rank each input by how much '
+            'concentrations (and any known K<sub>a</sub>) are drawn from the '
+            'uncertainty you set, each draw counted the same (a propagation of the '
+            'stated uncertainties).<br>Sobol indices rank each input by how much '
             'of that spread it explains; the heatmap maps Ka over two swept '
             'inputs.<br>Every sample is one exact fit of the averaged signal of the '
             'replicates the fit used, so the spread comes from the inputs alone.</qt>'
@@ -1053,10 +1152,11 @@ class SensitivityWidget(QWidget):
 
         Per binding constant: what the tab notes about fits that ran to the edge
         of the Ka box, the whole variance of log₁₀(Ka), then one row per source
-        as the table lists them, then the share no single source explains alone,
+        as the table lists them, then what no single source explains alone,
         then every perturbable input's elasticity — a source's elasticity is the
-        sum over the inputs it moves, so the inputs are listed too. Each row
-        carries the run's seed, which is what repeats it.
+        sum over the inputs it moves, so the inputs are listed too. A constant
+        the run withholds these for gets the note saying why and nothing else.
+        Each row carries the run's seed, which is what repeats it.
 
         A note is one row of its own, ``Kind`` ``note``, carrying the sentence
         the tab prints as its ``Item``: the numbers beside it are the ones the
@@ -1089,6 +1189,10 @@ class SensitivityWidget(QWidget):
         for ka_key, budget in result.budget.items():
             s1 = (result.sobol_s1 or {}).get(ka_key, {})
             s1_ci = (result.sobol_s1_ci or {}).get(ka_key, {})
+            withheld = _withheld_note(result, ka_key)
+            if withheld is not None:
+                rows.append(row(ka_key, 'note', plain_label(withheld)))
+                continue
             note = _on_bound_note(result, ka_key)
             if note is not None:
                 rows.append(row(ka_key, 'note', plain_label(note)))
@@ -1114,7 +1218,17 @@ class SensitivityWidget(QWidget):
                         **_csv_interval('Spread if exact (decades)', entry.sd_if_exact, entry.sd_if_exact_ci),
                     )
                 )
-            rows.append(row(ka_key, 'interactions', _INTERACTIONS_ROW, **{'S1': _csv_number(budget.interactions)}))
+            rows.append(
+                row(
+                    ka_key,
+                    'interactions',
+                    _INTERACTIONS_ROW,
+                    **{
+                        'S1': _csv_number(budget.interactions),
+                        'Variance (decades^2)': _csv_number(budget.interactions * budget.variance),
+                    },
+                )
+            )
             for input_key, value in (result.elasticity or {}).get(ka_key, {}).items():
                 name = plain_label(self._input_label(assay_type, input_key))
                 rows.append(row(ka_key, 'input', name, **{'Elasticity': _csv_number(value)}))
@@ -1222,29 +1336,41 @@ class SensitivityWidget(QWidget):
                 if key not in source_keys:
                     source_keys.append(key)
 
+        caption = QLabel(_PROPAGATION_NOTE)
+        caption.setWordWrap(True)
+        caption.setStyleSheet(f'color: {INK_2}; font-size: 13px; padding: 2px 6px;')
+        self._results_layout.addWidget(caption)
+
         top = QWidget()
         grid = QGridLayout(top)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(4)
         for r, ka_key in enumerate(result.ka_keys):
+            # A withheld constant keeps its samples on show, with no number read off them.
+            reason = (result.withheld or {}).get(ka_key, '')
             hist = self._make_histogram(
                 samples=samples_by_ka.get(ka_key),
                 baseline=result.baseline_ka.get(ka_key),
                 ka_key=ka_key,
                 use_log=use_log,
                 unit_html=self._ka_unit_html(assay_type, ka_key),
+                summary=not reason,
             )
             grid.addWidget(hist, 2 * r, 0)
             if source_keys:
+                if reason:
+                    no_index = f'No index for {fmt_param(ka_key)}: {_WITHHELD_SHORT[reason]}. The note below says more.'
+                else:
+                    no_index = _no_index_reason(result)
                 bars = self._make_index_bars(
                     ka_key=ka_key,
                     source_keys=source_keys,
-                    s1=s1_by_ka.get(ka_key, {}),
-                    st=st_by_ka.get(ka_key, {}),
-                    s1_ci=(result.sobol_s1_ci or {}).get(ka_key, {}),
-                    st_ci=(result.sobol_st_ci or {}).get(ka_key, {}),
+                    s1={} if reason else s1_by_ka.get(ka_key, {}),
+                    st={} if reason else st_by_ka.get(ka_key, {}),
+                    s1_ci={} if reason else (result.sobol_s1_ci or {}).get(ka_key, {}),
+                    st_ci={} if reason else (result.sobol_st_ci or {}).get(ka_key, {}),
                     assay_type=assay_type,
-                    no_index_reason=_no_index_reason(result),
+                    no_index_reason=no_index,
                 )
                 grid.addWidget(bars, 2 * r, 1)
             # The budget reads the same indices the bars draw, so it stands
@@ -1299,7 +1425,9 @@ class SensitivityWidget(QWidget):
         ka_key: str,
         use_log: bool,
         unit_html: str,
+        summary: bool = True,
     ) -> pg.PlotWidget:
+        """The samples' Ka as a histogram, titled with their median and spread when *summary*."""
         bottom_axis = ScientificAxisItem(orientation='bottom', use_exponent=not use_log)
         bottom_axis.enableAutoSIPrefix(False)
         pw, plot = self._new_plot(260, 220, axisItems={'bottom': bottom_axis})
@@ -1345,11 +1473,12 @@ class SensitivityWidget(QWidget):
 
         val_html = f'{fmt_sci(median, 3)} {unit_html}'.strip()
         spread = f' · middle 90% within {fmt_sci(p95 / p5)}-fold' if p5 > 0 else ''
+        subtitle = f'median {val_html}{spread}' if summary else 'no summary: see the note below'
         tick_size = self._style.get('distribution', {}).get('tick_font_size', 12)
         self._set_title(
             plot,
             f'{ka_label}<br><span style="font-weight: normal; font-size: {tick_size}pt; color: {INK_2};">'
-            f'median {val_html}{spread}</span>',
+            f'{subtitle}</span>',
         )
         self._apply_axis_style(plot)
         plot.enableAutoRange(axis='x')
@@ -1535,9 +1664,8 @@ class SensitivityWidget(QWidget):
         """One binding constant's budget: the spread it is known to, the table of sources, and the what-if row.
 
         Where fits ran to the edge of the Ka box, :func:`_on_bound_note` says
-        what that leaves the budget able to state. With the baseline itself on a
-        bound the note stands in for the spread line and the table reports no
-        number, since none of them is about the inputs any more.
+        what that leaves the budget able to state. A constant the run withholds
+        the budget for (:func:`_withheld_note`) gets the reason and no number.
         """
         block = QWidget()
         layout = QVBoxLayout(block)
@@ -1548,19 +1676,26 @@ class SensitivityWidget(QWidget):
         header.setTextFormat(Qt.TextFormat.RichText)
         header.setWordWrap(True)
         header.setStyleSheet(f'color: {INK}; font-weight: bold; font-size: {self._title_size()}pt;')
-        on_bound = bool((result.baseline_on_bound or {}).get(ka_key))
-        if not on_bound:
-            # The tip explains the spread and its interval, which the line carries only while there is one.
-            header.setToolTip(
-                '<qt>How far the fitted value moves when the inputs move within the uncertainties you stated, '
-                'and nothing else changes. The interval is the same 95% jackknife interval the index whiskers '
-                'carry: it covers the sampling error of the analysis, not errors in what you stated.</qt>'
-            )
         layout.addWidget(header)
 
-        # With the baseline on a bound the header already carries the note.
+        withheld = _withheld_note(result, ka_key)
+        if withheld is not None:
+            note = QLabel(withheld)
+            note.setTextFormat(Qt.TextFormat.RichText)
+            note.setWordWrap(True)
+            note.setStyleSheet(f'color: {INK_2}; font-size: 13px;')
+            layout.addWidget(note)
+            return block
+        # The tip explains the spread and its interval, which the line carries only while there is one.
+        header.setToolTip(
+            '<qt>How far the fitted value moves when the inputs move within the uncertainties you stated, '
+            'every draw counted the same, and nothing else changes. The interval is the same 95% jackknife '
+            'interval the index whiskers carry: it covers the sampling error of the analysis, not errors in '
+            'what you stated.</qt>'
+        )
+
         note_text = _on_bound_note(result, ka_key)
-        if note_text is not None and not on_bound:
+        if note_text is not None:
             note = QLabel(note_text)
             note.setTextFormat(Qt.TextFormat.RichText)
             note.setWordWrap(True)
@@ -1572,7 +1707,12 @@ class SensitivityWidget(QWidget):
         table.setToolTip(
             '<qt>Per source: what you stated, how many percent K<sub>a</sub> moves per percent of it '
             '(negative where it moves the other way), the share of the spread it explains alone, that share '
-            'as a variance, and the spread that would be left if the source were known exactly.</qt>'
+            'as a variance, and the spread that would be left if the source were known exactly. The variances '
+            'and the Interactions row add up to the square of the spread above.<br>A source behind every '
+            'concentration, such as one stock or balance, has elasticity −1 in a direct-binding assay; in a '
+            'displacement assay it cancels only as far as the elasticity of K<sub>a,dye</sub> is close to 1, '
+            'which holds for strong dye binding and not otherwise. The Elasticity column shows how far it does '
+            'here.</qt>'
         )
         layout.addWidget(table)
 
@@ -1582,48 +1722,40 @@ class SensitivityWidget(QWidget):
             note.setStyleSheet(f'color: {INK_2}; font-size: 13px;')
             layout.addWidget(note)
 
-        if not on_bound:
-            what_if_row = self._make_what_if(result, ka_key, assay_type)
-            if what_if_row is not None:
-                layout.addWidget(what_if_row)
+        what_if_row = self._make_what_if(result, ka_key, assay_type)
+        if what_if_row is not None:
+            layout.addWidget(what_if_row)
         return block
 
     def _budget_header(self, result: SensitivityResult, ka_key: str) -> str:
-        """The line above the table: the spread the stated inputs leave this constant with.
+        """The line above the table: the spread the stated uncertainties propagate to this constant.
 
-        Where the fit at the inputs as entered ran to the edge of the Ka box
-        there is no such spread to state — every sample is measured against a
-        value the data did not choose — and the line says that instead.
+        A constant the run withholds the budget for gets the heading alone; the
+        reason stands under it.
         """
         budget = result.budget[ka_key]
         ka_label = f'log₁₀({fmt_param(ka_key)})'
-        if (result.baseline_on_bound or {}).get(ka_key):
-            return _on_bound_note(result, ka_key)
+        lead = f'Spread of {ka_label} from the stated input uncertainties'
+        if (result.withheld or {}).get(ka_key):
+            return f'{lead}: not given.'
         if not np.isfinite(budget.variance):
-            return f'Input-limited spread of {ka_label}: too few fits finished to work it out.'
-        low, high = (_budget_cell(end) for end in _sd_interval(budget.variance_ci))
+            return f'{lead}: too few fits finished to work it out.'
+        ends = _sd_interval(budget.variance_ci)
+        digits = _digits_apart((budget.sd, *ends))
+        low, high = (_budget_cell(end, digits) for end in ends)
         interval = fmt_interval_html(low, high, False, False)
-        return f'Input-limited spread of {ka_label}, 1 SD: {fmt_spread(budget.sd, html=True)} {interval}'
+        return f'{lead}, 1 SD: {_spread_html(budget.sd, digits)} {interval}'
 
     def _budget_table(self, result: SensitivityResult, ka_key: str, assay_type: Optional[AssayType]) -> list[list[str]]:
         """The table's cells: one row per source, then what no single source explains.
 
-        With the baseline fit on a bound of the Ka box every number in the table
-        is about the edge of that box rather than about the inputs, so the cells
-        read as they do when too few fits finished: what was stated stays, the
-        rest is ``n/a``.
+        The Interactions row carries its share of the variance and that share
+        as a variance, so the Variance column adds up to the square of the
+        spread the line above states.
         """
         budget = result.budget[ka_key]
         s1 = (result.sobol_s1 or {}).get(ka_key, {})
         s1_ci = (result.sobol_s1_ci or {}).get(ka_key, {})
-        if (result.baseline_on_bound or {}).get(ka_key):
-            no_number = _budget_cell(np.nan)
-            rows = [
-                [self._input_label(assay_type, row.source), _stated_text(result, row.source), *[no_number] * 4]
-                for row in budget.rows
-            ]
-            rows.append([_INTERACTIONS_ROW, _NO_ENTRY, _NO_ENTRY, no_number, _NO_ENTRY, _NO_ENTRY])
-            return rows
         rows = [
             [
                 self._input_label(assay_type, row.source),
@@ -1635,7 +1767,16 @@ class SensitivityWidget(QWidget):
             ]
             for row in budget.rows
         ]
-        rows.append([_INTERACTIONS_ROW, _NO_ENTRY, _NO_ENTRY, _budget_cell(budget.interactions), _NO_ENTRY, _NO_ENTRY])
+        rows.append(
+            [
+                _INTERACTIONS_ROW,
+                _NO_ENTRY,
+                _NO_ENTRY,
+                _budget_cell(budget.interactions),
+                _budget_cell(budget.interactions * budget.variance),
+                _NO_ENTRY,
+            ]
+        )
         return rows
 
     def _make_what_if(self, result: SensitivityResult, ka_key: str, assay_type: Optional[AssayType]) -> QWidget | None:
@@ -1735,8 +1876,8 @@ class SensitivityWidget(QWidget):
             )
         sign = _stated_prefix(result, source)
         return (
-            f'Reducing {label} from {sign}{_pct(stated)} to {sign}{_pct(reduced_pct)} would shrink the input-limited '
-            f'spread of {fmt_param(ka_key)} from {fmt_spread(before, html=True)} to '
+            f'Reducing {label} from {sign}{_pct(stated)} to {sign}{_pct(reduced_pct)} would shrink the spread the '
+            f'stated uncertainties give {fmt_param(ka_key)} from {fmt_spread(before, html=True)} to '
             f'{after}{tail} '
             f'{self._input_label(assay_type, answer.largest_after)} would then be the largest item.'
         )

@@ -17,9 +17,14 @@ Pins the wiring the compute-layer tests can't reach:
   symmetric in the log ratio to the baseline Ka; Ka on the Plot Style's Ka
   scale; R²), labels its colour bar in the style's tick font, keeps the choice
   across new results and restyles, and names both inputs in its hover readout.
-- The budget says when fits ran to the edge of the Ka bounds: with the baseline
-  there it prints the reason in place of the spread and no number at all, and
-  with a share of the samples there it counts them above the numbers it keeps.
+- The budget says when fits ran to the edge of the Ka bounds, counting a share
+  of the samples there above the numbers it keeps; a constant the run withholds
+  (baseline on a bound, open interval, homogeneity identity broken) gets the
+  reason in place of its budget and no number at all. The page says once that
+  it propagates the stated uncertainties, and how that differs from the
+  input-aware interval; the Variance column adds up to the square of the spread,
+  and an interval is printed to the figures that tell it from its estimate.
+- A stopped run is counted in the sample blocks it kept, once.
 - The summary under the plot tabs follows the tab: the samples view on Ka
   Sensitivity, the fit on every other tab, and a new run, a failed run, a
   heatmap and new or cleared data never leave it stale. What that view shows is
@@ -131,7 +136,7 @@ _BUDGET = Budget(
     ),
 )
 #: Every perturbable input of the IDA assay, the two that are not sources of
-#: their own included, as ``input_elasticities`` reports them.
+#: their own included, as a run's elasticity refits report them.
 _ELASTICITY = {'Ka_dye': 0.31, 'h0': -1.2, 'd0': 0.62, TITRANT: 0.95}
 
 
@@ -652,26 +657,118 @@ def test_a_total_order_drawn_below_its_first_order_is_explained_by_the_whiskers(
     assert avoid not in text
 
 
-def test_a_cancelled_run_does_not_call_the_samples_it_never_reached_unfittable(qapp):
-    """A run stopped part way has samples with no fit for two reasons, and the note does not pick one."""
+def _stopped_result(kept: int) -> SensitivityResult:
+    """A run of 16 sample groups in eight blocks of two, stopped with *kept* blocks finished.
+
+    As a run records it: every sample of an unfinished block reads as having
+    no fit, and inside the finished ones the A sample of group 1 could not be
+    fitted, which takes that group out of the indices.
+    """
+    result = _sobol_result()
+    n_base, per_block = 16, 2
+    finished = np.arange(n_base) < kept * per_block
+    fitted = np.tile(finished, 2)
+    fitted[1] = False
+    ka = np.where(fitted, np.asarray(result.sample_ka['Ka_guest'][: 2 * n_base], dtype=float), np.nan)
+    ka[fitted] = 2e8
+    left_out = int(n_base - finished.sum()) + 1
+    return replace(
+        result,
+        config=replace(result.config, n_samples=n_base),
+        sample_ka={'Ka_guest': ka},
+        sample_r2=np.where(fitted, 0.99, np.nan),
+        sample_profile_r2=np.where(fitted, 0.991, np.nan),
+        sample_usable={'Ka_guest': np.tile(fitted[:n_base] & fitted[n_base:], 2)},
+        sample_offsets_pct={key: values[: 2 * n_base] for key, values in result.sample_offsets_pct.items()},
+        sample_params=None,
+        sobol_rows_left_out={'Ka_guest': left_out},
+        stopped=True,
+        n_blocks_finished=kept,
+        n_success=int(fitted.sum()),
+        n_total=int(fitted.sum()) + 1,
+    )
+
+
+def test_a_stopped_run_is_counted_once_in_the_blocks_it_kept(qapp):
+    """A stopped run keeps whole sample blocks, so it is stated in blocks, and what failed is counted inside them.
+
+    Counting the samples of the dropped blocks as unfitted, or the groups as
+    left out of the indices, would give three counts of one stop in three units.
+    """
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
-    result = _sobol_result()  # 40 samples, sample 5 unfitted
-    ka = np.asarray(result.sample_ka['Ka_guest'], dtype=float)
-    r2 = np.asarray(result.sample_r2, dtype=float)
-    ka[10:] = np.nan  # the run was cancelled after the tenth sample
-    r2[10:] = np.nan
-    result.sample_ka = {'Ka_guest': ka}
-    result.sample_r2 = r2
-    result.stopped = True
-    result.n_success = 9
-    result.n_total = 10
+    w = SensitivityWidget()
+    w.update_result(_stopped_result(kept=3))
+    text = w._note.text()
+
+    assert f'The analysis was stopped after 3 of {_SOBOL_BLOCKS} sample blocks had finished' in text
+    assert 'rests on the 6 sample groups of those blocks' in text
+    assert '1 of 12 samples in them could not be fitted and are left out.' in text
+    assert 'The Sobol indices leave out 1 of the 6 sample groups of the finished blocks' in text
+    assert 'either because' not in text and '32 samples' not in text and 'of the 16' not in text
+
+
+def test_a_run_stopped_before_any_block_finished_says_so_where_the_bars_would_be(qapp):
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    missing = {'Ka_guest': dict.fromkeys(_INPUTS, np.nan)}
+    no_ci = {'Ka_guest': dict.fromkeys(_INPUTS, (np.nan, np.nan))}
+    w.update_result(
+        replace(_stopped_result(kept=0), sobol_s1=missing, sobol_st=missing, sobol_s1_ci=no_ci, sobol_st_ci=no_ci)
+    )
+    (plot,) = [plot for plot in _plots(w) if 'Sobol indices' in plot.titleLabel.text]
+    texts = [item.textItem.toPlainText() for item in plot.items if isinstance(item, pg.TextItem)]
+
+    (reason,) = [text for text in texts if text != 'n/a']
+    assert reason.startswith(f'No index: the analysis was stopped before any of its {_SOBOL_BLOCKS} sample blocks')
+    assert 'stopped after' not in w._note.text()
+
+
+def test_a_run_stopped_during_its_elasticity_refits_says_it_was_stopped_and_nothing_else(qapp, monkeypatch):
+    """The refits a stop leaves unrun did not fail: the tab says the run was stopped, not that Ka jumps.
+
+    A run is stopped after two of the elasticity refits, which come before the
+    first sample block. No reason to withhold may be given, and nothing on the
+    tab may say the refits gave no fit or do not follow the inputs.
+    """
+    from PyQt6.QtWidgets import QLabel
+
+    import core.pipeline.sensitivity as sens
+    from core.assays.ida import IDAAssay
+    from core.data_processing.measurement_set import MeasurementSet
+    from core.pipeline.fit_pipeline import FitConfig
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+    from tests.conftest import IDA_TRUE, _make_ida_data
+
+    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
+        signal = dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)
+        return {'Ka_guest': 10.0 ** (8 + offsets.get('h0', 0.0)), **signal}, 1.0, 1.0
+
+    monkeypatch.setattr(sens, '_fit_perturbed', fake_fit)
+    x, y = _make_ida_data(IDA_TRUE, n_points=20)
+    ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
+    conditions = {k: Q_(IDA_TRUE[k], u) for k, u in (('Ka_dye', '1/M'), ('h0', 'M'), ('d0', 'M'))}
+    finished: list[int] = []
+    result = sens.run_sensitivity(
+        ms,
+        IDAAssay,
+        conditions,
+        FitConfig(),  # the default bounds, under which the homogeneity identity applies
+        SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={'h0': InputSpec.sigma_pct(3.0)}), seed=1),
+        max_workers=1,
+        progress=lambda done, total: finished.append(done),
+        should_cancel=lambda: len(finished) >= 3,  # the baseline and two refits
+    )
+    assert (result.stopped, result.n_blocks_finished, result.withheld) == (True, 0, {'Ka_guest': ''})
 
     w = SensitivityWidget()
     w.update_result(result)
-    text = w._note.text()
-    # Sample 5 plus the thirty the run never reached.
-    assert '31 of 40 samples have no fit, either because the analysis was stopped' in text
+    (plot,) = [plot for plot in _plots(w) if 'Sobol indices' in plot.titleLabel.text]
+    texts = [item.textItem.toPlainText() for item in plot.items if isinstance(item, pg.TextItem)]
+    texts += [label.text() for label in w.findChildren(QLabel)]
+    assert any(t.startswith('No index: the analysis was stopped before any') for t in texts)
+    assert not any('smoothly' in t or 'gave no fit' in t for t in texts)
 
 
 def test_log_ka_axis_labels_round_values_within_a_decade(qapp):
@@ -1603,14 +1700,14 @@ def test_an_index_panel_with_no_bars_says_why_it_is_empty(qapp, stopped, fix):
 def test_an_empty_index_panel_counts_the_samples_that_did_get_a_fit(qapp):
     """A run can hold a fit for every sample it reports and still have finished no sample group.
 
-    The design is run one matrix at a time, so Fit Quality can count samples
-    with a fit while the index panels have nothing to rank. The two readings sit
-    in different panes and read as contradicting each other unless the panel
-    with no bars gives both counts.
+    A group needs its mixed samples too, so Fit Quality can count samples with
+    a fit while the index panels have nothing to rank. The two readings sit in
+    different panes and read as contradicting each other unless the panel with
+    no bars gives both counts.
     """
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
-    result = _no_index_result(stopped=True)
+    result = _no_index_result(stopped=False)
     fitted = int(np.isfinite(result.sample_ka['Ka_guest']).sum())
     groups = result.config.n_samples
     finished = groups - result.sobol_rows_left_out['Ka_guest']
@@ -1721,7 +1818,7 @@ def test_the_budget_table_shows_the_numbers_of_the_result_it_was_given(qapp):
     # 0.05 × 0.007056 = 3.528e-4 decades², 0.0819 decades left if it were exact.
     assert rows[0] == [
         w._input_label(AssayType.IDA, 'Ka_dye'),
-        '5 % (1 SD)',
+        'σ 5 %',
         '0.31',
         '0.050 [0.020, 0.15]',
         '3.5×10⁻⁴ [2.0×10⁻⁴, 5.0×10⁻⁴]',
@@ -1729,8 +1826,42 @@ def test_the_budget_table_shows_the_numbers_of_the_result_it_was_given(qapp):
     ]
     # An input the fit answers to the other way round keeps its sign.
     assert rows[1][2] == '−1.2'
-    # The interactions row carries the share alone: the rest is not a number it has.
-    assert rows[-1] == ['Interactions', '–', '–', '0.15', '–', '–']
+    # The interactions row carries its share, 0.15, and that share of the variance, 0.15 × 0.007056.
+    assert rows[-1] == ['Interactions', '–', '–', '0.15', '1.1×10⁻³', '–']
+
+
+def test_the_variance_column_adds_up_to_the_square_of_the_spread(qapp):
+    """What the sources explain alone and what they explain only together make up the whole variance."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    result = _sobol_result()
+    w.update_result(result)
+    rows = w.budget_rows()
+
+    parts = [row['Variance (decades^2)'] for row in rows if row['Kind'] in ('source', 'interactions')]
+    assert sum(parts) == pytest.approx(result.budget['Ka_guest'].sd ** 2, rel=1e-12)
+
+
+def test_an_interval_is_printed_to_the_figures_that_tell_it_from_its_estimate(qapp):
+    """``0.050 [0.050, 0.050]`` reads as no uncertainty at all; the ends get the figures that show them."""
+    from gui.plotting.labels import fmt_param
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    result = _sobol_result()
+    first = result.budget['Ka_guest'].rows[0]
+    tight = BudgetRow(first.source, first.variance, first.variance_ci, 0.05, (0.04999, 0.05001), first.elasticity)
+    result.budget = {'Ka_guest': Budget(0.0025, (0.04999**2, 0.05001**2), (tight, *result.budget['Ka_guest'].rows[1:]))}
+    w = SensitivityWidget()
+    w.update_result(result)
+
+    assert w._budget_header(result, 'Ka_guest') == (
+        f'Spread of log₁₀({fmt_param("Ka_guest")}) from the stated input uncertainties, 1 SD: '
+        '0.05000 decades (×/÷&nbsp;1.1220) [0.04999, 0.05001]'
+    )
+    assert _cells(_budget_tables(w)[0])[0][-1] == '0.05000 [0.04999, 0.05001]'
+    # Where two figures already tell them apart, two it is.
+    assert _cells(_budget_tables(w)[0])[1][-1] == '0.075 [0.072, 0.078]'
 
 
 def test_the_spread_column_never_shows_a_negative_standard_deviation(qapp):
@@ -1784,7 +1915,8 @@ def test_the_header_line_states_the_spread_and_the_interval_of_the_spread(qapp):
     w.update_result(result)
 
     assert w._budget_header(result, 'Ka_guest') == (
-        f'Input-limited spread of log₁₀({fmt_param("Ka_guest")}), 1 SD: 0.084 decades (×/÷&nbsp;1.21) [0.081, 0.087]'
+        f'Spread of log₁₀({fmt_param("Ka_guest")}) from the stated input uncertainties, 1 SD: 0.084 decades '
+        '(×/÷&nbsp;1.21) [0.081, 0.087]'
     )
 
 
@@ -1803,7 +1935,7 @@ def test_a_budget_no_run_could_pin_down_says_so_instead_of_writing_nan(qapp):
     assert 'nan' not in line.lower()
     # With no variance there is no share for the sources to leave over, and a
     # row of "0" beside sources that all read n/a would state one.
-    assert _cells(_budget_tables(w)[0])[-1] == ['Interactions', '–', '–', 'n/a', '–', '–']
+    assert _cells(_budget_tables(w)[0])[-1] == ['Interactions', '–', '–', 'n/a', 'n/a', '–']
 
 
 _KNOWN_WHAT_IF = WhatIf(sd=0.056, sd_reweighted=0.057, effective_samples=1111.4, largest_after='h0')
@@ -1834,8 +1966,8 @@ def test_the_what_if_sentence_leads_with_the_re_weighted_answer(qapp, monkeypatc
     # The core call gets the reduction as a share of what was stated: 1 % of 5 %.
     assert asked[-1] == ('Ka_guest', 'Ka_dye', 0.2)
     assert sentence.text() == (
-        f'Reducing {w._input_label(AssayType.IDA, "Ka_dye")} from 5 % to 1 % would shrink the input-limited '
-        f'spread of {fmt_param("Ka_guest")} from 0.084 decades (×/÷&nbsp;1.21) to 0.057 decades '
+        f'Reducing {w._input_label(AssayType.IDA, "Ka_dye")} from 5 % to 1 % would shrink the spread the stated '
+        f'uncertainties give {fmt_param("Ka_guest")} from 0.084 decades (×/÷&nbsp;1.21) to 0.057 decades '
         '(×/÷&nbsp;1.14), read from the samples re-weighted towards the narrower uncertainty '
         '(1,111 effective samples). Cross-check by the formula: 0.056. '
         f'{w._input_label(AssayType.IDA, "h0")} would then be the largest item.'
@@ -1972,8 +2104,8 @@ def test_a_shared_source_and_the_additions_are_listed_beside_the_inputs(qapp):
 
     rows = _cells(_budget_tables(w)[0])
     assert [row[0] for row in rows] == ['[Host]<sub>0</sub>', 'Stock A', 'Each addition (random)', 'Interactions']
-    assert rows[1][1:3] == ['3 % (1 SD)', '−0.60']
-    assert rows[2][1:3] == ['1 % each addition', '–']
+    assert rows[1][1:3] == ['σ 3 %', '−0.60']
+    assert rows[2][1:3] == ['σ 1 % each addition', '–']
 
     # One panel per source that has an offset of its own; the additions have none.
     panels = [plot.getAxis('bottom').labelText for plot in _plots(w) if plot.getAxis('bottom').labelText]
@@ -2000,8 +2132,8 @@ def test_a_source_name_wider_than_its_bar_slot_is_cut_to_it(qapp):
     assert axis.tickValues(-0.5, 1.5, 140) == [(1.0, [0.0, 1.0])]
 
 
-def test_the_additions_row_says_it_is_already_inside_the_interval_the_fit_reports(qapp):
-    """The scatter of the points is what the fit's interval is built from, so this entry is not added to it."""
+def test_the_additions_row_says_the_interval_the_fit_reports_does_not_include_it(qapp):
+    """The fit takes the titrant concentrations as entered, so the random error of the additions is not in its interval."""
     from PyQt6.QtWidgets import QLabel
 
     from gui.plotting.sensitivity_widget import SensitivityWidget
@@ -2009,13 +2141,27 @@ def test_the_additions_row_says_it_is_already_inside_the_interval_the_fit_report
     w = SensitivityWidget()
     w.update_result(_shared_source_result())
     texts = [label.text() for label in w._results_host.widget().findChildren(QLabel)]
-    assert any('already inside the interval the fit reports' in text for text in texts)
+    assert any('does not include the random error of each addition' in text for text in texts)
+    assert not any('already inside' in text for text in texts)
 
     # A run with no additions has nothing to say about them.
     other = SensitivityWidget()
     other.update_result(_sobol_result())
     texts = [label.text() for label in other._results_host.widget().findChildren(QLabel)]
-    assert not any('already inside the interval' in text for text in texts)
+    assert not any('random error of each addition' in text for text in texts)
+
+
+def test_the_page_says_it_propagates_the_stated_uncertainties_and_how_that_differs_from_the_interval(qapp):
+    """Every sample counts the same here; the input-aware interval also weighs what the data say about the inputs."""
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(_sobol_result())
+    (caption,) = [text for text in _labels(w) if 'GUM Supplement 1' in text]
+
+    assert 'propagate the uncertainties stated under Input Uncertainty' in caption
+    assert 'input-aware interval on the Fit Curve tab also weighs what the data say about the inputs' in caption
+    assert 'can differ' in caption and 'splits' not in caption
 
 
 def _labels(widget) -> list[str]:
@@ -2025,34 +2171,66 @@ def _labels(widget) -> list[str]:
     return [label.text() for label in widget._results_host.widget().findChildren(QLabel)]
 
 
-def test_a_baseline_on_the_ka_bounds_replaces_the_spread_line_and_every_number(qapp):
-    """With the fit at the entered inputs on a bound, the spread is of the edge of the box, not of the inputs.
+@pytest.mark.parametrize(
+    'reason, words',
+    [
+        ('baseline_on_bound', 'ran to the edge of its bounds'),
+        ('open_interval', 'no upper or lower limit'),
+        ('homogeneity', 'do not follow the inputs smoothly'),
+    ],
+)
+def test_a_withheld_constant_gets_its_reason_and_no_number(qapp, reason, words):
+    """Where the run says a constant's numbers describe the search, not the inputs, none of them is printed.
 
-    Every elasticity is then zero and the spread comes out as none, which reads
-    as "the inputs do not matter" where it means "the data do not limit Ka".
-    The tab has to say the second, and print no figure that says the first.
+    A baseline on a bound gives elasticities of zero and a spread of none, which
+    read as "the inputs do not matter" where the data simply do not limit Ka; an
+    open interval or refits that break the homogeneity identity give numbers of
+    any size. The tab has to say which, and print no figure.
     """
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
-    result = _sobol_result()
-    result.baseline_on_bound = {'Ka_guest': True}
+    result = replace(_sobol_result(), withheld={'Ka_guest': reason}, homogeneity={'Ka_guest': 56.0})
     w = SensitivityWidget()
 
     w.update_result(result)
 
-    line = w._budget_header(result, 'Ka_guest')
-    assert 'The data do not limit' in line and 'ran to the edge of its bounds' in line
-    assert 'Identifiability' in line
-    assert 'spread' not in line.lower() and 'SD' not in line
-    # No budget number for it, exactly as a run with too few fits reports none.
-    rows = _cells(_budget_tables(w)[0])
-    assert [row[2:] for row in rows[:-1]] == [['n/a'] * 4] * len(_INPUTS)
-    assert rows[-1] == ['Interactions', '–', '–', 'n/a', '–', '–']
-    # Nor a what-if row: there is no spread of the inputs for a smaller one to shrink.
-    assert w._what_if == {}
-    # The exported file carries the same sentence beside the same rows.
-    note = next(row for row in w.budget_rows() if row['Kind'] == 'note')
-    assert 'The data do not limit' in note['Item'] and '<' not in note['Item']
+    (note,) = [text for text in _labels(w) if words in text]
+    assert 'no share, spread or elasticity is given' in note and 'Identifiability' in note
+    assert w._budget_header(result, 'Ka_guest').endswith('not given.')
+    assert _budget_tables(w) == [] and w._what_if == {}
+    (index_plot,) = [plot for plot in _plots(w) if 'Sobol indices' in plot.titleLabel.text]
+    assert all(len(item.opts['x0']) == 0 for item in index_plot.items if isinstance(item, pg.BarGraphItem))
+    assert not any(isinstance(item, pg.ErrorBarItem) for item in index_plot.items)
+    texts = [item.textItem.toPlainText() for item in index_plot.items if isinstance(item, pg.TextItem)]
+    (chart_reason,) = [text for text in texts if text != 'n/a']
+    assert chart_reason.startswith('No index for') and 'The note below says more.' in chart_reason
+    (histogram,) = [
+        plot for plot in _plots(w) if 'median' in plot.titleLabel.text or 'no summary' in plot.titleLabel.text
+    ]
+    assert 'median' not in histogram.titleLabel.text
+    # The exported file carries the same sentence and nothing beside it.
+    (row,) = w.budget_rows()
+    assert row['Kind'] == 'note' and words in row['Item'] and '<' not in row['Item']
+    assert not re.search(r'\d', row['Item'])
+
+
+def test_an_open_interval_note_names_the_side_the_data_leave_open(qapp):
+    from core.pipeline.varpro import KaInterval
+    from gui.plotting.sensitivity_widget import _withheld_note
+
+    baseline = replace(_baseline_fit(), intervals={'Ka_guest': KaInterval(1e7, 1e12, False, True, 0.95, 16)})
+    result = replace(_sobol_result(), baseline_fit=baseline, withheld={'Ka_guest': 'open_interval'})
+
+    assert 'no upper limit' in _withheld_note(result, 'Ka_guest')
+
+
+def test_one_withheld_constant_leaves_the_other_its_budget(qapp):
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+
+    w = SensitivityWidget()
+    w.update_result(replace(_two_ka_result(), withheld={'Ka_HG': 'open_interval', 'Ka_HG2': ''}))
+
+    assert len(_budget_tables(w)) == 1 and list(w._what_if) == ['Ka_HG2']
 
 
 def test_a_share_of_the_fits_on_the_ka_bounds_is_counted_in_a_note_above_the_budget(qapp):
@@ -2071,7 +2249,7 @@ def test_a_share_of_the_fits_on_the_ka_bounds_is_counted_in_a_note_above_the_bud
     assert 'those fits jump by many decades and inflate the spread and the budget' in note
     assert 'unidentifiable over part of their range' in note
     # The numbers stay: the spread is inflated, not unknowable.
-    assert w._budget_header(result, 'Ka_guest').startswith('Input-limited spread')
+    assert w._budget_header(result, 'Ka_guest').startswith('Spread of')
     assert _cells(_budget_tables(w)[0])[0][-1] == '0.082 [0.079, 0.084]'
     assert list(w._what_if) == ['Ka_guest']
     assert any(row['Kind'] == 'note' for row in w.budget_rows())

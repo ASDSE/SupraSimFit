@@ -26,7 +26,13 @@ implementation:
   them describes can be read off the result;
 - the Sobol' design is made of independent scrambles, and the t-intervals the
   delete-one-block jackknife over them gives cover the analytic Ishigami
-  indices at close to their stated 95 %.
+  indices at close to their stated 95 %;
+- a stopped run keeps the sample blocks all of whose fits finished, and its
+  indices are those of the design over exactly those blocks;
+- the indices, budget and elasticities of a constant are flagged as withheld
+  when the fit at the entered inputs rests on its bound, when its conditional
+  interval is open, or when the homogeneity identity its elasticities obey
+  misses −1 — and not otherwise.
 
 Fits run on synthetic data with the recovery bounds from ``conftest``; each is
 one deterministic projected fit, so the many-fit loops stay fast. Runs that fit
@@ -37,6 +43,7 @@ Runs that need real worker processes live in
 """
 
 import ast
+import dataclasses
 import os
 import pathlib
 import threading
@@ -259,9 +266,9 @@ _CAPPED_BOUNDS = {**GDA_IDA_RECOVERY_BOUNDS, 'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e
 def _ka_by_call(values: dict[int, float], otherwise: float):
     """A refit that reports *values* by the order it is called in, and *otherwise* for every other call.
 
-    The batch runs its perturbations in order, so the call index is the row of
-    the design: the rows of every Saltelli matrix first, then the two refits per
-    input behind the elasticities.
+    The batch runs its perturbations in order: the two refits per input behind
+    the elasticities first, then the design sample block by sample block, each
+    block's rows of ``A``, then of ``B``, then of every mixed matrix.
     """
     calls = count()
 
@@ -284,10 +291,13 @@ def test_the_design_fits_that_ran_to_a_ka_bound_are_counted_and_nothing_else_is(
     """
     _use_small_design(monkeypatch, 2)
     upper = float(_CAPPED_BOUNDS['Ka_guest'][1].magnitude)
-    # 4 rows per matrix, three matrices for one source: twelve design fits, then
-    # two refits per input. Three of the design fits stop at the bound, one has
-    # no fit at all, and every elasticity refit stops there too.
-    on_bound = {0: upper, 5: upper, 11: upper, 7: float('nan'), **{i: upper for i in range(12, 20)}}
+    # Two refits per input (calls 0-7), then 4 rows per matrix in two blocks of
+    # two, three matrices for one source: block 0 is A rows 0-1, B rows 0-1 and
+    # mixed rows 0-1 (calls 8-13), block 1 the rows 2-3 of each (calls 14-19).
+    # Every elasticity refit stops at the bound; of the twelve design fits, A
+    # row 0 (call 8), B row 1 (call 11) and mixed row 3 (call 19) do, and B row
+    # 3 (call 17) has no fit at all.
+    on_bound = {8: upper, 11: upper, 19: upper, 17: float('nan'), **{i: upper for i in range(8)}}
     monkeypatch.setattr(sens, '_fit_perturbed', _ka_by_call(on_bound, otherwise=1e3))
     ms, assay_cls, conditions, _ = ida_setup
     cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=1)
@@ -312,6 +322,7 @@ def test_a_ka_box_the_data_ask_past_puts_the_baseline_and_every_sample_on_its_bo
     assert result.baseline_on_bound == {'Ka_guest': True}
     assert result.baseline_ka['Ka_guest'] == pytest.approx(1e5)
     assert result.n_on_bound == {'Ka_guest': 4 * (1 + 2)}
+    assert result.withheld == {'Ka_guest': 'baseline_on_bound'}
 
 
 def test_a_run_inside_its_ka_box_counts_no_fit_on_a_bound(ida_setup, monkeypatch):
@@ -347,6 +358,138 @@ def test_a_binding_constant_pinned_to_one_value_is_not_reported_as_on_its_bound(
     result = run_sensitivity(ms, assay_cls, conditions, FitConfig(custom_bounds=pinned), cfg, max_workers=1)
 
     assert result.baseline_on_bound == {} and result.n_on_bound == {}
+    # A pinned constant cannot follow a change of the concentration unit, so the identity is not checked.
+    assert np.isnan(result.homogeneity['Ka_guest']) and result.withheld == {'Ka_guest': ''}
+
+
+# ---------------------------------------------------------------------------
+# What is withheld
+# ---------------------------------------------------------------------------
+
+
+def _default_box_setup():
+    """A noisy IDA titration fitted under the registry's own bounds.
+
+    Their signal coefficients are bounded by zero and infinity only, which read
+    the same in any concentration unit, so the identity applies to every fit.
+    """
+    ms, assay_cls, conditions, _ = _noisy_ida_setup(1, per_replica=False)
+    return ms, assay_cls, conditions, FitConfig()
+
+
+def _power_law(powers: dict[str, float]):
+    """A refit ``Ka = 1e6 x prod (1 + offset_j)^p_j``, whose elasticities are the powers exactly."""
+
+    def fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
+        ka = 1e6 * np.prod([(1 + offsets.get(key, 0.0)) ** p for key, p in powers.items()])
+        return {'Ka_guest': float(ka), **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
+
+    return fit
+
+
+@pytest.mark.parametrize(
+    'powers, withheld',
+    [
+        # s_h0 + s_d0 + s_titrant - s_Kadye = 3 + 1 - 4.5 - 0.5 = -1: a model that obeys the identity.
+        ({'Ka_dye': 0.5, 'h0': 3.0, 'd0': 1.0, TITRANT: -4.5}, ''),
+        # The same with the titrant's slope off by 0.1: a refit that does not respond smoothly.
+        ({'Ka_dye': 0.5, 'h0': 3.0, 'd0': 1.0, TITRANT: -4.4}, 'homogeneity'),
+    ],
+    ids=['identity-holds', 'identity-fails'],
+)
+def test_elasticities_that_break_the_homogeneity_identity_are_withheld(monkeypatch, powers, withheld):
+    """Scaling every concentration by c and the entered constants by 1/c divides a fitted Ka by c.
+
+    Differentiated, the elasticities over the concentrations minus those over
+    the entered binding constants are exactly -1 for these models, whatever
+    the data. Refits whose elasticities add up to anything else are not
+    responding to the inputs smoothly, and the run says so for that constant.
+    """
+    _use_small_design(monkeypatch, 2)
+    setup = _default_box_setup()
+    monkeypatch.setattr(sens, '_fit_perturbed', _power_law(powers))
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1)
+
+    result = _run(setup, cfg)
+
+    expected_sum = sum(-p if key == 'Ka_dye' else p for key, p in powers.items())
+    assert result.homogeneity['Ka_guest'] == pytest.approx(expected_sum, abs=1e-6)
+    assert result.withheld == {'Ka_guest': withheld}
+
+
+def test_the_tolerance_on_the_identity_is_a_few_refit_resolutions():
+    """Ten times the slope error two refits resolved to ``_LOG_KA_XTOL`` leave, per input.
+
+    Well above what identified fits miss by (at most 6e-4 over the six binding
+    assays) and far below what a flat or jumping refit misses by (0.8 and more).
+    """
+    per_slope = 2 * 1e-7 * np.log(10) / (np.log1p(1e-3) - np.log1p(-1e-3))
+    assert sens.homogeneity_tolerance(4) == pytest.approx(10 * 4 * per_slope, rel=1e-12)
+    assert 6e-4 < sens.homogeneity_tolerance(2) < sens.homogeneity_tolerance(4) < 0.8
+
+
+def test_a_signal_coefficient_held_by_a_finite_bound_takes_the_identity_out_of_play(monkeypatch):
+    """A coefficient on a bound a change of unit would move keeps the refits from following the scaling.
+
+    The recovery bounds hold the IDA coefficients within ±20 % of the truth,
+    and the fit of these data puts one of them on such a bound: the identity
+    does not constrain those refits, so it is not checked and not held against
+    the constant.
+    """
+    _use_small_design(monkeypatch, 2)
+    setup = _noisy_ida_setup(1, per_replica=False)
+    held = sens._resolve_bounds(setup[0].to_assay(IDAAssay, conditions=setup[2]), setup[3].custom_bounds)
+    baseline = fit_measurement_set(*setup)
+    assert any(
+        baseline.parameters[key].to(held[key][0].units).magnitude in (end.magnitude for end in held[key])
+        for key in ('I_dye_free', 'I_dye_bound')
+    )
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1)
+
+    result = _run(setup, cfg)
+
+    assert np.isnan(result.homogeneity['Ka_guest']) and result.withheld == {'Ka_guest': ''}
+
+
+def test_a_constant_with_an_open_conditional_interval_is_withheld(monkeypatch):
+    """Where the data leave Ka without a limit on a side, refits land wherever the flat profile lets them.
+
+    The run reads the interval of its own baseline — the fit at the inputs as
+    entered — so a constant whose interval is open there is flagged, even with
+    the estimate inside its box.
+    """
+    _use_small_design(monkeypatch, 2)
+    setup = _default_box_setup()
+    real = sens.fit_measurement_set
+
+    def with_open_upper_end(*args, **kwargs):
+        fit = real(*args, **kwargs)
+        interval = fit.intervals['Ka_guest']
+        return dataclasses.replace(fit, intervals={'Ka_guest': dataclasses.replace(interval, open_high=True)})
+
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1)
+    closed = _run(setup, cfg)
+    monkeypatch.setattr(sens, 'fit_measurement_set', with_open_upper_end)
+    opened = _run(setup, cfg)
+
+    assert closed.withheld == {'Ka_guest': ''} and closed.baseline_on_bound == {'Ka_guest': False}
+    assert opened.withheld == {'Ka_guest': 'open_interval'} and opened.baseline_on_bound == {'Ka_guest': False}
+
+
+def test_an_identified_fit_obeys_the_identity_through_the_run(monkeypatch):
+    """Real refits of a well-determined titration: the run's own elasticities add up to -1 to their resolution."""
+    _use_small_design(monkeypatch, 2)
+    setup = _default_box_setup()
+
+    result = _run(
+        setup,
+        SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1),
+    )
+
+    kinds = dict(perturbable_inputs(setup[2]))
+    assert result.homogeneity['Ka_guest'] == pytest.approx(sens.homogeneity_sum(result.elasticity['Ka_guest'], kinds))
+    assert abs(result.homogeneity['Ka_guest'] + 1) < 1e-3
+    assert result.withheld == {'Ka_guest': ''}
 
 
 # ---------------------------------------------------------------------------
@@ -1354,6 +1497,74 @@ def test_a_run_stopped_early_says_so():
     assert (stopped.stopped, stopped.n_total, stopped.n_success) == (True, 4, 4)
     assert int(np.sum(np.isnan(stopped.ka_grid['Ka_guest']))) == 5
     assert (full.stopped, full.n_total) == (False, 9)
+
+
+def test_a_stopped_sobol_run_keeps_the_sample_blocks_that_finished(ida_setup, monkeypatch):
+    """A stop keeps whole blocks, and the indices are those of the design over exactly them.
+
+    The refits are ``log10 Ka = 8 + 40 x_h0 + 20 x_d0``. The run is stopped
+    part way through the fourth of eight blocks; the indices and their
+    jackknife intervals must be the estimators' over the rows of the first
+    three blocks of the run's own design, the other rows left out, and every
+    sample of a dropped block must read as having no fit.
+    """
+    designs = _record_designs(monkeypatch)
+    specs = {'h0': InputSpec.interval_pct(-10.0, 10.0), 'd0': InputSpec.interval_pct(-10.0, 10.0)}
+
+    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
+        log_ka = 8 + 40 * offsets.get('h0', 0.0) + 20 * offsets.get('d0', 0.0)
+        return {'Ka_guest': 10.0**log_ka, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
+
+    monkeypatch.setattr(sens, '_fit_perturbed', fake_fit)
+    n_base, n_blocks, n_matrices = 1024, sens._SOBOL_BLOCKS, 4
+    per_block = n_base // n_blocks
+    n_elastic = 2 * len(perturbable_inputs(ida_setup[2]))
+    stop_after = 1 + n_elastic + 3 * per_block * n_matrices + 10  # the baseline, the elasticities, 3 blocks and a bit
+    finished: list[int] = []
+    ms, assay_cls, conditions, fit_config = ida_setup
+
+    result = run_sensitivity(
+        ms,
+        assay_cls,
+        conditions,
+        fit_config,
+        SensitivityConfig(SensitivityMode.SOBOL, n_base, ErrorModel(specs=specs), seed=4),
+        max_workers=1,
+        progress=lambda done, total: finished.append(done),
+        should_cancel=lambda: len(finished) >= stop_after,
+    )
+
+    ((a_points, b_points),) = designs
+    eps = sens._QUANTILE_EPS
+
+    def outputs(points):
+        h0, d0 = (
+            np.array([spec_fraction(specs[key], None, key, float(np.clip(q, eps, 1 - eps))) for q in points[:, c]])
+            for c, key in enumerate(specs)
+        )
+        kept = np.arange(n_base) < 3 * per_block
+        return np.where(kept, 8 + 40 * h0 + 20 * d0, np.nan)
+
+    mixed = []
+    for column in range(2):
+        points = a_points.copy()
+        points[:, column] = b_points[:, column]
+        mixed.append(outputs(points))
+    estimate = sobol_indices_with_ci(outputs(a_points), outputs(b_points), mixed, n_blocks)
+
+    assert result.stopped and result.n_blocks_finished == 3
+    assert result.n_total == stop_after - 1
+    assert result.sobol_rows_left_out == {'Ka_guest': n_base - 3 * per_block}
+    samples = result.sample_ka['Ka_guest'].reshape(2, n_base)
+    assert np.all(np.isfinite(samples[:, : 3 * per_block])) and np.all(np.isnan(samples[:, 3 * per_block :]))
+    assert np.all(np.isfinite(estimate.s1_ci))  # three blocks are enough for an interval
+    for column, key in enumerate(specs):
+        assert result.sobol_s1['Ka_guest'][key] == pytest.approx(estimate.s1[column], rel=1e-10)
+        assert result.sobol_st['Ka_guest'][key] == pytest.approx(estimate.st[column], rel=1e-10)
+        np.testing.assert_allclose(result.sobol_s1_ci['Ka_guest'][key], estimate.s1_ci[column], rtol=1e-10)
+    assert result.budget['Ka_guest'].variance == pytest.approx(estimate.variance, rel=1e-10)
+    # The elasticities are fitted first, so a stopped run still has them.
+    assert all(np.isfinite(value) for value in result.elasticity['Ka_guest'].values())
 
 
 # ---------------------------------------------------------------------------

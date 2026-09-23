@@ -93,7 +93,9 @@ def test_a_stopped_batch_drops_the_fits_it_had_queued(batch):
     assert _N_JOBS >= sens._PARALLEL_MIN_JOBS  # below this the work would stay in this process
     finished: list[object] = []
 
-    results = _evaluate(batch, on_result=finished.append, should_cancel=lambda: len(finished) >= 3)
+    results = _evaluate(
+        batch, on_result=lambda index, value: finished.append(value), should_cancel=lambda: len(finished) >= 3
+    )
 
     assert 3 <= len(finished) < _N_JOBS
     assert sum(value is not None for value in results) == len(finished)
@@ -121,7 +123,7 @@ def test_a_stop_is_answered_while_the_pool_is_still_starting(batch):
         requested_at.append(time.perf_counter())
         return True
 
-    results = _evaluate(batch, on_result=finished.append, should_cancel=should_cancel)
+    results = _evaluate(batch, on_result=lambda index, value: finished.append(value), should_cancel=should_cancel)
     latency = time.perf_counter() - requested_at[0]
 
     assert fits_at_each_ask[0] == 0  # asked while the workers were still starting
@@ -154,7 +156,12 @@ def test_a_job_that_fails_outright_stops_the_batch_at_once_in_plain_words(batch,
     finished: list[object] = []
 
     with pytest.raises(RuntimeError, match='could not be completed') as raised:
-        _evaluate(batch, on_result=finished.append, should_cancel=lambda: False, max_workers=max_workers)
+        _evaluate(
+            batch,
+            on_result=lambda index, value: finished.append(value),
+            should_cancel=lambda: False,
+            max_workers=max_workers,
+        )
 
     assert isinstance(raised.value.__cause__, TypeError)  # the real failure is kept for the log
     assert len(finished) < n_jobs / 2  # the rest were dropped rather than fitted first
@@ -176,8 +183,8 @@ def test_the_point_weights_of_the_run_reach_every_worker_process(batch):
     law = NoiseLaw(NoiseBasis.REPLICATES, share=1.0, reference=float(np.sqrt(np.mean(signal**2))), n_replicates=3)
     weights = law.weights(signal)
 
-    weighted = _evaluate(batch, on_result=lambda value: None, should_cancel=lambda: False, point_weights=weights)
-    equal = _evaluate(batch, on_result=lambda value: None, should_cancel=lambda: False)
+    weighted = _evaluate(batch, on_result=lambda index, value: None, should_cancel=lambda: False, point_weights=weights)
+    equal = _evaluate(batch, on_result=lambda index, value: None, should_cancel=lambda: False)
 
     assert len(weighted) == len(batch['perturbations'])
     for (offsets, _), in_pool, unweighted in zip(batch['perturbations'], weighted, equal):
@@ -223,6 +230,6 @@ def test_a_batch_over_worker_processes_leaves_this_process_uncapped(batch):
     """Running an analysis does not cap the application's own numerical work."""
     before = _thread_limits()
 
-    _evaluate(batch, on_result=lambda value: None, should_cancel=lambda: False)
+    _evaluate(batch, on_result=lambda index, value: None, should_cancel=lambda: False)
 
     assert _thread_limits() == before

@@ -10,7 +10,8 @@
   sampled at ``sigma / sqrt(replicates)``.
 - A run whose refits are replaced by a function of the offsets with known
   elasticities: the budget's rows, the elasticity of a shared source as the sum
-  over its inputs, the additions as one item.
+  over its inputs — a binding constant measured with the shared stock counted
+  with the opposite sign — and the additions as one item.
 - ``what_if`` against the exact variance of an additive function, by the formula
   and by re-weighting, and where it must decline.
 - ``homogeneity_sum`` and the fit count of a run with every kind of source.
@@ -175,6 +176,17 @@ def test_a_shared_source_moves_every_input_it_loads():
     assert np.std(shared) == pytest.approx(0.04, rel=0.02)
 
 
+def test_a_shared_source_moves_a_binding_constant_measured_with_it_the_other_way():
+    """A stock ``1 + e`` times stronger than assumed: [Host]0 is ``1 + e`` times, and a Ka(dye) fitted with it ``1 / (1 + e)`` times, the entered value."""
+    stock = SharedSource('Host stock', 4.0, ('h0', 'Ka_dye'))
+    built = sobol_jobs(ErrorModel(shared=(stock,)), _IDA_CONDITIONS, 1024, 20, 1, seed=2)
+
+    key = shared_key(stock.name)
+    for e, (offsets, _) in zip(built.source_offsets, built.jobs):
+        assert offsets['h0'] == e[key]
+        assert (1 + offsets['Ka_dye']) * (1 + e[key]) == pytest.approx(1.0, rel=1e-14)
+
+
 @pytest.mark.parametrize('n_replicates', [1, 4])
 def test_the_additions_are_one_item_of_one_column_per_point(n_replicates):
     """Sources + n_points columns; ``ADDITIONS`` last; deltas at sigma / sqrt(replicates).
@@ -289,6 +301,36 @@ def test_budget_rows_of_a_run_with_known_elasticities(ida_setup, monkeypatch):
         assert rows[key].sd_if_exact == pytest.approx(math.sqrt(total - variance), rel=0.03)
         # No interaction: the total index is the same share (the Jansen estimator is the sharper of the two).
         assert result.sobol_st['Ka_guest'][key] == pytest.approx(variance / total, abs=0.03)
+
+
+def test_the_elasticity_of_a_stock_behind_a_concentration_and_a_binding_constant_is_their_difference(
+    ida_setup, monkeypatch
+):
+    """``Ka ∝ (1 + e)^2`` through [Host]0 and ``(1 + e)^(-0.7)`` through Ka(dye) measured with the same stock.
+
+    The stock moves [Host]0 by ``1 + e`` and Ka(dye) by ``1 / (1 + e)``, so Ka
+    moves by ``(1 + e)^(2 + 0.7)``: the source's elasticity is ``2 - (-0.7)``.
+    """
+    powers = {'h0': 2.0, 'Ka_dye': -0.7}
+
+    def fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
+        log_ka = 8.0 + sum(p * math.log10(1 + offsets.get(key, 0.0)) for key, p in powers.items())
+        return {'Ka_guest': 10.0**log_ka, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
+
+    monkeypatch.setattr(sens, '_fit_perturbed', fit)
+    monkeypatch.setattr(sens, '_SOBOL_BLOCKS', 2)
+    monkeypatch.setattr(sens, '_SOBOL_SAMPLE_SIZES', (4,))
+    ms, assay_cls, conditions, fit_config = ida_setup
+    stock = SharedSource('Host stock', 4.0, ('h0', 'Ka_dye'))
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(shared=(stock,)), seed=6)
+
+    result = run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
+
+    (row,) = result.budget['Ka_guest'].rows
+    assert row.elasticity == pytest.approx(2.7, abs=1e-6)
+    # Each sample's Ka is the power law of the source's own offset, exponent 2.7.
+    e = result.sample_offsets_pct[shared_key(stock.name)] / 100
+    np.testing.assert_allclose(np.log10(result.sample_ka['Ka_guest']), 8.0 + 2.7 * np.log10(1 + e), rtol=1e-12)
 
 
 def test_sequential_additions_on_a_falling_series_are_refused_before_any_fit(ida_setup, monkeypatch):

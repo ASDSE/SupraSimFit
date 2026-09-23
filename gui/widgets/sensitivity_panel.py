@@ -51,15 +51,23 @@ the model — the titrant concentrations and the fixed conditions
 (<i>[Host]<sub>0</sub></i>, <i>[Dye]<sub>0</sub></i>, <i>K<sub>a,dye</sub></i>, …).
 Each carries pipetting / calibration error, and the fit silently absorbs it by
 shifting the reported K<sub>a</sub>.</p>
-<p>This tool re-runs the fit many times with those inputs varied by the
+<p>This tool re-runs the fit many times with those inputs drawn from the
 uncertainty you set under <i>Input Uncertainty</i>, and shows the resulting spread
-of K<sub>a</sub> — so you can see how much of your uncertainty comes from the inputs
-rather than the fit itself. Set at least one input there to something other than
-<i>fixed</i>; the same uncertainties widen the interval of every fit.</p>
+of K<sub>a</sub> and which input it comes from. Set at least one input there to
+something other than <i>fixed</i>.</p>
+<p>It is a propagation of the uncertainties you stated (GUM Supplement 1): every
+draw counts the same, however well or badly the fit at it follows your data. The
+interval on the Fit Curve tab uses the same uncertainties but also weighs what the
+data say about the inputs, so the two can differ — the spread here is the wider
+where your titration itself pins an input down.</p>
 <p>Every sample is one exact fit of the averaged signal of the replicates your fit
 used, so the same inputs always give the same K<sub>a</sub> and the spread you see
 comes from the inputs alone. The sample at no offset at all is the fit at the inputs
 you entered.</p>
+<p>Where the data do not limit a K<sub>a</sub> — its fit at the entered inputs rests
+on a bound, or its interval is open — or where its re-fits do not follow the inputs
+smoothly, the tab gives the reason for that K<sub>a</sub> instead of its shares,
+spread and elasticities.</p>
 """
 
 _MODE_HELP_HTML = """
