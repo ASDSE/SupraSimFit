@@ -38,11 +38,18 @@ from core.data_processing.measurement_set import MeasurementSet
 from core.models.equilibrium import MODEL_ARITHMETIC, legacy_arithmetic
 from core.optimizer.ensemble import describe, describe_log10
 from core.optimizer.filters import calculate_fit_metrics
-from core.pipeline.diagnostics import FitDiagnostics, InputShift, MisfitTest, lack_of_fit, runs_test, verdict
+from core.pipeline.diagnostics import (
+    FitDiagnostics,
+    InputShift,
+    MisfitTest,
+    lack_of_fit,
+    no_scatter,
+    runs_test,
+    verdict,
+)
 from core.pipeline.input_aware import (
     AwareFit,
     AwareResult,
-    at_edge,
     conflict,
     fit_jacobian,
     input_aware,
@@ -584,7 +591,16 @@ class ParameterSummary:
         but ``unit`` still names the underlying parameter's unit, so a label
         can read ``log₁₀(Ka / M⁻¹)``.
     estimate : float
-        The fit's value for this row.
+        The fit's value for this row. Where *estimate_at_bound* is set this is
+        the edge of the Ka box the search stopped on, not an estimate: the
+        curves are drawn from it, and no view or export prints it as one.
+    estimate_at_bound : str
+        ``'low'`` or ``'high'`` when the fit's value of this binding constant
+        sits on the lower or the upper edge of its box
+        (:func:`~core.pipeline.varpro.on_ka_bound`): the data do not limit it
+        on that side, so there is no estimate, only the interval. ``''``
+        otherwise, on every signal parameter and on a binding constant held
+        fixed by equal bounds.
     unit : str
         Unit of the underlying parameter (``""`` when it has none).
     interval : tuple[float, float] | None
@@ -617,7 +633,14 @@ class ParameterSummary:
     replicates : dict[str, float] | None
         :func:`~core.optimizer.ensemble.describe` (or ``describe_log10`` for a
         log twin) over the values the replicates the fit used give this
-        parameter in their own fits. ``None`` below two such replicates.
+        parameter in their own fits, leaving out each replicate whose own fit
+        of this binding constant is on an edge of its box: a bound is not an
+        estimate. A signal parameter leaves out every replicate whose own fit
+        put any binding constant on an edge, since its value is then that of
+        a curve pushed against the bound. ``None`` below two values.
+    replicates_at_bound : int
+        How many of the replicates the fit used were left out of *replicates*
+        for that reason.
     conditional_estimate : float | None
         This binding constant at the entered inputs, in the row's own scale.
         ``None`` on a row that is not a binding constant and on every row of a
@@ -632,11 +655,14 @@ class ParameterSummary:
     conditional_split : bool
         Whether the values *conditional_interval* spans come in separate
         stretches, so it spans a gap of values the data reject.
+    conditional_at_bound : str
+        *estimate_at_bound* of *conditional_estimate*.
     """
 
     key: str
     is_log: bool
     estimate: float
+    estimate_at_bound: str
     unit: str
     interval: Optional[Tuple[float, float]]
     interval_open: Tuple[bool, bool]
@@ -646,10 +672,12 @@ class ParameterSummary:
     level: Optional[float]
     degenerate: bool
     replicates: Optional[Dict[str, float]]
+    replicates_at_bound: int = 0
     conditional_estimate: Optional[float] = None
     conditional_interval: Optional[Tuple[float, float]] = None
     conditional_open: Tuple[bool, bool] = (False, False)
     conditional_split: bool = False
+    conditional_at_bound: str = ''
 
 
 def _binding_constant_keys(result: FitResult) -> set[str]:
@@ -695,6 +723,12 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
     replicates' values *first* — statistics of log₁₀(Ka) must come from the
     per-fit log values, because log₁₀ of a Ka spread is meaningless.
 
+    A binding constant the fit left on an edge of its box is flagged
+    (``estimate_at_bound``): the data do not limit it on that side, so the
+    value is the edge and not an estimate. For the same reason the replicate
+    statistics of a binding constant leave out each replicate whose own fit
+    of that constant ran to an edge, and say how many they left out.
+
     The conditional columns are filled only where they say something the
     estimate does not: on a binding constant of a fit that let its inputs
     move. With every input as entered the fit above is the conditional one.
@@ -704,7 +738,8 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
     parameters are binding constants is registry metadata.
     """
     ka_keys = _binding_constant_keys(result)
-    replicates = _replicate_values(result)
+    boxes = _ka_boxes(result)
+    replicates = _replicate_values(result, boxes)
     intervals = result.intervals or {}
     conditional = result.conditional if result.input_shifts else None
     rows: List[ParameterSummary] = []
@@ -712,20 +747,23 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
         unit = str(value.units) if isinstance(value, Quantity) else ''
         magnitude = float(value.magnitude) if isinstance(value, Quantity) else float(value)
         ci = intervals.get(key)
-        pool = replicates.get(key)
+        pool, replicates_at_bound = replicates.get(key, (None, 0))
         entered = None if conditional is None or key not in ka_keys else conditional.parameters.get(key)
         entered_ci = None if conditional is None or key not in ka_keys else conditional.intervals.get(key)
         shared = dict(
             key=key,
             unit=unit,
+            estimate_at_bound=_at_bound(value, boxes.get(key)),
             interval_open=(False, False) if ci is None else (ci.open_low, ci.open_high),
             interval_unsolvable=(False, False) if ci is None else (ci.unsolvable_low, ci.unsolvable_high),
             interval_limited_by=('', '') if ci is None else (ci.limited_by_low, ci.limited_by_high),
             interval_split=False if ci is None else ci.split,
             level=None if ci is None else ci.level,
             degenerate=key in result.degenerate_keys,
+            replicates_at_bound=replicates_at_bound,
             conditional_open=(False, False) if entered_ci is None else (entered_ci.open_low, entered_ci.open_high),
             conditional_split=False if entered_ci is None else entered_ci.split,
+            conditional_at_bound='' if entered is None else _at_bound(entered, boxes.get(key)),
         )
         rows.append(
             ParameterSummary(
@@ -755,22 +793,75 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
     return rows
 
 
-def _replicate_values(result: FitResult) -> Dict[str, np.ndarray]:
-    """Each parameter's values across the own fits of the replicates *result* used.
+def _ka_boxes(result: FitResult) -> Dict[str, Tuple[Quantity, Quantity]]:
+    """The box every binding constant of *result* was searched in, as the result records it.
 
-    Empty unless at least two of the replicates the fit was given entered its
-    average: one value is the fit itself seen again, and a replicate the fit
-    left out describes data the fit does not.
+    The bounds the fit was given where it records them, the registry's
+    defaults otherwise; a binding constant held fixed by equal bounds, and one
+    whose recorded box has no limit on a side, has no box to reach an edge of.
+    """
+    try:
+        defaults = ASSAY_REGISTRY[AssayType[result.assay_type]].default_bounds
+    except KeyError:
+        return {}
+    recorded = result.fit_config.get('custom_bounds') or {}
+    boxes = {}
+    for key in _binding_constant_keys(result):
+        lo, hi = defaults[key]
+        if key in recorded:
+            low, high, unit = recorded[key]
+            if low is None or high is None:
+                continue
+            lo, hi = Q_(low, unit), Q_(high, unit)
+        if lo != hi:
+            boxes[key] = (lo, hi)
+    return boxes
+
+
+def _at_bound(value: Quantity, box: Optional[Tuple[Quantity, Quantity]]) -> str:
+    """``'low'`` or ``'high'`` when *value* sits on that edge of the Ka *box* (:func:`on_ka_bound`), else ``''``."""
+    if box is None:
+        return ''
+    unit = value.units
+    ka = float(value.magnitude)
+    lo, hi = (float(bound.to(unit).magnitude) for bound in box)
+    if not on_ka_bound(ka, (lo, hi)):
+        return ''
+    return 'low' if np.log10(ka) - np.log10(lo) <= np.log10(hi) - np.log10(ka) else 'high'
+
+
+def _replicate_values(
+    result: FitResult, boxes: Dict[str, Tuple[Quantity, Quantity]]
+) -> Dict[str, Tuple[Optional[np.ndarray], int]]:
+    """Each parameter's values across the own fits of the replicates *result* used, and how many were left out.
+
+    A replicate whose own fit put a binding constant on an edge of its box
+    (*boxes*) is left out of that constant's values: a bound is not an
+    estimate. The replicate's fit of another binding constant still counts:
+    it is a value of that constant. A signal parameter's values leave out a
+    replicate with any binding constant on an edge, since they are those of a
+    curve pushed against it. The values are ``None`` unless at least two
+    remain, and there are none at all unless at least two of the replicates
+    the fit was given entered its average: one value is
+    the fit itself seen again, and a replicate the fit left out describes data
+    the fit does not.
     """
     used = set(result.metadata.get('replica_ids_fit') or ())
     fits = [rf for rf in result.replica_fits or () if rf.metadata.get('replica_id') in used]
     if len(fits) < 2:
         return {}
-    return {
-        key: np.array([float(rf.parameters[key].magnitude) for rf in fits])
-        for key in result.parameters
-        if all(key in rf.parameters for rf in fits)
-    }
+    on_edge = [
+        {k for k, box in boxes.items() if k in rf.parameters and _at_bound(rf.parameters[k], box)} for rf in fits
+    ]
+    ka_keys = _binding_constant_keys(result)
+    pooled = {}
+    for key in result.parameters:
+        if not all(key in rf.parameters for rf in fits):
+            continue
+        keep = [rf for rf, edges in zip(fits, on_edge) if not (key in edges if key in ka_keys else edges)]
+        values = np.array([float(rf.parameters[key].magnitude) for rf in keep]) if len(keep) >= 2 else None
+        pooled[key] = (values, len(fits) - len(keep))
+    return pooled
 
 
 def fit_replica_ids(result: FitResult) -> Optional[List[str]]:
@@ -916,7 +1007,7 @@ def fit_assay(
         projection,
         fit,
         free_inputs,
-        loading=errors.input_offsets if errors.shared else None,
+        loading=errors.loading(assay.get_conditions()),
         should_cancel=should_cancel,
         conditional=intervals,
     )
@@ -969,80 +1060,75 @@ def _diagnose(
     The test at the fit with the inputs as entered needs that fit's own
     Jacobian, which is the input-aware result with nothing free to move; where
     no input moves anyway it is the one result, and both tests are the one
-    test.
+    test. Every test of the verdict that could not be run is recorded with
+    the reason.
     """
     entered = (
         aware
         if not aware.constraints
         else input_aware(projection, fit, (), should_cancel=should_cancel, conditional=conditional_intervals)
     )
-    conditional_misfit = _misfit(projection, entered, replicate_signals)
-    misfit = conditional_misfit if entered is aware else _misfit(projection, aware, replicate_signals)
+    conditional_misfit, entered_why = _misfit(projection, entered, replicate_signals)
+    misfit, why = (
+        (conditional_misfit, entered_why) if entered is aware else _misfit(projection, aware, replicate_signals)
+    )
     inputs = conflict(aware)
+    skipped = {} if misfit is not None else {'misfit': why}
+    if not any(c.sigma is not None for c in aware.constraints):
+        skipped['conflict'] = 'no_uncertainty'
+    elif inputs is None:
+        skipped['conflict'] = 'no_informed_direction'
     return FitDiagnostics(
         conditional_misfit=conditional_misfit,
         misfit=misfit,
         conflict=inputs,
         verdict=verdict(conditional_misfit, misfit, inputs),
+        skipped=skipped,
     )
 
 
 def _misfit(
     projection: Projection, aware: AwareResult, replicate_signals: Optional[np.ndarray]
-) -> Optional[MisfitTest]:
-    """Whether the fitted curve misses the data by more than the data's own scatter allows.
+) -> Tuple[Optional[MisfitTest], str]:
+    """Whether the fitted curve misses the data by more than the data's own scatter allows; why not, if untested.
 
     With two or more replicates behind the fitted signal the test is theirs:
     the misfit of the curve against their average, judged against the scatter
     between them. With one signal there is no such scatter, and what is left to
     look at is whether the residuals change sign as often as a fit of this
     model to noise would — a test with little power, which says nothing at all
-    below ``_RUNS_TEST_DOF`` residual degrees of freedom.
+    below ``_RUNS_TEST_DOF`` residual degrees of freedom. Neither is run when
+    the scatter it would judge the curve against is below the resolution of
+    the fit (:func:`~core.pipeline.diagnostics.no_scatter`): noise-free or
+    identical data leave nothing to test the model with.
 
-    The F test is given the parameter count :func:`_fitted_params`, the
-    parameters the fit moved; the runs test takes its own reference from the
-    Jacobian of those same parameters (:func:`fit_jacobian`). Both tests are
-    run in the whitened space the projection's point weights define: the F test
-    weights the misfit of the curve and the scatter it is judged against by the
-    same weights, and the runs test reads the signs of the whitened residual,
-    which are the signs of the residual itself. The projection hands out the
-    whitened residual, so the fitted curve the F test takes is read back from
-    it in signal units.
+    Both tests count what the fit fitted, ``AwareFit.n_params``, and the runs
+    test takes its own reference from the Jacobian of those same parameters
+    (:func:`fit_jacobian`). Both tests are run in the whitened space the
+    projection's point weights define: the F test weights the misfit of the
+    curve and the scatter it is judged against by the same weights, and the
+    runs test reads the signs of the whitened residual, which are the signs of
+    the residual itself. The projection hands out the whitened residual, so
+    the fitted curve the F test takes is read back from it in signal units.
+
+    Returns
+    -------
+    tuple[MisfitTest | None, str]
+        The test, or ``None`` with the reason it was not run
+        (:data:`~core.pipeline.diagnostics.SKIP_REASONS`); the reason is
+        ``''`` when the test ran.
     """
-    residual = projection.residual(aware.fit.ka, 0, aware.fit.input_offsets)
+    fit, n = aware.fit, projection.n_points
+    residual = projection.residual(fit.ka, 0, fit.input_offsets)
     if replicate_signals is not None and np.shape(replicate_signals)[0] >= 2:
         fitted = projection.signals[0] - residual / np.sqrt(projection.point_weights)
-        return lack_of_fit(replicate_signals, fitted, _fitted_params(projection, aware), projection.point_weights)
-    if projection.n_points - aware.fit.n_params < _RUNS_TEST_DOF:
-        return None
-    return runs_test(residual, projection.assay.x_data.magnitude, fit_jacobian(projection, aware))
-
-
-def _fitted_params(projection: Projection, aware: AwareResult) -> int:
-    """Parameters the fit moved: the ``p`` of the lack-of-fit F test.
-
-    Three groups, each counted only where the fit was free to place it:
-
-    - the binding constants the search was free to move whose estimate lies
-      strictly inside its bounds (:func:`~core.pipeline.varpro.on_ka_bound`);
-    - the rank of the signal columns whose coefficient the bounded solve left
-      inside its bounds (:meth:`Projection.fitted_rank`);
-    - the inputs stated as a range that the fit left off the ends of theirs
-      (:func:`~core.pipeline.input_aware.at_edge`).
-
-    A parameter resting on a bound is held there, not fitted: it takes no
-    dimension from the residual, and counting it makes ``n - p`` smaller than
-    the residual's own dimension and the F ratio correspondingly larger. Over
-    7 200 synthetic null fits of replicated data at the 5 % level, counting
-    every free parameter rejects 4.6 % [0.039, 0.053] where no signal
-    coefficient rests on a bound and the Ka interval is closed, 5.4 % with a
-    coefficient on a bound, 5.9 % with the Ka estimate on its bound and 9.3 %
-    [0.078, 0.110] with both.
-    """
-    fit = aware.fit
-    free_ka = sum(not on_ka_bound(fit.ka[key], projection.ka_bounds[key]) for key in projection.free_ka)
-    ranges = sum(1 for c in aware.constraints if c.sigma is None and not at_edge(c, fit.offsets[c.key]))
-    return free_ka + projection.fitted_rank(fit.ka, fit.input_offsets) + ranges
+        found = lack_of_fit(replicate_signals, fitted, fit.n_params, projection.point_weights)
+        return found, '' if found is not None else 'no_scatter'
+    if n - fit.n_params < _RUNS_TEST_DOF:
+        return None, 'too_few_dof'
+    if no_scatter(fit.ssr / n, aware.ss_tot, n):
+        return None, 'no_scatter'
+    return runs_test(residual, projection.assay.x_data.magnitude, fit_jacobian(projection, aware)), ''
 
 
 def fit_linear_assay(
@@ -1540,7 +1626,7 @@ def _fitted_offsets(result: FitResult) -> Dict[str, float]:
     the fit recorded turns them into the offsets of the inputs.
     """
     fractions = {key: shift.fraction for key, shift in result.input_shifts.items()}
-    return ErrorModel.from_dict(result.fit_config).input_offsets(fractions)
+    return ErrorModel.from_dict(result.fit_config).input_offsets(fractions, result.conditions)
 
 
 def _present_numbers(result: FitResult, assay: BaseAssay) -> Tuple[FitResult, bool]:

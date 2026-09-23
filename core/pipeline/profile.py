@@ -148,8 +148,10 @@ class ProfileResult:
     n_points : int
         Number of points in the averaged signal.
     n_params : int
-        Parameter count ``p`` of the F test: the numerical rank of the
-        coefficient design at the optimum plus the free binding constants.
+        Parameter count ``p`` of the F test: what the best fit fitted, the
+        free binding constants inside their box and the rank of the signal
+        columns inside their bounds
+        (:meth:`~core.pipeline.varpro.Projection.fitted_parameters`).
     per_replica : bool
         Whether the fit this profile belongs to ran each replicate separately.
     aware : AwareProfile | None
@@ -347,7 +349,7 @@ def fit_profile(
             projection,
             fit,
             constraints(errors, assay.get_conditions(), fit_config.input_labels),
-            loading=errors.input_offsets if errors.shared else None,
+            loading=errors.loading(assay.get_conditions()),
             level=level,
             should_cancel=should_cancel,
             conditional={k: ci for k, ci in intervals.items() if ci is not None},
@@ -399,8 +401,8 @@ def fit_profile(
             joint_cuts: dict[float, float] = {}
 
             def profile(ka: float, key: str = key, cuts: dict = cuts, joint_cuts: dict = joint_cuts) -> float:
-                _, value, rank = projection.profile_point(key, ka)
-                cuts[ka], joint_cuts[ka] = cut(rank), joint_cut(rank)
+                _, value, fitted = projection.profile_point(key, ka)
+                cuts[ka], joint_cuts[ka] = cut(fitted), joint_cut(fitted)
                 return value
 
             def joint_excess(ka: float, profile=profile, joint_cuts: dict = joint_cuts) -> float:
@@ -421,7 +423,7 @@ def fit_profile(
             profiles[key] = result(key, grid, r2[:, 0], cuts)
         k1, k2 = projection.ka_keys
         x, y = (np.geomspace(*box[k], _REGION_POINTS) for k in (k1, k2))
-        # One solve per pair gives its residual and the rank its cut-off is read at.
+        # One solve per pair gives its residual and what was fitted, which its cut-off is read at.
         solved = [[projection.solved({k1: a, k2: b}) for b in y] for a in x]
         ssr = np.array([[cell_ssr[0] for cell_ssr, _ in row] for row in solved])
         region = JointRegion(
@@ -432,7 +434,7 @@ def fit_profile(
             r2_threshold=float(1.0 - projection.threshold(fit, level, n_constrained=2) / ss_tot),
             level=level,
             best=(fit.ka[k1], fit.ka[k2]),
-            r2_cut=1.0 - np.array([[joint_cut(rank) for _, rank in row] for row in solved]) / ss_tot,
+            r2_cut=1.0 - np.array([[joint_cut(fitted) for _, fitted in row] for row in solved]) / ss_tot,
         )
     else:
         # Every drawn curve: the average first, then each active replicate's own.
@@ -450,9 +452,9 @@ def fit_profile(
             cuts = {}
 
             def rows(ka: float, key: str = key, cuts: dict[float, float] = cuts) -> np.ndarray:
-                # The first row is the averaged signal, whose solve also gives the rank its cut-off is read at.
-                ssr, rank = curves.solved({key: ka})
-                cuts[ka] = cut(rank)
+                # The first row is the averaged signal, whose solve also gives what its cut-off is read at.
+                ssr, fitted = curves.solved({key: ka})
+                cuts[ka] = cut(fitted)
                 return ssr
 
             nodes = _ka_grid(*projection.ka_bounds[key], _PROFILE_PER_DECADE)

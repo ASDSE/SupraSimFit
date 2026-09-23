@@ -262,16 +262,22 @@ class TestFitRefusals:
             fit_assay(self._ida_assay(n_points=3))
 
     @pytest.mark.parametrize(
-        'bounds',
-        [(0.0, 1e12), (-1e6, 1e12), (1e9, 1e6)],
+        'bounds, says',
+        [
+            ((0.0, 1e12), 'lower bound 0 M⁻¹ under Parameter Bounds'),
+            ((-1e6, 1e12), 'lower bound -1e\\+06 M⁻¹ under Parameter Bounds'),
+            ((1e9, 1e6), 'lower bound of 1×10⁹ M⁻¹ above its upper bound of 1×10⁶ M⁻¹'),
+        ],
         ids=['zero', 'negative', 'inverted'],
     )
-    def test_ka_bounds_that_are_not_a_range_of_binding_constants_are_refused_by_name(self, bounds):
+    def test_ka_bounds_that_are_not_a_range_of_binding_constants_are_refused_by_the_value_entered(self, bounds, says):
+        """The refusal names the bound as the user entered it, in the panel's words and units."""
         lo, hi = bounds
         config = FitConfig(custom_bounds={'Ka_guest': (Q_(lo, '1/M'), Q_(hi, '1/M'))})
 
-        with pytest.raises(ValueError, match='Ka_guest'):
+        with pytest.raises(ValueError, match=says) as refused:
             fit_assay(self._ida_assay(), config)
+        assert 'Ka_guest' not in str(refused.value)
 
 
 class TestInputsTooFreeForTheData:

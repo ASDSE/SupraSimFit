@@ -504,7 +504,7 @@ def test_a_shared_source_moves_its_inputs_together_in_the_independent_objective(
 
     for ka in (projection.fit().ka['Ka_guest'], 4e6):
         value, offsets, _, _ = penalised_objective(
-            projection, {'Ka_guest': ka}, cons, {}, other_ka=None, loading=errors.input_offsets
+            projection, {'Ka_guest': ka}, cons, {}, other_ka=None, loading=errors.loading(assay.get_conditions())
         )
         assert set(offsets) == {'h0', 'd0', shared_key('Stock')}
         assert value == pytest.approx(reference(ka), abs=1e-6)
@@ -557,6 +557,60 @@ def test_a_planted_entry_error_is_recovered_as_a_shift_and_the_truth_is_inside_o
     assert all(0.0 <= w <= 1.0 for w in found.weights) and 0.0 <= found.p_value <= 1.0
 
 
+def test_a_binding_constant_on_its_bound_is_held_there_and_takes_no_share_of_the_inputs():
+    """DBA host-to-dye, 8 points: the data put Ka_dye on the top of its box, where it is held and not fitted.
+
+    Both inputs were entered within their stated 3 %. With the column of that
+    held constant in the reference, the constant took the one direction of the
+    inputs the data inform (weight 0.04 instead of 0.96), the statistic's
+    reference collapsed onto that sliver and the test returned p = 0. The
+    reference here is built independently — the speciation and a bounded
+    solve of the signal coefficients, central differences over the two input
+    coordinates with Ka_dye held on its bound — and the test agrees with it.
+    """
+    x = np.array([3.5956845446575212e-06 * k for k in range(1, 9)])
+    y = np.array([0.25797743358281594, 0.17783503163577002, 0.16633813598767203, 0.1610830729221144,
+                  0.1588025696965124, 0.1574060619491764, 0.1554913225617098, 0.15535553311458644])  # fmt: skip
+    dye = 2.265465452774337e-06
+    assay = ASSAY_CLASSES[AssayType.DBA_HtoD](
+        x_data=Q_(x, 'M'), y_data=Q_(y, 'au'), fixed_conc=Q_(dye, 'M'), mode='HtoD'
+    )
+    projection = Projection(assay, dict(ASSAY_REGISTRY[AssayType.DBA_HtoD].default_bounds))
+    _, result = _aware(assay, projection, {'fixed_conc': 0.03, TITRANT: 0.03})
+    fit = result.fit
+    top = projection.ka_bounds['Ka_dye'][1]
+    assert fit.ka['Ka_dye'] == pytest.approx(top, rel=1e-6) and fit.ka_fitted == ()
+    # Held on its bound, the constant is not among the parameters: the offset and the one signal coefficient
+    # a mass balance leaves (free and bound dye add up to the dye total).
+    assert fit.n_params == 2
+
+    lb, ub = _coefficient_box(projection)
+    sigma = np.array([0.03, 0.03])
+
+    def residual(z: np.ndarray) -> np.ndarray:
+        fixed, scale = np.array([dye, 1.0]) * (1.0 + sigma * z)
+        species = dba_species(top, scale * x, fixed, mode='HtoD')
+        columns = np.column_stack([np.ones(x.size), species['D'], species['HD']])
+        norm = np.linalg.norm(columns, axis=0)
+        solved = lsq_linear(columns / norm, y, bounds=(lb * norm, ub * norm), method='bvls')
+        return columns @ np.clip(solved.x / norm, lb, ub) - y
+
+    at = np.array([fit.offsets['fixed_conc'], fit.offsets[TITRANT]]) / sigma
+    s = np.sqrt(float(residual(at) @ residual(at)) / x.size)
+    h = 1e-5
+    columns = [(residual(at + step) - residual(at - step)) / (2 * h) / s for step in h * np.eye(2)]
+    jacobian = np.vstack([np.column_stack(columns), np.eye(2)])
+    weights, directions = np.linalg.eigh(np.eye(2) - np.linalg.inv(jacobian.T @ jacobian))
+    informed = weights >= 0.01
+
+    found = conflict(result)
+    assert found.k == np.count_nonzero(informed) == 1
+    assert found.weights == pytest.approx(tuple(weights[informed]), abs=2e-3)
+    # The statistic is the squared offset along the informed direction.
+    assert found.q == pytest.approx(float(np.sum((directions[:, informed].T @ at) ** 2)), rel=1e-3)
+    assert found.p_value > 0.3
+
+
 def test_an_input_stated_as_a_range_stays_inside_it_and_is_reported_on_its_edge():
     assay, projection = _ida(15, 0.001, 3, h0_factor=1.10)
     fit = projection.fit()
@@ -568,10 +622,11 @@ def test_an_input_stated_as_a_range_stays_inside_it_and_is_reported_on_its_edge(
     assert conflict(narrow) is None
     profile = narrow.profiles['Ka_guest']
     assert np.all(profile.offsets >= -0.05 - 1e-12) and np.all(profile.offsets <= 0.05 + 1e-12)
-    # A range is a free parameter with no pseudo-observation: it counts in p.
-    assert narrow.fit.n_params == projection.n_params(fit) + 1 and profile.interval.dof == 15 - 4
-    # Held on its edge the host is not fitted, so the whole fit's Jacobian has the signal parameters and Ka alone.
-    signal = projection.fitted_columns(narrow.fit.ka, narrow.fit.offsets).shape[1]
+    # A range is a free parameter with no pseudo-observation, counted in p wherever the fit leaves it inside the
+    # range. Held on its edge the host is not fitted: p and the whole fit's Jacobian have the signal parameters and
+    # Ka alone.
+    assert narrow.fit.n_params == projection.n_params(fit) and profile.interval.dof == 15 - 3
+    signal = projection.fitted_parameters(narrow.fit.ka, narrow.fit.offsets).columns.shape[1]
     assert fit_jacobian(projection, narrow).shape == (15, signal + 1)
 
     wide = input_aware(
@@ -579,8 +634,9 @@ def test_an_input_stated_as_a_range_stays_inside_it_and_is_reported_on_its_edge(
     )
     shift = input_shifts(wide)['h0']
     assert shift.fraction == pytest.approx(1 / 1.10 - 1, abs=0.01) and shift.at_edge is False
-    signal = projection.fitted_columns(wide.fit.ka, wide.fit.offsets).shape[1]
+    signal = projection.fitted_parameters(wide.fit.ka, wide.fit.offsets).columns.shape[1]
     assert fit_jacobian(projection, wide).shape == (15, signal + 2)
+    assert wide.fit.n_params == projection.n_params(fit) + 1 and wide.profiles['Ka_guest'].interval.dof == 15 - 4
     interval = wide.profiles['Ka_guest'].interval
     assert interval.low <= IDA_TRUE['Ka_guest'] <= interval.high
 
@@ -617,7 +673,7 @@ def test_a_range_input_the_fit_left_on_its_edge_absorbs_nothing_of_the_other_inp
     n, ssr, ss_tot = 10, 2.5, 1e3
     g = float(a @ a) / (ssr / n)
     for d0_offset, weight in ((0.02, 0.0), (0.05, g / (1 + g)), (-0.05, g / (1 + g))):
-        weights, _ = _input_directions(jacobian, 0, stated, {'h0': 0.01, 'd0': d0_offset}, ssr, n, ss_tot)
+        weights, _ = _input_directions(jacobian, [], stated, {'h0': 0.01, 'd0': d0_offset}, ssr, n, ss_tot)
         assert weights == pytest.approx((weight,), abs=1e-9)
 
 

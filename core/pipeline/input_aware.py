@@ -21,7 +21,9 @@ constant. The penalised profile of one binding constant and its interval are
 
     P(K_j = k) = min over the other free Ka and e in its box of [n log S(K, e) + z'z]
     interval_j = {k : P(k) - P_min <= n log(1 + m F(level; m, nu) / nu)},  nu = n - p - sum_i w_i
-    p = free Ka + rank of the free coefficient design at the optimum + inputs stated as a range
+    p = what the optimum fitted: the free Ka inside their box, the rank of the signal
+        columns inside their bounds (Projection.fitted_parameters) and the inputs
+        stated as a range that it left off the ends of theirs
     m = 1 + the signal parameters the optimum fits and the solution at k holds on a bound
 
 ``m`` is the numerator of :meth:`core.pipeline.varpro.Projection.cut_off`, read
@@ -29,7 +31,8 @@ at each profile point's own solution — its binding constants and its moved
 inputs — against the optimum's: a signal parameter on its bound is not fitted,
 so a rise to a Ka that pins one gives up that parameter as well as the Ka.
 
-An input with a range is one more parameter. An input with a standard
+An input with a range is one more parameter wherever the fit leaves it inside
+the range; on an end of it the input is held there. An input with a standard
 deviation is a parameter the penalty holds back: it takes up the fraction
 ``w_i`` of a residual degree of freedom that the data, and not the penalty,
 determine (:func:`core.pipeline.diagnostics.conflict_reference`; the sum is the
@@ -74,12 +77,12 @@ from core.pipeline.varpro import (
     LEVEL,
     FitCancelled,
     FitRefused,
+    FittedParameters,
     KaInterval,
     ProjectedFit,
     Projection,
     _interval,
     _ka_grid,
-    _rank,
     _refine_at,
     _require_dof,
 )
@@ -186,11 +189,13 @@ class AwareFit:
     objective : float
         ``P_min = n log(ssr) + z'z``, the residual floored at the resolution of R².
     n_params : int
-        ``p`` of the F test: the free binding constants, the design rank and
-        one per input stated as a range, wherever in its range the fit put it.
-        An input resting on an end of its range still counts, which keeps
-        ``n - p`` at or below the degrees of freedom the residual has and the
-        interval on the wide side.
+        ``p`` of every test of this fit: what it fitted — the free binding
+        constants strictly inside their box, the rank of the signal columns
+        strictly inside their bounds
+        (:meth:`~core.pipeline.varpro.Projection.fitted_parameters`) and the
+        inputs stated as a range that it left off the ends of theirs
+        (:func:`at_edge`). A parameter held on a bound takes no dimension from
+        the residual.
     jacobian : np.ndarray
         Jacobian at the optimum of the residual (signal units) followed by the
         penalty rows, over *ka_free* (log10) then *constraint_keys* (the offset
@@ -199,6 +204,9 @@ class AwareFit:
         The binding constants the fit was free to move.
     constraint_keys : tuple[str, ...]
         The varying inputs.
+    ka_fitted : tuple[str, ...]
+        Those of *ka_free* the fit left strictly inside their box; one on a
+        bound of it is held there and not fitted.
     """
 
     ka: dict[str, float]
@@ -211,6 +219,7 @@ class AwareFit:
     jacobian: np.ndarray
     ka_free: tuple[str, ...]
     constraint_keys: tuple[str, ...]
+    ka_fitted: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -230,8 +239,8 @@ class AwareProfile:
     offsets : np.ndarray
         Fitted offset of every constraint per grid point, shape ``(len(grid), constraints)``.
     threshold : float
-        ``P_min`` plus the acceptance excess of a solution that pins no signal
-        parameter the optimum fits (``m = 1``).
+        ``P_min`` plus the acceptance excess of a solution that holds no
+        parameter on a bound that the optimum fits (``m = 1``).
     r2_threshold : float
         *threshold* on the R² axis.
     interval : KaInterval
@@ -240,7 +249,7 @@ class AwareProfile:
     cut : np.ndarray
         ``P_min`` plus the acceptance excess of each grid point's own solution:
         *threshold*, and higher over every stretch where that solution holds
-        a signal parameter on a bound that the optimum leaves free.
+        a parameter on a bound that the optimum leaves free.
         *threshold* at every point when left out.
     r2_cut : np.ndarray
         *cut* on the R² axis.
@@ -278,13 +287,13 @@ class AwareResult:
 
 @dataclass(frozen=True)
 class _Point:
-    """One solved inner problem: the objective, where it lies, its residual sum of squares and its fitted rank."""
+    """One solved inner problem: the objective, where it lies, its residual sum of squares and what it fitted."""
 
     value: float
     ka: dict[str, float]  # every free Ka
     coords: np.ndarray  # input offsets in units of their standard deviation or half range
     ssr: float
-    rank: int = 0  # Projection.fitted_rank at (ka, coords); zero for a start and where the model has no solution
+    fitted: FittedParameters | None = None  # Projection.fitted_parameters at (ka, coords); None for a start
 
 
 class _Problem:
@@ -414,8 +423,19 @@ class _Problem:
         coords = x[m:]
         value = self.n * float(np.log(max(ssr, self.floor))) + float(np.sum(coords[self.is_sigma] ** 2))
         ka = {**fixed, **{key: float(10.0 ** x[i]) for i, key in enumerate(moving)}}
-        rank = self.projection.fitted_rank(ka, self.input_offsets(coords))
-        return _Point(value, {key: ka[key] for key in self.projection.free_ka}, coords, ssr, rank)
+        fitted = self.projection.fitted_parameters(ka, self.input_offsets(coords))
+        return _Point(value, {key: ka[key] for key in self.projection.free_ka}, coords, ssr, fitted)
+
+    def count(self, point: _Point) -> int:
+        """Parameters *point* fitted: its ``p``.
+
+        What its signal solve fitted (:attr:`FittedParameters.count`) and every
+        input stated as a range that it left off the ends of that range
+        (:func:`at_edge`).
+        """
+        offsets = self.offsets(point.coords)
+        ranges = sum(c.sigma is None and not at_edge(c, offsets[c.key]) for c in self.constraints)
+        return point.fitted.count + ranges
 
     def jacobian(self, point: _Point) -> np.ndarray:
         """Jacobian of ``[r ; z]`` at *point* over every free Ka (log10) and every input coordinate.
@@ -653,7 +673,7 @@ def at_edge(constraint: InputConstraint, offset: float) -> bool:
 
 def _input_directions(
     jacobian: np.ndarray,
-    n_free_ka: int,
+    ka_fitted: Sequence[bool],
     constraints: Sequence[InputConstraint],
     offsets: Mapping[str, float],
     ssr: float,
@@ -662,24 +682,29 @@ def _input_directions(
 ) -> tuple[np.ndarray, np.ndarray]:
     """:func:`conflict_reference` of a fit, at the noise scale ``sqrt(S / n)`` of its own residual.
 
-    An input stated as a range that the fit left on an end of it is held
-    there and not fitted, like a signal parameter on its bound, so its
-    Jacobian column stays out: the data then say as much about the other
-    inputs as they do with that input fixed.
+    *ka_fitted* says, per leading binding-constant column of *jacobian*,
+    whether the fit left that constant strictly inside its box. A binding
+    constant on a bound of its box and an input stated as a range that the
+    fit left on an end of it are held there and not fitted, like a signal
+    parameter on its bound, so their Jacobian columns stay out: left in, such
+    a column absorbs what the data say about the inputs along whatever
+    direction it happens to point, although the fit did not move it.
     """
     scale = float(np.sqrt(max(ssr, _R2_RESOLUTION * ss_tot) / n))
-    fitted = np.array([not at_edge(c, offsets[c.key]) for c in constraints], dtype=bool)
+    moved = np.array([not at_edge(c, offsets[c.key]) for c in constraints], dtype=bool)
     is_sigma = np.array([c.sigma is not None for c in constraints], dtype=bool)
-    columns = np.concatenate([np.ones(n_free_ka, dtype=bool), fitted])
-    return conflict_reference(jacobian[:, columns], n_free_ka, is_sigma[fitted], scale)
+    columns = np.concatenate([np.asarray(ka_fitted, dtype=bool), moved])
+    return conflict_reference(jacobian[:, columns], int(np.sum(ka_fitted)), is_sigma[moved], scale)
 
 
 def _require_aware_dof(n: int, n_model: int, constraints: Sequence[InputConstraint], taken: float = 0.0) -> float:
     """``nu = n - p - sum w``; refused in plain language, naming the inputs, when less than one is left.
 
-    *n_model* counts the binding constants and the signal parameters, and
-    *taken* is the sum of the weights of the inputs stated with a standard
-    deviation. One degree of freedom is what the fixed-input interval asks
+    *n_model* counts the binding constants and the signal parameters,
+    *constraints* are the sources that count as parameters — every one before
+    the search, and at the optimum those it did not leave on an end of their
+    range — and *taken* is the sum of the weights of the inputs stated with a
+    standard deviation. One degree of freedom is what the fixed-input interval asks
     for (``n - p >= 1``); below it the F quantile grows without bound and
     the interval says nothing.
     """
@@ -764,7 +789,6 @@ def input_aware(
         return _fixed_inputs(projection, fixed, level, conditional)
 
     problem = _Problem(projection, constraints, should_cancel, loading)
-    n_ranges = int(np.sum(~problem.is_sigma))
     best: list[_Point] = []
 
     def consider(point: _Point) -> _Point:
@@ -772,16 +796,23 @@ def input_aware(
             best[:] = [point]
         return point
 
-    def n_params(point: _Point) -> int:
-        design, _, _ = projection._solve_at(point.ka, problem.input_offsets(point.coords))
-        free, scale = projection._free_columns(design)
-        return len(projection.free_ka) + _rank(free / scale) + n_ranges
-
     def cut(optimum: _Point, dof: float) -> Callable[[_Point], float]:
-        """Cut-off of a point's own solution: one more parameter given up per signal parameter it pins."""
-        return lambda point: optimum.value + _excess(n, dof, level, 1 + max(0, optimum.rank - point.rank))
+        """Cut-off of a point's own solution: one more parameter given up per signal parameter it pins.
 
-    search_dof = _require_aware_dof(n, projection.n_params(fixed), constraints)
+        As in :meth:`Projection.cut_off`, only the signal parameters: the other
+        binding constant and an input stated as a range reach a bound where the
+        objective is flat towards it, and whether a solve lands on that bound
+        or just inside it is arbitrary.
+        """
+        fitted = optimum.fitted.rank
+        return lambda point: (
+            optimum.value
+            + _excess(n, dof, level, 1 + max(0, fitted - (0 if point.fitted is None else point.fitted.rank)))
+        )
+
+    # Refused on what the model has free, wherever a fit puts it, so that whether a fit is made does
+    # not depend on where the data happen to put its parameters.
+    search_dof = _require_aware_dof(n, fixed.n_free_ka + fixed.rank, constraints)
     excess = _excess(n, search_dof, level)
     entered = problem.start_coords()
     # The entered inputs at the fixed-input fit are allowed, so the fit from there is never worse
@@ -808,11 +839,12 @@ def input_aware(
     for _ in range(_MAX_PASSES):
         optimum = best[0]
         jacobian = problem.jacobian(optimum)
-        weights, _ = _input_directions(
-            jacobian, len(projection.free_ka), constraints, problem.offsets(optimum.coords), optimum.ssr, n, ss_tot
-        )
-        p = n_params(optimum)
-        dof = _require_aware_dof(n, p - n_ranges, constraints, float(weights.sum()))
+        ka_fitted = [key in optimum.fitted.ka for key in projection.free_ka]
+        offsets = problem.offsets(optimum.coords)
+        weights, _ = _input_directions(jacobian, ka_fitted, constraints, offsets, optimum.ssr, n, ss_tot)
+        p = problem.count(optimum)
+        moved = [c for c in constraints if not at_edge(c, offsets[c.key])]
+        dof = _require_aware_dof(n, optimum.fitted.count, moved, float(weights.sum()))
         excess = _excess(n, dof, level)
         threshold = optimum.value + excess
         for key, trace in traces.items():
@@ -858,6 +890,7 @@ def input_aware(
         jacobian=jacobian,
         ka_free=projection.free_ka,
         constraint_keys=problem.keys,
+        ka_fitted=optimum.fitted.ka,
     )
     return AwareResult(fit=fit, profiles=profiles, constraints=constraints, n_points=n, ss_tot=ss_tot)
 
@@ -882,8 +915,8 @@ def _fixed_inputs(
         points = {fixed.ka[key]: (projection._floored(fixed), threshold)}
         for edge, is_open in _edges(interval):
             if not is_open:
-                _, ssr, rank = projection.profile_point(key, edge, inner_per_decade)
-                points[edge] = (ssr, cut(rank))
+                _, ssr, fitted = projection.profile_point(key, edge, inner_per_decade)
+                points[edge] = (ssr, cut(fitted))
         grid = np.array(sorted(points))
         ssr, cuts = np.array([points[ka] for ka in grid.tolist()]).T
         profiles[key] = AwareProfile(
@@ -898,6 +931,7 @@ def _fixed_inputs(
             cut=n * np.log(cuts),
             r2_cut=1.0 - cuts / ss_tot,
         )
+    fitted = projection.fitted_parameters(fixed.ka)
     fit = AwareFit(
         ka=dict(fixed.ka),
         offsets={},
@@ -905,10 +939,11 @@ def _fixed_inputs(
         coefficients=fixed.coefficients[0],
         ssr=float(fixed.row_ssr[0]),
         objective=n * float(np.log(projection._floored(fixed))),
-        n_params=projection.n_params(fixed),
+        n_params=fitted.count,
         jacobian=_Problem(projection, ()).jacobian(_Point(np.nan, dict(fixed.ka), np.empty(0), np.nan)),
         ka_free=projection.free_ka,
         constraint_keys=(),
+        ka_fitted=fitted.ka,
     )
     return AwareResult(fit=fit, profiles=profiles, constraints=(), n_points=n, ss_tot=ss_tot)
 
@@ -916,18 +951,20 @@ def _fixed_inputs(
 def fit_jacobian(projection: Projection, result: AwareResult) -> np.ndarray:
     """Jacobian of the whole fit for :func:`core.pipeline.diagnostics.runs_test`.
 
-    The columns of the signal parameters the fit left inside their bounds,
-    then those of ``AwareFit.jacobian`` that the fit moved: every free binding
-    constant and every input but one resting on an end of its range, which is
-    held there like a signal parameter on its bound. The residual rows are in
-    units of the noise scale ``sqrt(S / n)``, the penalty rows as they are.
+    The columns of the parameters the fit fitted: the signal parameters it
+    left inside their bounds, then those of ``AwareFit.jacobian`` that it
+    moved — every free binding constant inside its box and every input but
+    one resting on an end of its range. A parameter on a bound is held there
+    and has no column. The residual rows are in units of the noise scale
+    ``sqrt(S / n)``, the penalty rows as they are.
     """
     fit, n = result.fit, result.n_points
-    fitted = projection.fitted_columns(fit.ka, fit.input_offsets)
+    fitted = projection.fitted_parameters(fit.ka, fit.input_offsets).columns
     scale = float(np.sqrt(max(fit.ssr, _R2_RESOLUTION * result.ss_tot) / n))
     columns = np.zeros((fit.jacobian.shape[0], fitted.shape[1]))
     columns[:n] = fitted
-    moved = [True] * len(fit.ka_free) + [not at_edge(c, fit.offsets[c.key]) for c in result.constraints]
+    moved = [key in fit.ka_fitted for key in fit.ka_free]
+    moved += [not at_edge(c, fit.offsets[c.key]) for c in result.constraints]
     stacked = np.hstack([columns, fit.jacobian[:, moved]])
     stacked[:n] /= scale
     return stacked
@@ -989,7 +1026,8 @@ def conflict(result: AwareResult) -> Conflict | None:
     sigma = [c for c in result.constraints if c.sigma is not None]
     if not sigma:
         return None
+    ka_fitted = [key in fit.ka_fitted for key in fit.ka_free]
     directions = _input_directions(
-        fit.jacobian, len(fit.ka_free), result.constraints, fit.offsets, fit.ssr, result.n_points, result.ss_tot
+        fit.jacobian, ka_fitted, result.constraints, fit.offsets, fit.ssr, result.n_points, result.ss_tot
     )
     return conflict_test([fit.offsets[c.key] / c.sigma for c in sigma], *directions, result.n_points, fit.n_params)

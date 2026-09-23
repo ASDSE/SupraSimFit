@@ -12,7 +12,6 @@ from core.models.equilibrium import ida_signal
 from core.pipeline.diagnostics import lack_of_fit
 from core.pipeline.fit_pipeline import (
     FitConfig,
-    _fitted_params,
     _misfit,
     _resolve_bounds,
     fit_assay,
@@ -209,9 +208,12 @@ class TestTheParametersTheLackOfFitTestCounts:
         i0, dye_free, dye_bound = aware.fit.coefficients
         assert -1000.0 < i0 < 1000.0 and 0.0 < dye_free < 1e9 and 0.0 < dye_bound < 1e9
         assert 1e-8 < aware.fit.ka['Ka_guest'] < 1e12
-        assert _fitted_params(projection, aware) == aware.fit.n_params
+        # Ka and the three signal columns, of which a mass balance ties two
+        # (free and bound dye add up to the dye total) to the offset: rank two.
+        assert aware.fit.n_params == 1 + 2
 
-        found = _misfit(projection, aware, replicates)
+        found, skipped = _misfit(projection, aware, replicates)
+        assert skipped == ''
         curve = projection.signals[0] - projection.residual(aware.fit.ka, 0, aware.fit.offsets)
         every_free = lack_of_fit(replicates, curve, aware.fit.n_params)
         # The scatter of three replicates about their own line in the mean
@@ -233,15 +235,17 @@ class TestTheParametersTheLackOfFitTestCounts:
         assert i0 == 0.0, 'the bounded solve holds the offset on its floor'
         assert 0.0 < dye_free < 1e9 and 0.0 < dye_bound < 1e9
         assert 1e-8 < aware.fit.ka['Ka_guest'] < 1e12
-        count = _fitted_params(projection, aware)
-        assert count == aware.fit.n_params - 1
+        # Ka and the two species coefficients; the offset on its floor is held there.
+        count = aware.fit.n_params
+        assert count == 1 + 2
 
         # The same data with the floor lifted: the offset goes free, and is counted.
         lifted, lifted_aware = self._fit(assay, {**_OPEN_KA, **_OPEN_SIGNAL})
         assert lifted_aware.fit.coefficients[0] < 0.0
-        assert _fitted_params(lifted, lifted_aware) == lifted_aware.fit.n_params == aware.fit.n_params
+        assert lifted_aware.fit.n_params == count + 1
 
-        found = _misfit(projection, aware, replicates)
+        found, skipped = _misfit(projection, aware, replicates)
+        assert skipped == ''
         rows, points = replicates.shape
         mean = replicates.mean(axis=0)
         curve = projection.signals[0] - projection.residual(aware.fit.ka, 0, aware.fit.offsets)
@@ -259,17 +263,18 @@ class TestTheParametersTheLackOfFitTestCounts:
         """Bounds that stop below where the data put Ka leave the estimate on the upper one, held there."""
         assay, _ = self._gda(seed=0)
         capped = {**_OPEN_SIGNAL, 'Ka_guest': (Q_(1e-8, '1/M'), Q_(1.2e6, '1/M'))}
-        projection, aware = self._fit(assay, capped)
+        _, aware = self._fit(assay, capped)
 
         assert aware.fit.ka['Ka_guest'] == pytest.approx(1.2e6, rel=1e-12)
         i0, dye_free, dye_bound = aware.fit.coefficients
         assert -1000.0 < i0 < 1000.0 and 0.0 < dye_free < 1e9 and 0.0 < dye_bound < 1e9
-        assert _fitted_params(projection, aware) == aware.fit.n_params - 1
+        # The three GDA signal columns, which no mass balance ties; Ka on its bound is held there.
+        assert aware.fit.n_params == 3
 
         # The same data over bounds the estimate lies inside: the constant is counted.
-        inside, inside_aware = self._fit(assay, {**_OPEN_KA, **_OPEN_SIGNAL})
+        _, inside_aware = self._fit(assay, {**_OPEN_KA, **_OPEN_SIGNAL})
         assert inside_aware.fit.ka['Ka_guest'] > 1.2e6
-        assert _fitted_params(inside, inside_aware) == inside_aware.fit.n_params == aware.fit.n_params
+        assert inside_aware.fit.n_params == aware.fit.n_params + 1
 
 
 def _ida_measurement_set() -> MeasurementSet:

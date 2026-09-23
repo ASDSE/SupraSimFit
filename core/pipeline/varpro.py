@@ -34,12 +34,15 @@ fit at that value of one Ka, so an F test on it gives a profile-likelihood
 confidence interval per Ka, and the same test on the rows of a replicate set
 decides whether every replicate shares K.
 
-The F test of a tested Ka compares two fits, and its numerator counts the
-parameters the best fit has and the fit at the tested Ka has not. That is the
-tested Ka, and every signal parameter the bounded solve holds on a bound there
-while the best fit leaves it free: a coefficient on its bound is not fitted.
-With ``r(K)`` the rank of the columns whose coefficient lies inside its bounds
-at K (:meth:`Projection.fitted_rank`) and ``K_hat`` the best fit,
+A parameter held on a bound is not fitted: it takes no dimension from the
+residual. What a fit at K fitted (:meth:`Projection.fitted_parameters`) is the
+free binding constants strictly inside their box and the rank ``r(K)`` of the
+design columns whose coefficient lies strictly inside its bounds; their count
+at the best fit ``K_hat`` is the ``p`` of every test here. The F test of a
+tested Ka compares two fits, and its numerator counts the parameters the best
+fit has and the fit at the tested Ka has not: the tested Ka, and every signal
+parameter the bounded solve holds on a bound there while the best fit leaves it
+free,
 
     m(K)   = constrained Ka + max(0, r(K_hat) - r(K))
     cut(K) = S_min (1 + m(K) F(level; m(K), n - p) / (n - p))
@@ -71,7 +74,7 @@ from scipy.stats import f as f_dist
 
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
-from core.units import Quantity
+from core.units import Q_, Quantity
 
 
 class FitCancelled(Exception):
@@ -234,6 +237,11 @@ def on_ka_bound(ka: float, bounds: tuple[float, float]) -> bool:
     return not min(estimate - low, high - estimate) > _LOG_KA_XTOL
 
 
+def _ka_text(value: float) -> str:
+    """A binding constant as a message shown to the user writes it, e.g. ``1×10⁻⁸ M⁻¹``."""
+    return f'{Q_(value, ""):.3g~P} M⁻¹'
+
+
 @dataclass(frozen=True)
 class KaInterval:
     """Profile-likelihood confidence interval of one binding constant.
@@ -345,6 +353,44 @@ class ReplicateTest:
     tested: bool
 
 
+@dataclass(frozen=True)
+class FittedParameters:
+    """What one solve fitted: the parameters it placed itself rather than held on a bound.
+
+    The one reading of "fitted" behind every count of parameters: the residual
+    degrees of freedom of an interval, the numerator of its F test, the
+    lack-of-fit test, the columns of the conflict reference and of the runs
+    test's reference, and the degrees of freedom of the input-aware interval.
+    A parameter held on a bound takes no dimension from the residual, so
+    counting it would make ``n - p`` smaller than the residual's own
+    dimension.
+
+    Attributes
+    ----------
+    ka : tuple[str, ...]
+        The free binding constants strictly inside their box
+        (:func:`on_ka_bound`), in ``Projection.free_ka`` order.
+    columns : np.ndarray
+        The whitened design columns of the signal parameters the bounded solve
+        left strictly inside their bounds: the derivatives of minus the
+        whitened residual with respect to those parameters.
+    rank : int
+        Numerical rank of those columns, read on the design as the model gives
+        it. A rank and not a count of columns, because a mass balance ties
+        columns together and the solve then returns one member of a family in
+        which any of the tied coefficients may be the one inside its bounds.
+    """
+
+    ka: tuple[str, ...]
+    columns: np.ndarray
+    rank: int
+
+    @property
+    def count(self) -> int:
+        """Parameters fitted: the ``p`` of a test."""
+        return len(self.ka) + self.rank
+
+
 class Projection:
     """Projected least-squares problem of one assay on one or more signal rows.
 
@@ -414,11 +460,17 @@ class Projection:
             for k, (lo, hi) in bounds.items()
         }
         self.ka_bounds = {k: fb[k] for k in self.ka_keys}
-        for key, (lo, hi) in self.ka_bounds.items():
-            if not 0.0 < lo <= hi:
+        for lo, hi in self.ka_bounds.values():
+            if not 0.0 < lo:
                 raise FitRefused(
-                    f'The bounds of {key} must be positive, with the lower one not above the upper one; '
-                    f'they are {lo:g} to {hi:g} 1/M.'
+                    f'An association constant has the lower bound {_ka_text(lo)} under Parameter Bounds. Association '
+                    'constants are searched on a logarithmic scale, so both of their bounds must be above zero. '
+                    f'Enter a positive lower bound, such as the default of {_ka_text(1e-8)}, and fit again.'
+                )
+            if not lo <= hi:
+                raise FitRefused(
+                    f'An association constant has a lower bound of {_ka_text(lo)} above its upper bound of '
+                    f'{_ka_text(hi)} under Parameter Bounds. Swap the two bounds and fit again.'
                 )
         self.free_ka = tuple(k for k, (lo, hi) in self.ka_bounds.items() if lo != hi)
         self._pinned_ka = {k: lo for k, (lo, hi) in self.ka_bounds.items() if lo == hi}
@@ -639,7 +691,7 @@ class Projection:
         else:
             ka, q = self._search_two(w)
         if not np.isfinite(q):
-            ranges = ' or '.join(f'between {lo:g} and {hi:g} M⁻¹' for lo, hi in self.ka_bounds.values())
+            ranges = ' or '.join(f'between {_ka_text(lo)} and {_ka_text(hi)}' for lo, hi in self.ka_bounds.values())
             which = 'its upper bound' if len(self.ka_bounds) == 1 else 'their upper bounds'
             raise FitRefused(
                 f'The binding model has no solution at any association constant {ranges}, so there is no fit. '
@@ -723,18 +775,24 @@ class Projection:
         return np.array([values[k] for k in self.assay.parameter_keys])
 
     def n_params(self, fit: ProjectedFit) -> int:
-        """Parameter count ``p`` of the F test: the free binding constants plus the design rank."""
-        return fit.n_free_ka + fit.rank
+        """Parameter count ``p`` of the F test: what the best fit fitted (:meth:`fitted_parameters`)."""
+        return self.fitted_parameters(fit.ka).count
 
-    def fitted_columns(self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None) -> np.ndarray:
-        """Whitened design columns of the signal parameters the bounded solve of the first row fits at *ka*.
+    def fitted_parameters(
+        self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None
+    ) -> FittedParameters:
+        """What the fit of the first row at *ka*, the inputs moved by *offsets*, fitted (see :meth:`solved`)."""
+        return self.solved(ka, offsets)[1]
 
-        The columns, with the inputs moved by *offsets* and every titration
-        point multiplied by the square root of its weight, of the free
-        coefficients that lie inside their bounds; a coefficient held on a
-        bound is not fitted. They are the derivatives of minus the whitened
-        :meth:`residual` with respect to those coefficients. None where the
-        model has no solution.
+    def solved(
+        self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None
+    ) -> tuple[np.ndarray, FittedParameters]:
+        """Each row's weighted SSR at *ka* and what the first row's fit there fitted, both from one bounded solve.
+
+        A free binding constant is fitted when it lies strictly inside its box
+        (:func:`on_ka_bound`), and a pinned one never is. A signal parameter is fitted when the bounded solve leaves it strictly
+        inside its bounds, read as follows. None is fitted where the model has
+        no solution.
 
         A coefficient is on a bound when moving it there changes the whitened
         curve by less than ``_RANK_RTOL`` of the signal's weighted variation
@@ -749,44 +807,22 @@ class Projection:
         a fitted coefficient, which scatters by at least the noise of one
         point in those variables, lands that close to a bound by chance in
         under 1e-5 of fits at a noise of 0.1 % of the signal.
+
+        The rank of the fitted columns is read on the columns as the model
+        gives them, the design ``_RANK_RTOL`` is measured on; whitening scales
+        the rows by positive factors, which leaves a rank as it is.
         """
         design, ssr, coef = self._solve_at(ka, offsets)
-        free, _ = self._free_columns(design * self._whiten[:, np.newaxis])
-        return free[:, self._fitted(design, ssr, coef)]
-
-    def _fitted(self, design: np.ndarray, ssr: np.ndarray, coef: np.ndarray) -> np.ndarray:
-        """Which free coefficients the first row's solve fits: a mask over the columns of :meth:`_free_columns`.
-
-        The reading of "inside its bounds" is that of :meth:`fitted_columns`,
-        on a solve :meth:`_solve_at` has made. All ``False`` where the model
-        has no solution.
-        """
         free = self._lb != self._ub
-        if not np.isfinite(ssr[0]):
-            return np.zeros(np.count_nonzero(free), dtype=bool)
-        _, scale = self._free_columns(design * self._whiten[:, np.newaxis])
-        margin = np.minimum(coef[0] - self._lb, self._ub - coef[0])[free] * scale
-        return margin > _RANK_RTOL * np.sqrt(self.ss_tot[0])
-
-    def solved(self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None) -> tuple[np.ndarray, int]:
-        """Each row's weighted SSR at *ka* and the fitted rank of the first row, both from one bounded solve.
-
-        The fitted rank is the rank of the design columns of the coefficients
-        :meth:`fitted_columns` names, the count :meth:`cut_off` takes. It is
-        read on the columns as the model gives them, the design ``_RANK_RTOL``
-        is measured on; whitening scales the rows by positive factors, which
-        leaves a rank as it is. A rank and not a count of columns, because a
-        mass balance ties columns together and the solve then returns one
-        member of a family in which any of the tied coefficients may be the
-        one inside its bounds.
-        """
-        design, ssr, coef = self._solve_at(ka, offsets)
-        columns = self._free_columns(design)[0][:, self._fitted(design, ssr, coef)]
-        return ssr, _rank(columns / _norms(columns))
-
-    def fitted_rank(self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None) -> int:
-        """Signal parameters the bounded solve of the first row fits at *ka* (see :meth:`solved`)."""
-        return self.solved(ka, offsets)[1]
+        whitened, scale = self._free_columns(design * self._whiten[:, np.newaxis])
+        if np.isfinite(ssr[0]):
+            margin = np.minimum(coef[0] - self._lb, self._ub - coef[0])[free] * scale
+            inside = margin > _RANK_RTOL * np.sqrt(self.ss_tot[0])
+        else:
+            inside = np.zeros(np.count_nonzero(free), dtype=bool)
+        columns = self._free_columns(design)[0][:, inside]
+        ka_inside = tuple(key for key in self.free_ka if not on_ka_bound(ka[key], self.ka_bounds[key]))
+        return ssr, FittedParameters(ka=ka_inside, columns=whitened[:, inside], rank=_rank(columns / _norms(columns)))
 
     def degenerate_keys(self, fit: ProjectedFit) -> tuple[str, ...]:
         """Signal parameters the data do not determine on their own at the fitted binding constants.
@@ -853,34 +889,51 @@ class Projection:
 
         ``S_min (1 + m F(level; m, n - p) / (n - p))`` with ``m`` the number of
         constrained binding constants (one for an interval, two for the joint
-        region) plus *released*, the signal parameters the best fit fits and
-        the fit at the tested Ka holds on a bound; ``p`` the free binding
-        constants plus the design rank, and ``S_min`` floored at
-        ``_R2_RESOLUTION`` of the total sum of squares.
+        region) plus *released*, the parameters the best fit fits and the fit
+        at the tested Ka holds on a bound; ``p`` what the best fit fitted
+        (:meth:`n_params`), and ``S_min`` floored at ``_R2_RESOLUTION`` of the
+        total sum of squares.
 
         Raises
         ------
-        ValueError
-            When ``n - p < 1``, so the data leave nothing to judge the fit by.
+        FitRefused
+            When the titration points are no more than the parameters the
+            model has free — the free binding constants and the rank of the
+            free signal columns, wherever the fit put them — so the data leave
+            nothing to judge a fit by.
         """
         self._require_one_row('A confidence threshold')
-        dof = _require_dof(self.n_points, self.n_params(fit))
+        _require_dof(self.n_points, fit.n_free_ka + fit.rank)
+        dof = self.n_points - self.n_params(fit)
         m = n_constrained + released
         return self._floored(fit) * (1.0 + m * f_dist.ppf(level, m, dof) / dof)
 
-    def cut_off(self, fit: ProjectedFit, level: float = LEVEL, n_constrained: int = 1) -> Callable[[int], float]:
-        """:meth:`threshold` by fitted rank: the cut-off a fit of that :meth:`fitted_rank` is judged against.
+    def cut_off(
+        self, fit: ProjectedFit, level: float = LEVEL, n_constrained: int = 1
+    ) -> Callable[[FittedParameters], float]:
+        """:meth:`threshold` by what the fit at a tested Ka fitted: the cut-off that fit is judged against.
 
-        *released* is how far the rank falls short of the best fit's, so along
-        the binding constants the cut-off is a step function that takes one
-        value per count. The rank comes from the solve that gave the judged
+        *released* is how far the rank of the signal columns that fit left
+        inside their bounds falls short of the best fit's, so along the binding
+        constants the cut-off is a step function that takes one value per
+        rank. What was fitted comes from the solve that gave the judged
         residual (:meth:`solved`, :meth:`profile_point`).
+
+        The other binding constant of a two-Ka model is not counted among what
+        a tested value gives up when it rests on its bound there. Where it
+        does, the objective is flat towards that bound — the data no longer
+        tell the constant's value — and whether the inner search lands on the
+        bound or a millionth of a decade inside it is arbitrary: on a stepwise
+        titration of the weak regime the reading flips from one profile point
+        to the next and the cut-off with it, by a third of the rise the test
+        allows. Whether that bound, and not the data, closes the interval is
+        what :meth:`_bound_behind` decides.
         """
-        fitted = self.fitted_rank(fit.ka)
+        fitted = self.fitted_parameters(fit.ka).rank
         cuts: dict[int, float] = {}
 
-        def at(rank: int) -> float:
-            released = max(0, fitted - rank)
+        def at(point: FittedParameters) -> float:
+            released = max(0, fitted - point.rank)
             if released not in cuts:
                 cuts[released] = self.threshold(fit, level, n_constrained, released)
             return cuts[released]
@@ -908,21 +961,21 @@ class Projection:
 
     def profile_point(
         self, ka_key: str, ka: float, inner_per_decade: int = _SEARCH_PER_DECADE
-    ) -> tuple[dict[str, float], float, int]:
-        """The profile at ``ka_key = ka``: its free binding constants, the objective of all rows, the fitted rank.
+    ) -> tuple[dict[str, float], float, FittedParameters]:
+        """The profile at ``ka_key = ka``: its free binding constants, the objective of all rows, what it fitted.
 
         The other free Ka is where :meth:`profile` finds its minimum. It is the
-        point whose fit the F test judges, so its fitted rank is the one
+        point whose fit the F test judges, so what it fitted is what
         :meth:`cut_off` takes. With *ka_key* the only free Ka the objective
-        and the rank are one solve (:meth:`solved`).
+        and what was fitted are one solve (:meth:`solved`).
         """
         point = {ka_key: ka}
         others = [k for k in self.free_ka if k != ka_key]
         if not others:
-            ssr, rank = self.solved(point)
-            return point, float(ssr @ self._weights(None)), rank
+            ssr, fitted = self.solved(point)
+            return point, float(ssr @ self._weights(None)), fitted
         point[others[0]], value = self._inner_minimum(ka_key, ka, self._weights(None), inner_per_decade)
-        return point, value, self.fitted_rank(point)
+        return point, value, self.fitted_parameters(point)
 
     def inner_start(self, ka_key: str, ka: float) -> dict[str, float]:
         """Where the other free Ka minimises the objective at ``ka_key = ka``; empty without another free Ka.
@@ -1042,8 +1095,8 @@ class Projection:
 
         def excess(inner_per_decade: int) -> Callable[[float], float]:
             def at(ka: float) -> float:
-                _, value, rank = self.profile_point(ka_key, ka, inner_per_decade)
-                return value - cut(rank)
+                _, value, fitted = self.profile_point(ka_key, ka, inner_per_decade)
+                return value - cut(fitted)
 
             return at
 
@@ -1074,7 +1127,7 @@ class Projection:
             limited_by_high=limited_by_high,
         )
 
-    def _bound_behind(self, ka_key: str, edge: float, cut: Callable[[int], float], floor: float) -> str:
+    def _bound_behind(self, ka_key: str, edge: float, cut: Callable[[FittedParameters], float], floor: float) -> str:
         """The other free Ka when its bound, and not the data, is what closes the profile of *ka_key* at *edge*.
 
         Along the profile of one constant of a stepwise model the other one
@@ -1090,14 +1143,14 @@ class Projection:
         """
         (other,) = (k for k in self.free_ka if k != ka_key)
         objective = self._objective(self._weights(None))
-        point, at_edge, rank = self.profile_point(ka_key, edge, _INNER_PER_DECADE)
+        point, at_edge, fitted = self.profile_point(ka_key, edge, _INNER_PER_DECADE)
         other_ka = point[other]
         lo, hi = self.ka_bounds[other]
         if other_ka not in (lo, hi):
             return ''
         step = 10.0 ** (1.0 / _SEARCH_PER_DECADE)
         inside = min(other_ka * step, hi) if other_ka == lo else max(other_ka / step, lo)
-        return other if objective({ka_key: edge, other: inside}) - at_edge > _BOUND_RISE * (cut(rank) - floor) else ''
+        return other if objective({ka_key: edge, other: inside}) - at_edge > _BOUND_RISE * (cut(fitted) - floor) else ''
 
 
 def replicate_outliers(

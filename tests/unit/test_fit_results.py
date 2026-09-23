@@ -489,6 +489,88 @@ class TestSummarizeParameters:
 
         assert {r.conditional_open for r in summarize_parameters(result) if r.key == 'Ka_guest'} == {(False, True)}
 
+    @pytest.mark.parametrize('ka, side', [(1e-8, 'low'), (1e12, 'high'), (1.5e6, ''), (1.0000001e-8, 'low')])
+    def test_a_binding_constant_on_an_edge_of_its_box_is_flagged_on_both_its_rows_and_on_no_other(self, ka, side):
+        """The GDA box is the registry's 1e-8 to 1e12 M⁻¹: a value on an edge is where the search stopped.
+
+        The search resolves log₁₀(Ka) to 1e-7 decade, so a value that close to
+        an edge is on it.
+        """
+        result = _sample_fit_result(parameters={**_sample_fit_result().parameters, 'Ka_guest': Q_(ka, '1/M')})
+        rows = summarize_parameters(result)
+        assert {r.estimate_at_bound for r in rows if r.key == 'Ka_guest'} == {side}
+        assert all(r.estimate_at_bound == '' for r in rows if r.key != 'Ka_guest')
+
+    def test_the_box_a_binding_constant_is_judged_against_is_the_one_the_fit_recorded(self):
+        """1.5e6 M⁻¹ is inside the registry's box and on the upper bound the fit was given, entered in mM⁻¹."""
+        bounds = {'Ka_guest': (Q_(1.0, '1/mM'), Q_(1.5e3, '1/mM'))}
+        result = _sample_fit_result(fit_config=_config_to_dict(FitConfig(per_replica=False, custom_bounds=bounds)))
+        assert {r.estimate_at_bound for r in summarize_parameters(result) if r.key == 'Ka_guest'} == {'high'}
+        # A binding constant held fixed by equal bounds has no box to reach an edge of.
+        pinned = {'Ka_guest': (Q_(1.5e6, '1/M'), Q_(1.5e6, '1/M'))}
+        result = _sample_fit_result(fit_config=_config_to_dict(FitConfig(per_replica=False, custom_bounds=pinned)))
+        assert {r.estimate_at_bound for r in summarize_parameters(result)} == {''}
+
+    def test_the_fit_at_the_entered_inputs_on_an_edge_is_flagged_on_its_own(self):
+        moved = _with_moved_inputs()
+        conditional = replace(
+            moved.conditional, parameters={**moved.conditional.parameters, 'Ka_guest': Q_(1e12, '1/M')}
+        )
+        rows = [r for r in summarize_parameters(_with_moved_inputs(conditional=conditional)) if r.key == 'Ka_guest']
+        assert {(r.estimate_at_bound, r.conditional_at_bound) for r in rows} == {('', 'high')}
+
+    def test_replicate_statistics_leave_out_every_replicate_whose_own_fit_ran_to_an_edge(self):
+        """A bound is not an estimate: the median and range are those of the replicates that have one.
+
+        Replicates give 1e5, 1e7 and the lower edge 1e-8. The statistics are
+        those of the first two, and every row says one replicate was left out.
+        """
+        result = _sample_fit_result(
+            metadata={'active_replica_ids': ['a', 'b', 'c'], 'replica_ids_fit': ['a', 'b', 'c']},
+            replica_fits=[_replica('a', 1e5), _replica('b', 1e7), _replica('c', 1e-8)],
+        )
+        rows = {(r.key, r.is_log): r for r in summarize_parameters(result)}
+        plain = rows[('Ka_guest', False)].replicates
+        assert plain['median'] == pytest.approx(5.05e6) and (plain['min'], plain['max']) == (1e5, 1e7)
+        assert {r.replicates_at_bound for r in rows.values()} == {1}
+        # Two of three on an edge leave one estimate, which is no spread.
+        result = replace(result, replica_fits=[_replica('a', 1e5), _replica('b', 1e12), _replica('c', 1e-8)])
+        rows = summarize_parameters(result)
+        assert all(r.replicates is None and r.replicates_at_bound == 2 for r in rows)
+
+    def test_one_binding_constant_on_an_edge_leaves_the_other_constants_replicate_values_whole(self):
+        """Two Ka: replicate c's Ka_HG2 ran to the upper edge, its Ka_HG did not.
+
+        Ka_HG keeps all three values and counts no replicate at a bound; Ka_HG2
+        keeps the two estimates and counts one. The signal parameters are those
+        of c's curve pushed against the bound, so they leave c out as well.
+        """
+        signal = {'I0': Q_(0.0, 'au'), 'I_G': Q_(1e6, 'au/M'), 'I_HG': Q_(5e7, 'au/M'), 'I_HG2': Q_(9e7, 'au/M')}
+
+        def fit(replica_id, ka_hg, ka_hg2):
+            return FitResult(
+                parameters={'Ka_HG': Q_(ka_hg, '1/M'), 'Ka_HG2': Q_(ka_hg2, '1/M'), **signal},
+                rmse=1.0,
+                r_squared=0.99,
+                x_fit=Q_(np.linspace(0, 50e-6, 5), 'M'),
+                y_fit=Q_(np.linspace(1, 5, 5), 'au'),
+                assay_type='DBA_HG2',
+                model_name='equilibrium',
+                conditions={'h0': Q_(10e-6, 'M')},
+                fit_config=_config_to_dict(FitConfig(per_replica=True)),
+                metadata={'replica_id': replica_id},
+            )
+
+        result = replace(
+            fit('avg', 1e6, 1e5),
+            metadata={'replica_ids_fit': ['a', 'b', 'c']},
+            replica_fits=[fit('a', 1e6, 1e5), fit('b', 2e6, 3e5), fit('c', 4e6, 1e12)],
+        )
+        rows = {r.key: r for r in summarize_parameters(result) if not r.is_log}
+        assert (rows['Ka_HG'].replicates['max'], rows['Ka_HG'].replicates_at_bound) == (4e6, 0)
+        assert (rows['Ka_HG2'].replicates['max'], rows['Ka_HG2'].replicates_at_bound) == (3e5, 1)
+        assert rows['I_HG'].replicates_at_bound == 1
+
     def test_a_fit_that_moved_no_input_reports_no_second_column(self):
         """Its headline already is the fit at the entered inputs; repeating it would read as two estimates."""
         result = _with_moved_inputs(input_shifts={})
@@ -532,27 +614,30 @@ def test_a_signal_parameter_the_fit_ended_on_an_entered_bound_is_named_with_that
     assert parameters_on_bound(FitResult.from_dict(json.loads(json.dumps(held.to_dict())))) == {'I_dye_bound': ceiling}
 
 
-def test_an_infinite_misfit_ratio_is_written_as_strict_json_and_read_back_as_infinite():
-    """Replicates that agree exactly leave no pure error, so the lack-of-fit ratio is infinite.
-
-    A results file is read by other programs too, and JSON has no token for
-    an infinite number, so the file holds null and the reader restores it.
-    """
-    exact = MisfitTest('lack_of_fit', math.inf, 0.0, dof=(9, 24))
-    result = _with_moved_inputs(
+def test_the_diagnostics_and_the_tests_they_could_not_run_are_written_as_strict_json_and_read_back():
+    """A results file is read by other programs too: every number in the diagnostics is finite, and a test
+    that was not run is recorded with its reason, so an imported result says the same as the fit did."""
+    ran = MisfitTest('lack_of_fit', 3.2, 0.004, dof=(9, 24))
+    both = _with_moved_inputs(
         diagnostics=FitDiagnostics(
-            conditional_misfit=exact,
-            misfit=exact,
-            conflict=Conflict(math.inf, 2, 0.0, (0.17, 0.99)),
-            verdict=Verdict.MODEL_INADEQUATE,
+            conditional_misfit=ran,
+            misfit=ran,
+            conflict=Conflict(14.0, 2, 0.001, (0.17, 0.99)),
+            verdict=Verdict.MODEL_AND_INPUTS,
         )
     )
-    text = json.dumps(result.to_dict(), allow_nan=False)  # refuses any value JSON cannot hold
-    assert '"statistic": null' in text and '"q": null' in text
-
-    back = FitResult.from_dict(json.loads(text))
-    assert back.diagnostics.misfit == back.diagnostics.conditional_misfit == exact
-    assert back.diagnostics.conflict.q == math.inf
+    untested = _with_moved_inputs(
+        diagnostics=FitDiagnostics(
+            conditional_misfit=None,
+            misfit=None,
+            conflict=None,
+            verdict=Verdict.CONSISTENT,
+            skipped={'misfit': 'no_scatter', 'conflict': 'no_informed_direction'},
+        )
+    )
+    for result in (both, untested):
+        text = json.dumps(result.to_dict(), allow_nan=False)  # refuses any value JSON cannot hold
+        assert FitResult.from_dict(json.loads(text)).diagnostics == result.diagnostics
 
 
 def test_a_bound_with_no_limit_is_written_as_strict_json_and_read_back_as_no_limit():

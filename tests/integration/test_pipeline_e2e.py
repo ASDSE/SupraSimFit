@@ -560,7 +560,12 @@ class TestInputsFreeWithinTheirUncertainty:
         assert result.parameters == result.conditional.parameters
         assert (result.rmse, result.r_squared) == (result.conditional.rmse, result.conditional.r_squared)
         # One signal and no replicates: the residuals are all there is to test the model with.
-        assert result.diagnostics.conditional_misfit.kind == 'runs'
+        x, y, true = ida_clean
+        noisy = Q_(y.magnitude + np.random.default_rng(2).normal(0.0, 0.01 * np.ptp(y.magnitude), y.size), 'au')
+        tested = fit_assay(
+            _ida_assay((x, noisy, true))[0], FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
+        ).diagnostics
+        assert tested.conditional_misfit.kind == 'runs' and 'misfit' not in tested.skipped
 
     def test_the_inputs_are_whichever_ones_the_assay_has(self, gda_clean):
         """Nothing here knows an assay by name: a GDA states a guest stock, and that is what moves.
@@ -592,3 +597,116 @@ class TestInputsFreeWithinTheirUncertainty:
         conditional = result.conditional.intervals['Ka_guest']
         assert (low, high) != (conditional.low, conditional.high)
         assert np.log10(high / low) > np.log10(conditional.high / conditional.low)
+
+
+# ---------------------------------------------------------------------------
+# Tests the data cannot carry
+# ---------------------------------------------------------------------------
+
+
+def _noise_free_assays():
+    """One noise-free titration of every binding model the app registers, with its recovery bounds."""
+    dba_x, dba_y = _make_dba_data(DBA_TRUE, n_points=12)
+    ida_x, ida_y = _make_ida_data(IDA_TRUE, n_points=12)
+    hg2_x, hg2_y = _make_hg2_data(HG2_TRUE)
+    h2g_x, h2g_y = _make_h2g_data(H2G_TRUE)
+    return {
+        'DBA': (
+            DBAAssay(
+                x_data=Q_(dba_x, 'M'), y_data=Q_(dba_y, 'au'), fixed_conc=Q_(DBA_TRUE['fixed_conc'], 'M'), mode='DtoH'
+            ),
+            DBA_RECOVERY_BOUNDS,
+        ),
+        'IDA': (_ida_assay((Q_(ida_x, 'M'), Q_(ida_y, 'au'), IDA_TRUE))[0], GDA_IDA_RECOVERY_BOUNDS),
+        'HG2': (
+            HG2Assay(x_data=Q_(hg2_x, 'M'), y_data=Q_(hg2_y, 'au'), h0=Q_(HG2_TRUE['h0'], 'M')),
+            HG2_RECOVERY_BOUNDS,
+        ),
+        'H2G': (
+            H2GAssay(x_data=Q_(h2g_x, 'M'), y_data=Q_(h2g_y, 'au'), h0=Q_(H2G_TRUE['h0'], 'M')),
+            H2G_RECOVERY_BOUNDS,
+        ),
+    }
+
+
+class TestDataWithoutScatter:
+    """Data with no noise carry nothing to judge a curve against, so no misfit test is run on them.
+
+    A noise-free titration leaves the residual of the search's own resolution,
+    1e-12 to 1e-8 of the signal's spread; its signs are those of where the
+    search stopped, and a runs test on them rejects a model that is exact.
+    Identical replicates leave a pure error of zero, over which the lack-of-fit
+    ratio is infinite. Neither is evidence against the model: the verdict is
+    that nothing was found, and the skipped test is named with its reason.
+    """
+
+    @pytest.mark.parametrize('name', ['DBA', 'IDA', 'HG2', 'H2G'])
+    def test_a_noise_free_titration_is_consistent_with_its_misfit_test_skipped(self, name):
+        assay, bounds = _noise_free_assays()[name]
+        diagnostics = fit_assay(assay, FitConfig(custom_bounds=bounds, per_replica=False)).diagnostics
+        assert diagnostics.verdict is Verdict.CONSISTENT
+        assert diagnostics.misfit is None and diagnostics.conditional_misfit is None
+        assert diagnostics.skipped == {'misfit': 'no_scatter', 'conflict': 'no_uncertainty'}
+
+    def test_identical_replicates_are_consistent_with_the_lack_of_fit_test_skipped(self):
+        x, y = _make_ida_data(IDA_TRUE, n_points=12)
+        ms = MeasurementSet(concentrations=x, signals=np.vstack([y, y, y]), replica_ids=('a', 'b', 'c'))
+        conditions = {k: Q_(IDA_TRUE[k], u) for k, u in (('Ka_dye', '1/M'), ('h0', 'M'), ('d0', 'M'))}
+        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False)
+        diagnostics = fit_measurement_set(ms, IDAAssay, conditions, config).diagnostics
+        assert diagnostics.verdict is Verdict.CONSISTENT and diagnostics.misfit is None
+        assert diagnostics.skipped['misfit'] == 'no_scatter'
+
+    def test_a_titration_with_too_few_points_for_the_runs_test_says_so(self):
+        """Five points and three fitted parameters leave two residual degrees of freedom, below the three the
+        runs test needs."""
+        x, y = _make_ida_data(IDA_TRUE, n_points=5)
+        noisy = y + np.random.default_rng(4).normal(0.0, 0.01 * np.ptp(y), y.size)
+        assay = _ida_assay((Q_(x, 'M'), Q_(noisy, 'au'), IDA_TRUE))[0]
+        diagnostics = fit_assay(assay, FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS)).diagnostics
+        assert diagnostics.misfit is None and diagnostics.skipped['misfit'] == 'too_few_dof'
+        assert diagnostics.verdict is Verdict.CONSISTENT
+
+
+# ---------------------------------------------------------------------------
+# A binding constant the data do not limit
+# ---------------------------------------------------------------------------
+
+
+class TestWeakBinding:
+    """Ka·c of 0.05 at the top of the titration: the data put no lower limit on Ka, and the fit runs to the bottom
+    of its box.
+
+    Where the search stopped is not an estimate. The rows every display renders
+    from say so, on both of the constant's rows, and a replicate whose own fit
+    ran to an edge is left out of the replicate statistics.
+    """
+
+    @pytest.fixture(scope='class')
+    def weak(self):
+        true = dict(DBA_TRUE, Ka_dye=1e3)
+        x, y = _make_dba_data(true, n_points=15, mode='HtoD')
+        signals = np.vstack([y + np.random.default_rng(30 + i).normal(0, 0.01 * np.abs(y)) for i in range(3)])
+        ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c'))
+        return ms, {'fixed_conc': Q_(true['fixed_conc'], 'M'), 'mode': 'HtoD'}
+
+    @pytest.mark.parametrize('per_replica', [False, True], ids=['average', 'per-replicate'])
+    def test_an_estimate_on_the_lower_edge_is_flagged_and_its_interval_is_open_below(self, weak, per_replica):
+        ms, conditions = weak
+        result = fit_measurement_set(ms, DBAAssay, conditions, FitConfig(per_replica=per_replica))
+        rows = [r for r in summarize_parameters(result) if r.key == 'Ka_dye']
+        assert {(r.estimate_at_bound, r.interval_open) for r in rows} == {('low', (True, False))}
+        assert all(r.estimate_at_bound == '' for r in summarize_parameters(result) if r.key != 'Ka_dye')
+        # The upper end is a real limit, far above the edge the search stopped on.
+        assert 1e2 < result.intervals['Ka_dye'].high < 1e5
+
+    def test_replicate_statistics_leave_out_the_replicate_whose_own_fit_ran_to_the_edge(self, weak):
+        ms, conditions = weak
+        result = fit_measurement_set(ms, DBAAssay, conditions, FitConfig(per_replica=True))
+        own = [float(fit.parameters['Ka_dye'].magnitude) for fit in result.replica_fits]
+        edge = [ka for ka in own if ka <= 1e-8 * (1 + 1e-6)]
+        assert len(edge) == 1, 'one replicate of this dataset runs to the edge on its own'
+        row = next(r for r in summarize_parameters(result) if r.key == 'Ka_dye' and not r.is_log)
+        kept = sorted(ka for ka in own if ka not in edge)
+        assert row.replicates_at_bound == 1
+        assert (row.replicates['min'], row.replicates['max']) == (kept[0], kept[-1])

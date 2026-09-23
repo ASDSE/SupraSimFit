@@ -2,23 +2,27 @@
 
 - the runs test has the binomial distribution of sign changes when nothing is
   fitted, the hand-derived distribution for three residuals about a fitted
-  offset, and its stated level on a fitted curve;
+  offset, and its stated level on a fitted curve; drawn in chunks, its
+  reference is the one drawn at once, to the last bit;
 - the lack-of-fit F is the hand-computed ratio on a 2 x 4 toy, weighted and
   unweighted, and it fires on replicates that differ by a scale and a
   background where the raw spread between them hides the misfit entirely;
+  replicates with no scatter above the resolution of a fit are not tested;
 - the weights of the conflict reference are g / (1 + g) for the information g
   the data hold on an input: 1 for an input the data determine, 0 for one the
-  residual does not depend on;
+  residual does not depend on; they do not depend on the units a parameter's
+  column is measured in;
 - the conflict p-value has its two analytic limits (chi-squared where the data
   determine the inputs, a scaled beta where they say nothing) and, on a linear
   Gaussian model fitted the same way, rejects a consistent fit at the stated
   rate with few points, where a reference that takes the noise scale as known
   rejects twice as often;
-- the verdict names the first cause that applies, in its fixed order.
+- the verdict judges the misfit test and the conflict statistic together by
+  Holm's procedure, names both when both reject, and a results file records
+  which test was not run and why.
 """
 
 import json
-import math
 
 import numpy as np
 import pytest
@@ -36,6 +40,7 @@ from core.pipeline.diagnostics import (
     conflict_reference,
     conflict_test,
     lack_of_fit,
+    no_scatter,
     runs_test,
     verdict,
 )
@@ -102,6 +107,31 @@ def test_runs_test_orders_by_x_leaves_out_zeros_and_carries_penalty_rows():
     assert (found.p_value, found.expected) == (ordered.p_value, ordered.expected)
     with pytest.raises(ValueError, match='needs 5 or more rows'):
         runs_test(residuals, x, jacobian[:4])
+
+
+def test_the_runs_reference_drawn_in_chunks_is_the_reference_drawn_at_once():
+    """The reference is read chunk by chunk to keep its memory bounded; the p-value is the same number.
+
+    Written out here the way one draw of the whole reference computes it: the
+    residuals the linearised fit leaves of standard normal noise, their runs,
+    and the mid-p against the observed runs. 300 points and 3 000 000 numbers
+    need several chunks.
+    """
+    rng = np.random.default_rng(7)
+    n = 300
+    x = np.linspace(0.0, 1.0, n)
+    jacobian = np.column_stack([np.ones(n), x, x**2])
+    residuals = np.sin(9 * x) + 0.3 * rng.standard_normal(n)
+    found = runs_test(residuals, x, jacobian, draws=10_000, seed=3)
+
+    u = np.linalg.svd(jacobian / np.linalg.norm(jacobian, axis=0), full_matrices=False)[0]
+    e = np.random.default_rng(3).standard_normal((10_000, n))
+    signs = np.sign(e - (e @ u) @ u.T)
+    null = 1 + np.sum(signs[:, 1:] != signs[:, :-1], axis=1)
+    observed = 1 + int(np.sum(np.sign(residuals[1:]) != np.sign(residuals[:-1])))
+    assert found.statistic == observed
+    assert found.p_value == float(np.mean(null < observed) + 0.5 * np.mean(null == observed))
+    assert found.expected == float(null.mean())
 
 
 def test_lack_of_fit_is_the_hand_computed_f_on_a_two_by_four_toy():
@@ -193,26 +223,37 @@ def test_lack_of_fit_refuses_data_that_cannot_carry_the_test():
         lack_of_fit(signals, fitted, 1, weights=np.ones(3))
 
 
-def test_replicates_that_leave_only_the_rounding_error_of_the_projection_have_no_scatter():
-    """Identical replicates, and exact affine images of one curve, are an infinite ratio, not a rounding artefact.
+def test_replicates_with_no_scatter_above_the_resolution_of_a_fit_are_not_tested():
+    """Identical replicates, and exact affine images of one curve, carry no noise to judge a curve against.
 
-    Detrending them leaves what the projection rounds off — about 1e-31 of the
-    data's squared norm — and a finite F over that would be floating-point
-    noise shown to the user as a statistic. Scatter of one part in 1e9, far
-    below any instrument, is still scatter and gives a finite ratio.
+    Detrending them leaves what the projection rounds off, and a ratio over
+    that is floating-point noise shown to the user as a statistic. The floor
+    is the resolution a fit reads a residual at, 1e-10 of the signal's sum of
+    squares (a scatter of 1e-5 of its spread): scatter of one part in 1e9 is
+    below it, one part in 1e3 is measured noise.
     """
     fitted = np.array([1.0, 2.0, 3.0, 5.0])
     agreeing = np.vstack([[1.0, 2.0, 3.0, 4.0]] * 3)
-    found = lack_of_fit(agreeing, fitted, n_params=1)
-    assert found.statistic == math.inf and found.p_value == 0.0
+    assert lack_of_fit(agreeing, fitted, n_params=1) is None
 
     images = np.array([[0.97], [1.0], [1.04]]) * agreeing[0] + np.array([[0.3], [0.0], [-0.2]])
-    assert lack_of_fit(images, fitted, n_params=1).statistic == math.inf
-    assert lack_of_fit(images, fitted, n_params=1, weights=np.array([4.0, 2.0, 1.0, 0.5])).statistic == math.inf
+    assert lack_of_fit(images, fitted, n_params=1) is None
+    assert lack_of_fit(images, fitted, n_params=1, weights=np.array([4.0, 2.0, 1.0, 0.5])) is None
 
     rng = np.random.default_rng(2)
     barely = agreeing * (1.0 + 1e-9 * rng.standard_normal(agreeing.shape))
-    assert math.isfinite(lack_of_fit(barely, fitted, n_params=1).statistic)
+    assert lack_of_fit(barely, fitted, n_params=1) is None
+    noisy = agreeing * (1.0 + 1e-3 * rng.standard_normal(agreeing.shape))
+    found = lack_of_fit(noisy, fitted, n_params=1)
+    assert found is not None and np.isfinite(found.statistic) and found.p_value < 1e-6
+
+
+def test_no_scatter_is_a_variance_below_the_resolution_of_the_signal_it_describes():
+    """1e-10 of the signal's variance per point: a scale-free floor, so a gain on the signal moves nothing."""
+    for gain in (1e-6, 1.0, 1e9):
+        ss_tot, n = 50.0 * gain**2, 10
+        assert no_scatter(0.99e-10 * ss_tot / n, ss_tot, n)
+        assert not no_scatter(1.01e-10 * ss_tot / n, ss_tot, n)
 
 
 def test_conflict_weights_are_one_for_a_determined_input_and_zero_for_an_unseen_one():
@@ -246,6 +287,30 @@ def test_conflict_weights_discount_what_a_binding_constant_or_a_range_input_abso
     assert conflict_reference(jacobian, 1, [True], 1e-3)[0] == pytest.approx((0.0,), abs=1e-6)
     # The same with the absorbing column a range input (no penalty row) listed before the sigma input.
     assert conflict_reference(jacobian, 0, [False, True], 1e-3)[0] == pytest.approx((0.0,), abs=1e-6)
+
+
+def test_conflict_weights_do_not_depend_on_the_units_a_binding_constant_is_measured_in():
+    """Rescaling a column is measuring its parameter in another unit, which changes nothing the data say.
+
+    A binding constant whose column is short against the others — one the
+    residual barely depends on in the units it happens to be written in — is
+    still a parameter the fit is free to move, and still absorbs its share of
+    the inputs. The reference is the same with that column multiplied by 1e-9
+    or by 1e3; here the first input shares a direction with it, and the
+    weights are the textbook ``I - [(J'J)⁻¹]_zz`` of the unscaled problem.
+    """
+    rng = np.random.default_rng(5)
+    n = 12
+    ka = rng.normal(size=n)
+    inputs = np.column_stack([0.8 * ka + 0.2 * rng.normal(size=n), rng.normal(size=n)])
+    jacobian = np.vstack([np.column_stack([ka, inputs]), np.hstack([np.zeros((2, 1)), np.eye(2)])])
+    covariance = np.linalg.inv(jacobian.T @ jacobian)[1:, 1:]
+    textbook = np.linalg.eigvalsh(np.eye(2) - covariance)
+    for factor in (1.0, 1e-9, 1e3):
+        scaled = jacobian.copy()
+        scaled[:, 0] *= factor
+        weights, _ = conflict_reference(scaled, 1, [True, True], 1.0)
+        assert weights == pytest.approx(textbook, rel=1e-9, abs=1e-12)
 
 
 def test_conflict_weights_add_up_to_the_residual_degrees_of_freedom_the_inputs_take():
@@ -360,43 +425,50 @@ def _conflict(p: float) -> Conflict:
         (0.01, 0.60, 0.40, Verdict.INPUTS_EXPLAIN),
         (0.01, 0.60, 0.01, Verdict.INPUTS_CONFLICT),  # the conflict outranks the explanation
         (0.50, 0.60, 0.01, Verdict.INPUTS_CONFLICT),
-        (0.01, 0.01, 0.01, Verdict.MODEL_INADEQUATE),  # a model the inputs cannot rescue outranks everything
         (0.50, 0.01, 0.40, Verdict.MODEL_INADEQUATE),
+        (0.01, 0.01, 0.01, Verdict.MODEL_AND_INPUTS),  # both reject: both are named
+        (0.001, 0.02, 0.04, Verdict.MODEL_AND_INPUTS),  # 0.02 < 0.05 / 2, then 0.04 < 0.05 / 1
+        (0.001, 0.03, 0.60, Verdict.INPUTS_EXPLAIN),  # 0.03 is not below 0.05 / 2: the misfit is not named
+        # The misfit at the entered inputs is the same test at other inputs and faces its threshold: a miss
+        # the shifted inputs left as it was is no miss they explain.
+        (0.03, 0.03, 0.60, Verdict.CONSISTENT),
+        (0.50, 0.60, 0.03, Verdict.CONSISTENT),  # the same for the conflict
+        (0.50, 0.03, 0.04, Verdict.CONSISTENT),  # the smaller p stops the procedure, the larger is not reached
         (0.05, 0.05, 0.05, Verdict.CONSISTENT),  # at the level itself nothing is rejected
     ],
 )
-def test_the_verdict_names_the_first_cause_that_applies(conditional, aware, conflict, expected):
+def test_the_verdict_judges_the_misfit_and_the_conflict_together_by_holm(conditional, aware, conflict, expected):
+    """Holm at 5 % over the two tests: the smaller p against 0.025, then the larger against 0.05."""
     assert verdict(_misfit(conditional), _misfit(aware), _conflict(conflict)) is expected
+
+
+def test_holm_holds_the_chance_of_a_false_finding_at_the_level_where_two_raw_tests_exceed_it():
+    """Independent uniform p-values, the null of both tests: at most one false finding in twenty.
+
+    Two tests at 5 % each name something in 1 - 0.95² = 9.75 % of fits. Holm
+    names something exactly when the smaller p-value is below 0.025, in
+    1 - 0.975² = 4.94 % of them.
+    """
+    rng = np.random.default_rng(11)
+    p = rng.random((40_000, 2))
+    named = np.mean([verdict(None, _misfit(a), _conflict(b)) is not Verdict.CONSISTENT for a, b in p])
+    assert named == pytest.approx(1 - 0.975**2, abs=0.004)
+    raw = np.mean(np.any(p < 0.05, axis=1))
+    assert raw == pytest.approx(1 - 0.95**2, abs=0.005)
 
 
 def test_the_verdict_without_a_test_or_without_varying_inputs():
     assert verdict(None, None, None) is Verdict.CONSISTENT
-    # Nothing varies: both misfit entries are the test at the entered inputs.
-    assert verdict(_misfit(0.001), _misfit(0.001), None) is Verdict.MODEL_INADEQUATE
+    # Nothing varies: both misfit entries are the test at the entered inputs, judged alone at the level.
+    assert verdict(_misfit(0.04), _misfit(0.04), None) is Verdict.MODEL_INADEQUATE
     # A range-only specification has no conflict statistic.
     assert verdict(_misfit(0.001), _misfit(0.7), None) is Verdict.INPUTS_EXPLAIN
     assert verdict(_misfit(0.03), _misfit(0.03), None, level=0.01) is Verdict.CONSISTENT
+    # A conflict alone is judged at the level too.
+    assert verdict(None, None, _conflict(0.04)) is Verdict.INPUTS_CONFLICT
 
 
-def test_a_value_json_cannot_hold_is_written_as_null_and_read_back_as_what_it_stood_for():
-    """The lack-of-fit ratio is infinite where the replicates leave no scatter at all, and JSON has no
-    token for it.
-
-    Everything else a results file holds here is finite: the p-values are
-    proportions, the degrees of freedom are counts, and the weights lie in
-    ``[0, 1]``.
-    """
-    agreeing = np.vstack([[1.0, 2.0, 3.0, 4.0]] * 3)
-    exact = lack_of_fit(agreeing, np.array([1.0, 2.0, 3.0, 5.0]), n_params=1)
-    assert exact.statistic == math.inf
-    assert exact.to_dict()['statistic'] is None
-    assert MisfitTest.from_dict(json.loads(json.dumps(exact.to_dict(), allow_nan=False))) == exact
-
-    far = Conflict(q=math.inf, k=2, p_value=0.0, weights=(0.2, 0.9))
-    assert far.to_dict()['q'] is None
-    assert Conflict.from_dict(json.loads(json.dumps(far.to_dict(), allow_nan=False))) == far
-
-    # A finite test is written as it stands, field for field.
+def test_every_number_a_results_file_holds_is_finite_and_written_field_for_field():
     ordinary = MisfitTest('lack_of_fit', 1.2, 0.34, dof=(3, 8))
     assert ordinary.to_dict() == {
         'kind': 'lack_of_fit',
@@ -405,7 +477,9 @@ def test_a_value_json_cannot_hold_is_written_as_null_and_read_back_as_what_it_st
         'dof': [3, 8],
         'expected': None,
     }
+    assert MisfitTest.from_dict(json.loads(json.dumps(ordinary.to_dict(), allow_nan=False))) == ordinary
     assert _conflict(0.003).to_dict() == {'q': 9.0, 'k': 2, 'p_value': 0.003, 'weights': [0.2, 0.9]}
+    assert Conflict.from_dict(json.loads(json.dumps(_conflict(0.003).to_dict(), allow_nan=False))) == _conflict(0.003)
 
 
 def test_diagnostics_round_trip_through_a_results_file_dict():
@@ -418,7 +492,34 @@ def test_diagnostics_round_trip_through_a_results_file_dict():
     written = full.to_dict()
     assert written['verdict'] == 'inputs_conflict' and written['conditional_misfit']['dof'] == [9, 72]
     assert FitDiagnostics.from_dict(written) == full
-    empty = FitDiagnostics(None, None, None, Verdict.CONSISTENT)
-    assert FitDiagnostics.from_dict(empty.to_dict()) == empty
+    empty = FitDiagnostics(None, None, None, Verdict.CONSISTENT, skipped={'misfit': 'no_scatter'})
+    assert empty.to_dict()['skipped'] == {'misfit': 'no_scatter'}
+    assert FitDiagnostics.from_dict(json.loads(json.dumps(empty.to_dict()))) == empty
+    # A file that names no skipped test.
+    written = {key: value for key, value in full.to_dict().items() if key != 'skipped'}
+    assert FitDiagnostics.from_dict(written).skipped == {}
     for shift in (InputShift('h0', -0.114, -3.8, False), InputShift('d0', -0.06, None, True)):
         assert InputShift.from_dict(shift.to_dict()) == shift
+
+
+def test_a_misfit_record_with_a_null_statistic_reads_as_data_with_no_scatter():
+    """A null F is the ratio over a pure error of zero: replicates that agree exactly, which no test can judge.
+
+    Read as the misfit test not run for that reason, the verdict stated on it
+    is judged again from the conflict alone, and the result renders.
+    """
+    from gui.plotting.labels import verdict_sentence
+
+    infinite = {'kind': 'lack_of_fit', 'statistic': None, 'p_value': 0.0, 'dof': [9, 24], 'expected': None}
+    record = {
+        'conditional_misfit': infinite,
+        'misfit': infinite,
+        'conflict': _conflict(0.6).to_dict(),
+        'verdict': 'model_inadequate',
+    }
+
+    read = FitDiagnostics.from_dict(json.loads(json.dumps(record)))
+
+    assert (read.conditional_misfit, read.misfit, read.skipped) == (None, None, {'misfit': 'no_scatter'})
+    assert read.verdict is Verdict.CONSISTENT
+    assert 'no scatter above rounding' in verdict_sentence(read, {}, {}, html=False)

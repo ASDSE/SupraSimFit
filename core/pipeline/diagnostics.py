@@ -23,14 +23,18 @@ usually inform one or two combinations of them (the host concentration and the
 titrant scale move the curve almost alike), so the shift of a single input says
 where the fit put the correction and not which stock is wrong.
 
-:func:`verdict` reads the three results in a fixed order and names the cause of
-a misfit: the model, the entered inputs, or neither.
+:func:`verdict` names what the tests found together — the model, the entered
+inputs, both, or nothing — holding the chance of a false finding among the tests
+it judges at the level of one test (Holm).
+
+A test is not run where the data cannot carry it; :attr:`FitDiagnostics.skipped`
+says which one and why, so that "nothing found" is never read as "tested and
+passed".
 """
 
 from __future__ import annotations
 
-import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Sequence
 
@@ -38,7 +42,7 @@ import numpy as np
 from scipy.stats import f as f_dist
 
 from core.pipeline.noise import replicate_scatter
-from core.pipeline.varpro import _RANK_RTOL, LEVEL
+from core.pipeline.varpro import _R2_RESOLUTION, _RANK_RTOL, LEVEL, _norms
 
 #: Level of every test here: the 5 % convention of the confidence intervals
 #: read from the other side, rounded because ``1 - 0.95`` is not 0.05 in floating point.
@@ -54,6 +58,13 @@ DIAGNOSTIC_LEVEL = round(1 - LEVEL, 12)
 # stepwise models). The data say nothing about them, for or against the inputs.
 _INFORMED_WEIGHT = 0.01
 
+# Standard normal numbers the runs test's reference draws at a time: 8 MB of
+# them, however many residuals and parameters the fit has, where one draw of the
+# whole reference takes memory in proportion to the number of points (1.3 GB at
+# 500 points). The generator yields the same stream in chunks as in one call, so
+# the p-value does not depend on this number.
+_RUNS_CHUNK = 1 << 20
+
 
 class Verdict(Enum):
     """What the misfit tests and the conflict statistic say together. The values are the tokens in results files."""
@@ -62,17 +73,7 @@ class Verdict(Enum):
     INPUTS_EXPLAIN = 'inputs_explain'
     INPUTS_CONFLICT = 'inputs_conflict'
     MODEL_INADEQUATE = 'model_inadequate'
-
-
-def _finite_or_none(value: float) -> float | None:
-    """*value* as a results file holds it: the number, or null where it is infinite.
-
-    Infinity is what a ratio over a zero denominator comes to, and null is
-    what JSON has for it; a results file is read by other programs too, and
-    none of them accepts a float outside the format. The reader turns null
-    back into the infinity it stands for.
-    """
-    return value if math.isfinite(value) else None
+    MODEL_AND_INPUTS = 'model_and_inputs'
 
 
 @dataclass(frozen=True)
@@ -100,35 +101,37 @@ class MisfitTest:
     expected: float | None = None
 
     def to_dict(self) -> dict:
-        """Every field, as written to a results file.
-
-        The F ratio is infinite where the replicates leave no scatter at
-        all, and that is written as null (see :func:`_finite_or_none`); the
-        p-value, the degrees of freedom and the expected number of runs are
-        always finite.
-        """
-        return {
-            **asdict(self),
-            'statistic': _finite_or_none(self.statistic),
-            'dof': None if self.dof is None else list(self.dof),
-        }
+        """Every field, as written to a results file; every number is finite."""
+        return {**asdict(self), 'dof': None if self.dof is None else list(self.dof)}
 
     @classmethod
     def from_dict(cls, d: dict) -> 'MisfitTest':
         """The test a results file holds."""
-        return cls(
-            **{
-                **d,
-                'statistic': math.inf if d['statistic'] is None else d['statistic'],
-                'dof': None if d.get('dof') is None else tuple(d['dof']),
-            }
-        )
+        return cls(**{**d, 'dof': None if d.get('dof') is None else tuple(d['dof'])})
+
+
+def no_scatter(variance: float, ss_tot: float, n_points: int) -> bool:
+    """Whether a noise variance per titration point is below what a fit can resolve, so there is nothing to test against.
+
+    The floor is ``_R2_RESOLUTION`` of the signal's own variance per point
+    (*ss_tot*, its sum of squares about its mean, over *n_points*): the
+    resolution the engine reads every residual at, below which a residual sum
+    of squares is floored because it is arithmetic and not data (a scatter
+    under 1e-5 of the signal's spread, finer than any instrument records). A
+    floor at machine precision does not separate the two: a noise-free
+    titration leaves a residual of 1e-12 to 1e-8 of its spread, set by how
+    finely the search resolves Ka (``_LOG_KA_XTOL``) and not by rounding, and
+    the runs test then rejects on the signs of the solver's stopping point.
+    Replicates that agree to the last bit, or are exact affine images of one
+    another, leave a scatter at rounding, many decades below the floor.
+    """
+    return variance <= _R2_RESOLUTION * ss_tot / n_points
 
 
 def lack_of_fit(
     signals: np.ndarray, fitted: np.ndarray, n_params: int, weights: np.ndarray | None = None
-) -> MisfitTest:
-    """Replicate lack-of-fit F test of a curve fitted to the mean of the replicates.
+) -> MisfitTest | None:
+    """Replicate lack-of-fit F test of a curve fitted to the mean of the replicates; ``None`` without scatter.
 
     ``F = [m Σ_i w_i (ybar_i - fitted_i)² / (n - p)] / [Σ_ri e_ri² / ((m - 1)(n - 2))]``
     on ``(n - p, (m - 1)(n - 2))`` degrees of freedom, with ``ybar`` the mean of
@@ -152,22 +155,24 @@ def lack_of_fit(
     The ratio is exactly F under normal noise of the variance the weights
     state, for weights fixed beforehand. A fit passes the weights of the law
     read from these same replicates (:func:`~core.pipeline.noise.noise_law`),
-    so numerator and denominator share one estimated share and the ratio is F
-    only approximately: in the same linearised construction, under constant
-    noise, proportional noise and a 3 % replicate scale factor, it rejects 4.7
-    to 7.5 % of consistent fits at the 5 % level, the most at two replicates
-    (3 000 draws per cell, m = 2, 4, 8). The rate through the whole fit is what
-    the validation check ``noise-law-lof-null`` measures. The deviations of the replicates from their mean are independent of
-    the mean, so numerator and denominator are independent; ``e`` is those
-    deviations projected off the two columns ``[1, ybar]``, which leaves
+    so numerator and denominator share one estimated law and the ratio is F
+    only approximately; the rate at which the whole fit rejects consistent
+    data is what the validation checks ``lof-null`` and
+    ``noise-law-lof-null`` measure. ``e`` is the deviations of the replicates
+    from their mean projected off the two columns ``[1, ybar]``, which leaves
     ``n - 2`` dimensions per replicate, less the one replicate the mean costs
     — the mean's own residual about the line is zero, so the ``e`` sum to zero
     across replicates. The weights enter both sums, so only their ratios
     matter: scaling them all by the same factor leaves the statistic where it
     was, and omitting them is the unweighted test.
 
-    Inputs a fit determines from the data are not counted in *p*, so at such a
-    fit the test is slightly lenient and never falsely alarming.
+    *n_params* is what the fit fitted
+    (:attr:`~core.pipeline.input_aware.AwareFit.n_params`): a parameter held on
+    a bound takes no dimension from the residual.
+
+    Replicates whose scatter is below the resolution of the fit
+    (:func:`no_scatter`) — noise-free or identical replicates — carry no noise
+    to judge the curve against, and the test is not run.
 
     Parameters
     ----------
@@ -204,21 +209,12 @@ def lack_of_fit(
     # Ones multiply exactly, so the numerator without weights is the plain sum
     # of the squared deviations and needs no branch of its own.
     w = np.ones(n) if weights is None else np.asarray(weights, dtype=float)
-    misfit = m * float(np.sum(w * (y.mean(axis=0) - np.asarray(fitted, dtype=float)) ** 2)) / dof[0]
-    # Replicates that agree to the last bit leave the rounding error of the
-    # projection, not zero. Each of its m·n residuals is accurate to about eps
-    # times the norm of the whitened data, so a scatter whose norm is below
-    # m·n times that is no scatter at all, and the ratio over it is infinite:
-    # the same verdict, and a statistic that is not a rounding artefact.
-    # Replicates that are exact affine images of one another leave at most
-    # 0.5 of that bound (20 000 random designs, 2 to 9 replicates of 3 to 39
-    # points); measured scatter stands many decades above it.
-    rounding = m * n * np.finfo(float).eps * float(np.linalg.norm(y * np.sqrt(w)))
+    mean = y.mean(axis=0)
     pure_error = float(np.sum(scatter**2)) / dof[1]
-    if np.linalg.norm(scatter) > rounding:
-        ratio = misfit / pure_error
-    else:
-        ratio = math.inf if misfit > 0 else 0.0
+    if no_scatter(pure_error, float(np.sum(w * (mean - np.average(mean, weights=w)) ** 2)), n):
+        return None
+    misfit = m * float(np.sum(w * (mean - np.asarray(fitted, dtype=float)) ** 2)) / dof[0]
+    ratio = misfit / pure_error
     return MisfitTest('lack_of_fit', ratio, float(f_dist.sf(ratio, *dof)), dof=dof)
 
 
@@ -267,11 +263,17 @@ def runs_test(
     norms = np.linalg.norm(j, axis=0)
     u, s, _ = np.linalg.svd(j / np.where(norms > 0, norms, 1.0), full_matrices=False)
     u = u[:, s > _RANK_RTOL * s.max()] if s.size else u
-    e = np.random.default_rng(seed).standard_normal((draws, j.shape[0]))
-    null = _count_runs(np.sign((e - (e @ u) @ u.T)[:, :n]))
     runs = int(_count_runs(np.sign(r[r != 0])))
-    p_value = float(np.mean(null < runs) + 0.5 * np.mean(null == runs))
-    return MisfitTest('runs', float(runs), p_value, expected=float(null.mean()))
+    rng = np.random.default_rng(seed)
+    chunk = max(1, _RUNS_CHUNK // j.shape[0])
+    fewer = same = total = 0
+    for start in range(0, draws, chunk):
+        e = rng.standard_normal((min(chunk, draws - start), j.shape[0]))
+        null = _count_runs(np.sign((e - (e @ u) @ u.T)[:, :n]))
+        fewer += int(np.sum(null < runs))
+        same += int(np.sum(null == runs))
+        total += int(np.sum(null))
+    return MisfitTest('runs', float(runs), fewer / draws + 0.5 * (same / draws), expected=total / draws)
 
 
 def _count_runs(signs: np.ndarray) -> np.ndarray:
@@ -335,17 +337,13 @@ class Conflict:
     weights: tuple[float, ...]
 
     def to_dict(self) -> dict:
-        """Every field, as written to a results file.
-
-        ``q`` is written through :func:`_finite_or_none`; the p-value is a
-        proportion and every weight lies in ``[0, 1]``, so both are finite.
-        """
-        return {**asdict(self), 'q': _finite_or_none(self.q), 'weights': list(self.weights)}
+        """Every field, as written to a results file; every number is finite."""
+        return {**asdict(self), 'weights': list(self.weights)}
 
     @classmethod
     def from_dict(cls, d: dict) -> 'Conflict':
         """The statistic a results file holds."""
-        return cls(**{**d, 'q': math.inf if d['q'] is None else d['q'], 'weights': tuple(d['weights'])})
+        return cls(**{**d, 'weights': tuple(d['weights'])})
 
 
 def conflict_reference(
@@ -364,15 +362,26 @@ def conflict_reference(
     freedom the inputs take up, the effective degrees of freedom of a
     penalised fit.
 
+    ``[H⁻¹]_zz`` is read off the singular value decomposition of the stacked
+    Jacobian with every column scaled to unit length, ``J D⁻¹ = U S Vᵀ``, as
+    ``D_z⁻¹ V_z S⁻² V_zᵀ D_z⁻¹``: the column scaling makes the result
+    independent of the units a parameter is measured in — a binding constant
+    in decades or in nepers, whatever its derivative's size — and the
+    decomposition of J itself, rather than an inverse of ``J'J``, keeps the
+    condition number unsquared. A direction of the scaled J below
+    ``_RANK_RTOL`` of the largest is taken as one the columns do not
+    separate, the reading of a rank used throughout the engine.
+
     Parameters
     ----------
     jacobian : np.ndarray
         Jacobian at the optimum of the residual rows in signal units, followed
         by one penalty row per input stated with a standard deviation. Columns:
-        the *n_free_ka* binding constants, then every varying input the fit
-        was free to move at the optimum. An input stated as a range that rests
-        on an end of it is held there and has no column: left in, it would
-        absorb what the data say about the other inputs.
+        the *n_free_ka* binding constants the fit left inside their box, then
+        every varying input the fit was free to move at the optimum. A
+        binding constant on a bound of its box, and an input stated as a range
+        that rests on an end of it, is held there and has no column: left in,
+        it would absorb what the data say about the other inputs.
     n_free_ka : int
         Number of leading binding-constant columns.
     sigma_mask : Sequence[bool]
@@ -392,9 +401,12 @@ def conflict_reference(
     k = int(mask.sum())
     j = np.array(jacobian, dtype=float)
     j[: j.shape[0] - k] /= scale
+    norms = _norms(j)
+    _, s, vt = np.linalg.svd(j / norms, full_matrices=False)
+    kept = s > _RANK_RTOL * s.max()
     columns = n_free_ka + np.flatnonzero(mask)
-    covariance = np.linalg.pinv(j.T @ j)[np.ix_(columns, columns)]
-    weights, directions = np.linalg.eigh(np.eye(k) - covariance)
+    root = vt[kept][:, columns].T / s[kept] / norms[columns, np.newaxis]
+    weights, directions = np.linalg.eigh(np.eye(k) - root @ root.T)
     return np.clip(weights, 0.0, 1.0), directions
 
 
@@ -449,16 +461,11 @@ def conflict_p_value(
     variable where they determine none (``w_i -> 0``) — bounded, with a
     longer tail than ``w_i chi²_1`` at few points.
 
-    Measured on random titrations with every input entered at its stated sigma
-    (8 to 30 points, noise 0.5 to 3 %, Ka·c from 0.1 to 1000), among the fits
-    that have a direction to test (44 to 57 % of the one-Ka fits, 38 and 61 %
-    of the stepwise ones), the rejection rate at the 5 % level is 3.1 % (GDA),
-    4.9 % (IDA), 5.6 and 3.2 % (DBA host-to-dye and dye-to-host; 6 468 fits)
-    and 6.4 and 7.8 % (DBA_HG2, DBA_H2G; 1 080 fits); at the 1 % level 0.6 to
-    1.5 % and 2.1 to 2.9 %. With inputs entered at three times their stated
-    sigma it rejects 7 to 34 % of the fits (21 % for IDA with 12 points and
-    0.5 % noise, 34 % with 30 points): the data inform one or two directions
-    of the inputs, and only a conflict along those can show.
+    The rate at which a fit whose inputs were entered within their stated
+    uncertainties is rejected, and how often an entry error is detected, are
+    what the validation checks ``conflict-null``, ``noise-law-conflict-null``
+    and ``conflict-power`` measure. The data inform one or two directions of
+    the inputs, and only a conflict along those can show.
 
     Parameters
     ----------
@@ -489,6 +496,18 @@ def conflict_p_value(
     return float(np.mean(q_null >= q))
 
 
+#: Why a test was not run: the tokens :attr:`FitDiagnostics.skipped` holds, as
+#: written to a results file.
+#:
+#: - ``no_scatter``: the replicates, or the residual of a single signal, carry
+#:   no scatter above the resolution of the fit (:func:`no_scatter`);
+#: - ``too_few_dof``: the residual has too few degrees of freedom for the test;
+#: - ``no_uncertainty``: no input is stated with a standard deviation (conflict);
+#: - ``no_informed_direction``: the data inform no direction of the inputs
+#:   stated with one (conflict).
+SKIP_REASONS = ('no_scatter', 'too_few_dof', 'no_uncertainty', 'no_informed_direction')
+
+
 @dataclass(frozen=True)
 class FitDiagnostics:
     """The tests of one fit and what they say together.
@@ -502,35 +521,58 @@ class FitDiagnostics:
         Misfit test at the fit with the inputs free to move; equal to
         *conditional_misfit* when no input varies.
     conflict : Conflict or None
-        ``None`` when no input is stated with a standard deviation.
+        ``None`` when the conflict statistic could not be formed.
     verdict : Verdict
+    skipped : dict[str, str]
+        Every test of the verdict that was not run, ``'misfit'`` or
+        ``'conflict'``, with the reason, one of :data:`SKIP_REASONS`.
     """
 
     conditional_misfit: MisfitTest | None
     misfit: MisfitTest | None
     conflict: Conflict | None
     verdict: Verdict
+    skipped: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        """Every field, as written to a results file."""
+        """Every field, as written to a results file; ``skipped`` only where a test was not run.
+
+        ``skipped`` is written only when a test was not run, and a record
+        without it reads as nothing skipped, so importing and exporting a
+        record leaves it as it was.
+        """
         return {
             'conditional_misfit': None if self.conditional_misfit is None else self.conditional_misfit.to_dict(),
             'misfit': None if self.misfit is None else self.misfit.to_dict(),
             'conflict': None if self.conflict is None else self.conflict.to_dict(),
             'verdict': self.verdict.value,
+            **({'skipped': dict(self.skipped)} if self.skipped else {}),
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> 'FitDiagnostics':
-        """The diagnostics a results file holds."""
-        return cls(
-            conditional_misfit=None
-            if d['conditional_misfit'] is None
-            else MisfitTest.from_dict(d['conditional_misfit']),
-            misfit=None if d['misfit'] is None else MisfitTest.from_dict(d['misfit']),
-            conflict=None if d['conflict'] is None else Conflict.from_dict(d['conflict']),
-            verdict=Verdict(d['verdict']),
-        )
+        """The diagnostics a results file holds; a file without ``skipped`` names no skipped test.
+
+        A misfit record whose statistic is null holds the F ratio of replicates
+        that agree exactly, over a pure error of zero: data with no scatter to
+        test the curve against. It is read as that test not run for
+        ``'no_scatter'``, and the verdict is judged again from the tests that
+        remain, since the one the file states rests on that ratio.
+        """
+        records = {key: d[key] for key in ('conditional_misfit', 'misfit')}
+        no_scatter = any(r is not None and r.get('statistic') is None for r in records.values())
+        tests = {
+            key: None if r is None or r.get('statistic') is None else MisfitTest.from_dict(r)
+            for key, r in records.items()
+        }
+        conflict = None if d['conflict'] is None else Conflict.from_dict(d['conflict'])
+        skipped = dict(d.get('skipped') or {})
+        if no_scatter:
+            skipped.setdefault('misfit', 'no_scatter')
+            judged = verdict(tests['conditional_misfit'], tests['misfit'], conflict)
+        else:
+            judged = Verdict(d['verdict'])
+        return cls(**tests, conflict=conflict, verdict=judged, skipped=skipped)
 
 
 def verdict(
@@ -539,25 +581,51 @@ def verdict(
     conflict: Conflict | None,
     level: float = DIAGNOSTIC_LEVEL,
 ) -> Verdict:
-    """Name the cause of a misfit, the first of these that applies.
+    """What the tests found together.
 
-    1. ``MODEL_INADEQUATE``: the misfit test fails at the fit with the inputs
+    The misfit test at the fit with the inputs free to move and the conflict
+    statistic are judged together by Holm's step-down procedure at *level*,
+    over those of the two that ran: the smaller p-value against ``level / 2``
+    and, if it rejects, the other against *level* (one test alone is judged
+    against *level*). Where each test holds its own level, the chance that
+    either names a cause although the model holds and the inputs are as
+    stated is then at most *level*, where two tests at *level* each reach up
+    to twice that; the validation check ``verdict-false-alarm`` measures the
+    rate the verdict reaches. The p-values stored on the
+    tests stay the raw ones.
+
+    1. ``MODEL_AND_INPUTS``: both reject. The data fit only with the inputs
+       further from their entered values than stated, and even then the model
+       misses them. An input error can itself produce the misfit, so the
+       inputs are the first thing to check.
+    2. ``INPUTS_CONFLICT``: the conflict statistic rejects — the data fit only
+       with the inputs, taken together, further from their entered values than
+       their stated uncertainties allow.
+    3. ``MODEL_INADEQUATE``: the misfit test rejects at the fit with the inputs
        free to move, so no allowed shift of the inputs rescues the model.
-    2. ``INPUTS_CONFLICT``: the conflict statistic is significant — the data
-       fit only with the inputs, taken together, further from their entered
-       values than their stated uncertainties allow.
-    3. ``INPUTS_EXPLAIN``: the misfit test fails with the inputs as entered and
-       passes once they move.
-    4. ``CONSISTENT`` otherwise. A test that could not be run fails nothing.
+    4. ``INPUTS_EXPLAIN``: neither rejects, and the misfit test at the inputs
+       as entered fails at the threshold the misfit test faced in the
+       procedure — the data fit once the inputs move within what was stated
+       for them. It is the same test at other inputs, so it is judged as
+       strictly: a miss the shifted inputs left as it was is no miss they
+       explain.
+    5. ``CONSISTENT`` otherwise: no test that ran found evidence against the
+       model or the inputs. A test that could not be run finds nothing.
     """
-
-    def fails(test: MisfitTest | Conflict | None) -> bool:
-        return test is not None and test.p_value < level
-
-    if fails(misfit):
-        return Verdict.MODEL_INADEQUATE
-    if fails(conflict):
+    tests = {'misfit': misfit, 'conflict': conflict}
+    ran = sorted((test.p_value, name) for name, test in tests.items() if test is not None)
+    threshold = {name: level / (len(ran) - i) for i, (_, name) in enumerate(ran)}
+    rejected = set()
+    for p_value, name in ran:
+        if not p_value < threshold[name]:
+            break
+        rejected.add(name)
+    if rejected == {'misfit', 'conflict'}:
+        return Verdict.MODEL_AND_INPUTS
+    if 'conflict' in rejected:
         return Verdict.INPUTS_CONFLICT
-    if fails(conditional_misfit):
+    if 'misfit' in rejected:
+        return Verdict.MODEL_INADEQUATE
+    if conditional_misfit is not None and conditional_misfit.p_value < threshold.get('misfit', level):
         return Verdict.INPUTS_EXPLAIN
     return Verdict.CONSISTENT
