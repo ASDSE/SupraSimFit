@@ -38,6 +38,7 @@ _VERDICT_IN_THE_README = {
     'INPUTS_EXPLAIN': 'whether a shift of the inputs inside the uncertainties you stated turns a miss into a fit',
     'INPUTS_CONFLICT': 'whether the data fit only with the inputs, taken together, further from the entered values',
     'MODEL_INADEQUATE': 'the model does not describe the data even with the inputs free',
+    'MODEL_AND_INPUTS': 'or both of the last two, with the inputs named first',
 }
 
 
