@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from scipy.optimize import minimize_scalar
 
 import core.pipeline.noise as noise
 from core.pipeline.noise import MIN_REPLICATES, NoiseBasis, NoiseLaw, noise_law, replicate_scatter
@@ -58,6 +59,38 @@ def _raw_share(signals):
 
     nodes = np.linspace(0.0, 1.0, 101)
     return float(nodes[int(np.argmin([objective(node) for node in nodes]))])
+
+
+def _unguarded_share(signals):
+    """The share the objective reads with no floor on ``u`` and every point that scatters after detrending counted.
+
+    Written out here rather than imported: on data where no mean is zero and
+    every point scatters, the guards of :func:`noise_law` must change nothing,
+    and this is the estimator they guard.
+    """
+    signals = np.asarray(signals, dtype=float)
+    mean = signals.mean(axis=0)
+    relative = mean**2 / np.mean(mean**2)
+
+    def scatter(share):
+        residuals, leverage = replicate_scatter(signals, 1.0 / ((1.0 - share) + share * relative))
+        return np.sum(residuals**2, axis=0) / (1.0 - leverage)
+
+    def objective(share):
+        logs = np.log(scatter(share))
+        return float(np.sum((logs - logs.mean()) ** 2))
+
+    nodes = np.linspace(0.0, 1.0, 101)
+    values = np.array([objective(node) for node in nodes])
+    best = int(values.argmin())
+    refined = minimize_scalar(
+        objective,
+        bounds=(nodes[max(best - 1, 0)], nodes[min(best + 1, 100)]),
+        method='bounded',
+        options={'xatol': 1e-5},
+    )
+    share = float(refined.x) if refined.fun < values[best] else float(nodes[best])
+    return 0.0 if share < 1e-5 else 1.0 if share > 1.0 - 1e-5 else share
 
 
 def test_constant_noise_reads_a_share_of_zero_and_the_true_floor(gda_clean):
@@ -121,7 +154,9 @@ def test_the_weights_are_exactly_one_wherever_no_law_was_read(gda_clean):
     for law in (
         NoiseLaw(NoiseBasis.SINGLE_TITRATION),
         NoiseLaw(NoiseBasis.TOO_FEW_POINTS, n_replicates=3),
-        NoiseLaw(NoiseBasis.REPLICATES, share=0.0, floor=12.0, reference=float(np.sqrt(np.mean(curve**2)))),
+        NoiseLaw(
+            NoiseBasis.REPLICATES, share=0.0, floor=12.0, reference=float(np.sqrt(np.mean(curve**2))), u_floor=0.3
+        ),
     ):
         weights = law.weights(curve)
         assert np.array_equal(weights, ones)
@@ -218,39 +253,103 @@ def test_a_mean_of_exactly_zero_leaves_every_weight_finite(gda_clean):
     assert mean[0] == 0.0
     law = noise_law(signals)
     assert law.basis is NoiseBasis.REPLICATES
+    # The zero-mean point scatters, so it sets the floor on u: zero.
+    assert law.u_floor == 0.0
     assert law.share < 1.0
     assert np.isfinite(law.weights(mean)).all()
+    json.dumps(law.to_dict(), allow_nan=False)
 
 
-def test_the_weights_never_spread_wider_than_the_square_of_the_signal_ratio(gda_clean):
-    """``max(w)/min(w) <= (max|ybar|/min|ybar|)²``, with equality only at a share of one.
+def test_blank_subtracted_replicates_read_a_finite_law(gda_clean):
+    """Each replicate minus its own first point: a column of exact zeros, which scatters nowhere and has a mean of zero.
 
-    The bound is what makes a floor on the weights unnecessary, and pinning it
-    here is what keeps a later change from widening it unnoticed. The GDA
-    titration is the hard case: its first mean is 0.4 % of the signal range, so
-    the bound it allows is five orders of magnitude.
+    That point judges nothing, so the law is read from the others, and the
+    smallest ``u`` among them is the floor every point's ``u`` is clipped at,
+    the zero included: the weights stay finite and spread no wider than
+    ``max u / u_floor``, the range of the points the law was read on. Constant,
+    proportional and mixed noise, two to four replicates.
     """
     curve = gda_clean[1].magnitude
-    bound = (np.abs(curve).max() / np.abs(curve).min()) ** 2
-    assert bound > 1e4
+    floor, proportional = 0.02 * np.ptp(curve), 0.02
+    for seed in range(60):
+        m = 2 + seed % 3
+        sd = (np.full(curve.size, floor), proportional * curve, np.hypot(0.25 * floor, proportional * curve))[seed % 3]
+        signals = _replicates(curve, sd, m=m, seed=seed)
+        signals = signals - signals[:, :1]
+        mean = signals.mean(axis=0)
+        law = noise_law(signals)
+        assert law.basis is NoiseBasis.REPLICATES
+        assert np.isfinite([law.share, law.floor, law.proportional, law.reference]).all()
+        u = mean**2 / law.reference**2
+        assert law.u_floor == pytest.approx(u[1:].min(), rel=1e-12)
+        weights = law.weights(mean)
+        assert np.isfinite(weights).all() and (weights > 0.0).all()
+        assert weights.max() / weights.min() <= u.max() / law.u_floor * (1.0 + 1e-12)
+        json.dumps(law.to_dict(), allow_nan=False)
+
+
+def test_the_guards_change_nothing_where_no_mean_is_zero_and_every_point_scatters(gda_clean, ida_clean):
+    """On data the guards do not act on, the share is the unguarded estimator's, to 1e-8.
+
+    The floor on ``u`` is the smallest ``u`` of all points, so it clips
+    nothing; the scattering set is every point; and the snap to a share of 1
+    is the unguarded one wherever the objective is finite there.
+    """
+    for fixture in (gda_clean, ida_clean):
+        curve = fixture[1].magnitude
+        for seed in range(12):
+            kind = seed % 3
+            sd = (
+                np.full(curve.size, 0.02 * np.ptp(curve)),
+                0.02 * curve,
+                np.hypot(0.005 * np.ptp(curve), 0.02 * curve),
+            )
+            signals = _replicates(curve, sd[kind], m=2 + seed % 7, seed=seed, scale=0.02 * (seed % 2))
+            mean = signals.mean(axis=0)
+            assert (mean != 0.0).all()
+            law = noise_law(signals)
+            assert law.u_floor == pytest.approx(np.min(mean**2) / law.reference**2, rel=1e-12)
+            assert law.share == pytest.approx(_unguarded_share(signals), abs=1e-8)
+
+
+def test_the_weights_spread_no_wider_than_the_range_of_u_the_law_was_read_on(gda_clean):
+    """``max(w)/min(w) <= max u / u_floor``, with equality only at a share of one.
+
+    Below ``u_floor`` a point takes the weight of a point at ``u_floor``: the
+    law is not extrapolated beneath the signals it was read on. The bound is
+    the range of ``u`` over those signals, which is large when one of them has
+    a mean near zero; the GDA titration's first mean is 0.4 % of the signal
+    range, and with that point among them the bound is five orders of
+    magnitude.
+    """
+    curve = gda_clean[1].magnitude
     reference = float(np.sqrt(np.mean(curve**2)))
-    for share in np.linspace(0.0, 1.0, 11):
-        weights = NoiseLaw(NoiseBasis.REPLICATES, share=float(share), reference=reference).weights(curve)
-        spread = weights.max() / weights.min()
-        if share == 1.0:
-            assert spread == pytest.approx(bound, rel=1e-12)
-        else:
-            assert spread < bound
+    u = curve**2 / reference**2
+    for u_floor in (0.0, float(np.sort(u)[2])):
+        bound = u.max() / (u_floor if u_floor > 0.0 else u.min())
+        assert bound > 1e4 or u_floor > 0.0
+        for share in np.linspace(0.0, 1.0, 11):
+            law = NoiseLaw(NoiseBasis.REPLICATES, share=float(share), reference=reference, u_floor=u_floor)
+            weights = law.weights(curve)
+            spread = weights.max() / weights.min()
+            if share == 1.0:
+                assert spread == pytest.approx(bound, rel=1e-12)
+            else:
+                assert spread < bound
+            if share > 0.0 and u_floor > 0.0:
+                below = u <= u_floor
+                assert np.all(weights[below] == 1.0 / ((1.0 - share) + share * u_floor))
 
 
 def test_constant_noise_at_a_near_zero_point_does_not_pull_the_share_to_one(gda_clean):
-    """The widest weights are reached only when the noise really is proportional that far down.
+    """With many replicates, the widest weights are reached only when the noise really is proportional that far down.
 
     The GDA titration's first point is 0.4 % of the signal range, so a share of
     one would give it 5×10⁴ times the weight of the top point. Under constant
     noise the estimator does not go there: that point's whitened scatter would
     then stand out by the same factor, which the objective charges as a squared
-    log.
+    log. With two or three replicates the share is one noisy reading and can
+    land near 1 all the same.
     """
     curve = gda_clean[1].magnitude
     law = noise_law(_replicates(curve, np.full(curve.size, 0.02 * np.ptp(curve)), seed=4))
@@ -279,14 +378,33 @@ def test_the_reported_level_is_the_variance_the_data_were_drawn_with(gda_clean):
 def test_the_law_round_trips_through_a_results_file():
     """A results file is JSON without NaN or infinity, and what it holds reads back as the same law."""
     laws = (
-        NoiseLaw(NoiseBasis.REPLICATES, share=0.37, floor=890.4, proportional=0.011, reference=4.2e4, n_replicates=8),
+        NoiseLaw(
+            NoiseBasis.REPLICATES,
+            share=0.37,
+            floor=890.4,
+            proportional=0.011,
+            reference=4.2e4,
+            n_replicates=8,
+            u_floor=0.0123,
+        ),
         NoiseLaw(NoiseBasis.SINGLE_TITRATION),
         NoiseLaw(NoiseBasis.TOO_FEW_POINTS, n_replicates=3),
     )
     for law in laws:
         written = law.to_dict()
         assert written['basis'] == law.basis.value
+        assert written['u_floor'] == law.u_floor
         assert NoiseLaw.from_dict(json.loads(json.dumps(written, allow_nan=False))) == law
+    # A results file that holds no floor on u reads as no floor.
+    written = laws[0].to_dict()
+    del written['u_floor']
+    assert NoiseLaw.from_dict(written).u_floor == 0.0
+
+
+def test_the_level_is_the_variance_at_the_rms_signal():
+    """``floor² + (proportional·reference)²``: the constant and the proportional part at the reference signal."""
+    law = NoiseLaw(NoiseBasis.REPLICATES, share=0.37, floor=890.4, proportional=0.011, reference=4.2e4)
+    assert law.level == pytest.approx(890.4**2 + (0.011 * 4.2e4) ** 2, rel=1e-15)
 
 
 def test_the_law_is_described_in_one_sentence():
