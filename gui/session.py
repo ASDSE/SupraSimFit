@@ -23,6 +23,7 @@ from core.pipeline.fit_pipeline import (
 )
 from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, InputSpec, SpecKind, shared_key
 from core.pipeline.sensitivity import SensitivityMode
+from core.pipeline.varpro import SECOND_STEP_LEVEL
 from core.units import Quantity
 from gui.plotting.export import ExportRefused
 from gui.plotting.labels import (
@@ -44,6 +45,8 @@ from gui.plotting.labels import (
     fmt_unit_pretty,
     fmt_value,
     not_run_reason,
+    offset_note,
+    one_step_sentence,
     own_estimates,
     replicate_summary,
     stated_uncertainty,
@@ -327,12 +330,22 @@ def _dilution_lines(result: FitResult) -> list[str]:
 #: Width the MODEL AND INPUTS lines label their test in, so the statistics line up.
 _TEST_LABEL_WIDTH = 32
 
+#: Characters of text on a report line, after its two-space indent: the report's one right margin.
+_REPORT_WIDTH = 74
+
 
 def _misfit_line(diagnostics, test: MisfitTest | None) -> str:
     """One misfit test as the report quotes it, or why there was none to run."""
     if test is None:
         return f'not tested — {not_run_reason(diagnostics, "misfit")}.'
     return fmt_misfit(test)
+
+
+def _labelled(label: str, text: str) -> list[str]:
+    """*text* after *label*, wrapped to the report's margin under the column the readings line up in."""
+    lines = textwrap.wrap(text, width=_REPORT_WIDTH - _TEST_LABEL_WIDTH)
+    indent = ' ' * _TEST_LABEL_WIDTH
+    return [f'  {label if i == 0 else indent:<{_TEST_LABEL_WIDTH}}{line}' for i, line in enumerate(lines)]
 
 
 def _model_and_inputs_block(result: FitResult) -> list[str]:
@@ -349,24 +362,18 @@ def _model_and_inputs_block(result: FitResult) -> list[str]:
     lines.append(f'  Verdict: {verdict_headline(diagnostics)[0]}.')
     lines.extend(_wrapped(verdict_sentence(diagnostics, result.input_shifts, labels, html=False)))
     lines.append('')
-    lines.append(
-        f'  {"Model at the entered inputs:":<{_TEST_LABEL_WIDTH}}'
-        f'{_misfit_line(diagnostics, diagnostics.conditional_misfit)}'
-    )
+    lines.extend(_labelled('Model at the entered inputs:', _misfit_line(diagnostics, diagnostics.conditional_misfit)))
     if result.input_shifts:
-        lines.append(
-            f'  {"Model with the inputs moved:":<{_TEST_LABEL_WIDTH}}{_misfit_line(diagnostics, diagnostics.misfit)}'
-        )
+        lines.extend(_labelled('Model with the inputs moved:', _misfit_line(diagnostics, diagnostics.misfit)))
     conflict = diagnostics.conflict
     specs = ErrorModel.from_dict(result.fit_config).source_specs()
     # What the block's readings are conditioned on, so a printed report says it
     # rather than leaving it to be inferred from a section that is not there.
     stated = 'stated above under INPUT UNCERTAINTY.' if specs else f'{NO_UNCERTAINTY}.'
-    lines.append(f'  {"Input uncertainties used:":<{_TEST_LABEL_WIDTH}}{stated}')
+    lines.extend(_labelled('Input uncertainties used:', stated))
     if conflict is not None:
-        lines.append(
-            f'  {"Inputs against what you stated:":<{_TEST_LABEL_WIDTH}}'
-            f'q = {fmt_stat(conflict.q)}, {fmt_p(conflict.p_value)}'
+        lines.extend(
+            _labelled('Inputs against what you stated:', f'q = {fmt_stat(conflict.q)}, {fmt_p(conflict.p_value)}')
         )
         lines.append('')
         directions = 'the one combination' if conflict.k == 1 else f'the {conflict.k} combinations'
@@ -421,7 +428,7 @@ def _fixed_width_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) ->
     return [header, rule, *body]
 
 
-def _wrapped(text: str, width: int = 74) -> list[str]:
+def _wrapped(text: str, width: int = _REPORT_WIDTH) -> list[str]:
     """*text* broken into lines of at most *width* characters, indented two spaces."""
     return [f'  {line}' for line in textwrap.wrap(text, width=width)]
 
@@ -443,7 +450,10 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
     ``ci_open_high`` say so. An estimate that sits on an end of its Ka search
     box is empty too, and ``estimate_at_bound`` names the end (``low`` or
     ``high``): the value is the box, not a measurement. The results file (JSON)
-    keeps every raw number, and these flags follow from it.
+    keeps every raw number, and these flags follow from it. ``one_step_p`` is
+    filled on the second binding constant of a two-step model: the p-value of
+    the interval's test against the model without that step, above which the
+    interval is open below.
 
     Where the fit was free to move an input, the ``cond_`` columns carry the
     same binding constant with every input held as entered, under the same
@@ -468,7 +478,11 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
     ``conflict_q`` and ``conflict_p`` columns describe the fit as a whole and
     repeat on every one of its rows; ``misfit_p`` is the misfit test of the
     fit the interval comes from and ``cond_misfit_p`` the one at the inputs
-    exactly as entered. ``noise`` is the law the replicates showed, the one
+    exactly as entered. ``misfit_reference`` names what a lack-of-fit p-value
+    was read against: ``F``, the F distribution, where the noise was taken as
+    constant, and ``bootstrap``, a simulation from the fitted curve and the
+    noise law, where the replicates showed one; it is blank for the runs test
+    of a single titration. ``noise`` is the law the replicates showed, the one
     the fit weighted its titration points by, and is blank where the result
     records none.
 
@@ -502,6 +516,7 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'ci_split',
         'ci_level',
         'ci_dof',
+        'one_step_p',
         'cond_estimate',
         'cond_estimate_at_bound',
         'cond_ci_low',
@@ -523,6 +538,7 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'verdict',
         'misfit_p',
         'cond_misfit_p',
+        'misfit_reference',
         'conflict_q',
         'conflict_p',
         'input_z',
@@ -558,6 +574,10 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
             'misfit_p': p_value(diagnostics.misfit),
             'cond_misfit_p': p_value(diagnostics.conditional_misfit),
         }
+        # Both tests of one fit read the one noise law, so they share a reference.
+        test = diagnostics.misfit or diagnostics.conditional_misfit
+        if test is not None and test.kind == 'lack_of_fit':
+            cells['misfit_reference'] = test.reference
         if diagnostics.conflict is not None:
             cells |= {
                 'conflict_q': f'{diagnostics.conflict.q:.6e}',
@@ -617,6 +637,8 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
                     # was free to move one, since an input the data pin down
                     # takes a residual degree of freedom with it.
                     row['ci_dof'] = f'{intervals[spec.key].dof:.6g}'
+                if spec.one_step_p is not None:
+                    row['one_step_p'] = f'{spec.one_step_p:.6g}'
                 if spec.conditional_interval is not None:
                     low, high = ends(spec.conditional_interval, spec.conditional_open)
                     row |= {
@@ -835,11 +857,13 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
             if spec.interval_split:
                 lines.append('')
                 lines.extend(_wrapped(f'{spec.key}: {SPLIT_NOTE}'))
+            # A lower side the one-step test opened is said by its sentence below.
+            step_unshown = spec.one_step_p is not None and spec.one_step_p > SECOND_STEP_LEVEL
             sides = zip(
                 ('low', 'high'), spec.interval, spec.interval_open, spec.interval_unsolvable, spec.interval_limited_by
             )
             for side, edge, is_open, unsolvable, limited_by in sides:
-                if not is_open:
+                if not is_open or (side == 'low' and step_unshown):
                     continue
                 lines.append('')
                 if limited_by:
@@ -849,10 +873,13 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 else:
                     note = _UNSOLVABLE_NOTE if unsolvable else _OPEN_ADVICE[side]
                 lines.extend(_wrapped(f'{spec.key}: open at the {side} end — {note}'))
-        bound_note = fmt_bound_note(parameters_on_bound(result))
-        if bound_note:
-            lines.append('')
-            lines.extend(_wrapped(bound_note))
+            if spec.one_step_p is not None:
+                lines.append('')
+                lines.extend(_wrapped(one_step_sentence(spec.key, spec.one_step_p)))
+        for note in (fmt_bound_note(parameters_on_bound(result)), offset_note(result)):
+            if note:
+                lines.append('')
+                lines.extend(_wrapped(note))
         lines.append('')
 
         lines.extend(_input_uncertainty_block(result))

@@ -57,7 +57,7 @@ from core.pipeline.fit_pipeline import FitResult, fit_replica_ids, input_replica
 from core.pipeline.input_aware import AwareProfile
 from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet
 from core.pipeline.sensitivity import TITRANT, SensitivityResult
-from core.pipeline.varpro import KaInterval
+from core.pipeline.varpro import SECOND_STEP_LEVEL, KaInterval
 from gui.plotting.colors import INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
 from gui.plotting.labels import (
     fmt_estimate,
@@ -67,6 +67,7 @@ from gui.plotting.labels import (
     fmt_r2,
     fmt_unit_html,
     fmt_value,
+    one_step_sentence,
     plain_label,
     verdict_sentence,
 )
@@ -929,14 +930,22 @@ class IdentifiabilityWidget(QWidget):
             )
         conditional = self._ci_html(interval, profile.best_ka, unit_html, bool(conditional_bound))
         if profile.aware is None:
-            return f'{label}: {fit_txt} · {conditional}{self._reach_html(interval, unit_html)}'
+            return f'{label}: {fit_txt} · {conditional}{self._reach_html(interval, unit_html, label)}'
         estimate, _ = _aware_peak(profile.aware)
         aware = profile.aware.interval
         estimate_txt = self._estimate_html(estimate, aware, unit_html, headline_bound)
+        # The joint region is drawn at the entered inputs, so the one-step test
+        # at them is said beside their interval as well as the headline's.
+        entered_step = (
+            ''
+            if interval.one_step_p is None
+            else f'<br><span style="color:{INK_2}">At the entered inputs, '
+            f'{one_step_sentence(label, interval.one_step_p)}</span>'
+        )
         return (
             f'{label}: best fit{average} {estimate_txt} · {self._ci_html(aware, estimate, unit_html, bool(headline_bound))}'
-            f'{self._reach_html(aware, unit_html)}'
-            f'<br>Conditional on the entered inputs: {fit_txt} · {conditional}'
+            f'{self._reach_html(aware, unit_html, label)}'
+            f'<br>Conditional on the entered inputs: {fit_txt} · {conditional}{entered_step}'
         )
 
     @staticmethod
@@ -977,9 +986,17 @@ class IdentifiabilityWidget(QWidget):
         return f'{interval.level:.0%} CI {ci_txt}{change}'
 
     @staticmethod
-    def _reach_html(interval: KaInterval, unit_html: str) -> str:
-        """What an interval spans where it is not one connected stretch, and what each open side stops at."""
+    def _reach_html(interval: KaInterval, unit_html: str, label: str) -> str:
+        """What an interval spans, what each open side stops at, and what the one-step test of *label* found.
+
+        The span is said where the interval is not one connected stretch, and
+        the one-step test only for the second constant of a two-step model,
+        the one interval that carries it. A lower side the one-step test opened
+        is said by the test's sentence, which names why it is open: the bound
+        it then runs to is not a reach of the data.
+        """
         line = ''
+        step_unshown = interval.one_step_p is not None and interval.one_step_p > SECOND_STEP_LEVEL
         if interval.split:
             line += (
                 f'<br><span style="color:{INK_2}">Not every K<sub>a</sub> inside the band explains the data well '
@@ -1005,7 +1022,7 @@ class IdentifiabilityWidget(QWidget):
                 'Points taken before the signal levels off, or a lower fixed concentration, would pin it down.',
             ),
         ):
-            if not is_open:
+            if not is_open or (side == 'lower' and step_unshown):
                 continue
             where = f'{fmt_value(edge)} {unit_html}'.strip()
             if limited_by:
@@ -1029,6 +1046,8 @@ class IdentifiabilityWidget(QWidget):
             line += (
                 f'<br><span style="color:{INK_2}">Open: the data cannot rule out a {side} K<sub>a</sub>. {tail}</span>'
             )
+        if interval.one_step_p is not None:
+            line += f'<br><span style="color:{INK_2}">{one_step_sentence(label, interval.one_step_p)}</span>'
         return line
 
     def _render_key(

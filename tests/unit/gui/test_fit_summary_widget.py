@@ -1319,3 +1319,91 @@ def test_a_replicate_both_fits_leave_out_is_explained_by_the_reason_recorded_for
     sentence = _shared_left_out(result, result, None)
 
     assert sentence.startswith('Both leave out') and sentence.endswith(f', {why}.')
+
+
+def _stepwise(second, **overrides):
+    """A 1:2 stepwise fit whose second binding constant carries *second* as its interval."""
+    from core.pipeline.varpro import KaInterval
+    from core.units import Q_
+
+    fields = dict(
+        parameters={
+            'Ka_HG': Q_(2.0e5, '1/M'),
+            'Ka_HG2': Q_(3.0e3, '1/M'),
+            'I0': Q_(10.0, 'au'),
+            'I_G': Q_(1e5, 'au/M'),
+            'I_H': Q_(0.0, 'au/M'),
+            'I_HG': Q_(4e7, 'au/M'),
+            'I_HG2': Q_(6e7, 'au/M'),
+        },
+        assay_type='DBA_HG2',
+        model_name='equilibrium_stepwise',
+        intervals={'Ka_HG': KaInterval(1.5e5, 2.6e5, False, False, 0.95, 16), 'Ka_HG2': second},
+    )
+    fields.update(overrides)
+    return _widget(**fields)
+
+
+def test_a_second_step_the_data_do_not_show_is_not_limited_below_and_the_line_under_the_table_says_why(qapp):
+    from core.pipeline.varpro import KaInterval
+
+    widget = _stepwise(KaInterval(1e-8, 9.0e3, True, False, 0.95, 16, one_step_p=0.03))
+    second = next(
+        _row(widget._table, r)
+        for r in range(widget._table.rowCount())
+        if 'HG₂' in widget._table.cellWidget(r, 0).text() and 'log' not in widget._table.cellWidget(r, 0).text()
+    )
+
+    # The open side is in words: the bound the side runs to is not an estimate.
+    assert 'no lower limit' in second[2] and '10⁻⁸' not in second[2]
+    assert not widget._footnote.isHidden()
+    assert (
+        'not limited below: a model without the second binding step fits nearly as well (one-step test p = 0.03).'
+    ) in widget._footnote.text()
+
+
+def test_a_second_step_the_data_support_names_the_p_its_alternative_was_rejected_at(qapp):
+    from core.pipeline.varpro import KaInterval
+
+    widget = _stepwise(KaInterval(1.1e3, 8.0e3, False, False, 0.95, 16, one_step_p=0.0034))
+
+    assert 'second binding step supported (one-step model rejected at p ≤ 0.004).' in widget._footnote.text()
+
+
+def _diagnostics(verdict, reference='F'):
+    from core.pipeline.diagnostics import FitDiagnostics, MisfitTest, Verdict
+
+    rejected = verdict in (Verdict.MODEL_INADEQUATE, Verdict.MODEL_AND_INPUTS)
+    test = MisfitTest(
+        'lack_of_fit', 12.0 if rejected else 0.9, 1e-6 if rejected else 0.55, (16, 40), reference=reference
+    )
+    return FitDiagnostics(conditional_misfit=test, misfit=test, conflict=None, verdict=verdict)
+
+
+def test_an_offset_held_at_zero_under_a_curve_that_misses_the_data_is_named_with_what_to_do(qapp):
+    """Both conditions, and neither alone: an offset at zero under a curve that fits is where the data put it."""
+    from core.pipeline.diagnostics import Verdict
+    from core.units import Q_
+    from gui.plotting.labels import OFFSET_AT_ZERO_NOTE
+
+    params = _result().parameters
+    on_zero = {**params, 'I0': Q_(0.0, 'au')}
+
+    both = _widget(parameters=on_zero, diagnostics=_diagnostics(Verdict.MODEL_INADEQUATE))
+    fits = _widget(parameters=on_zero, diagnostics=_diagnostics(Verdict.CONSISTENT))
+    lifted = _widget(diagnostics=_diagnostics(Verdict.MODEL_INADEQUATE))  # I0 at 100
+
+    assert OFFSET_AT_ZERO_NOTE in both._caption.text() and not both._caption.isHidden()
+    assert 'lower bound of 0' not in fits._caption.text()
+    assert 'lower bound of 0' not in lifted._caption.text()
+
+
+def test_a_simulated_lack_of_fit_p_value_says_so_in_the_block(qapp):
+    """Where the replicates showed the noise law, the F distribution is not the reference, and the block says what is."""
+    from core.pipeline.diagnostics import Verdict
+
+    simulated = _widget(diagnostics=_diagnostics(Verdict.CONSISTENT, reference='bootstrap'))
+    exact = _widget(diagnostics=_diagnostics(Verdict.CONSISTENT))
+
+    assert 'p = 0.55, simulated from the fitted curve and the noise law' in simulated._diagnostics_label.text()
+    assert 'simulated' not in exact._diagnostics_label.text()

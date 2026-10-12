@@ -8,8 +8,10 @@ inputs free to move:
 
 - :func:`lack_of_fit` when two or more replicates were measured: the scatter of
   each replicate about its own affine image of the mean curve is a model-free
-  estimate of the noise, and the F test compares the misfit of the averaged
-  signal with it;
+  estimate of the noise, and the F ratio compares the misfit of the averaged
+  signal with it, judged against the F distribution or, when the point weights
+  come from a noise law read off the same replicates, against a parametric
+  bootstrap of the whole reading;
 - :func:`runs_test` otherwise: a systematic deviation leaves long runs of
   residuals of one sign along the titration, fewer runs than the fitted model
   leaves of pure noise.
@@ -34,6 +36,7 @@ passed".
 
 from __future__ import annotations
 
+import zlib
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Sequence
@@ -41,7 +44,7 @@ from typing import Sequence
 import numpy as np
 from scipy.stats import f as f_dist
 
-from core.pipeline.noise import replicate_scatter
+from core.pipeline.noise import _SHARE_NODES, NoiseLaw, _read_share, _scattering_points, replicate_scatter
 from core.pipeline.varpro import _R2_RESOLUTION, _RANK_RTOL, LEVEL, _norms
 
 #: Level of every test here: the 5 % convention of the confidence intervals
@@ -57,6 +60,23 @@ DIAGNOSTIC_LEVEL = round(1 - LEVEL, 12)
 # directions reject 21 to 37 % of consistent fits (stoichiometric DBA, the
 # stepwise models). The data say nothing about them, for or against the inputs.
 _INFORMED_WEIGHT = 0.01
+
+#: Draws of the parametric bootstrap that is the lack-of-fit test's reference
+#: when the noise law was read off the replicates. The Monte-Carlo p-value
+#: ``(1 + #{F* >= F}) / (B + 1)`` takes the values ``k / (B + 1)``, and a test
+#: that rejects at ``p <= alpha`` — the rule :func:`verdict` applies — is exact
+#: at ``alpha`` whenever ``(B + 1)·alpha`` is an integer and the reference is
+#: right (Davison and Hinkley 1997, ch. 4). At 199 that holds at 5 % and at the
+#: 2.5 % of the first step of Holm's procedure; the p-value moves in steps of
+#: 0.005, and 0.005 is the smallest it can be.
+LOF_BOOTSTRAP_DRAWS = 199
+
+# Numbers the bootstrap's share search holds at a time: it reads every draw at
+# all 101 shares of the grid at once, which takes memory in proportion to
+# draws x shares x replicates x points (300 MB for 199 draws of 8 replicates
+# at 100 points). In chunks of draws it stays near 8 MB per array; every draw
+# is read on its own, so the chunking changes no number.
+_LOF_CHUNK = 1 << 20
 
 # Standard normal numbers the runs test's reference draws at a time: 8 MB of
 # them, however many residuals and parameters the fit has, where one draw of the
@@ -92,6 +112,12 @@ class MisfitTest:
         Degrees of freedom of the F ratio; ``None`` for the runs test.
     expected : float or None
         Expected number of runs; ``None`` for the F test.
+    reference : str
+        What the p-value is read from: for the F ratio ``'F'``, the F
+        distribution on *dof*, or ``'bootstrap'``, the parametric bootstrap of
+        :func:`lack_of_fit` for weights read off the same replicates; for the
+        runs test ``'simulated'``, the runs the linearised fit leaves of
+        simulated pure noise (:func:`runs_test`).
     """
 
     kind: str
@@ -99,6 +125,7 @@ class MisfitTest:
     p_value: float
     dof: tuple[int, int] | None = None
     expected: float | None = None
+    reference: str = 'F'
 
     def to_dict(self) -> dict:
         """Every field, as written to a results file; every number is finite."""
@@ -106,8 +133,13 @@ class MisfitTest:
 
     @classmethod
     def from_dict(cls, d: dict) -> 'MisfitTest':
-        """The test a results file holds."""
-        return cls(**{**d, 'dof': None if d.get('dof') is None else tuple(d['dof'])})
+        """The test a results file holds; a file without ``reference`` holds each test's only reference then.
+
+        That is the F distribution for the lack-of-fit test and the simulated
+        runs for the runs test.
+        """
+        reference = d.get('reference', 'F' if d['kind'] == 'lack_of_fit' else 'simulated')
+        return cls(**{**d, 'dof': None if d.get('dof') is None else tuple(d['dof']), 'reference': reference})
 
 
 def no_scatter(variance: float, ss_tot: float, n_points: int) -> bool:
@@ -129,9 +161,15 @@ def no_scatter(variance: float, ss_tot: float, n_points: int) -> bool:
 
 
 def lack_of_fit(
-    signals: np.ndarray, fitted: np.ndarray, n_params: int, weights: np.ndarray | None = None
+    signals: np.ndarray,
+    fitted: np.ndarray,
+    n_params: int,
+    weights: np.ndarray | None = None,
+    *,
+    law: NoiseLaw | None = None,
+    design: np.ndarray | None = None,
 ) -> MisfitTest | None:
-    """Replicate lack-of-fit F test of a curve fitted to the mean of the replicates; ``None`` without scatter.
+    """Replicate lack-of-fit test of a curve fitted to the mean of the replicates; ``None`` without scatter.
 
     ``F = [m Σ_i w_i (ybar_i - fitted_i)² / (n - p)] / [Σ_ri e_ri² / ((m - 1)(n - 2))]``
     on ``(n - p, (m - 1)(n - 2))`` degrees of freedom, with ``ybar`` the mean of
@@ -150,21 +188,35 @@ def lack_of_fit(
     show, the raw pure error rejects 1.3 % (m = 2) to 0.1 % (m = 8) of
     consistent fits at the 5 % level, where the scatter used here rejects 4.7
     to 5.6 % (4 000 linearised draws per cell, 12 points, three parameters,
-    the weights known).
+    the weights known). ``e`` is the deviations of the replicates from their
+    mean projected off the two columns ``[1, ybar]``, which leaves ``n - 2``
+    dimensions per replicate, less the one replicate the mean costs — the
+    mean's own residual about the line is zero, so the ``e`` sum to zero across
+    replicates. The weights enter both sums, so only their ratios matter:
+    scaling them all by the same factor leaves the statistic where it was, and
+    omitting them is the unweighted test.
 
-    The ratio is exactly F under normal noise of the variance the weights
-    state, for weights fixed beforehand. A fit passes the weights of the law
-    read from these same replicates (:func:`~core.pipeline.noise.noise_law`),
-    so numerator and denominator share one estimated law and the ratio is F
-    only approximately; the rate at which the whole fit rejects consistent
-    data is what the validation checks ``lof-null`` and
-    ``noise-law-lof-null`` measure. ``e`` is the deviations of the replicates
-    from their mean projected off the two columns ``[1, ybar]``, which leaves
-    ``n - 2`` dimensions per replicate, less the one replicate the mean costs
-    — the mean's own residual about the line is zero, so the ``e`` sum to zero
-    across replicates. The weights enter both sums, so only their ratios
-    matter: scaling them all by the same factor leaves the statistic where it
-    was, and omitting them is the unweighted test.
+    The reference the ratio is judged against depends on where the weights
+    came from:
+
+    - weights fixed beforehand, or none (*law* ``None`` or not estimated): the
+      ratio is exactly F under normal noise of the variance the weights state,
+      and the p-value is the F tail, ``reference = 'F'``;
+    - weights of a noise law read off these same replicates
+      (:func:`~core.pipeline.noise.noise_law`): numerator and denominator then
+      share a share chosen to make the scatter flattest, and the F tail rejects
+      consistent fits too often (up to 11 % at the 5 % level with two
+      replicates). The p-value is that of a parametric bootstrap of the whole
+      reading, ``reference = 'bootstrap'``: :data:`LOF_BOOTSTRAP_DRAWS` sets of
+      replicates are drawn about *fitted* with the variance the law states at
+      each point, ``level / w_i``; in each the share is read again by the same
+      estimator on its grid, with ``u``, ``u_floor`` and the points that scatter
+      held at the data's; the mean of the draw is refitted by weighted least
+      squares, linearised at the fit, on the columns of *design*; and the ratio
+      is formed by the same formula on the same degrees of freedom. The
+      p-value is ``(1 + #{F* >= F}) / (B + 1)`` (Davison and Hinkley 1997,
+      ch. 4). The random numbers are seeded from the signals, so the same data
+      give the same p-value.
 
     *n_params* is what the fit fitted
     (:attr:`~core.pipeline.input_aware.AwareFit.n_params`): a parameter held on
@@ -186,15 +238,26 @@ def lack_of_fit(
         Weight of every titration point, from the noise law the replicates
         showed (:meth:`~core.pipeline.noise.NoiseLaw.weights`); equal weights
         when omitted.
+    law : NoiseLaw or None
+        The noise law *weights* come from, read off *signals*. Only an
+        estimated law changes the reference.
+    design : np.ndarray or None
+        Required with an estimated law: the derivatives of the fitted signal,
+        in signal units and unwhitened, with respect to the *n_params*
+        parameters the fit fitted, shape ``(n, k)``. Its column space has
+        dimension *n_params*; ``k`` may exceed it where columns are tied, and
+        the refit projects off the *n_params* leading singular directions of
+        the whitened design with every column scaled to unit length.
 
     Raises
     ------
     ValueError
         With fewer than two replicates, with fewer than three titration points
         (the scatter has no dimension left once the line is removed), or when
-        ``n - p < 1``; and, from
-        :func:`~core.pipeline.noise.replicate_scatter`, with weights of the
-        wrong shape or a mean signal that does not vary.
+        ``n - p < 1``; with an estimated law and no *design*, or a design that
+        is not one row per titration point with at least *n_params* columns;
+        and, from :func:`~core.pipeline.noise.replicate_scatter`, with weights
+        of the wrong shape or a mean signal that does not vary.
     """
     y = np.asarray(signals, dtype=float)
     if y.ndim != 2 or y.shape[0] < 2:
@@ -205,6 +268,15 @@ def lack_of_fit(
         raise ValueError(f'The lack-of-fit test needs more points ({n}) than fitted parameters ({n_params}).')
     if dof[1] < 1:
         raise ValueError(f'The lack-of-fit test needs three or more titration points; the signals have {n}.')
+    bootstrap = law is not None and law.estimated
+    if bootstrap and (
+        design is None or np.ndim(design) != 2 or np.shape(design)[0] != n or np.shape(design)[1] < n_params
+    ):
+        raise ValueError(
+            f'With weights read off the replicates the lack-of-fit test needs the design of the fit, one row per '
+            f'titration point ({n}) and a column per fitted parameter ({n_params}); it got '
+            f'{None if design is None else np.shape(design)}.'
+        )
     scatter, _ = replicate_scatter(y, weights)
     # Ones multiply exactly, so the numerator without weights is the plain sum
     # of the squared deviations and needs no branch of its own.
@@ -215,7 +287,50 @@ def lack_of_fit(
         return None
     misfit = m * float(np.sum(w * (mean - np.asarray(fitted, dtype=float)) ** 2)) / dof[0]
     ratio = misfit / pure_error
-    return MisfitTest('lack_of_fit', ratio, float(f_dist.sf(ratio, *dof)), dof=dof)
+    if not bootstrap:
+        return MisfitTest('lack_of_fit', ratio, float(f_dist.sf(ratio, *dof)), dof=dof)
+    drawn = _bootstrap_ratios(y, np.asarray(fitted, dtype=float), law, np.asarray(design, dtype=float), dof)
+    p_value = (1 + int(np.sum(drawn >= ratio))) / (LOF_BOOTSTRAP_DRAWS + 1)
+    return MisfitTest('lack_of_fit', ratio, p_value, dof=dof, reference='bootstrap')
+
+
+def _bootstrap_ratios(
+    signals: np.ndarray, fitted: np.ndarray, law: NoiseLaw, design: np.ndarray, dof: tuple[int, int]
+) -> np.ndarray:
+    """The lack-of-fit ratio of :data:`LOF_BOOTSTRAP_DRAWS` replicate sets drawn under *law* about *fitted*.
+
+    Every draw is read the way the data were: the share by the noise law's
+    estimator on its grid, at the data's ``u``, ``u_floor`` and points that
+    scatter; the weights from that share; the pure error from the scatter at
+    those weights; and the misfit of the mean after the weighted least-squares
+    refit, linearised at the fit, on the leading ``n - dof[0]`` directions of
+    the whitened design.
+    """
+    m, n = signals.shape
+    n_params = n - dof[0]
+    mean = signals.mean(axis=0)
+    relative = np.maximum(mean**2 / law.reference**2, law.u_floor)
+    seed = np.random.SeedSequence(zlib.crc32(np.ascontiguousarray(signals, dtype=float).tobytes()))
+    noise = np.random.default_rng(seed).standard_normal((LOF_BOOTSTRAP_DRAWS, m, n))
+    draws = fitted + np.sqrt(law.level / law.weights(mean)) * noise
+    scatters = _scattering_points(signals)
+    chunk = max(1, _LOF_CHUNK // (_SHARE_NODES * m * n))
+    shares, sums = np.empty(LOF_BOOTSTRAP_DRAWS), np.empty((LOF_BOOTSTRAP_DRAWS, n))
+    for start in range(0, LOF_BOOTSTRAP_DRAWS, chunk):
+        part = slice(start, start + chunk)
+        shares[part], sums[part], _ = _read_share(draws[part], relative, scatters, refine=False)
+    pure_error = np.sum(sums, axis=-1) / dof[1]
+    misfit = np.empty(LOF_BOOTSTRAP_DRAWS)
+    for share in np.unique(shares):
+        drawn = shares == share
+        root = np.sqrt(1.0 / ((1.0 - share) + share * relative))
+        whitened = design * root[:, np.newaxis]
+        norms = np.linalg.norm(whitened, axis=0)
+        basis = np.linalg.svd(whitened / np.where(norms > 0.0, norms, 1.0), full_matrices=False)[0][:, :n_params]
+        deviation = (draws[drawn].mean(axis=-2) - fitted) * root
+        residual = deviation - (deviation @ basis) @ basis.T
+        misfit[drawn] = m * np.sum(residual**2, axis=-1) / dof[0]
+    return misfit / pure_error
 
 
 def runs_test(
@@ -273,7 +388,9 @@ def runs_test(
         fewer += int(np.sum(null < runs))
         same += int(np.sum(null == runs))
         total += int(np.sum(null))
-    return MisfitTest('runs', float(runs), fewer / draws + 0.5 * (same / draws), expected=total / draws)
+    return MisfitTest(
+        'runs', float(runs), fewer / draws + 0.5 * (same / draws), expected=total / draws, reference='simulated'
+    )
 
 
 def _count_runs(signs: np.ndarray) -> np.ndarray:
@@ -587,12 +704,14 @@ def verdict(
     statistic are judged together by Holm's step-down procedure at *level*,
     over those of the two that ran: the smaller p-value against ``level / 2``
     and, if it rejects, the other against *level* (one test alone is judged
-    against *level*). Where each test holds its own level, the chance that
-    either names a cause although the model holds and the inputs are as
-    stated is then at most *level*, where two tests at *level* each reach up
-    to twice that; the validation check ``verdict-false-alarm`` measures the
-    rate the verdict reaches. The p-values stored on the
-    tests stay the raw ones.
+    against *level*). A test rejects when its p-value is at or below its
+    threshold, the rule under which the Monte-Carlo p-value of the bootstrap
+    (:data:`LOF_BOOTSTRAP_DRAWS`) holds both thresholds exactly. Where each
+    test holds its own level, the chance that either names a cause although
+    the model holds and the inputs are as stated is then at most *level*,
+    where two tests at *level* each reach up to twice that; the validation
+    check ``verdict-false-alarm`` measures the rate the verdict reaches. The
+    p-values stored on the tests stay the raw ones.
 
     1. ``MODEL_AND_INPUTS``: both reject. The data fit only with the inputs
        further from their entered values than stated, and even then the model
@@ -617,7 +736,7 @@ def verdict(
     threshold = {name: level / (len(ran) - i) for i, (_, name) in enumerate(ran)}
     rejected = set()
     for p_value, name in ran:
-        if not p_value < threshold[name]:
+        if p_value > threshold[name]:
             break
         rejected.add(name)
     if rejected == {'misfit', 'conflict'}:
@@ -626,6 +745,6 @@ def verdict(
         return Verdict.INPUTS_CONFLICT
     if 'misfit' in rejected:
         return Verdict.MODEL_INADEQUATE
-    if conditional_misfit is not None and conditional_misfit.p_value < threshold.get('misfit', level):
+    if conditional_misfit is not None and conditional_misfit.p_value <= threshold.get('misfit', level):
         return Verdict.INPUTS_EXPLAIN
     return Verdict.CONSISTENT

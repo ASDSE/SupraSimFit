@@ -122,7 +122,8 @@ is physically identifiable in that case.</p>
   <li>By default I<sub>0</sub> cannot be negative and has no upper
       limit (its upper box is empty). If your raw signal has been
       background-subtracted and can legitimately go below zero, lower
-      the bound manually.</li>
+      the bound manually. Where the fit holds I<sub>0</sub> at zero and the
+      curve misses the data, the summary says so.</li>
   <li>Bounds on a signal parameter are constraints of an exact solve:
       the value reported is the best one they allow, and equal bounds
       pin the parameter and take it out of the fit entirely.</li>

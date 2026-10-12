@@ -306,3 +306,12 @@ def test_the_sensitivity_example_quotes_the_fit_count_its_own_run_would_cost():
 
     assert fits > config.n_samples * (len(inputs) + 2), 'the elasticity refits are part of the cost'
     assert f'sample size 1024, which costs {fits} fits' in _sensitivity_text()
+
+
+def test_the_guide_quotes_the_level_the_one_step_test_is_run_at():
+    """The level a closed lower end of a second constant has to pass is the engine's, not a number copied once."""
+    from core.pipeline.varpro import SECOND_STEP_LEVEL
+    from gui.plot_guide import IDENTIFIABILITY, PLOT_GUIDE
+
+    text = re.sub(r'\s+', ' ', PLOT_GUIDE[IDENTIFIABILITY][1])
+    assert f'the <i>one-step test</i>, at p&nbsp;&le;&nbsp;{SECOND_STEP_LEVEL:g}' in text

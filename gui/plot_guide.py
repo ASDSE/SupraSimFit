@@ -135,6 +135,15 @@ limited by the data</i> for both: the data cannot rule out K<sub>a</sub> up to t
 report a limit rather than a value. With two association constants an end is also open where the
 fit is rejected only because the other constant has reached its bound. A line starting
 <i>Open:</i> says which end is open and what would close it.</p>
+<p>The second constant of a two-step model (K<sub>a(HG₂)</sub>, K<sub>a(H₂G)</sub>) claims with a
+closed lower end that the second binding step happens at all. That end is closed only where the data
+reject the model without the step &mdash; the <i>one-step test</i>, at p&nbsp;&le;&nbsp;0.005 &mdash; and
+the line under that constant&rsquo;s reading gives the test either way: <i>second binding step
+supported</i>, with the p it was rejected at, or <i>not limited below</i>, because a model without the
+second step fits nearly as well. Where the inputs were free to move, it is given at the entered inputs too,
+the interval the panel of the pair is drawn at. Where the second constant is a hundred times or more
+below the first, a closed interval of it misses the true value more often than 1 in 20 even after
+the test: read it together with the joint region of the pair.</p>
 <p>The CI holds if the model is right, the true K<sub>a</sub> lies inside the bounds it is searched
 in, and the scatter is independent from point to point and as large at each point as the noise law
 under Fit Quality says (the same at every point for a single titration). It uses
@@ -370,7 +379,8 @@ it is fitted with the noise taken as constant, and the row says so. Where the no
 proportional to the signal, that costs precision at the low end of the curve and gives an interval
 somewhat wider than replicates would have earned.</p>
 <p><b>Model and inputs</b>: whether the curve misses the data by more than the replicates&rsquo; own
-scatter allows (or, with one signal, whether the residuals change sign as often as noise would),
+scatter allows (where they showed a noise law, its p-value is simulated from the fitted curve and that
+law; with one signal, whether the residuals change sign as often as noise would),
 where the fit put each input it was free to move and how far that is against what you stated, and a
 sentence saying what the two together mean and what to check. The shifts say where the correction
 landed, not which input is wrong: several of them move the curve almost alike.</p>

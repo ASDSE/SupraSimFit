@@ -75,10 +75,14 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
   a fit reads a noise law off their scatter (`core.pipeline.noise`) and hands
   `Projection` one weight per titration point. A single titration, and replicates
   whose law comes out constant, get exactly `np.ones`: whitening multiplies by
-  1.0, so the fit, its interval and its diagnostics are those of an engine
-  without weights *to the last bit*. Tests pin that by comparing the two
-  projections' numbers exactly — `==`, not `approx` — and they are what a change
-  that reorders the arithmetic of the unweighted path has to answer to. The law
+  1.0, so the fit and its interval are those of an engine without weights *to
+  the last bit*, and so are the diagnostics of a single titration. Tests pin
+  that by comparing the two projections' numbers exactly — `==`, not `approx` —
+  and they are what a change that reorders the arithmetic of the unweighted path
+  has to answer to. The lack-of-fit p-value of replicates whose law was
+  estimated, constant or not, is read against a parametric bootstrap seeded
+  from the signals; the F distribution is its reference only where no law could
+  be read. The law
   itself draws no random numbers either, but a test of it asserts a property —
   proportional noise gives a share near one, a replicate measured at a slightly
   different gain is not read as noise — against independently generated data,

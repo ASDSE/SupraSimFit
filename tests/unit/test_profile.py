@@ -205,6 +205,9 @@ def test_the_profile_carries_the_fit_it_belongs_to_exactly(model):
         assert profile.r2_threshold == 1.0 - projection.threshold(fit) / projection.ss_tot[0]
     if model == 'two_ka':
         assert profiles.region.best == (fit.ka['Ka_HG'], fit.ka['Ka_HG2'])
+        # The evidence for a second binding step the joint region is read beside is the fit's own one-step test.
+        assert profiles.profiles['Ka_HG2'].interval.one_step_p == projection.one_step_p(fit)
+        assert profiles.profiles['Ka_HG'].interval.one_step_p is None
     else:
         assert profiles.region is None
 

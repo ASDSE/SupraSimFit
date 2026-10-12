@@ -20,7 +20,7 @@ from core.pipeline.fit_pipeline import (
 )
 from core.pipeline.input_aware import input_aware
 from core.pipeline.inputs import TITRANT
-from core.pipeline.noise import NoiseBasis
+from core.pipeline.noise import NoiseBasis, noise_law
 from core.pipeline.varpro import FitCancelled, Projection
 from core.units import Q_
 from tests.conftest import (
@@ -212,7 +212,8 @@ class TestTheParametersTheLackOfFitTestCounts:
         # (free and bound dye add up to the dye total) to the offset: rank two.
         assert aware.fit.n_params == 1 + 2
 
-        found, skipped = _misfit(projection, aware, replicates)
+        # The projection weighs every point alike, the weights of a law taken as constant.
+        found, skipped = _misfit(projection, aware, replicates, noise_law(None))
         assert skipped == ''
         curve = projection.signals[0] - projection.residual(aware.fit.ka, 0, aware.fit.offsets)
         every_free = lack_of_fit(replicates, curve, aware.fit.n_params)
@@ -221,6 +222,8 @@ class TestTheParametersTheLackOfFitTestCounts:
         # one of the three replicates to the mean.
         assert found.dof == (12 - aware.fit.n_params, 2 * 10)
         assert (found.statistic, found.p_value) == (every_free.statistic, every_free.p_value)
+        # No law was read, so the reference is the F distribution itself.
+        assert found.reference == 'F'
 
     def test_a_coefficient_the_solve_holds_on_its_bound_is_not_counted(self):
         """The GDA truth has no offset, so a floor of zero under I0 pins it wherever the noise asks for less.
@@ -244,7 +247,8 @@ class TestTheParametersTheLackOfFitTestCounts:
         assert lifted_aware.fit.coefficients[0] < 0.0
         assert lifted_aware.fit.n_params == count + 1
 
-        found, skipped = _misfit(projection, aware, replicates)
+        # The projection weighs every point alike, the weights of a law taken as constant.
+        found, skipped = _misfit(projection, aware, replicates, noise_law(None))
         assert skipped == ''
         rows, points = replicates.shape
         mean = replicates.mean(axis=0)
@@ -341,6 +345,42 @@ class TestTheNoiseLawTheFitCarries:
         reported = result.parameters['Ka_guest'].magnitude
         assert reported == weighted.fit().ka['Ka_guest']
         assert reported != equal.fit().ka['Ka_guest']
+
+    def test_the_misfit_test_of_a_weighted_fit_keeps_its_ratio_and_reads_its_p_value_from_a_simulation(self):
+        """Weights read from the replicates' own scatter make F only approximate, so the reference is simulated.
+
+        The ratio itself is the weighted lack-of-fit F ratio, worked out here by
+        hand: the misfit of the fitted curve against the mean of the replicates
+        over the scatter of each replicate about its own weighted line in the
+        mean, both counted by the law's weights.
+        """
+        x, y = _make_ida_data(IDA_TRUE, n_points=15)
+        rng = np.random.default_rng(5)
+        signals = np.vstack([y * (1.0 + rng.normal(0.0, 0.03, y.size)) for _ in range(4)])
+        ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c', 'd'))
+        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False)
+
+        result = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, config)
+        test = result.diagnostics.misfit
+
+        assert result.noise.estimated and test.kind == 'lack_of_fit'
+        assert test.reference == 'bootstrap'
+        assert result.diagnostics.conditional_misfit == test, 'with no input free to move the two tests are one'
+        rows, points = signals.shape
+        mean = signals.mean(axis=0)
+        root = np.sqrt(result.noise.weights(mean))
+        assay = self._ida_assay(mean, x)
+        curve = assay.forward_model(np.array([result.parameters[k].magnitude for k in assay.parameter_keys])).magnitude
+        line = np.column_stack([np.ones(points), mean]) * root[:, None]
+        whitened = signals * root
+        scatter = whitened - (line @ np.linalg.lstsq(line, whitened.T, rcond=None)[0]).T
+        # The parameter count behind dof[0] is pinned by TestTheParametersTheLackOfFitTestCounts.
+        misfit_mean_square = rows * float(np.sum((root * (mean - curve)) ** 2)) / test.dof[0]
+        pure_error_mean_square = float(np.sum(scatter**2)) / ((rows - 1) * (points - 2))
+        assert test.dof[1] == (rows - 1) * (points - 2)
+        assert test.statistic == pytest.approx(misfit_mean_square / pure_error_mean_square, rel=1e-6)
+        # A Monte-Carlo p-value over 199 draws: (1 + exceedances) / 200.
+        assert round(test.p_value * 200, 9) == int(round(test.p_value * 200)) and 0.0 < test.p_value <= 1.0
 
 
 class TestDispatch:

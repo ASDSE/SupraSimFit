@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 
 from core.assays.registry import AssayType
 from core.optimizer.ensemble import describe, describe_log10
+from core.pipeline.diagnostics import LOF_BOOTSTRAP_DRAWS
 from core.pipeline.fit_pipeline import (
     FitResult,
     ParameterSummary,
@@ -34,7 +35,7 @@ from core.pipeline.fit_pipeline import (
 )
 from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, InputSpec, input_name, shared_key
 from core.pipeline.sensitivity import SensitivityMode, SensitivityResult
-from core.pipeline.varpro import LEVEL
+from core.pipeline.varpro import LEVEL, SECOND_STEP_LEVEL
 from core.units import Q_, Quantity
 from gui.plotting.colors import INK_2
 from gui.plotting.labels import (
@@ -59,6 +60,8 @@ from gui.plotting.labels import (
     fmt_unit_html,
     fmt_value,
     not_run_reason,
+    offset_note,
+    one_step_sentence,
     own_estimates,
     plain_label,
     replicate_summary,
@@ -123,6 +126,16 @@ the data</i> means neither end is closed, so the fit does not determine
 K<sub>a</sub> at all. A K<sub>a</sub> you held fixed reads <i>fixed</i> and has
 no interval, because it was not fitted.</p>
 
+<p><b>The second constant of a two-step model</b> &mdash; a closed lower end on
+K<sub>a(HG₂)</sub> or K<sub>a(H₂G)</sub> claims that the second binding step
+happens at all. It is closed only where the data reject the model without that
+step (the <i>one-step test</i>, at p&nbsp;&le;&nbsp;{SECOND_STEP_LEVEL:g});
+otherwise it reads <i>no lower limit</i>, and the line under the table says that
+a model without the second step fits nearly as well. Where the step is supported, the same line says
+at what p the one-step model was rejected. Where the second constant is a hundred times or more below
+the first, a closed interval of it misses the true value more often than 1 in 20 even after the
+test: read it together with the joint region on the <b>Identifiability</b> tab.</p>
+
 <p><b>An estimate in words</b> &mdash; <i>not limited below 2.41&times;10<sup>3</sup></i>
 means the best fit ran onto the lower bound of the K<sub>a</sub> search: the
 data do not limit K<sub>a</sub> from below, so the value the search stopped at is
@@ -161,10 +174,14 @@ when the result rests on something the data reject.</p>
 <p><b>The misfit test</b> &mdash; with two or more replicates, the scatter
 between them measures your noise directly, and the <i>lack-of-fit F test</i>
 asks whether the curve misses their average by more than that scatter allows.
-With a single signal there is no such measure, and the <i>runs test</i> asks
-instead whether the residuals change sign as often as a fit of this model to
-pure noise would; a curve that misses systematically leaves long runs on one
-side. The test is reported at the fit with the inputs as entered and, where an
+Where a noise law was read off the replicates &mdash; constant, or growing with
+the signal &mdash; the fit weights its points by that law, and the test&rsquo;s
+p-value is simulated from the fitted curve and the law, in {LOF_BOOTSTRAP_DRAWS} draws: where
+none of them misses the data as far as the curve does, it reads
+p&nbsp;&le;&nbsp;{1 / (LOF_BOOTSTRAP_DRAWS + 1):g}, the smallest value the simulation can show. With a single signal there is no such measure, and
+the <i>runs test</i> asks instead whether the residuals change sign as often as
+a fit of this model to pure noise would; a curve that misses systematically
+leaves long runs on one side. The test is reported at the fit with the inputs as entered and, where an
 input was free to move, at the fit that moved them.</p>
 
 <p><b>The inputs, taken together</b> &mdash; <i>q</i> measures how far the fit
@@ -1210,11 +1227,16 @@ class FitSummaryWidget(QWidget):
                 rows, [spec.key for spec in rows if spec.degenerate and not spec.is_log], _FIT_DEGENERATE_TAIL
             ),
             self._note_intervals(rows),
+            *(
+                one_step_sentence(fmt_param(spec.key), spec.one_step_p)
+                for spec in rows
+                if not spec.is_log and spec.one_step_p is not None
+            ),
         )
 
         legacy = _LEGACY_NOTE if ka_keys and result.intervals is None else ''
         on_bound = fmt_bound_note(parameters_on_bound(result))
-        caption = ' '.join(part for part in (block, legacy, on_bound, note) if part)
+        caption = ' '.join(part for part in (block, legacy, on_bound, offset_note(result), note) if part)
         self._caption.setText(caption)
         self._caption.setVisible(bool(caption))
 

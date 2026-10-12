@@ -20,7 +20,7 @@ from core.assays.hg2 import HG2Assay
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.models.equilibrium import dba_signal
-from core.pipeline.diagnostics import Verdict
+from core.pipeline.diagnostics import LOF_BOOTSTRAP_DRAWS, Verdict
 from core.pipeline.fit_pipeline import (
     FitConfig,
     FitResult,
@@ -534,7 +534,11 @@ class TestInputsFreeWithinTheirUncertainty:
         # in the mean curve, which the line costs two points and the mean one
         # replicate.
         assert diagnostics.conditional_misfit.dof == (12 - 3, 2 * 10)
-        assert diagnostics.conditional_misfit.p_value < 0.001
+        # The point weights come from the noise law these replicates show, so
+        # the p-value is simulated, and no draw reaches the observed ratio: the
+        # smallest p-value the simulation states.
+        assert diagnostics.conditional_misfit.reference == 'bootstrap'
+        assert diagnostics.conditional_misfit.p_value == 1 / (LOF_BOOTSTRAP_DRAWS + 1)
         assert diagnostics.misfit.p_value > 0.05
         assert diagnostics.conflict.p_value > 0.05, 'the shift stays within what was stated, so nothing conflicts'
         assert diagnostics.verdict is Verdict.INPUTS_EXPLAIN

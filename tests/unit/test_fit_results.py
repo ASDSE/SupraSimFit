@@ -14,6 +14,7 @@ from core.pipeline.fit_pipeline import (
     FitConfig,
     FitResult,
     _config_to_dict,
+    offsets_held_at_zero,
     summarize_parameters,
 )
 from core.pipeline.inputs import TITRANT, AdditionError, ErrorModel, InputSpec, SharedSource, specs_to_dict
@@ -654,3 +655,105 @@ def test_a_bound_with_no_limit_is_written_as_strict_json_and_read_back_as_no_lim
     assert back.fit_config['custom_bounds'] == {'I0': [1.0, None, 'au']}
     # The entered side is still read; the side with no limit is not a bound the fit can end on.
     assert parameters_on_bound(back) == {'I0': floor}
+
+
+def _stepwise_result(**overrides) -> FitResult:
+    """A 1:2 stepwise fit whose second constant the data leave open below: the one-step model fits nearly as well.
+
+    Its fit at the entered inputs carries the closed interval the test supports
+    there, so the headline and the conditional readings of the test differ.
+    """
+    parameters = {
+        'Ka_HG': Q_(2.0e5, '1/M'),
+        'Ka_HG2': Q_(3.0e3, '1/M'),
+        'I0': Q_(10.0, 'au'),
+        'I_G': Q_(1e5, 'au/M'),
+        'I_H': Q_(0.0, 'au/M'),
+        'I_HG': Q_(4e7, 'au/M'),
+        'I_HG2': Q_(6e7, 'au/M'),
+    }
+    defaults = dict(
+        parameters=parameters,
+        assay_type='DBA_HG2',
+        model_name='equilibrium_stepwise',
+        conditions={'h0': Q_(10e-6, 'M')},
+        intervals={
+            'Ka_HG': _interval(1.5e5, 2.6e5),
+            'Ka_HG2': _interval(1e-8, 9.0e3, open_low=True, one_step_p=0.03),
+        },
+        conditional=ConditionalFit(
+            parameters=dict(parameters),
+            intervals={'Ka_HG': _interval(1.6e5, 2.5e5), 'Ka_HG2': _interval(1.1e3, 8.0e3, one_step_p=0.0004)},
+            rmse=40.0,
+            r_squared=0.998,
+        ),
+        input_shifts={'h0': InputShift('h0', -0.02, -0.4, False)},
+        diagnostics=FitDiagnostics(
+            conditional_misfit=MisfitTest('lack_of_fit', 1.1, 0.4, dof=(8, 22), reference='bootstrap'),
+            misfit=MisfitTest('lack_of_fit', 0.9, 0.55, dof=(8, 22), reference='bootstrap'),
+            conflict=None,
+            verdict=Verdict.CONSISTENT,
+        ),
+        degenerate_keys=(),
+    )
+    defaults.update(overrides)
+    return _sample_fit_result(**defaults)
+
+
+class TestTheSecondStepAndTheMisfitReference:
+    """The one-step test of a second binding constant and the reference a misfit p-value was read against."""
+
+    def test_both_survive_the_file(self):
+        original = _stepwise_result()
+
+        restored = FitResult.from_dict(json.loads(json.dumps(original.to_dict(), allow_nan=False)))
+
+        assert restored.intervals == original.intervals
+        assert restored.conditional.intervals == original.conditional.intervals
+        assert restored.diagnostics == original.diagnostics
+        assert restored.diagnostics.misfit.reference == 'bootstrap'
+
+    def test_a_file_written_without_them_reads_as_no_test_and_the_f_reference(self):
+        """A file from before the one-step test and the simulated reference: no p is invented for either."""
+        written = json.loads(json.dumps(_stepwise_result().to_dict()))
+        for block in (written['intervals'], written['conditional']['intervals']):
+            for record in block.values():
+                del record['one_step_p']
+        for key in ('misfit', 'conditional_misfit'):
+            del written['diagnostics'][key]['reference']
+
+        restored = FitResult.from_dict(written)
+
+        assert all(ci.one_step_p is None for ci in restored.intervals.values())
+        assert all(ci.one_step_p is None for ci in restored.conditional.intervals.values())
+        assert (restored.diagnostics.misfit.reference, restored.diagnostics.conditional_misfit.reference) == ('F', 'F')
+
+    def test_the_reported_rows_carry_the_headline_interval_s_test_on_the_second_constant_alone(self):
+        """One field, on both rows of the constant it tests: the test of the interval the row reports."""
+        rows = summarize_parameters(_stepwise_result())
+
+        carried = {(spec.key, spec.is_log): spec.one_step_p for spec in rows if spec.one_step_p is not None}
+        # The headline interval's p, not the 0.0004 of the fit at the entered inputs.
+        assert carried == {('Ka_HG2', False): 0.03, ('Ka_HG2', True): 0.03}
+
+
+class TestOffsetsHeldAtZero:
+    """Which signal offsets the fit left on a floor of zero, read from the bounds the fit was given."""
+
+    def test_an_offset_on_the_registry_floor_of_zero_is_named(self):
+        # The sample GDA fit records no custom bounds, so its I0 floor is the registry's zero.
+        assert offsets_held_at_zero(_sample_fit_result()) == ['I0']
+
+    def test_an_offset_above_zero_or_a_floor_below_it_is_not(self):
+        lifted = _sample_fit_result(parameters={**_sample_fit_result().parameters, 'I0': Q_(3.0, 'au')})
+        below = _sample_fit_result(
+            fit_config=_config_to_dict(FitConfig(custom_bounds={'I0': (Q_(-500, 'au'), Q_(500, 'au'))}))
+        )
+        assert offsets_held_at_zero(lifted) == []
+        assert offsets_held_at_zero(below) == []
+
+    def test_an_offset_pinned_at_zero_by_equal_bounds_is_held_there_on_purpose(self):
+        pinned = _sample_fit_result(
+            fit_config=_config_to_dict(FitConfig(custom_bounds={'I0': (Q_(0, 'au'), Q_(0, 'au'))}))
+        )
+        assert offsets_held_at_zero(pinned) == []

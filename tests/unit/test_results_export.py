@@ -961,3 +961,165 @@ def test_txt_report_names_a_replicate_fit_on_its_search_bound_in_words(tmp_path:
 
     assert 'at the lower end of its search range' in rows['C']
     assert '10⁻⁸' not in rows['C']
+
+
+def _stepwise(second: KaInterval, *, reference: str = 'F') -> FitResult:
+    """A 1:2 stepwise fit of one signal set, its second constant reported by *second*."""
+    return FitResult(
+        parameters={
+            'Ka_HG': Q_(2.0e5, '1/M'),
+            'Ka_HG2': Q_(3.0e3, '1/M'),
+            'I0': Q_(10.0, 'au'),
+            'I_G': Q_(1e5, 'au/M'),
+            'I_H': Q_(0.0, 'au/M'),
+            'I_HG': Q_(4e7, 'au/M'),
+            'I_HG2': Q_(6e7, 'au/M'),
+        },
+        rmse=12.3,
+        r_squared=0.9962,
+        x_fit=Q_(_X, 'M'),
+        y_fit=Q_(_X, 'au'),
+        assay_type='DBA_HG2',
+        model_name='equilibrium_stepwise',
+        conditions={'h0': Q_(10e-6, 'M')},
+        fit_config={'per_replicate': False, 'level': 0.95},
+        intervals={
+            'Ka_HG': KaInterval(low=1.5e5, high=2.6e5, open_low=False, open_high=False, level=0.95, dof=7),
+            'Ka_HG2': second,
+        },
+        diagnostics=FitDiagnostics(
+            conditional_misfit=MisfitTest('lack_of_fit', 0.9, 0.55, dof=(7, 24), reference=reference),
+            misfit=MisfitTest('lack_of_fit', 0.9, 0.55, dof=(7, 24), reference=reference),
+            conflict=None,
+            verdict=Verdict.CONSISTENT,
+        ),
+    )
+
+
+#: The second constant where the one-step model fits nearly as well: the test opened its lower side.
+_STEP_UNSHOWN = KaInterval(low=1e-8, high=9.0e3, open_low=True, open_high=False, level=0.95, dof=7, one_step_p=0.03)
+
+#: The second constant where the data reject the one-step model.
+_STEP_SHOWN = KaInterval(low=1.1e3, high=8.0e3, open_low=False, open_high=False, level=0.95, dof=7, one_step_p=0.0034)
+
+
+def test_txt_report_says_a_second_step_the_data_do_not_show_is_not_limited_below(tmp_path: Path) -> None:
+    """The side is open because a model without the step fits as well, and the report gives that reason alone.
+
+    The advice to measure at a higher titrant concentration belongs to a side
+    the profile ran open; this one the test opened, and its sentence says why.
+    """
+    text = _prose(_txt(tmp_path, [_stepwise(_STEP_UNSHOWN)]))
+
+    assert (
+        'Ka_HG2 not limited below: a model without the second binding step fits nearly as well '
+        '(one-step test p = 0.03).'
+    ) in text
+    assert 'Ka_HG2: open at the low end' not in text
+    assert 'no lower limit' in text
+
+
+def test_txt_report_says_what_supports_a_closed_second_step_as_a_bound_that_holds(tmp_path: Path) -> None:
+    """p = 0.0034 is reported as ≤ 0.004: one figure, rounded up so the bound is true."""
+    text = _prose(_txt(tmp_path, [_stepwise(_STEP_SHOWN)]))
+
+    assert 'Ka_HG2: second binding step supported (one-step model rejected at p ≤ 0.004).' in text
+    # The first constant carries no test of its own.
+    assert 'Ka_HG:' not in text
+
+
+def test_csv_carries_the_one_step_p_on_the_second_constant_and_the_reference_of_the_misfit_test(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'r.csv'
+    export_results_csv([_stepwise(_STEP_UNSHOWN, reference='bootstrap')], path)
+    rows = {r['parameter']: r for r in _csv_rows(path)}
+
+    assert float(rows['Ka_HG2']['one_step_p']) == pytest.approx(0.03)
+    assert float(rows['log10(Ka_HG2)']['one_step_p']) == pytest.approx(0.03)
+    # An empty cell is a number there is none of.
+    assert rows['Ka_HG']['one_step_p'] == '' and rows['I0']['one_step_p'] == ''
+    # The open side has no end, whatever bound the profile stopped at.
+    assert (rows['Ka_HG2']['ci_low'], rows['Ka_HG2']['ci_open_low']) == ('', 'true')
+    assert {row['misfit_reference'] for row in rows.values()} == {'bootstrap'}
+
+
+def test_csv_names_the_f_reference_and_leaves_it_blank_for_the_runs_test(tmp_path: Path) -> None:
+    """A runs test is read against its own simulated reference, which the column does not describe."""
+    runs = MisfitTest(kind='runs', statistic=6.0, p_value=0.41, dof=None, expected=7.0)
+    single = replace(
+        _stepwise(_STEP_SHOWN),
+        diagnostics=FitDiagnostics(conditional_misfit=runs, misfit=runs, conflict=None, verdict=Verdict.CONSISTENT),
+    )
+    path = tmp_path / 'r.csv'
+    export_results_csv([_stepwise(_STEP_SHOWN), single], path)
+    rows = _csv_rows(path)
+
+    assert {row['misfit_reference'] for row in rows if row['result_index'] == '0'} == {'F'}
+    assert {row['misfit_reference'] for row in rows if row['result_index'] == '1'} == {''}
+
+
+def test_txt_report_says_a_lack_of_fit_p_value_was_simulated_where_it_was(tmp_path: Path) -> None:
+    simulated = _prose(_txt(tmp_path, [_stepwise(_STEP_SHOWN, reference='bootstrap')]))
+    exact = _prose(_txt(tmp_path, [_stepwise(_STEP_SHOWN)]))
+
+    assert 'F(7, 24) = 0.9, p = 0.55, simulated from the fitted curve and the noise law' in simulated
+    assert 'simulated' not in exact
+
+
+#: The misfit test rejecting the fit the report gives.
+_REJECTED = FitDiagnostics(
+    conditional_misfit=MisfitTest(kind='lack_of_fit', statistic=12.0, p_value=1e-6, dof=(7, 24)),
+    misfit=MisfitTest(kind='lack_of_fit', statistic=12.0, p_value=1e-6, dof=(7, 24)),
+    conflict=None,
+    verdict=Verdict.MODEL_INADEQUATE,
+)
+
+_OFFSET_NOTE = (
+    'The signal offset rests on its lower bound of 0. If the signals were blank-subtracted, allow a negative '
+    'offset under Parameter Bounds and fit again.'
+)
+
+
+def test_txt_report_suggests_a_negative_offset_only_where_the_offset_sits_on_zero_and_the_curve_misses(
+    tmp_path: Path,
+) -> None:
+    """Both conditions, and neither alone: an offset at zero under a curve that fits is where the data put it."""
+    on_zero = {**_PARAMS, 'I0': Q_(0.0, 'au')}
+    both = replace(_result(), parameters=on_zero, diagnostics=_REJECTED)
+    fits = replace(
+        both, diagnostics=replace(_REJECTED, conditional_misfit=None, misfit=None, verdict=Verdict.CONSISTENT)
+    )
+    lifted = replace(_result(), diagnostics=_REJECTED)  # I0 at 1000
+    below = replace(both, fit_config={**both.fit_config, 'custom_bounds': {'I0': [-500.0, 500.0, 'au']}})
+
+    assert _OFFSET_NOTE in _prose(_txt(tmp_path, [both]))
+    for result in (fits, lifted, below):
+        assert 'lower bound of 0' not in _prose(_txt(tmp_path, [result]))
+
+
+def test_the_test_readings_wrap_to_the_report_s_margin_under_their_column(tmp_path: Path) -> None:
+    """A simulated reference makes a reading longer than one line; it wraps, and its words stay together."""
+    from gui.session import _wrapped
+
+    aware = _input_aware_result()
+    diagnostics = aware.diagnostics
+    simulated = replace(
+        aware,
+        diagnostics=replace(
+            diagnostics,
+            conditional_misfit=replace(diagnostics.conditional_misfit, reference='bootstrap'),
+            misfit=replace(diagnostics.misfit, reference='bootstrap'),
+        ),
+    )
+    text = _txt(tmp_path, [simulated])
+    margin = max(len(line) for line in _wrapped('word ' * 200))
+    readings = text.split('Model at the entered inputs:', 1)[1].split('Input uncertainties used:', 1)[0]
+    lines = ('  Model at the entered inputs:' + readings).splitlines()
+
+    assert len(lines) > 2, 'the two readings take more than a line each'
+    assert [line for line in lines if len(line) > margin] == []
+    # Every continuation sits under the column the readings start in.
+    column = lines[0].index('lack-of-fit')
+    assert all(line[:column].strip() == '' for line in lines if not line.lstrip().startswith('Model'))
+    assert 'p = 0.55, simulated from the fitted curve and the noise law' in _prose(text)

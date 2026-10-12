@@ -54,6 +54,7 @@ from core.pipeline.input_aware import (
     fit_jacobian,
     input_aware,
     input_shifts,
+    misfit_design,
 )
 from core.pipeline.inputs import TITRANT, ErrorModel, constraints
 from core.pipeline.noise import NoiseLaw, noise_law
@@ -660,6 +661,13 @@ class ParameterSummary:
         stretches, so it spans a gap of values the data reject.
     conditional_at_bound : str
         *estimate_at_bound* of *conditional_estimate*.
+    one_step_p : float | None
+        On the second binding constant of a two-step model, the p-value of the
+        test of *interval* against the model without that step
+        (:attr:`~core.pipeline.varpro.KaInterval.one_step_p`): above
+        :data:`~core.pipeline.varpro.SECOND_STEP_LEVEL` the data do not show
+        the second step, and the interval is open below. ``None`` on every
+        other row.
     """
 
     key: str
@@ -681,6 +689,7 @@ class ParameterSummary:
     conditional_open: Tuple[bool, bool] = (False, False)
     conditional_split: bool = False
     conditional_at_bound: str = ''
+    one_step_p: Optional[float] = None
 
 
 def _binding_constant_keys(result: FitResult) -> set[str]:
@@ -713,6 +722,35 @@ def parameters_on_bound(result: FitResult) -> Dict[str, Quantity]:
             if bound is not None and bound != 0.0 and np.isclose(value, bound, rtol=1e-12, atol=0.0):
                 hits[key] = Q_(bound, unit)
     return hits
+
+
+def offsets_held_at_zero(result: FitResult) -> List[str]:
+    """Signal offsets the fit left on a lower bound of zero, the registry's floor for an offset.
+
+    A zero floor is right for a signal that includes its blank, and holds the
+    offset against the data when the blank was subtracted before the fit. The
+    bound is the one the fit was given where the result records it, the
+    registry's default otherwise; an offset pinned by equal bounds is held on
+    purpose and not reported. The bounded solve clips a coefficient to its
+    bound, so an offset held there is exactly zero.
+    """
+    try:
+        meta = ASSAY_REGISTRY[AssayType[result.assay_type]]
+    except KeyError:
+        return []
+    recorded = result.fit_config.get('custom_bounds') or {}
+    held = []
+    for key, kind in meta.param_kinds.items():
+        if kind is not ParamKind.SIGNAL_OFFSET or key not in result.parameters:
+            continue
+        if key in recorded:
+            lo, hi, unit = recorded[key]
+        else:
+            low, high = meta.default_bounds[key]
+            lo, hi, unit = float(low.magnitude), float(high.magnitude), str(low.units)
+        if lo == 0.0 and hi != lo and float(result.parameters[key].to(unit).magnitude) <= 0.0:
+            held.append(key)
+    return held
 
 
 def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
@@ -767,6 +805,7 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
             conditional_open=(False, False) if entered_ci is None else (entered_ci.open_low, entered_ci.open_high),
             conditional_split=False if entered_ci is None else entered_ci.split,
             conditional_at_bound='' if entered is None else _at_bound(entered, boxes.get(key)),
+            one_step_p=None if ci is None else ci.one_step_p,
         )
         rows.append(
             ParameterSummary(
@@ -1038,7 +1077,7 @@ def fit_assay(
         degenerate_keys=projection.degenerate_keys(fit),
         conditional=conditional,
         input_shifts=shifts,
-        diagnostics=_diagnose(projection, fit, aware, replicate_signals, intervals, should_cancel),
+        diagnostics=_diagnose(projection, fit, aware, replicate_signals, law, conditional.intervals, should_cancel),
         aware=aware,
         noise=law,
     )
@@ -1055,6 +1094,7 @@ def _diagnose(
     fit: ProjectedFit,
     aware: AwareResult,
     replicate_signals: Optional[np.ndarray],
+    law: NoiseLaw,
     conditional_intervals: Dict[str, KaInterval],
     should_cancel: Optional[Callable[[], bool]],
 ) -> FitDiagnostics:
@@ -1064,16 +1104,17 @@ def _diagnose(
     Jacobian, which is the input-aware result with nothing free to move; where
     no input moves anyway it is the one result, and both tests are the one
     test. Every test of the verdict that could not be run is recorded with
-    the reason.
+    the reason. *law* is the noise law the projection's point weights come
+    from, which the lack-of-fit test reads its reference from.
     """
     entered = (
         aware
         if not aware.constraints
         else input_aware(projection, fit, (), should_cancel=should_cancel, conditional=conditional_intervals)
     )
-    conditional_misfit, entered_why = _misfit(projection, entered, replicate_signals)
+    conditional_misfit, entered_why = _misfit(projection, entered, replicate_signals, law)
     misfit, why = (
-        (conditional_misfit, entered_why) if entered is aware else _misfit(projection, aware, replicate_signals)
+        (conditional_misfit, entered_why) if entered is aware else _misfit(projection, aware, replicate_signals, law)
     )
     inputs = conflict(aware)
     skipped = {} if misfit is not None else {'misfit': why}
@@ -1091,13 +1132,22 @@ def _diagnose(
 
 
 def _misfit(
-    projection: Projection, aware: AwareResult, replicate_signals: Optional[np.ndarray]
+    projection: Projection, aware: AwareResult, replicate_signals: Optional[np.ndarray], law: NoiseLaw
 ) -> Tuple[Optional[MisfitTest], str]:
     """Whether the fitted curve misses the data by more than the data's own scatter allows; why not, if untested.
 
     With two or more replicates behind the fitted signal the test is theirs:
     the misfit of the curve against their average, judged against the scatter
-    between them. With one signal there is no such scatter, and what is left to
+    between them. The p-value is read against one of two references, named
+    on the test (``MisfitTest.reference``). Where *law* was not read from the
+    replicates — the weights are then exactly one — the ratio is exactly F
+    under normal noise, and the p-value is F's. Where the replicates showed
+    the law, the weights are estimated from the same scatter the ratio is
+    judged against, so the ratio is F only approximately; the p-value is then
+    simulated: replicates drawn about the fitted curve at the law's own level,
+    the law read again from every draw and the curve refitted on the columns
+    of the parameters the fit counts (:func:`misfit_design`). With one signal
+    there is no such scatter, and what is left to
     look at is whether the residuals change sign as often as a fit of this
     model to noise would — a test with little power, which says nothing at all
     below ``_RUNS_TEST_DOF`` residual degrees of freedom. Neither is run when
@@ -1125,7 +1175,10 @@ def _misfit(
     residual = projection.residual(fit.ka, 0, fit.input_offsets)
     if replicate_signals is not None and np.shape(replicate_signals)[0] >= 2:
         fitted = projection.signals[0] - residual / np.sqrt(projection.point_weights)
-        found = lack_of_fit(replicate_signals, fitted, fit.n_params, projection.point_weights)
+        # The simulated reference needs the columns of the counted parameters;
+        # the exact F reference needs none, so they are worked out only for it.
+        design = misfit_design(projection, aware) if law.estimated else None
+        found = lack_of_fit(replicate_signals, fitted, fit.n_params, projection.point_weights, law=law, design=design)
         return found, '' if found is not None else 'no_scatter'
     if n - fit.n_params < _RUNS_TEST_DOF:
         return None, 'too_few_dof'

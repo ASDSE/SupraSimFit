@@ -46,6 +46,13 @@ input entered at its stated sigma) the 95 % interval holds the true Ka in
 98.3, 98.0, 97.5 and 96.3 %; with ``n - p`` in place of ``nu`` it is 85 to 93 %
 wherever the data determine an input direction.
 
+The second constant of a stepwise model is judged, as in
+:meth:`core.pipeline.varpro.Projection.interval`, by a one-step test before its
+interval claims a lower limit: ``P(0)`` with that constant at zero, minimised
+over the other one and the inputs, against ``P_min`` by the rule above, so the
+input-aware interval and the fixed-input one agree on what the data say about
+the second binding step.
+
 ``exp(P(k) / n)`` is a residual sum of squares inflated by the input penalty,
 so ``1 - exp(P(k) / n) / SS_tot`` draws on the R² axis of the fixed-input
 profile, never below it wherever the entered inputs are allowed.
@@ -58,7 +65,7 @@ finding cannot change a value by the order it asks in.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Callable, Mapping, Sequence
 
@@ -85,6 +92,7 @@ from core.pipeline.varpro import (
     _ka_grid,
     _refine_at,
     _require_dof,
+    _with_one_step_test,
 )
 
 __all__ = [
@@ -96,6 +104,7 @@ __all__ = [
     'fit_jacobian',
     'input_aware',
     'input_shifts',
+    'misfit_design',
 ]
 
 # Cost, one process per core with the default Ka bounds: a residual evaluation
@@ -749,7 +758,9 @@ def input_aware(
     the estimate is where it was found, so every profile is cut above the same minimum.
     The edges are then closed by root finding between the outermost accepted
     point and the rejected node beyond it, every value the lower of the solves
-    from those two points.
+    from those two points. The interval of the second constant of a stepwise
+    model carries the one-step test of :func:`_one_step_p` and is open below
+    where the test does not reject the model without the second step.
 
     Parameters
     ----------
@@ -876,6 +887,12 @@ def input_aware(
             'Narrow the bounds of the binding constants under Parameter Bounds and fit again.'
         )
 
+    if projection.second_step in traces:
+        key = projection.second_step
+        one_step_p = _one_step_p(problem, traces[key], optimum, dof)
+        interval = _with_one_step_test(profiles[key].interval, one_step_p, projection.ka_bounds[key][0])
+        profiles[key] = replace(profiles[key], interval=interval)
+
     offsets = problem.offsets(optimum.coords)
     input_offsets = problem.input_offsets(optimum.coords)
     _, _, coefficients = projection._solve_at(optimum.ka, input_offsets)
@@ -893,6 +910,24 @@ def input_aware(
         ka_fitted=optimum.fitted.ka,
     )
     return AwareResult(fit=fit, profiles=profiles, constraints=constraints, n_points=n, ss_tot=ss_tot)
+
+
+def _one_step_p(problem: _Problem, trace: _Trace, optimum: _Point, dof: float) -> float:
+    """:meth:`Projection.one_step_p` on the penalised profile of the second constant, which *trace* follows.
+
+    The objective with that constant at zero, minimised over the other
+    binding constant and the inputs, against the optimum: the test that cuts
+    the interval, ``P(0) - P_min`` against ``n log(1 + m F(m, nu) / nu)``,
+    turned into its p-value ``sf((exp((P(0) - P_min) / n) - 1) nu / m; m,
+    nu)``. The solve starts from the optimum, from the outermost node the
+    trace solved below it and from where the other constant minimises the
+    fixed-input objective at zero, and the lowest of the three counts.
+    """
+    zero = {trace.key: 0.0}
+    starts = [optimum, trace.table[min(trace.table)], trace.entered(0.0, optimum.coords)]
+    point = min((problem.solve(zero, start) for start in starts), key=lambda solved: solved.value)
+    m = 1 + max(0, optimum.fitted.rank - (0 if point.fitted is None else point.fitted.rank))
+    return float(f_dist.sf(np.expm1((point.value - optimum.value) / problem.n) * dof / m, m, dof))
 
 
 def _fixed_inputs(
@@ -968,6 +1003,27 @@ def fit_jacobian(projection: Projection, result: AwareResult) -> np.ndarray:
     stacked = np.hstack([columns, fit.jacobian[:, moved]])
     stacked[:n] /= scale
     return stacked
+
+
+def misfit_design(projection: Projection, result: AwareResult) -> np.ndarray:
+    """Design of the whole fit for :func:`core.pipeline.diagnostics.lack_of_fit`: one column per parameter of its ``p``.
+
+    The derivatives of the fitted signal, in signal units and unweighted, with
+    respect to the parameters counted in ``AwareFit.n_params``: the signal
+    parameters the fit left inside their bounds (their species columns), every
+    free binding constant inside its box (per decade of it) and every input
+    stated as a range that the fit left off the ends of it (per half range).
+    An input stated with a standard deviation is held back by its penalty and
+    is not one of them. Columns that a mass balance ties count once, so the
+    numerical rank of the design is ``n_params`` while its columns may be more.
+    """
+    fit = result.fit
+    whiten = np.sqrt(projection.point_weights)[:, np.newaxis]
+    signal = projection.fitted_parameters(fit.ka, fit.input_offsets).columns / whiten
+    moved = [key in fit.ka_fitted for key in fit.ka_free]
+    moved += [c.sigma is None and not at_edge(c, fit.offsets[c.key]) for c in result.constraints]
+    # The Jacobian is that of the whitened residual y - f: minus the whitened derivatives of f.
+    return np.hstack([signal, -fit.jacobian[: result.n_points, moved] / whiten])
 
 
 def _edges(interval: KaInterval) -> tuple[tuple[float, bool], tuple[float, bool]]:

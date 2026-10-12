@@ -38,7 +38,7 @@ from core.assays.base import TITRANT
 from core.assays.dye_alone import DyeAloneAssay
 from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
-from core.models.equilibrium import gda_species, hg2_signal, ida_signal
+from core.models.equilibrium import gda_species, h2g_signal, h2g_species, hg2_signal, hg2_species, ida_signal
 from core.pipeline import varpro
 from core.pipeline.varpro import (
     LEVEL,
@@ -739,9 +739,11 @@ def test_too_few_points_for_a_cut_off_is_refused_and_says_no_fit_is_reported():
 def test_ka_interval_round_trips_through_a_dict():
     interval = KaInterval(1.5e6, 2.5e6, False, True, 0.95, 12, split=True, unsolvable_high=True)
     assert KaInterval.from_dict(interval.to_dict()) == interval
+    second_step = KaInterval(1e-8, 2.5e6, True, False, 0.95, 6, one_step_p=0.03)
+    assert KaInterval.from_dict(second_step.to_dict()) == second_step
     assert KaInterval.from_dict(
         {'low': 1.0, 'high': 2.0, 'open_low': False, 'open_high': False, 'level': 0.95, 'dof': 5}
-    ) == (KaInterval(1.0, 2.0, False, False, 0.95, 5))
+    ) == (KaInterval(1.0, 2.0, False, False, 0.95, 5, one_step_p=None))
 
 
 def _compensated_hg2(scale: float = 1.0):
@@ -771,6 +773,8 @@ def test_a_crossing_only_the_other_constants_bound_produces_is_open_and_names_th
         first, second = projection.interval('Ka_HG', fit), projection.interval('Ka_HG2', fit)
         assert (first.open_low, first.limited_by_low) == (True, 'Ka_HG2')
         assert (second.open_low, second.limited_by_low) == (False, '')
+        # Only the second constant is judged by the one-step test, which the second step passes here.
+        assert first.one_step_p is None and second.one_step_p < varpro.SECOND_STEP_LEVEL
         edges[top] = (first.low, second.low)
     assert np.log10(edges[1e8][0] / edges[1e10][0]) == pytest.approx(2.0, abs=0.01)
     assert edges[1e8][1] == pytest.approx(edges[1e10][1], rel=1e-6)
@@ -804,6 +808,153 @@ def test_a_bright_signal_from_a_dilute_dye_is_fitted_like_any_other():
 
     assert 1.0 - fit.objective / projection.ss_tot[0] > 0.995
     assert interval.low < ka < interval.high and not (interval.open_low or interval.open_high)
+
+
+# ---------------------------------------------------------------------------
+# One-step test of the second binding constant
+# ---------------------------------------------------------------------------
+
+_STEPWISE_SPECIES = {AssayType.DBA_HG2: hg2_species, AssayType.DBA_H2G: h2g_species}
+_STEPWISE_SIGNAL = {AssayType.DBA_HG2: hg2_signal, AssayType.DBA_H2G: h2g_signal}
+
+
+def _stepwise(assay_type: AssayType, ka_hg: float, ka_second: float, equivalents: float, seed: int, **bounds):
+    """Twelve points of guest up to *equivalents* times a 10 µM host, noise 0.5 % of the range, the default bounds."""
+    h0 = 1e-5
+    x = np.linspace(0.0, equivalents * h0, 12)
+    keys = ASSAY_REGISTRY[assay_type].parameter_keys
+    y = _STEPWISE_SIGNAL[assay_type](
+        I0=100.0, Ka_HG=ka_hg, **{keys[1]: ka_second}, I_G=1e6, I_H=0.0, I_HG=1e7, **{keys[-1]: 5e6}, h0=h0, g0_values=x
+    )
+    assay = _assay(assay_type, x, _homoscedastic(y, 0.005, seed), h0=Q_(h0, 'M'))
+    return Projection(assay, {**ASSAY_REGISTRY[assay_type].default_bounds, **bounds}), keys[1]
+
+
+# Titrations without a second step (K1 h0 = 1, the second constant a millionth of the first) on which the
+# profile alone closes the interval of the second constant below, four to five decades above its truth.
+_ONE_STEP = {AssayType.DBA_HG2: 26, AssayType.DBA_H2G: 66}
+
+
+@pytest.mark.parametrize('assay_type', [AssayType.DBA_HG2, AssayType.DBA_H2G], ids=lambda t: t.name)
+def test_the_second_constant_at_zero_is_the_one_step_model(assay_type):
+    """No second complex forms, and the first is that of 1:1 binding, written in closed form."""
+    ka, h0, x = 2e5, 1e-5, np.linspace(0.0, 1e-4, 12)
+    species = _STEPWISE_SPECIES[assay_type](ka, 0.0, h0, x)
+    second = 'HG2' if assay_type is AssayType.DBA_HG2 else 'H2G'
+    s = h0 + x + 1.0 / ka
+    assert np.array_equal(species[second], np.zeros(x.size))
+    assert species['HG'] == pytest.approx(0.5 * (s - np.sqrt(s**2 - 4.0 * h0 * x)), rel=1e-9, abs=1e-20)
+
+
+@pytest.mark.parametrize('assay_type', list(_ONE_STEP), ids=lambda t: t.name)
+def test_without_a_second_step_the_second_constant_has_no_lower_limit(assay_type):
+    projection, key = _stepwise(assay_type, 1e5, 0.1, 10, _ONE_STEP[assay_type])
+    fit = projection.fit()
+    interval = projection.interval(key, fit)
+    assert interval.one_step_p > varpro.SECOND_STEP_LEVEL
+    assert (interval.open_low, interval.low, interval.limited_by_low) == (True, 1e-8, '')
+    assert interval.low <= 0.1 <= interval.high
+
+
+def test_the_one_step_p_value_is_the_f_test_of_an_independent_fit_without_the_second_step():
+    projection, key = _stepwise(AssayType.DBA_HG2, 1e5, 0.1, 10, _ONE_STEP[AssayType.DBA_HG2])
+    fit = projection.fit()
+    x, y, h0 = projection.assay.x_data.magnitude, projection.signals[0], projection.assay.h0.magnitude
+
+    def solve(ka_hg: float, ka_hg2: float, names: tuple[str, ...]) -> tuple[float, int]:
+        """Best SSR on the offset and the *names* species, every coefficient at or above zero, and how many are
+        strictly above it."""
+        species = hg2_species(ka_hg, ka_hg2, h0, x)
+        columns = np.column_stack([np.ones(x.size), *(species[name] for name in names)])
+        norm = np.linalg.norm(columns, axis=0)
+        found = lsq_linear(columns / norm, y, bounds=(0.0, np.inf), method='bvls')
+        return float(np.sum((columns @ (found.x / norm) - y) ** 2)), int(np.count_nonzero(found.active_mask == 0))
+
+    two_step = solve(fit.ka['Ka_HG'], fit.ka['Ka_HG2'], ('G', 'HG', 'HG2'))
+    grid = np.geomspace(1e-8, 1e12, 641)
+    scan = [solve(k, 0.0, ('G', 'HG'))[0] for k in grid]
+    best = int(np.argmin(scan))
+    found = minimize_scalar(
+        lambda t: solve(10.0**t, 0.0, ('G', 'HG'))[0],
+        bounds=(np.log10(grid[max(best - 1, 0)]), np.log10(grid[min(best + 1, grid.size - 1)])),
+        method='bounded',
+        options={'xatol': 1e-9},
+    )
+    one_step = solve(10.0**found.x, 0.0, ('G', 'HG'))
+    # Both constants of the fit lie inside their box, so the two fits differ by the second constant and by
+    # every signal coefficient the fit without the second complex holds at zero.
+    assert all(1e-8 < ka < 1e12 for ka in fit.ka.values())
+    m = (2 + two_step[1]) - (1 + one_step[1])
+    dof = projection.n_points - 2 - two_step[1]
+    expected = f_dist.sf((one_step[0] - two_step[0]) / m / (two_step[0] / dof), m, dof)
+    assert projection.one_step_p(fit) == pytest.approx(expected, rel=1e-4)
+
+
+def test_raising_the_lower_bound_of_the_second_constant_leaves_the_one_step_test_where_it_is():
+    seed = _ONE_STEP[AssayType.DBA_HG2]
+    default, _ = _stepwise(AssayType.DBA_HG2, 1e5, 0.1, 10, seed)
+    raised, _ = _stepwise(AssayType.DBA_HG2, 1e5, 0.1, 10, seed, Ka_HG2=(Q_(1e3, '1/M'), Q_(1e12, '1/M')))
+    fit, fit_raised = default.fit(), raised.fit()
+    assert fit_raised.objective == pytest.approx(fit.objective, rel=1e-9)
+    assert raised.one_step_p(fit_raised) == pytest.approx(default.one_step_p(fit), rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    'assay_type, ka_hg, ka_second, equivalents',
+    [(AssayType.DBA_HG2, 1e6, 1e5, 10), (AssayType.DBA_H2G, 1e7, 1e6, 3)],
+    ids=lambda v: v.name if isinstance(v, AssayType) else str(v),
+)
+def test_with_a_clear_second_step_the_lower_edge_stays_where_the_profile_crosses_its_cut_off(
+    assay_type, ka_hg, ka_second, equivalents
+):
+    projection, key = _stepwise(assay_type, ka_hg, ka_second, equivalents, 0)
+    fit = projection.fit()
+    interval = projection.interval(key, fit)
+    assert interval.one_step_p < 1e-3
+    assert not interval.open_low
+    _, value, fitted = projection.profile_point(key, interval.low, varpro._INNER_PER_DECADE)
+    assert value == pytest.approx(projection.cut_off(fit)(fitted), rel=1e-6)
+
+
+@pytest.mark.parametrize('assay_type', list(_ONE_STEP), ids=lambda t: t.name)
+def test_with_the_first_constant_held_the_second_is_still_judged_by_the_one_step_test(assay_type):
+    """Holding Ka_HG at one value leaves the profile of the second constant as shallow towards zero.
+
+    On the H2G titration the profile alone closes the interval below, four decades above the truth of 0.1. The
+    test there is two linear solves.
+    """
+    held = Q_(1e5, '1/M')
+    projection, key = _stepwise(assay_type, 1e5, 0.1, 10, _ONE_STEP[assay_type], Ka_HG=(held, held))
+    fit = projection.fit()
+    x, y, h0 = projection.assay.x_data.magnitude, projection.signals[0], projection.assay.h0.magnitude
+    second = key.removeprefix('Ka_')
+
+    def solve(ka_second: float, names: tuple[str, ...]) -> tuple[float, int]:
+        """Best SSR at Ka_HG = 1e5 on the offset and the *names* species, every coefficient at or above zero."""
+        species = _STEPWISE_SPECIES[assay_type](1e5, ka_second, h0, x)
+        columns = np.column_stack([np.ones(x.size), *(species[name] for name in names)])
+        norm = np.linalg.norm(columns, axis=0)
+        found = lsq_linear(columns / norm, y, bounds=(0.0, np.inf), method='bvls')
+        return float(np.sum((columns @ (found.x / norm) - y) ** 2)), int(np.count_nonzero(found.active_mask == 0))
+
+    two_step, one_step = solve(fit.ka[key], ('G', 'HG', second)), solve(0.0, ('G', 'HG'))
+    # The constant itself is the one parameter the test gives up beside the coefficients the solve at zero holds
+    # on a bound; the fit counts it only inside its box (on H2G it rests on the upper bound).
+    m = 1 + two_step[1] - one_step[1]
+    dof = projection.n_points - int(1e-8 < fit.ka[key] < 1e12) - two_step[1]
+    expected = f_dist.sf((one_step[0] - two_step[0]) / m / (two_step[0] / dof), m, dof)
+    interval = projection.interval(key, fit)
+    assert interval.one_step_p == pytest.approx(expected, rel=1e-4)
+    assert interval.one_step_p > varpro.SECOND_STEP_LEVEL
+    assert (interval.open_low, interval.low) == (True, 1e-8)
+
+
+def test_a_model_without_a_free_second_step_constant_has_no_one_step_test():
+    projection = _ida()
+    assert projection.one_step_p(projection.fit()) is None
+    held, _ = _stepwise(AssayType.DBA_HG2, 1e6, 1e5, 10, 0, Ka_HG2=(Q_(1e5, '1/M'), Q_(1e5, '1/M')))
+    fit = held.fit()
+    assert held.one_step_p(fit) is None and held.interval('Ka_HG', fit).one_step_p is None
 
 
 # ---------------------------------------------------------------------------

@@ -65,7 +65,7 @@ passes the range of a double.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Callable, Mapping, Sequence
 
 import numpy as np
@@ -106,6 +106,14 @@ REPLICATE_TEST_LEVEL = 0.01
 #: The fewest replicates the replicate test judges: with two, nothing says which
 #: of them is the odd one.
 REPLICATE_TEST_MIN = 3
+
+#: Level at which the data must reject the model without the second binding step
+#: before an interval of the second constant of a stepwise model claims a lower
+#: limit (see :meth:`Projection.interval`). It is the level proposed for claims
+#: of a new effect (Benjamin et al. 2018, Nat. Hum. Behav. 2:6), and the loosest
+#: of the levels tried whose closed intervals of the second constant cover at
+#: Bradley's band on held-out weak-regime titrations: 0.927 [0.890, 0.954].
+SECOND_STEP_LEVEL = 0.005
 
 # Ka grid densities, in points per decade across the Ka bounds. The search grid
 # only has to land in the basin of the optimum: the refinement finds it from
@@ -227,15 +235,20 @@ def on_ka_bound(ka: float, bounds: tuple[float, float]) -> bool:
     estimate within that of either end is one it could not move off: the data do
     not limit Ka on that side and the fit reports the bound. The single reading
     of "on its bound", wherever a fit is asked whether it ran to the edge of the
-    box — a parameter held there is not one the residual paid for.
+    box — a parameter held there is not one the residual paid for. A constant
+    at or beyond an end of the box is not inside it either, such as the zero
+    :meth:`Projection.one_step_p` sets the second constant of a stepwise model
+    to.
 
     Parameters
     ----------
     ka : float
-        The fitted constant, in the unit *bounds* is given in.
+        The constant, in the unit *bounds* is given in; zero or more.
     bounds : tuple[float, float]
         The lower and the upper bound of the Ka box, both positive.
     """
+    if not bounds[0] < ka < bounds[1]:
+        return True
     low, high = np.log10(bounds)
     estimate = np.log10(ka)
     return not min(estimate - low, high - estimate) > _LOG_KA_XTOL
@@ -277,6 +290,14 @@ class KaInterval:
         has reached its own bound: the data would accept Ka further out if the
         other constant could follow. The edge is then where that crossing is.
         Empty otherwise.
+    one_step_p : float or None
+        For the second constant of a stepwise model, whether the first is
+        fitted or held at one value, the p-value at which the data reject the
+        model without the second binding step (that constant at zero) against
+        the fit. Above
+        :data:`SECOND_STEP_LEVEL` the interval claims no lower limit: it is
+        open below, at the constant's lower bound. ``None`` for every other
+        interval.
     """
 
     low: float
@@ -290,6 +311,7 @@ class KaInterval:
     unsolvable_high: bool = False
     limited_by_low: str = ''
     limited_by_high: str = ''
+    one_step_p: float | None = None
 
     def to_dict(self) -> dict:
         """Every field, as written to a results file."""
@@ -439,6 +461,11 @@ class Projection:
         Each row's weighted total sum of squares about its weighted mean,
         ``sum_i omega_i (y_i - ybar_omega)²``: the scale every residual sum of
         squares of the projection is a fraction of.
+    second_step : str or None
+        The binding constant of the second step of a stepwise model, the
+        second of its two constants in the registry (``Ka_HG2``, ``Ka_H2G``),
+        which the one-step test judges (:meth:`one_step_p`); ``None`` for a
+        model with one binding constant.
 
     Raises
     ------
@@ -485,6 +512,8 @@ class Projection:
                     f'{_ka_text(hi)} under Parameter Bounds. Swap the two bounds and fit again.'
                 )
         self.free_ka = tuple(k for k, (lo, hi) in self.ka_bounds.items() if lo != hi)
+        # A model with two binding constants is stepwise, and the registry lists them in the order of the steps.
+        self.second_step = self.ka_keys[1] if len(self.ka_keys) == 2 else None
         self._pinned_ka = {k: lo for k, (lo, hi) in self.ka_bounds.items() if lo == hi}
         self._lb = np.array([fb[k][0] for k in self.coef_keys])
         self._ub = np.array([fb[k][1] for k in self.coef_keys])
@@ -1099,6 +1128,23 @@ class Projection:
         at an edge, root finding closes the edge on the step. A closed edge of
         a two-Ka interval that only the bound of the other Ka produces is
         reported open and names that Ka (see :meth:`_bound_behind`).
+
+        The second constant of a stepwise model is also judged by a one-step
+        test. A lower limit on it claims that the second binding step exists,
+        so the data must first reject the model without that step
+        (:meth:`one_step_p`) at :data:`SECOND_STEP_LEVEL`; where they do not,
+        the interval is open below, at the constant's lower bound, and
+        carries the p-value either way. Where the step is weakly identified the
+        profile is shallow towards zero, and closed lower edges found there
+        miss the true constant far more often than the level allows. The
+        construction — a pretest of identification strength, then the
+        least-favourable answer when it fails — follows Andrews & Cheng (2012,
+        Econometrica 80:2153, sec. 5.2) in spirit only: their pretest level
+        shrinks with the sample size, and a fixed level carries no guarantee
+        of theirs; the coverage of the result is what the validation measures.
+        The fits that pass the test at that level on data without a second
+        step remain a recognisable subset (Buehler 1959, Ann. Math. Statist.
+        30:845) over which the closed intervals miss.
         """
         self._require_one_row('A confidence interval')
         if ka_key not in self.free_ka:
@@ -1125,7 +1171,7 @@ class Projection:
         floor = self._floored(fit)
         limited_by_low = '' if open_low or not two_ka else self._bound_behind(ka_key, low, cut, floor)
         limited_by_high = '' if open_high or not two_ka else self._bound_behind(ka_key, high, cut, floor)
-        return KaInterval(
+        interval = KaInterval(
             low=low,
             high=high,
             open_low=open_low or bool(limited_by_low),
@@ -1138,6 +1184,33 @@ class Projection:
             limited_by_low=limited_by_low,
             limited_by_high=limited_by_high,
         )
+        if ka_key == self.second_step:
+            return _with_one_step_test(interval, self.one_step_p(fit), self.ka_bounds[ka_key][0])
+        return interval
+
+    def one_step_p(self, fit: ProjectedFit) -> float | None:
+        """p-value of the model without the second binding step against *fit*; ``None`` unless that constant is free.
+
+        The second step's constant is :attr:`second_step`, the second binding
+        constant of a stepwise model; the test runs whenever it is free, the
+        first constant fitted or held at one value. The model without the
+        second step is that constant at zero exactly, not at its lower bound:
+        the bound is the user's to move, and a signal coefficient without an
+        upper bound can keep the second complex in the fit at any positive
+        constant, however small, by growing as the constant shrinks. The test is the F test of the
+        interval (:meth:`cut_off`) at that one profile point: ``m`` is the
+        constant plus every signal parameter the fit fits and the solve at
+        zero holds on a bound, among them the coefficient of the complex that
+        no longer forms, and ``p = sf((P(0) / S_min - 1) (n - p) / m; m,
+        n - p)``.
+        """
+        self._require_one_row('A one-step test')
+        if self.second_step not in self.free_ka:
+            return None
+        _, value, fitted = self.profile_point(self.second_step, 0.0, _INNER_PER_DECADE)
+        m = 1 + max(0, self.fitted_parameters(fit.ka).rank - fitted.rank)
+        dof = self.n_points - self.n_params(fit)
+        return float(f_dist.sf((value / self._floored(fit) - 1.0) * dof / m, m, dof))
 
     def _bound_behind(self, ka_key: str, edge: float, cut: Callable[[FittedParameters], float], floor: float) -> str:
         """The other free Ka when its bound, and not the data, is what closes the profile of *ka_key* at *edge*.
@@ -1189,12 +1262,12 @@ def replicate_outliers(
        through ``p_r = sf(T_r / k)``. A starts as the smallest majority of the
        R rows — those whose own log10 Ka lie nearest the median of the rows'
        own fits, each Ka's distance scaled by its median absolute deviation.
-       Rows join A one per round: of those outside with ``p_r >= level / R``
+       Rows join A one per round: of those outside with ``p_r > level / R``
        (Bonferroni over the R rows given), the one that raises ``Qmin`` least,
        so each is judged against every row that joined before it and the order
        of the rows does not matter. When none can join and fewer than the
        allowance are out, the row of A whose leave-one-out ``p_r`` (the same
-       statistic, for A without r) is smallest leaves if it is below
+       statistic, for A without r) is smallest leaves if it is at or below
        ``level / R`` and does not rejoin, as in Hadi & Simonoff's re-selection
        of the subset; the search then resumes. The rows outside A at the end
        are left out.
@@ -1267,7 +1340,7 @@ def replicate_outliers(
         q_clean = q_min(clean)
         rise = {r: q_min(clean + [r]) - q_clean for r in range(rows) if r not in clean}
         p_values = {r: p_value(extra) for r, extra in rise.items()}
-        joining = [r for r in rise if r not in left and p_values[r] >= level / rows]
+        joining = [r for r in rise if r not in left and p_values[r] > level / rows]
         if joining:
             clean = sorted(clean + [min(joining, key=rise.get)])
             continue
@@ -1275,7 +1348,7 @@ def replicate_outliers(
             break
         drop = {r: q_clean - q_min([s for s in clean if s != r]) for r in clean}
         worst = max(drop, key=drop.get)
-        if p_value(drop[worst]) >= level / rows:
+        if p_value(drop[worst]) > level / rows:
             break
         clean.remove(worst)
         left.add(worst)
@@ -1324,6 +1397,18 @@ def _require_dof(n_points: int, n_params: int) -> int:
             'by giving it the same lower and upper bound under Parameter Bounds, and fit again.'
         )
     return dof
+
+
+def _with_one_step_test(interval: KaInterval, one_step_p: float, lower_bound: float) -> KaInterval:
+    """*interval* of the second constant of a stepwise model, judged by the one-step test at *one_step_p*.
+
+    A closed lower side claims that the second binding step exists. Where the
+    data do not reject the model without it at :data:`SECOND_STEP_LEVEL`, the
+    lower side is open at *lower_bound*, the constant's lower bound.
+    """
+    if one_step_p > SECOND_STEP_LEVEL and not interval.open_low:
+        return replace(interval, low=lower_bound, open_low=True, limited_by_low='', one_step_p=one_step_p)
+    return replace(interval, one_step_p=one_step_p)
 
 
 def _ka_grid(lo: float, hi: float, per_decade: int) -> np.ndarray:

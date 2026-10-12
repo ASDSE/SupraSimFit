@@ -8,6 +8,10 @@
   unweighted, and it fires on replicates that differ by a scale and a
   background where the raw spread between them hides the misfit entirely;
   replicates with no scatter above the resolution of a fit are not tested;
+- with weights read off the same replicates, its p-value comes from a
+  parametric bootstrap that holds the 5 % level on a linear model where the F
+  tail rejects twice as often, repeats exactly on the same data, still rejects
+  a gross misfit, and does not depend on tied or rescaled design columns;
 - the weights of the conflict reference are g / (1 + g) for the information g
   the data hold on an input: 1 for an input the data determine, 0 for one the
   residual does not depend on; they do not depend on the units a parameter's
@@ -31,6 +35,7 @@ from scipy.stats import beta, binom, chi2
 from scipy.stats import f as f_dist
 
 from core.pipeline.diagnostics import (
+    LOF_BOOTSTRAP_DRAWS,
     Conflict,
     FitDiagnostics,
     InputShift,
@@ -44,6 +49,7 @@ from core.pipeline.diagnostics import (
     runs_test,
     verdict,
 )
+from core.pipeline.noise import NoiseBasis, NoiseLaw, noise_law
 
 
 def test_runs_test_of_unfitted_residuals_is_the_binomial_distribution_of_sign_changes():
@@ -54,7 +60,7 @@ def test_runs_test_of_unfitted_residuals_is_the_binomial_distribution_of_sign_ch
     for signs, runs in (('++++-----', 2), ('++--++--+', 5), ('+-+-+-+-+', 9)):
         residuals = np.array([1.5 if s == '+' else -0.5 for s in signs])
         found = runs_test(residuals, x, nothing_fitted)
-        assert (found.kind, found.statistic, found.dof) == ('runs', runs, None)
+        assert (found.kind, found.statistic, found.dof, found.reference) == ('runs', runs, None, 'simulated')
         mid_p = binom.cdf(runs - 2, n - 1, 0.5) + 0.5 * binom.pmf(runs - 1, n - 1, 0.5)
         assert found.p_value == pytest.approx(mid_p, abs=3e-3)
         assert found.expected == pytest.approx(1 + (n - 1) / 2, abs=0.02)
@@ -248,6 +254,120 @@ def test_replicates_with_no_scatter_above_the_resolution_of_a_fit_are_not_tested
     assert found is not None and np.isfinite(found.statistic) and found.p_value < 1e-6
 
 
+def _line_fit(signals, design):
+    """The noise law of *signals*, its weights, and the weighted least-squares fit of their mean on *design*.
+
+    The fit a linear model gets from the pipeline: weights read off the
+    replicates, then the mean fitted with them.
+    """
+    law = noise_law(signals)
+    mean = signals.mean(axis=0)
+    weights = law.weights(mean)
+    root = np.sqrt(weights)
+    coefficients = np.linalg.lstsq(design * root[:, np.newaxis], mean * root, rcond=None)[0]
+    return law, weights, design @ coefficients
+
+
+def test_lack_of_fit_with_weights_read_off_the_replicates_holds_its_level_by_the_bootstrap():
+    """A straight line fitted to two replicates of a straight line, 20 points, constant noise, 20x signal range.
+
+    The model holds, so a test at 5 % rejects 5 % of datasets. The share of
+    the noise law is read off these same replicates, which makes the F tail
+    reject about twice that; the bootstrap that reads the share again in every
+    draw rejects within Bradley's liberal band [0.025, 0.075] (400 datasets,
+    sampling sd 0.011).
+    """
+    rng = np.random.default_rng(20)
+    x = np.linspace(0.0, 1.0, 20)
+    design = np.column_stack([np.ones(x.size), x])
+    rejected = {'F': 0, 'bootstrap': 0}
+    draws = 400
+    for _ in range(draws):
+        signals = 1.0 + 19.0 * x + rng.standard_normal((2, x.size))
+        law, weights, fitted = _line_fit(signals, design)
+        assert law.estimated
+        bootstrap = lack_of_fit(signals, fitted, 2, weights, law=law, design=design)
+        plain = lack_of_fit(signals, fitted, 2, weights)
+        assert (bootstrap.reference, plain.reference) == ('bootstrap', 'F')
+        rejected['bootstrap'] += bootstrap.p_value <= 0.05
+        rejected['F'] += plain.p_value <= 0.05
+    assert 0.025 <= rejected['bootstrap'] / draws <= 0.075
+    assert rejected['F'] / draws > 0.075
+
+
+def test_the_bootstrap_p_value_is_a_function_of_the_data():
+    """Seeded from the signals: the same data give the same p-value, and the statistic is the F ratio of today.
+
+    Its resolution is that of a Monte-Carlo test with 199 draws: a multiple of 1/200.
+    """
+    rng = np.random.default_rng(3)
+    x = np.linspace(0.0, 1.0, 12)
+    design = np.column_stack([np.ones(x.size), x])
+    signals = 2.0 + 30.0 * x + (0.2 + 0.05 * x) * rng.standard_normal((3, x.size))
+    law, weights, fitted = _line_fit(signals, design)
+    first = lack_of_fit(signals, fitted, 2, weights, law=law, design=design)
+    again = lack_of_fit(signals.copy(), fitted, 2, weights, law=law, design=design)
+    assert first == again
+    plain = lack_of_fit(signals, fitted, 2, weights)
+    assert (first.statistic, first.dof) == (plain.statistic, plain.dof)
+    assert (first.p_value * (LOF_BOOTSTRAP_DRAWS + 1)) == pytest.approx(round(first.p_value * 200), abs=1e-9)
+
+
+def test_the_bootstrap_still_rejects_a_gross_misfit():
+    """A straight line through a saturating curve misses it by many noise sds: no draw reaches its ratio."""
+    rng = np.random.default_rng(4)
+    x = np.linspace(0.0, 1.0, 15)
+    design = np.column_stack([np.ones(x.size), x])
+    signals = 100.0 * x / (0.1 + x) + rng.standard_normal((3, x.size))
+    law, weights, fitted = _line_fit(signals, design)
+    found = lack_of_fit(signals, fitted, 2, weights, law=law, design=design)
+    assert found.reference == 'bootstrap'
+    assert found.p_value == 1 / (LOF_BOOTSTRAP_DRAWS + 1)
+
+
+def test_the_bootstrap_reads_the_column_space_of_the_design_not_its_columns():
+    """Tied columns and the units a column is measured in change nothing: the refit is the same.
+
+    A signal coefficient tied to another, and a column a thousand million times
+    smaller than the others, are what the design of a real fit holds; the
+    count of fitted parameters is what fixes the dimension projected off.
+    """
+    rng = np.random.default_rng(5)
+    x = np.linspace(0.0, 1.0, 14)
+    design = np.column_stack([np.ones(x.size), x, x**2])
+    signals = 3.0 + 20.0 * x - 8.0 * x**2 + (0.3 + 0.1 * x) * rng.standard_normal((3, x.size))
+    law, weights, fitted = _line_fit(signals, design)
+    found = lack_of_fit(signals, fitted, 3, weights, law=law, design=design)
+    tied = np.column_stack([design, 2.0 * design[:, 1]])
+    rescaled = design * np.array([1.0, 1e-9, 1e3])
+    assert lack_of_fit(signals, fitted, 3, weights, law=law, design=tied) == found
+    assert lack_of_fit(signals, fitted, 3, weights, law=law, design=rescaled) == found
+
+
+def test_without_an_estimated_law_the_test_is_the_f_test():
+    """No law, or one taken as constant, leaves the F reference and every number exactly as they were."""
+    mean = np.array([-3.0, -1.0, 1.0, 3.0])
+    d = np.array([4.0, -3.0, 3.0, -4.0])
+    signals = np.vstack([mean + d, mean - d])
+    fitted = mean + np.array([2.0, 1.0, -1.0, -2.0])
+    plain = lack_of_fit(signals, fitted, 1)
+    assert plain.reference == 'F'
+    for law in (None, NoiseLaw(NoiseBasis.SINGLE_TITRATION), NoiseLaw(NoiseBasis.TOO_FEW_POINTS, n_replicates=2)):
+        assert lack_of_fit(signals, fitted, 1, law=law) == plain
+        assert lack_of_fit(signals, fitted, 1, law=law, design=np.ones((4, 1))) == plain
+
+
+def test_the_bootstrap_refuses_to_run_without_the_design_of_the_fit():
+    rng = np.random.default_rng(6)
+    x = np.linspace(0.0, 1.0, 10)
+    design = np.column_stack([np.ones(x.size), x])
+    signals = 1.0 + 5.0 * x + 0.1 * rng.standard_normal((3, x.size))
+    law, weights, fitted = _line_fit(signals, design)
+    for wrong in (None, design[:-1], design[:, :1], design[:, 0]):
+        with pytest.raises(ValueError, match='design of the fit'):
+            lack_of_fit(signals, fitted, 2, weights, law=law, design=wrong)
+
+
 def test_no_scatter_is_a_variance_below_the_resolution_of_the_signal_it_describes():
     """1e-10 of the signal's variance per point: a scale-free floor, so a gain on the signal moves nothing."""
     for gain in (1e-6, 1.0, 1e9):
@@ -428,17 +548,20 @@ def _conflict(p: float) -> Conflict:
         (0.50, 0.01, 0.40, Verdict.MODEL_INADEQUATE),
         (0.01, 0.01, 0.01, Verdict.MODEL_AND_INPUTS),  # both reject: both are named
         (0.001, 0.02, 0.04, Verdict.MODEL_AND_INPUTS),  # 0.02 < 0.05 / 2, then 0.04 < 0.05 / 1
-        (0.001, 0.03, 0.60, Verdict.INPUTS_EXPLAIN),  # 0.03 is not below 0.05 / 2: the misfit is not named
+        (0.001, 0.03, 0.60, Verdict.INPUTS_EXPLAIN),  # 0.03 is above 0.05 / 2: the misfit is not named
         # The misfit at the entered inputs is the same test at other inputs and faces its threshold: a miss
         # the shifted inputs left as it was is no miss they explain.
         (0.03, 0.03, 0.60, Verdict.CONSISTENT),
         (0.50, 0.60, 0.03, Verdict.CONSISTENT),  # the same for the conflict
         (0.50, 0.03, 0.04, Verdict.CONSISTENT),  # the smaller p stops the procedure, the larger is not reached
-        (0.05, 0.05, 0.05, Verdict.CONSISTENT),  # at the level itself nothing is rejected
+        # A test rejects at its threshold itself, the rule under which the bootstrap's p-values of k/200 hold
+        # 0.025 and 0.05 exactly; just above the first, the procedure stops.
+        (0.50, 0.025, 0.05, Verdict.MODEL_AND_INPUTS),
+        (0.50, 0.0250001, 0.05, Verdict.CONSISTENT),
     ],
 )
 def test_the_verdict_judges_the_misfit_and_the_conflict_together_by_holm(conditional, aware, conflict, expected):
-    """Holm at 5 % over the two tests: the smaller p against 0.025, then the larger against 0.05."""
+    """Holm at 5 % over the two tests: the smaller p against 0.025, then the larger against 0.05, each at or below."""
     assert verdict(_misfit(conditional), _misfit(aware), _conflict(conflict)) is expected
 
 
@@ -461,6 +584,7 @@ def test_the_verdict_without_a_test_or_without_varying_inputs():
     assert verdict(None, None, None) is Verdict.CONSISTENT
     # Nothing varies: both misfit entries are the test at the entered inputs, judged alone at the level.
     assert verdict(_misfit(0.04), _misfit(0.04), None) is Verdict.MODEL_INADEQUATE
+    assert verdict(_misfit(0.05), _misfit(0.05), None) is Verdict.MODEL_INADEQUATE
     # A range-only specification has no conflict statistic.
     assert verdict(_misfit(0.001), _misfit(0.7), None) is Verdict.INPUTS_EXPLAIN
     assert verdict(_misfit(0.03), _misfit(0.03), None, level=0.01) is Verdict.CONSISTENT
@@ -476,8 +600,20 @@ def test_every_number_a_results_file_holds_is_finite_and_written_field_for_field
         'p_value': 0.34,
         'dof': [3, 8],
         'expected': None,
+        'reference': 'F',
     }
     assert MisfitTest.from_dict(json.loads(json.dumps(ordinary.to_dict(), allow_nan=False))) == ordinary
+    bootstrap = MisfitTest('lack_of_fit', 1.2, 0.035, dof=(3, 8), reference='bootstrap')
+    assert MisfitTest.from_dict(json.loads(json.dumps(bootstrap.to_dict(), allow_nan=False))) == bootstrap
+    # A results file that names no reference holds an F test.
+    written = ordinary.to_dict()
+    del written['reference']
+    assert MisfitTest.from_dict(written) == ordinary
+    # ... and a runs test the simulated runs, its only reference.
+    runs = MisfitTest('runs', 4.0, 0.2, expected=6.0, reference='simulated')
+    written = runs.to_dict()
+    del written['reference']
+    assert MisfitTest.from_dict(written) == runs
     assert _conflict(0.003).to_dict() == {'q': 9.0, 'k': 2, 'p_value': 0.003, 'weights': [0.2, 0.9]}
     assert Conflict.from_dict(json.loads(json.dumps(_conflict(0.003).to_dict(), allow_nan=False))) == _conflict(0.003)
 

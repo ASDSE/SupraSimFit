@@ -171,8 +171,10 @@ _BOUNDS_SECTION_HELP_HTML = """
 <p>Lower and upper limits for each fitted parameter. Defaults come from the
 assay registry; edit them to constrain the fit if you have prior
 knowledge.</p>
-<p>A signal parameter cannot be negative and has no upper limit unless you
-enter one: leave its upper box empty for none.</p>
+<p>A signal parameter starts with a lower bound of zero and no upper limit
+unless you enter one: leave its upper box empty for none. Signals that were
+blank-subtracted can need an offset below zero: enter a negative lower bound
+for it.</p>
 <p>The two kinds of parameter use their bounds differently. An association
 constant is searched across its bounds, so they set the range the fit and the
 confidence interval are looked for in. A signal parameter is not searched at

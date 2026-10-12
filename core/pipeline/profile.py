@@ -139,7 +139,10 @@ class ProfileResult:
         R² at ``best_ka``.
     interval : KaInterval | None
         The confidence interval of this Ka; ``None`` when Ka is pinned by equal
-        bounds, which leaves no interval to estimate.
+        bounds, which leaves no interval to estimate. For the second constant
+        of a stepwise model it carries the p-value of the one-step test
+        (``KaInterval.one_step_p``), the evidence for a second binding step
+        that the joint region is read beside.
     r2_threshold : float
         R² at which the interval is cut wherever the fit at the tested Ka pins
         no signal parameter the best fit leaves free: the plain F test of one

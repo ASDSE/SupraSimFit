@@ -1445,3 +1445,73 @@ def test_renders_a_real_ida_fit_and_its_profile(qapp):
     assert items['best'].getData()[0][0] == pytest.approx(np.log10(profile.best_ka))
     interval = profile.interval
     assert f'95% CI [{fmt_value(interval.low)}, {fmt_value(interval.high)}]' in w._summary.text()
+
+
+def _two_ka_set_with_second(interval: KaInterval):
+    """:func:`_two_ka_set` with the second constant's interval at the entered inputs replaced by *interval*."""
+    from dataclasses import replace
+
+    profile_set = _two_ka_set()
+    profiles = dict(profile_set.profiles)
+    profiles['Ka_HG2'] = replace(profiles['Ka_HG2'], interval=interval)
+    return replace(profile_set, profiles=profiles)
+
+
+def test_a_second_step_the_data_do_not_show_reads_as_not_limited_below_and_why(qapp):
+    """The lower side is open because the one-step model fits nearly as well, not because the profile ran out.
+
+    So the line gives that reason and not the advice to measure at a higher
+    titrant concentration, nor the bound the side runs to as if the data reached it.
+    """
+    from dataclasses import replace
+
+    opened = replace(_interval(1e-8, 10**4.5, open_low=True), one_step_p=0.03)
+    w = _widget(_fit(keys=HG2_KEYS, assay='DBA_HG2'), _two_ka_set_with_second(opened), 'DBA_HG2')
+    text = w._summary.text()
+
+    assert (
+        'not limited below: a model without the second binding step fits nearly as well (one-step test p = 0.03).'
+    ) in text
+    assert 'cannot rule out a lower' not in text
+    assert 'It reaches the bound of 1.00×10⁻⁸' not in text
+
+
+def test_a_second_step_the_data_support_says_at_what_p_the_one_step_model_was_rejected(qapp):
+    from dataclasses import replace
+
+    closed = replace(_interval(10**3.5, 10**4.5), one_step_p=2e-5)
+    w = _widget(_fit(keys=HG2_KEYS, assay='DBA_HG2'), _two_ka_set_with_second(closed), 'DBA_HG2')
+    text = w._summary.text()
+
+    assert 'second binding step supported (one-step model rejected at p ≤ 0.001).' in text
+    # The first constant has no such test, so it is said once.
+    assert text.count('one-step') == 1
+
+
+def test_with_inputs_free_the_one_step_test_at_the_entered_inputs_is_said_beside_the_headline_s(qapp):
+    """The joint region is drawn at the entered inputs, so their one-step test is on the tab as well as the headline's.
+
+    The two tests can disagree (the inputs may explain part of what the
+    second step did), and each sentence says which interval it belongs to.
+    """
+    from dataclasses import replace
+
+    from gui.plotting.labels import fmt_param
+
+    profile_set = _two_ka_set(aware=True)
+    profiles = dict(profile_set.profiles)
+    second = profiles['Ka_HG2']
+    profiles['Ka_HG2'] = replace(
+        second,
+        interval=replace(_interval(1e-8, 10**4.5, open_low=True), one_step_p=0.03),
+        aware=replace(second.aware, interval=replace(second.aware.interval, one_step_p=2e-5)),
+    )
+    w = _widget(_fit(keys=HG2_KEYS, assay='DBA_HG2'), replace(profile_set, profiles=profiles), 'DBA_HG2')
+    text = w._summary.text()
+
+    assert 'second binding step supported (one-step model rejected at p ≤ 0.001).' in text
+    assert (
+        f'At the entered inputs, {fmt_param("Ka_HG2")} not limited below: a model without the second binding step '
+        'fits nearly as well (one-step test p = 0.03).'
+    ) in text
+    assert text.count('one-step') == 2

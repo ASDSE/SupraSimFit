@@ -42,13 +42,14 @@ from core.pipeline.input_aware import (
     fit_jacobian,
     input_aware,
     input_shifts,
+    misfit_design,
     penalised_objective,
 )
 from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec, SharedSource, constraints, shared_key
-from core.pipeline.varpro import LEVEL, FitCancelled, FitRefused, Projection
+from core.pipeline.varpro import LEVEL, SECOND_STEP_LEVEL, FitCancelled, FitRefused, Projection, _norms, _rank
 from core.units import Q_
 from tests.conftest import DBA_TRUE, GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
-from tests.unit.test_varpro import _hg2_truth_signal
+from tests.unit.test_varpro import _ONE_STEP, _hg2_truth_signal, _stepwise
 
 _IDA_SIGMAS = {'Ka_dye': 0.10, 'h0': 0.03, 'd0': 0.03, TITRANT: 0.03}
 
@@ -265,6 +266,73 @@ def test_two_ka_fit_is_never_worse_than_the_fit_at_the_entered_inputs(hg2_case):
         assert np.nanmin(profile.objective) >= result.fit.objective - 1e-9
 
 
+def test_with_a_clear_second_step_the_input_aware_interval_keeps_its_lower_limit(hg2_case):
+    _, _, _, result = hg2_case
+    second = result.profiles['Ka_HG2'].interval
+    assert second.one_step_p < SECOND_STEP_LEVEL and not second.open_low
+    assert result.profiles['Ka_HG'].interval.one_step_p is None
+
+
+def test_without_a_second_step_the_input_aware_interval_opens_below_with_the_conditional_one():
+    """The one-step test on the penalised profile: the model without the second step, its objective minimised over
+    the first constant and the inputs, judged against the optimum by the rule that cuts the interval."""
+    box = (Q_(1e2, '1/M'), Q_(1e8, '1/M'))
+    projection, key = _stepwise(AssayType.DBA_HG2, 1e5, 0.1, 10, _ONE_STEP[AssayType.DBA_HG2], Ka_HG=box, Ka_HG2=box)
+    assay, fit = projection.assay, projection.fit()
+    conditional = projection.interval(key, fit)
+    sigmas = {'h0': 0.03, TITRANT: 0.03}
+    result = input_aware(projection, fit, _sigma_constraints(assay, sigmas), conditional={key: conditional})
+    aware = result.profiles[key].interval
+    assert conditional.open_low and aware.open_low
+    assert (aware.low, aware.limited_by_low) == (1e2, '')
+
+    # P(0) of the independent objective, from the first constant where the fixed-input fit without the second
+    # step puts it.
+    x, y = assay.x_data.magnitude, assay.y_data.magnitude
+    centre = np.log10(projection.profile_point(key, 0.0)[0]['Ka_HG'])
+
+    def solve(v: np.ndarray) -> tuple[float, int]:
+        h0 = assay.h0.magnitude * (1.0 + 0.03 * v[1])
+        species = hg2_species(10.0 ** (centre + v[0]), 0.0, h0, (1.0 + 0.03 * v[2]) * x)
+        columns = np.column_stack([np.ones(x.size), species['G'], species['HG']])
+        norm = np.linalg.norm(columns, axis=0)
+        found = lsq_linear(columns / norm, y, bounds=(0.0, np.inf), method='bvls')
+        ssr = float(np.sum((columns @ (found.x / norm) - y) ** 2))
+        return x.size * np.log(ssr) + float(v[1:] @ v[1:]), int(np.count_nonzero(found.active_mask == 0))
+
+    rng = np.random.default_rng(17)
+    starts = rng.normal(0.0, 1.0, (20, 3)) * np.array([0.5, 1.0, 1.0])
+    options = {'xatol': 1e-9, 'fatol': 1e-11, 'maxiter': 4000}
+    zero = min((minimize(lambda v: solve(v)[0], start, method='Nelder-Mead', options=options) for start in starts),
+               key=lambda found: found.fun)  # fmt: skip
+    # The optimum fits every free signal coefficient (offset, guest, both complexes); without the second step
+    # the coefficient of the second complex has nothing to fit.
+    lb, ub = _coefficient_box(projection)
+    free = lb != ub
+    inside = int(
+        np.count_nonzero((result.fit.coefficients[free] > lb[free]) & (result.fit.coefficients[free] < ub[free]))
+    )
+    m = 1 + inside - solve(zero.x)[1]
+    nu = aware.dof
+    expected = f_dist.sf(np.expm1((zero.fun - result.fit.objective) / x.size) * nu / m, m, nu)
+    assert aware.one_step_p == pytest.approx(expected, rel=1e-3)
+    assert aware.one_step_p > SECOND_STEP_LEVEL
+
+
+def test_with_the_first_constant_held_the_input_aware_interval_is_judged_by_the_one_step_test_too():
+    """The H2G titration without a second step whose profile alone closes the second constant below."""
+    held = Q_(1e5, '1/M')
+    projection, key = _stepwise(AssayType.DBA_H2G, 1e5, 0.1, 10, _ONE_STEP[AssayType.DBA_H2G], Ka_HG=(held, held))
+    fit = projection.fit()
+    conditional = projection.interval(key, fit)
+    result = input_aware(
+        projection, fit, _sigma_constraints(projection.assay, {'h0': 0.03}), conditional={key: conditional}
+    )
+    aware = result.profiles[key].interval
+    assert conditional.one_step_p > SECOND_STEP_LEVEL and aware.one_step_p > SECOND_STEP_LEVEL
+    assert conditional.open_low and aware.open_low and aware.low == 1e-8
+
+
 # ---------------------------------------------------------------------------
 # Reduction to the fixed-input interval
 # ---------------------------------------------------------------------------
@@ -450,6 +518,33 @@ def test_the_jacobian_of_the_whole_fit_holds_the_free_signal_columns_the_residua
     assert jacobian[:n, c:] * scale == pytest.approx(result.fit.jacobian[:n], rel=1e-12)
 
 
+def test_the_misfit_design_holds_the_fitted_parameters_in_signal_units():
+    """No varying input, one Ka: the species columns of the signal parameters inside their bounds, then the
+    derivative of the fitted signal per decade of Ka, against central differences of the projected fit."""
+    assay, projection = _ida(15, 0.01, 2)
+    fit = projection.fit()
+    design = misfit_design(projection, input_aware(projection, fit, ()))
+    # Free plus bound dye sum to the dye total, so the signal columns have rank two whichever of them the solve
+    # leaves inside their bounds; with Ka, three parameters.
+    assert design.shape[0] == 15 and _rank(design / _norms(design)) == projection.n_params(fit) == 3
+    k, h = fit.ka['Ka_guest'], 1e-4
+
+    def fitted(t: float) -> np.ndarray:
+        return assay.y_data.magnitude - projection.residual({'Ka_guest': k * 10.0**t})
+
+    central = (fitted(h) - fitted(-h)) / (2 * h)
+    assert np.linalg.norm(design[:, -1] - central) < 1e-4 * np.linalg.norm(central)
+
+
+def test_the_misfit_design_of_an_input_aware_fit_has_the_rank_of_its_parameter_count(ida_case, hg2_case):
+    for _, projection, _, result in (ida_case, hg2_case):
+        design = misfit_design(projection, result)
+        # Inputs stated with a standard deviation are held back by their penalty and have no column.
+        signal = projection.fitted_parameters(result.fit.ka, result.fit.input_offsets).columns.shape[1]
+        assert design.shape == (projection.n_points, signal + len(result.fit.ka_fitted))
+        assert _rank(design / _norms(design)) == result.fit.n_params
+
+
 # ---------------------------------------------------------------------------
 # Determinism
 # ---------------------------------------------------------------------------
@@ -628,6 +723,8 @@ def test_an_input_stated_as_a_range_stays_inside_it_and_is_reported_on_its_edge(
     assert narrow.fit.n_params == projection.n_params(fit) and profile.interval.dof == 15 - 3
     signal = projection.fitted_parameters(narrow.fit.ka, narrow.fit.offsets).columns.shape[1]
     assert fit_jacobian(projection, narrow).shape == (15, signal + 1)
+    design = misfit_design(projection, narrow)
+    assert design.shape == (15, signal + 1) and _rank(design / _norms(design)) == narrow.fit.n_params
 
     wide = input_aware(
         projection, fit, constraints(ErrorModel(specs={'h0': InputSpec.interval_pct(-20, 20)}), assay.get_conditions())
@@ -636,6 +733,8 @@ def test_an_input_stated_as_a_range_stays_inside_it_and_is_reported_on_its_edge(
     assert shift.fraction == pytest.approx(1 / 1.10 - 1, abs=0.01) and shift.at_edge is False
     signal = projection.fitted_parameters(wide.fit.ka, wide.fit.offsets).columns.shape[1]
     assert fit_jacobian(projection, wide).shape == (15, signal + 2)
+    design = misfit_design(projection, wide)
+    assert design.shape == (15, signal + 2) and _rank(design / _norms(design)) == wide.fit.n_params
     assert wide.fit.n_params == projection.n_params(fit) + 1 and wide.profiles['Ka_guest'].interval.dof == 15 - 4
     interval = wide.profiles['Ka_guest'].interval
     assert interval.low <= IDA_TRUE['Ka_guest'] <= interval.high

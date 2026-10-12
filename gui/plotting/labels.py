@@ -15,6 +15,9 @@ input uncertainty in one notation (:func:`stated_uncertainty`).
 whether the model and the entered inputs describe the data, and where the fit
 put the inputs it was free to move — so the summary block, the plot, the
 Identifiability tab and the exported report say it in the same words.
+:func:`one_step_sentence` says what the test of a second binding step found,
+and :func:`offset_note` when a signal offset held at zero may be why the curve
+misses the data.
 
 Units are formatted by Pint's built-in formatters (``f"{ureg.Unit(unit_str):~H}"``
 for HTML, ``~P`` for pretty Unicode).
@@ -563,6 +566,84 @@ def fmt_bound_note(on_bound: dict) -> str:
     )
 
 
+#: Said where the fit holds the signal offset on its floor of zero and the
+#: curve misses the data: blank-subtracted signals need an offset below zero.
+OFFSET_AT_ZERO_NOTE = (
+    'The signal offset rests on its lower bound of 0. If the signals were blank-subtracted, allow a negative '
+    'offset under Parameter Bounds and fit again.'
+)
+
+
+def offset_note(result) -> str:
+    """:data:`OFFSET_AT_ZERO_NOTE` where it applies to *result*; ``''`` elsewhere.
+
+    It applies when the fit holds a signal offset on a lower bound of zero
+    (:func:`~core.pipeline.fit_pipeline.offsets_held_at_zero`) and the misfit
+    test rejects the fit the result reports: an offset held at zero against
+    blank-subtracted data is one way a curve comes to miss them. An offset at
+    zero under a curve the test does not reject is where the data put it.
+    """
+    from core.pipeline.diagnostics import Verdict
+    from core.pipeline.fit_pipeline import offsets_held_at_zero
+
+    diagnostics = result.diagnostics
+    rejected = diagnostics is not None and diagnostics.verdict in (Verdict.MODEL_INADEQUATE, Verdict.MODEL_AND_INPUTS)
+    return OFFSET_AT_ZERO_NOTE if rejected and offsets_held_at_zero(result) else ''
+
+
+def _one_figure(p: float) -> str:
+    """*p* to one significant figure, ``0.03``; one that rounds to 1 reads ``> 0.9``, which is what it says."""
+    rounded = float(f'{p:.1g}')
+    return '> 0.9' if rounded >= 1.0 else f'= {rounded:g}'
+
+
+def _at_most(p: float) -> str:
+    """The smallest one-figure number at or above *p*, so ``≤`` it is true: ``0.0034`` reads ``≤ 0.004``.
+
+    Below :data:`_P_FLOOR` it reads ``≤ 0.001``, the floor every p-value here
+    is reported to.
+    """
+    if p <= _P_FLOOR:
+        return f'≤ {_P_FLOOR:g}'
+    exponent = math.floor(math.log10(p))
+    # Rounded first, so a p that is one figure exactly is not lifted by its last bit.
+    figure = math.ceil(round(p / 10.0**exponent, 9))
+    return f'≤ {figure * 10.0**exponent:.{max(0, -exponent)}f}'
+
+
+def one_step_sentence(label: str, p: float) -> str:
+    """What the test of the second binding step says, beside the interval of that constant.
+
+    Above :data:`~core.pipeline.varpro.SECOND_STEP_LEVEL` a model without the
+    second step fits the data nearly as well, so the constant is not limited
+    below and its interval is open there: ``Ka(HG₂) not limited below: a model
+    without the second binding step fits nearly as well (one-step test p =
+    0.03).``, and ``p > 0.005`` where one figure would round *p* down onto the
+    level. At or below it the closed lower end is a claim that the step
+    exists, and the sentence says what supports it: ``Ka(HG₂): second binding
+    step supported (one-step model rejected at p ≤ 0.001).`` The F reference
+    of the test is conservative here, so the p-value is written as a bound,
+    rounded up so the bound holds.
+
+    Parameters
+    ----------
+    label : str
+        The constant's name, formatted for where the sentence goes.
+    p : float
+        :attr:`~core.pipeline.varpro.KaInterval.one_step_p` of the interval.
+    """
+    from core.pipeline.varpro import SECOND_STEP_LEVEL
+
+    if p > SECOND_STEP_LEVEL:
+        # One figure can round a p just above the level down onto it, the value a closed end is written with.
+        shown = _one_figure(p) if float(f'{p:.1g}') > SECOND_STEP_LEVEL else f'> {SECOND_STEP_LEVEL:g}'
+        return (
+            f'{label} not limited below: a model without the second binding step fits nearly as well '
+            f'(one-step test p {shown}).'
+        )
+    return f'{label}: second binding step supported (one-step model rejected at p {_at_most(p)}).'
+
+
 def _escape(text: str) -> str:
     """Plain text made safe for a rich-text widget: ``p < 0.001`` must not read as the start of a tag."""
     return escape(text, quote=False)
@@ -614,11 +695,24 @@ def fmt_stat(value: float) -> str:
     return f'{float(f"{value:.3g}"):g}'
 
 
+#: Said after the p-value of a lack-of-fit test whose reference was simulated:
+#: the weights came from the replicates' own scatter, so the F distribution is
+#: not the reference and the test names what is.
+SIMULATED_P = 'simulated from the fitted curve and the noise law'
+
+
 def fmt_misfit(test, *, named: bool = True) -> str:
     """One misfit test as a report quotes it, with its statistic and p-value.
 
     ``lack-of-fit F(9, 72) = 0.9, p = 0.55`` for the replicate F test and
-    ``runs test: 6 runs, 7.0 expected, p = 0.41`` for the runs test.
+    ``runs test: 6 runs, 7.0 expected, p = 0.41`` for the runs test. A
+    lack-of-fit p-value read from a simulated reference — the replicates
+    showed the noise law, so the weights are estimated — says so:
+    ``lack-of-fit F(9, 72) = 0.9, p = 0.55, simulated from the fitted curve and
+    the noise law``. When no simulated ratio reached the observed one, the
+    p-value is the smallest the simulation can show,
+    ``1 / (LOF_BOOTSTRAP_DRAWS + 1)``, and is written as the bound it is,
+    ``p ≤ 0.005``: the curve may miss the data by far more.
 
     Parameters
     ----------
@@ -635,6 +729,12 @@ def fmt_misfit(test, *, named: bool = True) -> str:
     else:
         dof = '' if test.dof is None else f'({test.dof[0]}, {test.dof[1]})'
         head = f'{"lack-of-fit " if named else ""}F{dof} = {fmt_stat(test.statistic)}'
+        if test.reference == 'bootstrap':
+            from core.pipeline.diagnostics import LOF_BOOTSTRAP_DRAWS
+
+            smallest = 1.0 / (LOF_BOOTSTRAP_DRAWS + 1)
+            p = f'p ≤ {smallest:g}' if test.p_value <= smallest else fmt_p(test.p_value)
+            return f'{head}, {p}, {SIMULATED_P}'
     return f'{head}, {fmt_p(test.p_value)}'
 
 
@@ -873,7 +973,7 @@ def _verdict_text(diagnostics, shifts, labels) -> str:
         if shifts:
             return (
                 'The model does not describe the data even with the inputs free to move within their uncertainties '
-                f'({fmt_misfit(test, named=False)} after the shifts). {_MODEL_TAIL}'
+                f'(after the shifts, {fmt_misfit(test, named=False)}). {_MODEL_TAIL}'
             )
         return (
             f'The model does not describe the data at the entered inputs ({fmt_misfit(test, named=False)}). '
@@ -886,7 +986,7 @@ def _verdict_text(diagnostics, shifts, labels) -> str:
     lead, where, moved, checked = _conflict_text(diagnostics, shifts, labels)
     return (
         f'{lead}, and even with {moved} moved the model misses the data '
-        f'({fmt_misfit(test, named=False)} after the shifts). {where} '
+        f'(after the shifts, {fmt_misfit(test, named=False)}). {where} '
         f'Check first {checked}: an input that '
         'is off can by itself make the curve miss the data. If the entered values are right, try another binding '
         'model or check the data. The interval assumes both the shifts and the model.'

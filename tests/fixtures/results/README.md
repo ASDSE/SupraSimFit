@@ -76,8 +76,9 @@ concentration by −8.6 % and reports a Ka of 1.88 MM⁻¹ against the 2 MM⁻¹
 data carry, where the interval that holds the entered inputs exact — the file's
 `conditional` block — runs from 2.14 to 2.60 MM⁻¹ and does not reach the truth.
 Its `diagnostics` say `inputs_explain`: at the entered inputs the replicates
-reject the curve (lack of fit p = 1e-7) and once the inputs move they do not
-(p = 0.55).
+reject the curve (lack of fit p ≤ 0.005: none of the 199 draws of the
+simulated reference reached the observed ratio) and once the inputs move they
+do not (p = 0.59).
 
 Its `noise` block holds the law the three replicates show, a share of 0.56
 between a floor of 3.2 au and 0.6 % of the signal, and the fit counts each
@@ -108,7 +109,7 @@ and the stock holds neither of them. `[Host]₀` carries an uncertainty of its o
 (σ 3 %) and one source named *Host and dye stock* (σ 4 %) moves `[Host]₀` and
 `[Dye]₀` together, so the file's `fit_config` carries a `shared_sources` entry
 and its `input_shifts` report the shared source under its own key beside the
-host's own shift. The reported interval, 1.84 to 2.13 MM⁻¹, holds the 2 MM⁻¹
+host's own shift. The reported interval, 1.84 to 2.12 MM⁻¹, holds the 2 MM⁻¹
 the data carry. Its `noise` block reads the replicates' scatter as
 proportional to the signal, 0.9 % of it, the structure the data were made
 with.

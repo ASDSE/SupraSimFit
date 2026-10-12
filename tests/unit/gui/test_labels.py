@@ -500,7 +500,7 @@ class TestVerdictSentence:
         shifts = {'h0': _shift('h0', -0.041, z=-1.4)}
         assert verdict_sentence(d, shifts, _LABELS, html=False) == (
             'The model does not describe the data even with the inputs free to move within their uncertainties '
-            '(F(9, 72) = 12, p < 0.001 after the shifts). '
+            '(after the shifts, F(9, 72) = 12, p < 0.001). '
             'The interval assumes a model the data reject; try another binding model or check the data.'
         )
 
@@ -555,7 +555,7 @@ class TestVerdictSentence:
         assert text.startswith(
             'The data fit only with the inputs, taken together, further from their entered values than their '
             'stated uncertainties allow (q = 30.1, p < 0.001), and even with them moved the model misses the '
-            'data (F(9, 72) = 40, p < 0.001 after the shifts).'
+            'data (after the shifts, F(9, 72) = 40, p < 0.001).'
         )
         assert text.index('Check first the values you entered for them:') < text.index('try another binding model')
         assert 'the statistic weighs them together' in text
@@ -666,6 +666,76 @@ class TestFmtMisfit:
         for value in (math.inf, -math.inf, math.nan):
             with pytest.raises(ValueError):
                 fmt_stat(value)
+
+    def test_a_simulated_reference_is_named_after_the_p_value_it_gave(self):
+        """Weights read from the replicates make F only approximate: the p-value says what it was read against."""
+        from dataclasses import replace
+
+        from gui.plotting.labels import fmt_misfit
+
+        simulated = replace(_f_test(0.9, 0.55), reference='bootstrap')
+        assert fmt_misfit(simulated) == (
+            'lack-of-fit F(9, 72) = 0.9, p = 0.55, simulated from the fitted curve and the noise law'
+        )
+
+    def test_a_simulated_p_value_at_the_floor_of_the_simulation_reads_as_a_bound(self):
+        """No draw reaching the observed ratio gives 1/(B + 1), however far the curve misses: an upper bound, not a value."""
+        from dataclasses import replace
+
+        from core.pipeline.diagnostics import LOF_BOOTSTRAP_DRAWS
+        from gui.plotting.labels import fmt_misfit
+
+        floor = replace(_f_test(1680.0, 1.0 / (LOF_BOOTSTRAP_DRAWS + 1)), reference='bootstrap')
+        assert fmt_misfit(floor) == (
+            'lack-of-fit F(9, 72) = 1680, p ≤ 0.005, simulated from the fitted curve and the noise law'
+        )
+        # One draw at or above the ratio is a value of the simulation, and reads as one.
+        assert ', p = 0.01, ' in fmt_misfit(replace(floor, p_value=2.0 / (LOF_BOOTSTRAP_DRAWS + 1)))
+
+
+class TestOneStepSentence:
+    """What the test of a second binding step says beside that constant's interval."""
+
+    def test_above_the_level_the_constant_is_not_limited_below_with_p_to_one_figure(self):
+        from gui.plotting.labels import one_step_sentence
+
+        assert one_step_sentence('Ka(HG₂)', 0.034) == (
+            'Ka(HG₂) not limited below: a model without the second binding step fits nearly as well '
+            '(one-step test p = 0.03).'
+        )
+        # A p that one figure rounds to 1 would read as certainty; it is written as the bound it is.
+        assert one_step_sentence('Ka(HG₂)', 0.97).endswith('(one-step test p > 0.9).')
+
+    def test_above_the_level_the_p_shown_never_reads_as_the_level_itself(self):
+        """0.0051 to one figure is 0.005, the value a closed lower end is written with; the open side says '> 0.005'."""
+        from core.pipeline.varpro import SECOND_STEP_LEVEL
+        from gui.plotting.labels import one_step_sentence
+
+        for p in (0.0051, 0.00549):
+            assert p > SECOND_STEP_LEVEL
+            assert one_step_sentence('Ka(HG₂)', p).endswith(f'(one-step test p > {SECOND_STEP_LEVEL:g}).')
+        assert one_step_sentence('Ka(HG₂)', 0.0056).endswith('(one-step test p = 0.006).')
+
+    def test_at_or_below_the_level_the_bound_written_is_one_figure_and_holds(self):
+        """Rounded up, never down: p ≤ 0.003 for p = 0.0034 would be false."""
+        import math
+        import re
+
+        from core.pipeline.varpro import SECOND_STEP_LEVEL
+        from gui.plotting.labels import one_step_sentence
+
+        for p in (0.0034, 0.0011, 0.002, SECOND_STEP_LEVEL, 0.00101, 3e-4, 1e-12):
+            text = one_step_sentence('Ka(HG₂)', p)
+            assert text.startswith('Ka(HG₂): second binding step supported (one-step model rejected at p ≤ ')
+            bound = float(re.search(r'p ≤ ([0-9.]+)\)', text).group(1))
+            assert bound >= p and bound >= 0.001
+            assert bound == float(f'{bound:.1g}'), 'one significant figure'
+            if p > 0.001:
+                assert bound - p < 10 ** math.floor(math.log10(p)), 'the next figure up, not a looser one'
+            else:
+                assert bound == 0.001
+        assert one_step_sentence('K', 0.0034).endswith('p ≤ 0.004).')
+        assert one_step_sentence('K', SECOND_STEP_LEVEL).endswith(f'p ≤ {SECOND_STEP_LEVEL:g}).')
 
 
 class TestFmtSpread:
