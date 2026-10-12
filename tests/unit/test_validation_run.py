@@ -13,7 +13,7 @@ import pytest
 
 from validation import run as runner
 from validation import store
-from validation.checks import Check, conditional_coverage, matching_cases
+from validation.checks import CHECKS, Check, conditional_coverage, matching_cases
 from validation.criteria import COVERAGE
 from validation.scenarios import Scenario
 
@@ -112,3 +112,25 @@ def test_a_run_takes_the_cases_whose_id_one_expression_matches():
     assert matching_cases(LADDER, ['GDA', 'IDA']) == CASES
     assert matching_cases(LADDER, None) == CASES
     assert matching_cases(LADDER, ['DBA_HG2']) == ()
+
+
+def test_a_one_step_null_case_can_fail_alone_and_pass_only_in_its_pooled_row():
+    """No closure in 400 draws still leaves an exact upper limit above 0.0075; the eight cases of a model pool 3200."""
+    check = CHECKS['one-step-null']
+    case = check.cases[0].id
+    key = 'Ka_HG2' if check.cases[0].assay == 'DBA_HG2' else 'Ka_H2G'
+    facts = {
+        'covers': True,
+        'open': True,
+        'open_low': True,
+        'split': False,
+        'limited': False,
+        'width': 9.0,
+        'one_step_p': 0.5,
+    }
+    assert check.stages == (400,)
+    assert not runner._case_passed(check, case, [{'aware': {key: facts}}] * 400, [])
+    per_model = sum(1 for other in check.cases if other.assay == check.cases[0].assay)
+    assert per_model == 8
+    # A rate of 0.15 %, as the F reference gives on one-step data, passes the pool.
+    assert check.criterion.verdict(5, per_model * 400) == 'pass'

@@ -61,7 +61,13 @@ The fit goes through the calls the interface makes — `fit_measurement_set` on 
 interval, the interval conditional on the entered inputs, where the fit put the inputs, what the
 misfit tests and the conflict statistic say, what the replicates showed about the noise
 (`noise_share`, `noise_basis` — the share of the variance that grows with the signal, and what
-the law was read from), and the wall time.
+the law was read from — and `weight_ratio`, the fit's largest point weight over its smallest),
+and the wall time. Each interval carries its edges, whether it is open and whether its lower side
+is (`open_low`), and `one_step_p`: for the second constant of a two-step model, the p-value of the
+one-step model that sets it to zero, which is what decides whether that constant is limited below;
+`None` for every other constant. `misfit_reference` says what the misfit test's p-value was read
+against — the F distribution, or a parametric bootstrap where the law was read off the replicates;
+for the runs test of a single titration, its simulated runs.
 
 A scenario says what the noise does as well as how big it is: `proportional` makes it grow with
 the signal, `noise_floor` puts a constant part under it in quadrature, and `replicate_scale`
@@ -148,11 +154,15 @@ of the observed rate, `[CP low, CP high]`:
 | rate of a 5 % test on the null | `CP low > 0.05` | `CP high <= 0.075` | undecided |
 | a clean replicate left out, claimed `<= 0.05` | `CP low > 0.05` | `CP high <= 0.05` | undecided |
 | the two profiles agree, claimed `>= 0.99` | `CP high < 0.99` | `CP low >= 0.99` | undecided |
+| a second constant closed below with no second step, claimed `<= 0.0075` | `CP low > 0.0075` | `CP high <= 0.0075` | undecided |
 
 A pass the limits also put past the far end of Bradley's range is labelled **conservative** and is
 still a pass: coverage with `CP low > 0.975`, a test rate with `CP high < 0.025`. The two
 upper- and lower-limit claims state a threshold rather than a level, so there is nothing to call
-conservative there. Fail is read first; the two conditions of a level can both hold only when the
+conservative there. The last claim is Bradley's liberal limit of the one-step test's 0.5 % level,
+1.5 times it, stated as the limit itself; no closure in 400 draws still leaves an exact upper limit
+of 0.0092, so a case of it can fail at 400 draws but not pass, and its pass rests on the pooled row
+of each model, 3200 draws over eight cases. Fail is read first; the two conditions of a level can both hold only when the
 exact limits are narrower than the gap between the thresholds, which needs some two thousand
 draws — five times what the ladder reaches.
 
@@ -189,8 +199,15 @@ and a user reads it as a finite guarantee; where the data barely identify the co
 stepwise constants a decade or more apart on a dark host — its coverage can fall far below the level
 while the rate over every draw holds, because the open draws cover by construction. So
 `conditional-coverage` and `two-ka-weak` judge `closed_cov.KEY` beside `cov.KEY`, and a case passes
-only when both do. Everywhere else `closed_cov.KEY` is reported, with the fractions `open.KEY`,
-`split.KEY` and `limited.KEY`, the median `width.KEY` and `bound_active`.
+only when both do, and report `false_closed.KEY` beside them: the share of every draw in which the
+interval is closed on both sides and misses the truth, which is how often a user is handed a finite
+interval that is wrong — the number the closed coverage leaves out, since it is divided by how many
+draws were closed. For the second constant of a two-step model they also report
+`false_closed_low.KEY`, the share of every draw whose lower edge is closed and lies above the truth —
+a false claim of a second step as strong as that edge, which an interval open above (running to the
+upper bound) makes too and which neither `closed_cov.KEY` nor `false_closed.KEY` counts. Everywhere
+else `closed_cov.KEY` is reported, with the fractions `open.KEY`, `split.KEY` and `limited.KEY`, the
+median `width.KEY` and `bound_active`.
 
 **The input-aware level is an average over the entry errors.** `input-aware-coverage` draws each
 entered input from the distribution its stated uncertainty describes — the reading of a Type B
@@ -288,6 +305,13 @@ reference-agreement    42 cases                                 >= 0.99
   The engine places both edges of its interval where an independent profile — its own design, its
   own search and its own root finding — places them, to a ten-thousandth of a decade of Ka.
 
+one-step-null          16 cases                                 <= 0.0075
+  On titrations of the two stepwise models that carry no second step — the second constant a
+  millionth of the first, the first step at K1·h0 of 1 and 3, 12 and 30 points, one titration of
+  constant noise and three replicates of noise that grows with the signal — the reported interval of
+  the second constant is closed below no more often than the 0.5 % level of the one-step test
+  allows.
+
 joint-region           48 cases                                 95 % interval
   The joint confidence region of a two-constant model holds the true pair as often as its level
   says — the reading the Identifiability tab offers where the two constants trade off against each
@@ -326,17 +350,19 @@ shared-source-coverage 36 cases                                 95 % interval
   concentration of the sample — one stock behind the host, the fixed partner and the titrant — the
   entries are drawn from exactly that model and the fit is told it.
 
-noise-law-coverage     48 cases                                 95 % interval
+noise-law-coverage     164 cases                                95 % interval
   The interval reported when every entered input is taken as exact holds the true binding constant
   as often as its 95 % level says on replicated titrations, whatever the noise does along them:
-  constant, growing with the signal, the two together, at two, three and four replicates, and with
-  whole replicates differing by a scale factor of three percent.
+  constant, growing with the signal, and the two together, at two, three and eight replicates and 8
+  and 20 points for every one-Ka assay in the medium and strong regimes; with whole replicates
+  differing by a scale factor of three percent; and for the two-step model under the same noise at
+  12 points.
 
-noise-law-lof-null     reads 48 cases of noise-law-coverage     5 % test
-  On the same replicated titrations, every one of which the model does describe, the lack-of-fit F
-  test calls the model inadequate about as often as its level allows — with the fit weighted by
-  the law the replicates show and the pure error taken as their scatter about their own image of
-  the mean curve.
+noise-law-lof-null     reads 164 cases of noise-law-coverage    5 % test
+  On the same replicated titrations, every one of which the model does describe, the lack-of-fit
+  test calls the model inadequate about as often as its level allows — with the fit weighted by the
+  law the replicates show, the pure error taken as their scatter about their own image of the mean
+  curve, and the F ratio read against a parametric bootstrap drawn at that law.
 
 noise-law-aware        16 cases                                 95 % interval
   The reported interval, which lets every entered input move within the uncertainty stated for it,
@@ -425,6 +451,24 @@ titrations: one curve cannot show how the noise varies along it, so there the no
 constant, and the rate is reported rather than judged — it is what the fit does where no law can be
 estimated, and the summary and the plot guide say so.
 
+`noise-law-coverage` spans constant, proportional and mixed noise at two, three and eight
+replicates and 8 and 20 points for every one-Ka assay in the medium and strong regimes, the lamp
+case beside them, and the two-step model at 12 points. A law read off few replicates can weight
+some points a thousand times others, so beside the judged rate the table gives the coverage in bins
+of the fit's largest weight over its smallest — `cov_wratio_le10.KEY`, `cov_wratio_10-1e3.KEY` and
+`cov_wratio_gt1e3.KEY` — and the distribution of that ratio, `weight_ratio`. `noise-law-lof-null`
+reads the same fits; wherever the law was read off the replicates the misfit test's F ratio is read
+against a parametric bootstrap at that law, and its rate says whether that reference holds the
+level.
+
+`one-step-null` fits both stepwise models to titrations that carry no second step — the second
+constant a millionth of the first — and asks how often the reported interval of that constant is
+closed below. A lower edge there tells the user the data hold a second step; the fit leaves that
+side open unless the one-step model is rejected at 0.5 %, so the rate is the false-alarm rate of
+that test, judged against Bradley's limit of 0.75 %, with the p-value each fit read reported
+beside it. The rule acts on the input-aware interval as well, which `input-aware-coverage` covers
+through its two-step cases.
+
 `replicate-exclusion-null` and `replicate-exclusion-power` run the per-replicate mode, the fit of
 every replicate on its own followed by the test of whether they share their binding constants, through
 `fit_measurement_set_per_replica` — the call the interface makes. Every other check fits the average
@@ -432,7 +476,8 @@ of the replicates. The null check judges, per fit, whether a replicate measured 
 left out; one noisy replicate among them is part of the null, since it shares the binding constant
 and leaving a clean replicate out because of it is a false exclusion all the same. How often the
 noisy or the shifted replicates themselves are left out is reported, with the coverage of the
-interval the fit reports.
+interval the fit reports: for a noisy replicate that is the power of Cochran's test to exclude a
+replicate whose scatter is out of line with the rest, and not a false exclusion.
 
 `before-after` runs the release before the engine. It extracts that commit with `git archive`
 into a directory of its own and runs it in a subprocess with that directory on the path, so the

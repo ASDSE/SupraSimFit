@@ -112,7 +112,8 @@ GRID_IDS: dict[str, tuple[int, str]] = {
     'misfit_power_grid': (84, 'GDA,K=0.1,n=12,noise=0.01,m=4,sine=0.02,sig'),
     'robustness_grid': (66, 'GDA,K=0.1,n=12,noise=0.005,sig,ent=0.5'),
     'robustness_strained_grid': (72, 'GDA,K=0.1,n=12,noise=0.005,sig,ent=2'),
-    'noise_law_grid': (48, 'GDA,K=10,n=12,noise=0.02,m=4'),
+    'noise_law_grid': (164, 'GDA,K=10,n=8,noise=0.02,m=2'),
+    'one_step_null_grid': (16, 'DBA_HG2,K=1,n=12,noise=0.01,kr=1e+06'),
     'noise_law_aware_grid': (16, 'GDA,K=10,n=12,noise=0.02,prop,m=4,sig'),
     'reference_grid': (42, 'GDA,K=0.1,n=8,noise=0.01'),
     'pooling_grid': (36, 'GDA,K=0.1,n=12,noise=0.02,m=4'),
@@ -293,10 +294,31 @@ def test_the_noise_structure_of_a_titration_reaches_the_key_its_measurements_han
 
 
 def test_the_noise_law_grid_runs_every_structure_the_replicates_can_carry():
-    """The claim is about the law under each of them; a structure left out is a claim nobody measured."""
+    """The claim is about the law under each of them; a structure left out is a claim nobody measured.
+
+    Every one-Ka assay at both regimes carries constant, proportional and mixed
+    noise at every replicate count and design the claim names — constant noise
+    at two replicates is where an estimated law misweights the most — and the
+    lamp case beside them; the two-step model keeps its six structures at 12
+    points.
+    """
     grid = scenarios.noise_law_grid()
+    one_ka = [case for case in grid if case.assay in scenarios.ONE_KA and not case.replicate_scale]
+    shapes = {(0.02, False, 0.0), (0.02, True, 0.0), (0.02, True, 0.005)}
+    for assay in scenarios.ONE_KA:
+        for regime in (10.0, 1000.0):
+            cell = {
+                (case.noise, case.proportional, case.noise_floor, case.replicates, case.n_points)
+                for case in one_ka
+                if case.assay == assay and case.regime == regime
+            }
+            assert cell == {(*shape, m, n) for shape in shapes for m in (2, 3, 8) for n in (8, 20)}, (assay, regime)
+    lamp = {(case.assay, case.regime) for case in grid if case.replicate_scale == 0.03}
+    assert {(assay, regime) for assay in scenarios.ONE_KA for regime in (10.0, 1000.0)} <= lamp
+    two_step = [case for case in grid if case.assay == 'DBA_HG2']
+    assert {case.n_points for case in two_step} == {12}
     assert {
-        (case.noise, case.proportional, case.noise_floor, case.replicates, case.replicate_scale) for case in grid
+        (case.noise, case.proportional, case.noise_floor, case.replicates, case.replicate_scale) for case in two_step
     } == {
         (0.02, False, 0.0, 4, 0.0),
         (0.02, True, 0.0, 4, 0.0),
@@ -305,9 +327,39 @@ def test_the_noise_law_grid_runs_every_structure_the_replicates_can_carry():
         (0.02, True, 0.0, 3, 0.0),
         (0.01, False, 0.0, 4, 0.03),
     }
+    assert {case.assay for case in grid} == {*scenarios.ONE_KA, 'DBA_HG2'}
     # The inputs are exact, so the judged interval is the conditional one and
     # what the rows measure is the weighting alone.
     assert all(not case.specs and case.replicates >= 2 for case in grid)
+
+
+def test_the_one_step_null_grid_measures_two_step_models_whose_second_step_is_absent():
+    """A second constant a millionth of the first is no second step: closing it below is a false claim of one.
+
+    The claim names both stepwise models, the first step at ``K1·h0`` of 1 and
+    3, 12 and 30 points, one titration of constant noise and three of noise
+    that grows with the signal, inputs exact.
+    """
+    grid = scenarios.one_step_null_grid()
+    assert {case.assay for case in grid} == set(scenarios.TWO_KA)
+    assert all(case.k_ratio == 1e6 and not case.specs for case in grid)
+    cells = {(case.assay, case.regime, case.n_points, case.replicates, case.proportional) for case in grid}
+    assert cells == {
+        (assay, regime, n, m, m > 1)
+        for assay in scenarios.TWO_KA
+        for regime in (1.0, 3.0)
+        for n in (12, 30)
+        for m in (1, 3)
+    }
+
+
+def test_the_second_constant_of_the_two_step_models_is_judged_on_the_one_step_null_and_the_aware_grid():
+    """The one-step rule acts on the reported interval too, so its two-Ka cases have to stay in that check."""
+    check = CHECKS['one-step-null']
+    assert check.row is not None and check.criterion is not None and check.criterion_reason
+    assert {case.id for case in check.cases} == {case.id for case in scenarios.one_step_null_grid()}
+    aware = {(case.assay, case.regime) for case in CHECKS['input-aware-coverage'].cases}
+    assert {(assay, regime) for assay in scenarios.TWO_KA for regime in (10.0, 1000.0)} <= aware
 
 
 def test_the_input_aware_noise_law_grid_states_its_inputs_and_replicates_them():

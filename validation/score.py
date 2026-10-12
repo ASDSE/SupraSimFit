@@ -79,11 +79,23 @@ def interval_facts(
     -------
     dict
         ``covers``, ``width`` in decades of Ka, the ``open``/``split``/
-        ``limited`` flags and the two edges, with ``estimate`` beside them.
-        ``None`` fields where there is no interval.
+        ``limited`` flags, ``open_low`` — the lower side runs to the Ka bound —
+        and the two edges, with ``estimate`` beside them, and ``one_step_p``,
+        the p-value of the one-step model the second constant of a two-step
+        model is tested against (``None`` for every other constant). ``None``
+        fields where there is no interval.
     """
     if interval is None:
-        return {'covers': None, 'width': None, 'open': None, 'split': None, 'limited': None, 'estimate': estimate}
+        return {
+            'covers': None,
+            'width': None,
+            'open': None,
+            'open_low': None,
+            'split': None,
+            'limited': None,
+            'estimate': estimate,
+            'one_step_p': None,
+        }
     covers = bool(interval.low <= truth <= interval.high)
     if covers and interval.split and accepts is not None:
         covers = bool(accepts(truth))
@@ -91,11 +103,13 @@ def interval_facts(
         'covers': covers,
         'width': float(np.log10(interval.high / interval.low)),
         'open': bool(interval.open_low or interval.open_high),
+        'open_low': bool(interval.open_low),
         'split': bool(interval.split),
         'limited': bool(interval.limited_by_low or interval.limited_by_high),
         'low': float(interval.low),
         'high': float(interval.high),
         'estimate': estimate,
+        'one_step_p': interval.one_step_p,
     }
 
 
@@ -189,6 +203,16 @@ def _bound_active(result, data: Dataset) -> bool:
     return False
 
 
+def _weight_ratio(result: FitResult, data: Dataset) -> float:
+    """The largest point weight of the fit over its smallest.
+
+    The weights are the law's at the mean signal of the replicates, which is
+    what the fit was handed them at.
+    """
+    weights = result.noise.weights(data.assay.y_data.magnitude)
+    return float(weights.max() / weights.min())
+
+
 def score(scenario: Scenario, seed: int) -> dict[str, Any]:
     """Generate one dataset, fit it as the application does, and score the fit against its truth.
 
@@ -211,10 +235,19 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
     ``noise_share`` and ``noise_basis`` say what the replicates showed about
     the noise and therefore how the fit was weighted; a single titration
     carries no law and reads ``single_titration`` with a share of zero.
+    ``weight_ratio`` is the largest weight of the fit over its smallest —
+    exactly 1 where the weights are all one — which says how far an estimated
+    law spread the weights.
+
+    ``misfit_reference`` names what the misfit test's p-value was read against:
+    for the lack-of-fit test ``'F'``, the F distribution, or ``'bootstrap'``
+    where the law was estimated; ``'simulated'`` for the runs test of a single
+    titration.
 
     ``truth``, ``z``, ``rmse``, ``r_squared``, ``noise_basis``,
-    ``cond_misfit_p`` and ``conflict_k`` are provenance: they are stored so a
-    row can be read back and questioned, and no check reads them today.
+    ``cond_misfit_p``, ``misfit_reference`` and ``conflict_k`` are provenance:
+    they are stored so a row can be read back and questioned, and no check
+    reads them today.
     """
     started = time.perf_counter()
     data = dataset(scenario, seed)
@@ -263,6 +296,7 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
             # grows with the signal, and what the law was read from.
             'noise_share': None if result.noise is None else float(result.noise.share),
             'noise_basis': None if result.noise is None else result.noise.basis.value,
+            'weight_ratio': None if result.noise is None else _weight_ratio(result, data),
             't_fit': t_fit,
         }
         if scenario.dilution is not None or scenario.shared_sources:
@@ -284,6 +318,7 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
                 'misfit_kind': None if misfit is None else misfit.kind,
                 'misfit_p': None if misfit is None else misfit.p_value,
                 'cond_misfit_p': None if conditional_misfit is None else conditional_misfit.p_value,
+                'misfit_reference': None if misfit is None else misfit.reference,
                 'conflict_p': None if inputs is None else inputs.p_value,
                 'conflict_q': None if inputs is None else inputs.q,
                 'conflict_k': None if inputs is None else inputs.k,

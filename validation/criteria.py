@@ -69,6 +69,7 @@ __all__ = [
     'COVERAGE',
     'FALSE_EXCLUSION',
     'NULL_RATE',
+    'ONE_STEP_NULL',
     'PASSING',
     'Criterion',
     'clopper_pearson',
@@ -169,6 +170,15 @@ NULL_RATE = Criterion(text='5 % test', safe_high=False, nominal=0.05, acceptable
 #: of the average in at most one fit in twenty. The claim is the threshold, so
 #: there is no Bradley step around it and nothing to call conservative.
 FALSE_EXCLUSION = Criterion(text='<= 0.05', safe_high=False, nominal=0.05, acceptable=0.05)
+
+#: An upper-limit claim: on titrations with no second step, the second
+#: constant of a two-step model is closed below in at most 0.75 % of fits -
+#: Bradley's liberal limit, 1.5 times the 0.5 % level the one-step test runs
+#: at (``core.pipeline.varpro.SECOND_STEP_LEVEL``). The limit is the claim, so
+#: there is nothing to call conservative; a pass needs some 490 draws, since no
+#: closure in fewer still leaves an exact upper limit above it, so at 400
+#: draws a case can fail and only a pooled row can pass.
+ONE_STEP_NULL = Criterion(text='<= 0.0075', safe_high=False, nominal=0.0075, acceptable=0.0075)
 
 #: A lower-limit claim: two computations of the same definition agree on all
 #: but one dataset in a hundred.

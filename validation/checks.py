@@ -22,6 +22,11 @@ the package reads:
     the interval itself, so its coverage is a claim of its own (Buehler 1959),
     and where the data barely identify the constants it can fall far below the
     level while the coverage over every draw holds. Elsewhere it is reported.
+    Beside it ``~false_closed.KEY`` is the rate per fit of an interval closed
+    on both sides that misses the truth — the share of all draws in which a
+    user reads a finite interval that is wrong — and, for the second constant
+    of a two-step model, ``~false_closed_low.KEY``, the rate of a lower edge
+    above the truth whatever the upper side does.
 
 A check with ``derived_from`` set computes nothing. It reads the rows of the
 check it names and asks a different question of them, so two claims that rest
@@ -36,7 +41,7 @@ from typing import Any, Callable, Sequence
 
 from core.pipeline.diagnostics import DIAGNOSTIC_LEVEL, Verdict
 from validation import budget, legacy, reference, scenarios, sobol
-from validation.criteria import AGREEMENT, COVERAGE, FALSE_EXCLUSION, NULL_RATE, Criterion
+from validation.criteria import AGREEMENT, COVERAGE, FALSE_EXCLUSION, NULL_RATE, ONE_STEP_NULL, Criterion
 from validation.score import joint_region_row, score, score_replicates
 
 __all__ = ['CHECKS', 'Check', 'case_by_id', 'matches', 'matching_cases']
@@ -178,9 +183,36 @@ def conditional_coverage(row: dict[str, Any]) -> dict[str, Any]:
     return {**_interval_metrics(row, 'cond'), **_fit_metrics(row)}
 
 
+#: The second binding constant of each two-step model: the one the one-step
+#: model sets to zero.
+_SECOND_KA = ('Ka_HG2', 'Ka_H2G')
+
+
+def _false_closures(row: dict[str, Any], field_name: str) -> dict[str, Any]:
+    """Per fit, whether the interval in *field_name* is closed on both sides and misses the truth.
+
+    The rate is over every draw, so it says how often a user is handed a finite
+    interval that is wrong — the number the coverage over the closed draws
+    leaves out, since it is divided by how many draws were closed. For the
+    second constant of a two-step model, ``~false_closed_low.KEY`` is the same
+    rate for the lower edge alone: closed, with the edge above the truth — a
+    false claim that the second step is as strong as that edge says, which an
+    interval open above makes as well.
+    """
+    out: dict[str, Any] = {}
+    for key, facts in (row.get(field_name) or {}).items():
+        none = facts['covers'] is None
+        out[f'~false_closed.{key}'] = None if none else not facts['open'] and not facts['covers']
+        if key in _SECOND_KA:
+            out[f'~false_closed_low.{key}'] = (
+                None if none else not facts['open_low'] and row['truth'][key] < facts['low']
+            )
+    return out
+
+
 def closed_coverage(row: dict[str, Any]) -> dict[str, Any]:
     """The interval at the inputs as entered, judged over every draw and over the closed draws alone."""
-    return {**_interval_metrics(row, 'cond', closed_judged=True), **_fit_metrics(row)}
+    return {**_interval_metrics(row, 'cond', closed_judged=True), **_false_closures(row, 'cond'), **_fit_metrics(row)}
 
 
 def aware_coverage(row: dict[str, Any]) -> dict[str, Any]:
@@ -230,9 +262,34 @@ def _noise_metrics(row: dict[str, Any]) -> dict[str, Any]:
     return {'~noise_share': row.get('noise_share')}
 
 
+#: Upper edges of the bins the largest weight ratio of a fit is read in, and
+#: how a series names each bin; the last bin is open.
+_WEIGHT_BINS = ((10.0, 'le10'), (1e3, '10-1e3'), (float('inf'), 'gt1e3'))
+
+
+def coverage_by_weight_ratio(row: dict[str, Any]) -> dict[str, Any]:
+    """The conditional interval's coverage in the bin of the fit's largest weight over its smallest.
+
+    A law read off few replicates can weight some points a thousand times
+    others, and where it does the interval rests on a handful of points.
+    Reported, never judged: it says at which spread of the weights the rate
+    over the grid holds.
+    """
+    ratio = row.get('weight_ratio')
+    if ratio is None:
+        return {}
+    label = next(name for edge, name in _WEIGHT_BINS if ratio <= edge)
+    return {f'~cov_wratio_{label}.{key}': facts['covers'] for key, facts in (row.get('cond') or {}).items()}
+
+
 def noise_law_conditional(row: dict[str, Any]) -> dict[str, Any]:
-    """The conditional interval of a weighted fit, with the share the law read beside it."""
-    return {**conditional_coverage(row), **_noise_metrics(row)}
+    """The conditional interval of a weighted fit, with the share the law read and the spread of its weights."""
+    return {
+        **conditional_coverage(row),
+        **_noise_metrics(row),
+        **coverage_by_weight_ratio(row),
+        '~weight_ratio': row.get('weight_ratio'),
+    }
 
 
 def noise_law_aware(row: dict[str, Any]) -> dict[str, Any]:
@@ -240,9 +297,24 @@ def noise_law_aware(row: dict[str, Any]) -> dict[str, Any]:
     return {**aware_coverage(row), **_noise_metrics(row)}
 
 
+def one_step_closure(row: dict[str, Any]) -> dict[str, Any]:
+    """Whether the reported interval of the second constant is closed below, on data with no second step.
+
+    A lower edge says the data hold a second step; where they hold none it is a
+    false claim of one, and the one-step test is what opens that side. The
+    p-value it read is reported beside the rate.
+    """
+    out: dict[str, Any] = {}
+    for key, facts in (row.get('aware') or {}).items():
+        if key in _SECOND_KA:
+            out[f'closed_low.{key}'] = None if facts['open_low'] is None else not facts['open_low']
+            out[f'~one_step_p.{key}'] = facts['one_step_p']
+    return out
+
+
 def _rejects(p_value: float | None) -> bool | None:
-    """Whether a test rejects at the level the application runs it at."""
-    return None if p_value is None else bool(p_value < DIAGNOSTIC_LEVEL)
+    """Whether a test rejects at the level the application runs it at: a p-value at or below it, as in the verdict."""
+    return None if p_value is None else bool(p_value <= DIAGNOSTIC_LEVEL)
 
 
 def conflict_rate(row: dict[str, Any]) -> dict[str, Any]:
@@ -677,6 +749,33 @@ CHECKS: dict[str, Check] = {
         ),
         stages=(50, 100, 400),
     ),
+    'one-step-null': Check(
+        name='one-step-null',
+        claim=(
+            'On titrations of the two stepwise models that carry no second step — the second constant a '
+            'millionth of the first, the first step at K1·h0 of 1 and 3, 12 and 30 points, one titration '
+            'of constant noise and three replicates of noise that grows with the signal — the reported '
+            'interval of the second constant is closed below no more often than the 0.5 % level of the '
+            'one-step test allows.'
+        ),
+        metrics=one_step_closure,
+        cases=tuple(scenarios.one_step_null_grid()),
+        row=score,
+        criterion=ONE_STEP_NULL,
+        criterion_reason=(
+            'A lower edge on the second constant tells the user the data hold a second step. The fit '
+            'opens that side unless the one-step model, the second constant at zero, is rejected at the '
+            "0.5 % level, so on data with no second step a closure is that test's false alarm, which its "
+            "level puts at 0.5 % of fits. Bradley's liberal criterion puts the acceptable rate at 1.5 times "
+            'the level, 0.75 %, and the claim is that limit: exact limits above it are a fail and limits '
+            'at or below it a pass, with nothing to call conservative. The F reference of the test is '
+            'conservative here, so the rate is expected well under the level. Every case runs 400 fits: '
+            'that is enough for a case to fail, but no closure in 400 still leaves an exact upper limit '
+            'of 0.92 %, so a case alone cannot pass, and the pass rests on the pooled row of each model, '
+            'which reads the 3200 fits of its eight cases.'
+        ),
+        stages=(400,),
+    ),
     'joint-region': Check(
         name='joint-region',
         claim=(
@@ -786,8 +885,10 @@ CHECKS: dict[str, Check] = {
         claim=(
             'The interval reported when every entered input is taken as exact holds the true binding '
             'constant as often as its 95 % level says on replicated titrations, whatever the noise does '
-            'along them: constant, growing with the signal, the two together, at two, three and four '
-            'replicates, and with whole replicates differing by a scale factor of three percent.'
+            'along them: constant, growing with the signal, and the two together, at two, three and '
+            'eight replicates and 8 and 20 points for every one-Ka assay in the medium and strong '
+            'regimes; with whole replicates differing by a scale factor of three percent; and for the '
+            'two-step model under the same noise at 12 points.'
         ),
         metrics=noise_law_conditional,
         cases=tuple(scenarios.noise_law_grid()),
@@ -797,16 +898,20 @@ CHECKS: dict[str, Check] = {
             _COVERAGE_REASON + ' The weights the fit uses are read off the same replicates the interval '
             'is computed from, so a law read too eagerly — or read off differences between whole '
             'replicates that are not noise about the curve at all — shows up here as an interval that '
-            'no longer holds its level. The share each fit read is reported beside the rate.'
+            'no longer holds its level. The share each fit read and the largest weight over the '
+            'smallest are reported beside the rate, with the coverage in bins of that ratio (up to 10, '
+            '10 to 1000, above 1000), since a law that spreads the weights far rests the interval on a '
+            'few points.'
         ),
     ),
     'noise-law-lof-null': Check(
         name='noise-law-lof-null',
         claim=(
             'On the same replicated titrations, every one of which the model does describe, the '
-            'lack-of-fit F test calls the model inadequate about as often as its level allows — with the '
-            'fit weighted by the law the replicates show and the pure error taken as their scatter about '
-            'their own image of the mean curve.'
+            'lack-of-fit test calls the model inadequate about as often as its level allows — with the '
+            'fit weighted by the law the replicates show, the pure error taken as their scatter about '
+            'their own image of the mean curve, and the F ratio read against a parametric bootstrap '
+            'drawn at that law.'
         ),
         metrics=lof_rate,
         cases=tuple(scenarios.noise_law_grid()),
@@ -815,7 +920,9 @@ CHECKS: dict[str, Check] = {
             _NULL_REASON + ' Both halves of this F ratio are affected by the weights: a law that '
             'misweights the points inflates the numerator, and a pure error that counted the difference '
             'between whole replicates as noise inflates the denominator until the test cannot fire at '
-            'all. The rate says whether the two are the quantities the F distribution describes.'
+            'all. A law read off the replicates is a random weighting the F distribution does not '
+            'describe, so the ratio is read against its own distribution under that law, the law read '
+            'again in every draw; the rate says whether that reference holds the level.'
         ),
         derived_from='noise-law-coverage',
     ),

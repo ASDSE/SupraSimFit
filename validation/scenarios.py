@@ -24,6 +24,7 @@ __all__ = [
     'COMPETITIVE',
     'DILUTION',
     'NOISY_FACTOR',
+    'NO_SECOND_STEP',
     'ONE_KA',
     'SHARED_STOCK',
     'STATED_SIGMA',
@@ -42,6 +43,7 @@ __all__ = [
     'misfit_power_grid',
     'noise_law_aware_grid',
     'noise_law_grid',
+    'one_step_null_grid',
     'owner_grid',
     'pooling_grid',
     'range_spec_grid',
@@ -584,38 +586,62 @@ def lof_null_grid() -> list[Scenario]:
     ]
 
 
-#: The scatter the noise law is read off, one entry per structure a replicated
-#: titration can carry: noise of constant size, noise proportional to the
-#: signal, the two together, the proportional case at the two smallest
-#: replicate counts a law can be read from, and constant noise measured on
-#: replicates that differ by a scale factor of three percent — a lamp or gain
-#: difference, which is not noise about the curve and must not be weighted as
-#: if it were.
-_NOISE_LAW_SCATTER: tuple[dict[str, Any], ...] = (
+#: The noise along a titration whose law the fit reads off its replicates:
+#: constant, proportional to the signal, and two percent of the signal with a
+#: constant floor of half a percent of the range under it.
+_NOISE_LAW_SHAPES: tuple[dict[str, Any], ...] = (
+    {'noise': 0.02},
+    {'noise': 0.02, 'proportional': True},
+    {'noise': 0.02, 'proportional': True, 'noise_floor': 0.005},
+)
+
+#: Constant noise measured on four replicates that differ by a scale factor of
+#: three percent — a lamp or gain difference, which is not noise about the
+#: curve and must not be weighted as if it were.
+_LAMP: dict[str, Any] = {'noise': 0.01, 'replicates': 4, 'replicate_scale': 0.03}
+
+#: The scatter the two-step model is read under, at 12 points: each shape at
+#: four replicates, the proportional one at the two smallest replicate counts a
+#: law can be read from, and the lamp case.
+_TWO_STEP_SCATTER: tuple[dict[str, Any], ...] = (
     {'noise': 0.02, 'replicates': 4},
     {'noise': 0.02, 'proportional': True, 'replicates': 4},
     {'noise': 0.02, 'proportional': True, 'noise_floor': 0.005, 'replicates': 4},
     {'noise': 0.02, 'proportional': True, 'replicates': 2},
     {'noise': 0.02, 'proportional': True, 'replicates': 3},
-    {'noise': 0.01, 'replicates': 4, 'replicate_scale': 0.03},
+    _LAMP,
 )
 
 
 def noise_law_grid() -> list[Scenario]:
     """Replicated titrations whose noise the fit reads a law off, inputs exact.
 
-    One assay of each family — a guest titrated into host and dye, a dye
-    displaced, a direct binding and a two-step model — in the medium and
-    strong regimes, against the six kinds of scatter in
-    :data:`_NOISE_LAW_SCATTER`. The inputs are exact, so the reported interval
-    is the conditional one and what the rows measure is the weighting alone.
+    Every one-Ka assay in the medium and strong regimes, against each shape of
+    :data:`_NOISE_LAW_SHAPES` at two, three and eight replicates and at 8 and
+    20 points — two replicates of constant noise are where a law read off
+    their scatter can spread the weights furthest — and against the lamp case
+    (:data:`_LAMP`) at 12 points. Beside them the two-step model in the same
+    regimes under :data:`_TWO_STEP_SCATTER` at 12 points. The inputs are
+    exact, so the reported interval is the conditional one and what the rows
+    measure is the weighting alone.
     """
-    return [
-        Scenario(assay=assay, regime=regime, n_points=12, **scatter)
-        for assay in ('GDA', 'IDA', 'DBA_HtoD', 'DBA_HG2')
+    grid = [
+        Scenario(assay=assay, regime=regime, n_points=n, replicates=m, **shape)
+        for assay in ONE_KA
         for regime in (10.0, 1000.0)
-        for scatter in _NOISE_LAW_SCATTER
+        for shape in _NOISE_LAW_SHAPES
+        for m in (2, 3, 8)
+        for n in (8, 20)
     ]
+    grid += [
+        Scenario(assay=assay, regime=regime, n_points=12, **_LAMP) for assay in ONE_KA for regime in (10.0, 1000.0)
+    ]
+    grid += [
+        Scenario(assay='DBA_HG2', regime=regime, n_points=12, **scatter)
+        for regime in (10.0, 1000.0)
+        for scatter in _TWO_STEP_SCATTER
+    ]
+    return grid
 
 
 def noise_law_aware_grid() -> list[Scenario]:
@@ -893,8 +919,10 @@ def replicate_grid(shifted: bool) -> list[Scenario]:
 
     Three, five and eight replicates of every one-Ka assay across the three
     regimes, inputs exact. With *shifted* false, either every replicate is
-    measured alike or one carries three times the noise of the others: any
-    replicate the test leaves out of the average there is a false exclusion.
+    measured alike or one carries three times the noise of the others: a
+    replicate measured like the others that the test leaves out of the average
+    is a false exclusion, and how often the noisy one is left out is the power
+    of Cochran's test to exclude a replicate whose scatter is out of line.
     With *shifted* true, one replicate measured at three times or a third of
     the true binding constant, and at five and eight replicates two at three
     times: how often the test finds them is its power.
@@ -913,6 +941,30 @@ def replicate_grid(shifted: bool) -> list[Scenario]:
         for assay in ONE_KA
         for regime in (0.1, 10.0, 1000.0)
         for m, departure in departures
+    ]
+
+
+#: First to second binding constant of a two-step titration whose second step
+#: is absent: at a millionth of the first, the second constant binds nothing a
+#: titration can see.
+NO_SECOND_STEP = 1e6
+
+
+def one_step_null_grid() -> list[Scenario]:
+    """Two-step models fitted to titrations with no second step, inputs exact.
+
+    Both stepwise models with the second constant at
+    1/:data:`NO_SECOND_STEP` of the first, the first step at ``K1·h0`` of 1
+    and 3, 12 and 30 points, one titration of constant noise and three
+    replicates of noise that grows with the signal. A lower edge on the second
+    constant here claims a step the data do not carry.
+    """
+    return [
+        Scenario(assay=assay, regime=regime, k_ratio=NO_SECOND_STEP, n_points=n, **noise)
+        for assay in TWO_KA
+        for regime in (1.0, 3.0)
+        for n in (12, 30)
+        for noise in ({'noise': 0.01}, {'noise': 0.02, 'proportional': True, 'replicates': 3})
     ]
 
 
@@ -955,6 +1007,7 @@ def all_scenarios() -> Iterator[Scenario]:
         reference_grid,
         pooling_grid,
         joint_grid,
+        one_step_null_grid,
         before_after_grid,
         dilution_grid,
         dilution_ignored_grid,

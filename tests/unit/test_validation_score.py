@@ -175,8 +175,13 @@ def test_a_row_says_what_the_replicates_showed_about_the_noise():
     assert replicated['noise_basis'] == 'replicates'
     assert 0.0 <= replicated['noise_share'] <= 1.0
     # The scenario's noise grows with the signal, so the law should not read it
-    # as flat; the share is what the weights are built from.
+    # as flat; the share is what the weights are built from, and the weights
+    # then differ along the titration.
     assert replicated['noise_share'] > 0.0
+    assert replicated['weight_ratio'] > 1.0
+    # A law read off the replicates is a law the F distribution does not
+    # describe, so the misfit test's reference is the bootstrap.
+    assert replicated['misfit_reference'] == 'bootstrap'
 
 
 def test_a_single_titration_reports_that_its_noise_was_taken_as_constant():
@@ -185,6 +190,7 @@ def test_a_single_titration_reports_that_its_noise_was_taken_as_constant():
     assert row['refused'] is None and row['error'] is None
     assert row['noise_basis'] == 'single_titration'
     assert row['noise_share'] == 0.0
+    assert row['weight_ratio'] == 1.0, 'weights of one are no weights, and their ratio is exactly one'
 
 
 def replace_replicates(scenario: Scenario, m: int) -> Scenario:
@@ -457,3 +463,129 @@ def test_a_verdict_that_blames_the_model_the_inputs_or_both_is_a_false_alarm_on_
         assert checks.false_alarm({'verdict': verdict})['alarm'] is (verdict in blamed)
     assert checks.false_alarm({'verdict': None}) == {'alarm': None}
     assert checks.CHECKS['verdict-false-alarm'].criterion is checks.NULL_RATE
+
+
+def test_an_interval_s_facts_carry_its_one_step_p_value_and_whether_its_lower_side_is_open():
+    """The one-step rule opens the lower side of a second constant; a row that lost either fact cannot show it."""
+    second = SimpleNamespace(
+        low=1e-8,
+        high=1e3,
+        open_low=True,
+        open_high=False,
+        split=False,
+        limited_by_low='',
+        limited_by_high='',
+        one_step_p=0.3,
+    )
+    facts = interval_facts(second, truth=1.0, estimate=10.0)
+    assert facts['one_step_p'] == 0.3
+    assert facts['open_low'] is True and facts['open'] is True
+    closed = interval_facts(interval(1e5, 1e7), truth=1e6, estimate=2e6)
+    assert closed['open_low'] is False and closed['one_step_p'] is None
+    missing = interval_facts(None, truth=1.0, estimate=10.0)
+    assert missing['open_low'] is None and missing['one_step_p'] is None
+
+
+#: A two-step titration whose second step is absent: the second constant is a
+#: millionth of the first. Twelve points of one titration keeps it in the fast
+#: layer.
+ONE_STEP = Scenario(assay='DBA_HG2', regime=1.0, n_points=12, noise=0.01, k_ratio=1e6)
+
+
+def test_a_two_step_row_carries_the_one_step_p_value_of_the_second_constant_alone():
+    """The pretest is of the second step; the first constant has none, on either interval."""
+    row = score(ONE_STEP, 0)
+    assert row['refused'] is None and row['error'] is None
+    for field in ('cond', 'aware'):
+        assert row[field]['Ka_HG']['one_step_p'] is None
+        p = row[field]['Ka_HG2']['one_step_p']
+        assert 0.0 <= p <= 1.0
+    metrics = checks.CHECKS['one-step-null'].metrics(row)
+    assert set(metrics) >= {'closed_low.Ka_HG2'}
+    assert not any(series.endswith('.Ka_HG') for series in metrics)
+
+
+def facts(
+    covers: bool, open_: bool, open_low: bool | None = None, one_step_p: float | None = None, low: float = 1.0
+) -> dict:
+    """The facts of one interval as a row stores them."""
+    return {
+        'covers': covers,
+        'open': open_,
+        'open_low': open_ if open_low is None else open_low,
+        'split': False,
+        'limited': False,
+        'width': 1.0,
+        'low': low,
+        'one_step_p': one_step_p,
+    }
+
+
+def test_a_closed_interval_that_misses_the_truth_is_counted_over_every_fit():
+    """The false-closure rate is per fit: closed and wrong, over all draws, beside the coverage of the closed ones."""
+    truth = {'Ka_HG2': 1.0}
+    metrics = [
+        checks.closed_coverage({'truth': truth, 'cond': {'Ka_HG2': facts(covers, open_)}})['~false_closed.Ka_HG2']
+        for covers, open_ in ((False, False), (True, False), (False, True), (True, True))
+    ]
+    assert metrics == [True, False, False, False]
+    none = {'truth': truth, 'cond': {'Ka_HG2': {**facts(False, False), 'covers': None}}}
+    assert checks.closed_coverage(none)['~false_closed.Ka_HG2'] is None
+
+
+def test_a_closed_lower_edge_of_the_second_constant_above_the_truth_is_counted_whatever_the_upper_side_does():
+    """Open above and closed below a decade over the truth claims a second step that strong: a false closure too."""
+    truth = {'Ka_HG': 1e5, 'Ka_HG2': 10.0}
+    cases = (
+        ({'open_low': False, 'low': 100.0}, True),  # runs to the upper bound, lower edge a decade too high
+        ({'open_low': False, 'low': 1.0}, False),  # lower edge below the truth
+        ({'open_low': True, 'low': 1e-8}, False),  # open below: no claim
+    )
+    for lower, expected in cases:
+        row = {
+            'truth': truth,
+            'cond': {'Ka_HG': facts(True, False), 'Ka_HG2': {**facts(lower['low'] <= 10.0, True), **lower}},
+        }
+        metrics = checks.closed_coverage(row)
+        assert metrics['~false_closed_low.Ka_HG2'] is expected
+        assert metrics['~false_closed.Ka_HG2'] is False, 'open above, so the two-sided series does not count it'
+        assert '~false_closed_low.Ka_HG' not in metrics, 'the first constant makes no claim about a second step'
+
+
+def test_the_one_step_null_judges_a_second_constant_closed_below():
+    """On data with no second step, a lower edge is a claim that the step is there; the first constant is not asked."""
+    row = {
+        'aware': {
+            'Ka_HG': facts(True, False),
+            'Ka_H2G': facts(True, True, open_low=False, one_step_p=0.001),
+        }
+    }
+    metrics = checks.CHECKS['one-step-null'].metrics(row)
+    assert metrics['closed_low.Ka_H2G'] is True
+    assert metrics['~one_step_p.Ka_H2G'] == 0.001
+    assert not any(series.endswith('.Ka_HG') for series in metrics)
+    opened = {'aware': {'Ka_H2G': facts(True, True, open_low=True, one_step_p=0.4)}}
+    assert checks.CHECKS['one-step-null'].metrics(opened)['closed_low.Ka_H2G'] is False
+
+
+def test_the_one_step_null_is_held_to_bradley_s_upper_limit_of_the_test_s_level():
+    """Half a percent is the level; 1.5 times it is the limit, judged with the exact limits of the observed rate."""
+    from core.pipeline.varpro import SECOND_STEP_LEVEL
+
+    criterion = checks.CHECKS['one-step-null'].criterion
+    assert criterion.nominal == pytest.approx(1.5 * SECOND_STEP_LEVEL)
+    assert criterion.verdict(0, 1000) == 'pass'
+    # No closure in 400 draws still leaves an exact upper limit of 0.0092.
+    assert criterion.verdict(0, 400) == 'undecided'
+    # 2 % of fits closed: the exact lower limit, 0.012, is past the limit.
+    assert criterion.verdict(20, 1000) == 'fail'
+
+
+def test_the_coverage_of_a_weighted_fit_is_split_by_how_far_its_weights_spread():
+    """An estimated law that weights some points a thousand times others is where the interval undercovers."""
+    for ratio, label in ((1.0, 'le10'), (10.0, 'le10'), (11.0, '10-1e3'), (1e3, '10-1e3'), (2e3, 'gt1e3')):
+        row = {'cond': {'Ka_dye': facts(True, False)}, 'weight_ratio': ratio, 'noise_share': 0.5}
+        metrics = checks.noise_law_conditional(row)
+        split = {series for series in metrics if series.startswith('~cov_wratio_')}
+        assert split == {f'~cov_wratio_{label}.Ka_dye'}, ratio
+        assert metrics['~weight_ratio'] == ratio
