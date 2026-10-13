@@ -2132,8 +2132,8 @@ def test_a_source_name_wider_than_its_bar_slot_is_cut_to_it(qapp):
     assert axis.tickValues(-0.5, 1.5, 140) == [(1.0, [0.0, 1.0])]
 
 
-def test_the_additions_row_says_the_interval_the_fit_reports_does_not_include_it(qapp):
-    """The fit takes the titrant concentrations as entered, so the random error of the additions is not in its interval."""
+def test_the_additions_row_says_the_interval_the_fit_reports_holds_it_when_stated(qapp):
+    """A stated random error of each addition widens the fit's interval; the analysis ranks it against the rest."""
     from PyQt6.QtWidgets import QLabel
 
     from gui.plotting.sensitivity_widget import SensitivityWidget
@@ -2141,8 +2141,11 @@ def test_the_additions_row_says_the_interval_the_fit_reports_does_not_include_it
     w = SensitivityWidget()
     w.update_result(_shared_source_result())
     texts = [label.text() for label in w._results_host.widget().findChildren(QLabel)]
-    assert any('does not include the random error of each addition' in text for text in texts)
-    assert not any('already inside' in text for text in texts)
+    assert any(
+        'The random error of each addition is part of the reported interval when stated under Input Uncertainty' in text
+        for text in texts
+    )
+    assert not any('does not include the random error of each addition' in text for text in texts)
 
     # A run with no additions has nothing to say about them.
     other = SensitivityWidget()

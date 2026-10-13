@@ -27,13 +27,16 @@ above it.
 
 Only the SHAPE of the variance reaches the fit. The confidence interval's
 threshold is a residual-variance F threshold, which profiles the noise level
-out, so the level enters no inference; it is reported, as the floor ``a`` in au
-and the proportional part ``b`` as a fraction of the signal. What the fit gets
-is one vector of point weights, ``NoiseLaw.weights``, which
-:class:`~core.pipeline.varpro.Projection` whitens its signal rows and design
-with. A single titration cannot show how the noise varies with the signal, and
-is fitted with weights of exactly one — the arithmetic of a fit without a noise
-law, to the last bit.
+out, so the level is reported, as the floor ``a`` in au and the proportional
+part ``b`` as a fraction of the signal, and is otherwise used only to draw the
+simulated replicates of the lack-of-fit test. What the fit gets is one vector
+of point weights, ``NoiseLaw.weights``, read off the curve the caller passes,
+which :class:`~core.pipeline.varpro.Projection` whitens its signal rows and
+design with; and the range of shares the scatter is consistent with,
+``NoiseLaw.share_set``, over which the interval allows for the share being
+an estimate. A single titration cannot show how the noise varies with the
+signal, and is fitted with weights of exactly one — the arithmetic of a fit
+without a noise law, to the last bit.
 """
 
 from __future__ import annotations
@@ -44,6 +47,7 @@ from enum import Enum
 import numpy as np
 from scipy.optimize import minimize_scalar
 from scipy.special import digamma
+from scipy.stats import chi2
 
 #: Replicates needed to read a noise law: a variance needs two values.
 MIN_REPLICATES = 2
@@ -66,6 +70,12 @@ _SHARE_NODES = 101
 _SHARE_XATOL = 1e-5
 
 _SHARE_GRID = np.linspace(0.0, 1.0, _SHARE_NODES)
+
+# Confidence level of the share set. The interval takes the worst case of its
+# design effect over this set, the device of Berger and Boos (1994, JASA
+# 89:1012) for a nuisance parameter that is only estimated: the set misses the
+# true share with probability 0.01, and the interval's level is kept as it is.
+_SHARE_SET_LEVEL = 0.99
 
 
 class NoiseBasis(Enum):
@@ -105,6 +115,10 @@ class NoiseLaw:
         law was read on. A point below it takes the weight of a point at it:
         the law is not extrapolated beneath the signals that showed it. ``0``
         where a point the law was read on has a mean of zero.
+    share_set : tuple[float, float]
+        The shares the scatter is consistent with at 99 %, ``(low, high)``,
+        always containing *share* (:func:`noise_law`). ``(0.0, 0.0)`` where no
+        law was read.
     """
 
     basis: NoiseBasis
@@ -114,6 +128,7 @@ class NoiseLaw:
     reference: float = 0.0
     n_replicates: int = 1
     u_floor: float = 0.0
+    share_set: tuple[float, float] = (0.0, 0.0)
 
     @property
     def estimated(self) -> bool:
@@ -128,15 +143,47 @@ class NoiseLaw:
         """
         return self.floor**2 + (self.proportional * self.reference) ** 2
 
-    def weights(self, mean_signal: np.ndarray) -> np.ndarray:
-        """Weight of every titration point, ``1 / ((1 - share) + share·max(u, u_floor))``, ``u = ybar²/reference²``.
+    def relative_variance(self, signal: np.ndarray, share: float | None = None) -> np.ndarray:
+        """The law's variance at *signal* over its variance at the rms signal, ``(1 - s) + s·max(u, u_floor)``.
+
+        ``u = signal²/reference²`` and ``s`` is *share*, the law's own share
+        when omitted; a point's variance is ``level`` times this. Another
+        share is the variance the same scatter states under that share, which
+        is how the interval reads the law over its :attr:`share_set`.
+
+        Where no law was read, and where ``s`` is exactly zero, this is
+        ``np.ones`` — exactly.
+
+        Parameters
+        ----------
+        signal : np.ndarray
+            The signal at each titration point, in au.
+        share : float or None
+            The share to read the variance at; the law's own when omitted.
+        """
+        signal = np.asarray(signal, dtype=float)
+        s = self.share if share is None else share
+        if not self.estimated or s == 0.0:
+            return np.ones(signal.shape)
+        return (1.0 - s) + s * np.maximum(signal**2 / self.reference**2, self.u_floor)
+
+    def weights(self, signal: np.ndarray) -> np.ndarray:
+        """Weight of every titration point, ``1 / relative_variance(signal)``.
 
         The weights are the inverse of the law's variance, scaled to 1 at the
         rms signal, so a point the replicates show to be twice as precise
-        counts four times. They are read off the measured means rather than the
-        fitted curve, and are computed once, before the fit: there is no
-        reweighting loop, and the conditional fit, the input-aware fit, every
-        profile point and every sensitivity sample see the same weights.
+        counts four times. The caller passes the curve the weights are read
+        off. Where the share is above zero that is the fitted curve of a first
+        fit, made with the weights at the means of the replicates: two-stage
+        generalised least squares with a variance that depends on the mean
+        (Carroll and Ruppert 1988, *Transformation and Weighting in
+        Regression*, ch. 2-3; Davidian and Carroll 1987, JASA 82:1079). The
+        curve, and not the means, because a mean that its own noise pushed
+        near zero would otherwise get a weight set by that same noise: a few
+        replicates of constant noise give weight ratios of 1e5 to 1e9 there
+        and land the binding constant many decades off. The weights are then
+        fixed: the conditional fit, the input-aware fit, every profile point
+        and every sensitivity sample see the same ones.
 
         Where no law was read, and where the share came out exactly zero, this
         is ``np.ones`` — exactly, so that whitening by its square root multiplies
@@ -148,19 +195,14 @@ class NoiseLaw:
         and it is large when one of them has a mean near zero: a point whose
         mean is 1 % of the largest can carry 1e4 times the weight of the top
         point. That is the right weight when the noise really is proportional
-        down to that point, and a share read off a few replicates of constant
-        noise can come out near 1 by chance and give it all the same.
+        down to that point.
 
         Parameters
         ----------
-        mean_signal : np.ndarray
-            The mean of the replicates at each titration point, in au — the
-            signal the fit is run against.
+        signal : np.ndarray
+            The curve to read the weights off at each titration point, in au.
         """
-        mean = np.asarray(mean_signal, dtype=float)
-        if not self.estimated or self.share == 0.0:
-            return np.ones(mean.shape)
-        return 1.0 / ((1.0 - self.share) + self.share * np.maximum(mean**2 / self.reference**2, self.u_floor))
+        return 1.0 / self.relative_variance(signal)
 
     def describe(self) -> str:
         """The law in one plain sentence, for the summary, the report and the CSV.
@@ -182,12 +224,17 @@ class NoiseLaw:
 
     def to_dict(self) -> dict:
         """Every field, as written to a results file: the basis token and finite numbers."""
-        return {**asdict(self), 'basis': self.basis.value}
+        return {**asdict(self), 'basis': self.basis.value, 'share_set': list(self.share_set)}
 
     @classmethod
     def from_dict(cls, d: dict) -> 'NoiseLaw':
-        """The law a results file holds; a file without ``u_floor`` holds no floor on ``u``."""
-        return cls(**{**d, 'basis': NoiseBasis(d['basis'])})
+        """The law a results file holds.
+
+        A file without ``u_floor`` holds no floor on ``u``, and one without
+        ``share_set`` holds the share alone, ``(share, share)``.
+        """
+        share_set = d.get('share_set', (d.get('share', 0.0),) * 2)
+        return cls(**{**d, 'basis': NoiseBasis(d['basis']), 'share_set': (float(share_set[0]), float(share_set[1]))})
 
 
 def _two_digits(value: float) -> str:
@@ -300,6 +347,32 @@ def noise_law(signals: np.ndarray | None) -> NoiseLaw:
     of the replicates about their own line, which under normal noise is
     independent of the mean the fit sees.
 
+    The share set is the range of shares the same scatter is consistent with,
+    read from the scatter at equal weights that the grid search computes at its
+    first node. Detrending a replicate is a fixed linear map ``I - H`` (``H`` the
+    projector on ``[1, ybar]``), so under the share ``lam`` the scatter at point
+    ``i`` is ``c·d_i(lam)`` times a chi-square on ``m - 1`` degrees of freedom,
+    ``d_i(lam) = sum_j (I - H)_ij² g_j(lam)``. With ``S`` the ``N`` points that
+    scatter and ``s_i`` their summed squared scatter, the gamma pseudo-likelihood
+    with the level ``c`` profiled out is
+
+    ``l(lam) = -(m - 1)/2 · [sum_S log d_i(lam) + N log(sum_S (s_i / d_i(lam)) / (N (m - 1)))]``
+
+    and the set is the hull of the 101 grid shares with
+    ``((n - 2)/n) · 2 (max l - l(lam)) <= chi2_1(0.99)``, together with the
+    estimate. The factor ``(n - 2)/n`` counts the scatter's dimensions: the
+    affine detrending leaves ``(m - 1)(n - 2)`` of the ``(m - 1) n``, and a
+    likelihood that treats every point's scatter as a chi-square of its own
+    counts ``n / (n - 2)`` times the evidence there is. The detrending is held
+    at equal weights because a detrending weighted by ``1/g(lam)`` passes
+    through any point that ``lam`` gives most of the weight: that point's
+    scatter then stays put while its ``g`` shrinks, and the likelihood climbs
+    without bound toward every share that gives one point most of the weight —
+    the set collapses onto such a share whatever the noise. On simulated
+    constant, proportional and mixed noise (m = 2 to 8, n = 8 to 30, lowest
+    signal 0.4 % to 30 % of the highest) the set holds the true share in 0.97
+    to 1.00 of datasets.
+
     Parameters
     ----------
     signals : np.ndarray or None
@@ -332,7 +405,9 @@ def noise_law(signals: np.ndarray | None) -> NoiseLaw:
     if scatters.sum() < _MIN_SCATTER_POINTS:
         return too_few
     u_floor = float(u[scatters].min())
-    found = _read_share(y, np.maximum(u, u_floor), scatters, refine=True)
+    relative = np.maximum(u, u_floor)
+    grid = _scatter_sums(y, relative, _SHARE_GRID)
+    found = _read_share(y, relative, scatters, refine=True, grid=grid)
     if found is None:
         return too_few
     share, sums, leverage = found
@@ -348,7 +423,32 @@ def noise_law(signals: np.ndarray | None) -> NoiseLaw:
         reference=reference,
         n_replicates=m,
         u_floor=u_floor,
+        share_set=_share_set(share, grid[0][0], mean, relative, scatters, m),
     )
+
+
+def _share_set(
+    share: float, scatter: np.ndarray, mean: np.ndarray, relative: np.ndarray, scatters: np.ndarray, m: int
+) -> tuple[float, float]:
+    """The hull of the grid shares the scatter is consistent with at 99 %, and *share* (see :func:`noise_law`).
+
+    *scatter* is ``sum_r e_ri²`` at equal weights for ``m`` replicates of mean
+    *mean*. The likelihood ratio is ``(m - 1)·(A(lam) - min A)`` with
+    ``A = sum_S log d_i + N log sum_S s_i / d_i``: ``2 (max l - l)`` once the
+    constants of ``l`` cancel. A share that makes a variance zero is outside
+    the set.
+    """
+    n = mean.size
+    centred = mean - mean.mean()
+    kept = (np.eye(n) - 1.0 / n - np.outer(centred, centred) / (centred @ centred)) ** 2
+    g = (1.0 - _SHARE_GRID)[:, np.newaxis] + _SHARE_GRID[:, np.newaxis] * relative
+    d = (g @ kept.T)[:, scatters]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        a = np.sum(np.log(d), axis=-1) + int(scatters.sum()) * np.log(np.sum(scatter[scatters] / d, axis=-1))
+    a = np.where(np.isfinite(a), a, np.inf)
+    ratio = (m - 1) * (a - a.min())
+    accepted = _SHARE_GRID[(n - 2) / n * ratio <= chi2.ppf(_SHARE_SET_LEVEL, 1)]
+    return float(min(accepted.min(), share)), float(max(accepted.max(), share))
 
 
 def _scattering_points(signals: np.ndarray) -> np.ndarray:
@@ -382,7 +482,12 @@ def _scattering_points(signals: np.ndarray) -> np.ndarray:
 
 
 def _read_share(
-    signals: np.ndarray, relative: np.ndarray, scatters: np.ndarray, *, refine: bool
+    signals: np.ndarray,
+    relative: np.ndarray,
+    scatters: np.ndarray,
+    *,
+    refine: bool,
+    grid: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[float | np.ndarray, np.ndarray, np.ndarray] | None:
     """The share that makes the whitened scatter flattest, with the scatter it leaves.
 
@@ -403,6 +508,9 @@ def _read_share(
         The points ``J`` sums over (:func:`_scattering_points`).
     refine : bool
         Refine the best node by bounded Brent; one set of replicates only.
+    grid : tuple[np.ndarray, np.ndarray] or None
+        The scatter of :func:`_scatter_sums` on the share grid, where the
+        caller has it already; computed here when omitted.
 
     Returns
     -------
@@ -412,7 +520,7 @@ def _read_share(
         leverages, shape ``(..., n)`` each. ``None`` where ``J`` is infinite at
         every node of a refined search.
     """
-    sums, leverage = _scatter_sums(signals, relative, _SHARE_GRID)
+    sums, leverage = _scatter_sums(signals, relative, _SHARE_GRID) if grid is None else grid
     values = _flatness(sums, leverage, scatters)
     best = values.argmin(axis=-1)
     if not refine:

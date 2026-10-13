@@ -22,7 +22,12 @@ states for them, and the interval of Ka is cut from the penalised profile
   stated as a range stays inside it and is reported on its edge when the truth
   lies beyond, where it is held and absorbs nothing of the other inputs;
 - a Ka the model cannot be solved at opens the interval the way the fixed-input
-  one does; too few points and a stop request are refused in plain language.
+  one does; too few points and a stop request are refused in plain language;
+- a design effect of one changes no bit; a larger one widens the acceptance
+  excess to ``n log(1 + kappa m F / nu)``, so the closed edges move out onto
+  that cut-off of the independent objective, the drawn cut follows it, the
+  one-step test is widened with it, and with no varying input the result is
+  the fixed-input interval at the same design effect.
 """
 
 import numpy as np
@@ -353,6 +358,78 @@ def test_with_no_varying_input_the_result_is_the_fixed_input_fit_and_its_own_int
     assert conflict(result) is None and input_shifts(result) == {}
     # A spec that does not vary is no constraint at all.
     assert constraints(ErrorModel(specs={'h0': InputSpec.sigma_pct(0.0)}), assay.get_conditions()) == ()
+
+
+def test_with_no_varying_input_and_a_design_effect_the_result_is_the_fixed_input_interval_at_that_effect():
+    assay, projection = _ida(15, 0.02, 5)
+    fit = projection.fit()
+    n = assay.n_points
+    plain = projection.interval('Ka_guest', fit)
+    widened = projection.interval('Ka_guest', fit, inflation=2.0)
+    assert widened.low < plain.low and plain.high < widened.high
+    # An interval cut at another design effect is not handed back: the one at the effect asked for is.
+    result = input_aware(projection, fit, (), conditional={'Ka_guest': plain}, inflation={'Ka_guest': 2.0})
+    profile = result.profiles['Ka_guest']
+    assert profile.interval == widened and profile.interval.inflation == 2.0
+    assert profile.threshold == pytest.approx(n * np.log(projection.threshold(fit, inflation=2.0)), rel=1e-14)
+    assert profile.threshold > n * np.log(projection.threshold(fit))
+    # One cut at the effect asked for is the object returned.
+    again = input_aware(projection, fit, (), conditional={'Ka_guest': widened}, inflation={'Ka_guest': 2.0})
+    assert again.profiles['Ka_guest'].interval is widened
+
+
+def test_a_design_effect_of_one_is_the_fit_without_one_to_the_last_bit(ida_case):
+    _, _, _, plain = ida_case
+    assay, projection = _ida(15, 0.01, 2)
+    one = input_aware(projection, projection.fit(), _sigma_constraints(assay, _IDA_SIGMAS), inflation={'Ka_guest': 1.0})
+    assert one.fit.ka == plain.fit.ka and one.fit.objective == plain.fit.objective
+    a, b = plain.profiles['Ka_guest'], one.profiles['Ka_guest']
+    assert a.interval == b.interval and a.threshold == b.threshold
+    assert np.array_equal(a.grid, b.grid) and np.array_equal(a.objective, b.objective)
+    assert np.array_equal(a.cut, b.cut)
+
+
+def test_a_design_effect_moves_the_closed_edges_out_onto_the_widened_cut_off_of_the_independent_objective(ida_case):
+    assay, projection, fit, plain = ida_case
+    n = assay.n_points
+    result = input_aware(projection, fit, _sigma_constraints(assay, _IDA_SIGMAS), inflation={'Ka_guest': 2.0})
+    profile, before = result.profiles['Ka_guest'], plain.profiles['Ka_guest'].interval
+    interval = profile.interval
+    # The optimum and its degrees of freedom are those of the fit without the design effect.
+    assert result.fit.objective == pytest.approx(plain.fit.objective, abs=1e-9)
+    assert interval.dof == pytest.approx(before.dof, rel=1e-9) and interval.inflation == 2.0
+    assert interval.low < before.low and before.high < interval.high
+    assert not (interval.open_low or interval.open_high)
+    excess = n * np.log1p(2.0 * f_dist.ppf(LEVEL, 1, interval.dof) / interval.dof)
+    assert profile.threshold == pytest.approx(result.fit.objective + excess, rel=1e-12)
+    # The drawn cut is that threshold wherever the solution pins nothing the optimum fits, and never below it.
+    assert profile.cut.min() == profile.threshold
+    for edge in (interval.low, interval.high):
+        assert _ida_reference(assay, projection, edge) == pytest.approx(profile.threshold, rel=1e-6)
+
+
+def test_a_design_effect_widens_the_input_aware_one_step_test_with_its_cut_off():
+    """The weak second step of the fixed-input test, the first constant held and the host free within 3 %.
+
+    The rise to the model without the second step is one and the same at both design effects; judged by the
+    F tail of that rise divided by the effect, the data reject the one-step model at 0.005 under the plain cut-off
+    and no longer under the cut-off widened by 2, where the lower side opens at the bound with the fixed-input one.
+    """
+    held = Q_(1e5, '1/M')
+    projection, key = _stepwise(AssayType.DBA_HG2, 1e5, 2e4, 10, 0, Ka_HG=(held, held))
+    fit = projection.fit()
+    cons = _sigma_constraints(projection.assay, {'h0': 0.03})
+    plain, wide = (input_aware(projection, fit, cons, inflation={key: kappa}).profiles[key] for kappa in (1.0, 2.0))
+    nu = plain.interval.dof
+    assert wide.interval.dof == nu
+    # At zero the solve pins no signal parameter the optimum fits (the fixed-input test's two solves say so), so
+    # one parameter is given up and F(1, nu) is the reference.
+    rise = [f_dist.isf(profile.interval.one_step_p, 1, nu) * kappa for profile, kappa in ((plain, 1.0), (wide, 2.0))]
+    assert rise[1] == pytest.approx(rise[0], rel=1e-9)
+    assert plain.interval.one_step_p < SECOND_STEP_LEVEL < wide.interval.one_step_p
+    assert not plain.interval.open_low
+    assert (wide.interval.open_low, wide.interval.low) == (True, 1e-8)
+    assert projection.interval(key, fit, inflation=2.0).open_low
 
 
 def test_weights_of_exactly_one_are_the_fit_without_weights_to_the_last_bit():

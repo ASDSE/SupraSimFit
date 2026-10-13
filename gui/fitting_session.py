@@ -356,12 +356,14 @@ def _stated_as(result: FitResult) -> str:
     """What *result* was told about its inputs and about what they share, read back from its own record.
 
     Each source named and valued as the Input Uncertainty panel writes it — an
-    input's own uncertainty and, after them, the ones several inputs share — so
-    a note about a fit made with other uncertainties says which ones they were
-    and they can be set back without opening the file.
+    input's own uncertainty, after them the ones several inputs share, and last
+    the random error of each addition with its mode and what the replicates
+    are — so a note about a fit made with other uncertainties says which ones
+    they were and they can be set back without opening the file.
     """
-    sources = ErrorModel.from_dict(result.fit_config).source_specs()
-    if not sources:
+    errors = ErrorModel.from_dict(result.fit_config)
+    sources = errors.source_specs()
+    if not sources and errors.additions is None:
         return _NO_UNCERTAINTY_STATED
     labels = result_input_labels(result.assay_type, result.fit_config)
     stated = []
@@ -373,6 +375,13 @@ def _stated_as(result: FitResult) -> str:
         # result whose assay this version does not know.
         name = labels.get(key) or source_name(key, labels)
         stated.append(f'{name} {stated_uncertainty(spec, unit)}')
+    additions = errors.additions
+    if additions is not None:
+        mode = 'sequential additions into one cuvette' if additions.sequential else 'separately prepared samples'
+        replicates = 'separate titrations' if additions.separate_titrations else 'repeated reads of one titration'
+        stated.append(
+            f'a random error of each addition of σ {additions.sigma_pct:g} % ({mode}; replicates are {replicates})'
+        )
     return and_join(stated)
 
 
@@ -647,15 +656,13 @@ class FittingSession(QWidget):
         custom_bounds = self._bounds_panel.current_bounds()
         if custom_bounds:
             config = replace(config, custom_bounds=custom_bounds)
-        # The uncertainties widen the reported interval to cover them; a fit
-        # that cannot be made with the inputs as free as they were stated to be
-        # names them in its refusal the way the panel names them. The random
-        # error of each addition is scatter the fit's own residuals already
-        # measure, so it is left out here (``for_fit``) and a change to it never
-        # puts a fit out of date.
+        # The uncertainties, the random error of each addition included, widen
+        # the reported interval to cover them; a fit that cannot be made with
+        # the inputs as free as they were stated to be names them in its
+        # refusal the way the panel names them.
         config = replace(
             config,
-            errors=self._input_panel.current_errors().for_fit(),
+            errors=self._input_panel.current_errors(),
             input_labels=self._input_panel.input_labels(),
         )
 
@@ -1329,9 +1336,10 @@ class FittingSession(QWidget):
             # Until the profiles arrive the tab says they are being computed.
             self._identifiability_widget.show_profile_pending(result, result.assay_type)
             # The fit already worked out the penalised profiles behind its
-            # interval: the tab draws those, rather than computing them again.
+            # interval: the tab draws those, rather than computing them again,
+            # with the weights and design effects the fit ran with.
             self._profile_worker = ProfileWorker(
-                ms, worker.assay_cls, worker.conditions, worker.config, result.aware, parent=self
+                ms, worker.assay_cls, worker.conditions, worker.config, result, parent=self
             )
             self._profile_worker.finished.connect(self._on_profile_complete)
             self._profile_worker.error.connect(self._on_profile_error)
@@ -1505,8 +1513,7 @@ class FittingSession(QWidget):
             return
 
         # The analysis draws the inputs from the error sources stated in the
-        # shared panel, the same ones the fit's interval accounts for, plus the
-        # random error of each addition, which only it samples.
+        # shared panel, the same ones the fit's interval accounts for.
         errors = self._input_panel.current_errors()
         if not errors.varies:
             QMessageBox.warning(
@@ -1790,7 +1797,7 @@ class FittingSession(QWidget):
 
         if not changes:
             used = ErrorModel.from_dict(result.fit_config)
-            if uncertainties and used != self._input_panel.current_errors().for_fit():
+            if uncertainties and used != self._input_panel.current_errors():
                 return _INPUTS_CHANGED_NOTE.format(stated=_stated_as(result))
             return None
         fix = fixes[0] if len(fixes) == 1 else 'change these back'

@@ -20,6 +20,7 @@ from scipy.optimize import minimize_scalar
 
 import core.pipeline.noise as noise
 from core.pipeline.noise import MIN_REPLICATES, NoiseBasis, NoiseLaw, noise_law, replicate_scatter
+from tests.conftest import GDA_TRUE, IDA_TRUE, _make_gda_data, _make_ida_data
 
 # Replicates per dataset. The estimator reads one number off the scatter at
 # each titration point, so its spread falls like 1/sqrt(m); at 200 the share is
@@ -161,6 +162,48 @@ def test_the_weights_are_exactly_one_wherever_no_law_was_read(gda_clean):
         weights = law.weights(curve)
         assert np.array_equal(weights, ones)
         assert weights.dtype == float
+
+
+def test_the_relative_variance_is_the_law_at_the_signal_it_is_given_and_the_weights_its_inverse():
+    """``(1 - s) + s·max(u, u_floor)`` with ``u = signal²/reference²``, hand-computed, at the law's share or another.
+
+    The variance is read at the curve the caller passes, so the same law gives
+    other weights on another curve; a share of zero, the law's or one asked
+    for, is exactly one.
+    """
+    law = NoiseLaw(NoiseBasis.REPLICATES, share=0.4, floor=3.0, proportional=0.02, reference=10.0, u_floor=0.04)
+    signal = np.array([0.0, 1.0, 10.0, -20.0])
+    # u = 0, 0.01, 1, 4 -> max(u, 0.04) = 0.04, 0.04, 1, 4
+    assert law.relative_variance(signal) == pytest.approx([0.616, 0.616, 1.0, 2.2], rel=1e-15)
+    assert law.relative_variance(signal, share=1.0) == pytest.approx([0.04, 0.04, 1.0, 4.0], rel=1e-15)
+    assert law.weights(signal) == pytest.approx(1.0 / np.array([0.616, 0.616, 1.0, 2.2]), rel=1e-15)
+    assert np.array_equal(law.relative_variance(signal, share=0.0), np.ones(4))
+    for unread in (NoiseLaw(NoiseBasis.SINGLE_TITRATION), NoiseLaw(NoiseBasis.TOO_FEW_POINTS, n_replicates=3)):
+        assert np.array_equal(unread.relative_variance(signal, share=0.7), np.ones(4))
+
+
+def test_weights_read_off_a_curve_spread_no_wider_than_that_curve_does():
+    """A mean that its own noise pushed near zero gets a weight set by that noise; the curve's point does not.
+
+    Constant noise, two replicates, a curve whose lowest point is 0.4 % of its
+    highest (the GDA ground truth at 12 points). Where the share comes out
+    above zero by chance, the weights at the measured means spread wider than
+    the curve itself could make them in about 5 % of datasets (16 of these
+    300, up to ratios of 1e5 to 1e6), because one mean landed nearer zero than
+    any point of the curve; read off the true curve they are bounded by that
+    curve's range of ``u``, whatever the means did.
+    """
+    curve = _make_gda_data(GDA_TRUE, n_points=12)[1]
+    bound = np.max(curve**2) / np.min(curve**2)
+    rng = np.random.default_rng(12)
+    beyond = 0
+    for _ in range(300):
+        signals = curve + 0.01 * np.ptp(curve) * rng.standard_normal((2, curve.size))
+        law = noise_law(signals)
+        at_curve, at_means = law.weights(curve), law.weights(signals.mean(axis=0))
+        assert at_curve.max() / at_curve.min() <= bound * (1 + 1e-12)
+        beyond += at_means.max() / at_means.min() > bound
+    assert beyond >= 0.01 * 300
 
 
 def test_scaling_every_signal_leaves_the_shape_and_scales_the_level(gda_clean):
@@ -375,6 +418,47 @@ def test_the_reported_level_is_the_variance_the_data_were_drawn_with(gda_clean):
     assert np.exp(np.mean(np.log(level))) == pytest.approx(sd**2, rel=0.15)
 
 
+def test_the_share_set_holds_the_estimate_and_is_nothing_where_no_law_was_read(gda_clean):
+    """The set always contains the share the law reports; a law not read from replicates has the set ``(0, 0)``."""
+    curve = gda_clean[1].magnitude
+    rng = np.random.default_rng(4)
+    for sd in (0.01 * np.ptp(curve), 0.02 * curve, np.hypot(0.005 * np.ptp(curve), 0.02 * curve)):
+        for m in (2, 3, 8):
+            law = noise_law(curve + sd * rng.standard_normal((m, curve.size)))
+            low, high = law.share_set
+            assert 0.0 <= low <= law.share <= high <= 1.0
+    for law in (noise_law(curve), noise_law(np.tile(curve, (4, 1)))):
+        assert law.basis in (NoiseBasis.SINGLE_TITRATION, NoiseBasis.TOO_FEW_POINTS)
+        assert law.share_set == (0.0, 0.0)
+
+
+@pytest.mark.parametrize('n_points', [12, 30])
+def test_the_share_set_covers_the_true_share_and_narrows_with_more_replicates(n_points):
+    """The 99 % set holds the share the data were drawn with in 95 % or more of datasets, at 3 and at 8 replicates.
+
+    Constant noise (true share 0, 1 % of the signal range) and proportional
+    noise (true share 1, 2 % of the signal), 300 datasets each, on the GDA
+    ground truth, whose lowest point is 0.4 % of its highest, and the IDA one,
+    whose signals all lie within a factor of four. Rates found: 0.98 to 1.00
+    in every cell. The GDA curve at 12 points is the design that needs the
+    detrending held fixed: detrended at the weights of each share, a point
+    given most of the weight is passed through by its replicates' lines, and
+    the set at 3 replicates holds the true constant share in 0.90.
+    With more replicates the scatter says more about the share, and the set
+    is narrower on average.
+    """
+    for make, truth in ((_make_gda_data, GDA_TRUE), (_make_ida_data, IDA_TRUE)):
+        curve = make(truth, n_points=n_points)[1]
+        for sd, true_share in ((0.01 * np.ptp(curve) * np.ones(curve.size), 0.0), (0.02 * curve, 1.0)):
+            width = {}
+            for m in (3, 8):
+                rng = np.random.default_rng(m)
+                sets = [noise_law(curve + sd * rng.standard_normal((m, curve.size))).share_set for _ in range(300)]
+                assert np.mean([low <= true_share <= high for low, high in sets]) >= 0.95
+                width[m] = np.mean([high - low for low, high in sets])
+            assert width[8] < width[3]
+
+
 def test_the_law_round_trips_through_a_results_file():
     """A results file is JSON without NaN or infinity, and what it holds reads back as the same law."""
     laws = (
@@ -386,6 +470,7 @@ def test_the_law_round_trips_through_a_results_file():
             reference=4.2e4,
             n_replicates=8,
             u_floor=0.0123,
+            share_set=(0.12, 0.81),
         ),
         NoiseLaw(NoiseBasis.SINGLE_TITRATION),
         NoiseLaw(NoiseBasis.TOO_FEW_POINTS, n_replicates=3),
@@ -395,10 +480,12 @@ def test_the_law_round_trips_through_a_results_file():
         assert written['basis'] == law.basis.value
         assert written['u_floor'] == law.u_floor
         assert NoiseLaw.from_dict(json.loads(json.dumps(written, allow_nan=False))) == law
-    # A results file that holds no floor on u reads as no floor.
+    # A results file that holds no floor on u reads as no floor, and one that
+    # holds no share set as the share alone.
     written = laws[0].to_dict()
-    del written['u_floor']
-    assert NoiseLaw.from_dict(written).u_floor == 0.0
+    del written['u_floor'], written['share_set']
+    read = NoiseLaw.from_dict(written)
+    assert (read.u_floor, read.share_set) == (0.0, (0.37, 0.37))
 
 
 def test_the_level_is_the_variance_at_the_rms_signal():

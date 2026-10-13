@@ -199,13 +199,14 @@ def test_the_help_tells_an_input_own_error_from_a_shared_one_and_says_what_each_
     assert 'take their errors to be unrelated' not in text
     # A binding constant measured with a shared stock moves the other way from the concentrations made from it.
     assert 'by the same percentage the other way' in text
-    # The additions feed the analysis alone, and the interval of a fit does not hold them.
-    assert 'feeds the K<sub>a</sub> Sensitivity analysis only' in text
-    assert 'the interval the fit reports does not include the random error of each addition' in text
-    assert 'already measures' not in text
-    # What the σ means with replicates, and what that assumes of them.
-    assert 'as σ/√<i>m</i> for <i>m</i> replicates' in text
-    assert 'assumes the replicates are separate titrations' in text
+    # The additions reach the interval of a fit, which they only ever widen.
+    assert 'widens the interval of K<sub>a</sub> by the factor this implies, never narrowing it' in text
+    assert 'does not include the random error of each addition' not in text
+    assert 'Sensitivity analysis only' not in text
+    # What the σ means with replicates, for each of the two kinds the user can state.
+    assert 'their average carries σ/√<i>m</i> of them for <i>m</i>' in text
+    assert '<i>Repeated reads of one titration</i> share them, and their average carries σ itself' in text
+    assert 'A σ larger than the real one gives a wider interval than needed' in text
 
 
 def test_the_help_says_what_the_uncertainties_feed_and_what_each_kind_means_for_the_fit():
@@ -635,10 +636,47 @@ def test_every_control_locks_while_a_run_is_live(qapp):
         *panel._shared_rows,
         panel._additions_combo,
         panel._additions_sigma,
+        panel._replicates_combo,
     ]
     assert not any(control.isEnabled() for control in controls)
     panel.set_running(False)
     assert all(control.isEnabled() for control in controls)
+
+
+def test_the_replicates_of_an_addition_error_are_stated_with_it(qapp):
+    """Separate titrations unless told otherwise, and only once an error of the additions is stated."""
+    panel = _ida_panel()
+    # With no error of the additions there is nothing for the replicates to share.
+    assert not panel._replicates_combo.isEnabled()
+    assert panel._replicates_combo.currentText() == 'separate titrations'
+
+    _set_additions(panel, _SEQUENTIAL, 3.0)
+    assert panel._replicates_combo.isEnabled()
+    assert panel.current_errors().additions == AdditionError(3.0, sequential=True, separate_titrations=True)
+
+    seen = []
+    panel.specs_changed.connect(lambda: seen.append(panel.current_errors()))
+    panel._replicates_combo.setCurrentIndex(panel._replicates_combo.findText('repeated reads of one titration'))
+    assert seen[-1].additions == AdditionError(3.0, sequential=True, separate_titrations=False)
+
+    # A run locks it, and the end of the run unlocks it only while an error of the additions is stated.
+    panel.set_running(True)
+    assert not panel._replicates_combo.isEnabled()
+    panel.set_running(False)
+    assert panel._replicates_combo.isEnabled()
+    panel._additions_combo.setCurrentIndex(panel._additions_combo.findText('none'))
+    assert not panel._replicates_combo.isEnabled()
+    panel.set_running(True)
+    panel.set_running(False)
+    assert not panel._replicates_combo.isEnabled()
+    assert panel.current_errors().additions is None
+
+    # Remembered with the rest of the entry, per assay.
+    _set_additions(panel, _SEPARATE, 1.0)
+    panel.set_assay_type(AssayType.GDA)
+    assert panel._replicates_combo.currentText() == 'separate titrations'
+    panel.set_assay_type(AssayType.IDA)
+    assert panel.current_errors().additions == AdditionError(1.0, sequential=False, separate_titrations=False)
 
 
 def test_the_panel_is_as_wide_whichever_kind_each_input_shows(qapp):
@@ -804,7 +842,13 @@ def test_tab_runs_from_the_input_rows_through_the_additions_to_the_shared_source
     shared = _add_shared(panel, 'Host and dye stock', 4.0, ('h0', 'd0'))
 
     expected = [widget for row in panel._rows.values() for widget in row.focus_widgets()]
-    expected += [panel._additions_combo, panel._additions_sigma, panel._add_shared_btn, *shared.focus_widgets()]
+    expected += [
+        panel._additions_combo,
+        panel._additions_sigma,
+        panel._replicates_combo,
+        panel._add_shared_btn,
+        *shared.focus_widgets(),
+    ]
 
     reached, widget = [], expected[0]
     for _ in range(600):

@@ -20,7 +20,7 @@ likelihood profiled over the noise variance is ``n log S + z'z`` up to a
 constant. The penalised profile of one binding constant and its interval are
 
     P(K_j = k) = min over the other free Ka and e in its box of [n log S(K, e) + z'z]
-    interval_j = {k : P(k) - P_min <= n log(1 + m F(level; m, nu) / nu)},  nu = n - p - sum_i w_i
+    interval_j = {k : P(k) - P_min <= n log(1 + kappa_j m F(level; m, nu) / nu)},  nu = n - p - sum_i w_i
     p = what the optimum fitted: the free Ka inside their box, the rank of the signal
         columns inside their bounds (Projection.fitted_parameters) and the inputs
         stated as a range that it left off the ends of theirs
@@ -30,6 +30,10 @@ constant. The penalised profile of one binding constant and its interval are
 at each profile point's own solution — its binding constants and its moved
 inputs — against the optimum's: a signal parameter on its bound is not fitted,
 so a rise to a Ka that pins one gives up that parameter as well as the Ka.
+``kappa_j >= 1`` is the design effect of K_j that widens the fixed-input
+cut-off as well (:mod:`core.pipeline.inflation`): it accounts for point weights
+read off the replicates and for a stated random error of each titrant addition,
+which no input offset here represents. It is one unless the caller hands one in.
 
 An input with a range is one more parameter wherever the fit leaves it inside
 the range; on an end of it the input is held there. An input with a standard
@@ -40,8 +44,9 @@ effective number of parameters of a penalised fit). The noise variance is
 profiled from ``S`` alone, so ``nu`` is what is left to judge it by. With no
 varying input ``P(k) - P_min`` is ``n log(S(k) / S_min)``, ``nu = n - p``, and
 the rule is the F test of :meth:`core.pipeline.varpro.Projection.interval` on
-the log scale, so that interval is returned as it is. Over 2 400 random
-titrations of 5, 6, 8 and 12 points (GDA, IDA, both DBA directions, every
+the log scale, with the same ``kappa_j``, so that interval is returned as it
+is. Over 2 400 random titrations of 5, 6, 8 and 12 points with unit weights
+and no addition error, so ``kappa_j = 1`` (GDA, IDA, both DBA directions, every
 input entered at its stated sigma) the 95 % interval holds the true Ka in
 98.3, 98.0, 97.5 and 96.3 %; with ``n - p`` in place of ``nu`` it is 85 to 93 %
 wherever the data determine an input direction.
@@ -49,9 +54,9 @@ wherever the data determine an input direction.
 The second constant of a stepwise model is judged, as in
 :meth:`core.pipeline.varpro.Projection.interval`, by a one-step test before its
 interval claims a lower limit: ``P(0)`` with that constant at zero, minimised
-over the other one and the inputs, against ``P_min`` by the rule above, so the
-input-aware interval and the fixed-input one agree on what the data say about
-the second binding step.
+over the other one and the inputs, against ``P_min`` by the rule above with
+that constant's ``kappa``, so the input-aware interval and the fixed-input one
+agree on what the data say about the second binding step.
 
 ``exp(P(k) / n)`` is a residual sum of squares inflated by the input penalty,
 so ``1 - exp(P(k) / n) / SS_tot`` draws on the R² axis of the fixed-input
@@ -73,7 +78,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.stats import f as f_dist
 
-from core.pipeline.diagnostics import Conflict, InputShift, conflict_reference, conflict_test
+from core.pipeline.diagnostics import Conflict, InputShift, conflict_added, conflict_reference, conflict_test
 from core.pipeline.inputs import InputConstraint
 from core.pipeline.varpro import (
     _BOUND_RISE,
@@ -92,6 +97,7 @@ from core.pipeline.varpro import (
     _ka_grid,
     _refine_at,
     _require_dof,
+    _require_inflation,
     _with_one_step_test,
 )
 
@@ -143,7 +149,7 @@ _LS_TOL = {'xtol': 1e-9, 'ftol': 1e-10, 'gtol': 1e-9}
 # scale one.
 _KA_XSCALE = 0.1
 
-# Multiples of the acceptance excess n log(1 + F / (n - p)) above the running
+# Multiples of the acceptance excess n log(1 + kappa F / nu) above the running
 # minimum at which the node-by-node trace of a profile stops. A node that far
 # out re-enters the interval only if a lower minimum lies beyond it, which the
 # coarse sweep looks for.
@@ -249,7 +255,8 @@ class AwareProfile:
         Fitted offset of every constraint per grid point, shape ``(len(grid), constraints)``.
     threshold : float
         ``P_min`` plus the acceptance excess of a solution that holds no
-        parameter on a bound that the optimum fits (``m = 1``).
+        parameter on a bound that the optimum fits (``m = 1``), widened by
+        the interval's design effect (``KaInterval.inflation``).
     r2_threshold : float
         *threshold* on the R² axis.
     interval : KaInterval
@@ -575,11 +582,12 @@ class _Trace:
                 return inner, self.table[i]
 
     def profile(
-        self, hat: _Point, cut: Callable[[_Point], float], excess: float, level: float, dof: int
+        self, hat: _Point, cut: Callable[[_Point], float], excess: float, level: float, dof: int, inflation: float
     ) -> tuple[KaInterval, list[_Point]]:
         """Interval of this Ka under *cut* and the points its curve is drawn through, ascending in Ka.
 
-        *cut* gives the cut-off of a point's own solution. An edge is a root
+        *cut* gives the cut-off of a point's own solution, widened by the
+        design effect *inflation* that the interval records. An edge is a root
         of the profile minus that cut-off — where the cut-off steps, the step
         itself — between the
         outermost accepted point and the rejected node beyond it. At those two
@@ -638,6 +646,7 @@ class _Trace:
             unsolvable_high=unsolvable_at[1],
             limited_by_low=limited_by[0],
             limited_by_high=limited_by[1],
+            inflation=inflation,
         )
         return interval, [drawn[ka] for ka in sorted(drawn)]
 
@@ -664,9 +673,13 @@ class _Trace:
 
 
 @lru_cache(maxsize=None)
-def _excess(n: int, dof: float, level: float, m: int = 1) -> float:
-    """Acceptance excess of the penalised profile: the F test of *m* parameters given up, on the log scale."""
-    return n * float(np.log1p(m * f_dist.ppf(level, m, dof) / dof))
+def _excess(n: int, dof: float, level: float, m: int = 1, inflation: float = 1.0) -> float:
+    """Acceptance excess of the penalised profile: the F test of *m* parameters given up, on the log scale.
+
+    ``n log(1 + kappa m F(level; m, dof) / dof)`` with ``kappa`` the design
+    effect *inflation* (:mod:`core.pipeline.inflation`).
+    """
+    return n * float(np.log1p(inflation * m * f_dist.ppf(level, m, dof) / dof))
 
 
 def at_edge(constraint: InputConstraint, offset: float) -> bool:
@@ -699,11 +712,24 @@ def _input_directions(
     a column absorbs what the data say about the inputs along whatever
     direction it happens to point, although the fit did not move it.
     """
+    return conflict_reference(*_reference_arguments(jacobian, ka_fitted, constraints, offsets, ssr, n, ss_tot))
+
+
+def _reference_arguments(
+    jacobian: np.ndarray,
+    ka_fitted: Sequence[bool],
+    constraints: Sequence[InputConstraint],
+    offsets: Mapping[str, float],
+    ssr: float,
+    n: int,
+    ss_tot: float,
+) -> tuple[np.ndarray, int, np.ndarray, float]:
+    """The columns of the fitted parameters, their Ka count, the σ mask and the noise scale of :func:`_input_directions`."""
     scale = float(np.sqrt(max(ssr, _R2_RESOLUTION * ss_tot) / n))
     moved = np.array([not at_edge(c, offsets[c.key]) for c in constraints], dtype=bool)
     is_sigma = np.array([c.sigma is not None for c in constraints], dtype=bool)
     columns = np.concatenate([np.asarray(ka_fitted, dtype=bool), moved])
-    return conflict_reference(jacobian[:, columns], int(np.sum(ka_fitted)), is_sigma[moved], scale)
+    return jacobian[:, columns], int(np.sum(ka_fitted)), is_sigma[moved], scale
 
 
 def _require_aware_dof(n: int, n_model: int, constraints: Sequence[InputConstraint], taken: float = 0.0) -> float:
@@ -742,6 +768,7 @@ def input_aware(
     level: float = LEVEL,
     should_cancel: Callable[[], bool] | None = None,
     conditional: Mapping[str, KaInterval] | None = None,
+    inflation: Mapping[str, float] | None = None,
 ) -> AwareResult:
     """Fit and Ka intervals of a single-row projection with its varying inputs free within their constraints.
 
@@ -760,7 +787,9 @@ def input_aware(
     point and the rejected node beyond it, every value the lower of the solves
     from those two points. The interval of the second constant of a stepwise
     model carries the one-step test of :func:`_one_step_p` and is open below
-    where the test does not reject the model without the second step.
+    where the test does not reject the model without the second step. Every
+    cut-off of one binding constant — of the trace, the edges, the drawn cut
+    and the one-step test — is widened by that constant's *inflation*.
 
     Parameters
     ----------
@@ -783,8 +812,13 @@ def input_aware(
         Asked before every inner solve whether to stop.
     conditional : Mapping[str, KaInterval], optional
         Fixed-input intervals the caller has already computed for *fixed* at
-        *level*; with no varying input these objects are the intervals
-        returned, and nothing is computed twice.
+        *level*; with no varying input each one widened by that constant's
+        *inflation* is the interval returned, and nothing is computed twice.
+    inflation : Mapping[str, float], optional
+        The design effect ``kappa >= 1`` of each free binding constant
+        (:func:`core.pipeline.inflation.inflation`) by which its acceptance
+        excess is widened to ``n log(1 + kappa m F / nu)``; a constant left
+        out, and every one when it is omitted, takes one.
 
     Raises
     ------
@@ -793,11 +827,16 @@ def input_aware(
         and the varying inputs.
     FitCancelled
         When *should_cancel* or the projection's own flag asked to stop.
+    ValueError
+        For an *inflation* that is not a finite number of one or more.
     """
     constraints = tuple(constraints)
     n, ss_tot = projection.n_points, float(projection.ss_tot[0])
+    kappa = {key: float((inflation or {}).get(key, 1.0)) for key in projection.free_ka}
+    for factor in kappa.values():
+        _require_inflation(factor)
     if not constraints:
-        return _fixed_inputs(projection, fixed, level, conditional)
+        return _fixed_inputs(projection, fixed, level, conditional, kappa)
 
     problem = _Problem(projection, constraints, should_cancel, loading)
     best: list[_Point] = []
@@ -807,24 +846,25 @@ def input_aware(
             best[:] = [point]
         return point
 
-    def cut(optimum: _Point, dof: float) -> Callable[[_Point], float]:
-        """Cut-off of a point's own solution: one more parameter given up per signal parameter it pins.
+    def cut(optimum: _Point, dof: float, key: str) -> Callable[[_Point], float]:
+        """Cut-off of a point's own solution on *key*'s profile: one more parameter per signal parameter it pins.
 
         As in :meth:`Projection.cut_off`, only the signal parameters: the other
         binding constant and an input stated as a range reach a bound where the
         objective is flat towards it, and whether a solve lands on that bound
-        or just inside it is arbitrary.
+        or just inside it is arbitrary. Widened by the design effect of *key*.
         """
         fitted = optimum.fitted.rank
         return lambda point: (
             optimum.value
-            + _excess(n, dof, level, 1 + max(0, fitted - (0 if point.fitted is None else point.fitted.rank)))
+            + _excess(
+                n, dof, level, 1 + max(0, fitted - (0 if point.fitted is None else point.fitted.rank)), kappa[key]
+            )
         )
 
     # Refused on what the model has free, wherever a fit puts it, so that whether a fit is made does
     # not depend on where the data happen to put its parameters.
     search_dof = _require_aware_dof(n, fixed.n_free_ka + fixed.rank, constraints)
-    excess = _excess(n, search_dof, level)
     entered = problem.start_coords()
     # The entered inputs at the fixed-input fit are allowed, so the fit from there is never worse
     # than the fixed-input one; it is also the whole fit when every binding constant is pinned.
@@ -836,6 +876,7 @@ def input_aware(
         consider(problem.solve(at_fixed, _Point(np.nan, at_fixed, entered, np.nan)))
     traces = {key: _Trace(problem, key, consider) for key in projection.free_ka}
     for key, trace in traces.items():
+        excess = _excess(n, search_dof, level, 1, kappa[key])
         centre = best[0] if best and np.isfinite(best[0].value) else None
         nearest = np.abs(np.log10(trace.nodes) - np.log10(centre.ka[key] if centre else fixed.ka[key]))
         i0 = int(np.argmin(nearest))
@@ -844,7 +885,7 @@ def input_aware(
         while lowest != trace.lowest():
             lowest = trace.lowest()
             trace.refine()
-            trace.sweep(lambda point: point.value <= cut(best[0], search_dof)(point), excess)
+            trace.sweep(lambda point: point.value <= cut(best[0], search_dof, key)(point), excess)
 
     profiles: dict[str, AwareProfile] = {}
     for _ in range(_MAX_PASSES):
@@ -856,13 +897,13 @@ def input_aware(
         p = problem.count(optimum)
         moved = [c for c in constraints if not at_edge(c, offsets[c.key])]
         dof = _require_aware_dof(n, optimum.fitted.count, moved, float(weights.sum()))
-        excess = _excess(n, dof, level)
-        threshold = optimum.value + excess
         for key, trace in traces.items():
+            excess = _excess(n, dof, level, 1, kappa[key])
+            threshold = optimum.value + excess
             hat = optimum if len(traces) == 1 else trace.at(optimum.ka[key], [optimum])
-            interval, drawn = trace.profile(hat, cut(optimum, dof), excess, level, dof)
+            interval, drawn = trace.profile(hat, cut(optimum, dof, key), excess, level, dof, kappa[key])
             objective = np.array([point.value for point in drawn])
-            cuts = np.array([cut(optimum, dof)(point) for point in drawn])
+            cuts = np.array([cut(optimum, dof, key)(point) for point in drawn])
             with np.errstate(over='ignore'):
                 r2 = np.where(np.isfinite(objective), 1.0 - np.exp(objective / n) / ss_tot, np.nan)
             other = [k for k in projection.free_ka if k != key]
@@ -889,7 +930,7 @@ def input_aware(
 
     if projection.second_step in traces:
         key = projection.second_step
-        one_step_p = _one_step_p(problem, traces[key], optimum, dof)
+        one_step_p = _one_step_p(problem, traces[key], optimum, dof, kappa[key])
         interval = _with_one_step_test(profiles[key].interval, one_step_p, projection.ka_bounds[key][0])
         profiles[key] = replace(profiles[key], interval=interval)
 
@@ -912,41 +953,53 @@ def input_aware(
     return AwareResult(fit=fit, profiles=profiles, constraints=constraints, n_points=n, ss_tot=ss_tot)
 
 
-def _one_step_p(problem: _Problem, trace: _Trace, optimum: _Point, dof: float) -> float:
+def _one_step_p(problem: _Problem, trace: _Trace, optimum: _Point, dof: float, inflation: float) -> float:
     """:meth:`Projection.one_step_p` on the penalised profile of the second constant, which *trace* follows.
 
     The objective with that constant at zero, minimised over the other
     binding constant and the inputs, against the optimum: the test that cuts
-    the interval, ``P(0) - P_min`` against ``n log(1 + m F(m, nu) / nu)``,
-    turned into its p-value ``sf((exp((P(0) - P_min) / n) - 1) nu / m; m,
-    nu)``. The solve starts from the optimum, from the outermost node the
-    trace solved below it and from where the other constant minimises the
-    fixed-input objective at zero, and the lowest of the three counts.
+    the interval, ``P(0) - P_min`` against ``n log(1 + kappa m F(m, nu) /
+    nu)`` with ``kappa`` its *inflation*, turned into its p-value
+    ``sf((exp((P(0) - P_min) / n) - 1) nu / (kappa m); m, nu)``. The solve
+    starts from the optimum, from the outermost node the trace solved below it
+    and from where the other constant minimises the fixed-input objective at
+    zero, and the lowest of the three counts.
     """
     zero = {trace.key: 0.0}
     starts = [optimum, trace.table[min(trace.table)], trace.entered(0.0, optimum.coords)]
     point = min((problem.solve(zero, start) for start in starts), key=lambda solved: solved.value)
     m = 1 + max(0, optimum.fitted.rank - (0 if point.fitted is None else point.fitted.rank))
-    return float(f_dist.sf(np.expm1((point.value - optimum.value) / problem.n) * dof / m, m, dof))
+    return float(f_dist.sf(np.expm1((point.value - optimum.value) / problem.n) * dof / (inflation * m), m, dof))
 
 
 def _fixed_inputs(
-    projection: Projection, fixed: ProjectedFit, level: float, conditional: Mapping[str, KaInterval] | None
+    projection: Projection,
+    fixed: ProjectedFit,
+    level: float,
+    conditional: Mapping[str, KaInterval] | None,
+    kappa: Mapping[str, float],
 ) -> AwareResult:
-    """The result with no varying input: the fixed-input fit and its own intervals.
+    """The result with no varying input: the fixed-input fit and its own intervals at the design effects *kappa*.
 
     With nothing to minimise over, the penalised profile is the fixed-input
     one, ``n log S(k)``, which :mod:`core.pipeline.profile` draws. Each profile
     here holds the points that say what the interval is: the estimate at
     ``P_min`` and every closed edge, each with the cut-off of its own fit.
+    A *conditional* interval is the one returned where it was cut at the
+    same design effect, and computed again at that one otherwise.
     """
     n, ss_tot = projection.n_points, float(projection.ss_tot[0])
-    threshold = projection.threshold(fixed, level)
-    cut = projection.cut_off(fixed, level)
     inner_per_decade = _INNER_PER_DECADE if len(projection.free_ka) == 2 else _SEARCH_PER_DECADE
     profiles = {}
     for key in projection.free_ka:
-        interval = (conditional or {}).get(key) or projection.interval(key, fixed, level)
+        threshold = projection.threshold(fixed, level, inflation=kappa[key])
+        cut = projection.cut_off(fixed, level, inflation=kappa[key])
+        given = (conditional or {}).get(key)
+        interval = (
+            given
+            if given is not None and given.inflation == kappa[key]
+            else projection.interval(key, fixed, level, kappa[key])
+        )
         points = {fixed.ka[key]: (projection._floored(fixed), threshold)}
         for edge, is_open in _edges(interval):
             if not is_open:
@@ -1076,14 +1129,26 @@ def input_shifts(result: AwareResult) -> dict[str, InputShift]:
     return shifts
 
 
-def conflict(result: AwareResult) -> Conflict | None:
-    """Conflict statistic of the inputs stated with a standard deviation; ``None`` when the data inform none of them."""
+def conflict(result: AwareResult, added: np.ndarray | None = None) -> Conflict | None:
+    """Conflict statistic of the inputs stated with a standard deviation; ``None`` when the data inform none of them.
+
+    *added* is the covariance a stated random error of each addition puts on
+    the whitened residual of the fitted signal, in signal units: the
+    reference of the statistic then carries it (:func:`conflict_added`).
+    """
     fit = result.fit
     sigma = [c for c in result.constraints if c.sigma is not None]
     if not sigma:
         return None
     ka_fitted = [key in fit.ka_fitted for key in fit.ka_free]
-    directions = _input_directions(
+    reference = _reference_arguments(
         fit.jacobian, ka_fitted, result.constraints, fit.offsets, fit.ssr, result.n_points, result.ss_tot
     )
-    return conflict_test([fit.offsets[c.key] / c.sigma for c in sigma], *directions, result.n_points, fit.n_params)
+    extra = None if added is None else conflict_added(*reference, added)
+    return conflict_test(
+        [fit.offsets[c.key] / c.sigma for c in sigma],
+        *conflict_reference(*reference),
+        result.n_points,
+        fit.n_params,
+        added=extra,
+    )

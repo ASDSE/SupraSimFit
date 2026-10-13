@@ -169,7 +169,7 @@ def test_a_job_that_fails_outright_stops_the_batch_at_once_in_plain_words(batch,
 
 
 def test_the_point_weights_of_the_run_reach_every_worker_process(batch):
-    """Every fit of a run carries the noise law of the baseline, wherever the fit is made.
+    """Every fit of a run carries the point weights the baseline fit ran with, wherever the fit is made.
 
     The weights are handed to the pool once, with the rest of the batch's
     state; a worker that started without them would fit its perturbations

@@ -19,8 +19,9 @@ no offset is the fit at the inputs as entered. The input-aware interval of a
 fit (:mod:`core.pipeline.input_aware`) also weighs what the data say about the
 inputs — an input value the titration rules out costs it — so the two answer
 different questions and can differ, the spread here being the wider where the
-data inform an input. That interval does not include the random error of each
-addition (:meth:`~core.pipeline.inputs.ErrorModel.for_fit`).
+data inform an input. That interval takes in a stated random error of each
+addition through a widened cut-off (:mod:`core.pipeline.inflation`); here it is
+sampled like every other source, so that it can be ranked against them.
 
 Two analysis modes:
 
@@ -964,10 +965,14 @@ def sobol_jobs(
     matrix, whatever the number of points.
 
     Every column goes through the inverse CDF of its source
-    (:func:`spec_fraction`). Replicates are separate titrations with
-    independent addition errors and a refit is of their average, whose
-    first-order addition error is the mean of *n_replicates* independent ones:
-    the addition columns are sampled at ``sigma / sqrt(n_replicates)``.
+    (:func:`spec_fraction`). A refit is of the average of the replicates.
+    Where they are separate titrations
+    (``AdditionError.separate_titrations``), each with its own addition
+    errors, the first-order addition error of the average is the mean of
+    *n_replicates* independent ones and the addition columns are sampled at
+    ``sigma / sqrt(n_replicates)``; where they are repeated reads of one
+    titration they share their additions, and the columns are sampled at
+    ``sigma``.
 
     Parameters
     ----------
@@ -1014,7 +1019,8 @@ def sobol_jobs(
     source_offsets = [dict(zip(specs, row)) for row in zip(*columns)] if columns else [{} for _ in quantiles]
     deltas: list[np.ndarray | None] = [None] * len(quantiles)
     if errors.additions is not None:
-        per_average = InputSpec.sigma_pct(errors.additions.sigma_pct / math.sqrt(n_replicates))
+        divisor = n_replicates if errors.additions.separate_titrations else 1
+        per_average = InputSpec.sigma_pct(errors.additions.sigma_pct / math.sqrt(divisor))
         deltas = list(spec_fraction(per_average, None, source_name(ADDITIONS), quantiles[:, n_single:]))
     return SobolJobs(
         sources=_reported_sources(errors),
@@ -1291,11 +1297,12 @@ def _fit_perturbed(
     comes back in its canonical registry unit, the unit ``FitResult.parameters``
     carries, and the R² is measured against that averaged signal.
 
-    *point_weights* is the weight of every titration point, from the noise law
-    the replicates showed at the entered inputs. The law is a function of the
-    measured replicates, which moving the inputs leaves untouched, so every fit
-    of a run carries the same weights and a sample with no offset is the
-    baseline fit. Beside the R² above, which counts every point equally, the
+    *point_weights* is the weight of every titration point the baseline fit
+    ran with (:attr:`~core.pipeline.fit_pipeline.FitResult.point_weights`).
+    The noise law they come from is read off the measured replicates, which
+    moving the inputs leaves untouched, and every fit of a run carries the same
+    weights: each sample minimises the objective the baseline minimised, and a
+    sample with no offset is the baseline fit. Beside the R² above, which counts every point equally, the
     fit's place on the Identifiability tab's axis comes back as
     ``1 - S_w / SS_tot,w``: the weighted objective this fit minimised, on the
     scale the Ka profiles are drawn on.
@@ -1652,15 +1659,11 @@ def run_sensitivity(
     # spread around it come from one fitting method.
     ms = ms.with_active(fit_replica_ids(baseline_result))
     probe_assay = ms.to_assay(assay_cls, conditions=base_conditions, use_average=True)
-    # Every fit of the run carries the weights of the baseline's noise law,
-    # read off the replicates it used. The law describes the measured
-    # replicates, which moving the inputs leaves untouched, so re-reading it
-    # per sample would return the same numbers; re-using it is what makes the
-    # baseline the sample with no offset. An imported baseline that records no
-    # law is fitted with equal weights, as it was.
-    point_weights = (
-        None if baseline_result.noise is None else baseline_result.noise.weights(probe_assay.y_data.magnitude)
-    )
+    # Every fit of the run carries the weights the baseline fit ran with, read
+    # off the replicates it used. They describe the measured replicates, which
+    # moving the inputs leaves untouched, so every sample is weighted alike and
+    # the baseline is the sample with no offset.
+    point_weights = baseline_result.point_weights
     baseline_ka = {k: baseline_result.parameters[k].to('1/M').magnitude for k in ka_keys}
     degenerate_keys = baseline_result.degenerate_keys
     # The Ka box every fit of the run searches, and where the baseline landed in

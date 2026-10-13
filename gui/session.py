@@ -49,9 +49,11 @@ from gui.plotting.labels import (
     one_step_sentence,
     own_estimates,
     replicate_summary,
+    stated_additions,
     stated_uncertainty,
     verdict_headline,
     verdict_sentence,
+    widening_sentences,
 )
 from gui.widgets.assay_conditions import result_input_labels
 from gui.widgets.replica_panel import _display_label
@@ -224,7 +226,8 @@ def _interval_cell(spec: ParameterSummary, result: FitResult, ka_keys: set[str])
 
 #: Said above the per-Ka line that reports the interval with every input taken as entered.
 _CONDITIONAL_NOTE = (
-    'The interval above covers the input uncertainties stated below; the one here takes every input exactly as entered.'
+    'The interval above covers the input uncertainties stated below; the one here takes every input exactly as '
+    'entered, with no error in the additions.'
 )
 
 #: Said after the reason the inputs were not tested against what was stated:
@@ -239,13 +242,14 @@ def _input_uncertainty_block(result: FitResult) -> list[str]:
     """The INPUT UNCERTAINTY table: what was stated per source and where the fit put it.
 
     One row per input with an uncertainty of its own, then one per source
-    several inputs share, which the label names with the inputs it moves.
-    Empty for a fit that took every input as entered, which has no source to
-    report and no shift to show.
+    several inputs share, which the label names with the inputs it moves, and
+    last the random error of each addition, which moves no input and has no
+    shift. Empty for a fit that took every input as entered and stated no
+    error of the additions.
     """
     errors = ErrorModel.from_dict(result.fit_config)
     specs = errors.specs
-    if not specs and not errors.shared:
+    if not specs and not errors.shared and errors.additions is None:
         return []
     labels = result_input_labels(result.assay_type, result.fit_config)
     stated: list[tuple[str, InputSpec]] = list(specs.items())
@@ -262,20 +266,31 @@ def _input_uncertainty_block(result: FitResult) -> list[str]:
         rows.append(
             (labels.get(key, key), stated_uncertainty(spec, fmt_unit_pretty(unit) if unit else ''), moved, against)
         )
+    if errors.additions is not None:
+        n_replicates = 1 if result.noise is None else result.noise.n_replicates
+        rows.append(('Each addition (random)', f'σ {stated_additions(errors.additions, n_replicates)}', '—', '—'))
 
     lines = ['INPUT UNCERTAINTY', '-' * 60]
-    lines.extend(
-        _wrapped(
-            'The fit was free to move each input inside the uncertainty stated for it, and the interval it '
-            'reports covers that freedom. Where it put each one is below, as a percentage of the value entered '
-            'and against the uncertainty stated for it.'
+    if specs or errors.shared:
+        lines.extend(
+            _wrapped(
+                'The fit was free to move each input inside the uncertainty stated for it, and the interval it '
+                'reports covers that freedom. Where it put each one is below, as a percentage of the value '
+                'entered and against the uncertainty stated for it.'
+            )
         )
-    )
     if errors.shared:
         lines.extend(
             _wrapped(
                 'A shared source is one error several inputs have in common — one stock, balance or pipette '
                 'behind all of them — and it moves every input it applies to by the same percentage.'
+            )
+        )
+    if errors.additions is not None:
+        lines.extend(
+            _wrapped(
+                'The random error of each addition moves every point along the titrant axis rather than one '
+                'input; the interval is widened by the factor it implies, as said under FITTED PARAMETERS.'
             )
         )
     lines.append('')
@@ -366,10 +381,11 @@ def _model_and_inputs_block(result: FitResult) -> list[str]:
     if result.input_shifts:
         lines.extend(_labelled('Model with the inputs moved:', _misfit_line(diagnostics, diagnostics.misfit)))
     conflict = diagnostics.conflict
-    specs = ErrorModel.from_dict(result.fit_config).source_specs()
+    errors = ErrorModel.from_dict(result.fit_config)
+    specs = errors.source_specs()
     # What the block's readings are conditioned on, so a printed report says it
     # rather than leaving it to be inferred from a section that is not there.
-    stated = 'stated above under INPUT UNCERTAINTY.' if specs else f'{NO_UNCERTAINTY}.'
+    stated = 'stated above under INPUT UNCERTAINTY.' if specs or errors.additions else f'{NO_UNCERTAINTY}.'
     lines.extend(_labelled('Input uncertainties used:', stated))
     if conflict is not None:
         lines.extend(
@@ -453,11 +469,19 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
     keeps every raw number, and these flags follow from it. ``one_step_p`` is
     filled on the second binding constant of a two-step model: the p-value of
     the interval's test against the model without that step, above which the
-    interval is open below.
+    interval is open below. ``ci_inflation`` is the design effect the
+    interval's cut-off was widened by — the factor on the variance of the
+    estimate that a stated random error of each addition and a noise law the
+    replicates leave uncertain imply — and is ``1`` where the interval is the
+    plain F test's; ``cond_ci_inflation`` is the same of the conditional
+    interval, which carries the noise law's part alone. ``joint_inflation``,
+    filled on every row of a fit with two binding constants, is the same of
+    the joint region of the pair drawn at the entered inputs.
 
-    Where the fit was free to move an input, the ``cond_`` columns carry the
-    same binding constant with every input held as entered, under the same
-    rules (``cond_estimate_at_bound``), and one row per source it could move
+    Where the fit was free to move an input or took in a stated error of the
+    additions, the ``cond_`` columns carry the same binding constant with every
+    input held as entered and no error of the additions, under the same rules
+    (``cond_estimate_at_bound``), and one row per source it could move
     carries where the fit put it: ``parameter`` is the source's key — the
     input's own key, and ``shared:<name>`` for a source several inputs share,
     listed after the inputs — ``unit`` is ``% of entered``, ``estimate`` the
@@ -516,6 +540,7 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'ci_split',
         'ci_level',
         'ci_dof',
+        'ci_inflation',
         'one_step_p',
         'cond_estimate',
         'cond_estimate_at_bound',
@@ -524,6 +549,8 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         'cond_ci_open_low',
         'cond_ci_open_high',
         'cond_ci_split',
+        'cond_ci_inflation',
+        'joint_inflation',
         'degenerate',
         'replicate_median',
         'replicate_min',
@@ -604,6 +631,7 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
                 'noise': '' if result.noise is None else result.noise.describe(),
                 'replicates_used': used,
                 'replicates_left_out': left_out,
+                'joint_inflation': f'{result.joint_inflation:.6g}' if len(intervals) == 2 else '',
                 **diagnostic_cells(result),
             }
             for spec in summarize_parameters(result):
@@ -630,6 +658,7 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
                         'ci_limited_by_low': spec.interval_limited_by[0],
                         'ci_limited_by_high': spec.interval_limited_by[1],
                         'ci_split': flag(spec.interval_split),
+                        'ci_inflation': f'{spec.inflation:.6g}',
                     }
                 if spec.key in intervals:
                     # Residual degrees of freedom: a whole number where every
@@ -649,6 +678,7 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
                         'cond_ci_open_low': flag(spec.conditional_open[0]),
                         'cond_ci_open_high': flag(spec.conditional_open[1]),
                         'cond_ci_split': flag(spec.conditional_split),
+                        'cond_ci_inflation': f'{spec.conditional_inflation:.6g}',
                     }
                 if spec.replicates is not None:
                     across = spec.replicates
@@ -800,7 +830,8 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 'Estimate = the least-squares fit of the data. Interval = the range of a binding constant the '
                 'data cannot tell apart from that fit, cut from the fit’s own profile by an F test. Where an '
                 'input was given an uncertainty, the fit was free to move it inside that uncertainty and the '
-                'interval covers that freedom.'
+                'interval covers that freedom. A stated random error of each addition, and a noise law the '
+                'replicates leave uncertain, widen the interval by the factor said below the table.'
             )
         )
         if ka_keys and result.intervals is None:
@@ -876,6 +907,9 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
             if spec.one_step_p is not None:
                 lines.append('')
                 lines.extend(_wrapped(one_step_sentence(spec.key, spec.one_step_p)))
+        for sentence in widening_sentences(specs, result, lambda key: key):
+            lines.append('')
+            lines.extend(_wrapped(sentence))
         for note in (fmt_bound_note(parameters_on_bound(result)), offset_note(result)):
             if note:
                 lines.append('')

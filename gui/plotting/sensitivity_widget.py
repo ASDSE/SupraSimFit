@@ -181,9 +181,8 @@ _BUDGET_CSV_COLUMNS = (
 )
 # How the additions entry relates to the interval the fit reports.
 _ADDITIONS_NOTE = (
-    'The interval the fit reports does not include the random error of each addition: it takes the titrant '
-    'concentrations as entered, apart from the uncertainties stated for them. Here that error is sampled and '
-    'ranked against the other sources.'
+    'The random error of each addition is part of the reported interval when stated under Input Uncertainty; '
+    'it is listed here to be ranked against the other sources.'
 )
 # What the numbers of a Sobol run are, said once above them: a propagation of the
 # stated uncertainties, and how that differs from the fit's input-aware interval.

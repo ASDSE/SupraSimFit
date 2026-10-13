@@ -17,7 +17,9 @@ the inputs as entered is one of the fits it may choose — and the band and the
 cut-off drawn are its own, because the interval it implies is the one the fit
 reports. The interval at the inputs exactly as entered stays underneath, and
 the summary quotes both. The joint region of a pair of binding constants is
-drawn at the inputs as entered and is titled that way.
+drawn at the inputs as entered and is titled that way; a stated random error of
+each addition and a noise law the replicates leave uncertain widen it, and its
+two bands, as they widen the reported intervals.
 
 The R² axis is linear: for one signal the squared misfit is linear in R², so
 equal R² gaps are equal misfit gaps. The peak and the cut-off sit close together
@@ -55,6 +57,7 @@ from PyQt6.QtWidgets import (
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
 from core.pipeline.fit_pipeline import FitResult, fit_replica_ids, input_replica_ids, summarize_parameters
 from core.pipeline.input_aware import AwareProfile
+from core.pipeline.inputs import ErrorModel
 from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet
 from core.pipeline.sensitivity import TITRANT, SensitivityResult
 from core.pipeline.varpro import SECOND_STEP_LEVEL, KaInterval
@@ -69,6 +72,7 @@ from gui.plotting.labels import (
     fmt_value,
     one_step_sentence,
     plain_label,
+    region_sentence,
     verdict_sentence,
 )
 from gui.plotting.plot_style import DEFAULT_STYLE
@@ -215,6 +219,11 @@ def _default_r2_range(values: np.ndarray, levels: Sequence[float]) -> tuple[floa
     span = max(high - low, _MIN_R2_SPAN)
     top = max(high, float(values.max())) if values.size else high
     return low - span, min(top + 0.6 * span, 1.0 + 0.1 * span)
+
+
+def _same_curve(aware: AwareProfile) -> bool:
+    """Whether *aware* is the profile at the entered inputs itself: no input moves, only its cut-off is wider."""
+    return aware.offsets.shape[1] == 0
 
 
 def _aware_peak(aware: AwareProfile) -> tuple[float, float]:
@@ -786,11 +795,14 @@ class IdentifiabilityWidget(QWidget):
             summary.append(f'<span style="color:{INK_2}">{_WEIGHTED_R2_NOTE}</span>')
         if self._profile.region is not None:
             self._render_region(2 * len(ka_keys), meta, self._profile.region, profiles)
-            if any(profile.aware is not None for profile in profiles.values()):
+            if any(profile.aware is not None and not _same_curve(profile.aware) for profile in profiles.values()):
                 notes.append(
-                    'The panel of the pair takes the entered inputs as exact. The uncertainties you stated '
-                    "widen each binding constant's own interval, in the panels beside it."
+                    'The panel of the pair takes the entered inputs as exact. The uncertainties you stated for '
+                    "them widen each binding constant's own interval, in the panels beside it."
                 )
+            widened = None if self._fit is None else region_sentence(self._fit)
+            if widened:
+                notes.append(f'{widened} Its two bands are the intervals at the entered inputs, widened alike.')
         # What the fit found out about the model and the entered inputs, in the
         # words the summary table and the report use.
         verdict = self._verdict_html()
@@ -886,11 +898,22 @@ class IdentifiabilityWidget(QWidget):
         are said once for the fit.
         """
         counts = f'{_count(profiles[0].n_points, "data point")} and {_count(profiles[0].n_params, "fitted parameter")}'
-        if any(profile.aware is not None for profile in profiles):
+        moved = any(profile.aware is not None and not _same_curve(profile.aware) for profile in profiles)
+        if moved:
+            additions = ErrorModel.from_dict(self._fit.fit_config or {}).additions
             text = (
                 'Every input was free to move within the uncertainty you stated for it, which usually widens '
-                f'the interval. Each interval at the entered inputs is worked out from {counts}, and no '
+                'the interval'
+                + ('; the random error of each addition you stated widens it further' if additions else '')
+                + f'. Each interval at the entered inputs is worked out from {counts}, and no '
                 'interval reaches further than the parameter bounds this fit was given.'
+            )
+        elif any(profile.aware is not None for profile in profiles):
+            # No input moved: what the reported interval adds is the stated error of each addition.
+            text = (
+                'The random error of each addition you stated widens the reported interval beyond the one at the '
+                f'entered inputs, on the same curve. Each interval is worked out from {counts}, and no interval '
+                'reaches further than the parameter bounds this fit was given.'
             )
         else:
             text = (
@@ -934,6 +957,11 @@ class IdentifiabilityWidget(QWidget):
         estimate, _ = _aware_peak(profile.aware)
         aware = profile.aware.interval
         estimate_txt = self._estimate_html(estimate, aware, unit_html, headline_bound)
+        # No input moved where the aware reading is the same curve: only the
+        # stated error of the additions sets the two intervals apart.
+        beside = (
+            'Without the error of the additions' if _same_curve(profile.aware) else 'Conditional on the entered inputs'
+        )
         # The joint region is drawn at the entered inputs, so the one-step test
         # at them is said beside their interval as well as the headline's.
         entered_step = (
@@ -945,7 +973,7 @@ class IdentifiabilityWidget(QWidget):
         return (
             f'{label}: best fit{average} {estimate_txt} · {self._ci_html(aware, estimate, unit_html, bool(headline_bound))}'
             f'{self._reach_html(aware, unit_html, label)}'
-            f'<br>Conditional on the entered inputs: {fit_txt} · {conditional}{entered_step}'
+            f'<br>{beside}: {fit_txt} · {conditional}{entered_step}'
         )
 
     @staticmethod
@@ -1096,6 +1124,9 @@ class IdentifiabilityWidget(QWidget):
         }
         self._items[ka_key] = items
         aware = profile.aware
+        # The reported reading on this same curve, under the wider cut-off the
+        # stated error of the additions implies: one curve and one best fit.
+        same_curve = aware is not None and _same_curve(aware)
         log_best = float(np.log10(profile.best_ka))
         xs: list[np.ndarray] = [np.array([log_best])]
         sample_x = sample_y = np.empty(0)
@@ -1115,7 +1146,8 @@ class IdentifiabilityWidget(QWidget):
                 f'<span style="color:{_on_surface(INK_2, _LEGEND_FILL_ALPHA)}">&#9608;</span>',
                 f'{interval.level:.0%} confidence interval'
                 if aware is None
-                else f'{interval.level:.0%} CI at the entered inputs',
+                else f'{interval.level:.0%} CI '
+                + ('without the error of the additions' if same_curve else 'at the entered inputs'),
             )
             xs.append(np.array([lo, hi]))
         if aware is not None:
@@ -1128,7 +1160,8 @@ class IdentifiabilityWidget(QWidget):
             items['aware_band'] = band
             legend['aware_band'] = (
                 f'<span style="color:{_on_surface(_AWARE, _LEGEND_FILL_ALPHA)}">&#9608;</span>',
-                f'{aware.interval.level:.0%} confidence interval',
+                f'{aware.interval.level:.0%} confidence interval'
+                + (' with the error of the additions' if same_curve else ''),
             )
             xs.append(np.array([lo, hi]))
         for r2 in (profile.replica_r2 or {}).values():
@@ -1141,14 +1174,14 @@ class IdentifiabilityWidget(QWidget):
         # breaks there instead of stepping across the gap.
         items['average'] = main.plot(log_grid, profile.r2, pen=pg.mkPen(INK, width=2), connect='finite', antialias=True)
         items['average'].setZValue(3)
-        entered = ' with the inputs as entered' if aware is not None else ''
+        entered = ' with the inputs as entered' if aware is not None and not same_curve else ''
         legend['profile'] = (
             f'<span style="color:{INK}">&#9473;</span>',
             f'best {self._r2_name()} reachable at each K<sub>a</sub>'
             + (" on the replicates' average" if profile.per_replica else '')
             + entered,
         )
-        if aware is not None:
+        if aware is not None and not same_curve:
             items['aware'] = main.plot(
                 np.log10(aware.grid), aware.r2, pen=pg.mkPen(_AWARE, width=2), connect='finite', antialias=True
             )
@@ -1186,9 +1219,9 @@ class IdentifiabilityWidget(QWidget):
         items['best'] = self._best_marker(main, log_best, profile.best_r2)
         legend['best'] = (
             f'<span style="color:{INK}">&#9670;</span>',
-            'best fit' if aware is None else 'best fit at the entered inputs',
+            'best fit' if aware is None or same_curve else 'best fit at the entered inputs',
         )
-        if aware is not None:
+        if aware is not None and not same_curve:
             estimate, estimate_r2 = _aware_peak(aware)
             log_estimate = float(np.log10(estimate))
             items['aware_best'] = self._best_marker(main, log_estimate, estimate_r2, _AWARE)
@@ -1247,12 +1280,12 @@ class IdentifiabilityWidget(QWidget):
             # the pair at the inputs as entered, and is named that way.
             plot.setTitle('At the entered inputs', color=INK_2, size=f'{label_font.pointSize()}pt')
 
-        # The two single-Ka intervals, behind the region and in the same grey as
-        # the bands of the panels beside it: each of them is what that Ka alone
-        # is held to while the other one is free.
+        # The two single-Ka intervals at the region's own footing, behind the
+        # region and in the same grey as the bands of the panels beside it: each
+        # of them is what that Ka alone is held to while the other one is free.
         bands = []
         for key, orientation in ((k1, 'vertical'), (k2, 'horizontal')):
-            interval = profiles[key].interval
+            interval = region.intervals.get(key, profiles[key].interval)
             if interval is None:
                 continue
             band = pg.LinearRegionItem(

@@ -10,8 +10,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.assays.base import BaseAssay
 from core.data_processing.measurement_set import MeasurementSet
-from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
-from core.pipeline.input_aware import AwareResult
+from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set
 from core.pipeline.profile import fit_profile
 from core.pipeline.sensitivity import SensitivityConfig, SensitivityRunError, run_sensitivity
 from core.pipeline.varpro import FitCancelled, FitRefused
@@ -189,12 +188,13 @@ class ProfileWorker(QThread):
         Assay conditions the fit used.
     config : FitConfig
         Configuration the fit used; its replicate handling and bounds apply.
-    aware : AwareResult or None
-        The penalised profiles the fit itself made
-        (:attr:`~core.pipeline.fit_pipeline.FitResult.aware`), passed straight
-        through so the tab draws the fit's own curves and interval rather than
-        a second computation of them. ``None`` for a fit that took every input
-        as entered, which has none.
+    fit : FitResult or None
+        The fit being profiled (:meth:`~core.pipeline.fit_pipeline.FitResult.profile_arguments`):
+        its penalised profiles are passed straight through, so the tab draws
+        the fit's own curves and interval rather than a second computation of
+        them, and the profile runs with the point weights the fit ran with and
+        the design effects of its conditional intervals and joint region.
+        ``None`` profiles the data afresh, with weights of one.
 
     Signals
     -------
@@ -220,7 +220,7 @@ class ProfileWorker(QThread):
         assay_cls: type[BaseAssay],
         conditions: dict[str, Any],
         config: FitConfig,
-        aware: AwareResult | None = None,
+        fit: FitResult | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -228,7 +228,7 @@ class ProfileWorker(QThread):
         self._assay_cls = assay_cls
         self._conditions = conditions
         self._config = config
-        self._aware = aware
+        self._fit = fit
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -249,7 +249,7 @@ class ProfileWorker(QThread):
                     self._conditions,
                     self._config,
                     should_cancel=lambda: self._cancelled,
-                    aware=self._aware,
+                    **({} if self._fit is None else self._fit.profile_arguments()),
                 )
             )
         except FitCancelled:

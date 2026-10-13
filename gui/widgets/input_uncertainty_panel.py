@@ -12,10 +12,10 @@ addition.
 
 What the panel collects feeds two things: the confidence interval of every fit
 (:func:`core.pipeline.input_aware.input_aware` lets the fit move each input inside
-its uncertainty) and the Ka sensitivity analysis
+its uncertainty, and :mod:`core.pipeline.inflation` widens the cut-off by what the
+random error of each addition adds) and the Ka sensitivity analysis
 (:class:`~core.pipeline.sensitivity.SensitivityConfig`), which draws the sources from
-the same model; the random error of each addition feeds the analysis only. The panel
-itself runs neither — it emits :attr:`specs_changed` and
+the same model. The panel itself runs neither — it emits :attr:`specs_changed` and
 the owning session reads :meth:`current_errors` and :meth:`problems`.
 
 An assay whose signal the engine cannot project onto binding constants
@@ -135,11 +135,19 @@ error that shifts every concentration by the same fraction. The scatter of the i
 additions is stated here instead. Choose <i>sequential additions into one cuvette</i>,
 where every point carries the errors of the additions before it as well as its own, or
 <i>separately prepared samples</i>, where each point is pipetted on its own.</p>
-<p>This entry feeds the K<sub>a</sub> Sensitivity analysis only: the interval the fit
-reports does not include the random error of each addition. The analysis ranks it against
-the other sources. It is applied to the average of the replicates as σ/√<i>m</i> for
-<i>m</i> replicates, which assumes the replicates are separate titrations, each pipetted on
-its own.</p>
+<p>A random error in each addition moves every point along the titrant axis. The
+residuals show only part of that: for additions into one cuvette, most of it shifts the
+whole curve the way a different K<sub>a</sub> would. When you state it, the fit works out
+from your σ and the slope of the fitted curve how much more K<sub>a</sub> varies than the
+scatter alone implies, and widens the interval of K<sub>a</sub> by the factor this
+implies, never narrowing it. The result says by how much.</p>
+<p>Choose what your replicates are. Replicates made as <i>separate titrations</i> each have
+their own addition errors, and their average carries σ/√<i>m</i> of them for <i>m</i>
+replicates. <i>Repeated reads of one titration</i> share them, and their average carries
+σ itself. The data cannot tell the two apart reliably, so it is stated here; separate
+titrations is the setting the panel opens with.</p>
+<p>A σ larger than the real one gives a wider interval than needed. The K<sub>a</sub>
+Sensitivity analysis samples the same error and ranks it against the other sources.</p>
 """
 
 #: Significant figures an absolute value is shown and kept with.
@@ -163,8 +171,15 @@ _ADDITION_MODES: tuple[tuple[str, bool | None], ...] = (
     ('sequential additions into one cuvette', True),
     ('separately prepared samples', False),
 )
-#: The additions entry as the panel opens it: no mode chosen, and a σ to edit once one is.
-_NO_ADDITIONS = (0, _DEFAULT_SOURCE_SIGMA)
+#: The entries of the replicate selector of the additions entry, each with the
+#: ``separate_titrations`` flag it states.
+_REPLICATE_KINDS: tuple[tuple[str, bool], ...] = (
+    ('separate titrations', True),
+    ('repeated reads of one titration', False),
+)
+#: The additions entry as the panel opens it: no mode chosen, a σ to edit once one is,
+#: and the replicates taken as separate titrations.
+_NO_ADDITIONS = (0, _DEFAULT_SOURCE_SIGMA, 0)
 
 
 def _unavailable_reason(assay_type: AssayType) -> str:
@@ -719,7 +734,7 @@ class InputUncertaintyPanel(InfoGroupBox):
         self._remembered: dict[tuple[AssayType, str], _RowState] = {}
         # The same for the sources below the rows, which are stated against this assay's inputs.
         self._remembered_shared: dict[AssayType, tuple[SharedSource, ...]] = {}
-        self._remembered_additions: dict[AssayType, tuple[int, float]] = {}
+        self._remembered_additions: dict[AssayType, tuple[int, float, int]] = {}
         # Condition key -> its set value in the base unit, from the conditions form.
         self._nominals: dict[str, float] = {}
         # The conditions the inputs are read off, as :func:`validate` takes them.
@@ -770,7 +785,8 @@ class InputUncertaintyPanel(InfoGroupBox):
         absolute one in the input's base unit, both as entered: the conversion to a
         relative offset belongs to :func:`core.pipeline.inputs.constraints`, which reads
         the conditions of the assay being fitted. The shared sources come in the order
-        they are shown, and the additions entry is ``None`` until a mode is chosen.
+        they are shown, and the additions entry is ``None`` until a mode is chosen; once
+        one is, it says whether the replicates are separate titrations.
 
         A source that states no error a titration can have — a σ of 0, a range that does
         not open, a shared source on one input — is reported by :meth:`problems` and
@@ -823,6 +839,7 @@ class InputUncertaintyPanel(InfoGroupBox):
         self._add_shared_btn.setEnabled(not running)
         self._additions_combo.setEnabled(not running)
         self._additions_sigma.setEnabled(not running)
+        self._replicates_combo.setEnabled(not running and self._additions_combo.currentIndex() > 0)
 
     # ------------------------------------------------------------------
     # UI
@@ -855,8 +872,8 @@ class InputUncertaintyPanel(InfoGroupBox):
             self._additions_combo.addItem(text, sequential)
         self._additions_combo.setToolTip(
             'How the titrant was added: one cuvette filled addition after addition, or a sample '
-            'prepared on its own for every point. The analysis needs to know which to work out what '
-            'the scatter of the additions does to Ka.'
+            'prepared on its own for every point. The fit and the analysis need to know which to work '
+            'out what the scatter of the additions does to Ka.'
         )
         self._additions_combo.currentIndexChanged.connect(self._on_additions_mode_changed)
         # The mode's wording is long, so it sits under its label rather than beside it:
@@ -883,6 +900,22 @@ class InputUncertaintyPanel(InfoGroupBox):
         sigma_line.addWidget(QLabel('%'))
         sigma_line.addStretch(1)
         additions.addWidget(self._additions_sigma_row)
+
+        self._replicates_combo = QComboBox()
+        for text, separate in _REPLICATE_KINDS:
+            self._replicates_combo.addItem(text, separate)
+        self._replicates_combo.setToolTip(
+            'Separate titrations each have their own addition errors, so their average carries σ/√m of them '
+            'for m replicates; repeated reads of one titration share them, and their average carries σ.'
+        )
+        self._replicates_combo.currentIndexChanged.connect(self.specs_changed)
+        replicates_line = QHBoxLayout()
+        replicates_line.setContentsMargins(_VALUE_INDENT, 0, 0, 0)
+        replicates_line.setSpacing(4)
+        replicates_line.addWidget(QLabel('Replicates are:'))
+        replicates_line.addWidget(self._replicates_combo)
+        replicates_line.addStretch(1)
+        additions.addLayout(replicates_line)
         self._additions_warning = _warning_label()
         self._additions_warning.setContentsMargins(_VALUE_INDENT, 0, 0, 0)
         additions.addWidget(self._additions_warning)
@@ -939,7 +972,7 @@ class InputUncertaintyPanel(InfoGroupBox):
         chain: list[QWidget] = []
         for row in self._rows.values():
             chain += row.focus_widgets()
-        chain += [self._additions_combo, self._additions_sigma, self._add_shared_btn]
+        chain += [self._additions_combo, self._additions_sigma, self._replicates_combo, self._add_shared_btn]
         for shared in self._shared_rows:
             chain += shared.focus_widgets()
         for first, second in zip(chain, chain[1:]):
@@ -1043,24 +1076,38 @@ class InputUncertaintyPanel(InfoGroupBox):
         sequential = self._additions_combo.currentData()
         if sequential is None:
             return None
-        return AdditionError(sigma_pct=self._additions_sigma.value(), sequential=sequential)
+        return AdditionError(
+            sigma_pct=self._additions_sigma.value(),
+            sequential=sequential,
+            separate_titrations=self._replicates_combo.currentData(),
+        )
 
-    def _additions_state(self) -> tuple[int, float]:
-        """The additions entry as shown — the mode and the σ beside it, kept even while no mode is chosen."""
-        return self._additions_combo.currentIndex(), self._additions_sigma.value()
+    def _additions_state(self) -> tuple[int, float, int]:
+        """The additions entry as shown — the mode, the σ and the replicates, kept even while no mode is chosen."""
+        return (
+            self._additions_combo.currentIndex(),
+            self._additions_sigma.value(),
+            self._replicates_combo.currentIndex(),
+        )
 
-    def _set_additions_state(self, state: tuple[int, float]) -> None:
+    def _set_additions_state(self, state: tuple[int, float, int]) -> None:
         """Show *state* again, without reporting it."""
-        index, sigma = state
-        blocked = self._additions_combo.blockSignals(True)
-        self._additions_combo.setCurrentIndex(index)
-        self._additions_combo.blockSignals(blocked)
-        blocked = self._additions_sigma.blockSignals(True)
-        self._additions_sigma.setValue(sigma)
-        self._additions_sigma.blockSignals(blocked)
-        # The σ is a number about a mode: it is shown once one is chosen.
+        index, sigma, replicates = state
+        for widget, set_value, value in (
+            (self._additions_combo, self._additions_combo.setCurrentIndex, index),
+            (self._additions_sigma, self._additions_sigma.setValue, sigma),
+            (self._replicates_combo, self._replicates_combo.setCurrentIndex, replicates),
+        ):
+            blocked = widget.blockSignals(True)
+            set_value(value)
+            widget.blockSignals(blocked)
+        self._show_additions_mode(index)
+
+    def _show_additions_mode(self, index: int) -> None:
+        """The σ and the replicates are statements about a mode: shown, and open to edits, once one is chosen."""
         self._additions_sigma_row.setVisible(index > 0)
+        self._replicates_combo.setEnabled(index > 0 and self._additions_combo.isEnabledTo(self))
 
     def _on_additions_mode_changed(self, index: int) -> None:
-        self._additions_sigma_row.setVisible(index > 0)
+        self._show_additions_mode(index)
         self.specs_changed.emit()

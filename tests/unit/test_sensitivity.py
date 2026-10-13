@@ -1340,8 +1340,8 @@ def test_baseline_is_the_unperturbed_sample(n_replicas, per_replica, proportiona
     The grid's centre cell holds the inputs as entered, so its Ka reads no
     change against the baseline, and the report's Estimate comes from the
     fitting method its spread comes from. Where the replicates showed a noise
-    law, that means the samples carry its weights: an unweighted refit of the
-    centre cell would land somewhere else.
+    law, that means the samples carry the weights the baseline ran with: an
+    unweighted refit of the centre cell would land somewhere else.
     """
     setup = _noisy_ida_setup(n_replicas, per_replica=per_replica, proportional=proportional)
     result = _run(setup, _heatmap(3))
@@ -1351,8 +1351,8 @@ def test_baseline_is_the_unperturbed_sample(n_replicas, per_replica, proportiona
     assert result.r2_grid[1, 1] == pytest.approx(result.baseline_fit.r_squared, abs=1e-12)
     ms, assay_cls, conditions, fit_config = setup
     used = ms.with_active(sens.fit_replica_ids(result.baseline_fit))
-    weights = result.baseline_fit.noise.weights(used.average_signal())
-    assert proportional == (weights.max() > weights.min()), 'the weighted case has to weight the points differently'
+    weights = result.baseline_fit.point_weights
+    assert proportional == (weights is not None), 'the weighted case has to weight the points differently'
     unperturbed, r_squared, _ = sens._fit_perturbed(
         used, assay_cls, np.asarray(ms.concentrations), conditions, {}, fit_config, point_weights=weights
     )
@@ -1379,10 +1379,10 @@ def test_a_samples_profile_r2_is_its_place_on_the_ka_profile():
         conditions,
         {},
         fit_config,
-        point_weights=baseline.noise.weights(ms.average_signal()),
+        point_weights=baseline.point_weights,
     )
 
-    profiles = fit_profile(ms, assay_cls, conditions, fit_config)
+    profiles = fit_profile(ms, assay_cls, conditions, fit_config, **baseline.profile_arguments())
     assert profiles.weighted
     assert profile_r2 == pytest.approx(profiles.profiles['Ka_guest'].best_r2, abs=1e-12)
     assert profile_r2 != pytest.approx(r_squared, abs=1e-9)
@@ -2021,3 +2021,19 @@ def test_run_intervals_leave_out_rows_without_a_fit(ida_setup, monkeypatch):
         assert result.sobol_st['Ka_guest'][key] == pytest.approx(st[column], rel=1e-12)
         np.testing.assert_allclose(result.sobol_s1_ci['Ka_guest'][key], s1_ci[column], rtol=1e-12)
         np.testing.assert_allclose(result.sobol_st_ci['Ka_guest'][key], st_ci[column], rtol=1e-12)
+
+
+@pytest.mark.parametrize(('separate', 'divisor'), [(True, 4), (False, 1)], ids=['separate', 'repeated_reads'])
+def test_the_additions_of_an_average_are_drawn_at_what_its_replicates_share(separate, divisor):
+    """Four separate titrations average their addition errors to sigma / 2; four reads of one titration keep sigma."""
+    from core.pipeline.inputs import AdditionError
+
+    sigma = 0.02
+    errors = ErrorModel(additions=AdditionError(100 * sigma, sequential=True, separate_titrations=separate))
+    conditions = {'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'd0': Q_(5e-6, 'M')}
+
+    jobs = sens.sobol_jobs(errors, conditions, 256, 12, 4, seed=3)
+
+    deltas = np.array([row for _, row in jobs.jobs])
+    assert deltas.shape[1] == 12
+    assert np.std(deltas) == pytest.approx(sigma / np.sqrt(divisor), rel=0.03)

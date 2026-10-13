@@ -25,7 +25,12 @@ a two-constant model. These tests pin what makes it trustworthy:
   ``tests/integration/test_profile_fits.py``);
 - where the inputs were stated with an uncertainty, the tab also gets the
   fit's own penalised profile, which lies above the fixed-input curve
-  everywhere it is drawn;
+  everywhere it is drawn; where only the design effect of the reported
+  interval differs, that interval is this curve under its wider cut-off;
+- the point weights and design effects are the fit's, handed in: with them
+  the profile reproduces the fit's interval, the widened cut-offs and the
+  joint region cut at its own design effect, and without them it is the
+  unweighted plain F test whatever the replicates show;
 - a stop request ends the profile at its next solve.
 """
 
@@ -48,6 +53,7 @@ from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline import profile as profile_module
 from core.pipeline import varpro
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_assay, fit_measurement_set
+from core.pipeline.input_aware import input_aware
 from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec
 from core.pipeline.profile import JointRegion, fit_profile
 from core.pipeline.varpro import FitCancelled, Projection
@@ -564,8 +570,12 @@ def test_per_replicate_profile_describes_the_average_and_adds_each_replicates_cu
     ms.set_active('c', False)
     active = ['a', 'b', 'd']
 
-    profile = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, FitConfig(per_replica=True)).profiles['Ka_guest']
-    averaged = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE).profiles['Ka_guest']
+    # Weights the fit might have run with: every curve is drawn on the weighted R² axis they define.
+    weights = np.linspace(0.5, 2.0, 15)
+    profile = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, FitConfig(per_replica=True), point_weights=weights).profiles[
+        'Ka_guest'
+    ]
+    averaged = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE, point_weights=weights).profiles['Ka_guest']
 
     # The replicates' curves add drawing points of their own; every Ka both grids share
     # (at least the regular grid) carries the same averaged R².
@@ -581,10 +591,8 @@ def test_per_replicate_profile_describes_the_average_and_adds_each_replicates_cu
     assert profile.per_replica and not averaged.per_replica
     assert averaged.replica_r2 is None
 
-    # Every curve is drawn on the weighted R² axis the fit's own noise law
-    # defines, so a replicate's curve is that replicate's signal projected
-    # under those weights — here through a projection of its own row alone.
-    weights = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE).noise.weights(ms.average_signal())
+    # A replicate's curve is that replicate's signal projected under the fit's weights — here through a
+    # projection of its own row alone.
     assert list(profile.replica_r2) == active
     for rid in active:
         row = _single(x, ms.get_replica_signal(rid))
@@ -595,33 +603,83 @@ def test_per_replicate_profile_describes_the_average_and_adds_each_replicates_cu
         np.testing.assert_allclose(drawn, expected, rtol=0, atol=1e-12)
 
 
-def test_the_profile_of_replicated_data_is_the_weighted_one_the_fit_was_made_on():
-    """Replicates that scatter with the signal weight the curve, and the tab shows the fit's own numbers.
-
-    The R² axis is then ``1 - S_w / SS_tot,w`` — a different number from the
-    Fit Quality R², which counts every point equally — while the best fit and
-    the interval are the ones the fit of the same replicates reports.
-    """
+def _proportional_replicates() -> MeasurementSet:
+    """Four IDA replicates whose scatter grows with the signal, so the fit reads a noise law of positive share."""
     x, y = _make_ida_data(IDA_TRUE, n_points=15)
     rng = np.random.default_rng(3)
     signals = np.vstack([y * (1.0 + rng.normal(0.0, 0.03, y.size)) for _ in range(4)])
-    ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c', 'd'))
+    return MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c', 'd'))
 
-    fit = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
-    profiles = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+
+def test_given_the_weights_and_design_effect_a_fit_ran_with_the_profile_is_that_fit():
+    """The curve, its cut-off and its interval are those of the weighted projection, cut at the widened F test.
+
+    The R² axis is then ``1 - S_w / SS_tot,w``, with each point counted by its weight; the cut-off is
+    ``S_min (1 + kappa F(1, n - p) / (n - p))`` on that scale, and the curve meets it at the interval's edges.
+    """
+    ms = _proportional_replicates()
+    assay = ms.to_assay(IDAAssay, conditions=_IDA_CONDITIONS, use_average=True)
+    weights = 1.0 / (0.2 + (assay.y_data.magnitude / assay.y_data.magnitude.max()) ** 2)
+    kappa = 1.7
+    profiles = fit_profile(
+        ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE, point_weights=weights, inflation={'Ka_guest': kappa}
+    )
     profile = profiles.profiles['Ka_guest']
 
-    assert fit.noise.estimated and fit.noise.share > 0.0
+    weighted = Projection(assay, _resolve_bounds(assay, None), point_weights=weights)
+    fit = weighted.fit()
     assert profiles.weighted
-    assert profile.best_ka == fit.parameters['Ka_guest'].magnitude
-    assert profile.interval == fit.intervals['Ka_guest']
-    # The curve's peak is the weighted R² of that fit, read off a projection
-    # built here with the law's weights, and it is not the reported R².
-    assay = ms.to_assay(IDAAssay, conditions=_IDA_CONDITIONS, use_average=True)
-    weighted = Projection(assay, _resolve_bounds(assay, None), point_weights=fit.noise.weights(ms.average_signal()))
-    peak = 1.0 - weighted.row_ssr({'Ka_guest': profile.best_ka})[0] / weighted.ss_tot[0]
-    assert profile.best_r2 == pytest.approx(peak, abs=1e-12)
-    assert profile.best_r2 != pytest.approx(fit.r_squared, abs=1e-9)
+    assert profile.best_ka == fit.ka['Ka_guest']
+    assert profile.interval == weighted.interval('Ka_guest', fit, inflation=kappa)
+    assert profile.interval.inflation == kappa
+    # The cut-off from the weighted residual and scipy's F quantile.
+    ss_tot = float(
+        np.sum(weights * (assay.y_data.magnitude - np.average(assay.y_data.magnitude, weights=weights)) ** 2)
+    )
+    dof = profile.n_points - profile.n_params
+    s_min = float(np.sum(weights * (assay.y_data.magnitude - assay.forward_model(weighted.params(fit)).magnitude) ** 2))
+    assert 1.0 - profile.r2_threshold == pytest.approx(
+        s_min * (1 + kappa * f_dist.ppf(varpro.LEVEL, 1, dof) / dof) / ss_tot
+    )
+    log_grid = np.log10(profile.grid)
+    for edge in (profile.interval.low, profile.interval.high):
+        at = int(np.argmin(np.abs(log_grid - np.log10(edge))))
+        assert profile.r2[at] == pytest.approx(profile.r2_cut[at], abs=1e-8)
+    assert profile.best_r2 == pytest.approx(1.0 - s_min / ss_tot, abs=1e-12)
+
+
+def test_the_profile_of_replicated_data_given_the_fits_own_weights_and_design_effects_is_that_fit():
+    """With a law of positive share the fit weights by its fitted curve and widens its interval; so does the tab."""
+    ms = _proportional_replicates()
+    fit = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+    assert fit.noise.estimated and fit.noise.share > 0.0 and fit.point_weights is not None
+    conditional = fit.conditional.intervals
+    profiles = fit_profile(
+        ms,
+        IDAAssay,
+        _IDA_CONDITIONS,
+        _AVERAGE,
+        aware=fit.aware,
+        point_weights=fit.point_weights,
+        inflation={key: interval.inflation for key, interval in conditional.items()},
+    )
+    profile = profiles.profiles['Ka_guest']
+    assert profiles.weighted
+    assert profile.best_ka == fit.conditional.parameters['Ka_guest'].magnitude
+    assert profile.interval == conditional['Ka_guest']
+    assert (profile.interval if profile.aware is None else profile.aware.interval) == fit.intervals['Ka_guest']
+
+
+def test_a_profile_handed_no_weights_is_unweighted_whatever_the_replicates_show():
+    """The weights are the fit's to hand over; the profile reads no noise law of its own."""
+    ms = _proportional_replicates()
+    profiles = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+    profile = profiles.profiles['Ka_guest']
+    assert not profiles.weighted
+    plain = _projection(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+    fit = plain.fit()
+    assert profile.interval == plain.interval('Ka_guest', fit) and profile.interval.inflation == 1.0
+    assert profile.best_r2 == 1.0 - fit.objective / plain.ss_tot[0]
 
 
 def test_a_single_titration_is_profiled_with_no_weights_at_all():
@@ -747,6 +805,76 @@ def test_the_joint_region_holds_the_best_fit_and_only_pairs_that_clear_the_joint
         assert value == pytest.approx(joint_cut(rank), rel=1e-6)
 
 
+def test_the_joint_region_and_each_interval_are_cut_at_the_fits_own_design_effects():
+    ms = _hg2_ms(n_points=12, frac=0.02, seed=0)
+    kappa = {'Ka_HG': 1.5, 'Ka_HG2': 3.0}
+    profiles = fit_profile(ms, HG2Assay, _HG2_CONDITIONS, _HG2_AVERAGE, inflation=kappa, joint_inflation=2.0)
+    region = profiles.region
+    assay = ms.to_assay(HG2Assay, conditions=_HG2_CONDITIONS)
+    bounds = _resolve_bounds(assay, _HG2_BOX)
+    ss_tot = float(np.sum((assay.y_data.magnitude - assay.y_data.magnitude.mean()) ** 2))
+    s_min = _independent_ssr(assay, bounds, dict(zip(region.ka_keys, region.best)))
+    dof = assay.n_points - profiles.profiles['Ka_HG'].n_params
+
+    # The joint F test and each one-dimensional one, their quantiles scaled by the design effect handed in.
+    assert region.inflation == 2.0
+    joint = s_min * (1.0 + 2.0 * 2 * f_dist.ppf(region.level, 2, dof) / dof)
+    assert 1.0 - region.r2_threshold == pytest.approx(joint / ss_tot, rel=1e-8)
+    projection = _projection(ms, HG2Assay, _HG2_CONDITIONS, _HG2_AVERAGE)
+    fit = projection.fit()
+    for key, factor in kappa.items():
+        profile = profiles.profiles[key]
+        one = s_min * (1.0 + factor * f_dist.ppf(region.level, 1, dof) / dof)
+        assert 1.0 - profile.r2_threshold == pytest.approx(one / ss_tot, rel=1e-8)
+        assert profile.interval == projection.interval(key, fit, inflation=factor)
+    # A side of the region's box inside the Ka bounds lies where the profile crosses the widened joint cut-off.
+    joint_cut = projection.cut_off(fit, region.level, n_constrained=2, inflation=2.0)
+    closed = [
+        (key, side)
+        for key, axis in zip(region.ka_keys, (region.x, region.y))
+        for side in (axis[0], axis[-1])
+        if side not in (1e4, 1e8)
+    ]
+    assert closed
+    for key, side in closed:
+        _, value, fitted = projection.profile_point(key, side)
+        assert value == pytest.approx(joint_cut(fitted), rel=1e-6)
+
+
+def test_stated_additions_widen_the_joint_region_and_its_bands_as_they_widen_the_reported_intervals():
+    """The region at the entered inputs carries the additions; after an import, so does the reported reading."""
+    from dataclasses import replace
+
+    from core.pipeline.inflation import joint_inflation
+    from core.pipeline.inputs import AdditionError
+
+    ms = _hg2_ms(n_points=12, frac=0.005, seed=0)
+    additions = AdditionError(3.0, sequential=True)
+    config = replace(_HG2_AVERAGE, errors=ErrorModel(additions=additions))
+    result = fit_measurement_set(ms, HG2Assay, _HG2_CONDITIONS, config)
+    projection = _projection(ms, HG2Assay, _HG2_CONDITIONS, _HG2_AVERAGE)
+    fit = projection.fit()
+    assert result.joint_inflation == joint_inflation(projection, fit, additions=additions)
+    assert result.joint_inflation > 1.0
+
+    profiles = fit_profile(ms, HG2Assay, _HG2_CONDITIONS, config, **result.profile_arguments())
+    region = profiles.region
+    assert region.inflation == result.joint_inflation
+    joint = projection.threshold(fit, region.level, n_constrained=2, inflation=result.joint_inflation)
+    assert 1.0 - region.r2_threshold == pytest.approx(joint / float(projection.ss_tot[0]), rel=1e-12)
+    for key in region.ka_keys:
+        # The bands are the reported intervals: no input moved, so they are cut on this same curve.
+        assert region.intervals[key] == result.intervals[key]
+        assert profiles.profiles[key].interval == result.conditional.intervals[key]
+    assert any(region.intervals[key].inflation > 1.0 for key in region.ka_keys)
+
+    # A result read from a file holds no penalised profiles; its reported reading is cut again, at its own factors.
+    imported = fit_profile(ms, HG2Assay, _HG2_CONDITIONS, config, **{**result.profile_arguments(), 'aware': None})
+    for key in region.ka_keys:
+        assert imported.profiles[key].aware.interval == result.intervals[key]
+    assert imported.region.inflation == region.inflation
+
+
 def test_pinning_one_of_two_ka_profiles_the_other_alone_and_leaves_no_region():
     x, y = _make_hg2_data(HG2_TRUE, n_points=12)
     signals = np.vstack([_homoscedastic(y, 0.02, seed) for seed in range(2)])
@@ -791,6 +919,31 @@ def test_a_fit_that_held_every_input_as_entered_draws_one_curve():
     profiles = fit_profile(_single(x, _homoscedastic(y, 0.005, 4)), IDAAssay, _IDA_CONDITIONS, _AVERAGE)
 
     assert profiles.profiles['Ka_guest'].aware is None
+
+
+def test_a_reported_interval_at_a_larger_design_effect_is_this_curve_under_its_wider_cut_off():
+    """No input free to move, and the reported interval widened further than this one (a stated error of each
+    addition): the tab draws it as the second reading of the one curve, under its own cut-off."""
+    x, y = _make_ida_data(IDA_TRUE, n_points=12)
+    ms = _single(x, _homoscedastic(y, 0.005, 4))
+    projection = _projection(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+    fit = projection.fit()
+    headline = input_aware(projection, fit, (), inflation={'Ka_guest': 2.5})
+
+    profile = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE, aware=headline).profiles['Ka_guest']
+
+    reported = profile.aware
+    assert reported is not None and reported.interval is headline.profiles['Ka_guest'].interval
+    assert (profile.interval.inflation, reported.interval.inflation) == (1.0, 2.5)
+    assert reported.interval.low < profile.interval.low and profile.interval.high < reported.interval.high
+    assert np.array_equal(reported.grid, profile.grid) and np.array_equal(reported.r2, profile.r2)
+    dof = profile.n_points - profile.n_params
+    widened = fit.objective * (1.0 + 2.5 * f_dist.ppf(varpro.LEVEL, 1, dof) / dof)
+    assert 1.0 - reported.r2_threshold == pytest.approx(widened / projection.ss_tot[0], rel=1e-12)
+    # The curve passes through the reported interval's edges and meets its cut-off there.
+    for edge in (reported.interval.low, reported.interval.high):
+        (at,) = np.flatnonzero(reported.grid == edge)
+        assert reported.r2[at] == pytest.approx(reported.r2_cut[at], abs=1e-8)
 
 
 def test_the_tab_draws_the_penalised_profile_the_fit_itself_made(uncertain_ida):

@@ -19,7 +19,10 @@ power of molar in the input's unit: +1 for a concentration made from the stock,
 addition (:class:`AdditionError`, :func:`perturb_titrant`). The sensitivity
 analysis samples the sources; the input-aware interval reads them through
 :func:`constraints`, which turns every varying source into an
-:class:`InputConstraint` on its relative offset ``e``.
+:class:`InputConstraint` on its relative offset ``e``. The additions reach the
+interval of a fit through :func:`addition_loading`, the first-order change of
+the series per addition error, from which
+:mod:`core.pipeline.inflation` widens the interval's cut-off.
 
 Layering: this module must not import from ``gui.*``. Inputs are classified by
 pint dimensionality of the passed condition Quantities (``M`` → concentration,
@@ -30,7 +33,7 @@ passed in wherever a message names an input.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Mapping, Optional
 
@@ -50,6 +53,7 @@ __all__ = [
     'InputConstraint',
     'InputSpec',
     'SpecKind',
+    'addition_loading',
     'axis_reaches_zero',
     'constraints',
     'input_name',
@@ -161,10 +165,19 @@ class AdditionError:
     *sequential* says the additions went into one cuvette one after another, so
     every later point carries the errors of the earlier ones; otherwise every
     point is a sample prepared on its own (:func:`perturb_titrant`).
+
+    *separate_titrations* says how the replicates were made. ``True``: each
+    replicate is a titration of its own with its own additions, so the mean of
+    ``m`` replicates carries ``1/m`` of the variance of one titration's
+    addition errors. ``False``: the replicates are repeated reads of one
+    titration, every one of them carries the same additions, and averaging
+    them takes none of it away. The replicates cannot tell the two apart
+    reliably, so it is stated.
     """
 
     sigma_pct: float
     sequential: bool
+    separate_titrations: bool = True
 
 
 @dataclass(frozen=True)
@@ -179,9 +192,9 @@ class ErrorModel:
     shared : tuple[SharedSource, ...]
         The errors several inputs have in common.
     additions : AdditionError or None
-        The random error of each titrant addition. The sensitivity analysis
-        samples it; the interval of a fit does not include it, since the fit
-        reads :meth:`for_fit`.
+        The random error of each titrant addition. The interval of a fit takes
+        it in through a widened cut-off (:mod:`core.pipeline.inflation`), and
+        the sensitivity analysis samples it.
     """
 
     specs: Mapping[str, InputSpec] = field(default_factory=dict)
@@ -265,10 +278,6 @@ class ErrorModel:
             return None
         return lambda e: self.input_offsets(e, base_conditions)
 
-    def for_fit(self) -> 'ErrorModel':
-        """The sources a fit's interval reads: every one but the random error of the additions."""
-        return replace(self, additions=None)
-
     def to_dict(self) -> dict[str, Any]:
         """The entries of a results file's ``fit_config``.
 
@@ -281,19 +290,30 @@ class ErrorModel:
                 {'name': s.name, 'sigma_pct': s.sigma_pct, 'inputs': list(s.inputs)} for s in self.shared
             ]
         if self.additions is not None:
-            d['titrant_additions'] = {'sigma_pct': self.additions.sigma_pct, 'sequential': self.additions.sequential}
+            d['titrant_additions'] = {
+                'sigma_pct': self.additions.sigma_pct,
+                'sequential': self.additions.sequential,
+                'separate_titrations': self.additions.separate_titrations,
+            }
         return d
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> 'ErrorModel':
-        """The model :meth:`to_dict` wrote, read from it or from a whole ``fit_config``; an absent entry states nothing."""
+        """The model :meth:`to_dict` wrote, read from it or from a whole ``fit_config``; an absent entry states nothing.
+
+        Additions written without ``separate_titrations`` are separate titrations.
+        """
         additions = d.get('titrant_additions')
         return cls(
             specs=specs_from_dict(d.get('input_uncertainty') or {}),
             shared=tuple(
                 SharedSource(s['name'], s['sigma_pct'], tuple(s['inputs'])) for s in d.get('shared_sources') or ()
             ),
-            additions=None if additions is None else AdditionError(additions['sigma_pct'], additions['sequential']),
+            additions=None
+            if additions is None
+            else AdditionError(
+                additions['sigma_pct'], additions['sequential'], additions.get('separate_titrations', True)
+            ),
         )
 
 
@@ -708,18 +728,64 @@ def perturb_titrant(x: np.ndarray, deltas: np.ndarray, sequential: bool, titrant
     deltas = np.asarray(deltas, dtype=float)
     w = x if titrant_stock is None else x / (titrant_stock - x)
     if sequential:
-        falls = np.flatnonzero(np.diff(x) < 0)
-        if falls.size:
-            i = int(falls[0]) + 1
-            raise FitRefused(
-                f'The titrant concentration falls at point {i + 1} of the data '
-                f'({Quantity(x[i], "M"):.4g~P} after {Quantity(x[i - 1], "M"):.4g~P}), '
-                'which additions into one cuvette cannot do. '
-                "Choose 'separately prepared samples' or check the order of the data."
-            )
+        _require_rising(x)
         shift = np.cumsum(np.diff(w, prepend=0.0) * deltas)
     else:
         shift = w * deltas
     if titrant_stock is None:
         return x + shift
     return x + titrant_stock * shift / ((1.0 + w) * (1.0 + w + shift))
+
+
+def addition_loading(x: np.ndarray, sequential: bool, titrant_stock: Optional[float]) -> np.ndarray:
+    """How far each titrant concentration moves per unit relative error of each addition, to first order.
+
+    The Jacobian ``L_ij = d x_i / d delta_j`` of :func:`perturb_titrant` at
+    ``delta = 0``. With ``w_i = x_i / (c_T - x_i)`` the stock volume per sample
+    volume and ``dx/dw = c_T / (1 + w)²`` (``w = x`` and ``dx/dw = 1`` with no
+    stock declared), additions into one cuvette give
+    ``L_ij = (dx/dw)_i (w_j - w_{j-1})`` for ``j <= i`` and zero above the
+    diagonal, and separately prepared samples ``L = diag((dx/dw)_i w_i)``.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Titrant concentrations in the cuvette, in file order.
+    sequential : bool
+        Whether the additions went into one cuvette one after another.
+    titrant_stock : float or None
+        Stock concentration in the unit of *x*; ``None`` when no dilution is declared.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n, n)``, in the unit of *x*.
+
+    Raises
+    ------
+    FitRefused
+        When *sequential* and the series falls somewhere, as :func:`perturb_titrant`.
+    """
+    x = np.asarray(x, dtype=float)
+    if titrant_stock is None:
+        w, slope = x, np.ones_like(x)
+    else:
+        w = x / (titrant_stock - x)
+        slope = titrant_stock / (1.0 + w) ** 2
+    if sequential:
+        _require_rising(x)
+        return slope[:, np.newaxis] * np.tril(np.broadcast_to(np.diff(w, prepend=0.0), (x.size, x.size)))
+    return np.diag(slope * w)
+
+
+def _require_rising(x: np.ndarray) -> None:
+    """Refuse a series that falls somewhere: additions into one cuvette only raise the concentration."""
+    falls = np.flatnonzero(np.diff(x) < 0)
+    if falls.size:
+        i = int(falls[0]) + 1
+        raise FitRefused(
+            f'The titrant concentration falls at point {i + 1} of the data '
+            f'({Quantity(x[i], "M"):.4g~P} after {Quantity(x[i - 1], "M"):.4g~P}), '
+            'which additions into one cuvette cannot do. '
+            "Choose 'separately prepared samples' or check the order of the data."
+        )

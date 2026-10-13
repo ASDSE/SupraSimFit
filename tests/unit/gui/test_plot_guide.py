@@ -138,7 +138,7 @@ def test_the_examples_still_describe_the_demo_data():
     conditions = {'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M'), 'Ka_dye': Q_(16.8e6, '1/M')}
     config = FitConfig(per_replica=False)
     result = fit_measurement_set(ms, IDAAssay, conditions, config)
-    profiles = fit_profile(ms, IDAAssay, conditions, config)
+    profiles = fit_profile(ms, IDAAssay, conditions, config, **result.profile_arguments())
     profile = profiles.profiles['Ka_guest']
 
     # The demo data carry replicates, so they show a noise law and the fit is
@@ -146,9 +146,7 @@ def test_the_examples_still_describe_the_demo_data():
     # to carry the same weights or its ss_tot and row_ssr describe another fit.
     assay = ms.to_assay(IDAAssay, conditions=conditions, use_average=True)
     assert profiles.weighted, "the guide names the tab's axis after this"
-    projection = Projection(
-        assay, _resolve_bounds(assay, None), point_weights=result.noise.weights(assay.y_data.magnitude)
-    )
+    projection = Projection(assay, _resolve_bounds(assay, None), point_weights=result.point_weights)
     ss_tot = float(projection.ss_tot[0])
 
     def at(factor: float) -> float:
@@ -281,10 +279,11 @@ def test_the_sensitivity_entry_calls_the_per_addition_item_what_the_widget_label
     text = _sensitivity_text()
 
     assert f'<b>{_ADDITIONS_LABEL}</b>' in text
-    # The fit's interval leaves the error of each addition out, and both texts say so.
-    statement = 'The interval the fit reports does not include the random error of each addition'
+    # A stated error of each addition is part of the fit's interval, and both texts say so.
+    statement = 'The random error of each addition is part of the reported interval when stated under Input Uncertainty'
     assert _ADDITIONS_NOTE.startswith(statement)
     assert statement in text
+    assert 'does not include the random error of each addition' not in text
 
 
 def test_the_sensitivity_example_quotes_the_fit_count_its_own_run_would_cost():

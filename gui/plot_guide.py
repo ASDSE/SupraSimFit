@@ -78,12 +78,12 @@ Identifiability tab shows where it comes from. The fit is deterministic: the sam
 bounds and input uncertainties always give the same numbers.</p>
 
 <p><b>Example</b></p>
-<p>With every input as entered: K<sub>a(G)</sub> = 2.78&times;10<sup>8</sup> M<sup>&minus;1</sup>
-[1.91&times;10<sup>8</sup>, 4.00&times;10<sup>8</sup>], R&sup2; 0.9897. At 11 of the 12 concentrations
+<p>With every input as entered: K<sub>a(G)</sub> = 2.81&times;10<sup>8</sup> M<sup>&minus;1</sup>
+[1.74&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>], R&sup2; 0.9906. At 11 of the 12 concentrations
 all 7 replicates sit on the same side of the curve: a systematic miss, which no width of interval
 accounts for.</p>
 <p>The headline, with the uncertainties Demo IDA states: K<sub>a(G)</sub> = 1.59&times;10<sup>8</sup>
-M<sup>&minus;1</sup> [1.21&times;10<sup>8</sup>, 2.00&times;10<sup>8</sup>], R&sup2; 0.999983, under the red
+M<sup>&minus;1</sup> [1.14&times;10<sup>8</sup>, 2.08&times;10<sup>8</sup>], R&sup2; 0.999984, under the red
 line <i>The inputs together are further from their entered values than you stated</i>. Moving the
 inputs removes the miss, but only by moving them further than those uncertainties allow: check the
 stocks and the stated uncertainties before trusting either number.</p>
@@ -118,12 +118,17 @@ replicate on its own. The black line and the CI use their average.</li>
 under <i>Input Uncertainty</i>. At each K<sub>a</sub> the fit may also move those inputs inside what
 you stated, so this curve runs at or above the black one and its band &mdash; the interval the app
 reports &mdash; is usually the wider of the two. The black curve and the faint band under it are the
-same profile with every input held exactly as entered.</li>
+same profile with every input held exactly as entered. Where you state only the random error of each
+addition, no input moves and there is no second curve: the error widens the cut-off of the one
+curve, and the coloured band &mdash; the interval the app reports &mdash; lies over the faint band
+without it.</li>
 <li>Pair panel (two association constants): log<sub>10</sub> of one against log<sub>10</sub> of the
 other, with the 95&thinsp;% region for the pair filled, the best fit marked, and the two single
 intervals as faint bands. The region is wider than the two bands crossed whenever the two constants
-trade off against each other. This panel holds the inputs as entered, whatever you state for them;
-the two single intervals are the ones that account for them.</li>
+trade off against each other. This panel holds the inputs as entered, whatever uncertainty you state
+for them; the two single intervals in the panels beside it are the ones that account for that. The
+random error of each addition, where you state one, does widen the region and its two bands, as it
+widens the reported intervals, and a note on the tab says by how much.</li>
 </ul>
 <p>The R&sup2; axis is linear and opens on the peak and the cut-off. Scroll to zoom, drag to pan,
 right-click for View All.</p>
@@ -164,14 +169,16 @@ since changed inputs can absorb a systematic miss. <i>Show sensitivity samples</
 <i>Colour by</i> shades it by one input&rsquo;s change (blue lower, red higher).</p>
 
 <p><b>Example</b></p>
-<p>Best fit 2.78&times;10<sup>8</sup> M<sup>&minus;1</sup> (weighted R&sup2; 0.9959); CI
-[1.91&times;10<sup>8</sup>, 4.00&times;10<sup>8</sup>] M<sup>&minus;1</sup> (&minus;31&thinsp;% / +44&thinsp;%), cut-off
-0.9935 from 12 data points and 3 fitted parameters. The best weighted R&sup2; is 0.9875 at twice the
-best K<sub>a</sub> and 0.9861 at half: small R&sup2; differences set a 2-fold interval. Below
-1.5&times;10<sup>8</sup> M<sup>&minus;1</sup> the fit holds the signal offset on zero, so the
-cut-off steps down to 0.9920 there; the interval ends above that step, at the level where every
-signal parameter is free.</p>
-<p>The curve misses the replicates&rsquo; mean by 7.6&times;10<sup>3</sup> a.u. (RMSE) while they
+<p>Best fit 2.81&times;10<sup>8</sup> M<sup>&minus;1</sup> (weighted R&sup2; 0.9957); CI
+[1.74&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>] M<sup>&minus;1</sup> (&minus;38&thinsp;% / +60&thinsp;%), cut-off
+0.9918 from 12 data points and 3 fitted parameters. The cut-off sits lower than those alone would
+put it: the 7 replicates leave the share of proportional noise anywhere between 0.63 and 1, and the
+interval is widened (variance &times;1.57) to hold for every share they allow. The best weighted
+R&sup2; is 0.9873 at twice the best K<sub>a</sub> and 0.9859 at half: small R&sup2; differences set a
+3-fold interval. Below 1.6&times;10<sup>8</sup> M<sup>&minus;1</sup> the fit holds the signal offset
+on zero, so the cut-off steps down to 0.9892 there; the interval ends above that step, at the level
+where every signal parameter is free.</p>
+<p>The curve misses the replicates&rsquo; mean by 7.2&times;10<sup>3</sup> a.u. (RMSE) while they
 scatter by about 1.0&times;10<sup>3</sup> a.u.: they depart from the model in the same way (see Fit
 Curve), so the true uncertainty is wider than this interval.</p>
 """
@@ -285,10 +292,11 @@ rests on no assumption about how K<sub>a</sub> depends on the source; it is give
 samples that effectively carry the weight, and a first-order formula follows it as the cross-check.
 Where too few samples carry the weight, or you take the source as exact and leave none to re-weight,
 the formula gives the spread instead and the sentence says so. No fit is run for a what-if.</p>
-<p>The interval the fit reports does not include the random error of each addition; here it is
-sampled and ranked against the other sources. With <i>m</i> replicates it is drawn at
-&sigma;/&radic;<i>m</i>, which takes the replicates to be separate titrations, each pipetted on its
-own.</p>
+<p>The random error of each addition is part of the reported interval when stated under Input
+Uncertainty; here it is sampled and ranked against the other sources. With <i>m</i> replicates
+made as separate titrations it is drawn at &sigma;/&radic;<i>m</i>, the error of their average;
+replicates stated as repeated reads of one titration share their additions, and it is drawn at
+&sigma;.</p>
 <p><i>Export</i> &#9656; <i>Export All&hellip;</i> writes the whole table, the spread, the
 elasticity of every input and the run&rsquo;s seed as <i>Ka uncertainty budget (CSV)</i>.</p>
 
@@ -304,21 +312,21 @@ neighbouring cells. The axes are inputs, each swept over its own stated range.</
 
 <p><b>Example</b></p>
 <p>The uncertainties Demo IDA states, nothing shared, sample size 1024, which costs 6152 fits: median
-2.77&times;10<sup>8</sup> M<sup>&minus;1</sup> against a baseline of 2.78&times;10<sup>8</sup>, middle
-90&thinsp;% within 1.8-fold, a spread of 0.076 decades (&times;/&divide; 1.19). Every sample produced a
+2.81&times;10<sup>8</sup> M<sup>&minus;1</sup> against a baseline of 2.81&times;10<sup>8</sup>, middle
+90&thinsp;% within 1.8-fold, a spread of 0.077 decades (&times;/&divide; 1.19). Every sample produced a
 fit. The draws are fresh each run unless you tick <i>Fixed seed</i>, so a repeat run lands near these
 numbers rather than on them.</p>
-<p>S<sub>1</sub> / S<sub>T</sub>: Guest (the titrant) 0.44 / 0.44, K<sub>a,dye</sub> 0.30 / 0.30,
-[Host]<sub>0</sub> 0.21 / 0.22, [Dye]<sub>0</sub> 0.04 / 0.04, whiskers within &plusmn;0.02. For these
+<p>S<sub>1</sub> / S<sub>T</sub>: Guest (the titrant) 0.44 / 0.44, K<sub>a,dye</sub> 0.29 / 0.30,
+[Host]<sub>0</sub> 0.22 / 0.22, [Dye]<sub>0</sub> 0.04 / 0.04, whiskers within &plusmn;0.03. For these
 uncertainties the titrant causes most of the spread, so a better titrant stock would narrow
 K<sub>a</sub> most; K<sub>a,dye</sub> comes second although K<sub>a</sub> follows it only one for one,
 because its stated &sigma; is the largest.</p>
-<p>+1&thinsp;% Guest lowers K<sub>a</sub> by about 3.9&thinsp;%; +1&thinsp;% [Host]<sub>0</sub>
-raises it by about 2.7&thinsp;%, [Dye]<sub>0</sub> by 1.1&thinsp;% and K<sub>a,dye</sub> by
+<p>+1&thinsp;% Guest lowers K<sub>a</sub> by about 4.0&thinsp;%; +1&thinsp;% [Host]<sub>0</sub>
+raises it by about 2.8&thinsp;%, [Dye]<sub>0</sub> by 1.1&thinsp;% and K<sub>a,dye</sub> by
 0.96&thinsp;%. The draws reached about &plusmn;33&thinsp;% for K<sub>a,dye</sub> and
 &plusmn;10&ndash;13&thinsp;% for the others, so the panels open there. A source shared by the host and
-the dye stock would carry the sum of the first two, 3.8; one common to all three concentrations would
-carry 2.7 + 1.1 &minus; 3.9 &asymp; 0: it cancels here because the elasticity to K<sub>a,dye</sub> is
+the dye stock would carry the sum of the first two, 3.9; one common to all three concentrations would
+carry 2.8 + 1.1 &minus; 4.0 &asymp; 0: it cancels here because the elasticity to K<sub>a,dye</sub> is
 close to 1. Were K<sub>a,dye</sub> measured with that same stock, the source would move it the other
 way as well and carry exactly &minus;1, as the same source does in a direct-binding assay.</p>
 """
@@ -336,8 +344,9 @@ data (the Identifiability tab draws where it comes from). An open side is writte
 K<sub>a</sub> you held fixed reads <i>fixed</i>. Where you stated an uncertainty for an input, this
 interval covers it too.</li>
 <li><i>Conditional on entered inputs</i>: the same interval with every input held exactly at the
-value you entered. The column appears only when you stated an uncertainty for at least one input,
-because otherwise it is the column before it.</li>
+value you entered and no error of the additions. The column appears when you stated an uncertainty
+for at least one input or a random error of each addition, because otherwise it is the column before
+it.</li>
 <li><i>Single-replicate fits</i>, the line under the table: the median and range of the
 replicates&rsquo; own fits, each made with the inputs as entered, when each replicate was fitted
 separately and at least two entered the fit. That is how far your replicates disagree, which is a
@@ -395,11 +404,11 @@ every sample&rsquo;s best fit. Rows marked * are values the data fix only in com
 spread, even 0 &plusmn; 0, says nothing about precision.</p>
 
 <p><b>Example</b></p>
-<p>With every input as entered: RMSE 7.57&times;10<sup>3</sup> a.u. on signals up to
-2.9&times;10<sup>5</sup> a.u., R&sup2; 0.9897, 7 of 7 replicates used; K<sub>a(G)</sub> =
-2.78&times;10<sup>8</sup> M<sup>&minus;1</sup> [1.91&times;10<sup>8</sup>, 4.00&times;10<sup>8</sup>].
+<p>With every input as entered: RMSE 7.24&times;10<sup>3</sup> a.u. on signals up to
+2.9&times;10<sup>5</sup> a.u., R&sup2; 0.9906, 7 of 7 replicates used; K<sub>a(G)</sub> =
+2.81&times;10<sup>8</sup> M<sup>&minus;1</sup> [1.74&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>].
 With the uncertainties Demo IDA states, <i>Fit Quality</i> describes the headline fit instead: RMSE
-310 a.u. and R&sup2; 0.999983, while the <i>Conditional on entered inputs</i> column keeps the interval
+300 a.u. and R&sup2; 0.999984, while the <i>Conditional on entered inputs</i> column keeps the interval
 above.</p>
 """
 

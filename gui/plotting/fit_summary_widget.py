@@ -65,9 +65,11 @@ from gui.plotting.labels import (
     own_estimates,
     plain_label,
     replicate_summary,
+    stated_additions,
     stated_uncertainty,
     verdict_headline,
     verdict_sentence,
+    widening_sentences,
 )
 from gui.widgets.assay_conditions import result_input_labels
 from gui.widgets.info_button import InfoGroupBox
@@ -80,8 +82,9 @@ _LEVEL_TEXT = f'{LEVEL * 100:g} %'
 _DIAGNOSTICS_TITLE = 'Model and inputs'
 
 #: Column holding the same binding constant with every entered input taken as
-#: exact. Shown only where at least one input was free to move; otherwise the
-#: estimate beside it is already that fit and the column would repeat it.
+#: exact and no error of the additions. Shown only where at least one input was
+#: free to move or an error of the additions was stated; otherwise the estimate
+#: beside it is already that fit and the column would repeat it.
 _CONDITIONAL_HEADER = 'Conditional on entered inputs'
 
 _PARAMS_TITLE = 'Fitted Parameters'
@@ -102,15 +105,21 @@ free to move within the uncertainty you stated for it &mdash; and kept when the
 resulting misfit is not significantly worse than the best fit&rsquo;s (an F test
 at {_LEVEL_TEXT}). So it answers what the data say about K<sub>a</sub> when the
 inputs are known no better than you stated. With no uncertainty stated, every
-input counts as exact and the interval is conditional on it. The signal
-parameters get no interval: only K<sub>a</sub> is being tested.</p>
+input counts as exact and the interval is conditional on it. A random error of
+each addition you state under <b>Input Uncertainty</b>, and a noise law the
+replicates leave uncertain, widen the interval further: the test then allows for
+a larger spread of the estimate than the scatter of the data alone implies, by
+the factor the line under the table names. The signal parameters get no
+interval: only K<sub>a</sub> is being tested.</p>
 
 <p><b>{_CONDITIONAL_HEADER}</b> &mdash; the same fit and interval with every
-input held exactly where you entered it. The column appears only when at least
-one input was free to move, and comparing it with the estimate beside it shows
-what the input uncertainties cost you. It is usually the narrower of the two;
-it can be the wider one where moving an input explains misfit the entered values
-could not.</p>
+input held exactly where you entered it and no error of the additions. The
+column appears when at least one input was free to move or you stated a random
+error of each addition, and comparing it with the columns before it shows what
+those uncertainties cost you. Where you stated only the error of the additions,
+no input moves: the estimate is the same and only the interval differs. It is
+usually the narrower of the two; it can be the wider one where moving an input
+explains misfit the entered values could not.</p>
 
 <p><b>A marked interval</b> &mdash; {SPLIT_MARK} means the K<sub>a</sub> the test
 keeps come in separate stretches, and the bracket spans all of them, so values
@@ -710,7 +719,7 @@ def _inputs_line(diagnostics, shifts: dict, labels: dict[str, str]) -> str:
 def _uncertainty_line(result: FitResult, labels: dict[str, str]) -> str:
     """What the fit was told about its inputs and about the sources they share, read back from the fit's own record."""
     errors = ErrorModel.from_dict(result.fit_config or {})
-    if not errors.specs and not errors.shared:
+    if not errors.specs and not errors.shared and errors.additions is None:
         return f'Input uncertainties used: {NO_UNCERTAINTY}.'
     conditions = result.conditions or {}
 
@@ -725,6 +734,9 @@ def _uncertainty_line(result: FitResult, labels: dict[str, str]) -> str:
         f'{labels.get(shared_key(source.name), source.name)} {stated_uncertainty(InputSpec.sigma_pct(source.sigma_pct), "")}'
         for source in errors.shared
     ]
+    if errors.additions is not None:
+        n_replicates = 1 if result.noise is None else result.noise.n_replicates
+        stated.append(f'each addition σ {stated_additions(errors.additions, n_replicates)}')
     return f'Input uncertainties used: {", ".join(stated)}.'
 
 
@@ -1232,6 +1244,7 @@ class FitSummaryWidget(QWidget):
                 for spec in rows
                 if not spec.is_log and spec.one_step_p is not None
             ),
+            *widening_sentences(rows, result, fmt_param),
         )
 
         legacy = _LEGACY_NOTE if ka_keys and result.intervals is None else ''

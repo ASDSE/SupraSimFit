@@ -25,7 +25,11 @@ least-squares solve. These tests pin what makes the engine trustworthy:
 - weights of the titration points: weights of one change no bit of a fit or an
   interval, a weighted solve is the bounded least squares of the whitened
   arrays, only the ratios of the weights matter, ranks are those of the
-  unweighted design, and a point the weights call imprecise steers Ka less.
+  unweighted design, and a point the weights call imprecise steers Ka less;
+- a design effect of one is the plain F test to the last bit; a larger one
+  moves both closed edges out to the widened cut-off, opens a side only where
+  that cut-off passes the profile at the Ka bound, and raises the one-step
+  p-value to the F tail of the ratio divided by it.
 """
 
 import numpy as np
@@ -670,6 +674,72 @@ def test_where_the_tested_ka_pins_nothing_the_interval_is_that_of_the_constant_c
     assert (interval.low, interval.high) == (low, high)
 
 
+# ---------------------------------------------------------------------------
+# Design effect on the cut-off
+# ---------------------------------------------------------------------------
+
+
+def test_a_design_effect_of_one_is_the_plain_f_test_to_the_last_bit():
+    """A fit with no noise law of positive share and no addition error widens nothing, and no bit may move."""
+    projection = _ida(n=15, frac=0.02, seed=5)
+    fit = projection.fit()
+    dof = projection.n_points - projection.n_params(fit)
+    # The cut-off of the F test in its own order of operations: S_min (1 + m F / (n - p)).
+    assert projection.threshold(fit, inflation=1.0) == fit.objective * (1.0 + 1 * f_dist.ppf(LEVEL, 1, dof) / dof)
+    plain = projection.interval('Ka_guest', fit)
+    assert projection.interval('Ka_guest', fit, inflation=1.0) == plain and plain.inflation == 1.0
+    stepwise, key = _stepwise(AssayType.DBA_HG2, 1e5, 0.1, 10, _ONE_STEP[AssayType.DBA_HG2])
+    fit = stepwise.fit()
+    assert stepwise.one_step_p(fit, inflation=1.0) == stepwise.one_step_p(fit)
+    assert stepwise.interval(key, fit, inflation=1.0) == stepwise.interval(key, fit)
+
+
+def test_a_design_effect_moves_both_closed_edges_out_to_the_widened_cut_off():
+    projection = _ida(n=15, frac=0.02, seed=5)
+    fit = projection.fit()
+    dof = projection.n_points - projection.n_params(fit)
+    plain, wide = (projection.interval('Ka_guest', fit, inflation=kappa) for kappa in (1.0, 2.0))
+    assert wide.inflation == 2.0
+    assert wide.low < plain.low < fit.ka['Ka_guest'] < plain.high < wide.high
+    assert not (wide.open_low or wide.open_high)
+    # The F quantile scaled by the design effect, from scipy; no signal parameter is pinned out to these edges.
+    threshold = fit.objective * (1 + 2.0 * f_dist.ppf(LEVEL, 1, dof) / dof)
+    assert projection.threshold(fit, inflation=2.0) == pytest.approx(threshold, rel=1e-12)
+    profile = projection.profile('Ka_guest')
+    for edge in (wide.low, wide.high):
+        assert profile(edge) == pytest.approx(threshold, rel=1e-6)
+
+
+def test_a_design_effect_opens_a_side_only_where_its_cut_off_passes_the_profile_at_the_ka_bound():
+    """In a box of 8e5 to 5e6 1/M every fit leaves both signal columns free, so the cut-off is one constant.
+
+    The profile at the bounds lies 12 and 15 widened F quantiles above the minimum: a factor of 13.5 opens the lower
+    side alone and 20 both, and each side is open exactly where the profile at its bound is under the cut-off.
+    """
+    projection = _ida(n=15, frac=0.02, seed=5, Ka_guest=(Q_(8e5, '1/M'), Q_(5e6, '1/M')))
+    fit = projection.fit()
+    dof = projection.n_points - projection.n_params(fit)
+    profile = projection.profile('Ka_guest')
+    at_low, at_high = profile(8e5), profile(5e6)
+    sides = set()
+    for kappa in (1.0, 13.5, 20.0):
+        threshold = fit.objective * (1 + kappa * f_dist.ppf(LEVEL, 1, dof) / dof)
+        interval = projection.interval('Ka_guest', fit, inflation=kappa)
+        assert (interval.open_low, interval.open_high) == (at_low <= threshold, at_high <= threshold)
+        if interval.open_low:
+            assert interval.low == 8e5
+        sides.add((interval.open_low, interval.open_high))
+    assert sides == {(False, False), (True, False), (True, True)}
+
+
+def test_a_design_effect_below_one_or_not_a_number_is_refused():
+    projection = _ida(n=12)
+    fit = projection.fit()
+    for kappa in (0.9, np.nan, np.inf):
+        with pytest.raises(ValueError, match='finite number of one or more'):
+            projection.threshold(fit, inflation=kappa)
+
+
 def test_a_saturated_design_is_open_on_the_side_the_data_cannot_close():
     # Guest binding far stronger than the dye's makes the displacement
     # stoichiometric: raising Ka further does not change the curve, so the data
@@ -741,9 +811,14 @@ def test_ka_interval_round_trips_through_a_dict():
     assert KaInterval.from_dict(interval.to_dict()) == interval
     second_step = KaInterval(1e-8, 2.5e6, True, False, 0.95, 6, one_step_p=0.03)
     assert KaInterval.from_dict(second_step.to_dict()) == second_step
-    assert KaInterval.from_dict(
+    widened = KaInterval(1.2e6, 3.1e6, False, False, 0.95, 12, inflation=2.75)
+    assert KaInterval.from_dict(widened.to_dict()) == widened
+    read = KaInterval.from_dict(
         {'low': 1.0, 'high': 2.0, 'open_low': False, 'open_high': False, 'level': 0.95, 'dof': 5}
-    ) == (KaInterval(1.0, 2.0, False, False, 0.95, 5, one_step_p=None))
+    )
+    assert read == KaInterval(1.0, 2.0, False, False, 0.95, 5, one_step_p=None)
+    # A results file written before intervals carried a design effect holds the plain F test's interval.
+    assert read.inflation == 1.0
 
 
 def _compensated_hg2(scale: float = 1.0):
@@ -947,6 +1022,38 @@ def test_with_the_first_constant_held_the_second_is_still_judged_by_the_one_step
     assert interval.one_step_p == pytest.approx(expected, rel=1e-4)
     assert interval.one_step_p > varpro.SECOND_STEP_LEVEL
     assert (interval.open_low, interval.low) == (True, 1e-8)
+
+
+def test_a_design_effect_divides_the_one_step_ratio_and_opens_the_lower_side_where_the_test_no_longer_rejects():
+    """An H2G-style weak second step with the first constant held: the one-step test is two linear solves.
+
+    At the plain F test the data reject the model without the second step at 0.005 and the interval keeps a lower
+    limit; the cut-off widened by 2 widens the test with it, and the lower side opens at the bound.
+    """
+    held = Q_(1e5, '1/M')
+    projection, key = _stepwise(AssayType.DBA_HG2, 1e5, 2e4, 10, 0, Ka_HG=(held, held))
+    fit = projection.fit()
+    x, y, h0 = projection.assay.x_data.magnitude, projection.signals[0], projection.assay.h0.magnitude
+
+    def solve(ka_second: float, names: tuple[str, ...]) -> tuple[float, int]:
+        species = hg2_species(1e5, ka_second, h0, x)
+        columns = np.column_stack([np.ones(x.size), *(species[name] for name in names)])
+        norm = np.linalg.norm(columns, axis=0)
+        found = lsq_linear(columns / norm, y, bounds=(0.0, np.inf), method='bvls')
+        return float(np.sum((columns @ (found.x / norm) - y) ** 2)), int(np.count_nonzero(found.active_mask == 0))
+
+    two_step, one_step = solve(fit.ka[key], ('G', 'HG', 'HG2')), solve(0.0, ('G', 'HG'))
+    assert 1e-8 < fit.ka[key] < 1e12
+    m = 1 + two_step[1] - one_step[1]
+    dof = projection.n_points - 1 - two_step[1]
+    ratio = (one_step[0] - two_step[0]) / m / (two_step[0] / dof)
+    p = {kappa: projection.one_step_p(fit, inflation=kappa) for kappa in (1.0, 2.0)}
+    for kappa, value in p.items():
+        assert value == pytest.approx(f_dist.sf(ratio / kappa, m, dof), rel=1e-4)
+    assert p[1.0] < varpro.SECOND_STEP_LEVEL < p[2.0]
+    plain, wide = (projection.interval(key, fit, inflation=kappa) for kappa in (1.0, 2.0))
+    assert not plain.open_low and plain.one_step_p == p[1.0]
+    assert (wide.open_low, wide.low, wide.one_step_p) == (True, 1e-8, p[2.0])
 
 
 def test_a_model_without_a_free_second_step_constant_has_no_one_step_test():

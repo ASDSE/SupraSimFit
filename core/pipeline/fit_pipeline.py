@@ -10,8 +10,11 @@ constants — deciding which of them enter it.
 Every interval rests on the inputs the user entered. An input given an
 uncertainty (:mod:`core.pipeline.inputs`) is free to move within it while Ka is
 profiled (:mod:`core.pipeline.input_aware`), and the headline interval is the
-one that lets them; the fit at the entered inputs and its own interval stay
-beside it as :class:`ConditionalFit`. :attr:`FitResult.diagnostics` holds what
+one that lets them. A stated random error of each titrant addition, and a
+noise law the replicates leave uncertain, widen the cut-off of an interval by
+the design effect they imply (:mod:`core.pipeline.inflation`). The fit at the
+entered inputs and its own interval stay beside the headline as
+:class:`ConditionalFit`. :attr:`FitResult.diagnostics` holds what
 the tests of :mod:`core.pipeline.diagnostics` say about the model and the
 inputs.
 
@@ -39,6 +42,7 @@ from core.models.equilibrium import MODEL_ARITHMETIC, legacy_arithmetic
 from core.optimizer.ensemble import describe, describe_log10
 from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline.diagnostics import (
+    AdditionDraws,
     FitDiagnostics,
     InputShift,
     MisfitTest,
@@ -46,6 +50,13 @@ from core.pipeline.diagnostics import (
     no_scatter,
     runs_test,
     verdict,
+)
+from core.pipeline.inflation import (
+    addition_signal_loading,
+    inflation,
+    joint_inflation,
+    paule_mandel,
+    replicate_scatter_ssr,
 )
 from core.pipeline.input_aware import (
     AwareFit,
@@ -56,9 +67,10 @@ from core.pipeline.input_aware import (
     input_shifts,
     misfit_design,
 )
-from core.pipeline.inputs import TITRANT, ErrorModel, constraints
+from core.pipeline.inputs import TITRANT, AdditionError, ErrorModel, constraints
 from core.pipeline.noise import NoiseLaw, noise_law
 from core.pipeline.varpro import (
+    _R2_RESOLUTION,
     LEVEL,
     FitRefused,
     KaInterval,
@@ -194,9 +206,11 @@ class FitResult:
     intervals : dict[str, KaInterval] | None
         Profile-likelihood confidence interval of every binding constant the
         fit was free to move, with every input as free as its stated
-        uncertainty allows. ``None`` when the result carries no interval: a
-        dye-alone calibration, or a result imported from a file written before
-        intervals were reported.
+        uncertainty allows and the cut-off widened by everything the stated
+        errors and the replicates add to the spread of the estimate
+        (``KaInterval.inflation``, :mod:`core.pipeline.inflation`). ``None``
+        when the result carries no interval: a dye-alone calibration, or a
+        result imported from a file written before intervals were reported.
     degenerate_keys : tuple[str, ...]
         Signal parameters the data determine only in combination at the fitted
         binding constants, so each of their values is one member of a family
@@ -207,17 +221,18 @@ class FitResult:
         carrying no interval. ``None`` for a fit of one signal.
     conditional : ConditionalFit | None
         The same fit with the entered inputs held exactly where they were
-        entered. ``None`` for a dye-alone calibration and for a result imported
-        from a file written before the inputs could move. With no input given
-        an uncertainty the fit above is that fit: same numbers, and the very
-        same :class:`~core.pipeline.varpro.KaInterval` objects.
+        entered and no error of the additions. ``None`` for a dye-alone
+        calibration and for a result imported from a file written before the
+        inputs could move. With no input given an uncertainty and no error of
+        the additions stated (:func:`reports_conditional`) the fit above is
+        that fit: same numbers, and the very same
+        :class:`~core.pipeline.varpro.KaInterval` objects.
     input_shifts : dict[str, InputShift]
         Where the fit put every error source that was free to move, by source
         key (an input's own key, or
         :func:`~core.pipeline.inputs.shared_key` of a shared source): as a
         fraction of the entered value and in units of the uncertainty stated
-        for it. Empty when nothing was free to move, which is also what says that the
-        headline above is the conditional fit.
+        for it. Empty when nothing was free to move.
     diagnostics : FitDiagnostics | None
         What the misfit tests and the conflict statistic say about the model
         and the entered inputs (:mod:`core.pipeline.diagnostics`).
@@ -233,6 +248,22 @@ class FitResult:
         which estimates no law, on a replicate's own fit inside
         ``replica_fits``, where the sentence belongs to the reported fit, and
         on a result imported from a file written before the law was recorded.
+    point_weights : np.ndarray | None
+        The weight of every titration point the fit ran with, shape
+        ``(n_points,)``: the law's weights read off the fitted curve
+        (:func:`fit_assay`). ``None`` where every weight is one — no law, a
+        constant one, a dye-alone calibration — and on a result imported from
+        a file written before the weights were recorded. Every later
+        computation on the fit (its Ka profile, the sensitivity analysis)
+        runs with these weights rather than reading the law again.
+    joint_inflation : float
+        The design effect of the pair of binding constants of a two-step model
+        (:func:`~core.pipeline.inflation.joint_inflation`), which widens the
+        cut-off of their joint region at the entered inputs: the noise law's
+        share of it and, where one is stated, the random error of each
+        addition's. One for a model with one free binding constant, wherever
+        neither applies, and on a result imported from a file written before
+        it was recorded.
     """
 
     parameters: Dict[str, Quantity]
@@ -257,11 +288,35 @@ class FitResult:
     diagnostics: Optional[FitDiagnostics] = None
     aware: Optional[AwareResult] = None
     noise: Optional[NoiseLaw] = None
+    point_weights: Optional[np.ndarray] = None
+    joint_inflation: float = 1.0
 
     @property
     def per_replica(self) -> bool:
         """Whether the fit tested its replicates and reports their own fits."""
         return bool(self.fit_config.get('per_replicate'))
+
+    def profile_arguments(self) -> Dict[str, Any]:
+        """The keyword arguments that make :func:`~core.pipeline.profile.fit_profile` profile this fit as it was made.
+
+        Its penalised profiles, the point weights it ran with, and the design
+        effects of its conditional intervals, of its reported ones and of their
+        joint region: with them the curves, the intervals and the region are the
+        fit's own rather than those of a fit with weights of one and plain
+        cut-offs, after an import as well, which holds no penalised profiles.
+        """
+        conditional = self.conditional
+        return {
+            'aware': self.aware,
+            'point_weights': self.point_weights,
+            'inflation': None
+            if conditional is None
+            else {key: interval.inflation for key, interval in conditional.intervals.items()},
+            'reported_inflation': None
+            if self.intervals is None
+            else {key: interval.inflation for key, interval in self.intervals.items()},
+            'joint_inflation': self.joint_inflation,
+        }
 
     # ------------------------------------------------------------------
     # Serialization
@@ -326,6 +381,8 @@ class FitResult:
             'input_shifts': {k: v.to_dict() for k, v in self.input_shifts.items()},
             'diagnostics': None if self.diagnostics is None else self.diagnostics.to_dict(),
             'noise': None if self.noise is None else self.noise.to_dict(),
+            'point_weights': None if self.point_weights is None else self.point_weights.tolist(),
+            'joint_inflation': self.joint_inflation,
         }
 
     @classmethod
@@ -339,7 +396,9 @@ class FitResult:
         move, and reads with those fields empty. One that names no noise law,
         either because it holds ``null`` there or because it was written
         before the law was recorded, reads with :attr:`FitResult.noise`
-        ``None``.
+        ``None``, one without ``point_weights`` with
+        :attr:`FitResult.point_weights` ``None``, and one without
+        ``joint_inflation`` with the plain joint region, a factor of one.
 
         Raises
         ------
@@ -359,6 +418,7 @@ class FitResult:
         conditional = d.get('conditional')
         diagnostics = d.get('diagnostics')
         noise = d.get('noise')
+        point_weights = d.get('point_weights')
         return cls(
             **_common_fields(d),
             intervals=None if intervals is None else {k: KaInterval.from_dict(v) for k, v in intervals.items()},
@@ -368,6 +428,8 @@ class FitResult:
             input_shifts={k: InputShift.from_dict(v) for k, v in (d.get('input_shifts') or {}).items()},
             diagnostics=None if diagnostics is None else FitDiagnostics.from_dict(diagnostics),
             noise=None if noise is None else NoiseLaw.from_dict(noise),
+            point_weights=None if point_weights is None else np.asarray(point_weights, dtype=float),
+            joint_inflation=d.get('joint_inflation', 1.0),
         )
 
     @classmethod
@@ -458,10 +520,10 @@ class FitConfig:
     ``custom_bounds`` overrides the registry's default bounds per parameter;
     ``per_replica`` decides whether the replicates are fitted and tested
     individually beside the fit of their average; ``errors`` states how well
-    the entered inputs are known (:class:`core.pipeline.inputs.ErrorModel`), of
-    which a fit reads ``errors.for_fit()``. An input no source moves is taken
-    as exact, and with no source at all the reported interval is the one
-    conditional on every entered input.
+    the entered inputs are known (:class:`core.pipeline.inputs.ErrorModel`), the
+    random error of each titrant addition included. An input no source moves
+    is taken as exact, and with no source and no error of the additions the
+    reported interval is the one conditional on every entered input.
 
     ``input_labels`` is how the interface writes each input's name. A fit that
     cannot be made with the inputs as free as they were stated to be says so by
@@ -499,7 +561,7 @@ def _config_to_dict(config: FitConfig) -> Dict[str, Any]:
         # The on-disk key of the per-replicate mode in exported results files.
         'per_replicate': False,
         'level': LEVEL,
-        **config.errors.for_fit().to_dict(),
+        **config.errors.to_dict(),
     }
 
 
@@ -631,6 +693,10 @@ class ParameterSummary:
         interval spans a gap of values they reject.
     level : float | None
         Confidence level of ``interval``; ``None`` when there is none.
+    inflation : float | None
+        The design effect ``interval``'s cut-off was widened by
+        (:attr:`~core.pipeline.varpro.KaInterval.inflation`): one where it was
+        not widened, ``None`` where there is no interval.
     degenerate : bool
         Whether the data determine this parameter only in combination with
         others.
@@ -648,11 +714,14 @@ class ParameterSummary:
     conditional_estimate : float | None
         This binding constant at the entered inputs, in the row's own scale.
         ``None`` on a row that is not a binding constant and on every row of a
-        fit whose inputs were all taken as entered, where the estimate above
-        is already that one.
+        fit that reports its conditional fit (:func:`reports_conditional`),
+        where the estimate above is already that one.
     conditional_interval : tuple[float, float] | None
-        Its interval with the inputs held as entered, in the row's own scale;
-        ``None`` on the same rows as *conditional_estimate*.
+        Its interval with the inputs held as entered and no error of the
+        additions, in the row's own scale; ``None`` on the same rows as
+        *conditional_estimate*.
+    conditional_inflation : float | None
+        *inflation* of *conditional_interval*; ``None`` on the same rows.
     conditional_open : tuple[bool, bool]
         Per endpoint of *conditional_interval*, whether it reaches as far as
         the profile goes rather than being closed by the data.
@@ -690,6 +759,18 @@ class ParameterSummary:
     conditional_split: bool = False
     conditional_at_bound: str = ''
     one_step_p: Optional[float] = None
+    inflation: Optional[float] = None
+    conditional_inflation: Optional[float] = None
+
+
+def reports_conditional(result: FitResult) -> bool:
+    """Whether *result*'s headline is its fit at the entered inputs, every input exact.
+
+    It is unless an input was free to move (``input_shifts``) or a random error
+    of each addition was stated, which widens the reported interval beyond the
+    conditional one even where no input moves.
+    """
+    return not result.input_shifts and ErrorModel.from_dict(result.fit_config).additions is None
 
 
 def _binding_constant_keys(result: FitResult) -> set[str]:
@@ -772,7 +853,8 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
 
     The conditional columns are filled only where they say something the
     estimate does not: on a binding constant of a fit that let its inputs
-    move. With every input as entered the fit above is the conditional one.
+    move or took in a stated error of the additions. Otherwise the fit above
+    is the conditional one (:func:`reports_conditional`).
 
     Each unit comes from the parameter's own ``Quantity``, which stays correct
     even when the assay type is missing from the registry; only which
@@ -782,7 +864,7 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
     boxes = _ka_boxes(result)
     replicates = _replicate_values(result, boxes)
     intervals = result.intervals or {}
-    conditional = result.conditional if result.input_shifts else None
+    conditional = None if reports_conditional(result) else result.conditional
     rows: List[ParameterSummary] = []
     for key, value in result.parameters.items():
         unit = str(value.units) if isinstance(value, Quantity) else ''
@@ -806,6 +888,8 @@ def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
             conditional_split=False if entered_ci is None else entered_ci.split,
             conditional_at_bound='' if entered is None else _at_bound(entered, boxes.get(key)),
             one_step_p=None if ci is None else ci.one_step_p,
+            inflation=None if ci is None else ci.inflation,
+            conditional_inflation=None if entered_ci is None else entered_ci.inflation,
         )
         rows.append(
             ParameterSummary(
@@ -971,19 +1055,35 @@ def fit_assay(
     constant is profiled again
     (:func:`~core.pipeline.input_aware.input_aware`): what comes back is the
     reported fit and the reported interval, which answers what the data say
-    about Ka when the inputs are known no better than stated. With no such
-    input the two are one fit, down to the interval objects. Either way the
-    misfit tests and the conflict statistic of
-    :mod:`core.pipeline.diagnostics` are run and recorded.
+    about Ka when the inputs are known no better than stated. A stated random
+    error of each titrant addition reaches the reported interval too: it moves
+    every point along the titrant axis, which the residuals show only in part,
+    and the cut-off is widened by the design effect it implies
+    (:func:`~core.pipeline.inflation.inflation`). With no such input and no
+    error of the additions the two are one fit, down to the interval objects.
+    Either way the misfit tests and the conflict statistic of
+    :mod:`core.pipeline.diagnostics` are run and recorded, the misfit tests
+    against a reference that carries the stated error of the additions.
 
     How precisely each titration point was measured is read off the replicates
     behind the fitted signal (:func:`~core.pipeline.noise.noise_law`) and
     carried through every projection here as point weights, so the fit, its
     profiles, both intervals and the lack-of-fit test count each point by the
-    precision the replicates show it to have. The law is recorded on the
-    result. One signal cannot show how the noise varies with the signal, and is
-    fitted with weights of exactly one: every number is then that of a fit made
-    without a law.
+    precision the replicates show it to have. Where the law has a share of
+    proportional noise the weights are a function of the signal, and they are
+    read off the fitted curve rather than the measured means, by two-stage
+    generalised least squares with a mean-dependent variance (Carroll and
+    Ruppert 1988, *Transformation and Weighting in Regression*, ch. 2–3;
+    Davidian and Carroll 1987, JASA 82:1079): a first fit with the weights at
+    the means, then one refit with the weights at its curve, and no further
+    iteration. A mean pushed near zero by its own noise would otherwise get a
+    weight set by that same noise. The few replicates the share is read from
+    leave it uncertain, and each interval is widened to hold for every share
+    they allow (``NoiseLaw.share_set``). The law and the weights are recorded
+    on the result. One signal cannot show how the noise varies with the
+    signal, and neither can replicates whose share comes out zero: they are
+    fitted with weights of exactly one and no refit, and every number is then
+    that of a fit made without a law.
 
     Parameters
     ----------
@@ -1018,23 +1118,25 @@ def fit_assay(
         the Ka bounds are not positive, when a signal the fit is measured
         against does not change across the titration, when the data hold too
         few points to judge the fitted parameters and the inputs that may
-        move, or when an input uncertainty cannot be read as one.
+        move, when an input uncertainty cannot be read as one, or when
+        sequential additions are stated for a titrant series that falls.
     FitCancelled
         If *should_cancel* returns True.
     """
     if config is None:
         config = FitConfig()
+    errors = config.errors
     law = noise_law(replicate_signals)
-    projection = Projection(
-        assay,
-        _resolve_bounds(assay, config.custom_bounds),
-        should_cancel=should_cancel,
-        point_weights=law.weights(assay.y_data.magnitude),
-    )
+    bounds = _resolve_bounds(assay, config.custom_bounds)
+    weights, curve = _point_weights(assay, bounds, law, should_cancel)
+    projection = Projection(assay, bounds, should_cancel=should_cancel, point_weights=weights)
     fit = projection.fit()
     params = projection.params(fit)
     rmse, r_squared, x_fit, y_fit = fit_view(assay, params)
-    found = {key: projection.interval(key, fit) for key in projection.ka_keys}
+    # The design effect of the law alone widens the conditional intervals; the
+    # reported ones also carry the stated error of the additions.
+    by_law = inflation(projection, fit, law=law, curve=curve)
+    found = {key: projection.interval(key, fit, inflation=by_law.get(key, 1.0)) for key in projection.ka_keys}
     intervals = {key: ci for key, ci in found.items() if ci is not None}
     conditional = ConditionalFit(
         parameters=_wrap_params_as_quantities(params, assay),
@@ -1043,7 +1145,18 @@ def fit_assay(
         r_squared=r_squared,
     )
 
-    errors = config.errors.for_fit()
+    n_replicates = 1 if replicate_signals is None else int(np.shape(replicate_signals)[0])
+    stated = dict(
+        law=law,
+        curve=curve,
+        additions=errors.additions,
+        n_replicates=n_replicates,
+        titrant_stock=_titrant_stock(assay),
+    )
+    reported = by_law if errors.additions is None else inflation(projection, fit, **stated)
+    # The joint region is drawn at the entered inputs and carries everything
+    # else the reported intervals carry: the law and the stated additions.
+    pair = joint_inflation(projection, fit, **stated)
     free_inputs = constraints(errors, assay.get_conditions(), config.input_labels)
     aware = input_aware(
         projection,
@@ -1052,14 +1165,26 @@ def fit_assay(
         loading=errors.loading(assay.get_conditions()),
         should_cancel=should_cancel,
         conditional=intervals,
+        inflation=reported,
     )
     shifts = input_shifts(aware)
     if shifts:
         params = _aware_params(projection, aware.fit)
         rmse, r_squared, x_fit, y_fit = fit_view(assay, params, aware.fit.input_offsets)
+    if shifts or errors.additions is not None:
         # The profiles carry the same interval objects as ``conditional`` where
-        # nothing moved, so an unchanged interval stays the one object.
+        # nothing moved and nothing widened, so an unchanged interval stays the one object.
         intervals = {key: profile.interval for key, profile in aware.profiles.items()}
+    diagnostics = _diagnose(
+        projection,
+        fit,
+        aware,
+        replicate_signals,
+        law,
+        conditional.intervals,
+        should_cancel,
+        additions=errors.additions,
+    )
     return FitResult(
         parameters=_wrap_params_as_quantities(params, assay),
         rmse=rmse,
@@ -1077,10 +1202,41 @@ def fit_assay(
         degenerate_keys=projection.degenerate_keys(fit),
         conditional=conditional,
         input_shifts=shifts,
-        diagnostics=_diagnose(projection, fit, aware, replicate_signals, law, conditional.intervals, should_cancel),
+        diagnostics=diagnostics,
         aware=aware,
         noise=law,
+        point_weights=None if np.all(weights == 1.0) else weights,
+        joint_inflation=pair,
     )
+
+
+def _point_weights(
+    assay: BaseAssay,
+    bounds: Dict[str, Tuple[Quantity, Quantity]],
+    law: NoiseLaw,
+    should_cancel: Optional[Callable[[], bool]],
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """The weights a fit of *assay*'s signal runs with under *law*, and the curve they were read off.
+
+    Where the law has a share of proportional noise, the weights at the
+    measured means steer a first fit, and the weights are read again off its
+    fitted curve: two-stage generalised least squares, one refit and no loop
+    (see :func:`fit_assay`). The curve is returned with them, since the design
+    effect of the law is measured at the same curve. Otherwise the weights are
+    the law's at the means — ``np.ones``, exactly, where it states no share —
+    and no curve was needed.
+    """
+    weights = law.weights(assay.y_data.magnitude)
+    if not (law.estimated and law.share > 0.0):
+        return weights, None
+    first = Projection(assay, bounds, should_cancel=should_cancel, point_weights=weights)
+    curve = assay.forward_model(first.params(first.fit())).magnitude
+    return law.weights(curve), curve
+
+
+def _titrant_stock(assay: BaseAssay) -> Optional[float]:
+    """The declared titrant stock in M, the unit of the titrant grid; ``None`` when the additions do not dilute."""
+    return None if assay.titrant_stock is None else float(assay.titrant_stock.to('M').magnitude)
 
 
 def _aware_params(projection: Projection, fit: AwareFit) -> np.ndarray:
@@ -1097,6 +1253,7 @@ def _diagnose(
     law: NoiseLaw,
     conditional_intervals: Dict[str, KaInterval],
     should_cancel: Optional[Callable[[], bool]],
+    additions: Optional[AdditionError] = None,
 ) -> FitDiagnostics:
     """Test the model at both fits, test the inputs against what was stated, and name what they say together.
 
@@ -1105,18 +1262,40 @@ def _diagnose(
     no input moves anyway it is the one result, and both tests are the one
     test. Every test of the verdict that could not be run is recorded with
     the reason. *law* is the noise law the projection's point weights come
-    from, which the lack-of-fit test reads its reference from.
+    from, which the lack-of-fit test reads its reference from, and *additions*
+    the stated random error of each titrant addition, which both misfit tests
+    count as part of the noise and the conflict statistic as part of what
+    moves the inputs: the additions shift the curve much as a titrant scale or
+    a concentration does, so a fit free to move those inputs puts some of the
+    addition errors into them, and the statistic's reference carries that
+    share (:func:`~core.pipeline.diagnostics.conflict_added`).
     """
     entered = (
         aware
         if not aware.constraints
-        else input_aware(projection, fit, (), should_cancel=should_cancel, conditional=conditional_intervals)
+        else input_aware(
+            projection,
+            fit,
+            (),
+            should_cancel=should_cancel,
+            conditional=conditional_intervals,
+            inflation={key: ci.inflation for key, ci in conditional_intervals.items()},
+        )
     )
-    conditional_misfit, entered_why = _misfit(projection, entered, replicate_signals, law)
+    conditional_misfit, entered_why = _misfit(projection, entered, replicate_signals, law, additions)
     misfit, why = (
-        (conditional_misfit, entered_why) if entered is aware else _misfit(projection, aware, replicate_signals, law)
+        (conditional_misfit, entered_why)
+        if entered is aware
+        else _misfit(projection, aware, replicate_signals, law, additions)
     )
-    inputs = conflict(aware)
+    added = None
+    if additions is not None and aware.constraints:
+        # The fitted signal is the mean of the replicates: separate titrations
+        # average their own addition errors down, repeated reads share one set.
+        divisor = 1 if replicate_signals is None or not additions.separate_titrations else len(replicate_signals)
+        whitened = np.sqrt(projection.point_weights)[:, np.newaxis] * _addition_loading(projection, aware, additions)
+        added = (additions.sigma_pct / 100.0) ** 2 / divisor * (whitened @ whitened.T)
+    inputs = conflict(aware, added)
     skipped = {} if misfit is not None else {'misfit': why}
     if not any(c.sigma is not None for c in aware.constraints):
         skipped['conflict'] = 'no_uncertainty'
@@ -1132,7 +1311,11 @@ def _diagnose(
 
 
 def _misfit(
-    projection: Projection, aware: AwareResult, replicate_signals: Optional[np.ndarray], law: NoiseLaw
+    projection: Projection,
+    aware: AwareResult,
+    replicate_signals: Optional[np.ndarray],
+    law: NoiseLaw,
+    additions: Optional[AdditionError] = None,
 ) -> Tuple[Optional[MisfitTest], str]:
     """Whether the fitted curve misses the data by more than the data's own scatter allows; why not, if untested.
 
@@ -1140,20 +1323,28 @@ def _misfit(
     the misfit of the curve against their average, judged against the scatter
     between them. The p-value is read against one of two references, named
     on the test (``MisfitTest.reference``). Where *law* was not read from the
-    replicates — the weights are then exactly one — the ratio is exactly F
-    under normal noise, and the p-value is F's. Where the replicates showed
-    the law, the weights are estimated from the same scatter the ratio is
-    judged against, so the ratio is F only approximately; the p-value is then
+    replicates — the weights are then exactly one — and no error of the
+    additions is stated, the ratio is exactly F under normal noise, and the
+    p-value is F's. Where the replicates showed the law, the weights are
+    estimated from the same scatter the ratio is judged against, so the ratio
+    is F only approximately; and a random error of each addition moves the
+    mean curve in a way no fitted parameter follows, and moves replicates
+    that are repeated reads of one titration all alike. The p-value is then
     simulated: replicates drawn about the fitted curve at the law's own level,
-    the law read again from every draw and the curve refitted on the columns
-    of the parameters the fit counts (:func:`misfit_design`). With one signal
-    there is no such scatter, and what is left to
-    look at is whether the residuals change sign as often as a fit of this
-    model to noise would — a test with little power, which says nothing at all
-    below ``_RUNS_TEST_DOF`` residual degrees of freedom. Neither is run when
-    the scatter it would judge the curve against is below the resolution of
-    the fit (:func:`~core.pipeline.diagnostics.no_scatter`): noise-free or
-    identical data leave nothing to test the model with.
+    each shifted by addition errors drawn at the stated σ — one set per
+    replicate for separate titrations, one set for all of them for repeated
+    reads — the law read again from every draw and the curve refitted on the
+    columns of the parameters the fit counts (:func:`misfit_design`). With one
+    signal there is no such scatter, and what is left to look at is whether
+    the residuals change sign as often as a fit of this model to noise would —
+    a test with little power, which says nothing at all below
+    ``_RUNS_TEST_DOF`` residual degrees of freedom. A stated error of the
+    additions is noise correlated along the titration, which makes long runs
+    of its own, so the reference is then drawn with that covariance
+    (:func:`_runs_covariance`). Neither test is run when the scatter it would
+    judge the curve against is below the resolution of the fit
+    (:func:`~core.pipeline.diagnostics.no_scatter`): noise-free or identical
+    data leave nothing to test the model with.
 
     Both tests count what the fit fitted, ``AwareFit.n_params``, and the runs
     test takes its own reference from the Jacobian of those same parameters
@@ -1173,18 +1364,65 @@ def _misfit(
     """
     fit, n = aware.fit, projection.n_points
     residual = projection.residual(fit.ka, 0, fit.input_offsets)
+    loading = None if additions is None else _addition_loading(projection, aware, additions)
     if replicate_signals is not None and np.shape(replicate_signals)[0] >= 2:
         fitted = projection.signals[0] - residual / np.sqrt(projection.point_weights)
         # The simulated reference needs the columns of the counted parameters;
         # the exact F reference needs none, so they are worked out only for it.
-        design = misfit_design(projection, aware) if law.estimated else None
-        found = lack_of_fit(replicate_signals, fitted, fit.n_params, projection.point_weights, law=law, design=design)
+        design = misfit_design(projection, aware) if law.estimated or additions is not None else None
+        draws = (
+            None
+            if additions is None
+            else AdditionDraws(loading, additions.sigma_pct / 100.0, shared=not additions.separate_titrations)
+        )
+        found = lack_of_fit(
+            replicate_signals,
+            fitted,
+            fit.n_params,
+            projection.point_weights,
+            law=law,
+            design=design,
+            additions=draws,
+        )
         return found, '' if found is not None else 'no_scatter'
     if n - fit.n_params < _RUNS_TEST_DOF:
         return None, 'too_few_dof'
     if no_scatter(fit.ssr / n, aware.ss_tot, n):
         return None, 'no_scatter'
-    return runs_test(residual, projection.assay.x_data.magnitude, fit_jacobian(projection, aware)), ''
+    covariance = None if additions is None else _runs_covariance(projection, aware, residual, loading, additions)
+    return runs_test(
+        residual, projection.assay.x_data.magnitude, fit_jacobian(projection, aware), covariance=covariance
+    ), ''
+
+
+def _addition_loading(projection: Projection, aware: AwareResult, additions: AdditionError) -> np.ndarray:
+    """``H`` of :func:`~core.pipeline.inflation.addition_signal_loading` at the fit *aware* holds, at its inputs."""
+    fit = aware.fit
+    moved = projection.assay.with_inputs(fit.input_offsets) if fit.input_offsets else projection.assay
+    return addition_signal_loading(projection, fit.ka, fit.input_offsets, additions, _titrant_stock(moved))
+
+
+def _runs_covariance(
+    projection: Projection, aware: AwareResult, residual: np.ndarray, loading: np.ndarray, additions: AdditionError
+) -> np.ndarray:
+    """Covariance of the noise in the whitened residual of one titration whose additions carry a random error.
+
+    ``sigma2 I + G_w`` with ``G_w = s² W½ H H' W½`` the whitened covariance of
+    the addition errors, *loading* ``H`` and ``s`` the stated relative σ of
+    one addition, and ``sigma2`` the Paule-Mandel residual variance beside it
+    (Paule and Mandel 1982, J. Res. NBS 87:377): the root of
+    ``r' (sigma2 I + G_w)⁻¹ r = n - p``. It is in the units of the residual
+    rows of :func:`fit_jacobian`, the noise scale ``sqrt(S / n)``, so it sits
+    beside the penalty rows the inputs held by a standard deviation add, whose
+    noise is standard.
+    """
+    fit, n = aware.fit, projection.n_points
+    whitened = np.sqrt(projection.point_weights)[:, np.newaxis] * loading
+    added = (additions.sigma_pct / 100.0) ** 2 * (whitened @ whitened.T)
+    dof = n - fit.n_params
+    beside = paule_mandel(residual, added, float(residual @ residual) / dof, dof)
+    scale = max(fit.ssr, _R2_RESOLUTION * aware.ss_tot) / n
+    return (beside * np.eye(n) + added) / scale
 
 
 def fit_linear_assay(
@@ -1395,7 +1633,10 @@ def fit_measurement_set_per_replica(
     (:func:`~core.pipeline.varpro.replicate_outliers`). A replicate whose own
     signal needs a different binding constant than the others share, or whose
     scatter about its own fit is far larger than theirs, is left out of the
-    average and reported by name, with the reason.
+    average and reported by name, with the reason. Replicates stated as
+    separate titrations with a random error of each addition each carry their
+    own addition errors, and the test allows for them
+    (:func:`_replicate_additions`).
 
     The replicates' own fits and the rounds of the test are searches over one
     :class:`~core.pipeline.varpro.Projection`, whose per-row residuals on the
@@ -1404,7 +1645,10 @@ def fit_measurement_set_per_replica(
     as that replicate's reported fit and as the residual the test weights it by.
     Measured at 30 points on the default Ka box with four replicates, they add
     0.05 s to a one-Ka fit and 3 s to a two-Ka fit, on top of the reported fit
-    and its intervals.
+    and its intervals. The shared projection runs with the weights a fit of the
+    average of the replicates given runs with (:func:`fit_assay`): where the
+    law has a share of proportional noise they are read off the curve of a
+    first fit of that average, which costs one fit more.
 
     Parameters
     ----------
@@ -1431,8 +1675,10 @@ def fit_measurement_set_per_replica(
         replicates it kept; a replicate's own fit is the search over its own
         signal at the inputs as entered and carries none of them — a law read
         from the scatter of several replicates describes the set, not the one
-        row — though the rows are fitted with the weights of the law of the
-        replicates given.
+        row — though the rows are fitted with the weights a fit of the average
+        of the replicates given runs with under their law. Those fits are
+        conditional: no input moves, and no error of the additions widens
+        anything of theirs.
 
     Raises
     ------
@@ -1463,17 +1709,19 @@ def fit_measurement_set_per_replica(
         )
 
     grid_assay = ms.to_assay(assay_cls, conditions=conditions, use_average=True)
-    # One noise law for the replicates given, so every row of the shared
-    # projection — each replicate's own fit and the test between them — counts
-    # a titration point by the same precision.
+    bounds = _resolve_bounds(grid_assay, config.custom_bounds)
+    # One noise law for the replicates given, and the weights a fit of their
+    # average runs with under it, so every row of the shared projection — each
+    # replicate's own fit and the test between them — counts a titration point
+    # by the same precision.
     given_signals = ms.signals[rows]
-    law = noise_law(given_signals)
+    weights, _ = _point_weights(grid_assay, bounds, noise_law(given_signals), should_cancel)
     projection = Projection(
         grid_assay,
-        _resolve_bounds(grid_assay, config.custom_bounds),
+        bounds,
         signals=given_signals,
         should_cancel=should_cancel,
-        point_weights=law.weights(given_signals.mean(axis=0)),
+        point_weights=weights,
     )
     # Each row's own fit is both the replicate's reported fit and the residual
     # the shared-Ka test weights it by, so it is searched once and used twice.
@@ -1482,7 +1730,8 @@ def fit_measurement_set_per_replica(
         _replica_fit(ms, assay_cls, conditions, projection, config, rid, row, own_fits[row])
         for row, rid in enumerate(given)
     ]
-    test = replicate_outliers(projection, own_fits)
+    kappa, scatter = _replicate_additions(projection, bounds, own_fits, config.errors.additions, should_cancel)
+    test = replicate_outliers(projection, own_fits, inflation=kappa, scatter_ssr=scatter)
     excluded = {given[row] for row in test.excluded}
     used = [rid for rid in given if rid not in excluded]
 
@@ -1510,6 +1759,55 @@ def fit_measurement_set_per_replica(
         }
     _record_data(result, ms)
     return result
+
+
+def _replicate_additions(
+    projection: Projection,
+    bounds: Dict[str, Tuple[Quantity, Quantity]],
+    own_fits: List[ProjectedFit],
+    additions: Optional[AdditionError],
+    should_cancel: Optional[Callable[[], bool]],
+) -> Tuple[Optional[List[float]], Optional[List[float]]]:
+    """What the stated addition errors do to every replicate's own fit, for the replicate test.
+
+    Replicates stated as separate titrations each carry their own addition
+    errors. Row *r* of *projection*, within *bounds* and fitted alone
+    (*own_fits*), gets the design effect of its errors on its own Ka
+    (:func:`~core.pipeline.inflation.inflation`, or its joint form for two
+    free Ka), which the shared-Ka step divides its statistic by, and its
+    residual with the residue of its own additions taken out
+    (:func:`~core.pipeline.inflation.replicate_scatter_ssr`), which is what
+    Cochran's test compares: that residue differs from one titration to the
+    next and is not scatter. Where it cannot be read for every row, Cochran's
+    test compares the residuals as they are. ``(None, None)`` where no addition error
+    is stated, and where the replicates are repeated reads of one titration:
+    they share its additions, which then move every replicate alike and none
+    of them apart.
+    """
+    if additions is None or not additions.separate_titrations:
+        return None, None
+    stock = _titrant_stock(projection.assay)
+    factors, alone_fits = [], []
+    for row, own in enumerate(own_fits):
+        alone = Projection(
+            projection.assay,
+            bounds,
+            signals=projection.signals[row : row + 1],
+            should_cancel=should_cancel,
+            point_weights=projection.point_weights,
+        )
+        fit = replace(
+            own,
+            coefficients=own.coefficients[row : row + 1],
+            row_ssr=own.row_ssr[row : row + 1],
+            objective=float(own.row_ssr[row]),
+        )
+        if len(alone.free_ka) == 2:
+            factors.append(joint_inflation(alone, fit, additions=additions, titrant_stock=stock))
+        else:
+            factors.append(max([1.0, *inflation(alone, fit, additions=additions, titrant_stock=stock).values()]))
+        alone_fits.append((alone, fit))
+    return factors, replicate_scatter_ssr(alone_fits, additions, stock)
 
 
 def _replica_fit(

@@ -1123,3 +1123,133 @@ def test_the_test_readings_wrap_to_the_report_s_margin_under_their_column(tmp_pa
     column = lines[0].index('lack-of-fit')
     assert all(line[:column].strip() == '' for line in lines if not line.lstrip().startswith('Model'))
     assert 'p = 0.55, simulated from the fitted curve and the noise law' in _prose(text)
+
+
+# ---------------------------------------------------------------------------
+# What widened an interval: the stated error of the additions and the noise law
+# ---------------------------------------------------------------------------
+
+
+def _widened(*, additions=None, law_factor: float = 1.0, reported_factor: float = 1.0) -> FitResult:
+    """A fit of three replicates whose interval was widened by *reported_factor*, the law's part being *law_factor*.
+
+    With *additions* stated the reported interval is the wider one and the one
+    at the entered inputs, widened by the law alone, stands beside it.
+    """
+    entered = _result()
+    conditional_interval = replace(entered.intervals['Ka_guest'], inflation=law_factor)
+    result = replace(
+        entered,
+        intervals={'Ka_guest': replace(_AWARE, dof=7, inflation=reported_factor)}
+        if additions is not None
+        else {'Ka_guest': conditional_interval},
+        conditional=ConditionalFit(
+            parameters=dict(_PARAMS), intervals={'Ka_guest': conditional_interval}, rmse=12.3, r_squared=0.9962
+        ),
+        noise=_law(n_replicates=3, share_set=(0.2, 0.9)),
+        point_weights=np.linspace(0.5, 2.0, _X.size),
+    )
+    result.fit_config.update(ErrorModel(additions=additions).to_dict())
+    return result
+
+
+def test_csv_carries_the_design_effect_of_each_interval_and_one_where_nothing_widened_it(tmp_path: Path) -> None:
+    from core.pipeline.inputs import AdditionError
+
+    path = tmp_path / 'r.csv'
+    export_results_csv(
+        [_widened(additions=AdditionError(1.0, True), law_factor=1.2, reported_factor=2.1), _result()], path
+    )
+    rows = [row for row in _csv_rows(path) if row['parameter'] in ('Ka_guest', 'log10(Ka_guest)')]
+
+    widened, plain = rows[:2], rows[2:]
+    assert {(row['ci_inflation'], row['cond_ci_inflation']) for row in widened} == {('2.1', '1.2')}
+    # The column is a number on every row with an interval: 1 where the cut-off is the plain F test's.
+    assert {(row['ci_inflation'], row['cond_ci_inflation']) for row in plain} == {('1', '')}
+    signal = next(row for row in _csv_rows(path) if row['parameter'] == 'I0')
+    assert signal['ci_inflation'] == ''
+
+
+@pytest.mark.parametrize(
+    ('separate', 'law_factor', 'sentence'),
+    [
+        (
+            True,
+            1.0,
+            'Random error of each addition (1 %, sequential; σ/√3 for 3 replicates as separate titrations) widens '
+            'the interval of Ka_guest about 1.4-fold: it takes the variance of the estimate as 2.1 times what the '
+            'scatter of the data alone implies.',
+        ),
+        (
+            False,
+            1.2,
+            'Random error of each addition (1 %, sequential; σ itself for 3 repeated reads of one titration) and '
+            'the noise law the replicates leave uncertain (share between 0.2 and 0.9) widen the interval of '
+            'Ka_guest about 1.4-fold: it takes the variance of the estimate as 2.1 times what the scatter of the '
+            'data alone implies.',
+        ),
+    ],
+)
+def test_txt_report_says_what_widened_the_interval_and_by_what_factor(
+    tmp_path: Path, separate: bool, law_factor: float, sentence: str
+) -> None:
+    from core.pipeline.inputs import AdditionError
+
+    additions = AdditionError(1.0, sequential=True, separate_titrations=separate)
+    text = _prose(_txt(tmp_path, [_widened(additions=additions, law_factor=law_factor, reported_factor=2.1)]))
+
+    assert sentence in text
+    assert 'Each addition (random) σ 1 %, sequential' in text
+
+
+def test_txt_report_says_an_uncertain_noise_law_widened_the_interval_and_says_nothing_where_nothing_did(
+    tmp_path: Path,
+) -> None:
+    law_only = _prose(_txt(tmp_path, [_widened(law_factor=1.25, reported_factor=1.25)]))
+    assert (
+        'The replicates leave the noise law uncertain (share between 0.2 and 0.9); the interval of Ka_guest is '
+        'widened about 1.1-fold to hold for every share they allow: it takes the variance of the estimate as 1.25 '
+        'times what the scatter of the data alone implies.'
+    ) in law_only
+    assert 'Random error of each addition' not in law_only
+
+    plain = _prose(_txt(tmp_path, [_widened()]))
+    assert 'times what the scatter' not in plain
+
+
+def test_the_joint_region_of_a_pair_says_what_widened_it_in_the_report_and_carries_its_factor_in_the_csv(
+    tmp_path: Path,
+) -> None:
+    from core.pipeline.inputs import AdditionError
+
+    widened = replace(_stepwise(_STEP_SHOWN), joint_inflation=4.8)
+    widened.fit_config.update(ErrorModel(additions=AdditionError(3.0, True)).to_dict())
+    text = _prose(_txt(tmp_path, [widened]))
+    assert (
+        'The joint region of the pair, at the entered inputs, is widened for the random error of each addition: it '
+        'takes the variance of the pair as 4.8 times what the scatter of the data alone implies.'
+    ) in text
+    assert 'joint region' not in _prose(_txt(tmp_path, [_stepwise(_STEP_SHOWN)]))
+
+    path = tmp_path / 'r.csv'
+    export_results_csv([widened, _stepwise(_STEP_SHOWN), _result()], path)
+    cells = [(row['result_index'], row['joint_inflation']) for row in _csv_rows(path)]
+    assert {cell for index, cell in cells if index == '0'} == {'4.8'}
+    assert {cell for index, cell in cells if index == '1'} == {'1'}
+    assert {cell for index, cell in cells if index == '2'} == {''}
+
+
+def test_a_results_file_carries_what_widened_the_interval_back_into_the_report(tmp_path: Path) -> None:
+    from core.pipeline.inputs import AdditionError
+
+    original = _widened(
+        additions=AdditionError(3.0, False, separate_titrations=False), law_factor=1.2, reported_factor=4.0
+    )
+    export_results([original], tmp_path / 'r.json')
+    (restored,) = import_results(tmp_path / 'r.json')
+
+    np.testing.assert_array_equal(restored.point_weights, original.point_weights)
+    assert ErrorModel.from_dict(restored.fit_config).additions == AdditionError(3.0, False, separate_titrations=False)
+    direct = _prose(_txt(tmp_path, [original]))
+    imported = _prose(_txt(tmp_path, [restored]))
+    assert imported.split('FITTED PARAMETERS')[1] == direct.split('FITTED PARAMETERS')[1]

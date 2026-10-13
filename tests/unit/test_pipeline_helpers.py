@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from scipy.stats import f as f_dist
 
 from core.assays.base import BaseAssay
 from core.assays.dye_alone import DyeAloneAssay
@@ -17,9 +18,11 @@ from core.pipeline.fit_pipeline import (
     fit_assay,
     fit_measurement_set,
     fit_view,
+    reports_conditional,
+    summarize_parameters,
 )
 from core.pipeline.input_aware import input_aware
-from core.pipeline.inputs import TITRANT
+from core.pipeline.inputs import TITRANT, AdditionError, ErrorModel
 from core.pipeline.noise import NoiseBasis, noise_law
 from core.pipeline.varpro import FitCancelled, Projection
 from core.units import Q_
@@ -296,6 +299,14 @@ _IDA_CONDITIONS = {
 }
 
 
+def _constant_noise_replicates(seed: int) -> MeasurementSet:
+    """Three replicates of the IDA ground truth at 15 points, with constant noise of 0.5 % of the signal's range."""
+    x, y = _make_ida_data(IDA_TRUE, n_points=15)
+    rng = np.random.default_rng(seed)
+    signals = np.vstack([y + rng.normal(0.0, 0.005 * np.ptp(y), y.size) for _ in range(3)])
+    return MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c'))
+
+
 class TestTheNoiseLawTheFitCarries:
     """What the replicates behind a fit say about its noise, and what that does to the numbers."""
 
@@ -320,11 +331,13 @@ class TestTheNoiseLawTheFitCarries:
         assert [result.parameters[k].magnitude for k in assay.parameter_keys] == list(params)
 
     def test_a_fit_of_replicates_that_scatter_with_the_signal_is_weighted_by_their_law(self):
-        """The law the replicates show is recorded, and it is what the fit was made with.
+        """The law the replicates show is recorded, and the fit is made with its weights at the fitted curve.
 
         Replicates whose noise grows with the signal make the low end of the
         titration the precise end, and the fit that counts it so is a different
-        fit from the one that counts every point equally.
+        fit from the one that counts every point equally. The weights are those
+        of two-stage generalised least squares: the law at the curve of a first
+        fit weighted at the measured means, and one refit.
         """
         x, y = _make_ida_data(IDA_TRUE, n_points=15)
         rng = np.random.default_rng(5)
@@ -338,13 +351,41 @@ class TestTheNoiseLawTheFitCarries:
         assert 0.0 < result.noise.share <= 1.0
         assay = self._ida_assay(ms.average_signal(), x)
         bounds = _resolve_bounds(assay, GDA_IDA_RECOVERY_BOUNDS)
-        weights = result.noise.weights(assay.y_data.magnitude)
+        first = Projection(assay, bounds, point_weights=result.noise.weights(assay.y_data.magnitude))
+        curve = assay.forward_model(first.params(first.fit())).magnitude
+        weights = result.noise.weights(curve)
         assert weights.max() > 2 * weights.min(), 'the law has to weight the points differently to be tested'
+        np.testing.assert_array_equal(result.point_weights, weights)
         weighted = Projection(assay, bounds, point_weights=weights)
         equal = Projection(assay, bounds)
         reported = result.parameters['Ka_guest'].magnitude
         assert reported == weighted.fit().ka['Ka_guest']
         assert reported != equal.fit().ka['Ka_guest']
+
+    def test_a_law_with_a_share_of_proportional_noise_refits_once_and_a_constant_one_never(self, monkeypatch):
+        """Two-stage weights cost one fit more where they differ from the means', and nothing where the law is constant."""
+        x, y = _make_ida_data(IDA_TRUE, n_points=15)
+        calls = []
+        real_fit = Projection.fit
+        monkeypatch.setattr(Projection, 'fit', lambda self, *a, **k: calls.append(1) or real_fit(self, *a, **k))
+        config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False)
+
+        rng = np.random.default_rng(5)
+        proportional = np.vstack([y * (1.0 + rng.normal(0.0, 0.03, y.size)) for _ in range(4)])
+        result = fit_measurement_set(
+            MeasurementSet(concentrations=x, signals=proportional, replica_ids=('a', 'b', 'c', 'd')),
+            IDAAssay,
+            _IDA_CONDITIONS,
+            config,
+        )
+        assert result.noise.share > 0.0
+        assert len(calls) == 2
+
+        calls.clear()
+        result = fit_measurement_set(_constant_noise_replicates(15), IDAAssay, _IDA_CONDITIONS, config)
+        assert result.noise.estimated and result.noise.share == 0.0, 'a constant law is the case to pin'
+        assert len(calls) == 1
+        assert result.point_weights is None
 
     def test_the_misfit_test_of_a_weighted_fit_keeps_its_ratio_and_reads_its_p_value_from_a_simulation(self):
         """Weights read from the replicates' own scatter make F only approximate, so the reference is simulated.
@@ -368,7 +409,7 @@ class TestTheNoiseLawTheFitCarries:
         assert result.diagnostics.conditional_misfit == test, 'with no input free to move the two tests are one'
         rows, points = signals.shape
         mean = signals.mean(axis=0)
-        root = np.sqrt(result.noise.weights(mean))
+        root = np.sqrt(result.point_weights)
         assay = self._ida_assay(mean, x)
         curve = assay.forward_model(np.array([result.parameters[k].magnitude for k in assay.parameter_keys])).magnitude
         line = np.column_stack([np.ones(points), mean]) * root[:, None]
@@ -381,6 +422,138 @@ class TestTheNoiseLawTheFitCarries:
         assert test.statistic == pytest.approx(misfit_mean_square / pure_error_mean_square, rel=1e-6)
         # A Monte-Carlo p-value over 199 draws: (1 + exceedances) / 200.
         assert round(test.p_value * 200, 9) == int(round(test.p_value * 200)) and 0.0 < test.p_value <= 1.0
+
+
+class TestAFitWithNothingToWidenIsTheFitItWas:
+    """No law with a share of proportional noise and no error of the additions: the numbers of the engine without them.
+
+    The pinned literals are what commit 47a66e2 — before the two-stage
+    weights and the design effects of :mod:`core.pipeline.inflation` — computed
+    for these fixed datasets. On this path the weights are exactly one, no
+    refit is made and every design effect is exactly 1.0, which multiplies
+    exactly, so the numbers must not move by a single bit. A change that moves
+    them has reordered the arithmetic of the unweighted path.
+    """
+
+    def test_a_single_titration(self):
+        x, y = _make_ida_data(IDA_TRUE, n_points=15)
+        signal = y + np.random.default_rng(2).normal(0.0, 0.01 * np.ptp(y), y.size)
+        assay = IDAAssay(x_data=Q_(x, 'M'), y_data=Q_(signal, 'au'), **_IDA_CONDITIONS)
+
+        result = fit_assay(assay, FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS))
+
+        interval = result.intervals['Ka_guest']
+        assert result.parameters['Ka_guest'].magnitude == 1960965.2892053537
+        assert (interval.low, interval.high, interval.inflation) == (1711772.5002722654, 2251322.0507251946, 1.0)
+        assert result.rmse == 8.333778585159477
+        assert result.diagnostics.misfit.p_value == 0.48129500000000003
+        assert result.point_weights is None
+
+    def test_replicates_whose_law_comes_out_constant_fitted_one_by_one(self):
+        result = fit_measurement_set(
+            _constant_noise_replicates(15),
+            IDAAssay,
+            _IDA_CONDITIONS,
+            FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True),
+        )
+
+        assert result.noise.estimated and result.noise.share == 0.0
+        interval = result.intervals['Ka_guest']
+        assert result.parameters['Ka_guest'].magnitude == 1972634.0216546278
+        assert (interval.low, interval.high, interval.inflation) == (1902589.6815905347, 2045556.692844387, 1.0)
+        assert result.rmse == 2.2405649481255057
+        assert (result.diagnostics.misfit.p_value, result.diagnostics.misfit.reference) == (0.45, 'bootstrap')
+        assert [own.parameters['Ka_guest'].magnitude for own in result.replica_fits] == [
+            1977679.586719383,
+            1999978.1772710413,
+            1940598.1125365798,
+        ]
+        assert result.point_weights is None
+
+
+class TestAStatedErrorOfTheAdditions:
+    """A random error of each addition reaches the reported interval and the misfit tests, and nothing else."""
+
+    @staticmethod
+    def _single(sigma_pct: float | None):
+        x, y = _make_ida_data(IDA_TRUE, n_points=15)
+        signal = y + np.random.default_rng(2).normal(0.0, 0.002 * np.ptp(y), y.size)
+        assay = IDAAssay(x_data=Q_(x, 'M'), y_data=Q_(signal, 'au'), **_IDA_CONDITIONS)
+        additions = None if sigma_pct is None else AdditionError(sigma_pct, sequential=True)
+        return assay, fit_assay(
+            assay, FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, errors=ErrorModel(additions=additions))
+        )
+
+    def test_the_reported_interval_is_cut_at_the_widened_cut_off_and_the_conditional_one_is_not(self):
+        """3 % sequential additions on a titration of 0.2 % noise: the headline interval is the one the error widens."""
+        assay, result = self._single(3.0)
+        _, plain = self._single(None)
+
+        reported, conditional = result.intervals['Ka_guest'], result.conditional.intervals['Ka_guest']
+        assert reported is result.aware.profiles['Ka_guest'].interval, 'the headline is the input-aware result'
+        assert not reports_conditional(result)
+        assert conditional.inflation == 1.0
+        assert conditional == plain.intervals['Ka_guest'], 'the conditional interval is the fit without additions'
+        assert result.parameters == plain.parameters, 'the error widens the interval and moves no estimate'
+
+        kappa = reported.inflation
+        assert kappa > 1.0
+        assert not (reported.open_low or reported.open_high)
+        assert reported.low < conditional.low and reported.high > conditional.high
+        # Each closed edge lies where the profile crosses S_min (1 + kappa F(0.95; 1, n - p) / (n - p)).
+        projection = Projection(assay, _resolve_bounds(assay, GDA_IDA_RECOVERY_BOUNDS))
+        fit = projection.fit()
+        dof = reported.dof
+        cut = float(fit.row_ssr[0]) * (1.0 + kappa * f_dist.ppf(reported.level, 1, dof) / dof)
+        for edge in (reported.low, reported.high):
+            assert projection.profile('Ka_guest')(edge) == pytest.approx(cut, rel=1e-6)
+
+        rows = {row.key: row for row in summarize_parameters(result) if not row.is_log}
+        assert rows['Ka_guest'].inflation == kappa
+        assert rows['Ka_guest'].conditional_interval == (conditional.low, conditional.high)
+        assert rows['Ka_guest'].conditional_inflation == 1.0
+
+    def test_replicates_read_from_one_titration_keep_the_whole_error_of_their_additions(self, monkeypatch):
+        """Separate titrations average their addition errors away by sqrt(m); repeated reads of one titration do not."""
+        import core.pipeline.fit_pipeline as pipeline
+
+        drawn = []
+        real = pipeline.lack_of_fit
+        monkeypatch.setattr(pipeline, 'lack_of_fit', lambda *a, **k: drawn.append(k['additions']) or real(*a, **k))
+        ms = _constant_noise_replicates(15)
+
+        def kappa(separate: bool) -> float:
+            additions = AdditionError(3.0, sequential=True, separate_titrations=separate)
+            config = FitConfig(
+                custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False, errors=ErrorModel(additions=additions)
+            )
+            result = fit_measurement_set(ms, IDAAssay, _IDA_CONDITIONS, config)
+            assert result.conditional.intervals['Ka_guest'].inflation == 1.0, 'a constant law widens nothing'
+            return result.intervals['Ka_guest'].inflation
+
+        separate, shared = kappa(True), kappa(False)
+        assert 1.0 < separate < shared
+        # The lack-of-fit reference draws the additions once per replicate, or once for all of them.
+        assert [draws.shared for draws in drawn] == [False, True]
+        assert all(draws.sigma == 0.03 and draws.loading.shape == (15, 15) for draws in drawn)
+
+    def test_the_runs_test_of_one_titration_draws_its_reference_with_the_covariance_of_the_additions(self, monkeypatch):
+        """Sequential additions correlate the noise along the titration; independent noise is drawn without them."""
+        import core.pipeline.fit_pipeline as pipeline
+
+        seen = []
+        real = pipeline.runs_test
+        monkeypatch.setattr(pipeline, 'runs_test', lambda *a, **k: seen.append(k.get('covariance')) or real(*a, **k))
+        self._single(None)
+        self._single(3.0)
+
+        assert seen[0] is None
+        covariance = seen[1]
+        assert covariance.shape == (15, 15)
+        np.testing.assert_allclose(covariance, covariance.T)
+        assert np.linalg.eigvalsh(covariance).min() > 0.0
+        # An addition moves every later point of the cuvette, so later points share errors.
+        assert covariance[-1, -2] > 0.0
 
 
 class TestDispatch:

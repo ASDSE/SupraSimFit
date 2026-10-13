@@ -1398,7 +1398,7 @@ def test_renders_a_real_input_aware_fit_beside_its_conditional_one(qapp):
     }
     config = FitConfig(per_replica=False, errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(5.0)}))
     fit = fit_measurement_set(ms, IDAAssay, conditions, config)
-    profile_set = fit_profile(ms, IDAAssay, conditions, config, aware=fit.aware)
+    profile_set = fit_profile(ms, IDAAssay, conditions, config, **fit.profile_arguments())
     profile = profile_set.profiles['Ka_guest']
 
     w = _widget(fit, profile_set)
@@ -1423,6 +1423,48 @@ def test_renders_a_real_input_aware_fit_beside_its_conditional_one(qapp):
     assert verdict_sentence(fit.diagnostics, fit.input_shifts, labels, html=True) in conditional_line
 
 
+def test_a_stated_error_of_the_additions_draws_the_reported_interval_on_the_same_curve(qapp):
+    """No input moves, so the reported reading is the one curve under the wider cut-off the additions imply."""
+    from core.assays.ida import IDAAssay
+    from core.data_processing.measurement_set import MeasurementSet
+    from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
+    from core.pipeline.inputs import AdditionError, ErrorModel
+    from core.pipeline.profile import fit_profile
+    from gui.plotting.labels import fmt_value
+    from tests.conftest import IDA_TRUE, _make_ida_data
+
+    x, y = _make_ida_data(IDA_TRUE, n_points=15)
+    signal = y + np.random.default_rng(2).normal(0.0, 0.002 * np.ptp(y), y.size)
+    ms = MeasurementSet(concentrations=x, signals=signal[np.newaxis], replica_ids=('A',))
+    conditions = {
+        'Ka_dye': Q_(IDA_TRUE['Ka_dye'], '1/M'),
+        'h0': Q_(IDA_TRUE['h0'], 'M'),
+        'd0': Q_(IDA_TRUE['d0'], 'M'),
+    }
+    config = FitConfig(per_replica=False, errors=ErrorModel(additions=AdditionError(3.0, sequential=True)))
+    fit = fit_measurement_set(ms, IDAAssay, conditions, config)
+    profile_set = fit_profile(ms, IDAAssay, conditions, config, **fit.profile_arguments())
+    profile = profile_set.profiles['Ka_guest']
+
+    assert profile.interval == fit.conditional.intervals['Ka_guest']
+    assert profile.aware.interval == fit.intervals['Ka_guest']
+    np.testing.assert_array_equal(profile.aware.r2, profile.r2)
+    w = _widget(fit, profile_set)
+    text = ' '.join(w._summary.text().split())
+    reported = fit.intervals['Ka_guest']
+    assert f'95% CI [{fmt_value(reported.low)}, {fmt_value(reported.high)}]' in text
+    assert 'The random error of each addition you stated widens the reported interval' in text
+    assert 'Every input was free to move' not in text
+    assert 'Without the error of the additions:' in text
+    # One curve and one best fit, not the same curve drawn twice under two names.
+    items = w._items['Ka_guest']
+    assert items['aware'] is None and items['aware_best'] is None
+    legend = w._legend.text().replace('&nbsp;', ' ')
+    assert 'CI without the error of the additions' in legend
+    assert 'confidence interval with the error of the additions' in legend
+    assert 'with the inputs as entered' not in legend
+
+
 def test_renders_a_real_ida_fit_and_its_profile(qapp):
     """The IDA demo data: the drawn curve is the profile's own, and the header quotes its interval."""
     from core.assays.ida import IDAAssay
@@ -1436,7 +1478,7 @@ def test_renders_a_real_ida_fit_and_its_profile(qapp):
     conditions = {'Ka_dye': Q_(16.8e6, '1/M'), 'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M')}
     config = FitConfig(per_replica=False)
     fit = fit_measurement_set(ms, IDAAssay, conditions, config)
-    profile_set = fit_profile(ms, IDAAssay, conditions, config)
+    profile_set = fit_profile(ms, IDAAssay, conditions, config, **fit.profile_arguments())
     profile = profile_set.profiles['Ka_guest']
 
     w = _widget(fit, profile_set)

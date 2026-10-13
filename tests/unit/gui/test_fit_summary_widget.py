@@ -1407,3 +1407,41 @@ def test_a_simulated_lack_of_fit_p_value_says_so_in_the_block(qapp):
 
     assert 'p = 0.55, simulated from the fitted curve and the noise law' in simulated._diagnostics_label.text()
     assert 'simulated' not in exact._diagnostics_label.text()
+
+
+def test_the_footnote_says_what_widened_the_interval_and_nothing_where_nothing_did(qapp):
+    """A stated error of the additions widens the reported interval; the summary names it, its replicates and the factor."""
+    from core.pipeline.fit_pipeline import ConditionalFit
+    from core.pipeline.inputs import AdditionError, ErrorModel
+    from core.pipeline.varpro import KaInterval
+
+    plain = _result()
+    entered = ConditionalFit(
+        parameters=dict(plain.parameters),
+        intervals={'Ka_guest': KaInterval(0.7e6, 2.2e6, False, False, 0.95, 16)},
+        rmse=plain.rmse,
+        r_squared=plain.r_squared,
+    )
+    widened = _widget(
+        intervals={'Ka_guest': KaInterval(0.4e6, 3.1e6, False, False, 0.95, 16, inflation=3.2)},
+        conditional=entered,
+        noise=_law(share=0.0, n_replicates=3, share_set=(0.0, 0.0)),
+        fit_config={
+            'per_replicate': False,
+            'level': 0.95,
+            **ErrorModel(additions=AdditionError(2.0, sequential=True)).to_dict(),
+        },
+    )
+
+    footnote = ' '.join(widened._footnote.text().split())
+    assert not widened._footnote.isHidden()
+    assert (
+        'Random error of each addition (2 %, sequential; σ/√3 for 3 replicates as separate titrations) widens the '
+        'interval of'
+    ) in footnote
+    assert 'about 1.8-fold: it takes the variance of the estimate as 3.2 times' in footnote
+    # The interval at the entered inputs stands beside the reported one, as it does when an input moved.
+    assert 'Conditional on entered inputs' in _headers(widened._table)
+    assert 'Conditional on entered inputs' not in _headers(_widget()._table)
+
+    assert 'times what the scatter' not in _widget()._footnote.text()

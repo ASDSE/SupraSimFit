@@ -290,9 +290,9 @@ class TestSerialization:
         assert restored == conditions
 
     def test_a_fit_without_shared_sources_records_the_entries_it_always_has(self):
-        """``shared_sources`` and ``titrant_additions`` appear only when stated, and the additions never in a fit's record."""
+        """``shared_sources`` and ``titrant_additions`` appear only when stated, and a stated one in full."""
         specs = {'h0': InputSpec.sigma_pct(10)}
-        plain = _config_to_dict(FitConfig(errors=ErrorModel(specs=specs, additions=AdditionError(1.0, True))))
+        plain = _config_to_dict(FitConfig(errors=ErrorModel(specs=specs)))
         assert list(plain) == ['custom_bounds', 'per_replicate', 'level', 'input_uncertainty']
         assert plain['input_uncertainty'] == specs_to_dict(specs)
 
@@ -300,6 +300,12 @@ class TestSerialization:
         with_shared = _config_to_dict(FitConfig(errors=ErrorModel(specs=specs, shared=(shared,))))
         assert list(with_shared) == [*plain, 'shared_sources']
         assert ErrorModel.from_dict(json.loads(json.dumps(with_shared))) == ErrorModel(specs=specs, shared=(shared,))
+
+        # The additions reach the interval, so the record keeps them, how the replicates share them included.
+        stated = ErrorModel(specs=specs, additions=AdditionError(1.0, True, separate_titrations=False))
+        with_additions = _config_to_dict(FitConfig(errors=stated))
+        assert list(with_additions) == [*plain, 'titrant_additions']
+        assert ErrorModel.from_dict(json.loads(json.dumps(with_additions))) == stated
 
     def test_from_dict_missing_optional_fields(self):
         """A file holding only what a fit must have loads, with no interval."""
@@ -579,6 +585,98 @@ class TestSummarizeParameters:
         rows = summarize_parameters(result)
         assert all(r.conditional_estimate is None and r.conditional_interval is None for r in rows)
         assert all(r.conditional_open == (False, False) for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# What widened an interval: the weights, the design effects, the additions
+# ---------------------------------------------------------------------------
+
+
+def _widened(**overrides) -> FitResult:
+    """A fit of three replicates read as repeated reads of one titration, with 2 % sequential additions stated.
+
+    The law the replicates show weights the points and is uncertain enough to
+    widen the conditional interval; the additions widen the reported one
+    further. No input was free to move.
+    """
+    additions = AdditionError(2.0, sequential=True, separate_titrations=False)
+    conditional = ConditionalFit(
+        parameters=_sample_fit_result().parameters,
+        intervals={'Ka_guest': _interval(1.4e6, 1.6e6, inflation=1.3)},
+        rmse=42.0,
+        r_squared=0.998,
+    )
+    defaults = dict(
+        intervals={'Ka_guest': _interval(1.2e6, 1.8e6, inflation=2.5)},
+        fit_config=_config_to_dict(FitConfig(per_replica=False, errors=ErrorModel(additions=additions))),
+        conditional=conditional,
+        noise=NoiseLaw(
+            NoiseBasis.REPLICATES,
+            share=0.6,
+            floor=1.0,
+            proportional=0.01,
+            reference=900.0,
+            n_replicates=3,
+            u_floor=0.01,
+            share_set=(0.2, 0.9),
+        ),
+        point_weights=np.linspace(0.5, 2.0, 30),
+        joint_inflation=1.7,
+    )
+    defaults.update(overrides)
+    return _sample_fit_result(**defaults)
+
+
+class TestWhatWidenedTheInterval:
+    def test_the_weights_the_design_effects_and_the_replicates_of_the_additions_survive_the_file(self):
+        original = _widened()
+
+        restored = FitResult.from_dict(json.loads(json.dumps(original.to_dict())))
+
+        np.testing.assert_array_equal(restored.point_weights, original.point_weights)
+        assert restored.intervals['Ka_guest'].inflation == 2.5
+        assert restored.conditional.intervals['Ka_guest'].inflation == 1.3
+        assert restored.joint_inflation == 1.7
+        assert restored.noise.share_set == (0.2, 0.9)
+        additions = ErrorModel.from_dict(restored.fit_config).additions
+        assert additions == AdditionError(2.0, sequential=True, separate_titrations=False)
+
+    def test_weights_of_one_are_written_as_none(self):
+        """A fit with no law to weight by records no weights, and reads back with none."""
+        written = json.loads(json.dumps(_sample_fit_result().to_dict()))
+        assert written['point_weights'] is None
+        assert FitResult.from_dict(written).point_weights is None
+
+    def test_a_file_written_before_any_of_them_reads_as_nothing_widened(self):
+        """Weights of one, plain cut-offs, separate titrations: what every fit was before these entries existed."""
+        older = _widened().to_dict()
+        del older['point_weights'], older['joint_inflation'], older['noise']['share_set']
+        del older['intervals']['Ka_guest']['inflation'], older['conditional']['intervals']['Ka_guest']['inflation']
+        del older['fit_config']['titrant_additions']['separate_titrations']
+
+        restored = FitResult.from_dict(json.loads(json.dumps(older)))
+
+        assert restored.point_weights is None
+        assert restored.intervals['Ka_guest'].inflation == 1.0
+        assert restored.conditional.intervals['Ka_guest'].inflation == 1.0
+        assert restored.joint_inflation == 1.0
+        assert restored.noise.share_set == (0.6, 0.6)
+        assert ErrorModel.from_dict(restored.fit_config).additions.separate_titrations
+        assert {row.inflation for row in summarize_parameters(restored) if row.key == 'Ka_guest'} == {1.0}
+
+    def test_stated_additions_put_the_conditional_interval_beside_the_headline_though_no_input_moved(self):
+        """The reported interval is the wider one, so the one at the entered inputs is a second column."""
+        rows = {row.key: row for row in summarize_parameters(_widened()) if not row.is_log}
+
+        assert (rows['Ka_guest'].interval, rows['Ka_guest'].inflation) == ((1.2e6, 1.8e6), 2.5)
+        assert (rows['Ka_guest'].conditional_interval, rows['Ka_guest'].conditional_inflation) == ((1.4e6, 1.6e6), 1.3)
+        # Without the additions the headline is the conditional fit itself, widened by the law alone.
+        plain = _widened(
+            fit_config=_config_to_dict(FitConfig(per_replica=False)),
+            intervals={'Ka_guest': _interval(1.4e6, 1.6e6, inflation=1.3)},
+        )
+        row = next(row for row in summarize_parameters(plain) if row.key == 'Ka_guest' and not row.is_log)
+        assert (row.inflation, row.conditional_interval, row.conditional_inflation) == (1.3, None, None)
 
 
 # ---------------------------------------------------------------------------

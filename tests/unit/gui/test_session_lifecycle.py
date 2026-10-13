@@ -405,7 +405,7 @@ def test_the_demo_states_typical_input_uncertainties_and_says_so(qapp, dialogs, 
     assert session._input_panel.current_errors() == stated
     assert session._bounds_panel.current_bounds() is None
     assert session.fit_running()
-    assert session._fit_worker.config.errors == stated.for_fit()
+    assert session._fit_worker.config.errors == stated
     assert messages[-1].startswith('Demo settings: ')
     assert 'σ 10 %' in messages[-1] and 'σ 3 %' in messages[-1]
     assert messages[-1].endswith('— fitting…')

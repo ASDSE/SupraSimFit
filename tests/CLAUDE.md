@@ -80,9 +80,10 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
   that by comparing the two projections' numbers exactly — `==`, not `approx` —
   and they are what a change that reorders the arithmetic of the unweighted path
   has to answer to. The lack-of-fit p-value of replicates whose law was
-  estimated, constant or not, is read against a parametric bootstrap seeded
-  from the signals; the F distribution is its reference only where no law could
-  be read. The law
+  estimated, constant or not, or whose additions carry a stated error, is read
+  against a parametric bootstrap seeded from the signals; the F distribution is
+  its reference only where no law could be read and no error of the additions is
+  stated. The law
   itself draws no random numbers either, but a test of it asserts a property —
   proportional noise gives a share near one, a replicate measured at a slightly
   different gain is not read as noise — against independently generated data,

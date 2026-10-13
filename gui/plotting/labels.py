@@ -16,7 +16,8 @@ whether the model and the entered inputs describe the data, and where the fit
 put the inputs it was free to move — so the summary block, the plot, the
 Identifiability tab and the exported report say it in the same words.
 :func:`one_step_sentence` says what the test of a second binding step found,
-and :func:`offset_note` when a signal offset held at zero may be why the curve
+:func:`widening_sentences` why an interval is wider than the plain F test's,
+:func:`region_sentence` why the joint region of a pair is, and :func:`offset_note` when a signal offset held at zero may be why the curve
 misses the data.
 
 Units are formatted by Pint's built-in formatters (``f"{ureg.Unit(unit_str):~H}"``
@@ -642,6 +643,123 @@ def one_step_sentence(label: str, p: float) -> str:
             f'(one-step test p {shown}).'
         )
     return f'{label}: second binding step supported (one-step model rejected at p {_at_most(p)}).'
+
+
+def stated_additions(additions, n_replicates: int) -> str:
+    """The stated random error of each addition in words, with what it is for the average of the replicates.
+
+    ``3 %, sequential``; with replicates, ``3 %, sequential; σ/√3 for 3
+    replicates as separate titrations`` or ``3 %, separate samples; σ itself
+    for 3 repeated reads of one titration``.
+
+    Parameters
+    ----------
+    additions : core.pipeline.inputs.AdditionError
+        The stated error.
+    n_replicates : int
+        How many replicates the fitted signal is the average of.
+    """
+    text = f'{additions.sigma_pct:g} %, {"sequential" if additions.sequential else "separate samples"}'
+    if n_replicates < 2:
+        return text
+    if additions.separate_titrations:
+        return f'{text}; σ/√{n_replicates} for {n_replicates} replicates as separate titrations'
+    return f'{text}; σ itself for {n_replicates} repeated reads of one titration'
+
+
+def widening_sentences(rows, result, name) -> list[str]:
+    """Why each reported interval is wider than the plain F test's, one sentence per binding constant it widens.
+
+    An interval's cut-off is widened by a design effect
+    (:attr:`~core.pipeline.varpro.KaInterval.inflation`, a factor on the
+    variance of the estimate) where a random error of each addition is stated,
+    and where the replicates leave the share of the noise law uncertain. The
+    conditional interval, at the entered inputs, carries the law's part alone,
+    so a law that widened it is named beside the additions; with no additions
+    stated the reported interval's factor is the law's. Each sentence says how
+    much wider in the reader's terms — about the square root of the factor,
+    the width of a profile interval growing with the square root of the
+    variance it allows for — and what the factor is a factor on. Nothing is
+    said of an interval that was not widened. The joint region of a two-step
+    model is said last (:func:`region_sentence`).
+
+    Parameters
+    ----------
+    rows : list[ParameterSummary]
+        :func:`~core.pipeline.fit_pipeline.summarize_parameters` of *result*.
+    result : FitResult
+        The fit, whose configuration records the stated additions and whose
+        noise law the share set.
+    name : Callable[[str], str]
+        Formats a parameter key for where the sentence goes.
+    """
+    from core.pipeline.inputs import ErrorModel
+
+    additions = ErrorModel.from_dict(result.fit_config).additions
+    noise = result.noise
+    n_replicates = 1 if noise is None else noise.n_replicates
+    sentences = []
+    for spec in rows:
+        if spec.is_log or spec.inflation is None or not spec.inflation > 1.0:
+            continue
+        by_law = spec.inflation if additions is None else (spec.conditional_inflation or 1.0)
+        label = name(spec.key)
+        how_much = f'about {math.sqrt(spec.inflation):.2g}-fold'
+        meaning = f'it takes the variance of the estimate as {_variance_ratio(spec.inflation)}'
+        uncertain = None
+        if by_law > 1.0 and noise is not None:
+            low, high = noise.share_set
+            uncertain = f'share between {low:.2g} and {high:.2g}'
+        if additions is not None:
+            causes = f'Random error of each addition ({stated_additions(additions, n_replicates)})'
+            if uncertain is None:
+                sentences.append(f'{causes} widens the interval of {label} {how_much}: {meaning}.')
+            else:
+                sentences.append(
+                    f'{causes} and the noise law the replicates leave uncertain ({uncertain}) widen the interval '
+                    f'of {label} {how_much}: {meaning}.'
+                )
+        elif uncertain is not None:
+            sentences.append(
+                f'The replicates leave the noise law uncertain ({uncertain}); the interval of {label} is widened '
+                f'{how_much} to hold for every share they allow: {meaning}.'
+            )
+    region = region_sentence(result)
+    return sentences if region is None else [*sentences, region]
+
+
+def region_sentence(result) -> str | None:
+    """What widened the joint region of a two-step model's pair of binding constants, or ``None`` where nothing did.
+
+    The region is drawn at the entered inputs with the design effect of the
+    pair (:attr:`~core.pipeline.fit_pipeline.FitResult.joint_inflation`), which
+    carries a stated random error of each addition and a noise law the
+    replicates leave uncertain, as the reported intervals do.
+    """
+    from core.pipeline.inputs import ErrorModel
+
+    factor = result.joint_inflation
+    if not factor > 1.0:
+        return None
+    noise = result.noise
+    causes = [
+        cause
+        for cause, applies in (
+            ('the random error of each addition', ErrorModel.from_dict(result.fit_config).additions is not None),
+            ('the noise law the replicates leave uncertain', noise is not None and noise.estimated and noise.share > 0),
+        )
+        if applies
+    ]
+    why = f' for {" and ".join(causes)}' if causes else ''
+    return (
+        f'The joint region of the pair, at the entered inputs, is widened{why}: it takes the variance of the pair '
+        f'as {_variance_ratio(factor)}.'
+    )
+
+
+def _variance_ratio(factor: float) -> str:
+    """``3.88 times what the scatter of the data alone implies``: what a design effect is a factor on."""
+    return f'{factor:.3g} times what the scatter of the data alone implies'
 
 
 def _escape(text: str) -> str:

@@ -7,9 +7,9 @@ needs real fits of a whole grid, so they live here rather than in the fast
 layer (that the estimates scale with the concentrations they were measured
 against is ``test_homogeneity.py``):
 
-- cell by cell, a perturbation reports what the ordinary fit of the same
-  perturbed inputs reports, so the Estimate in the report and the spread around
-  it come from one estimator;
+- cell by cell, a perturbation reports what the engine's fit of the same
+  perturbed inputs reports at the point weights the baseline fit ran with, so
+  the Estimate in the report and the spread around it come from one objective;
 - a replicate the baseline fit left out is out of every perturbed fit too, so
   every sample describes the same measurements.
 """
@@ -19,7 +19,7 @@ import pytest
 
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
-from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
+from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measurement_set, fit_view
 from core.pipeline.sensitivity import (
     ErrorModel,
     InputSpec,
@@ -27,6 +27,7 @@ from core.pipeline.sensitivity import (
     SensitivityMode,
     run_sensitivity,
 )
+from core.pipeline.varpro import Projection
 from core.units import Q_
 from tests.conftest import (
     GDA_IDA_RECOVERY_BOUNDS,
@@ -69,14 +70,18 @@ def _grid(n_steps: int) -> SensitivityConfig:
 
 
 def test_every_perturbation_reports_the_fit_of_those_inputs():
-    """Cell by cell, the run's Ka and R² are those of an ordinary fit of the same perturbed inputs.
+    """Cell by cell, the run's Ka and R² are those of the engine's fit of the same perturbed inputs.
 
-    Sample and estimate come from the same engine, so they agree to the
-    arithmetic rather than to a tolerance: a cell that differs is a cell fitted
-    on other data, other bounds or other conditions than it claims.
+    Every sample is fitted at the point weights the baseline fit ran with
+    (``FitResult.point_weights``), so each minimises the objective the baseline
+    minimised, and the cell with no offset is the baseline fit itself. Sample
+    and reference come from the same engine, so they agree to the arithmetic
+    rather than to a tolerance: a cell that differs is a cell fitted on other
+    data, other bounds, other conditions or other weights than it claims.
     """
     ms, conditions, fit_config = _noisy_ida(3, per_replica=False, noise_frac=0.06)
     cfg = _grid(3)
+    baseline = fit_measurement_set(ms, IDAAssay, conditions, fit_config)
 
     result = run_sensitivity(ms, IDAAssay, conditions, fit_config, cfg, max_workers=1)
 
@@ -87,11 +92,18 @@ def test_every_perturbation_reports_the_fit_of_those_inputs():
                 'h0': conditions['h0'] * (1 + x_offset),
                 'd0': conditions['d0'] * (1 + y_offset),
             }
-            reference = fit_measurement_set(ms, IDAAssay, perturbed, fit_config)
-            assert result.ka_grid['Ka_guest'][iy, ix] == pytest.approx(
-                reference.parameters['Ka_guest'].magnitude, rel=1e-12
+            assay = ms.to_assay(IDAAssay, conditions=perturbed, use_average=True)
+            projection = Projection(
+                assay, _resolve_bounds(assay, fit_config.custom_bounds), point_weights=baseline.point_weights
             )
-            assert result.r2_grid[iy, ix] == pytest.approx(reference.r_squared, abs=1e-12)
+            params = projection.params(projection.fit())
+            ka = dict(zip(assay.parameter_keys, params))['Ka_guest']
+            assert result.ka_grid['Ka_guest'][iy, ix] == pytest.approx(ka, rel=1e-12)
+            assert result.r2_grid[iy, ix] == pytest.approx(fit_view(assay, params)[1], abs=1e-12)
+    # The cell with no offset is the reported fit, two-stage weights and all.
+    assert result.x_offsets_pct[1] == 0.0 and result.y_offsets_pct[1] == 0.0
+    centre = result.ka_grid['Ka_guest'][1, 1]
+    assert centre == pytest.approx(baseline.parameters['Ka_guest'].magnitude, rel=1e-12)
 
 
 def test_a_replicate_the_baseline_left_out_enters_no_perturbed_fit():

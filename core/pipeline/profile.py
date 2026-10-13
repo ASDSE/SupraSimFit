@@ -14,7 +14,15 @@ the fit makes, so the tab shows the fit it belongs to and nothing else.
 Where the inputs were stated with an uncertainty, the fit's penalised profile
 comes with it (:class:`~core.pipeline.input_aware.AwareProfile`): the second
 curve, its own interval and its own cut-off, drawn beside the one above. It is
-the fit's own working, handed over rather than computed again.
+the fit's own working, handed over rather than computed again. Where only a
+random error of each titrant addition was stated, the curve is the one above
+and the fit's reported interval differs only in its cut-off, widened by a
+larger design effect (:mod:`core.pipeline.inflation`); that reading is the
+second curve then.
+
+The point weights and the design effects that widen the cut-offs are the
+fit's own, handed in by the caller: the weights the fit ran with and the
+factor of each interval and of the joint region.
 
 The equilibrium models report a Ka they have no speciation for as species that
 are not a number, rather than by raising. Such a Ka has no fit at all, so its
@@ -33,8 +41,8 @@ the profile keeps with the models, not a range of Ka it runs into.
 from __future__ import annotations
 
 import heapq
-from dataclasses import dataclass
-from typing import Any, Callable, Type
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Type
 
 import numpy as np
 
@@ -43,11 +51,11 @@ from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds
 from core.pipeline.input_aware import AwareProfile, AwareResult, input_aware
 from core.pipeline.inputs import constraints
-from core.pipeline.noise import noise_law
 from core.pipeline.varpro import (
     _PROFILE_PER_DECADE,
     _SEARCH_PER_DECADE,
     LEVEL,
+    FittedParameters,
     KaInterval,
     Projection,
     _interval,
@@ -108,7 +116,7 @@ _REGION_POINTS = 64
 class ProfileResult:
     """Best achievable R² across one binding constant and the interval it implies.
 
-    Where the replicates behind the fit showed a noise law
+    Where the fit weighted its titration points
     (:attr:`ProfileSet.weighted`), every R² here — ``r2``, ``best_r2``,
     ``r2_cut``, ``r2_threshold`` and each curve in ``replica_r2`` — is
     ``1 - S_w / SS_tot,w``, measured with each titration point counted by its
@@ -138,16 +146,19 @@ class ProfileResult:
     best_r2 : float
         R² at ``best_ka``.
     interval : KaInterval | None
-        The confidence interval of this Ka; ``None`` when Ka is pinned by equal
-        bounds, which leaves no interval to estimate. For the second constant
-        of a stepwise model it carries the p-value of the one-step test
-        (``KaInterval.one_step_p``), the evidence for a second binding step
-        that the joint region is read beside.
+        The confidence interval of this Ka at the entered inputs; ``None`` when
+        Ka is pinned by equal bounds, which leaves no interval to estimate. It
+        carries the design effect its cut-off was widened by
+        (``KaInterval.inflation``) and, for the second constant of a stepwise
+        model, the p-value of the one-step test (``KaInterval.one_step_p``),
+        the evidence for a second binding step that the joint region is read
+        beside.
     r2_threshold : float
         R² at which the interval is cut wherever the fit at the tested Ka pins
-        no signal parameter the best fit leaves free: the plain F test of one
-        constrained Ka. With a pinned Ka there is no interval and the cut is
-        the R² a one-parameter improvement would have to beat.
+        no signal parameter the best fit leaves free: the F test of one
+        constrained Ka, widened by the interval's design effect. With a pinned
+        Ka there is no interval and the cut is the R² a one-parameter
+        improvement would have to beat.
     n_points : int
         Number of points in the averaged signal.
     n_params : int
@@ -158,10 +169,12 @@ class ProfileResult:
     per_replica : bool
         Whether the fit this profile belongs to ran each replicate separately.
     aware : AwareProfile | None
-        The same profile with the inputs free to move within the uncertainties
-        stated for them: its own grid, R² curve, cut-off and interval.
-        ``None`` when no input was free to move, where it would be this curve
-        again.
+        The reading the fit reports, where it differs from this one: the
+        profile with the inputs free to move within the uncertainties stated
+        for them, with its own grid, R² curve, cut-off and interval; or, where
+        no input moves and a stated error of each addition widens the
+        reported interval further, this curve under that wider cut-off and
+        interval. ``None`` where the reported reading is this one.
     r2_cut : np.ndarray
         R² the fit at each grid Ka is judged against
         (:meth:`~core.pipeline.varpro.Projection.cut_off`): ``r2_threshold``,
@@ -210,7 +223,7 @@ class JointRegion:
     r2_threshold : float
         R² at which the region is cut wherever the fit at a pair pins no signal
         parameter the best fit leaves free: the joint F test with two
-        constrained binding constants.
+        constrained binding constants, widened by *inflation*.
     level : float
         Confidence level of the region.
     best : tuple[float, float]
@@ -220,6 +233,15 @@ class JointRegion:
         ``r2``: ``r2_threshold``, and lower where the fit holds a signal
         parameter on a bound that the best fit leaves free. The region is
         ``r2 >= r2_cut``. ``r2_threshold`` at every pair when left out.
+    inflation : float
+        The design effect of the pair that widens every cut-off of the region
+        (:func:`core.pipeline.inflation.joint_inflation`); one for the plain
+        joint F test.
+    intervals : dict[str, KaInterval | None]
+        The interval of each of the two constants at the region's footing —
+        the entered inputs, every cut-off widened as the fit's reported one
+        is — drawn as the two bands under the region; ``None`` for a constant
+        its bounds fix.
     """
 
     ka_keys: tuple[str, str]
@@ -230,6 +252,8 @@ class JointRegion:
     level: float
     best: tuple[float, float]
     r2_cut: np.ndarray | None = None
+    inflation: float = 1.0
+    intervals: dict[str, KaInterval | None] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.r2_cut is None:
@@ -248,13 +272,13 @@ class ProfileSet:
         The joint region of the pair; ``None`` unless the model has two free
         binding constants.
     weighted : bool
-        Whether the replicates showed a noise law that weights the titration
-        points (:mod:`core.pipeline.noise`). Every R² here — the curves, the
-        best fit, the cut-offs and the threshold — is then ``1 - S_w /
-        SS_tot,w``, the scale the profile falls on and the cut-off is a level
-        on, which counts each point by the precision the replicates show it to
-        have. That is a different number from the unweighted R² a fit reports
-        as its quality, and the tab that draws these curves names it
+        Whether the fit weighted its titration points by a noise law the
+        replicates showed (:mod:`core.pipeline.noise`). Every R² here — the
+        curves, the best fit, the cut-offs and the threshold — is then ``1 -
+        S_w / SS_tot,w``, the scale the profile falls on and the cut-off is a
+        level on, which counts each point by the precision the replicates show
+        it to have. That is a different number from the unweighted R² a fit
+        reports as its quality, and the tab that draws these curves names it
         accordingly. ``False`` where the weights are one, and the two numbers
         are the same.
     """
@@ -273,6 +297,10 @@ def fit_profile(
     level: float = LEVEL,
     should_cancel: Callable[[], bool] | None = None,
     aware: AwareResult | None = None,
+    point_weights: np.ndarray | None = None,
+    inflation: Mapping[str, float] | None = None,
+    reported_inflation: Mapping[str, float] | None = None,
+    joint_inflation: float = 1.0,
 ) -> ProfileSet:
     """Profiles of the averaged signal, their intervals and, for two free Ka, the joint region.
 
@@ -281,17 +309,10 @@ def fit_profile(
     every replicate: counting each replicate's points as separate evidence
     would overstate how precisely the data pin Ka down. The best fit and the
     intervals come from the same engine calls a fit of the same replicates
-    makes, so they equal the fit's exactly. ``fit_config.custom_bounds``
-    applies throughout; with ``fit_config.per_replica`` a model with one free
-    binding constant also carries each replicate's own curve in
-    ``replica_r2``.
-
-    The curves carry the point weights of the noise law those replicates show
-    (:mod:`core.pipeline.noise`), as the fit does, so the R² axis here is the
-    weighted one wherever a law was read (:attr:`ProfileSet.weighted`). The
-    average, the law and therefore every number here are functions of the
-    active replicates of *ms* alone: they are a fit's own exactly when *ms*
-    holds the replicates that fit used, which is the caller's to arrange.
+    makes, so they equal the fit's exactly when the fit's own point weights
+    and design effects are handed in. ``fit_config.custom_bounds`` applies
+    throughout; with ``fit_config.per_replica`` a model with one free binding
+    constant also carries each replicate's own curve in ``replica_r2``.
 
     Parameters
     ----------
@@ -313,8 +334,29 @@ def fit_profile(
         (:attr:`~core.pipeline.fit_pipeline.FitResult.aware`), made at this
         *level* on these data with this configuration. They are carried
         through as they are, which is what makes the tab show the fit's own
-        interval; left out, they are computed here whenever
-        ``fit_config.errors`` lets an input move.
+        interval; left out, they are computed here with *reported_inflation*
+        whenever ``fit_config.errors`` lets an input move or that widens a
+        cut-off beyond *inflation*.
+    point_weights : np.ndarray, optional
+        The weight of every titration point the fit ran with
+        (:attr:`~core.pipeline.fit_pipeline.FitResult.point_weights`); every
+        curve, cut-off and R² here is on that weighted scale
+        (:attr:`ProfileSet.weighted`). Ones when omitted.
+    inflation : Mapping[str, float], optional
+        The design effect of each binding constant's interval at the entered
+        inputs (``KaInterval.inflation`` of the fit's conditional intervals),
+        which widens that interval's cut-off; a constant left out, and every
+        one when it is omitted, takes one.
+    reported_inflation : Mapping[str, float], optional
+        The design effect of each binding constant's reported interval
+        (``KaInterval.inflation`` of the fit's own intervals), which carries a
+        stated error of the additions beside the law's; *inflation* where it
+        is omitted or leaves a constant out. It cuts the reported reading where
+        *aware* is not handed in, and the two bands under the joint region.
+    joint_inflation : float
+        The design effect of the pair that widens the joint region's cut-off
+        (:func:`core.pipeline.inflation.joint_inflation`); one for the plain
+        joint F test.
 
     Returns
     -------
@@ -325,8 +367,9 @@ def fit_profile(
     ValueError
         For an assay the engine cannot project, a level outside (0, 1),
         invalid Ka bounds, Ka bounds the equilibrium model cannot be solved
-        anywhere within, or too few data points to leave any degrees of
-        freedom.
+        anywhere within, too few data points to leave any degrees of
+        freedom, point weights that are not one positive number per point, or
+        a design effect that is not a finite number of one or more.
     FitCancelled
         If *should_cancel* returns True.
     """
@@ -334,20 +377,17 @@ def fit_profile(
         raise ValueError(f'The confidence level must lie between 0 and 1, got {level}.')
     assay = ms.to_assay(assay_cls, conditions=conditions, use_average=True)
     bounds = _resolve_bounds(assay, fit_config.custom_bounds)
-    # The weights the fit of these replicates is made with, read off the same
-    # rows their average came from, so the curves and the fit's own interval
-    # are one set of numbers.
-    law = noise_law(np.vstack([ms.get_replica_signal(rid) for rid in ms.active_replica_ids]))
-    point_weights = law.weights(assay.y_data.magnitude)
 
     # The fit itself: the calls a fit of the averaged signal makes, in the same order.
     projection = Projection(assay, bounds, should_cancel=should_cancel, point_weights=point_weights)
     fit = projection.fit()
-    threshold = projection.threshold(fit, level)
-    intervals = {key: projection.interval(key, fit, level) for key in projection.ka_keys}
+    kappa = {key: float((inflation or {}).get(key, 1.0)) for key in projection.ka_keys}
+    kappa_reported = {key: float((reported_inflation or {}).get(key, kappa[key])) for key in projection.ka_keys}
+    thresholds = {key: projection.threshold(fit, level, inflation=kappa[key]) for key in projection.ka_keys}
+    intervals = {key: projection.interval(key, fit, level, kappa[key]) for key in projection.ka_keys}
     ss_tot = float(projection.ss_tot[0])
-    errors = fit_config.errors.for_fit()
-    if aware is None and (errors.specs or errors.shared):
+    errors = fit_config.errors
+    if aware is None and (errors.specs or errors.shared or kappa_reported != kappa):
         aware = input_aware(
             projection,
             fit,
@@ -356,21 +396,51 @@ def fit_profile(
             level=level,
             should_cancel=should_cancel,
             conditional={k: ci for k, ci in intervals.items() if ci is not None},
+            inflation=kappa_reported,
         )
-    # With nothing free to move the penalised profile is this one, so there is
-    # no second curve to draw.
-    penalised = aware.profiles if aware is not None and aware.constraints else {}
+    n = projection.n_points
     common = dict(
         best_r2=float(1.0 - fit.objective / ss_tot),
-        r2_threshold=float(1.0 - threshold / ss_tot),
-        n_points=projection.n_points,
+        n_points=n,
         n_params=projection.n_params(fit),
         per_replica=fit_config.per_replica,
     )
 
-    cut = projection.cut_off(fit, level)
+    def reported(key: str, grid: np.ndarray, r2: np.ndarray, fitted: list[FittedParameters]) -> AwareProfile | None:
+        """The reading the fit reports for *key* where it is not the one drawn here (:attr:`ProfileResult.aware`).
 
-    def result(key: str, grid: np.ndarray, r2: np.ndarray, cuts: dict[float, float], replica_r2=None) -> ProfileResult:
+        With inputs free to move it is the fit's penalised profile. With none,
+        a reported interval at another design effect than this one's is this
+        curve under the cut-off of that design effect.
+        """
+        if aware is None or key not in aware.profiles:
+            return None
+        if aware.constraints:
+            return aware.profiles[key]
+        headline = aware.profiles[key].interval
+        if headline.inflation == kappa[key]:
+            return None
+        threshold = projection.threshold(fit, level, inflation=headline.inflation)
+        cut = projection.cut_off(fit, level, inflation=headline.inflation)
+        cuts = np.array([cut(point) for point in fitted])
+        return AwareProfile(
+            ka_key=key,
+            grid=grid,
+            objective=n * np.log(ss_tot * (1.0 - r2)),
+            r2=r2,
+            offsets=np.empty((grid.size, 0)),
+            threshold=n * float(np.log(threshold)),
+            r2_threshold=1.0 - threshold / ss_tot,
+            interval=headline,
+            cut=n * np.log(cuts),
+            r2_cut=1.0 - cuts / ss_tot,
+        )
+
+    def result(
+        key: str, grid: np.ndarray, r2: np.ndarray, fitted: dict[float, FittedParameters], replica_r2=None
+    ) -> ProfileResult:
+        cut = projection.cut_off(fit, level, inflation=kappa[key])
+        at = [fitted[ka] for ka in grid.tolist()]
         return ProfileResult(
             ka_key=key,
             grid=grid,
@@ -378,16 +448,29 @@ def fit_profile(
             replica_r2=replica_r2,
             best_ka=fit.ka[key],
             interval=intervals[key],
-            aware=penalised.get(key),
-            r2_cut=1.0 - np.array([cuts[ka] for ka in grid.tolist()]) / ss_tot,
+            r2_threshold=float(1.0 - thresholds[key] / ss_tot),
+            aware=reported(key, grid, r2, at),
+            r2_cut=1.0 - np.array([cut(point) for point in at]) / ss_tot,
             **common,
         )
 
     def marks(key: str) -> list[float]:
-        """Ka values every drawn curve passes through: the best fit and the interval's closed edges."""
-        interval = intervals[key]
-        edges = [] if interval is None else [(interval.low, interval.open_low), (interval.high, interval.open_high)]
-        return [fit.ka[key]] + [edge for edge, is_open in edges if not is_open]
+        """Ka values every drawn curve passes through: the best fit and the closed edges of each interval drawn on it.
+
+        Those are this curve's own interval and, where no input moves, the
+        interval the fit reports, which :func:`reported` cuts from this curve.
+        """
+        drawn = [intervals[key]]
+        if aware is not None and not aware.constraints and key in aware.profiles:
+            drawn.append(aware.profiles[key].interval)
+        edges = [
+            edge
+            for interval in drawn
+            if interval is not None
+            for edge, is_open in ((interval.low, interval.open_low), (interval.high, interval.open_high))
+            if not is_open
+        ]
+        return list(dict.fromkeys([fit.ka[key], *edges]))
 
     profiles: dict[str, ProfileResult] = {}
     region = None
@@ -397,23 +480,22 @@ def fit_profile(
         # the other axis from its cache; the same node values, each against the
         # joint cut-off of its own profile point, cut the joint region's
         # bounding box, the way an interval is cut.
-        joint_cut = projection.cut_off(fit, level, n_constrained=2)
+        joint_cut = projection.cut_off(fit, level, n_constrained=2, inflation=joint_inflation)
         box = {}
         for key in projection.ka_keys:
-            cuts: dict[float, float] = {}
-            joint_cuts: dict[float, float] = {}
+            fitted: dict[float, FittedParameters] = {}
 
-            def profile(ka: float, key: str = key, cuts: dict = cuts, joint_cuts: dict = joint_cuts) -> float:
-                _, value, fitted = projection.profile_point(key, ka)
-                cuts[ka], joint_cuts[ka] = cut(fitted), joint_cut(fitted)
+            def profile(ka: float, key: str = key, fitted: dict = fitted) -> float:
+                _, value, fitted[ka] = projection.profile_point(key, ka)
                 return value
 
-            def joint_excess(ka: float, profile=profile, joint_cuts: dict = joint_cuts) -> float:
-                return profile(ka) - joint_cuts[ka]
+            def joint_excess(ka: float, profile=profile, fitted: dict = fitted) -> float:
+                value = profile(ka)
+                return value - joint_cut(fitted[ka])
 
             nodes = _ka_grid(*projection.ka_bounds[key], _SEARCH_PER_DECADE)
             node_ssr = np.array([profile(ka) for ka in nodes.tolist()])
-            node_excess = node_ssr - np.array([joint_cuts[ka] for ka in nodes.tolist()])
+            node_excess = node_ssr - np.array([joint_cut(fitted[ka]) for ka in nodes.tolist()])
             box[key] = _interval(joint_excess, nodes, node_excess, fit.ka[key])[0]
             grid, r2 = _draw(
                 lambda ka: np.array([profile(ka)]),
@@ -423,7 +505,7 @@ def fit_profile(
                 _CURVE_MAX_EXTRA_TWO_KA,
                 marks(key),
             )
-            profiles[key] = result(key, grid, r2[:, 0], cuts)
+            profiles[key] = result(key, grid, r2[:, 0], fitted)
         k1, k2 = projection.ka_keys
         x, y = (np.geomspace(*box[k], _REGION_POINTS) for k in (k1, k2))
         # One solve per pair gives its residual and what was fitted, which its cut-off is read at.
@@ -434,30 +516,44 @@ def fit_profile(
             x=x,
             y=y,
             r2=np.where(np.isfinite(ssr), 1.0 - ssr / ss_tot, np.nan),
-            r2_threshold=float(1.0 - projection.threshold(fit, level, n_constrained=2) / ss_tot),
+            r2_threshold=float(
+                1.0 - projection.threshold(fit, level, n_constrained=2, inflation=joint_inflation) / ss_tot
+            ),
             level=level,
             best=(fit.ka[k1], fit.ka[k2]),
-            r2_cut=1.0 - np.array([[joint_cut(fitted) for _, fitted in row] for row in solved]) / ss_tot,
+            r2_cut=1.0 - np.array([[joint_cut(point) for _, point in row] for row in solved]) / ss_tot,
+            inflation=joint_inflation,
+            intervals={
+                key: intervals[key]
+                if kappa_reported[key] == kappa[key]
+                else projection.interval(key, fit, level, kappa_reported[key])
+                for key in (k1, k2)
+            },
         )
     else:
         # Every drawn curve: the average first, then each active replicate's own.
         replica_ids = list(ms.active_replica_ids) if fit_config.per_replica else []
         rows = np.vstack([assay.y_data.magnitude, *(ms.get_replica_signal(rid) for rid in replica_ids)])
-        curves = Projection(assay, bounds, signals=rows, should_cancel=should_cancel, point_weights=point_weights)
+        curves = Projection(
+            assay, bounds, signals=rows, should_cancel=should_cancel, point_weights=projection.point_weights
+        )
         for key in projection.ka_keys:
             if key not in projection.free_ka:
                 # Equal Ka bounds fix Ka: the fit was not free to move it, so
                 # its profile is the one point the fit reached.
+                best = fit.ka[key]
                 profiles[key] = result(
-                    key, np.array([fit.ka[key]]), np.array([common['best_r2']]), {fit.ka[key]: threshold}
+                    key,
+                    np.array([best]),
+                    np.array([common['best_r2']]),
+                    {best: projection.fitted_parameters(fit.ka)},
                 )
                 continue
-            cuts = {}
+            fitted = {}
 
-            def rows(ka: float, key: str = key, cuts: dict[float, float] = cuts) -> np.ndarray:
+            def rows(ka: float, key: str = key, fitted: dict[float, FittedParameters] = fitted) -> np.ndarray:
                 # The first row is the averaged signal, whose solve also gives what its cut-off is read at.
-                ssr, fitted = curves.solved({key: ka})
-                cuts[ka] = cut(fitted)
+                ssr, fitted[ka] = curves.solved({key: ka})
                 return ssr
 
             nodes = _ka_grid(*projection.ka_bounds[key], _PROFILE_PER_DECADE)
@@ -466,7 +562,7 @@ def fit_profile(
             replica_r2 = (
                 {rid: r2[:, i] for i, rid in enumerate(replica_ids, start=1)} if fit_config.per_replica else None
             )
-            profiles[key] = result(key, grid, r2[:, 0], cuts, replica_r2)
+            profiles[key] = result(key, grid, r2[:, 0], fitted, replica_r2)
     return ProfileSet(profiles=profiles, region=region, weighted=bool(np.any(projection.point_weights != 1.0)))
 
 

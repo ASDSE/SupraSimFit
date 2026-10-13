@@ -12,6 +12,13 @@
   parametric bootstrap that holds the 5 % level on a linear model where the F
   tail rejects twice as often, repeats exactly on the same data, still rejects
   a gross misfit, and does not depend on tied or rescaled design columns;
+- with a stated random error in each titrant addition, the bootstrap draws it
+  too and holds the 5 % level where the F tail rejects most consistent fits —
+  replicates that share one titration's additions — and where each replicate
+  is a titration of its own; an addition error of zero draws the reference of
+  none; the runs test drawn with the covariance the additions add holds its
+  level on a single titration where independent noise rejects three times as
+  often, and only the shape of that covariance matters;
 - the weights of the conflict reference are g / (1 + g) for the information g
   the data hold on an input: 1 for an input the data determine, 0 for one the
   residual does not depend on; they do not depend on the units a parameter's
@@ -21,6 +28,12 @@
   Gaussian model fitted the same way, rejects a consistent fit at the stated
   rate with few points, where a reference that takes the noise scale as known
   rejects twice as often;
+- with a stated error of the additions, the covariance it adds to the shifts
+  is the linearised map ``A_r G A_r' / s²`` of the stacked Jacobian, the
+  p-value with a known extra covariance is the scaled chi-squared tail, an
+  extra covariance of zero gives the p-value of none, and on a linear model
+  whose correlated noise moves the curve the way the inputs do, the reference
+  that carries it holds the level the plain one misses by a factor of seven;
 - the verdict judges the misfit test and the conflict statistic together by
   Holm's procedure, names both when both reject, and a results file records
   which test was not run and why.
@@ -36,11 +49,13 @@ from scipy.stats import f as f_dist
 
 from core.pipeline.diagnostics import (
     LOF_BOOTSTRAP_DRAWS,
+    AdditionDraws,
     Conflict,
     FitDiagnostics,
     InputShift,
     MisfitTest,
     Verdict,
+    conflict_added,
     conflict_p_value,
     conflict_reference,
     conflict_test,
@@ -257,15 +272,23 @@ def test_replicates_with_no_scatter_above_the_resolution_of_a_fit_are_not_tested
 def _line_fit(signals, design):
     """The noise law of *signals*, its weights, and the weighted least-squares fit of their mean on *design*.
 
-    The fit a linear model gets from the pipeline: weights read off the
-    replicates, then the mean fitted with them.
+    The fit a linear model gets from the pipeline: the law read off the
+    replicates, the mean fitted with its weights at the means and, where the
+    share is above zero, fitted again with its weights at that fitted curve.
     """
     law = noise_law(signals)
     mean = signals.mean(axis=0)
+
+    def fit(weights):
+        root = np.sqrt(weights)
+        return design @ np.linalg.lstsq(design * root[:, np.newaxis], mean * root, rcond=None)[0]
+
     weights = law.weights(mean)
-    root = np.sqrt(weights)
-    coefficients = np.linalg.lstsq(design * root[:, np.newaxis], mean * root, rcond=None)[0]
-    return law, weights, design @ coefficients
+    fitted = fit(weights)
+    if law.share > 0.0:
+        weights = law.weights(fitted)
+        fitted = fit(weights)
+    return law, weights, fitted
 
 
 def test_lack_of_fit_with_weights_read_off_the_replicates_holds_its_level_by_the_bootstrap():
@@ -273,15 +296,17 @@ def test_lack_of_fit_with_weights_read_off_the_replicates_holds_its_level_by_the
 
     The model holds, so a test at 5 % rejects 5 % of datasets. The share of
     the noise law is read off these same replicates, which makes the F tail
-    reject about twice that; the bootstrap that reads the share again in every
-    draw rejects within Bradley's liberal band [0.025, 0.075] (400 datasets,
-    sampling sd 0.011).
+    reject about twice that (0.107 over 6 000 datasets); the bootstrap that
+    reads the share again in every draw rejects 0.067 there, inside Bradley's
+    liberal band [0.025, 0.075] but near its top. A rate that close to the
+    edge is judged by its 99 % Clopper-Pearson interval over 1 000 datasets:
+    the bootstrap's must reach into the band, the F tail's must lie above it.
     """
     rng = np.random.default_rng(20)
     x = np.linspace(0.0, 1.0, 20)
     design = np.column_stack([np.ones(x.size), x])
     rejected = {'F': 0, 'bootstrap': 0}
-    draws = 400
+    draws = 1000
     for _ in range(draws):
         signals = 1.0 + 19.0 * x + rng.standard_normal((2, x.size))
         law, weights, fitted = _line_fit(signals, design)
@@ -291,8 +316,17 @@ def test_lack_of_fit_with_weights_read_off_the_replicates_holds_its_level_by_the
         assert (bootstrap.reference, plain.reference) == ('bootstrap', 'F')
         rejected['bootstrap'] += bootstrap.p_value <= 0.05
         rejected['F'] += plain.p_value <= 0.05
-    assert 0.025 <= rejected['bootstrap'] / draws <= 0.075
-    assert rejected['F'] / draws > 0.075
+    low, high = _clopper_pearson(rejected['bootstrap'], draws)
+    assert low <= 0.075 and high >= 0.025
+    assert _clopper_pearson(rejected['F'], draws)[0] > 0.075
+
+
+def _clopper_pearson(k: int, n: int, level: float = 0.99) -> tuple[float, float]:
+    """The exact two-sided interval of a binomial rate, *k* events in *n* trials."""
+    tail = (1.0 - level) / 2.0
+    low = beta.ppf(tail, k, n - k + 1) if k > 0 else 0.0
+    high = beta.ppf(1.0 - tail, k + 1, n - k) if k < n else 1.0
+    return float(low), float(high)
 
 
 def test_the_bootstrap_p_value_is_a_function_of_the_data():
@@ -366,6 +400,123 @@ def test_the_bootstrap_refuses_to_run_without_the_design_of_the_fit():
     for wrong in (None, design[:-1], design[:, :1], design[:, 0]):
         with pytest.raises(ValueError, match='design of the fit'):
             lack_of_fit(signals, fitted, 2, weights, law=law, design=wrong)
+
+
+# A straight line titrated by twelve equal additions of 1/12 each: the titrant
+# at point i is the sum of the first i additions, each off by its own relative
+# error, so an error of addition j moves every point from j on by slope/12.
+_ADDED = np.full(12, 1.0 / 12)
+_TITRANT = np.cumsum(_ADDED)
+_SLOPE = 10.0
+_LINE = np.column_stack([np.ones(12), _TITRANT])
+_LOADING = _SLOPE * np.tril(np.ones((12, 12))) * _ADDED
+
+
+def _titrated_lines(rng, m, shared, sigma=0.03, sd=0.02):
+    """*m* replicates of the line ``1 + slope·x`` at titrant concentrations made by additions with relative error *sigma*.
+
+    The titrant is built from the additions themselves, independently of
+    ``_LOADING``: one set of addition errors for all replicates when *shared*,
+    one per replicate otherwise, plus independent noise of sd *sd*.
+    """
+    errors = sigma * rng.standard_normal((1 if shared else m, 12))
+    titrant = np.cumsum(_ADDED * (1.0 + errors), axis=-1)
+    return 1.0 + _SLOPE * titrant + sd * rng.standard_normal((m, 12))
+
+
+@pytest.mark.parametrize('shared', [True, False])
+def test_the_bootstrap_with_the_stated_additions_holds_its_level(shared):
+    """Three replicates of a straight line whose titrant carries 3 % sequential addition errors, 400 datasets.
+
+    Shared: the replicates are repeated reads of one titration, so the
+    additions move every replicate alike, the scatter between them does not
+    see it, and the F tail rejects 85 % of these consistent fits. Separate: each
+    replicate is its own titration, and the F tail rejects 10 %. With the
+    additions drawn in its reference, the bootstrap rejects within Bradley's
+    liberal band [0.025, 0.075] either way: 0.035 shared and 0.059 separate
+    over 2 000 datasets.
+    """
+    rng = np.random.default_rng(31)
+    additions = AdditionDraws(_LOADING, 0.03, shared)
+    rejected = {'F': 0, 'bootstrap': 0}
+    draws = 400
+    for _ in range(draws):
+        signals = _titrated_lines(rng, 3, shared)
+        law, weights, fitted = _line_fit(signals, _LINE)
+        found = lack_of_fit(signals, fitted, 2, weights, law=law, design=_LINE, additions=additions)
+        assert found.reference == 'bootstrap'
+        rejected['bootstrap'] += found.p_value <= 0.05
+        rejected['F'] += lack_of_fit(signals, fitted, 2, weights).p_value <= 0.05
+    assert 0.025 <= rejected['bootstrap'] / draws <= 0.075
+    if shared:
+        assert rejected['F'] / draws > 0.5
+
+
+def test_an_addition_error_of_zero_draws_the_reference_of_none():
+    """The addition offsets are drawn after the noise, from the same stream: at zero they add exactly nothing."""
+    rng = np.random.default_rng(32)
+    signals = _titrated_lines(rng, 3, shared=False)
+    law, weights, fitted = _line_fit(signals, _LINE)
+    assert law.estimated
+    for shared in (True, False):
+        none = AdditionDraws(_LOADING, 0.0, shared)
+        assert lack_of_fit(signals, fitted, 2, weights, law=law, design=_LINE, additions=none) == lack_of_fit(
+            signals, fitted, 2, weights, law=law, design=_LINE
+        )
+
+
+def test_the_bootstrap_refuses_an_addition_loading_of_the_wrong_shape():
+    rng = np.random.default_rng(33)
+    signals = _titrated_lines(rng, 3, shared=True)
+    law, weights, fitted = _line_fit(signals, _LINE)
+    with pytest.raises(ValueError, match='design of the fit'):
+        lack_of_fit(signals, fitted, 2, weights, additions=AdditionDraws(_LOADING, 0.03, True))
+    with pytest.raises(ValueError, match='12 x 12'):
+        lack_of_fit(
+            signals, fitted, 2, weights, law=law, design=_LINE, additions=AdditionDraws(_LOADING[:-1], 0.03, True)
+        )
+
+
+def test_the_runs_reference_with_the_covariance_of_the_additions_holds_its_level():
+    """One titration, 20 points on a binding curve ``1 + 10·x/(0.3 + x)``, 3 % sequential additions, 0.2 % noise.
+
+    The error of one addition moves every later point, so the residuals of a
+    consistent fit run in long stretches of one sign: the reference of
+    independent noise rejects 13 % at the 5 % level. Drawn from the noise
+    plus the covariance the additions add, linearised at the fitted curve, the
+    reference rejects 5.3 %, within Bradley's band (2 000 datasets each).
+    """
+    n, sigma, sd = 20, 0.03, 0.02
+    added = np.full(n, 1.0 / n)
+    x = np.cumsum(added)
+    design = np.column_stack([np.ones(n), x / (0.3 + x)])
+    rng = np.random.default_rng(34)
+    rejected = {'independent': 0, 'additions': 0}
+    datasets = 400
+    for _ in range(datasets):
+        titrant = np.cumsum(added * (1.0 + sigma * rng.standard_normal(n)))
+        signal = 1.0 + 10.0 * titrant / (0.3 + titrant) + sd * rng.standard_normal(n)
+        coefficients = np.linalg.lstsq(design, signal, rcond=None)[0]
+        residual = signal - design @ coefficients
+        loading = coefficients[1] * (0.3 / (0.3 + x) ** 2)[:, np.newaxis] * np.tril(np.ones((n, n))) * added
+        covariance = sd**2 * np.eye(n) + sigma**2 * loading @ loading.T
+        rejected['independent'] += runs_test(residual, x, design, draws=5_000).p_value < 0.05
+        rejected['additions'] += runs_test(residual, x, design, draws=5_000, covariance=covariance).p_value < 0.05
+    assert rejected['independent'] / datasets > 0.1
+    assert 0.025 <= rejected['additions'] / datasets <= 0.075
+
+
+def test_only_the_shape_of_the_runs_covariance_matters_and_a_wrong_one_is_refused():
+    """Signs alone are counted: noise of equal variance, at any scale, is the reference of independent noise."""
+    rng = np.random.default_rng(35)
+    x = np.linspace(0.0, 1.0, 15)
+    jacobian = np.column_stack([np.ones(15), x])
+    residuals = rng.standard_normal(15)
+    plain = runs_test(residuals, x, jacobian, draws=20_000)
+    assert runs_test(residuals, x, jacobian, draws=20_000, covariance=4.0 * np.eye(15)) == plain
+    for wrong in (np.eye(14), np.triu(np.ones((15, 15))), np.full((15, 15), np.nan)):
+        with pytest.raises(ValueError, match='finite symmetric 15 x 15'):
+            runs_test(residuals, x, jacobian, covariance=wrong)
 
 
 def test_no_scatter_is_a_variance_below_the_resolution_of_the_signal_it_describes():
@@ -528,6 +679,75 @@ def test_the_conflict_reference_holds_its_level_on_a_consistent_linear_model_wit
     assert weak_known_scale > 0.085  # what ignoring the estimated scale costs at six points
     strong, _ = _null_rejection_rates(n=8, gain=10.0)
     assert 0.03 <= strong <= 0.07
+
+
+def test_the_covariance_the_additions_add_to_the_shifts_is_the_linearised_map_of_the_residual_noise():
+    """``A_r G A_r' / s²`` with ``A = (J'J)⁻¹ J'`` of the stacked Jacobian, its rows of the inputs held by a sigma."""
+    rng = np.random.default_rng(7)
+    n, n_ka = 10, 1
+    residual_rows = rng.normal(size=(n, n_ka + 3))
+    # Columns: one Ka, an input held by a sigma, a range input (no penalty row), another sigma input.
+    penalty = np.zeros((2, n_ka + 3))
+    penalty[0, 1] = penalty[1, 3] = 1.0
+    scale = 0.3
+    jacobian = np.vstack([residual_rows, penalty])
+    loading = rng.normal(size=(n, 2))
+    added = loading @ loading.T
+    stacked = jacobian.copy()
+    stacked[:n] /= scale
+    operator = np.linalg.inv(stacked.T @ stacked) @ stacked.T
+    rows = operator[[1, 3], :n]
+    expected = rows @ (added / scale**2) @ rows.T
+    found = conflict_added(jacobian, n_ka, [True, False, True], scale, added)
+    assert found == pytest.approx(expected, rel=1e-9, abs=1e-12)
+
+
+def test_the_conflict_p_value_with_an_added_covariance_is_the_scaled_tail_and_zero_adds_nothing():
+    # Directions the data determine (w = 1) with a known scale, plus a² of covariance on each: (1 + a²) chi².
+    a2 = 0.5
+    assert conflict_p_value(6.0, [1.0, 1.0], added=a2 * np.eye(2)) == pytest.approx(
+        chi2.sf(6.0 / (1 + a2), 2), abs=3e-3
+    )
+    # An extra covariance of zero is the p-value of the shifts alone, with the scale estimated too.
+    plain = conflict_p_value(3.0, [0.4, 0.9], 12, 3)
+    assert conflict_p_value(3.0, [0.4, 0.9], 12, 3, added=np.zeros((2, 2))) == pytest.approx(plain, abs=1e-12)
+
+
+def test_the_conflict_reference_with_the_additions_holds_its_level_where_the_plain_one_does_not():
+    """A linear model whose correlated noise moves the curve the way one input does; 600 seeded datasets.
+
+    The binomial 95 % range around 0.05 is 0.033 to 0.067. The plain reference
+    reads the shift that noise puts into the inputs as a conflict.
+    """
+    rng = np.random.default_rng(1)
+    n, sims = 12, 600
+    t = np.linspace(0.0, 1.0, n)
+    x = np.column_stack([np.ones(n), t])
+    project = np.eye(n) - x @ np.linalg.pinv(x)
+    raw = 3.0 * np.column_stack([np.sin(3 * t), t**2])
+    effect = project @ raw
+    jacobian = np.vstack([-effect, np.eye(2)])
+    loading = 2.0 * np.column_stack([raw[:, 0], np.cos(5 * t)])
+    added = loading @ loading.T
+    rejected = np.zeros(2)
+    for _ in range(sims):
+        y = project @ (rng.standard_normal(n) + loading @ rng.standard_normal(2)) - effect @ rng.standard_normal(2)
+
+        def objective(z: np.ndarray) -> float:
+            return n * np.log(np.sum((y - effect @ z) ** 2)) + float(z @ z)
+
+        z = minimize(objective, np.zeros(2), method='BFGS', options={'gtol': 1e-10}).x
+        scale = np.sqrt(np.sum((y - effect @ z) ** 2) / n)
+        weights, directions = conflict_reference(jacobian, 0, [True, True], scale)
+        q = float(np.sum((directions.T @ z) ** 2))
+        extra = directions.T @ conflict_added(jacobian, 0, [True, True], scale, added) @ directions
+        rejected += [
+            conflict_p_value(q, weights, n, 2, draws=20_000) < 0.05,
+            conflict_p_value(q, weights, n, 2, draws=20_000, added=extra) < 0.05,
+        ]
+    plain, carried = rejected / sims
+    assert plain > 0.2
+    assert 0.03 <= carried <= 0.07
 
 
 def _misfit(p: float) -> MisfitTest:

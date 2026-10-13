@@ -74,15 +74,18 @@ concentration was entered 8 % above the value the data were made at, with that
 stock stated to 10 % and the titrant to 3 %. The fit moves the host
 concentration by −8.6 % and reports a Ka of 1.88 MM⁻¹ against the 2 MM⁻¹ the
 data carry, where the interval that holds the entered inputs exact — the file's
-`conditional` block — runs from 2.14 to 2.60 MM⁻¹ and does not reach the truth.
+`conditional` block — runs from 2.13 to 2.62 MM⁻¹ and does not reach the truth.
 Its `diagnostics` say `inputs_explain`: at the entered inputs the replicates
 reject the curve (lack of fit p ≤ 0.005: none of the 199 draws of the
 simulated reference reached the observed ratio) and once the inputs move they
-do not (p = 0.59).
+do not (p = 0.595).
 
 Its `noise` block holds the law the three replicates show, a share of 0.56
 between a floor of 3.2 au and 0.6 % of the signal, and the fit counts each
-titration point by the weight that law gives it.
+titration point by the weight that law gives it at the fitted curve
+(`point_weights`). Three replicates leave the share anywhere between 0 and 1
+(`share_set`), so both intervals are widened to hold for every share in that
+range (`inflation` 1.12).
 
 An import scores the reported parameters where the fit put the inputs, so the
 file verifies; strip its `input_shifts` and the same numbers no longer describe

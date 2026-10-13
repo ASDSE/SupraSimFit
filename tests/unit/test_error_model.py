@@ -11,9 +11,12 @@
   sentence that names it, and ``source_problems`` lists every fault of every
   source so the panel can state them all before a run.
 - The model's entries in a results file: a model without shared sources writes
-  the per-input layout alone, and a ``fit_config`` holding only that reads back.
+  the per-input layout alone, and a ``fit_config`` holding only that reads back;
+  whether the replicates are separate titrations survives, and a file that does
+  not say reads as separate titrations.
 - ``perturb_titrant`` against an explicit simulation of the volumes pipetted,
-  and against the law of accumulated errors for equal aliquots.
+  and against the law of accumulated errors for equal aliquots;
+  ``addition_loading`` against central differences of it.
 """
 
 import numpy as np
@@ -26,6 +29,7 @@ from core.pipeline.inputs import (
     ErrorModel,
     InputSpec,
     SharedSource,
+    addition_loading,
     perturb_titrant,
     shared_key,
     source_name,
@@ -136,15 +140,6 @@ def test_varies_says_whether_any_source_moves_anything():
     assert ErrorModel(additions=AdditionError(1.0, True)).varies
 
 
-def test_the_fit_reads_every_source_but_the_additions():
-    specs = {'h0': InputSpec.sigma_pct(3)}
-    sequential = ErrorModel(specs=specs, shared=(_STOCK,), additions=AdditionError(1.0, True))
-    separate = ErrorModel(specs=specs, shared=(_STOCK,), additions=AdditionError(2.0, False))
-    assert sequential != separate
-    assert sequential.for_fit() == separate.for_fit() == ErrorModel(specs=specs, shared=(_STOCK,))
-    assert sequential.for_fit() != ErrorModel(specs=specs)
-
-
 # -- refusals ----------------------------------------------------------------------
 
 
@@ -240,8 +235,19 @@ def test_the_whole_model_survives_a_json_round_trip():
     )
     written = errors.to_dict()
     assert written['shared_sources'][0] == {'name': _STOCK.name, 'sigma_pct': 4.0, 'inputs': ['h0', 'd0']}
-    assert written['titrant_additions'] == {'sigma_pct': 0.8, 'sequential': True}
+    assert written['titrant_additions'] == {'sigma_pct': 0.8, 'sequential': True, 'separate_titrations': True}
     assert ErrorModel.from_dict(json.loads(json.dumps(written))) == errors
+
+
+def test_replicates_read_from_one_titration_survive_a_round_trip_and_a_file_without_them_means_separate():
+    import json
+
+    reads = ErrorModel(additions=AdditionError(0.8, True, separate_titrations=False))
+    assert ErrorModel.from_dict(json.loads(json.dumps(reads.to_dict()))) == reads
+    # A results file that does not say how the replicates were made holds separate titrations.
+    assert ErrorModel.from_dict({'titrant_additions': {'sigma_pct': 0.8, 'sequential': True}}) == ErrorModel(
+        additions=AdditionError(0.8, True, separate_titrations=True)
+    )
 
 
 # -- the random error of each addition ---------------------------------------------
@@ -309,3 +315,28 @@ def test_a_falling_series_cannot_be_sequential_and_the_refusal_names_the_point()
     assert "Choose 'separately prepared samples' or check the order of the data" in message
     # A series that stays level (a repeated point) is no fall.
     perturb_titrant(np.array([0.0, 1e-6, 1e-6, 2e-6]), np.zeros(4), True, None)
+
+
+@pytest.mark.parametrize('stock', [None, _C_T], ids=['no stock', 'stock'])
+@pytest.mark.parametrize('sequential', [True, False], ids=['sequential', 'separate'])
+def test_the_addition_loading_is_the_derivative_of_the_perturbed_series(sequential, stock):
+    """Column j is how far every point moves per unit relative error of addition j: central differences of the series."""
+    x = _in_cuvette(np.cumsum(_ALIQUOTS)) if stock else 1e-6 * np.cumsum(np.array([0.0, 1, 1, 2, 2, 4, 8, 16, 30]))
+    loading = addition_loading(x, sequential, stock)
+
+    h = 1e-6
+    expected = np.column_stack(
+        [
+            (perturb_titrant(x, h * e, sequential, stock) - perturb_titrant(x, -h * e, sequential, stock)) / (2 * h)
+            for e in np.eye(x.size)
+        ]
+    )
+    assert loading == pytest.approx(expected, rel=1e-7, abs=1e-12 * x.max())
+    # Sequential errors reach the later points only; a separate sample carries its own error alone.
+    assert np.array_equal(loading != 0, expected != 0)
+    assert not np.triu(loading, 1).any() and (sequential or not np.tril(loading, -1).any())
+
+
+def test_a_falling_series_has_no_sequential_loading():
+    with pytest.raises(FitRefused, match='point 3'):
+        addition_loading(np.array([0.0, 2e-6, 1e-6]), True, None)

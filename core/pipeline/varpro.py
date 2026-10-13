@@ -45,7 +45,7 @@ parameter the bounded solve holds on a bound there while the best fit leaves it
 free,
 
     m(K)   = constrained Ka + max(0, r(K_hat) - r(K))
-    cut(K) = S_min (1 + m(K) F(level; m(K), n - p) / (n - p))
+    cut(K) = S_min (1 + kappa m(K) F(level; m(K), n - p) / (n - p))
 
 and the interval is ``{k : P_j(k) <= cut}`` at the profile point of k, the other
 binding constant where it minimises Q. ``n - p`` is that of the best fit
@@ -53,6 +53,15 @@ throughout. Wherever the tested Ka pins nothing the best fit leaves free,
 ``m`` is the number of constrained Ka and the cut-off is the constant one of the
 plain F test; where it does, the cut-off steps up, which is conservative against
 the exact mixture of F distributions a bounded parameter follows.
+
+``kappa >= 1`` is the design effect of the tested Ka, one unless the caller
+hands in another (:mod:`core.pipeline.inflation`): how much more the estimate
+of that Ka varies than the residual scatter alone implies, where the point
+weights were read off the replicates or a random error of each titrant
+addition is stated. Under a misspecified variance the likelihood-ratio
+statistic of one parameter is ``kappa`` times a chi-squared variable to first
+order (Kent 1982, Biometrika 69:19), so the F quantile is scaled by it; at
+``kappa = 1`` the cut-off is the plain F test's.
 
 The equilibrium models report a K they have no speciation for as species that
 are not a number, rather than by raising. Such a K has no fit at all, so its
@@ -298,6 +307,9 @@ class KaInterval:
         :data:`SECOND_STEP_LEVEL` the interval claims no lower limit: it is
         open below, at the constant's lower bound. ``None`` for every other
         interval.
+    inflation : float
+        The design effect ``kappa`` the cut-off was widened by
+        (:mod:`core.pipeline.inflation`); one for the plain F test.
     """
 
     low: float
@@ -312,6 +324,7 @@ class KaInterval:
     limited_by_low: str = ''
     limited_by_high: str = ''
     one_step_p: float | None = None
+    inflation: float = 1.0
 
     def to_dict(self) -> dict:
         """Every field, as written to a results file."""
@@ -925,15 +938,23 @@ class Projection:
         if self.signals.shape[0] != 1:
             raise ValueError(f'{what} describes one signal; this projection holds {self.signals.shape[0]} rows.')
 
-    def threshold(self, fit: ProjectedFit, level: float = LEVEL, n_constrained: int = 1, released: int = 0) -> float:
+    def threshold(
+        self,
+        fit: ProjectedFit,
+        level: float = LEVEL,
+        n_constrained: int = 1,
+        released: int = 0,
+        inflation: float = 1.0,
+    ) -> float:
         """Objective cut-off of the F test on a single-row projection.
 
-        ``S_min (1 + m F(level; m, n - p) / (n - p))`` with ``m`` the number of
-        constrained binding constants (one for an interval, two for the joint
-        region) plus *released*, the parameters the best fit fits and the fit
-        at the tested Ka holds on a bound; ``p`` what the best fit fitted
-        (:meth:`n_params`), and ``S_min`` floored at ``_R2_RESOLUTION`` of the
-        total sum of squares.
+        ``S_min (1 + kappa m F(level; m, n - p) / (n - p))`` with ``m`` the
+        number of constrained binding constants (one for an interval, two for
+        the joint region) plus *released*, the parameters the best fit fits and
+        the fit at the tested Ka holds on a bound; ``p`` what the best fit
+        fitted (:meth:`n_params`), ``S_min`` floored at ``_R2_RESOLUTION`` of
+        the total sum of squares, and ``kappa`` the *inflation*, the design
+        effect of :mod:`core.pipeline.inflation` (one: the plain F test).
 
         Raises
         ------
@@ -942,17 +963,22 @@ class Projection:
             model has free — the free binding constants and the rank of the
             free signal columns, wherever the fit put them — so the data leave
             nothing to judge a fit by.
+        ValueError
+            For an *inflation* that is not a finite number of one or more.
         """
         self._require_one_row('A confidence threshold')
+        _require_inflation(inflation)
         _require_dof(self.n_points, fit.n_free_ka + fit.rank)
         dof = self.n_points - self.n_params(fit)
         m = n_constrained + released
-        return self._floored(fit) * (1.0 + m * f_dist.ppf(level, m, dof) / dof)
+        return self._floored(fit) * (1.0 + inflation * m * f_dist.ppf(level, m, dof) / dof)
 
     def cut_off(
-        self, fit: ProjectedFit, level: float = LEVEL, n_constrained: int = 1
+        self, fit: ProjectedFit, level: float = LEVEL, n_constrained: int = 1, inflation: float = 1.0
     ) -> Callable[[FittedParameters], float]:
         """:meth:`threshold` by what the fit at a tested Ka fitted: the cut-off that fit is judged against.
+
+        Every step is widened by the same *inflation*.
 
         *released* is how far the rank of the signal columns that fit left
         inside their bounds falls short of the best fit's, so along the binding
@@ -976,7 +1002,7 @@ class Projection:
         def at(point: FittedParameters) -> float:
             released = max(0, fitted - point.rank)
             if released not in cuts:
-                cuts[released] = self.threshold(fit, level, n_constrained, released)
+                cuts[released] = self.threshold(fit, level, n_constrained, released, inflation)
             return cuts[released]
 
         return at
@@ -1115,8 +1141,14 @@ class Projection:
         grid = np.array(sorted(excess))
         return grid, np.array([excess[ka] for ka in grid.tolist()])
 
-    def interval(self, ka_key: str, fit: ProjectedFit, level: float = LEVEL) -> KaInterval | None:
+    def interval(
+        self, ka_key: str, fit: ProjectedFit, level: float = LEVEL, inflation: float = 1.0
+    ) -> KaInterval | None:
         """Profile-likelihood interval of *ka_key* on a single-row projection; ``None`` when it is pinned.
+
+        *inflation* is the design effect ``kappa`` of *ka_key*
+        (:mod:`core.pipeline.inflation`) that widens the cut-off and the
+        one-step test alike; one gives the plain F test.
 
         Wherever the interval is, the profile is scanned at
         ``_PROFILE_PER_DECADE`` — across the Ka bounds when *ka_key* is the only
@@ -1149,7 +1181,7 @@ class Projection:
         self._require_one_row('A confidence interval')
         if ka_key not in self.free_ka:
             return None
-        cut = self.cut_off(fit, level)
+        cut = self.cut_off(fit, level, inflation=inflation)
 
         def excess(inner_per_decade: int) -> Callable[[float], float]:
             def at(ka: float) -> float:
@@ -1183,12 +1215,13 @@ class Projection:
             unsolvable_high=unsolvable_high,
             limited_by_low=limited_by_low,
             limited_by_high=limited_by_high,
+            inflation=inflation,
         )
         if ka_key == self.second_step:
-            return _with_one_step_test(interval, self.one_step_p(fit), self.ka_bounds[ka_key][0])
+            return _with_one_step_test(interval, self.one_step_p(fit, inflation), self.ka_bounds[ka_key][0])
         return interval
 
-    def one_step_p(self, fit: ProjectedFit) -> float | None:
+    def one_step_p(self, fit: ProjectedFit, inflation: float = 1.0) -> float | None:
         """p-value of the model without the second binding step against *fit*; ``None`` unless that constant is free.
 
         The second step's constant is :attr:`second_step`, the second binding
@@ -1201,16 +1234,18 @@ class Projection:
         interval (:meth:`cut_off`) at that one profile point: ``m`` is the
         constant plus every signal parameter the fit fits and the solve at
         zero holds on a bound, among them the coefficient of the complex that
-        no longer forms, and ``p = sf((P(0) / S_min - 1) (n - p) / m; m,
-        n - p)``.
+        no longer forms, and ``p = sf((P(0) / S_min - 1) (n - p) / (kappa m);
+        m, n - p)`` with ``kappa`` the *inflation* of the interval's cut-off,
+        so the test rejects exactly where ``P(0)`` passes that cut-off.
         """
         self._require_one_row('A one-step test')
+        _require_inflation(inflation)
         if self.second_step not in self.free_ka:
             return None
         _, value, fitted = self.profile_point(self.second_step, 0.0, _INNER_PER_DECADE)
         m = 1 + max(0, self.fitted_parameters(fit.ka).rank - fitted.rank)
         dof = self.n_points - self.n_params(fit)
-        return float(f_dist.sf((value / self._floored(fit) - 1.0) * dof / m, m, dof))
+        return float(f_dist.sf((value / self._floored(fit) - 1.0) * dof / (inflation * m), m, dof))
 
     def _bound_behind(self, ka_key: str, edge: float, cut: Callable[[FittedParameters], float], floor: float) -> str:
         """The other free Ka when its bound, and not the data, is what closes the profile of *ka_key* at *edge*.
@@ -1242,6 +1277,8 @@ def replicate_outliers(
     projection: Projection,
     own_fits: Sequence[ProjectedFit] | None = None,
     level: float = REPLICATE_TEST_LEVEL,
+    inflation: Sequence[float] | None = None,
+    scatter_ssr: Sequence[float] | None = None,
 ) -> ReplicateTest:
     """Rows of *projection* that scatter far more than the others, or need another Ka than the others share.
 
@@ -1289,6 +1326,19 @@ def replicate_outliers(
     Each own residual is floored at ``_R2_RESOLUTION`` of the row's total sum
     of squares, so a row the model reproduces to rounding gets a finite weight.
 
+    Rows that are titrations of their own each carry their own errors of the
+    titrant additions where those are stated, which move a row's own Ka by
+    far more than its scatter does while its residual shows little of it.
+    The binding-constant step then judges row r by ``T_r / (k kappa_r)``, with
+    ``kappa_r`` the design effect of those errors on row r's own Ka
+    (:func:`core.pipeline.inflation.inflation`, its joint form for two Ka):
+    the first-order Rao-Scott correction of an F statistic whose numerator
+    carries more variance than its reference (Rao & Scott 1984, Ann. Stat.
+    12:46), the correction the interval's cut-off makes for the same errors.
+    The same errors leave a residue in each row's residual that differs from
+    row to row and is not scatter, so Cochran's test then compares the rows'
+    residuals with that residue taken out (*scatter_ssr*).
+
     Parameters
     ----------
     projection : Projection
@@ -1300,6 +1350,14 @@ def replicate_outliers(
         per-replicate fit.
     level : float
         Family-wise level of each step.
+    inflation : Sequence[float], optional
+        ``kappa_r`` of every row, each at least one; ones when omitted, and
+        the test is then the one of rows whose binding constants carry their
+        scatter alone.
+    scatter_ssr : Sequence[float], optional
+        What Cochran's test compares for every row, in the units of its own
+        residual ``S_r``; the own residuals themselves when omitted. Floored
+        as they are.
 
     Returns
     -------
@@ -1327,8 +1385,10 @@ def replicate_outliers(
         mask[members] = w[members]
         return nu * projection.fit(mask).objective
 
-    def p_value(extra: float) -> float:
-        return float(f_dist.sf(max(extra - nu, 0.0) / k, k, nu))
+    kappa = np.ones(rows) if inflation is None else np.asarray(inflation, dtype=float)
+
+    def p_value(extra: float, r: int) -> float:
+        return float(f_dist.sf(max(extra - nu, 0.0) / (k * kappa[r]), k, nu))
 
     own_log_ka = np.log10([[fit.ka[key] for key in projection.free_ka] for fit in own_fits])
     deviation = np.abs(own_log_ka - np.median(own_log_ka, axis=0))
@@ -1339,7 +1399,7 @@ def replicate_outliers(
     while True:
         q_clean = q_min(clean)
         rise = {r: q_min(clean + [r]) - q_clean for r in range(rows) if r not in clean}
-        p_values = {r: p_value(extra) for r, extra in rise.items()}
+        p_values = {r: p_value(extra, r) for r, extra in rise.items()}
         joining = [r for r in rise if r not in left and p_values[r] > level / rows]
         if joining:
             clean = sorted(clean + [min(joining, key=rise.get)])
@@ -1347,16 +1407,17 @@ def replicate_outliers(
         if len(rise) >= allowance:
             break
         drop = {r: q_clean - q_min([s for s in clean if s != r]) for r in clean}
-        worst = max(drop, key=drop.get)
-        if p_value(drop[worst]) > level / rows:
+        worst = max(drop, key=drop.get if inflation is None else lambda r: (drop[r] - nu) / kappa[r])
+        if p_value(drop[worst], worst) > level / rows:
             break
         clean.remove(worst)
         left.add(worst)
     shifted = list(p_values)
 
+    compared = own_ssr if scatter_ssr is None else np.maximum(scatter_ssr, _R2_RESOLUTION * projection.ss_tot)
     scatter: dict[int, tuple[float, float]] = {}
     while len(clean) >= REPLICATE_TEST_MIN and len(shifted) + len(scatter) < allowance:
-        variances = own_ssr[clean]
+        variances = compared[clean]
         c = float(variances.max() / variances.sum())
         limit = _cochran_limit(level, len(clean), nu)
         if c <= limit:
@@ -1366,8 +1427,8 @@ def replicate_outliers(
         clean.remove(worst)
     if scatter:
         q_clean = q_min(clean)
-        p_values = {r: p_value(q_min(clean + [r]) - q_clean) for r in shifted}
-    p_values.update({r: p_value(q_clean - q_min([s for s in clean if s != r])) for r in clean})
+        p_values = {r: p_value(q_min(clean + [r]) - q_clean, r) for r in shifted}
+    p_values.update({r: p_value(q_clean - q_min([s for s in clean if s != r]), r) for r in clean})
     return ReplicateTest(excluded=(*shifted, *scatter), p_values=p_values, level=level, tested=True, scatter=scatter)
 
 
@@ -1397,6 +1458,12 @@ def _require_dof(n_points: int, n_params: int) -> int:
             'by giving it the same lower and upper bound under Parameter Bounds, and fit again.'
         )
     return dof
+
+
+def _require_inflation(inflation: float) -> None:
+    """Refuse a design effect that would narrow a cut-off or is not a number."""
+    if not (np.isfinite(inflation) and inflation >= 1.0):
+        raise ValueError(f'The inflation of a cut-off must be a finite number of one or more; got {inflation!r}.')
 
 
 def _with_one_step_test(interval: KaInterval, one_step_p: float, lower_bound: float) -> KaInterval:
