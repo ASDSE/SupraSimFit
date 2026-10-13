@@ -36,7 +36,7 @@ from core.pipeline.reporting import (
 )
 from core.pipeline.sensitivity import SensitivityMode, SensitivityResult
 from core.pipeline.varpro import LEVEL, SECOND_STEP_LEVEL
-from core.units import Q_, Quantity
+from core.units import Quantity
 from gui.plotting.colors import INK_2
 from gui.plotting.labels import (
     NO_UNCERTAINTY,
@@ -64,6 +64,7 @@ from gui.plotting.labels import (
     one_step_sentence,
     own_estimates,
     plain_label,
+    region_sentence,
     replicate_summary,
     stated_additions,
     stated_uncertainty,
@@ -107,9 +108,9 @@ at {_LEVEL_TEXT}). So it answers what the data say about K<sub>a</sub> when the
 inputs are known no better than you stated. With no uncertainty stated, every
 input counts as exact and the interval is conditional on it. A random error of
 each addition you state under <b>Input Uncertainty</b>, and a noise law the
-replicates leave uncertain, widen the interval further: the test then allows for
-a larger spread of the estimate than the scatter of the data alone implies, by
-the factor the line under the table names. The signal parameters get no
+replicates leave uncertain, are allowed for as well: the test then allows for a
+larger spread of the estimate than the scatter of the data alone implies, by the
+factor the line under the table names. The signal parameters get no
 interval: only K<sub>a</sub> is being tested.</p>
 
 <p><b>{_CONDITIONAL_HEADER}</b> &mdash; the same fit and interval with every
@@ -185,21 +186,25 @@ between them measures your noise directly, and the <i>lack-of-fit F test</i>
 asks whether the curve misses their average by more than that scatter allows.
 Where a noise law was read off the replicates &mdash; constant, or growing with
 the signal &mdash; the fit weights its points by that law, and the test&rsquo;s
-p-value is simulated from the fitted curve and the law, in {LOF_BOOTSTRAP_DRAWS} draws: where
-none of them misses the data as far as the curve does, it reads
+p-value is simulated from the fitted curve and the law, in {LOF_BOOTSTRAP_DRAWS} draws, each
+carrying the random error of each addition where you stated one: where none of
+them misses the data as far as the curve does, it reads
 p&nbsp;&le;&nbsp;{1 / (LOF_BOOTSTRAP_DRAWS + 1):g}, the smallest value the simulation can show. With a single signal there is no such measure, and
 the <i>runs test</i> asks instead whether the residuals change sign as often as
-a fit of this model to pure noise would; a curve that misses systematically
-leaves long runs on one side. The test is reported at the fit with the inputs as entered and, where an
-input was free to move, at the fit that moved them.</p>
+a fit of this model to pure noise would &mdash; noise that carries the error of
+each addition where you stated one; a curve that misses systematically leaves
+long runs on one side. The test is reported at the fit with the inputs as
+entered and, where an input was free to move, at the fit that moved them.</p>
 
 <p><b>The inputs, taken together</b> &mdash; <i>q</i> measures how far the fit
 had to move your inputs, in units of the uncertainties you stated, along the
 combinations of them the data can actually see. The data usually see only one or
 two such combinations &mdash; the host concentration and the titrant scale move
 the curve almost alike &mdash; so a large shift on one input says where the fit
-put the correction, <b>not</b> which stock is wrong. Where the data see no
-combination at all, they cannot check your inputs and the line says so.</p>
+put the correction, <b>not</b> which stock is wrong. A stated random error of
+each addition moves the inputs a little as well, and the test allows for that.
+Where the data see no combination at all, they cannot check your inputs and the
+line says so.</p>
 
 <p><b>What the verdict means</b></p>
 <ul>
@@ -259,15 +264,18 @@ uncertainty under <b>Input Uncertainty</b>.</p>
 
 <p><b>Noise</b> &mdash; how large the scatter of your measurements is and how it
 grows with the signal, read from how far your replicates fall from the curve
-each of them traces. The fit uses it to weight the titration points: a point the
-replicates show to be twice as precise counts four times as much. One titration
+each of them traces. The fit uses it to weight the titration points, read at the
+fitted curve: a point the replicates show to be twice as precise counts four
+times as much. One titration
 cannot show how the noise varies, so it is fitted with the noise taken as
 constant, which the row says.</p>
 
 <p><b>Replicates used</b> &mdash; how many of the replicates you switched on
 entered the fit. A replicate is left out when its own best fit needs a
 K<sub>a</sub> the others do not share, or when its points scatter about its own
-fit far more than the others&rsquo; do; the tooltip names each one and why. The
+fit far more than the others&rsquo; do; the tooltip names each one and why.
+Where you stated a random error of each addition and the replicates are separate
+titrations, both checks allow for each replicate&rsquo;s own additions. The
 K<sub>a</sub> test can only notice a replicate whose own data pin K<sub>a</sub> down &mdash;
 if the replicates&rsquo; own K<sub>a</sub> values spread over decades, one that
 disagrees will not stand out.</p>
@@ -1245,6 +1253,7 @@ class FitSummaryWidget(QWidget):
                 if not spec.is_log and spec.one_step_p is not None
             ),
             *widening_sentences(rows, result, fmt_param),
+            region_sentence(result) or '',
         )
 
         legacy = _LEGACY_NOTE if ka_keys and result.intervals is None else ''
@@ -1254,7 +1263,7 @@ class FitSummaryWidget(QWidget):
         self._caption.setVisible(bool(caption))
 
         self._show_diagnostics(result)
-        self._rmse_label.setText(f'{Q_(result.rmse, "au"):.3g~H}')
+        self._rmse_label.setText(f'{fmt_value(result.rmse)} {fmt_unit_html("au")}')
         self._r2_label.setText(fmt_r2(result.r_squared))
         self._noise_label.setText(_noise_row(_NO_NOISE if result.noise is None else result.noise.describe()))
         self._show_replicates_used(result)

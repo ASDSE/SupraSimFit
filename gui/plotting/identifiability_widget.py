@@ -75,6 +75,7 @@ from gui.plotting.labels import (
     plain_label,
     region_sentence,
     verdict_sentence,
+    widening_sentences,
 )
 from gui.plotting.plot_style import DEFAULT_STYLE
 from gui.plotting.sensitivity_widget import _LogKaAxis
@@ -896,31 +897,41 @@ class IdentifiabilityWidget(QWidget):
 
         The point and parameter counts are the fit's own projection's and the
         bounds are the fit's, so they hold for every binding constant alike and
-        are said once for the fit.
+        are said once for the fit. Where a design effect widens a cut-off — a
+        noise law the replicates leave uncertain, a stated random error of each
+        addition — the counts alone no longer give it, and the sentences of
+        :func:`~gui.plotting.labels.widening_sentences` say by how much. A
+        stated error of the additions is said to be allowed for, not to widen
+        the interval: where the noise law widens it already, the interval that
+        allows for both need not be the wider of the two.
         """
         counts = f'{_count(profiles[0].n_points, "data point")} and {_count(profiles[0].n_params, "fitted parameter")}'
         moved = any(profile.aware is not None and not _same_curve(profile.aware) for profile in profiles)
+        additions = ErrorModel.from_dict(self._fit.fit_config or {}).additions if self._fit is not None else None
+        allowed = 'the reported interval allows for the random error of each addition you stated'
         if moved:
-            additions = ErrorModel.from_dict(self._fit.fit_config or {}).additions
             text = (
-                'Every input was free to move within the uncertainty you stated for it, which usually widens '
-                'the interval'
-                + ('; the random error of each addition you stated widens it further' if additions else '')
+                'Each input with a stated uncertainty was free to move within the uncertainty you stated for it, '
+                'which usually widens the interval'
+                + (f', and {allowed}' if additions else '')
                 + f'. Each interval at the entered inputs is worked out from {counts}, and no '
                 'interval reaches further than the parameter bounds this fit was given.'
             )
         elif any(profile.aware is not None for profile in profiles):
             # No input moved: what the reported interval adds is the stated error of each addition.
             text = (
-                'The random error of each addition you stated widens the reported interval beyond the one at the '
-                f'entered inputs, on the same curve. Each interval is worked out from {counts}, and no interval '
-                'reaches further than the parameter bounds this fit was given.'
+                f'{allowed[0].upper()}{allowed[1:]}, on the same curve; the interval without it is given beside it. '
+                f'Each interval is worked out from {counts}, and no interval reaches further than the parameter '
+                'bounds this fit was given.'
             )
         else:
             text = (
                 f'Each interval is worked out from {counts}, and reaches no further than the parameter bounds '
                 'this fit was given.'
             )
+        if self._fit is not None:
+            rows = summarize_parameters(self._fit)
+            text = ' '.join([text, *widening_sentences(rows, self._fit, fmt_param)])
         return f'<span style="color:{INK_2}">{text}</span>'
 
     def _summary_line(

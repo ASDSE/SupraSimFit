@@ -676,12 +676,19 @@ def widening_sentences(rows, result, name) -> list[str]:
     and where the replicates leave the share of the noise law uncertain. The
     conditional interval, at the entered inputs, carries the law's part alone,
     so a law that widened it is named beside the additions; with no additions
-    stated the reported interval's factor is the law's. Each sentence says how
+    stated the reported interval's factor is the law's. Stated additions take
+    over part of the scatter the law's residual part would otherwise carry, so
+    their factor together with the law's can come out at or below the law's
+    alone: the sentence then says the interval allows for both and gives the
+    two factors, and says *widen* only where the reported factor is the larger.
+    It compares factors, not intervals: where an input moved, the reported
+    interval sits at other inputs than the conditional one.
+    Each sentence says how
     much wider in the reader's terms — about the square root of the factor,
     the width of a profile interval growing with the square root of the
     variance it allows for — and what the factor is a factor on. Nothing is
     said of an interval that was not widened. The joint region of a two-step
-    model is said last (:func:`region_sentence`).
+    model is said by :func:`region_sentence`.
 
     Parameters
     ----------
@@ -711,21 +718,27 @@ def widening_sentences(rows, result, name) -> list[str]:
             low, high = noise.share_set
             uncertain = f'share between {low:.2g} and {high:.2g}'
         if additions is not None:
-            causes = f'Random error of each addition ({stated_additions(additions, n_replicates)})'
+            stated = stated_additions(additions, n_replicates)
+            causes = f'Random error of each addition ({stated})'
             if uncertain is None:
                 sentences.append(f'{causes} widens the interval of {label} {how_much}: {meaning}.')
-            else:
+            elif spec.inflation > by_law:
                 sentences.append(
                     f'{causes} and the noise law the replicates leave uncertain ({uncertain}) widen the interval '
                     f'of {label} {how_much}: {meaning}.'
+                )
+            else:
+                sentences.append(
+                    f'The interval of {label} allows for the random error of each addition ({stated}) and for the '
+                    f'noise law the replicates leave uncertain ({uncertain}): {meaning}, no more than the '
+                    f'{by_law:.3g} of the noise law alone, since part of the scatter is put down to the additions.'
                 )
         elif uncertain is not None:
             sentences.append(
                 f'The replicates leave the noise law uncertain ({uncertain}); the interval of {label} is widened '
                 f'{how_much} to hold for every share they allow: {meaning}.'
             )
-    region = region_sentence(result)
-    return sentences if region is None else [*sentences, region]
+    return sentences
 
 
 def region_sentence(result) -> str | None:
@@ -767,10 +780,11 @@ def _escape(text: str) -> str:
     return escape(text, quote=False)
 
 
-#: Below this a p-value is reported as a bound. The references behind the tests
-#: here are Monte-Carlo quadratures — 100 000 draws for the runs test, 200 000
-#: for the conflict statistic — whose own error is 5e-4 to 7e-4 at p = 0.05, so
-#: digits past the third decimal would report the quadrature, not the data.
+#: Below this a p-value is reported as a bound. The references of the runs test
+#: and the conflict statistic are Monte-Carlo quadratures — 100 000 and 200 000
+#: draws — whose own error is 5e-4 to 7e-4 at p = 0.05, so digits past the third
+#: decimal would report the quadrature, not the data. The simulated reference of
+#: the lack-of-fit test has its own floor, which :func:`fmt_misfit` writes.
 _P_FLOOR = 0.001
 
 #: Above this two significant figures round to 1, and ``p = 1`` would read as a
@@ -782,8 +796,9 @@ _P_CEILING = 0.99
 def fmt_p(p: float) -> str:
     """A p-value as every report writes it: ``p = 0.55``, ``p = 0.0012``, ``p < 0.001``, ``p > 0.99``.
 
-    Two significant figures, which is as finely as the references behind these
-    tests are known, and a bound past :data:`_P_FLOOR` and :data:`_P_CEILING`.
+    Two significant figures and a bound past :data:`_P_FLOOR` and
+    :data:`_P_CEILING`. A simulated lack-of-fit p-value takes the values
+    ``k / (LOF_BOOTSTRAP_DRAWS + 1)``, which two figures write exactly.
     """
     if p < _P_FLOOR:
         return f'p < {_P_FLOOR:g}'
@@ -814,9 +829,10 @@ def fmt_stat(value: float) -> str:
 
 
 #: Said after the p-value of a lack-of-fit test whose reference was simulated:
-#: the weights came from the replicates' own scatter, so the F distribution is
-#: not the reference and the test names what is.
-SIMULATED_P = 'simulated from the fitted curve and the noise law'
+#: the weights came from the replicates' own scatter, or an error of each
+#: addition was stated, so the F distribution is not the reference and the test
+#: names what is.
+SIMULATED_P = 'simulated from the fitted curve and the noise law, with any addition error you stated'
 
 
 def fmt_misfit(test, *, named: bool = True) -> str:
@@ -825,9 +841,11 @@ def fmt_misfit(test, *, named: bool = True) -> str:
     ``lack-of-fit F(9, 72) = 0.9, p = 0.55`` for the replicate F test and
     ``runs test: 6 runs, 7.0 expected, p = 0.41`` for the runs test. A
     lack-of-fit p-value read from a simulated reference — the replicates
-    showed the noise law, so the weights are estimated — says so:
+    showed the noise law, so the weights are estimated, or a random error of
+    each addition was stated, which the simulation draws as well — says so:
     ``lack-of-fit F(9, 72) = 0.9, p = 0.55, simulated from the fitted curve and
-    the noise law``. When no simulated ratio reached the observed one, the
+    the noise law, with any addition error you stated``. When no simulated
+    ratio reached the observed one, the
     p-value is the smallest the simulation can show,
     ``1 / (LOF_BOOTSTRAP_DRAWS + 1)``, and is written as the bound it is,
     ``p ≤ 0.005``: the curve may miss the data by far more.

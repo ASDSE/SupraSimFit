@@ -250,7 +250,7 @@ def test_every_control_locks_while_a_run_is_live(qapp):
 
 
 def test_the_help_says_what_one_sample_is_and_where_the_uncertainties_are_set():
-    """Every sample is one exact fit of one signal, drawn from the uncertainties stated for the fit.
+    """Every sample is one complete fit of one signal, drawn from the uncertainties stated for the fit.
 
     The analysis propagates those uncertainties, every draw counted the same;
     the fit's interval also weighs what the data say about the inputs, so the
@@ -259,7 +259,7 @@ def test_the_help_says_what_one_sample_is_and_where_the_uncertainties_are_set():
     from gui.widgets import sensitivity_panel
 
     text = ' '.join(sensitivity_panel._SECTION_HELP_HTML.split())
-    assert 'one exact fit of the averaged signal of the replicates your fit used' in text
+    assert 'one complete, deterministic fit of the averaged signal of the replicates your fit used' in text
     assert 'the same inputs always give the same K<sub>a</sub>' in text
     assert 'the uncertainty you set under <i>Input Uncertainty</i>' in text
     assert 'a propagation of the uncertainties you stated (GUM Supplement 1)' in text

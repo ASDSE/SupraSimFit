@@ -491,7 +491,9 @@ def sobol_design(
 
     Block *j* occupies rows ``j·n`` to ``(j + 1)·n − 1`` of both matrices, with
     ``n = n_base // n_blocks``. Each block is the first ``n`` points of its own
-    scrambled ``2·n_inputs``-dimensional Sobol' sequence, split by columns into
+    scrambled ``2·n_inputs``-dimensional Sobol' sequence — scipy's
+    ``scramble=True``, a left linear matrix scramble followed by a digital
+    random shift (Matoušek 1998, J. Complexity 14:527) — split by columns into
     ``A`` and ``B``: splitting one sequence by columns keeps ``A`` and ``B``
     independent, as the index estimators require, and the independent scrambles
     make the blocks independent replicates of one design, whose spread

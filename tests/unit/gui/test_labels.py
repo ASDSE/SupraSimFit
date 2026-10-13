@@ -668,14 +668,19 @@ class TestFmtMisfit:
                 fmt_stat(value)
 
     def test_a_simulated_reference_is_named_after_the_p_value_it_gave(self):
-        """Weights read from the replicates make F only approximate: the p-value says what it was read against."""
+        """Weights read from the replicates, or a stated error of the additions, make F only approximate.
+
+        The p-value says what it was read against: the simulation draws the noise
+        law and, where one is stated, the error of each addition.
+        """
         from dataclasses import replace
 
         from gui.plotting.labels import fmt_misfit
 
         simulated = replace(_f_test(0.9, 0.55), reference='bootstrap')
         assert fmt_misfit(simulated) == (
-            'lack-of-fit F(9, 72) = 0.9, p = 0.55, simulated from the fitted curve and the noise law'
+            'lack-of-fit F(9, 72) = 0.9, p = 0.55, simulated from the fitted curve and the noise law, '
+            'with any addition error you stated'
         )
 
     def test_a_simulated_p_value_at_the_floor_of_the_simulation_reads_as_a_bound(self):
@@ -687,7 +692,8 @@ class TestFmtMisfit:
 
         floor = replace(_f_test(1680.0, 1.0 / (LOF_BOOTSTRAP_DRAWS + 1)), reference='bootstrap')
         assert fmt_misfit(floor) == (
-            'lack-of-fit F(9, 72) = 1680, p ≤ 0.005, simulated from the fitted curve and the noise law'
+            'lack-of-fit F(9, 72) = 1680, p ≤ 0.005, simulated from the fitted curve and the noise law, '
+            'with any addition error you stated'
         )
         # One draw at or above the ratio is a value of the simulation, and reads as one.
         assert ', p = 0.01, ' in fmt_misfit(replace(floor, p_value=2.0 / (LOF_BOOTSTRAP_DRAWS + 1)))

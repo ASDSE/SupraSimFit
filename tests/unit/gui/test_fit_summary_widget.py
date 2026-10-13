@@ -416,6 +416,22 @@ def test_the_quality_panel_reports_rmse_and_r2(qapp):
     assert widget._r2_label.text() == '0.9980'
 
 
+def test_the_rmse_reads_as_the_screen_and_the_report_write_every_fitted_number(qapp, tmp_path):
+    """Three significant figures with the trailing zero kept and ``×10ⁿ``, never ``e+06``, on screen and in the file.
+
+    1 204 000 to three figures is 1.20×10⁶ and 299.8 is 300: worked out by hand.
+    """
+    from gui.session import export_results_txt
+
+    for rmse, shown in ((1.204e6, '1.20×10⁶ a.u.'), (299.8, '300 a.u.')):
+        result = _result(rmse=rmse)
+        assert _widget(result)._rmse_label.text() == shown
+        path = tmp_path / 'report.txt'
+        export_results_txt([result], path)
+        (line,) = [ln for ln in path.read_text(encoding='utf-8').splitlines() if ln.strip().startswith('RMSE:')]
+        assert line.split(':', 1)[1].strip() == shown
+
+
 def _law(**overrides):
     """A noise law read from replicates, with the shape the overrides ask for."""
     from core.pipeline.noise import NoiseBasis, NoiseLaw

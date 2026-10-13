@@ -38,7 +38,7 @@ Assays</b> (DBA Host&rarr;Dye and DBA Dye&rarr;Host). In IDA and GDA it
 is a <i>known</i> input that you supply in the Assay Configuration
 panel &mdash; those assays fit K<sub>a,guest</sub> instead. A value taken
 from an earlier DBA fit is known to within that fit&rsquo;s own interval:
-state it under <b>Input Uncertainty</b>, as a &plusmn;&thinsp;&sigma; or as
+state it under <b>Input Uncertainty</b>, as a &sigma; or as
 the range itself, and the K<sub>a,guest</sub> interval reported covers that
 uncertainty rather than assuming the number exact.</p>
 
@@ -111,7 +111,8 @@ a.u. (arbitrary signal units).</p>
 <p><b>What It Controls in the Fit</b></p>
 <p>Shifts the whole fitted curve vertically. Because I<sub>0</sub>
 enters additively, it is <b>structurally degenerate</b> with
-I<sub>dye,free</sub>&sdot;[D] when [D]<sub>0</sub> is fixed (DBA). Only
+I<sub>dye,free</sub>&sdot;[D] when [D]<sub>0</sub> is fixed (IDA and DBA
+host-to-dye). Only
 the combination I<sub>0</sub> + I<sub>dye,free</sub>&sdot;[D]<sub>0</sub>
 is physically identifiable in that case.</p>
 
@@ -183,8 +184,8 @@ parameter to recover reliably.</p>
       a plateau that doesn&rsquo;t match the data and the summary says
       I<sub>dye,bound</sub> ended on a bound you entered, widen that
       bound before blaming K<sub>a</sub>.</li>
-  <li>In DBA, its absolute value is under-determined; trust the
-      difference (I<sub>dye,bound</sub>&nbsp;&minus;&nbsp;I<sub>dye,free</sub>)
+  <li>Where the dye concentration is held fixed (IDA, DBA host-to-dye), its
+      absolute value is under-determined; trust the difference (I<sub>dye,bound</sub>&nbsp;&minus;&nbsp;I<sub>dye,free</sub>)
       rather than either coefficient alone.</li>
 </ul>
 """)

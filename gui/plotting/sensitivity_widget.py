@@ -943,13 +943,13 @@ class SensitivityWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setToolTip(
-            '<qt>Spread of the fitted association constant when the input '
-            'concentrations (and any known K<sub>a</sub>) are drawn from the '
-            'uncertainty you set, each draw counted the same (a propagation of the '
-            'stated uncertainties).<br>Sobol indices rank each input by how much '
-            'of that spread it explains; the heatmap maps Ka over two swept '
-            'inputs.<br>Every sample is one exact fit of the averaged signal of the '
-            'replicates the fit used, so the spread comes from the inputs alone.</qt>'
+            '<qt>Spread of the fitted association constant when the inputs are '
+            'drawn from the error sources you stated under Input Uncertainty, each '
+            'draw counted the same (a propagation of the stated uncertainties).<br>'
+            'Sobol indices rank each source by how much of that spread it explains; '
+            'the heatmap maps Ka over two swept inputs.<br>Every sample is one '
+            'complete, deterministic fit of the averaged signal of the replicates '
+            'the fit used, so the spread comes from the inputs alone.</qt>'
         )
         self._style: dict = dict(DEFAULT_STYLE)
         self._result: SensitivityResult | None = None
@@ -1677,7 +1677,7 @@ class SensitivityWidget(QWidget):
         # The tip explains the spread and its interval, which the line carries only while there is one.
         header.setToolTip(
             '<qt>How far the fitted value moves when the inputs move within the uncertainties you stated, '
-            'every draw counted the same, and nothing else changes. The interval is the same 95% jackknife '
+            'every draw counted the same, and nothing else changes. The interval is the same kind of 95% '
             'interval the index whiskers carry: it covers the sampling error of the analysis, not errors in '
             'what you stated.</qt>'
         )

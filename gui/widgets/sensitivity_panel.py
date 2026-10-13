@@ -53,14 +53,14 @@ Each carries pipetting / calibration error, and the fit silently absorbs it by
 shifting the reported K<sub>a</sub>.</p>
 <p>This tool re-runs the fit many times with those inputs drawn from the
 uncertainty you set under <i>Input Uncertainty</i>, and shows the resulting spread
-of K<sub>a</sub> and which input it comes from. Set at least one input there to
+of K<sub>a</sub> and which error source it comes from. Set at least one input there to
 something other than <i>fixed</i>.</p>
 <p>It is a propagation of the uncertainties you stated (GUM Supplement 1): every
 draw counts the same, however well or badly the fit at it follows your data. The
 interval on the Fit Curve tab uses the same uncertainties but also weighs what the
 data say about the inputs, so the two can differ — the spread here is the wider
 where your titration itself pins an input down.</p>
-<p>Every sample is one exact fit of the averaged signal of the replicates your fit
+<p>Every sample is one complete, deterministic fit of the averaged signal of the replicates your fit
 used, so the same inputs always give the same K<sub>a</sub> and the spread you see
 comes from the inputs alone. The sample at no offset at all is the fit at the inputs
 you entered.</p>
@@ -73,12 +73,12 @@ spread and elasticities.</p>
 _MODE_HELP_HTML = """
 <h3>Mode</h3>
 <ul>
-  <li><b>Sensitivity indices</b> — vary every input together and measure how
-      much of the spread in K<sub>a</sub> each one is responsible for. You get
-      a K<sub>a</sub> distribution plus two Sobol indices per input:
-      S<sub>1</sub> (first order), its effect on its own, and S<sub>T</sub>
-      (total), which also counts that input acting in combination with the
-      others.</li>
+  <li><b>Sensitivity indices</b> — vary every error source together and
+      measure how much of the spread in K<sub>a</sub> each one is responsible
+      for. You get a K<sub>a</sub> distribution plus two Sobol indices per
+      source: S<sub>1</sub> (first order), its effect on its own, and
+      S<sub>T</sub> (total), which also counts that source acting in
+      combination with the others.</li>
   <li><b>Heatmap</b> — sweep two chosen inputs on a regular grid and fit at
       every cell, giving a 2-D K<sub>a</sub> surface.</li>
 </ul>
@@ -87,16 +87,16 @@ An error several inputs share is one source of its own, reported as one item: it
 is what re-making that one stock, or recalibrating that one pipette, would take
 away.</p>
 <p>S<sub>T</sub> covers S<sub>1</sub>, so it cannot really be smaller. Drawn below
-S<sub>1</sub>, the input acts almost entirely on its own: the two are equal to within
+S<sub>1</sub>, the source acts almost entirely on its own: the two are equal to within
 sampling noise, and either can come out on top in any run, at any sample size. Where
-the gap is wider than the whiskers span, take that input's two indices as unreliable.</p>
+the gap is wider than the whiskers span, take that source's two indices as unreliable.</p>
 """
 
 _SAMPLES_HELP_HTML = f"""
 <h3>Sample size</h3>
 <p>How thoroughly the input space is explored. A run fits
-<i>sample size × (k + 2)</i> samples for <i>k</i> inputs that vary, so every step up
-doubles the work.</p>
+<i>sample size × (k + 2)</i> samples for <i>k</i> error sources that vary, plus two
+refits per input for the elasticities, so every step up doubles the work.</p>
 <p>The whisker on each index is its 95% confidence interval. It is built so that
 in about 95 of every 100 analyses it contains the index you would get with
 unlimited samples for the uncertainties you set. A repeat run with fresh samples

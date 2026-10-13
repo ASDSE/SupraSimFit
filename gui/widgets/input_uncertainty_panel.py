@@ -139,8 +139,12 @@ where every point carries the errors of the additions before it as well as its o
 residuals show only part of that: for additions into one cuvette, most of it shifts the
 whole curve the way a different K<sub>a</sub> would. When you state it, the fit works out
 from your σ and the slope of the fitted curve how much more K<sub>a</sub> varies than the
-scatter alone implies, and widens the interval of K<sub>a</sub> by the factor this
-implies, never narrowing it. The result says by how much.</p>
+scatter alone implies, and allows for that factor in the interval of K<sub>a</sub>. Part
+of the scatter is then put down to the additions rather than to noise, so where the
+replicates show a noise law, the interval can come out about as wide as, or slightly
+narrower than, the one without the additions. The result says by what factor. The misfit test, the check of the
+inputs against what you stated and the test of the replicates allow for the same
+error.</p>
 <p>Choose what your replicates are. Replicates made as <i>separate titrations</i> each have
 their own addition errors, and their average carries σ/√<i>m</i> of them for <i>m</i>
 replicates. <i>Repeated reads of one titration</i> share them, and their average carries

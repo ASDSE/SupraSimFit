@@ -52,8 +52,11 @@ One covariance carries both sources, ``Ω(λ) = σ²_PM D̃_λ + G_w``:
 
 The factor is the largest over the shares the replicates accept at 99 %
 (``NoiseLaw.share_set``), the device of Berger & Boos (1994, JASA 89:1012) for
-a nuisance parameter known only to a confidence set, and never below 1: a
-stated error never narrows an interval. Without a law of positive share and
+a nuisance parameter known only to a confidence set, and never below 1, so no
+cut-off is tighter than the plain F test's. It is not monotone in what is
+stated: with additions the residual variance beside them is ``σ²_PM <= σ̂²``,
+so a factor that carries a law and additions can come out below the factor of
+the law alone, which the conditional interval carries. Without a law of positive share and
 without additions every factor is exactly 1.0, computed from nothing, so the
 cut-off multiplies by 1.0 and the interval is the profile's own to the last bit.
 """

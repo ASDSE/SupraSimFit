@@ -66,7 +66,8 @@ DIAGNOSTIC_LEVEL = round(1 - LEVEL, 12)
 _INFORMED_WEIGHT = 0.01
 
 #: Draws of the parametric bootstrap that is the lack-of-fit test's reference
-#: when the noise law was read off the replicates. The Monte-Carlo p-value
+#: when the noise law was read off the replicates or a random error of each
+#: titrant addition is stated. The Monte-Carlo p-value
 #: ``(1 + #{F* >= F}) / (B + 1)`` takes the values ``k / (B + 1)``, and a test
 #: that rejects at ``p <= alpha`` — the rule :func:`verdict` applies — is exact
 #: at ``alpha`` whenever ``(B + 1)·alpha`` is an integer and the reference is
@@ -119,7 +120,8 @@ class MisfitTest:
     reference : str
         What the p-value is read from: for the F ratio ``'F'``, the F
         distribution on *dof*, or ``'bootstrap'``, the parametric bootstrap of
-        :func:`lack_of_fit` for weights read off the same replicates; for the
+        :func:`lack_of_fit` for weights read off the same replicates or a stated
+        random error of each addition; for the
         runs test ``'simulated'``, the runs the linearised fit leaves of
         simulated pure noise (:func:`runs_test`).
     """

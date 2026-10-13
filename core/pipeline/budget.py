@@ -199,7 +199,8 @@ class WhatIf:
 #: the cross-check is less certain than the first-order formula it checks (the
 #: `what-if-accuracy` check measures the formula's relative error against a second
 #: analysis at the reduced uncertainty at an rms of 5–15 %, the re-weighted
-#: value's above 200 effective samples at 0.9–1.5 %).
+#: value's above 200 effective samples at 0.9–1.5 % over the analyses in
+#: which no fit ran to a bound of the Ka box).
 _MIN_EFFECTIVE_SAMPLES = 200
 
 

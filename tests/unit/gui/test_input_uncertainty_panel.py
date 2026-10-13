@@ -199,8 +199,12 @@ def test_the_help_tells_an_input_own_error_from_a_shared_one_and_says_what_each_
     assert 'take their errors to be unrelated' not in text
     # A binding constant measured with a shared stock moves the other way from the concentrations made from it.
     assert 'by the same percentage the other way' in text
-    # The additions reach the interval of a fit, which they only ever widen.
-    assert 'widens the interval of K<sub>a</sub> by the factor this implies, never narrowing it' in text
+    # The additions reach the interval of a fit. With a noise law of the replicates the interval allowing
+    # for both can come out no wider than the one at the law alone, so no promise to widen is made.
+    assert 'allows for that factor in the interval of K<sub>a</sub>' in text
+    assert 'about as wide as, or slightly narrower than, the one without the additions' in text
+    assert 'widens the interval of K<sub>a</sub>' not in text
+    assert 'allow for the same error' in text
     assert 'does not include the random error of each addition' not in text
     assert 'Sensitivity analysis only' not in text
     # What the σ means with replicates, for each of the two kinds the user can state.

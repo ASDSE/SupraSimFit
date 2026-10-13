@@ -48,6 +48,7 @@ from gui.plotting.labels import (
     offset_note,
     one_step_sentence,
     own_estimates,
+    region_sentence,
     replicate_summary,
     stated_additions,
     stated_uncertainty,
@@ -290,7 +291,7 @@ def _input_uncertainty_block(result: FitResult) -> list[str]:
         lines.extend(
             _wrapped(
                 'The random error of each addition moves every point along the titrant axis rather than one '
-                'input; the interval is widened by the factor it implies, as said under FITTED PARAMETERS.'
+                'input; the interval allows for it by the factor said under FITTED PARAMETERS.'
             )
         )
     lines.append('')
@@ -831,7 +832,7 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 'data cannot tell apart from that fit, cut from the fit’s own profile by an F test. Where an '
                 'input was given an uncertainty, the fit was free to move it inside that uncertainty and the '
                 'interval covers that freedom. A stated random error of each addition, and a noise law the '
-                'replicates leave uncertain, widen the interval by the factor said below the table.'
+                'replicates leave uncertain, are allowed for by the factor said below the table.'
             )
         )
         if ka_keys and result.intervals is None:
@@ -907,7 +908,8 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
             if spec.one_step_p is not None:
                 lines.append('')
                 lines.extend(_wrapped(one_step_sentence(spec.key, spec.one_step_p)))
-        for sentence in widening_sentences(specs, result, lambda key: key):
+        region = region_sentence(result)
+        for sentence in [*widening_sentences(specs, result, lambda key: key), *([region] if region else [])]:
             lines.append('')
             lines.extend(_wrapped(sentence))
         for note in (fmt_bound_note(parameters_on_bound(result)), offset_note(result)):
@@ -925,7 +927,7 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
         # Fit quality
         lines.append('FIT QUALITY')
         lines.append('-' * 60)
-        lines.append(f'  RMSE:          {result.rmse:.4g} {fmt_unit_pretty("au")}')
+        lines.append(f'  RMSE:          {fmt_value(result.rmse)} {fmt_unit_pretty("au")}')
         lines.append(f'  R²:            {fmt_r2(result.r_squared)}')
         # A dye-alone calibration is a line fitted by fit_linear_assay, which
         # reads no noise law and needs none.

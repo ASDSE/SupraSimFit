@@ -1448,8 +1448,8 @@ def test_a_stated_error_of_the_additions_draws_the_reported_interval_on_the_same
     text = ' '.join(w._summary.text().split())
     reported = fit.intervals['Ka_guest']
     assert f'95% CI [{fmt_value(reported.low)}, {fmt_value(reported.high)}]' in text
-    assert 'The random error of each addition you stated widens the reported interval' in text
-    assert 'Every input was free to move' not in text
+    assert 'The reported interval allows for the random error of each addition you stated' in text
+    assert 'free to move' not in text
     assert 'Without the error of the additions:' in text
     # One curve and one best fit, not the same curve drawn twice under two names.
     items = w._items['Ka_guest']
@@ -1482,6 +1482,81 @@ def test_renders_a_real_ida_fit_and_its_profile(qapp):
     assert items['best'].getData()[0][0] == pytest.approx(np.log10(profile.best_ka))
     interval = profile.interval
     assert f'95% CI [{fmt_value(interval.low)}, {fmt_value(interval.high)}]' in w._summary.text()
+
+
+def _filtered_demo():
+    """Demo IDA as the guide describes it: the bundled data through Outlier Removal at its defaults."""
+    from core.data_processing.measurement_set import MeasurementSet
+    from core.data_processing.preprocessing import get_step
+    from core.io import load_measurements
+
+    ms = MeasurementSet.from_dataframe(load_measurements('data/IDA_system.txt'))
+    get_step('zscore_replica_filter', {'threshold': 3.5, 'min_replicas': 3})(ms)
+    conditions = {'Ka_dye': Q_(16.8e6, '1/M'), 'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M')}
+    return ms, conditions
+
+
+def test_a_cut_off_below_the_plain_f_tests_says_why(qapp):
+    """The replicates of the demo leave their noise law uncertain, and the tab says what that does to the cut-off.
+
+    The plain F test's cut-off follows from the counts the tab quotes alone:
+    ``R²_cut = 1 - (1 - R²_best)(1 + F(1, n - p)/(n - p))``. Where the drawn
+    cut-off lies below it, the counts no longer explain it, and the reader is
+    told why and by how much.
+    """
+    from scipy.stats import f as f_dist
+
+    from core.assays.ida import IDAAssay
+    from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
+    from core.pipeline.profile import fit_profile
+
+    ms, conditions = _filtered_demo()
+    config = FitConfig(per_replica=False)
+    fit = fit_measurement_set(ms, IDAAssay, conditions, config)
+    profile_set = fit_profile(ms, IDAAssay, conditions, config, **fit.profile_arguments())
+    profile = profile_set.profiles['Ka_guest']
+    dof = profile.n_points - profile.n_params
+    plain = 1.0 - (1.0 - profile.best_r2) * (1.0 + f_dist.ppf(0.95, 1, dof) / dof)
+    assert profile.r2_threshold < plain - 1e-6, 'the demo no longer widens its cut-off: pick data that do'
+
+    w = _widget(fit, profile_set)
+    text = ' '.join(w._summary.text().split())
+    assert 'leave the noise law uncertain' in text
+    assert 'times what the scatter of the data alone implies' in text
+
+
+@pytest.mark.parametrize('sequential, wider', [(True, False), (False, True)])
+def test_the_error_of_the_additions_is_called_wider_only_where_the_interval_is(qapp, sequential, wider):
+    """A stated error of each addition is allowed for in the interval; the tab says *widen* only where it is wider.
+
+    With the noise law already widening the cut-off, the additions take over
+    part of the scatter the law carries, and the interval allowing for both
+    need not be the wider one: on the demo, 3 % sequential additions on
+    repeated reads of one titration leave it narrower than the interval
+    without them, 3 % separate samples make it wider. The tab makes no
+    comparison the two intervals themselves do not bear out.
+    """
+    from core.assays.ida import IDAAssay
+    from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
+    from core.pipeline.inputs import AdditionError, ErrorModel
+    from core.pipeline.profile import fit_profile
+
+    ms, conditions = _filtered_demo()
+    additions = AdditionError(3.0, sequential=sequential, separate_titrations=False)
+    config = FitConfig(per_replica=False, errors=ErrorModel(additions=additions))
+    fit = fit_measurement_set(ms, IDAAssay, conditions, config)
+    profile_set = fit_profile(ms, IDAAssay, conditions, config, **fit.profile_arguments())
+    profile = profile_set.profiles['Ka_guest']
+    reported, without = profile.aware.interval, profile.interval
+    assert (reported.high / reported.low > without.high / without.low) is wider, 'pick additions that do'
+
+    w = _widget(fit, profile_set)
+    text = ' '.join(w._summary.text().split())
+    assert 'The reported interval allows for the random error of each addition you stated' in text
+    assert ('widen' in text) is wider
+    if not wider:
+        assert 'allows for the random error of each addition (3 %, sequential' in text
+        assert 'of the noise law alone, since part of the scatter is put down to the additions' in text
 
 
 def _two_ka_set_with_second(interval: KaInterval):

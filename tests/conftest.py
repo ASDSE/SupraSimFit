@@ -10,8 +10,9 @@ Tolerance Guidelines:
 Parameter Identifiability Notes:
 - Ka (association constant) is always identifiable — it controls curve shape.
 - Signal coefficients (I0, I_dye_free, I_dye_bound) have structural degeneracies
-  in DBA and IDA because the sum [D_free] + [HD] = const (fixed species).
-  Individual signal coefficients are NOT independently recoverable.
+  in IDA and DBA host-to-dye because the sum [D_free] + [HD] = const (the dye is
+  held fixed); there the individual coefficients are not independently
+  recoverable. GDA and DBA dye-to-host titrate the dye and determine each one.
 - I0 is set to 0 in ground truth to reduce the parameter space.
 - Signal coefficient bounds are kept tight (±20% of truth) to constrain the
   degenerate subspace and let Ka be recovered cleanly.

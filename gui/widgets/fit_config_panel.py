@@ -58,7 +58,10 @@ and the ones outside at the end are left out. Starting from that majority means 
 replicates which share a wrong K<sub>a</sub> cannot pull the shared fit their
 way and push a good replicate out instead. The replicates kept are then
 compared for scatter (Cochran&rsquo;s test), and one whose scatter is far larger
-than the others&rsquo; is left out as well.</p>
+than the others&rsquo; is left out as well. Where you stated a random error of each
+addition under <b>Input Uncertainty</b> and the replicates are separate titrations,
+both steps allow for each replicate&rsquo;s own additions, which move its K<sub>a</sub>
+and its points apart from the others&rsquo;.</p>
 <p>Both steps work at a 1&thinsp;% level (the outlier level of
 ISO&nbsp;5725-2): the K<sub>a</sub> step shares it out over the replicates you
 gave, Cochran&rsquo;s test over the replicates still in it. Together they never

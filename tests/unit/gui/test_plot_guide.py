@@ -181,6 +181,19 @@ def test_the_examples_still_describe_the_demo_data():
         assert phrase in identifiability
     assert lo > grid[step + 1], 'the interval no longer ends above the step the guide describes'
 
+    # Why the cut-off sits below the plain F test's: the shares the replicates
+    # allow and the design effect the interval was widened by over them.
+    low_share, high_share = result.noise.share_set
+    for phrase in (
+        f'the {len(result.metadata["active_replica_ids"])} replicates leave the share of proportional noise '
+        f'anywhere between {low_share:.2g} and {high_share:.2g}',
+        f'(variance &times;{interval.inflation:.2f})',
+    ):
+        assert phrase in identifiability
+    # The Readme quotes the noise sentence this fit carries.
+    readme = re.sub(r'\s+', ' ', (_IDA_DATA.parents[1] / 'Readme.md').read_text(encoding='utf-8'))
+    assert f'`{result.noise.describe()}`' in readme
+
     # The headline the Fit Curve and the summary panel quote is the same fit, to the three
     # significant figures every view writes a fitted value with.
     headline = (

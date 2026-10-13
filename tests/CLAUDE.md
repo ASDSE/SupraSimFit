@@ -73,12 +73,17 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
   each p-value a function of its arguments like any other computed number.
 - **Weights of one are no weights.** Where two or more replicates were measured,
   a fit reads a noise law off their scatter (`core.pipeline.noise`) and hands
-  `Projection` one weight per titration point. A single titration, and replicates
-  whose law comes out constant, get exactly `np.ones`: whitening multiplies by
-  1.0, so the fit and its interval are those of an engine without weights *to
-  the last bit*, and so are the diagnostics of a single titration. Tests pin
-  that by comparing the two projections' numbers exactly — `==`, not `approx` —
-  and they are what a change that reorders the arithmetic of the unweighted path
+  `Projection` one weight per titration point; where the law's share of
+  proportional noise is above zero the weights are read off the fitted curve of
+  a first fit and the fit is made once more, and every interval is widened by
+  the design effect of the shares the replicates allow (`core.pipeline.inflation`).
+  A single titration, and replicates whose law comes out constant (share exactly
+  0), get exactly `np.ones` and no refit: whitening multiplies by 1.0, so the fit
+  is that of an engine without weights *to the last bit*; with no error of the
+  additions stated as well, every design effect is exactly 1.0, so the intervals
+  are too, and so are the diagnostics of a single titration. Tests pin that by
+  comparing the two projections' numbers exactly — `==`, not `approx` — and
+  they are what a change that reorders the arithmetic of the unweighted path
   has to answer to. The lack-of-fit p-value of replicates whose law was
   estimated, constant or not, or whose additions carry a stated error, is read
   against a parametric bootstrap seeded from the signals; the F distribution is
@@ -104,29 +109,46 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
   entered inputs* and, when an uncertainty is stated for an input, the
   *input-aware* one that lets the inputs move inside it. Their defining
   properties differ and are tested separately: the conditional edge is where the
-  profile crosses `SSR_min (1 + m F(m, n − p)/(n − p))`; the input-aware edge is
-  where the penalised profile `n log S + z'z` rises by `n log(1 + m F(m, ν)/ν)`
+  profile crosses `SSR_min (1 + κ m F(m, n − p)/(n − p))`; the input-aware edge is
+  where the penalised profile `n log S + z'z` rises by `n log(1 + κ m F(m, ν)/ν)`
   above its minimum, with the effective residual degrees of freedom
-  `ν = n − p − Σw`. `m` is 1 plus the signal parameters the best fit determines
-  and the fit at that Ka holds on a bound, so it is 1 wherever none is. Two
+  `ν = n − p − Σw`. `p` counts what the best fit fitted — the Ka strictly inside
+  their box, the signal columns strictly inside their bounds
+  (`Projection.fitted_parameters`) — and `m` is 1 plus the signal parameters the
+  best fit determines and the fit at that Ka holds on a bound, so it is 1
+  wherever none is. `κ ≥ 1` is the design effect of a noise law of positive share
+  and, on the reported interval, of a stated error of the additions; it is
+  exactly 1 without either. The second
+  constant of a stepwise model has a lower edge only where the one-step model
+  (that constant at exactly zero) is rejected at `SECOND_STEP_LEVEL`. Two
   reductions are worth pinning cheaply: with every input fixed the input-aware
   result *is* the conditional one, and as a stated σ goes to zero the two edges
-  converge. Coverage — the property the interval is for — is a sweep over
-  synthetic datasets with the inputs drawn at their stated uncertainty, and
-  belongs in `tests/integration/`.
+  converge. Coverage — the property the interval is for — is a rate over
+  thousands of synthetic datasets, and the checks in `validation/` measure it
+  (`conditional-coverage`, `input-aware-coverage` and the rest). A test in
+  `tests/integration/` may run a fixed handful of seeds against a loose bound as
+  a smoke check of the same property; it never stands in for the rate, and no
+  document quotes it.
 - **A diagnostic is a rate, not a p-value.** The misfit tests and the conflict
   statistic claim a false-alarm rate at their level and some power against a real
   fault. A unit test pins what is checkable fast — the runs test on residuals of
   one sign, the lack-of-fit F ratio against a hand-computed replicate scatter, a
   verdict read from given test results — and the rates come from the checks in
   `validation/`. Never assert that a single dataset gets a particular verdict
-  because a run once produced it.
+  because a run once produced it. A test the data cannot carry is not run, and
+  `FitDiagnostics.skipped` says which and why — noise-free or identical
+  replicates scatter below what a fit resolves — so for such data pin the skip
+  and its reason, not a rejection.
 - **A conflict names no input.** The statistic judges the stated inputs together,
   so a test may assert that a planted input error raises the statistic, never
   that the shift lands on the input that was planted.
-- **Signal coefficients are degenerate.** In DBA/IDA only `Ka` is identifiable
-  (`I0`, `I_dye_free`, `I_dye_bound` trade off). Test `Ka` recovery and signal
-  reconstruction — never the individual signal coefficients.
+- **Which signal coefficients are degenerate depends on what is titrated.** With
+  the dye held fixed — IDA and DBA host-to-dye — its mass balance ties `I0`,
+  `I_dye_free` and `I_dye_bound`, and only `Ka` is identifiable; with the dye
+  titrated — GDA and DBA dye-to-host — the data determine each coefficient. The
+  engine says which per fit (`FitResult.degenerate_keys`). Test `Ka` recovery and
+  signal reconstruction, and an individual coefficient only where the design
+  determines it.
 - **GUI tests never pop a window.** A widget test that needs real geometry
   (`tabRect()`, child positions, `isVisible()`) has to be laid out, and Qt only
   computes that on `show()`. Set `WA_DontShowOnScreen` before showing: the

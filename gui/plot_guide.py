@@ -119,16 +119,16 @@ under <i>Input Uncertainty</i>. At each K<sub>a</sub> the fit may also move thos
 you stated, so this curve runs at or above the black one and its band &mdash; the interval the app
 reports &mdash; is usually the wider of the two. The black curve and the faint band under it are the
 same profile with every input held exactly as entered. Where you state only the random error of each
-addition, no input moves and there is no second curve: the error widens the cut-off of the one
-curve, and the coloured band &mdash; the interval the app reports &mdash; lies over the faint band
-without it.</li>
+addition, no input moves and there is no second curve: the cut-off of the one curve allows for
+the error, and the coloured band &mdash; the interval the app reports &mdash; is drawn over the faint
+band without it.</li>
 <li>Pair panel (two association constants): log<sub>10</sub> of one against log<sub>10</sub> of the
 other, with the 95&thinsp;% region for the pair filled, the best fit marked, and the two single
 intervals as faint bands. The region is wider than the two bands crossed whenever the two constants
 trade off against each other. This panel holds the inputs as entered, whatever uncertainty you state
 for them; the two single intervals in the panels beside it are the ones that account for that. The
-random error of each addition, where you state one, does widen the region and its two bands, as it
-widens the reported intervals, and a note on the tab says by how much.</li>
+random error of each addition, where you state one, and a noise law the replicates leave uncertain
+do widen the region and its two bands, and a note on the tab says by how much.</li>
 </ul>
 <p>The R&sup2; axis is linear and opens on the peak and the cut-off. Scroll to zoom, drag to pan,
 right-click for View All.</p>
@@ -370,7 +370,9 @@ K<sub>a</sub>, its own R&sup2;, its p-value in the shared-K<sub>a</sub> test, an
 the average or was left out. With three replicates or more, the test starts from the majority whose
 own K<sub>a</sub> lie closest to their median and takes back every other replicate the fit of that
 set does not reject; a replicate that scatters far more about its own curve than the others do is
-left out as well, and the test never leaves out half of them or more. The test can only notice a replicate
+left out as well, and the test never leaves out half of them or more. Where you stated a random error
+of each addition and the replicates are separate titrations, both steps allow for each
+replicate&rsquo;s own additions. The test can only notice a replicate
 whose own data pin K<sub>a</sub> down: where the replicates&rsquo; own K<sub>a</sub> values already
 spread over decades, a replicate that disagrees will not stand out, and the single-replicate line
 under the table is what tells you so.</p>
@@ -380,8 +382,8 @@ your scatter is and how it grows with the signal; <i>Replicates used</i> how man
 you switched on entered the fit.</p>
 <p>The noise law behind that row is read from your replicates: how far each of them falls from the
 curve it traces itself, written as a constant part in signal units plus a part proportional to the
-signal. The fit weights the titration points by it &mdash; a point the replicates show to be twice
-as precise counts four times &mdash; which is why the Identifiability tab calls its axis
+signal. The fit weights the titration points by it, read at the fitted curve &mdash; a point the
+replicates show to be twice as precise counts four times &mdash; which is why the Identifiability tab calls its axis
 <i>weighted R&sup2;</i>: weighted R&sup2; counts each point by that precision, while the R&sup2;
 here counts every point equally. One titration cannot show how the noise varies with the signal, so
 it is fitted with the noise taken as constant, and the row says so. Where the noise really is
@@ -389,7 +391,8 @@ proportional to the signal, that costs precision at the low end of the curve and
 somewhat wider than replicates would have earned.</p>
 <p><b>Model and inputs</b>: whether the curve misses the data by more than the replicates&rsquo; own
 scatter allows (where they showed a noise law, its p-value is simulated from the fitted curve and that
-law; with one signal, whether the residuals change sign as often as noise would),
+law; with one signal, whether the residuals change sign as often as noise would; either way with the
+random error of each addition, where you stated one),
 where the fit put each input it was free to move and how far that is against what you stated, and a
 sentence saying what the two together mean and what to check. The shifts say where the correction
 landed, not which input is wrong: several of them move the curve almost alike.</p>

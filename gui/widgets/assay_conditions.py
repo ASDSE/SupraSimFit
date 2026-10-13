@@ -37,7 +37,8 @@ class ConditionField:
         ``"concentration"`` → nM / µM / mM / M selector (default µM),
         ``"binding_constant"`` → M⁻¹ selector,
         ``""`` → no selector, plain spinbox.
-        Exact choices/defaults are derived from ``core.units.CONDITION_UNITS``.
+        The choices and the default of each are listed in
+        ``_UNIT_TYPE_CHOICES`` in ``gui/widgets/assay_config_panel.py``.
     """
 
     key: str

@@ -1373,7 +1373,7 @@ def replicate_outliers(
        of the subset; the search then resumes. The rows outside A at the end
        are left out.
     2. **Scatter** — Cochran's test (Cochran 1941, Ann. Eugen. 11:47;
-       ISO 5725-2:2019, 7.3.3) on the own variances of the rows kept: the
+       ISO 5725-2:2019, 8.3.4) on the own variances of the rows kept: the
        largest is left out when ``C = s_max² / sum_r s_r²`` exceeds
        ``1 / (1 + (p - 1) / F⁻¹(1 - level/p; nu, (p - 1) nu))`` for the ``p``
        rows still in — the Bonferroni bound, which reproduces Cochran's tables

@@ -192,10 +192,11 @@ linear combination.</p>
      I<sub>dye,bound</sub> &middot; [HD]</i>
 </p>
 
-<p><b>Structural Degeneracy</b></p>
-<p>As with DBA H&rarr;D, only <i>K<sub>a,dye</sub></i> is strictly
-identifiable; the signal coefficients enter the fit in a
-degenerate linear combination.</p>
+<p><b>Signal Coefficients</b></p>
+<p>Unlike DBA H&rarr;D, the dye concentration changes along the titration,
+so the data can determine each signal coefficient as well as
+<i>K<sub>a,dye</sub></i>. Where a design still fixes only a combination of
+them, the summary marks those coefficients with *.</p>
 
 <p><b>Known Conditions</b></p>
 <p>The fixed host concentration [H]<sub>0</sub> is the one condition you supply,
@@ -240,9 +241,10 @@ aggregation, inner-filter effects, or detector saturation.</p>
 <p>The fit produced by this assay is reused downstream by the
 <i>Parameter Bounds</i> panel: tick <b>Use dye-alone priors for signal
 bounds</b> and load your calibration file to clamp I<sub>0</sub> and
-I<sub>dye,free</sub> during subsequent IDA/DBA/GDA fits. This breaks the
-structural degeneracy in the signal coefficients and usually improves
-K<sub>a</sub> recovery.</p>
+I<sub>dye,free</sub> during subsequent IDA/DBA/GDA fits. Where the dye is
+held fixed (IDA, DBA host-to-dye) this breaks the structural degeneracy in
+the signal coefficients, and in any of these assays it can narrow the
+K<sub>a</sub> interval.</p>
 """
 
 _DBA_HG2_HTML = """

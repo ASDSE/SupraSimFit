@@ -41,13 +41,14 @@ from a prior <b>Dye Alone</b> calibration. The window is the calibration
 result &plusmn;&nbsp;20&nbsp;%.</p>
 
 <p><b>Why It Helps the Fit</b></p>
-<p>In IDA, DBA and GDA the three signal coefficients
-(I<sub>0</sub>, I<sub>dye,free</sub>, I<sub>dye,bound</sub>) are partially
-degenerate &mdash; many combinations give nearly the same curve, so the fit
-reports them starred: only their combination is determined. Confining two of
-them to what the dye-alone experiment measured breaks that degeneracy, which
-makes all three coefficients meaningful on their own and narrows the
-confidence interval of the association constant.</p>
+<p>Where the dye concentration is held fixed &mdash; IDA and DBA host-to-dye
+&mdash; the three signal coefficients (I<sub>0</sub>, I<sub>dye,free</sub>,
+I<sub>dye,bound</sub>) are degenerate: many combinations give the same curve, so
+the fit reports them starred, and only their combination is determined. Where
+the dye is titrated, the data can determine each one. Confining two of them to
+what the dye-alone experiment measured breaks that degeneracy, which makes all
+three coefficients meaningful on their own and can narrow the confidence
+interval of the association constant.</p>
 
 <p><b>The Math</b></p>
 <p>A dye-alone fit gives
@@ -189,9 +190,10 @@ automatically.</p>
 <p>The confidence interval on the Identifiability tab is read inside these
 bounds, and an end that reaches one is reported as open rather than as a
 measured limit. The interval holds if the model is right, the conditions you
-entered are right, and the scatter is independent from point to point and of
-the same size at every point; it says nothing about an error in any of
-those.</p>
+entered are right to within the uncertainty you stated for them under
+<b>Input Uncertainty</b>, and the scatter is independent from point to point
+and as large at each point as the noise law under Fit Quality says; it says
+nothing about an error in any of those.</p>
 """
 
 
