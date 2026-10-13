@@ -47,7 +47,7 @@ from typing import Sequence
 import numpy as np
 from scipy.stats import f as f_dist
 
-from core.pipeline.inflation import paule_mandel
+from core.pipeline.inflation import paule_mandel, residual_space
 from core.pipeline.noise import _SHARE_NODES, NoiseLaw, _read_share, _scatter, _scattering_points, replicate_scatter
 from core.pipeline.varpro import _R2_RESOLUTION, _RANK_RTOL, LEVEL, _norms
 
@@ -446,10 +446,10 @@ def _noise_fraction(
     """
     root = np.sqrt(weights)
     columns = root[:, np.newaxis] * np.column_stack([np.ones(mean.size), mean])
-    rest = np.linalg.svd(columns, full_matrices=True)[0][:, 2:]
-    loading = rest.T @ (root[:, np.newaxis] * np.asarray(additions.loading, dtype=float))
+    loading = root[:, np.newaxis] * np.asarray(additions.loading, dtype=float)
     added = additions.sigma**2 * (loading @ loading.T)
-    return paule_mandel(scatter @ rest, added, pure_error, dof) / pure_error
+    beside, _ = paule_mandel([(scatter, residual_space(columns, 2), added)], dof, pure_error)
+    return beside / pure_error
 
 
 def runs_test(
@@ -550,25 +550,19 @@ def addition_noise_covariance(
     *loading* ``H`` is the change of the signal at every point per unit
     relative error of every addition and *sigma* ``s`` the relative standard
     deviation of one addition; ``G = s² H H'`` is what the additions add.
-    ``σ²`` is the noise beside them, the Paule-Mandel root (Paule and Mandel
-    1982, J. Res. NBS 87:377; :func:`~core.pipeline.inflation.paule_mandel`)
-    on the residual space: with ``Q`` an orthonormal basis of the complement
-    of the *n_params* leading directions of *design*, every column scaled to
-    unit length, the root of
+    ``σ²`` is the noise beside them, the Paule-Mandel root on the residual
+    space (:func:`~core.pipeline.inflation.paule_mandel`, the one estimate the
+    interval's design effect and Cochran's test read as well): with ``Q`` an
+    orthonormal basis of the complement of the *n_params* leading directions
+    of *design*, every column scaled to unit length, the root of
 
         (Q'r)' (σ² I + Q'G Q)⁻¹ (Q'r) = n - p,
 
-    between ``1e-12 σ̂²`` and ``σ̂² = r'r / (n - p)``. In the linearised model
-    ``Q'r`` is ``Q'`` of the noise and the addition offsets alone, whatever the
-    fit did, so the left side is chi-squared on ``n - p`` degrees of freedom at
-    the true ``σ²``. The root has to be taken there: an error of the additions
-    moves the curve much as another Ka would, the fit follows most of it, and
-    the remainder lies along ``(I - P) H``, which ``G`` taken whole hardly
-    weighs down; the remainder then counts as noise, the root comes out at
-    several times the noise where the additions dominate it, and the runs
-    reference drawn with it is close to independent noise and rejects 8 to 11 %
-    of consistent fits at the 5 % level (3 % additions, noise 0.2 % of the
-    signal range, 12 points).
+    between ``1e-12 σ̂²`` and ``σ̂² = r'r / (n - p)``. A root read on the whole
+    residual would count the part of the additions' effect the fit leaves as
+    noise, and the runs reference drawn with it would be close to independent
+    noise and reject 8 to 11 % of consistent fits at the 5 % level (3 %
+    additions, noise 0.2 % of the signal range, 12 points).
 
     Parameters
     ----------
@@ -604,8 +598,8 @@ def addition_noise_covariance(
         raise ValueError(f'The noise beside the additions needs more points ({n}) than fitted parameters ({n_params}).')
     added = sigma**2 * (h @ h.T)
     norms = np.linalg.norm(columns, axis=0)
-    rest = np.linalg.svd(columns / np.where(norms > 0.0, norms, 1.0), full_matrices=True)[0][:, n_params:]
-    beside = paule_mandel(rest.T @ r, rest.T @ added @ rest, float(r @ r) / dof, dof)
+    rest = residual_space(columns / np.where(norms > 0.0, norms, 1.0), n_params)
+    beside, _ = paule_mandel([(r, rest, added)], dof, float(r @ r) / dof)
     return beside * np.eye(n) + added
 
 

@@ -6,7 +6,8 @@
 - The additions part against an independent computation of the closed form
   ``(σ²_PM c_kk + e'MGM'e) / (σ̂² c_kk)``: the addition loading by central
   differences of the perturbed series through the forward model, the
-  Paule-Mandel root by a dense solve, the estimator from the full Jacobian with
+  Paule-Mandel root on the null space of the Jacobian's transpose by a dense
+  solve, the estimator from the full Jacobian with
   the Ka's column taken by index. The law part against the sandwich
   ``(M D M')_kk / (σ̄² c_kk)`` of that same full Jacobian, the largest over the
   accepted shares.
@@ -24,14 +25,16 @@
   statistic, which reads the same shifts against a wider null; and the
   replicate test of separate titrations, whose Cochran step compares each
   replicate's residual with its own addition residue taken out — exactly the
-  residual where there is none — and which, with both steps corrected, stops
-  leaving out replicates that agree.
+  residual where there is none, and against a dense solve of the root pooled
+  over every replicate's residual space where there is — and which, with both
+  steps corrected, stops leaving out replicates that agree.
 """
 
 from dataclasses import replace
 
 import numpy as np
 import pytest
+from scipy.linalg import null_space
 from scipy.optimize import brentq
 
 from core.assays import ASSAY_CLASSES
@@ -123,6 +126,24 @@ def _addition_covariance(projection, fit, sigma, sequential):
     return sigma**2 * whitened @ whitened.T, loading
 
 
+def _residual_space_root(jacobian, residual, added, variance):
+    """The noise variance beside *added* read on the residual space, dense, within ``[1e-12 σ̂², σ̂²]``.
+
+    The root of ``(Q'r)'(σ² I + Q'GQ)⁻¹ Q'r = n - p``, ``Q`` an orthonormal
+    basis of the null space of the Jacobian's transpose.
+    """
+    rest = null_space(jacobian.T)
+    projected, covariance = rest.T @ residual, rest.T @ added @ rest
+    dof = rest.shape[1]
+
+    def excess(s2):
+        return projected @ np.linalg.solve(s2 * np.eye(dof) + covariance, projected) - dof
+
+    if excess(1e-12 * variance) <= 0:
+        return 1e-12 * variance
+    return brentq(excess, 1e-12 * variance, variance, xtol=1e-14 * variance)
+
+
 def _closed_forms(projection, fit, sigma=None, sequential=True, shapes=()):
     """Each free Ka's additions factor ``(σ²_PM c + e'MGM'e)/(σ̂² c)`` and law factors ``(M D M')/(σ̄² c)``."""
     jacobian, n_signal = _jacobian(projection, fit)
@@ -144,12 +165,7 @@ def _closed_forms(projection, fit, sigma=None, sequential=True, shapes=()):
         found = {}
         if sigma is not None:
             added, _ = _addition_covariance(projection, fit, sigma, sequential)
-            pm = brentq(
-                lambda s2: residual @ np.linalg.solve(s2 * np.eye(n) + added, residual) - (n - p),
-                1e-12 * variance,
-                variance,
-                xtol=1e-14 * variance,
-            )
+            pm = _residual_space_root(jacobian, residual, added, variance)
             found['additions'] = (pm * c + e @ estimator @ added @ estimator.T @ e) / (variance * c)
         found['law'] = [
             (e @ estimator @ np.diag(d) @ estimator.T @ e) / (np.sum((1 - leverage) * d) / (n - p) * c) for d in shapes
@@ -267,9 +283,7 @@ def test_the_joint_factor_is_the_mean_eigenvalue_and_lies_in_the_range_of_the_pe
         projection.signals[0] - projection._design(fit.ka) @ fit.coefficients[0]
     )
     variance = residual @ residual / (n - p)
-    pm = brentq(
-        lambda s2: residual @ np.linalg.solve(s2 * np.eye(n) + added, residual) - (n - p), 1e-12 * variance, variance
-    )
+    pm = _residual_space_root(jacobian, residual, added, variance)
     block = slice(n_signal, n_signal + 2)
     model = variance * inverse[block, block]
     sandwich = (estimator @ (pm * np.eye(n) + added) @ estimator.T)[block, block]
@@ -380,9 +394,9 @@ def _separate_titrations(seed, m=4):
     return projection, bounds, [projection.fit(np.eye(m)[r]) for r in range(m)]
 
 
-def test_without_addition_errors_the_scatter_cochran_compares_is_each_replicates_own_residual():
-    projection, _, own = _separate_titrations(5)
-    alone = [
+def _alone(projection, own):
+    """Every replicate's single-row projection and its own fit."""
+    return [
         (
             Projection(projection.assay, projection.assay.get_default_bounds(), signals=projection.signals[r : r + 1]),
             replace(
@@ -394,8 +408,36 @@ def test_without_addition_errors_the_scatter_cochran_compares_is_each_replicates
         )
         for r, fit in enumerate(own)
     ]
-    found = replicate_scatter_ssr(alone, AdditionError(0.0, sequential=True))
+
+
+def test_without_addition_errors_the_scatter_cochran_compares_is_each_replicates_own_residual():
+    projection, _, own = _separate_titrations(5)
+    found = replicate_scatter_ssr(_alone(projection, own), AdditionError(0.0, sequential=True))
     assert found == pytest.approx([float(fit.row_ssr[r]) for r, fit in enumerate(own)], rel=1e-9)
+
+
+def test_with_addition_errors_cochran_compares_each_residual_on_its_residual_space_at_the_pooled_root():
+    """``σ² t_r`` with ``σ²`` the root of ``sum_r t_r(σ²) = sum_r (n - p_r)``, every part by a dense solve."""
+    projection, _, own = _separate_titrations(5)
+    alone = _alone(projection, own)
+    parts = []
+    for single, fit in alone:
+        jacobian, _ = _jacobian(single, fit)
+        jacobian = jacobian / np.linalg.norm(jacobian, axis=0)
+        residual = np.sqrt(single.point_weights) * (single.signals[0] - single._design(fit.ka) @ fit.coefficients[0])
+        added, _ = _addition_covariance(single, fit, 0.03, True)
+        rest = null_space(jacobian.T)
+        parts.append((rest.T @ residual, rest.T @ added @ rest, residual @ residual / rest.shape[1]))
+    dof = sum(projected.size for projected, _, _ in parts)
+
+    def form(s2, projected, covariance):
+        return projected @ np.linalg.solve(s2 * np.eye(projected.size) + covariance, projected)
+
+    low, high = min(v for _, _, v in parts), max(v for _, _, v in parts)
+    root = brentq(lambda s2: sum(form(s2, q, c) for q, c, _ in parts) - dof, 1e-12 * low, high, xtol=1e-14 * low)
+    found = replicate_scatter_ssr(alone, _SEQUENTIAL)
+    assert found != pytest.approx([float(fit.row_ssr[r]) for r, fit in enumerate(own)], rel=1e-2)
+    assert found == pytest.approx([root * form(root, q, c) for q, c, _ in parts], rel=1e-6)
 
 
 def test_the_replicate_test_keeps_separate_titrations_whose_own_additions_move_them_apart():

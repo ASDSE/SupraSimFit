@@ -39,10 +39,11 @@ One covariance carries both sources, ``Ω(λ) = σ²_PM D̃_λ + G_w``:
   points, ``H = diag(f') L`` (:func:`addition_signal_loading`), ``s`` the
   relative error of one addition, and ``s²`` divided by the number of
   replicates averaged when each is a titration of its own.
-- ``σ²_PM`` is the residual variance beside it: the root of
-  ``r' (σ² I + G_w)⁻¹ r = n - p`` on the whitened residual ``r`` (Paule &
-  Mandel 1982, J. Res. NBS 87:377), between ``10⁻¹² σ̂²`` (the numerical zero
-  it is truncated to) and ``σ̂²``, which it is without additions.
+- ``σ²_PM`` is the residual variance beside it, read on the residual space
+  (:func:`paule_mandel`): the root of ``(N'r)' (σ² I + N' G_w N)⁻¹ (N'r) = n - p``
+  on the whitened residual ``r``, ``N`` an orthonormal basis of the complement
+  of ``[C | K]``, between ``10⁻¹² σ̂²`` (the numerical zero it is truncated
+  to) and ``σ̂²``, which it is without additions.
 - ``D_λ = g(λ) / g(λ̂)`` is the variance of every point under the share ``λ``
   over the variance the weights assume, and ``D̃_λ`` is it scaled so that
   ``tr((I - H_J) D̃_λ) = n - p``: the residual variance ``σ²_PM`` the fit
@@ -70,7 +71,14 @@ from core.pipeline.noise import NoiseLaw
 from core.pipeline.varpro import ProjectedFit, Projection
 from core.units import Q_
 
-__all__ = ['addition_signal_loading', 'inflation', 'joint_inflation', 'replicate_scatter_ssr', 'paule_mandel']
+__all__ = [
+    'addition_signal_loading',
+    'inflation',
+    'joint_inflation',
+    'paule_mandel',
+    'replicate_scatter_ssr',
+    'residual_space',
+]
 
 # Step of the central difference of a Ka column, in decades: far below the
 # curvature of any registered model in log Ka, far above rounding.
@@ -247,7 +255,7 @@ def replicate_scatter_ssr(
     is a chi-squared variable on the ``n - p_r`` residual degrees of freedom
     in the linearised model, whatever ``G_r``; ``σ²`` is the pooled root of
     ``sum_r t_r(σ²) = sum_r (n - p_r)``, the Paule-Mandel equation of all the
-    replicates together (Paule & Mandel 1982), between ``_PM_FLOOR`` of the
+    replicates together (:func:`paule_mandel`), between ``_PM_FLOOR`` of the
     smallest residual variance and the largest. Cochran's test compares the
     ``t_r``, written back in the units of a residual sum of squares as
     ``σ² t_r``.
@@ -268,7 +276,7 @@ def replicate_scatter_ssr(
         One value per replicate; ``None`` when one of them has no free Ka, no
         residual degree of freedom or no finite residual.
     """
-    parts = []
+    parts, variances = [], []
     for projection, fit in rows:
         found = _linearised(projection, fit)
         if found is None:
@@ -276,25 +284,11 @@ def replicate_scatter_ssr(
         residual, whiten, _, _, span, variance = found
         loading = whiten[:, np.newaxis] * addition_signal_loading(projection, fit.ka, None, additions, titrant_stock)
         added = (additions.sigma_pct / 100.0) ** 2 * (loading @ loading.T)
-        rest = np.linalg.svd(span, full_matrices=True)[0][:, span.shape[1] :]
-        values, vectors = np.linalg.eigh(rest.T @ added @ rest)
-        parts.append(((vectors.T @ (rest.T @ residual)) ** 2, np.maximum(values, 0.0), variance))
-    dof = sum(projected.size for projected, _, _ in parts)
-
-    def excess(log_variance: float) -> float:
-        noise = np.exp(log_variance)
-        return sum(float(np.sum(projected / (noise + values))) for projected, values, _ in parts) - dof
-
-    high = np.log(max(variance for _, _, variance in parts))
-    low = np.log(min(variance for _, _, variance in parts)) + np.log(_PM_FLOOR)
-    if excess(high) >= 0:
-        log_noise = high
-    elif excess(low) <= 0:
-        log_noise = low
-    else:
-        log_noise = brentq(excess, low, high, xtol=1e-12)
-    noise = float(np.exp(log_noise))
-    return [noise * float(np.sum(projected / (noise + values))) for projected, values, _ in parts]
+        parts.append((residual, residual_space(span, span.shape[1]), added))
+        variances.append(variance)
+    dof = sum(rest.shape[1] for _, rest, _ in parts)
+    noise, forms = paule_mandel(parts, dof, max(variances), min(variances))
+    return [noise * form for form in forms]
 
 
 def _linearised(
@@ -377,7 +371,7 @@ def _factors(
         divisor = n_replicates if additions.separate_titrations else 1
         loading = whiten[:, np.newaxis] * addition_signal_loading(projection, fit.ka, None, additions, titrant_stock)
         added = (additions.sigma_pct / 100.0) ** 2 / divisor * (loading @ loading.T)
-        beside = paule_mandel(residual, added, variance, n - p)
+        beside, _ = paule_mandel([(residual, residual_space(span, p), added)], n - p, variance)
 
     signal = projection.signals[0] if curve is None else np.asarray(curve, dtype=float)
     sandwich = []
@@ -409,28 +403,69 @@ def _basis(columns: np.ndarray) -> np.ndarray:
     return u[:, : int(np.sum(s > s[0] * _RANK_RTOL))] if s[0] > 0 else np.zeros((columns.shape[0], 0))
 
 
-def paule_mandel(residual: np.ndarray, added: np.ndarray, variance: float, dof: int) -> float:
-    """The residual variance ``σ²`` beside a known covariance *added* ``G`` of the residual *residual* ``r``.
+def residual_space(columns: np.ndarray, rank: int) -> np.ndarray:
+    """An orthonormal basis of the complement of the *rank* leading left singular directions of *columns*.
 
-    The root of ``r' (σ² I + G)⁻¹ r = dof`` (Paule & Mandel 1982, J. Res. NBS
-    87:377), truncated to ``[_PM_FLOOR σ̂², σ̂²]`` with ``σ̂²`` = *variance*, the
-    residual variance with no ``G``. A *residual* of shape ``(rows, k)`` holds
-    several residuals of the same covariance, and the left side is the sum of
-    their quadratic forms.
+    For the columns a fit counts, the residual space: the directions of the
+    signal no fitted parameter follows, ``n - rank`` of them.
     """
-    values, vectors = np.linalg.eigh(added)
-    projected = (vectors.T @ residual.T) ** 2
-    if projected.ndim == 2:
-        projected = projected.sum(axis=1)
-    values = np.maximum(values, 0.0)
+    return np.linalg.svd(columns, full_matrices=True)[0][:, rank:]
+
+
+def paule_mandel(
+    parts: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray]], dof: int, largest: float, smallest: float | None = None
+) -> tuple[float, list[float]]:
+    """The noise variance ``σ²`` beside a known covariance, read on the residual space, and each part's form at it.
+
+    Each part is a residual ``r`` — or several residuals of one covariance,
+    rows of a ``(k, n)`` array — an orthonormal basis ``Q`` of its residual
+    space (:func:`residual_space`) and the covariance ``G`` a known error adds
+    to the residual, ``(n, n)``. With
+
+        t(σ²) = (Q'r)' (σ² I + Q'G Q)⁻¹ (Q'r),
+
+    summed over the rows of a part, ``σ²`` is the root of
+    ``sum over parts t(σ²) = dof`` (Paule & Mandel 1982, J. Res. NBS 87:377).
+    In the linearised model ``Q'r`` is ``Q'`` of the noise and of the known
+    error alone, whatever the fit did, so each ``t`` is chi-squared on its
+    residual degrees of freedom at the true ``σ²``. The root has to be read on
+    that space: an error of the titrant additions moves the curve much as a
+    Ka would, the fit follows most of it, and the remainder lies along
+    ``(I - P) H``, which ``G`` taken whole hardly weighs down, so that on the
+    whole residual the remainder counts as noise and the root comes out at
+    1.3 to 3 times the noise (median) where the additions dominate it.
+
+    The root is truncated to ``[_PM_FLOOR · smallest, largest]``, the residual
+    variances with no ``G`` (*smallest* is *largest* when omitted): the
+    numerical zero below, and above the variance the residual shows with no
+    known error, which is the root where ``G`` is zero.
+
+    Returns
+    -------
+    tuple[float, list[float]]
+        ``σ²`` and ``t(σ²)`` of every part.
+    """
+    reduced = []
+    for residual, rest, added in parts:
+        values, vectors = np.linalg.eigh(rest.T @ added @ rest)
+        projected = (vectors.T @ (rest.T @ np.asarray(residual).T)) ** 2
+        if projected.ndim == 2:
+            projected = projected.sum(axis=1)
+        reduced.append((projected, np.maximum(values, 0.0)))
+
+    def forms(noise: float) -> list[float]:
+        return [float(np.sum(projected / (noise + values))) for projected, values in reduced]
 
     def excess(log_variance: float) -> float:
-        return float(np.sum(projected / (np.exp(log_variance) + values))) - dof
+        return sum(forms(np.exp(log_variance))) - dof
 
-    high = np.log(variance)
-    low = high + np.log(_PM_FLOOR)
+    smallest = largest if smallest is None else smallest
+    high = np.log(largest)
+    low = np.log(smallest) + np.log(_PM_FLOOR)
     if excess(high) >= 0:
-        return variance
-    if excess(low) <= 0:
-        return variance * _PM_FLOOR
-    return float(np.exp(brentq(excess, low, high, xtol=1e-12)))
+        noise = largest
+    elif excess(low) <= 0:
+        noise = smallest * _PM_FLOOR
+    else:
+        noise = float(np.exp(brentq(excess, low, high, xtol=1e-12)))
+    return noise, forms(noise)
