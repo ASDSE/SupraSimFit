@@ -13,6 +13,29 @@ The two agreeing to a fraction of a decade is what says the engine's interval
 is the interval its definition names, rather than an artefact of how it
 searches.
 
+The definition the reference computes carries every rule of the reported
+interval, each written here again in the reference's own terms:
+
+- **Fitted parameters** (decision D-A2). A free Ka counts as fitted only off
+  the ends of its box, a signal coefficient only where moving it to its bound
+  changes the curve by more than ``_ON_BOUND_RTOL`` of the signal's weighted
+  variation about its weighted mean, and an input stated as a range only off
+  the ends of that range. What the best fit fitted is the ``p`` of ``n - p``;
+  the numerator ``m`` of a tested Ka counts it and every coefficient the best
+  fit fits and the fit at that Ka holds on a bound, so the cut-off is a step
+  function of the fitted rank.
+- **One-step pretest of the second constant** (decision D-Q2). A closed lower
+  edge of the second constant of a stepwise model claims the second binding
+  step exists, so it stands only where the data reject the model without that
+  step: the profile at that constant equal to zero exactly, its ``m`` the
+  constant plus the coefficients it releases, its F test at
+  :data:`~core.pipeline.varpro.SECOND_STEP_LEVEL`. Where they do not, the
+  interval is open below, at the constant's lower bound.
+- **An edge the other constant's bound sets** (the interval's
+  ``limited_by_low``). A lower edge of a two-Ka interval at which the other
+  constant rests on its bound while the profile still falls towards that bound
+  is open already, so the one-step pretest leaves it where it is.
+
 Where the replicates show a noise law, both computations carry it: the
 reference whitens its own target and design with the point weights the
 application's fit ran with and widens its cut-off by the factor the
@@ -37,7 +60,7 @@ from core.assays.base import BaseAssay
 from core.assays.registry import AssayType
 from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
 from core.pipeline.inputs import ErrorModel, SpecKind
-from core.pipeline.varpro import LEVEL, Projection
+from core.pipeline.varpro import LEVEL, SECOND_STEP_LEVEL, Projection
 from validation.generate import dataset, stream_seed
 from validation.scenarios import Scenario
 from validation.score import guard, measurement_set
@@ -48,6 +71,28 @@ __all__ = ['agreement_row', 'pooling_row', 'reference_intervals']
 #: engine's search density, so the reference shares none of its choices, and
 #: refined between neighbouring nodes so the best fit and the edges are exact.
 _PER_DECADE = 8
+
+#: Tolerance of the bounded Brent refinement, in decades of Ka from the node
+#: it refines around. The refinement runs in that offset rather than in
+#: log10(Ka) itself, whose size would scale the solver's own relative
+#: tolerance to 1e-7 decades: where a coefficient reaches its bound a few
+#: tenths of a microdecade from the optimum, the fitted parameters are read on
+#: the side of that step the optimum lies on only at this precision.
+_REFINE_XATOL = 1e-10
+
+#: Density, in points per decade, at which a grid cell is profiled again where
+#: the fitted rank differs between its two nodes. The cut-off steps with the
+#: rank, so a stretch the test accepts can begin and end between two rejected
+#: nodes there; at this density a stretch of a sixtieth of a decade holds a
+#: point.
+_DENSE_PER_DECADE = 64
+
+#: The rule that names the other constant's bound as what closes an edge: the
+#: profile, at the other constant one step of a quarter decade inside its
+#: bound, stands above the profile at the edge by more than ``_BOUND_RISE`` of
+#: the rise the test allows there. Both numbers are the rule's definition.
+_BOUND_STEP_DECADES = 0.25
+_BOUND_RISE = 1e-3
 
 #: The reference profile with uncertain inputs: every profile value is the
 #: lowest of three Nelder-Mead runs, each restarted where it stopped until it
@@ -69,19 +114,24 @@ _JACOBIAN_STEP = 6e-6
 #: separates stays above 7e-7, and 1e-8 sits in the gap.
 _RANK_RTOL = 1e-8
 
-#: Distance from a bound, as a fraction of the length of the target, below which
-#: a coefficient counts as held on that bound rather than fitted. Read in the
-#: norm-scaled variables the bounded solve works in, so it is the change the
-#: coefficient could still make to the fitted curve. The solve puts a held
-#: coefficient exactly on its bound, so the reading only has to separate zero
-#: from the scatter a fitted coefficient keeps.
+#: Distance from a bound, as a fraction of the signal's weighted variation about
+#: its weighted mean, below which a coefficient counts as held on that bound
+#: rather than fitted. Read in the norm-scaled variables the bounded solve works
+#: in, so it is the change the coefficient could still make to the fitted curve,
+#: and measured against the variation rather than the length of the signal, so
+#: a constant background under it leaves the reading as it is. The solve puts a
+#: held coefficient exactly on its bound, so the reading only has to separate
+#: zero from the scatter a fitted coefficient keeps.
 _ON_BOUND_RTOL = 1e-8
 
 #: Distance from an end of the Ka box, in decades, within which the reference's
-#: best fit counts as resting on that end: ten times the tolerance of the
-#: bounded Brent refinement (1e-5 in log10 Ka), which is as close as the
-#: refinement comes to an end it runs to, and far below any distance an
-#: optimum inside a box of twenty decades is found at.
+#: best fit counts as resting on that end. An end node the refinement cannot
+#: beat is kept exactly, and the bounded Brent refinement comes to within
+#: about 3e-9 decades of an end it runs to (``_REFINE_XATOL`` plus the
+#: solver's relative tolerance on an offset of at most one node spacing);
+#: 1e-4 decades is a margin of over four orders on that, for an objective
+#: that is flat towards the end, and far below any distance an optimum inside
+#: a box of twenty decades is found at.
 _ON_BOX_DECADES = 1e-4
 
 #: Distance from an end of its range, as a fraction of the range's width,
@@ -116,6 +166,11 @@ def _column_rank(columns: np.ndarray) -> int:
     return int(np.linalg.matrix_rank(scaled, tol=_RANK_RTOL * np.linalg.norm(scaled, 2)))
 
 
+def _axis(ends: tuple[float, float], per_decade: int) -> np.ndarray:
+    """Log-spaced Ka from one end to the other, at least *per_decade* points per decade."""
+    return np.geomspace(*ends, int(np.ceil(np.log10(ends[1] / ends[0]) * per_decade)) + 1)
+
+
 def _on_box(ka: float, bounds: tuple[float, float]) -> bool:
     """Whether *ka* rests on an end of its box, to ``_ON_BOX_DECADES``."""
     return bool(min(np.log10(ka / bounds[0]), np.log10(bounds[1] / ka)) <= _ON_BOX_DECADES)
@@ -124,9 +179,14 @@ def _on_box(ka: float, bounds: tuple[float, float]) -> bool:
 def _refine(fn: Callable[[float], float], grid: np.ndarray, on_grid: np.ndarray) -> tuple[float, float]:
     """Minimum of *fn* in log Ka between the neighbours of the best grid node, as ``(Ka, value)``."""
     i = int(np.argmin(on_grid))
-    lo, hi = np.log10(grid[max(i - 1, 0)]), np.log10(grid[min(i + 1, grid.size - 1)])
-    res = minimize_scalar(lambda t: fn(10.0**t), bounds=(lo, hi), method='bounded')
-    return (float(10.0**res.x), float(res.fun)) if res.fun < on_grid[i] else (float(grid[i]), float(on_grid[i]))
+    centre = np.log10(grid[i])
+    lo, hi = np.log10(grid[max(i - 1, 0)]) - centre, np.log10(grid[min(i + 1, grid.size - 1)]) - centre
+    res = minimize_scalar(
+        lambda u: fn(10.0 ** (centre + u)), bounds=(lo, hi), method='bounded', options={'xatol': _REFINE_XATOL}
+    )
+    if res.fun < on_grid[i]:
+        return float(10.0 ** (centre + res.x)), float(res.fun)
+    return float(grid[i]), float(on_grid[i])
 
 
 def reference_intervals(
@@ -162,8 +222,20 @@ def reference_intervals(
 
     so the cut-off is a step function of ``k``: the constant cut-off of the
     plain F test wherever the profile gives no signal parameter up, one step
-    higher wherever it gives one up. Every edge and every accepted node is
-    judged against the cut-off its own fitted rank names.
+    higher wherever it gives one up. Every edge and every accepted point is
+    judged against the cut-off its own fitted rank names, and every grid cell
+    whose two nodes differ in fitted rank is profiled again at
+    ``_DENSE_PER_DECADE``, since the step can open a stretch the test accepts
+    between two nodes it rejects.
+
+    The second constant of a stepwise model, the second binding constant in
+    the registry's order, is open below at its lower bound unless the data
+    reject the model without the second step: with ``P(0)`` the profile at
+    that constant equal to zero and ``m₀`` the constant plus the coefficients
+    the fit there holds on a bound and the best fit does not,
+    ``sf((exp((P(0) - P_min) / N) - 1) nu / (kappa m₀); m₀, nu)`` at or below
+    :data:`~core.pipeline.varpro.SECOND_STEP_LEVEL`. A lower edge the other
+    constant's bound sets is open already and stays where it is.
 
     ``S_w`` is the weighted residual sum of squares ``sum w_i (y_i - f_i)²``:
     the target and the free columns are multiplied by ``sqrt(w)`` before the
@@ -235,12 +307,13 @@ def reference_intervals(
     m, n_points = signals.shape
     n = m * n_points
     stacked = signals.ravel()
-    root = None if weights is None else np.sqrt(np.tile(np.asarray(weights, dtype=float), m))
+    point_weights = np.ones(n) if weights is None else np.tile(np.asarray(weights, dtype=float), m)
+    root = None if weights is None else np.sqrt(point_weights)
+    # The signal's weighted variation about its weighted mean: the scale a coefficient's distance from its bound
+    # is read on.
+    variation = float(np.sqrt(np.sum(point_weights * (stacked - np.average(stacked, weights=point_weights)) ** 2)))
     free_ka = [k for k in ka_keys if bounds[k][0] != bounds[k][1]]
-    axes = {
-        k: np.geomspace(*bounds[k], int(np.ceil(np.log10(bounds[k][1] / bounds[k][0]) * _PER_DECADE)) + 1)
-        for k in free_ka
-    }
+    axes = {k: _axis(bounds[k], _PER_DECADE) for k in free_ka}
     # Input offsets are searched in units of the stated standard deviation or half range.
     input_keys = list(specs)
     is_sigma = np.array([s.kind is SpecKind.SIGMA for s in specs.values()], dtype=bool)
@@ -293,7 +366,7 @@ def reference_intervals(
         from its bound there is the change it could still make to the fitted
         curve; a coefficient the active set holds sits exactly on its bound and
         a fitted one lies a real distance away, which ``_ON_BOUND_RTOL`` of the
-        target's length separates. A rank of those columns and not a count of
+        signal's weighted variation separates. A rank of those columns and not a count of
         them, because a mass balance ties columns together and the solve then
         holds one member of a family any member of which could have been the
         one left free.
@@ -301,9 +374,9 @@ def reference_intervals(
         solved = bounded(ka, coords)
         if solved is None:
             return 0
-        columns, _, scale, x, target = solved
+        columns, _, scale, x, _ = solved
         margin = np.minimum(x - lb[~pinned] * scale, ub[~pinned] * scale - x)
-        inside = margin > _ON_BOUND_RTOL * float(np.linalg.norm(target))
+        inside = margin > _ON_BOUND_RTOL * variation
         return _column_rank(columns[:, ~pinned][:, inside])
 
     def objective(ka: dict[str, float], coords: np.ndarray = entered_coords) -> float:
@@ -332,7 +405,8 @@ def reference_intervals(
         start_other = []
         if others:
             other = others[0]
-            i = int(np.argmin(np.abs(np.log10(axes[key]) - np.log10(value))))
+            # The nearest node, the lower bound's for the zero the one-step pretest profiles at.
+            i = int(np.argmin(np.abs(np.log10(axes[key]) - np.log10(np.clip(value, *bounds[key])))))
             on_node = axes[key][i] == value
             scan = (
                 np.take(grid, i, axis=free_ka.index(key))
@@ -395,8 +469,8 @@ def reference_intervals(
         # decide which directions count, and the condition number of J is not squared.
         norms = np.linalg.norm(jac, axis=0)
         norms[norms == 0] = 1.0
-        root = np.linalg.pinv(jac / norms) / norms[:, np.newaxis]
-        covariance = (root @ root.T)[np.ix_(z_columns, z_columns)]
+        inverse = np.linalg.pinv(jac / norms) / norms[:, np.newaxis]
+        covariance = (inverse @ inverse.T)[np.ix_(z_columns, z_columns)]
         dof -= float(np.clip(np.linalg.eigvalsh(np.eye(z_columns.size) - covariance), 0.0, 1.0).sum())
     if dof < 1:
         return None
@@ -413,25 +487,59 @@ def reference_intervals(
             cuts[key, released] = p_min + n * float(np.log1p(kappa * tested * f_dist.ppf(LEVEL, tested, dof) / dof))
         return cuts[key, released]
 
-    def excess(key: str, value: float) -> float:
-        """How far the profile at ``key = value`` stands above the cut-off its own fitted rank names."""
+    def judged(key: str, value: float) -> tuple[float, int]:
+        """How far the profile at ``key = value`` stands above the cut-off its own fitted rank names, and that rank."""
         found, ka, coords = profile(key, value)
-        return found - cut_off(key, fitted_rank(ka, coords))
+        rank = fitted_rank(ka, coords)
+        return found - cut_off(key, rank), rank
 
+    def one_step_rejected() -> bool:
+        """Whether the data reject the model without the second binding step at ``SECOND_STEP_LEVEL``."""
+        found, ka, coords = profile(second, 0.0)
+        tested = 1 + max(0, best_fitted - fitted_rank(ka, coords))
+        ratio = float(np.expm1((found - p_min) / n)) * dof / (factors.get(second, 1.0) * tested)
+        return bool(f_dist.sf(ratio, tested, dof) <= SECOND_STEP_LEVEL)
+
+    def bound_closes(key: str, edge: float) -> bool:
+        """Whether the other free Ka's bound, and not the data, closes the profile of *key* at *edge*."""
+        others = [k for k in free_ka if k != key]
+        if not others:
+            return False
+        (other,) = others
+        found, ka, coords = profile(key, edge)
+        lo, hi = bounds[other]
+        if not _on_box(ka[other], (lo, hi)):
+            return False
+        step = 10.0**_BOUND_STEP_DECADES
+        inward = min(lo * step, hi) if np.log10(ka[other] / lo) <= np.log10(hi / ka[other]) else max(hi / step, lo)
+        rise = objective({key: edge, other: inward}, coords) - found
+        return bool(rise > _BOUND_RISE * (cut_off(key, fitted_rank(ka, coords)) - p_min))
+
+    second = ka_keys[1] if len(ka_keys) == 2 and ka_keys[1] in free_ka else None
     intervals = {}
     for key in free_ka:
         nodes = axes[key]
         points = node_points.get(key) or [profile(key, v) for v in nodes]
-        above_cut = np.array([found - cut_off(key, fitted_rank(ka, coords)) for found, ka, coords in points])
-        inside = np.append(nodes[above_cut <= 0.0], best_ka[key])
+        ranks = np.array([fitted_rank(ka, coords) for _, ka, coords in points])
+        values = list(nodes)
+        excesses = [found - cut_off(key, rank) for (found, _, _), rank in zip(points, ranks)]
+        for i in np.flatnonzero(ranks[:-1] != ranks[1:]):
+            for value in _axis((nodes[i], nodes[i + 1]), _DENSE_PER_DECADE)[1:-1]:
+                values.append(float(value))
+                excesses.append(judged(key, value)[0])
+        order = np.argsort(values)
+        values, excesses = np.array(values)[order], np.array(excesses)[order]
+        inside = np.append(values[excesses <= 0.0], best_ka[key])
         low_in, high_in = float(inside.min()), float(inside.max())
-        below, above = nodes[nodes < low_in], nodes[nodes > high_in]
+        below, above = values[values < low_in], values[values > high_in]
 
         def edge(outside: float, within: float, key: str = key) -> float:
-            return float(10 ** brentq(lambda t: excess(key, 10**t), np.log10(outside), np.log10(within)))
+            return float(10 ** brentq(lambda t: judged(key, 10**t)[0], np.log10(outside), np.log10(within)))
 
         low = edge(below[-1], low_in) if below.size else float(nodes[0])
         high = edge(above[0], high_in) if above.size else float(nodes[-1])
+        if key == second and below.size and not bound_closes(key, low) and not one_step_rejected():
+            low = float(nodes[0])
         intervals[key] = (low, high)
     return intervals
 
