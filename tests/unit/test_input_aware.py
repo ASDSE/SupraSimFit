@@ -21,6 +21,11 @@ states for them, and the interval of Ka is cut from the penalised profile
   inside the input-aware interval and outside the fixed-input one; an input
   stated as a range stays inside it and is reported on its edge when the truth
   lies beyond, where it is held and absorbs nothing of the other inputs;
+- at vanishing uncertainty a search cell is read as the fixed-input interval
+  reads it: an accepted stretch and a gap that lie inside one cell are found,
+  against an independent fixed-input profile; a node solved into the shallower
+  of two input basins does not cut the interval short; a binding constant whose
+  minimum lies on its bound is put there and not counted as fitted;
 - a Ka the model cannot be solved at opens the interval the way the fixed-input
   one does; too few points and a stop request are refused in plain language;
 - a design effect of one changes no bit; a larger one widens the acceptance
@@ -32,13 +37,23 @@ states for them, and the interval of Ka is cut from the penalised profile
 
 import numpy as np
 import pytest
-from scipy.optimize import brentq, lsq_linear, minimize
+from scipy.optimize import brentq, lsq_linear, minimize, minimize_scalar
 from scipy.stats import f as f_dist
 
 from core.assays import ASSAY_CLASSES
+from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.models.equilibrium import dba_signal, dba_species, hg2_species, ida_species
+from core.models.equilibrium import (
+    dba_signal,
+    dba_species,
+    gda_signal,
+    gda_species,
+    h2g_signal,
+    h2g_species,
+    hg2_species,
+    ida_species,
+)
 from core.pipeline.input_aware import (
     AwareProfile,
     _input_directions,
@@ -51,7 +66,16 @@ from core.pipeline.input_aware import (
     penalised_objective,
 )
 from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec, SharedSource, constraints, shared_key
-from core.pipeline.varpro import LEVEL, SECOND_STEP_LEVEL, FitCancelled, FitRefused, Projection, _norms, _rank
+from core.pipeline.varpro import (
+    LEVEL,
+    SECOND_STEP_LEVEL,
+    FitCancelled,
+    FitRefused,
+    Projection,
+    _norms,
+    _rank,
+    on_ka_bound,
+)
 from core.units import Q_
 from tests.conftest import DBA_TRUE, GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
 from tests.unit.test_varpro import _ONE_STEP, _hg2_truth_signal, _stepwise
@@ -510,6 +534,139 @@ def test_vanishing_uncertainties_converge_to_the_fixed_input_profile_and_interva
     assert aware.dof == pytest.approx(conditional.dof, abs=1e-6)
 
 
+def _independent_one_ka_excess(projection: Projection, species_of, ks) -> np.ndarray:
+    """The fixed-input profile of a one-Ka model minus its own F cut-off, from species functions and BVLS alone.
+
+    The offset and the free and bound dye coefficients are solved in their bounds at every Ka of a 64-per-decade
+    scan, refined at its best point; ``m`` is one plus the rank of the columns the best fit leaves inside their
+    bounds that the solve at a tested Ka does not, and ``n - p`` that of the best fit.
+    """
+    y = projection.signals[0]
+    lb, ub = _coefficient_box(projection)
+
+    def solve(k: float) -> tuple[float, int]:
+        species = species_of(k)
+        columns = np.column_stack([np.ones(y.size), species['D'], species['HD']])
+        norm = np.linalg.norm(columns, axis=0)
+        found = lsq_linear(columns / norm, y, bounds=(lb * norm, ub * norm), method='bvls')
+        inside = found.active_mask == 0
+        rank = int(np.linalg.matrix_rank((columns / norm)[:, inside])) if inside.any() else 0
+        return float(np.sum((columns @ np.clip(found.x / norm, lb, ub) - y) ** 2)), rank
+
+    (lo, hi), = projection.ka_bounds.values()  # fmt: skip
+    scan = np.geomspace(lo, hi, int(np.log10(hi / lo) * 64) + 1)
+    i = int(np.argmin([solve(k)[0] for k in scan]))
+    found = minimize_scalar(
+        lambda t: solve(10.0**t)[0],
+        bounds=(np.log10(scan[max(i - 1, 0)]), np.log10(scan[min(i + 1, scan.size - 1)])),
+        method='bounded',
+        options={'xatol': 1e-10},
+    )
+    best, best_rank = solve(10.0**found.x)
+    dof = y.size - 1 - best_rank
+
+    def excess(k: float) -> float:
+        ssr, rank = solve(k)
+        m = 1 + max(0, best_rank - rank)
+        return ssr - best * (1.0 + m * f_dist.ppf(LEVEL, m, dof) / dof)
+
+    return np.array([excess(k) for k in ks])
+
+
+def _vanishing(projection: Projection, keys) -> tuple:
+    """The fixed-input fit and interval of a one-Ka projection, and its input-aware interval at a sigma of 1e-5 %."""
+    fit = projection.fit()
+    ((key, _),) = projection.ka_bounds.items()
+    conditional = projection.interval(key, fit)
+    tiny = constraints(
+        ErrorModel(specs={k: InputSpec.sigma_pct(1e-5) for k in keys}), projection.assay.get_conditions()
+    )
+    return conditional, input_aware(projection, fit, tiny, conditional={key: conditional}).profiles[key].interval
+
+
+def test_an_accepted_stretch_inside_one_search_cell_extends_the_interval_as_far_as_the_fixed_input_one():
+    """Dye-to-host DBA, twelve points at 3 % noise, true Ka 2.2×10⁶ M⁻¹.
+
+    Below the estimate the cut-off steps up where a signal coefficient reaches its bound, so the test accepts Ka
+    down to 7.4×10⁴ M⁻¹, a stretch that starts and ends between two search-grid nodes the test rejects. Read at the
+    nodes alone the lower edge closes at 9.5×10⁴ M⁻¹; read as the fixed-input interval reads it, the vanishing-σ
+    interval holds every Ka the independent profile accepts.
+    """
+    x = np.linspace(1e-7, 5e-5, 12)
+    y = dba_signal(I0=0.0, Ka_dye=2154904.336304565, I_dye_free=5e7, I_dye_bound=3e8, x_titrant=x, y_fixed=1e-5,
+                   mode='DtoH')  # fmt: skip
+    assay = ASSAY_CLASSES[AssayType.DBA_DtoH](
+        x_data=Q_(x, 'M'), y_data=Q_(_noisy(y, 0.03, 494788571), 'au'), fixed_conc=Q_(1e-5, 'M'), mode='DtoH'
+    )
+    projection = Projection(assay, ASSAY_REGISTRY[AssayType.DBA_DtoH].default_bounds)
+    conditional, aware = _vanishing(projection, ('fixed_conc', TITRANT))
+
+    accepted = np.geomspace(7.7e4, 8.9e4, 4)
+    assert (_independent_one_ka_excess(projection, lambda k: dba_species(k, x, 1e-5, mode='DtoH'), accepted) < 0).all()
+    assert aware.low < accepted[0] and not aware.open_low
+    assert abs(np.log10(aware.low / conditional.low)) < 2e-7
+
+
+def test_a_gap_inside_one_search_cell_is_reported_as_the_fixed_input_interval_reports_it():
+    """GDA, eight points at 0.5 % noise, true Ka 1.3×10⁴ M⁻¹: the profile rejects Ka about 4.5×10⁵ M⁻¹ between two
+    stretches it accepts, all of it inside one search cell."""
+    x = np.linspace(1e-7, 3e-5, 8)
+    y = gda_signal(I0=0.0, Ka_guest=13435.076103099427, I_dye_free=5e7, I_dye_bound=3e8, Ka_dye=5e5, h0=1e-5,
+                   d0_values=x, g0=2e-5)  # fmt: skip
+    assay = GDAAssay(
+        x_data=Q_(x, 'M'), y_data=Q_(_noisy(y, 0.005, 857474922), 'au'), Ka_dye=Q_(5e5, '1/M'), h0=Q_(1e-5, 'M'),
+        g0=Q_(2e-5, 'M'),
+    )  # fmt: skip
+    projection = Projection(assay, ASSAY_REGISTRY[AssayType.GDA].default_bounds)
+    conditional, aware = _vanishing(projection, ('h0', 'g0', TITRANT))
+
+    ks = (3.98e5, 4.47e5, 5.01e5)
+    excess = _independent_one_ka_excess(projection, lambda k: gda_species(k, 5e5, 1e-5, x, 2e-5), ks)
+    assert excess[0] < 0 < excess[1] and excess[2] < 0
+    assert aware.split and aware.high > ks[2]
+    assert abs(np.log10(aware.high / conditional.high)) < 2e-7
+
+
+def test_a_binding_constant_whose_minimum_lies_on_its_bound_is_put_on_it_and_not_counted_as_fitted():
+    """A 2:1 titration whose second constant runs to the top of its box.
+
+    The independent fixed-input objective, the first constant minimised, falls all the way to that bound, so the
+    minimum lies on it. The trust-region solve of both constants and the inputs keeps its iterates inside the box
+    and stops short of it, by more than the resolution a bound is read at; the solve puts the constant on the
+    bound, where it is held and not fitted.
+    """
+    h0, x = 1e-5, np.linspace(0.0, 1e-4, 20)
+    y = h2g_signal(I0=100.0, Ka_HG=15271675.297786418, Ka_H2G=19886909.313149683, I_G=1e6, I_H=0.0, I_HG=1e7,
+                   I_H2G=5e6, h0=h0, g0_values=x)  # fmt: skip
+    assay = ASSAY_CLASSES[AssayType.DBA_H2G](
+        x_data=Q_(x, 'M'), y_data=Q_(_noisy(y, 0.005, 52824378), 'au'), h0=Q_(h0, 'M')
+    )
+    bounds = ASSAY_REGISTRY[AssayType.DBA_H2G].default_bounds
+    projection = Projection(assay, bounds)
+    lb, ub = _coefficient_box(projection)
+    free = lb != ub
+    top = projection.ka_bounds['Ka_H2G'][1]
+
+    def lowest(ka_h2g: float) -> float:
+        """The independent fixed-input objective at *ka_h2g*, minimised over the first constant near the top."""
+
+        def ssr(t: float) -> float:
+            species = h2g_species(10.0**t, ka_h2g, h0, x)
+            columns = np.column_stack([np.ones(x.size), species['G'], species['HG'], species['H2G']])
+            return _reference_ssr(columns, assay.y_data.magnitude, lb[free], ub[free])
+
+        return minimize_scalar(ssr, bounds=(10.0, 12.0), method='bounded', options={'xatol': 1e-10}).fun
+
+    on_top = lowest(top)
+    assert all(on_top <= lowest(top * 10.0**-step) for step in (1e-6, 1e-3, 1e-1))
+
+    fit, result = _aware(assay, projection, {'h0': 1e-5, TITRANT: 1e-5})
+    assert on_ka_bound(result.fit.ka['Ka_H2G'], projection.ka_bounds['Ka_H2G'])
+    assert result.fit.ssr == pytest.approx(on_top, rel=1e-6)
+    # Held there, it is not fitted: the first constant and the four signal columns the solve leaves free.
+    assert result.fit.ka_fitted == ('Ka_HG',) and result.fit.n_params == 5
+
+
 def test_the_drawn_profile_is_never_below_the_fixed_input_one_on_the_r2_axis(ida_case):
     """The entered inputs are feasible, so freeing them can only lower the objective."""
     assay, projection, _, result = ida_case
@@ -531,14 +688,15 @@ def test_the_fit_is_never_worse_than_the_fit_at_the_entered_inputs(ida_case):
     assert result.fit.objective <= assay.n_points * np.log(fit.objective) + 1e-9
 
 
-def test_an_estimate_between_a_rejected_and_an_accepted_node_closes_its_edge_in_its_own_bracket():
+def test_a_node_solved_into_the_shallower_of_two_input_basins_does_not_cut_the_interval_short():
     """Stoichiometric IDA, eight points, inputs entered five standard deviations off.
 
-    The estimate lies between a search-grid node the test rejects and one it
-    accepts, so the lower edge is bracketed by that node and the estimate
-    itself, and the input space has a second basin beside it: the profile at
-    the estimate must be the estimate's own value, whatever a fresh solve from
-    the other side's start points would find.
+    The input space has two basins. The search-grid node below the estimate,
+    solved from the estimate's side, lands in the shallower one, above the
+    threshold, while the independent objective there lies below it: the
+    profile is read again across that search cell and the node solved again
+    from its neighbours, so the lower edge lies where the independent
+    objective crosses the threshold, below the node, with no gap reported.
     """
     x = [5.045663887196735e-06, 1.009132777439347e-05, 1.5136991661590206e-05, 2.018265554878694e-05]
     x += [2.522831943598368e-05, 3.0273983323180412e-05, 3.531964721037715e-05, 4.036531109757388e-05]
@@ -556,10 +714,13 @@ def test_an_estimate_between_a_rejected_and_an_accepted_node_closes_its_edge_in_
     profile = result.profiles['Ka_guest']
     interval, estimate = profile.interval, result.fit.ka['Ka_guest']
     nodes = projection._grid()[0][0]
-    below, above = nodes[nodes < estimate][-1], nodes[nodes > estimate][0]
+    below = nodes[nodes < estimate][-1]
     value = dict(zip(profile.grid.tolist(), profile.objective.tolist()))
-    assert value[below] > profile.threshold > value[above]
-    assert below < interval.low < estimate and not interval.open_low
+    # The independent objective accepts the node, and crosses the threshold below it.
+    assert _ida_reference(assay, projection, below) < profile.threshold
+    assert value[below] == pytest.approx(_ida_reference(assay, projection, below), abs=1e-6)
+    assert interval.low < below and not (interval.open_low or interval.split)
+    assert _ida_reference(assay, projection, interval.low) == pytest.approx(profile.threshold, abs=1e-5)
     assert value[interval.low] == pytest.approx(profile.threshold, abs=1e-5)
 
 

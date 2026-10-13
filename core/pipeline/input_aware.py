@@ -62,10 +62,21 @@ agree on what the data say about the second binding step.
 so ``1 - exp(P(k) / n) / SS_tot`` draws on the R² axis of the fixed-input
 profile, never below it wherever the entered inputs are allowed.
 
+The interval is cut from the penalised profile by the routine that cuts the
+fixed-input one (:func:`core.pipeline.varpro._cut_interval`), the objective and
+its cut-off handed in: the same reading of the profile where its verdict turns,
+the same root finding of the edges, split and open sides, and the same rule for
+an edge that only the bound of the other binding constant closes
+(:meth:`core.pipeline.varpro.Projection._bound_behind`). What differs follows
+from the objective: a point of the penalised profile is a bounded optimisation
+over the inputs, so the search-grid nodes are traced outward from the estimate
+rather than all solved, and each point is solved from its neighbours.
+
 Every profile value is a pure function of the Ka it is asked at and of the
 start points it is solved from, and the start points come only from the table
-of solved search-grid nodes — never from the previous evaluation — so root
-finding cannot change a value by the order it asks in.
+of solved search-grid nodes, the estimate and, with two free Ka, where the other
+one minimises the fixed-input objective — never from the previous evaluation —
+so root finding cannot change a value by the order it asks in.
 """
 
 from __future__ import annotations
@@ -76,12 +87,10 @@ from typing import Callable, Mapping, Sequence
 
 import numpy as np
 from scipy.optimize import least_squares
-from scipy.stats import f as f_dist
 
 from core.pipeline.diagnostics import Conflict, InputShift, conflict_added, conflict_reference, conflict_test
 from core.pipeline.inputs import InputConstraint
 from core.pipeline.varpro import (
-    _BOUND_RISE,
     _INNER_PER_DECADE,
     _PROFILE_PER_DECADE,
     _R2_RESOLUTION,
@@ -93,11 +102,13 @@ from core.pipeline.varpro import (
     KaInterval,
     ProjectedFit,
     Projection,
-    _interval,
+    _allowed_rise,
+    _cut_interval,
     _ka_grid,
     _refine_at,
     _require_dof,
     _require_inflation,
+    _rise_p,
     _with_one_step_test,
 )
 
@@ -115,13 +126,14 @@ __all__ = [
 
 # Cost, one process per core with the default Ka bounds: a residual evaluation
 # is one moved copy of the assay (30 us), one species solve (65 us) and one
-# bounded linear solve (16 to 400 us), and an interval takes 5 000 to 15 000 of
-# them. Over 5 760 random one-Ka titrations of 8 and 20 points the input-aware
-# part takes, median / 99th percentile / maximum: IDA (four inputs) 1.8 / 5.0 /
-# 20.5 s, GDA (four) 0.9 / 4.1 / 6.6 s, DBA (two) 0.4 to 0.5 / 2.0 / 2.7 s, beside
-# 0.05 s for the fixed-input fit and interval. With two Ka and two inputs (the
-# stepwise models, 1 080 titrations of 12 and 30 points): 3.7 / 9.5 / 47 s, beside
-# 3 to 5 s for their fixed-input fit and intervals.
+# bounded linear solve (16 to 400 us), and an interval takes thousands of them.
+# Over 60 random titrations with every input at 3 %, the input-aware part takes
+# median / 90th percentile / maximum 0.8 / 1.5 / 1.8 s with one Ka (20
+# titrations) and 5.2 / 7.4 / 24 s with two Ka and two inputs (40), beside 0.05 s
+# and 3 to 5 s for the fixed-input fit and intervals. By assay, the one-Ka median
+# is about 2.5 s for IDA (four inputs), 1.3 s for GDA (four) and 0.6 to 0.7 s for
+# DBA (two); the hardest designs with few points take about 25 s with one Ka and
+# 50 s with two.
 # The slowest fits are those whose profile edge lies where a signal parameter
 # reaches its bound: the objective has a kink there, along which the
 # least-squares solver creeps to a value good to 1e-4 instead of 1e-9.
@@ -164,10 +176,9 @@ _STOP_EXCESS = 2
 _COARSE_STEP = 4
 
 # Distance from an end of its range, as a fraction of the range's width, within
-# which an input stated as a range is reported as resting on that end (and, as a
-# fraction of the Ka bounds in decades, within which the other binding constant
-# is taken to sit on its bound): three orders above the solver's step tolerance
-# on the scaled coordinate, three below anything a percentage display shows.
+# which an input stated as a range is reported as resting on that end: three
+# orders above the solver's step tolerance on the scaled coordinate, three below
+# anything a percentage display shows.
 _EDGE_TOL = 1e-6
 
 # Resolution of the objective: the scale iteration converges a profile value to
@@ -245,8 +256,10 @@ class AwareProfile:
     ----------
     ka_key : str
     grid : np.ndarray
-        Ka in 1/M, ascending: the solved search-grid nodes, the estimate, the
-        closed edges and a fill at the drawn density between them.
+        Ka in 1/M, ascending: the solved search-grid nodes, the points read at
+        ``_PROFILE_PER_DECADE`` where the verdict of the test turns, the
+        estimate, the closed edges and a fill at that density through the
+        search cells of the estimate and of each closed edge.
     objective : np.ndarray
         ``P`` on *grid*; infinite where the model has no solution.
     r2 : np.ndarray
@@ -440,7 +453,20 @@ class _Problem:
         value = self.n * float(np.log(max(ssr, self.floor))) + float(np.sum(coords[self.is_sigma] ** 2))
         ka = {**fixed, **{key: float(10.0 ** x[i]) for i, key in enumerate(moving)}}
         fitted = self.projection.fitted_parameters(ka, self.input_offsets(coords))
-        return _Point(value, {key: ka[key] for key in self.projection.free_ka}, coords, ssr, fitted)
+        point = _Point(value, {key: ka[key] for key in self.projection.free_ka}, coords, ssr, fitted)
+        # The trust-region solver keeps its iterates strictly inside the box, so a binding constant whose minimum
+        # lies on a bound stops short of it by as much as the objective is flat there, which can be more than the
+        # resolution on_ka_bound reads a bound at. A moving binding constant within one search-grid step of a bound
+        # is therefore also solved for held on that bound, and that solution is the answer where it is no higher, to
+        # the resolution of the objective.
+        best = point
+        for i, key in enumerate(moving):
+            end = min(bounds[0][i], bounds[1][i], key=lambda bound: abs(bound - x[i]))
+            if 0.0 < abs(x[i] - end) <= 1.0 / _SEARCH_PER_DECADE:
+                held = self.solve({**fixed, key: float(10.0**end)}, point)
+                if held.value <= best.value + _P_RESOLUTION:
+                    best = held
+        return best
 
     def count(self, point: _Point) -> int:
         """Parameters *point* fitted: its ``p``.
@@ -557,14 +583,14 @@ class _Trace:
 
     # -- edges and the drawn curve ------------------------------------------------
 
-    def _close(self, hat: _Point, cut: Callable[[_Point], float], d: int) -> tuple[_Point, _Point | None]:
-        """The accepted point furthest out on side *d* and the solvable rejected node next to it, if there is one.
+    def _close(self, hat: _Point, cut: Callable[[_Point], float], d: int) -> None:
+        """Solve the nodes beyond the accepted point furthest out on side *d* until one is rejected or unsolvable.
 
         A point is accepted at or below *cut*, the cut-off of its own
         solution. The node beyond the accepted stretch is solved again from the
         accepted point's solution, because a basin can be reachable from one
         side only; if that brings it under its cut-off it joins the stretch and
-        the bracket moves one node further out.
+        the next node out is solved.
         """
         key, nodes = self.key, self.nodes
         while True:
@@ -572,104 +598,132 @@ class _Trace:
             inner = (max if d > 0 else min)(accepted, key=lambda point: point.ka[key])
             beyond = np.flatnonzero(nodes > inner.ka[key]) if d > 0 else np.flatnonzero(nodes < inner.ka[key])[::-1]
             if not beyond.size:
-                return inner, None
+                return
             i = int(beyond[0])
             if i not in self.table or np.isfinite(self.table[i].value):
                 self._node(i, [inner])
-            if not np.isfinite(self.table[i].value):
-                return inner, None
-            if self.table[i].value > cut(self.table[i]):
-                return inner, self.table[i]
+            if not np.isfinite(self.table[i].value) or self.table[i].value > cut(self.table[i]):
+                return
 
     def profile(
-        self, hat: _Point, cut: Callable[[_Point], float], excess: float, level: float, dof: int, inflation: float
+        self, hat: _Point, cut: Callable[[_Point], float], floor: float, level: float, dof: float, inflation: float
     ) -> tuple[KaInterval, list[_Point]]:
         """Interval of this Ka under *cut* and the points its curve is drawn through, ascending in Ka.
 
         *cut* gives the cut-off of a point's own solution, widened by the
-        design effect *inflation* that the interval records. An edge is a root
-        of the profile minus that cut-off — where the cut-off steps, the step
-        itself — between the
-        outermost accepted point and the rejected node beyond it. At those two
-        the profile is the value they were solved to, which is what put one
-        inside and the other outside; between them it is the lower of the
-        solves from the two. The curve runs through
-        the solved nodes, the estimate *hat* and the closed edges, and at
-        ``_PROFILE_PER_DECADE`` through the search-grid cell of the estimate
-        and of each closed edge, where the curve turns; each of those points
-        is solved from the nearest of the others. Between those cells the
-        minimum over the inputs leaves a smooth curve, which the nodes carry.
+        design effect *inflation* that the interval records, and *floor* is the
+        optimum's objective, which every cut-off stands above. The accepted
+        stretch is first extended node by node (:meth:`_close`), and the
+        interval is then cut from the solved nodes by the routine of the
+        fixed-input interval (:func:`~core.pipeline.varpro._cut_interval`): the
+        profile is read again at ``_PROFILE_PER_DECADE`` wherever its verdict
+        turns, the edges are roots of the profile minus that cut-off — where
+        the cut-off steps, the step itself — and a closed edge of a two-Ka
+        interval that only the bound of the other Ka produces opens that side
+        (:meth:`~core.pipeline.varpro.Projection._bound_behind`), the rise
+        inside that bound minimised over the inputs. A solved node keeps the
+        value it was solved to; every other point is solved from the nearest
+        solved node or estimate on each side and, with two free Ka, also where
+        the other Ka minimises the fixed-input objective there, as a node is.
+        The curve runs through the points the interval was cut from, the
+        estimate *hat*, the closed edges, and at ``_PROFILE_PER_DECADE``
+        through the search-grid cell of the estimate and of each closed edge,
+        where the curve turns; each of those last points is solved from the
+        nearest of the others. Between those cells the minimum over the inputs
+        leaves a smooth curve, which the nodes carry.
         """
+        for d in (-1, 1):
+            self._close(hat, cut, d)
+        while True:
+            interval, grid, value, edges = self._cut(hat, cut, floor, level, dof, inflation)
+            if not (interval.split and self._fill_gaps(interval, grid, value, cut)):
+                break
         key = self.key
-        brackets = {d: self._close(hat, cut, d) for d in (-1, 1)}
-
-        def value(ka: float) -> _Point:
-            bracket = [point for point in brackets[-1 if ka <= brackets[-1][0].ka[key] else 1] if point is not None]
-            for point in bracket:
-                if point.ka[key] == ka:
-                    return point
-            return self.at(ka, bracket)
-
-        def above_cut(point: _Point) -> float:
-            return point.value - cut(point)
-
-        solved = sorted(self.table.values(), key=lambda point: point.ka[key])
-        (low, high), open_at, split, unsolvable_at = _interval(
-            lambda ka: above_cut(value(ka)),
-            np.array([point.ka[key] for point in solved]),
-            np.array([above_cut(point) for point in solved]),
-            hat.ka[key],
-        )
-        drawn = {point.ka[key]: point for point in [*solved, hat]}
-        limited_by = ['', '']
-        for side, (edge, is_open) in enumerate(zip((low, high), open_at)):
-            if not is_open:
-                drawn[edge] = value(edge)
-                limited_by[side] = self._bound_behind(drawn[edge], excess)
+        drawn = {**{ka: value(ka) for ka in grid.tolist()}, hat.ka[key]: hat, **edges}
         anchors = list(drawn.values())
         anchor_logs = np.log10([point.ka[key] for point in anchors])
-        turning = [hat.ka[key], *(edge for edge, is_open in zip((low, high), open_at) if not is_open)]
-        for at in turning:
+        for at in [hat.ka[key], *edges]:
             cell = self.nodes[self.nodes <= at][-1:].tolist() + self.nodes[self.nodes >= at][:1].tolist()
             for ka in _ka_grid(min(cell), max(cell), _PROFILE_PER_DECADE * (len(cell) > 1)).tolist():
                 if ka not in drawn:
                     drawn[ka] = self.at(ka, [anchors[int(np.argmin(np.abs(anchor_logs - np.log10(ka))))]])
-        interval = KaInterval(
-            low=low,
-            high=high,
-            open_low=open_at[0] or bool(limited_by[0]),
-            open_high=open_at[1] or bool(limited_by[1]),
-            level=level,
-            dof=dof,
-            split=split,
-            unsolvable_low=unsolvable_at[0],
-            unsolvable_high=unsolvable_at[1],
-            limited_by_low=limited_by[0],
-            limited_by_high=limited_by[1],
-            inflation=inflation,
-        )
         return interval, [drawn[ka] for ka in sorted(drawn)]
 
-    def _bound_behind(self, edge: _Point, excess: float) -> str:
-        """The other free Ka when its bound, and not the data, closes the profile at *edge*.
+    def _cut(
+        self, hat: _Point, cut: Callable[[_Point], float], floor: float, level: float, dof: float, inflation: float
+    ) -> tuple[KaInterval, np.ndarray, Callable[[float], _Point], dict[float, _Point]]:
+        """The interval cut from the table as it stands, the Ka it was cut from, the profile there and its closed edges."""
+        key, projection = self.key, self.problem.projection
+        anchors = sorted([*self.table.values(), hat], key=lambda point: point.ka[key])
+        anchors = [point for point in anchors if np.isfinite(point.value)]
+        anchor_ka = np.array([point.ka[key] for point in anchors])
+        known = {point.ka[key]: point for point in [*self.table.values(), hat]}
+        read: dict[float, _Point] = {}
 
-        The rule of :meth:`Projection._bound_behind` on the penalised
-        objective: at the edge the other Ka sits on a bound, and one
-        search-grid step inside that bound the objective, minimised over the
-        inputs, lies more than ``_BOUND_RISE`` of the acceptance excess higher.
+        def value(ka: float) -> _Point:
+            if ka in known:
+                return known[ka]
+            if ka not in read:
+                i = int(np.searchsorted(anchor_ka, ka))
+                starts = anchors[max(i - 1, 0) : i + 1]
+                if self.two_ka:
+                    starts = [*starts, self.entered(ka, starts[0].coords)]
+                read[ka] = self.at(ka, starts)
+            return read[ka]
+
+        def above_cut(point: _Point) -> float:
+            return point.value - cut(point)
+
+        edges: dict[float, _Point] = {}
+
+        def limited_by(edge: float) -> str:
+            point = edges[edge] = value(edge)
+            if not self.two_ka:
+                return ''
+            (other,) = (k for k in projection.free_ka if k != key)
+            return projection._bound_behind(
+                key,
+                point.ka[other],
+                lambda inside: self.problem.solve({key: edge, other: inside}, point).value - point.value,
+                cut(point) - floor,
+            )
+
+        interval, grid = _cut_interval(
+            lambda ka: above_cut(value(ka)),
+            {point.ka[key]: above_cut(point) for point in self.table.values()},
+            hat.ka[key],
+            level,
+            dof,
+            inflation,
+            limited_by,
+            self.nodes,
+        )
+        return interval, grid, value, edges
+
+    def _fill_gaps(
+        self, interval: KaInterval, grid: np.ndarray, value: Callable[[float], _Point], cut: Callable[[_Point], float]
+    ) -> bool:
+        """Solve every node the test rejects inside *interval* again from its neighbours on *grid*; whether one fell.
+
+        A node is solved from its neighbour on one side only, and a basin of
+        the inputs can be reachable from the other, so a rejected node between
+        accepted points is a gap only where the solutions of the points beside
+        it do not bring it lower.
         """
-        if not self.two_ka:
-            return ''
-        (other,) = (k for k in self.problem.projection.free_ka if k != self.key)
-        lo, hi = self.problem.projection.ka_bounds[other]
-        tolerance = _EDGE_TOL * (np.log10(hi) - np.log10(lo))
-        on_low, on_high = (abs(np.log10(edge.ka[other]) - np.log10(b)) <= tolerance for b in (lo, hi))
-        if not (on_low or on_high):
-            return ''
-        step = 10.0 ** (1.0 / _SEARCH_PER_DECADE)
-        inside = min(lo * step, hi) if on_low else max(hi / step, lo)
-        moved = self.problem.solve({self.key: edge.ka[self.key], other: inside}, edge)
-        return other if moved.value - edge.value > _BOUND_RISE * excess else ''
+        key, fell = self.key, False
+        for i, point in list(self.table.items()):
+            ka = point.ka[key]
+            if not (interval.low < ka < interval.high and point.value > cut(point)):
+                continue
+            j = int(np.searchsorted(grid, ka))
+            beside = [value(float(grid[k])) for k in (j - 1, j + 1) if 0 <= k < grid.size]
+            starts = [start for start in beside if np.isfinite(start.value)]
+            if not starts:
+                continue
+            again = self.at(ka, starts)
+            if again.value < point.value - _P_RESOLUTION:
+                self.table[i], fell = again, True
+        return fell
 
 
 @lru_cache(maxsize=None)
@@ -679,7 +733,7 @@ def _excess(n: int, dof: float, level: float, m: int = 1, inflation: float = 1.0
     ``n log(1 + kappa m F(level; m, dof) / dof)`` with ``kappa`` the design
     effect *inflation* (:mod:`core.pipeline.inflation`).
     """
-    return n * float(np.log1p(inflation * m * f_dist.ppf(level, m, dof) / dof))
+    return n * float(np.log1p(_allowed_rise(level, m, dof, inflation)))
 
 
 def at_edge(constraint: InputConstraint, offset: float) -> bool:
@@ -783,10 +837,14 @@ def input_aware(
     each grid local minimum the fixed-input search refines and from the
     fixed-input fit itself. ``P_min`` is the lowest objective found anywhere and
     the estimate is where it was found, so every profile is cut above the same minimum.
-    The edges are then closed by root finding between the outermost accepted
-    point and the rejected node beyond it, every value the lower of the solves
-    from those two points. The interval of the second constant of a stepwise
-    model carries the one-step test of :func:`_one_step_p` and is open below
+    The accepted stretch is extended node by node, and the interval is cut by
+    the routine of the fixed-input interval
+    (:func:`~core.pipeline.varpro._cut_interval`), every point off the node
+    table the lowest of the solves from the nearest solved points on either
+    side; a node the test rejects inside the interval is solved again from the
+    points beside it before it counts as a gap. The interval of the second
+    constant of a stepwise model carries the one-step test of
+    :func:`_one_step_p` and is open below
     where the test does not reject the model without the second step. Every
     cut-off of one binding constant — of the trace, the edges, the drawn cut
     and the one-step test — is widened by that constant's *inflation*.
@@ -901,7 +959,7 @@ def input_aware(
             excess = _excess(n, dof, level, 1, kappa[key])
             threshold = optimum.value + excess
             hat = optimum if len(traces) == 1 else trace.at(optimum.ka[key], [optimum])
-            interval, drawn = trace.profile(hat, cut(optimum, dof, key), excess, level, dof, kappa[key])
+            interval, drawn = trace.profile(hat, cut(optimum, dof, key), optimum.value, level, dof, kappa[key])
             objective = np.array([point.value for point in drawn])
             cuts = np.array([cut(optimum, dof, key)(point) for point in drawn])
             with np.errstate(over='ignore'):
@@ -969,7 +1027,7 @@ def _one_step_p(problem: _Problem, trace: _Trace, optimum: _Point, dof: float, i
     starts = [optimum, trace.table[min(trace.table)], trace.entered(0.0, optimum.coords)]
     point = min((problem.solve(zero, start) for start in starts), key=lambda solved: solved.value)
     m = 1 + max(0, optimum.fitted.rank - (0 if point.fitted is None else point.fitted.rank))
-    return float(f_dist.sf(np.expm1((point.value - optimum.value) / problem.n) * dof / (inflation * m), m, dof))
+    return _rise_p(np.expm1((point.value - optimum.value) / problem.n), m, dof, inflation)
 
 
 def _fixed_inputs(

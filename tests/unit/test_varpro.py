@@ -12,6 +12,10 @@ least-squares solve. These tests pin what makes the engine trustworthy:
 - the two-Ka search is at least as good as a dense brute-force grid;
 - the interval edges lie exactly on the F-test cut-off, a saturated design is
   reported open on the side the data cannot close, and a pinned Ka has none;
+- the routine both interval engines cut a profile with finds, on an excess of
+  known roots, a stretch and a gap that lie between two search-grid nodes, and
+  the other constant closes an edge only on its bound and where the objective
+  still falls towards it;
 - structurally degenerate coefficients are named per assay;
 - the replicate test leaves out the replicates that need another Ka, even two
   of five that share one, and a replicate whose scatter is far larger than the
@@ -853,6 +857,47 @@ def test_a_crossing_only_the_other_constants_bound_produces_is_open_and_names_th
         edges[top] = (first.low, second.low)
     assert np.log10(edges[1e8][0] / edges[1e10][0]) == pytest.approx(2.0, abs=0.01)
     assert edges[1e8][1] == pytest.approx(edges[1e10][1], rel=1e-6)
+
+
+def test_the_interval_routine_finds_a_stretch_and_a_gap_that_lie_between_two_search_grid_nodes():
+    """An excess with known roots: accepted on |t - 3| <= 0.41 and on |t - 2.4| <= 0.04, t = log10 Ka.
+
+    The narrow stretch and the gap beside it lie between nodes of a 4-per-decade grid that the excess rejects, so
+    read at the nodes alone the interval would be [10^2.59, 10^3.41] and whole.
+    """
+
+    def excess(ka: float) -> float:
+        t = np.log10(ka)
+        return min((t - 3.0) ** 2 - 0.41**2, 50.0 * ((t - 2.4) ** 2 - 0.04**2))
+
+    nodes = varpro._ka_grid(1.0, 1e5, varpro._SEARCH_PER_DECADE)
+    points = {float(ka): excess(ka) for ka in nodes.tolist()}
+    interval, _ = varpro._cut_interval(excess, points, 1e3, LEVEL, 7, 1.0, nodes=nodes)
+    assert np.log10(interval.low) == pytest.approx(2.36, abs=2e-7)
+    assert np.log10(interval.high) == pytest.approx(3.41, abs=2e-7)
+    assert interval.split and not (interval.open_low or interval.open_high)
+
+
+def test_the_other_constant_closes_an_edge_only_on_its_bound_and_where_the_objective_still_falls_towards_it():
+    projection, _ = _stepwise(AssayType.DBA_HG2, 1e6, 1e5, 10, 0)
+    lo, hi = projection.ka_bounds['Ka_HG2']
+    asked = []
+
+    def rise(by: float):
+        def at(inside: float) -> float:
+            asked.append(inside)
+            return by
+
+        return at
+
+    # A bound is read at on_ka_bound's resolution, and the rise one search-grid step inside it.
+    assert projection._bound_behind('Ka_HG', hi * 10.0**-5e-8, rise(1.0), 1.0) == 'Ka_HG2'
+    assert asked == [pytest.approx(hi * 10.0 ** (-1.0 / varpro._SEARCH_PER_DECADE), rel=1e-12)]
+    assert projection._bound_behind('Ka_HG', lo, rise(1.0), 1.0) == 'Ka_HG2'
+    assert asked[-1] == pytest.approx(lo * 10.0 ** (1.0 / varpro._SEARCH_PER_DECADE), rel=1e-12)
+    # Off the bound, or on it with an objective that no longer changes towards it, the data set the edge.
+    assert projection._bound_behind('Ka_HG', hi * 10.0**-1e-6, rise(1.0), 1.0) == ''
+    assert projection._bound_behind('Ka_HG', hi, rise(0.5 * varpro._BOUND_RISE), 1.0) == ''
 
 
 @pytest.mark.parametrize('scale', [1e-3, 1e6])

@@ -970,8 +970,7 @@ class Projection:
         _require_inflation(inflation)
         _require_dof(self.n_points, fit.n_free_ka + fit.rank)
         dof = self.n_points - self.n_params(fit)
-        m = n_constrained + released
-        return self._floored(fit) * (1.0 + inflation * m * f_dist.ppf(level, m, dof) / dof)
+        return self._floored(fit) * (1.0 + _allowed_rise(level, n_constrained + released, dof, inflation))
 
     def cut_off(
         self, fit: ProjectedFit, level: float = LEVEL, n_constrained: int = 1, inflation: float = 1.0
@@ -1074,73 +1073,6 @@ class Projection:
             scan = np.array([objective({ka_key: ka, other: k}) for k in other_axis])
         return _refine_minima(lambda k: objective({ka_key: ka, other: k}), other_axis, scan)
 
-    def _two_ka_scan(
-        self,
-        ka_key: str,
-        node_excess: Callable[[float], float],
-        excess_at: Callable[[float], float],
-        fit: ProjectedFit,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Ka values a two-Ka interval is cut from, and the profiled excess at each.
-
-        A profile point of a two-Ka model costs a minimisation over the other
-        Ka, so the whole Ka box cannot be scanned at the profile density. The
-        search-grid nodes are scanned first with *node_excess*, whose inner
-        scan is a row of the cached grid so that only the refinements are
-        solved; they say roughly which Ka the test accepts. Every cell read
-        again is read with *excess_at*, its nodes included, which scans the
-        other Ka at ``_INNER_PER_DECADE``. What the interval then depends on is where
-        that verdict turns over, so exactly those cells are scanned again at
-        ``_PROFILE_PER_DECADE``, the density a one-Ka interval uses everywhere:
-        every cell whose two nodes disagree, and then cell by cell outward past
-        the accepted ones until a whole cell holds nothing the test accepts, or
-        a Ka bound is reached. An edge is therefore closed only where a full
-        search cell, read five times finer, rejects every Ka in it, while a
-        stretch the nodes accept throughout — an interval the data leave open
-        spans the whole box — costs nothing further.
-
-        The stepwise models need that resolution at the turning points: their
-        profile is a minimum that moves from one K₁·K₂ valley to another, so the
-        accepted Ka can break into stretches narrower than a search cell. Read
-        from the nodes alone the envelope stops short of Ka the test accepts and
-        the gap inside it goes unreported.
-        """
-        nodes = self._grid()[0][self.free_ka.index(ka_key)]
-        excess = {float(ka): node_excess(ka) for ka in nodes.tolist()}
-        dense: set[float] = set()
-        logs = np.log10(nodes)
-        lo, hi = float(logs[0]), float(logs[-1])
-        cell = (hi - lo) / max(nodes.size - 1, 1)
-
-        def scan(a: float, b: float) -> bool:
-            """Profile from ``10**a`` to ``10**b`` at the profile density; whether any Ka there is accepted."""
-            accepts = False
-            for ka in _ka_grid(10.0**a, 10.0**b, _PROFILE_PER_DECADE).tolist():
-                if ka not in dense:
-                    dense.add(ka)
-                    excess[ka] = excess_at(ka)
-                accepts = accepts or excess[ka] <= 0
-            return accepts
-
-        accepted = np.array([excess[ka] <= 0 for ka in nodes.tolist()])
-        turns = np.flatnonzero(accepted[:-1] != accepted[1:])
-        for i in turns:
-            scan(float(logs[i]), float(logs[i + 1]))
-        if not turns.size and not accepted.any():
-            # The fit's own Ka is the only one the test is known to accept, and
-            # it lies between two nodes: that cell is where the interval is.
-            i = int(np.clip(np.searchsorted(logs, np.log10(fit.ka[ka_key])) - 1, 0, max(nodes.size - 2, 0)))
-            scan(float(logs[i]), float(logs[min(i + 1, nodes.size - 1)]))
-        reached = [ka for ka, e in excess.items() if e <= 0] + [fit.ka[ka_key]]
-        left = max(float(np.log10(min(reached))), lo)
-        right = min(float(np.log10(max(reached))), hi)
-        while left > lo and scan(max(left - cell, lo), left):
-            left = max(left - cell, lo)
-        while right < hi and scan(right, min(right + cell, hi)):
-            right = min(right + cell, hi)
-        grid = np.array(sorted(excess))
-        return grid, np.array([excess[ka] for ka in grid.tolist()])
-
     def interval(
         self, ka_key: str, fit: ProjectedFit, level: float = LEVEL, inflation: float = 1.0
     ) -> KaInterval | None:
@@ -1150,16 +1082,17 @@ class Projection:
         (:mod:`core.pipeline.inflation`) that widens the cut-off and the
         one-step test alike; one gives the plain F test.
 
-        Wherever the interval is, the profile is scanned at
-        ``_PROFILE_PER_DECADE`` — across the Ka bounds when *ka_key* is the only
-        free Ka, and around the accepted search-grid nodes when the profile is a
-        minimisation over another Ka (see :meth:`_two_ka_scan`). The envelope of
-        the accepted points is then closed by root finding to ``_LOG_KA_XTOL``
-        decades. A Ka is accepted where its profile is at or below
-        :meth:`cut_off` at its :meth:`profile_point`; where the cut-off steps
-        at an edge, root finding closes the edge on the step. A closed edge of
-        a two-Ka interval that only the bound of the other Ka produces is
-        reported open and names that Ka (see :meth:`_bound_behind`).
+        A Ka is accepted where its profile is at or below :meth:`cut_off` at
+        its :meth:`profile_point`, and :func:`_cut_interval` cuts the interval
+        from the profile. With *ka_key* the only free Ka the profile is read at
+        ``_PROFILE_PER_DECADE`` across the Ka bounds. When it is a minimisation
+        over another Ka, a point costs a search over that Ka, so the
+        search-grid nodes are read first, their scan of the other Ka a row of
+        the cached grid, and the profile is read again at
+        ``_PROFILE_PER_DECADE``, the other Ka scanned at ``_INNER_PER_DECADE``,
+        wherever its verdict turns (:func:`_scan_turns`). A closed edge of a
+        two-Ka interval that only the bound of the other Ka produces is
+        reported open and names that Ka (:meth:`_bound_behind`).
 
         The second constant of a stepwise model is also judged by a one-step
         test. A lower limit on it claims that the second binding step exists,
@@ -1190,33 +1123,31 @@ class Projection:
 
             return at
 
-        two_ka = len(self.free_ka) == 2
-        excess_at = excess(_INNER_PER_DECADE if two_ka else _SEARCH_PER_DECADE)
-        if two_ka:
-            grid, excess_grid = self._two_ka_scan(ka_key, excess(_SEARCH_PER_DECADE), excess_at, fit)
+        dof = self.n_points - self.n_params(fit)
+        if len(self.free_ka) == 1:
+            excess_at = excess(_SEARCH_PER_DECADE)
+            points = {ka: excess_at(ka) for ka in _ka_grid(*self.ka_bounds[ka_key], _PROFILE_PER_DECADE)}
+            interval, _ = _cut_interval(excess_at, points, fit.ka[ka_key], level, dof, inflation)
         else:
-            grid = _ka_grid(*self.ka_bounds[ka_key], _PROFILE_PER_DECADE)
-            excess_grid = np.array([excess_at(ka) for ka in grid])
-        (low, high), (open_low, open_high), split, (unsolvable_low, unsolvable_high) = _interval(
-            excess_at, grid, excess_grid, fit.ka[ka_key]
-        )
-        floor = self._floored(fit)
-        limited_by_low = '' if open_low or not two_ka else self._bound_behind(ka_key, low, cut, floor)
-        limited_by_high = '' if open_high or not two_ka else self._bound_behind(ka_key, high, cut, floor)
-        interval = KaInterval(
-            low=low,
-            high=high,
-            open_low=open_low or bool(limited_by_low),
-            open_high=open_high or bool(limited_by_high),
-            level=level,
-            dof=self.n_points - self.n_params(fit),
-            split=split,
-            unsolvable_low=unsolvable_low,
-            unsolvable_high=unsolvable_high,
-            limited_by_low=limited_by_low,
-            limited_by_high=limited_by_high,
-            inflation=inflation,
-        )
+            (other,) = (k for k in self.free_ka if k != ka_key)
+            objective = self._objective(self._weights(None))
+            floor = self._floored(fit)
+
+            def limited_by(edge: float) -> str:
+                point, at_edge, fitted = self.profile_point(ka_key, edge, _INNER_PER_DECADE)
+                return self._bound_behind(
+                    ka_key,
+                    point[other],
+                    lambda inside: objective({ka_key: edge, other: inside}) - at_edge,
+                    cut(fitted) - floor,
+                )
+
+            nodes = self._grid()[0][self.free_ka.index(ka_key)]
+            node_excess = excess(_SEARCH_PER_DECADE)
+            points = {float(ka): node_excess(ka) for ka in nodes.tolist()}
+            interval, _ = _cut_interval(
+                excess(_INNER_PER_DECADE), points, fit.ka[ka_key], level, dof, inflation, limited_by, nodes
+            )
         if ka_key == self.second_step:
             return _with_one_step_test(interval, self.one_step_p(fit, inflation), self.ka_bounds[ka_key][0])
         return interval
@@ -1244,33 +1175,45 @@ class Projection:
             return None
         _, value, fitted = self.profile_point(self.second_step, 0.0, _INNER_PER_DECADE)
         m = 1 + max(0, self.fitted_parameters(fit.ka).rank - fitted.rank)
-        dof = self.n_points - self.n_params(fit)
-        return float(f_dist.sf((value / self._floored(fit) - 1.0) * dof / (inflation * m), m, dof))
+        return _rise_p(value / self._floored(fit) - 1.0, m, self.n_points - self.n_params(fit), inflation)
 
-    def _bound_behind(self, ka_key: str, edge: float, cut: Callable[[FittedParameters], float], floor: float) -> str:
-        """The other free Ka when its bound, and not the data, is what closes the profile of *ka_key* at *edge*.
+    def _bound_behind(self, ka_key: str, other_ka: float, rise: Callable[[float], float], allowed: float) -> str:
+        """The other free Ka when its bound, and not the data, is what closes the profile of *ka_key* at an edge.
 
-        Along the profile of one constant of a stepwise model the other one
-        compensates, until it reaches its bound; from there the residual rises
-        and crosses the threshold although the data would accept the pair
-        further out. Such a crossing moves with the bound. It shows at the
-        edge itself: the minimum over the other Ka lies on its bound, and the
-        residual still falls towards that bound — by more than ``_BOUND_RISE``
-        of the allowed rise over the last search-grid step, the allowed rise
-        being the edge's own *cut* above *floor*, the best residual. Where the
-        data do set the edge, the other Ka is either inside its bounds or on a
-        bound the residual no longer changes towards.
+        The rule both interval engines apply at a closed edge of a two-Ka
+        interval, each on its own objective. Along the profile of one constant
+        of a stepwise model the other one compensates, until it reaches its
+        bound; from there the objective rises and crosses the cut-off although
+        the data would accept the pair further out. Such a crossing moves with
+        the bound. It shows at the edge itself: the minimum over the other Ka,
+        *other_ka*, lies on its bound (:func:`on_ka_bound`), and the objective
+        still falls towards that bound — *rise*, the objective one search-grid
+        step inside the bound less the objective at the edge, exceeds
+        ``_BOUND_RISE`` of *allowed*, the rise the edge's own cut-off allows
+        above the best objective. Where the data do set the edge, the other Ka
+        is either inside its bounds or on a bound the objective no longer
+        changes towards.
+
+        Parameters
+        ----------
+        ka_key : str
+            The binding constant whose profile has the edge.
+        other_ka : float
+            The other free binding constant at the edge's profile point.
+        rise : Callable[[float], float]
+            The objective at the edge with the other binding constant held at
+            the value it is given, less the objective at the edge.
+        allowed : float
+            The edge's cut-off less the best objective.
         """
         (other,) = (k for k in self.free_ka if k != ka_key)
-        objective = self._objective(self._weights(None))
-        point, at_edge, fitted = self.profile_point(ka_key, edge, _INNER_PER_DECADE)
-        other_ka = point[other]
         lo, hi = self.ka_bounds[other]
-        if other_ka not in (lo, hi):
+        if not on_ka_bound(other_ka, (lo, hi)):
             return ''
         step = 10.0 ** (1.0 / _SEARCH_PER_DECADE)
-        inside = min(other_ka * step, hi) if other_ka == lo else max(other_ka / step, lo)
-        return other if objective({ka_key: edge, other: inside}) - at_edge > _BOUND_RISE * (cut(fitted) - floor) else ''
+        on_low = abs(np.log10(other_ka) - np.log10(lo)) <= abs(np.log10(hi) - np.log10(other_ka))
+        inside = min(lo * step, hi) if on_low else max(hi / step, lo)
+        return other if rise(inside) > _BOUND_RISE * allowed else ''
 
 
 def replicate_outliers(
@@ -1466,6 +1409,25 @@ def _require_inflation(inflation: float) -> None:
         raise ValueError(f'The inflation of a cut-off must be a finite number of one or more; got {inflation!r}.')
 
 
+def _allowed_rise(level: float, m: int, dof: float, inflation: float) -> float:
+    """Relative rise of the residual sum of squares the F test of *m* parameters given up allows at *level*.
+
+    ``kappa m F(level; m, dof) / dof`` with ``kappa`` the design effect
+    *inflation*: the cut-off is ``S_min (1 + rise)``, and on the log scale of
+    the penalised profile ``n log(1 + rise)`` above its minimum.
+    """
+    return inflation * m * f_dist.ppf(level, m, dof) / dof
+
+
+def _rise_p(rise: float, m: int, dof: float, inflation: float) -> float:
+    """p-value of a relative rise of the residual sum of squares by the F test of :func:`_allowed_rise`.
+
+    ``sf(rise dof / (kappa m); m, dof)``: ``1 - level`` or less exactly where
+    *rise* reaches the rise :func:`_allowed_rise` allows at *level*.
+    """
+    return float(f_dist.sf(rise * dof / (inflation * m), m, dof))
+
+
 def _with_one_step_test(interval: KaInterval, one_step_p: float, lower_bound: float) -> KaInterval:
     """*interval* of the second constant of a stepwise model, judged by the one-step test at *one_step_p*.
 
@@ -1540,6 +1502,124 @@ def _refine_at(ssr_fn: Callable[[float], float], grid: np.ndarray, ssr_grid: np.
     if res.fun < ssr_grid[i]:
         return float(10.0**res.x), float(res.fun)
     return float(grid[i]), float(ssr_grid[i])
+
+
+def _cut_interval(
+    excess_at: Callable[[float], float],
+    points: dict[float, float],
+    best_ka: float,
+    level: float,
+    dof: float,
+    inflation: float,
+    limited_by: Callable[[float], str] | None = None,
+    nodes: np.ndarray | None = None,
+) -> tuple[KaInterval, np.ndarray]:
+    """The interval of one binding constant cut from its profile: the one routine of both interval engines.
+
+    Each engine hands in its own objective through *excess_at*, the profile
+    at a Ka minus the cut-off of that profile point's own fit, and the Ka it
+    has read the profile at with their excess, *points*; *best_ka*, the
+    estimate, is always accepted. The fixed-input profile is the residual sum
+    of squares against :meth:`Projection.cut_off`, the penalised one ``n log S
+    + z'z`` against its own step cut-off (:mod:`core.pipeline.input_aware`).
+
+    With the search-grid *nodes* of the constant given, *points* are a coarse
+    reading, and the profile is read again at ``_PROFILE_PER_DECADE`` wherever
+    its verdict turns (:func:`_scan_turns`); without them *points* are the
+    whole profile. :func:`_interval` then closes the envelope of the accepted
+    points by root finding, and *limited_by*, called at each closed edge, low
+    then high, names the binding constant whose bound and not the data closes
+    it (:meth:`Projection._bound_behind`), which opens that side.
+
+    Returns
+    -------
+    tuple[KaInterval, np.ndarray]
+        The interval at *level*, *dof* and *inflation*, and the Ka it was cut
+        from, ascending.
+    """
+    if nodes is not None:
+        _scan_turns(points, excess_at, best_ka, nodes)
+    grid = np.array(sorted(points))
+    excess_grid = np.array([points[ka] for ka in grid.tolist()])
+    (low, high), (open_low, open_high), split, (unsolvable_low, unsolvable_high) = _interval(
+        excess_at, grid, excess_grid, best_ka
+    )
+    limited_by_low = '' if open_low or limited_by is None else limited_by(low)
+    limited_by_high = '' if open_high or limited_by is None else limited_by(high)
+    interval = KaInterval(
+        low=low,
+        high=high,
+        open_low=open_low or bool(limited_by_low),
+        open_high=open_high or bool(limited_by_high),
+        level=level,
+        dof=dof,
+        split=split,
+        unsolvable_low=unsolvable_low,
+        unsolvable_high=unsolvable_high,
+        limited_by_low=limited_by_low,
+        limited_by_high=limited_by_high,
+        inflation=inflation,
+    )
+    return interval, grid
+
+
+def _scan_turns(
+    points: dict[float, float], excess_at: Callable[[float], float], best_ka: float, nodes: np.ndarray
+) -> None:
+    """Read a coarse profile again at ``_PROFILE_PER_DECADE`` wherever its verdict turns, adding to *points*.
+
+    *points* holds the excess of the profile at the Ka read so far, at most
+    one per search-grid node of *nodes*. What the interval depends on is
+    where the verdict of the test turns over, so exactly those stretches are
+    read again at the density a one-Ka fixed-input interval uses everywhere:
+    every stretch between two neighbouring points that disagree, and then
+    search cell by search cell outward past the accepted points until a whole
+    cell holds nothing the test accepts, or a Ka bound is reached. An edge is
+    therefore closed only where a full search cell, read five times finer,
+    rejects every Ka in it, while a stretch the coarse points accept
+    throughout costs nothing further. When no coarse point is accepted, the
+    stretch around the estimate is read.
+
+    The stepwise models need that resolution at the turning points: their
+    profile is a minimum that moves from one K₁·K₂ valley to another, and the
+    cut-off steps where a signal parameter reaches its bound, so the accepted
+    Ka can break into stretches narrower than a search cell. Read from the
+    nodes alone the envelope stops short of Ka the test accepts and the gap
+    inside it goes unreported.
+    """
+    coarse = np.array(sorted(points))
+    logs = np.log10(coarse)
+    node_logs = np.log10(nodes)
+    lo, hi = float(node_logs[0]), float(node_logs[-1])
+    cell = (hi - lo) / max(nodes.size - 1, 1)
+    dense: set[float] = set()
+
+    def scan(a: float, b: float) -> bool:
+        """Profile from ``10**a`` to ``10**b`` at the profile density; whether any Ka there is accepted."""
+        accepts = False
+        for ka in _ka_grid(10.0**a, 10.0**b, _PROFILE_PER_DECADE).tolist():
+            if ka not in dense:
+                dense.add(ka)
+                points[ka] = excess_at(ka)
+            accepts = accepts or points[ka] <= 0
+        return accepts
+
+    accepted = np.array([points[ka] <= 0 for ka in coarse.tolist()])
+    turns = np.flatnonzero(accepted[:-1] != accepted[1:])
+    for i in turns:
+        scan(float(logs[i]), float(logs[i + 1]))
+    if not turns.size and not accepted.any():
+        # The estimate is the only Ka the test is known to accept, and it lies
+        # between two coarse points: that stretch is where the interval is.
+        i = int(np.clip(np.searchsorted(logs, np.log10(best_ka)) - 1, 0, max(coarse.size - 2, 0)))
+        scan(float(logs[i]), float(logs[min(i + 1, coarse.size - 1)]))
+    reached = [ka for ka, e in points.items() if e <= 0] + [best_ka]
+    left = max(float(np.log10(min(reached))), lo)
+    right = min(float(np.log10(max(reached))), hi)
+    while left > lo and scan(max(left - cell, lo), left):
+        left = max(left - cell, lo)
+    while right < hi and scan(right, min(right + cell, hi)):
+        right = min(right + cell, hi)
 
 
 def _interval(
