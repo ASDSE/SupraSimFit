@@ -864,13 +864,13 @@ def test_import_of_a_released_file_with_bare_number_conditions_is_checked_and_sh
     assert 'This fit was made on replicates A–C with [Host]₀ = 10 µM.' in session.hidden_results_note()
 
 
-def test_import_of_a_file_written_before_the_arithmetic_marker_says_its_numbers_were_recomputed(
+def test_import_of_a_file_written_before_the_arithmetic_marker_is_shown_as_stored(
     qapp, make_session, dialogs, monkeypatch
 ):
     """``unmarked_gda.json`` stores the scores of a less precise equilibrium solve.
 
-    Its fit is shown; the one notice tells the user which of its numbers the app
-    computed again.
+    They reproduce at that solve's precision, so the fit is shown with the
+    numbers the file holds and nothing to tell the user.
     """
     fixtures = Path(__file__).resolve().parents[2] / 'fixtures' / 'results'
     conditions = {'Ka_dye': 1e7, 'h0': 2e-7, 'g0': 2e-7}
@@ -889,22 +889,15 @@ def test_import_of_a_file_written_before_the_arithmetic_marker_says_its_numbers_
     session.import_results()
 
     assert dialogs['warning'] == []
-    ((_, title, text),) = dialogs['information']
-    assert title == 'Imported Results'
-    assert text == (
-        'unmarked_gda.json was written by an earlier version of SupraSimFit. Its R², RMSE and fit curve were '
-        'computed again with the equilibrium solution this version uses. The fitted values are unchanged.'
-    )
+    assert dialogs['information'] == []
     (shown,) = session._state.fit_results
-    assert shown.parameters['Ka_guest'].magnitude > 0
+    stored = json.loads((fixtures / 'unmarked_gda.json').read_text())
+    assert (shown.rmse, shown.r_squared) == (stored['rmse'], stored['r_squared'])
     assert shown.intervals is None, 'a file written before intervals were reported carries none'
 
 
-def test_import_of_a_released_per_replicate_file_gives_both_reasons_its_numbers_changed(
-    qapp, make_session, dialogs, monkeypatch
-):
-    """``v150_pr_drop.json`` scored its numbers against a replicate the fit left out *and* records no
-    arithmetic, so the app rebuilt them twice over and owes the user both reasons."""
+def test_import_of_a_released_per_replicate_file_says_why_its_numbers_changed(qapp, make_session, dialogs, monkeypatch):
+    """``v150_pr_drop.json`` scored its numbers against a replicate the fit left out, so the app rebuilt them."""
     root = Path(__file__).resolve().parents[3]
     fixtures = root / 'tests' / 'fixtures' / 'results'
     session = make_session()
@@ -922,11 +915,28 @@ def test_import_of_a_released_per_replicate_file_gives_both_reasons_its_numbers_
 
     assert dialogs['warning'] == []
     ((_, _, text),) = dialogs['information']
-    assert 'did not describe the replicates each fit used' in text
-    assert 'written by an earlier version' in text
-    assert text.index('replicates each fit used') < text.index('written by an earlier version'), (
-        'the replicate reason comes first'
+    assert text == (
+        'Some numbers stored in v150_pr_drop.json did not describe the replicates each fit used, so the R², RMSE '
+        'and curve were recomputed on those replicates.'
     )
+
+
+def test_import_of_results_that_cannot_be_checked_on_the_loaded_data_says_so(
+    qapp, make_session, fit, dialogs, monkeypatch, tmp_path
+):
+    """A file naming an arithmetic this version does not have is shown as stored, with a notice why."""
+    later = fit.to_dict()
+    later['metadata']['model_arithmetic'] = later['metadata']['model_arithmetic'] + 1
+    session = make_session(_data())
+
+    _import(session, monkeypatch, tmp_path, [FitResult.from_dict(later)])
+
+    (shown,) = session._state.held_fit_results
+    assert (shown.rmse, shown.r_squared) == (fit.rmse, fit.r_squared)
+    ((_, title, text),) = dialogs['information']
+    assert title == 'Imported Results'
+    assert 'could not be checked against the data loaded now' in text
+    assert 'shown as stored in the file' in text
 
 
 def test_import_without_data_shows_the_stored_numbers_unchecked(

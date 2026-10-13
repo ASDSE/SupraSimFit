@@ -31,10 +31,9 @@ from core.pipeline.fit_pipeline import (
     fit_assay,
     fit_measurement_set,
     fit_measurement_set_per_replica,
-    fit_replica_ids,
-    summarize_parameters,
 )
 from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec
+from core.pipeline.reporting import fit_replica_ids, summarize_parameters
 from core.units import Q_
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data, assert_within_tolerance
 

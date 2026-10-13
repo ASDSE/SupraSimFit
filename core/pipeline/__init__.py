@@ -3,13 +3,12 @@
 from core.pipeline.fit_pipeline import (
     FitConfig,
     FitResult,
-    ParameterSummary,
     bounds_from_dye_alone,
     fit_assay,
     fit_linear_assay,
     fit_measurement_set,
-    summarize_parameters,
 )
+from core.pipeline.reporting import ParameterSummary, summarize_parameters
 
 __all__ = [
     'FitResult',

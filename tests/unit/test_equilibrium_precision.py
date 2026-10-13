@@ -18,12 +18,10 @@ two, plus the rounding of the three to five operations that form a species),
 import math
 import random
 import sys
-import threading
 from fractions import Fraction as F
 
 import numpy as np
 import pytest
-from scipy.optimize import brentq
 
 from core.models.equilibrium import (
     competitive_species_point,
@@ -32,7 +30,6 @@ from core.models.equilibrium import (
     h2g_species,
     hg2_species,
     ida_species,
-    legacy_arithmetic,
 )
 
 EPS = F(sys.float_info.epsilon)
@@ -411,75 +408,3 @@ def test_a_free_concentration_far_above_its_own_lower_bound_is_solved_for():
     for Kd, h0, d0 in ((1e308, 1e-6, 1e-6), (5e307, 1e-6, 1e-6)):
         got = competitive_species_point(0.0, Kd, h0, d0, 0.0)['H']
         _certify_free(_host_balance(0.0, Kd, h0, d0, 0.0), got, h0, f'Kd={Kd!r} h0={h0!r} d0={d0!r}')
-
-
-# ---------------------------------------------------------------------------
-# Arithmetic of results files without a `model_arithmetic` entry
-# ---------------------------------------------------------------------------
-
-
-class TestLegacyArithmetic:
-    """Inside ``legacy_arithmetic()`` the two iterative solves are Brent's method at the absolute
-    tolerance and bracket written out below; everywhere else they are the relative-precision solves."""
-
-    competitive = (1e11, 1e7, 4e-6, 6e-6, 2e-5)  # Kg, Kd, h0, d0, g0: free host about 1e-13 M
-    stepwise = (1e9, 1e8, 4e-6, 1.2e-5)  # K1, K2, core, ligand
-
-    def _absolute_tolerance_host(self):
-        Kg, Kd, h0, d0, g0 = self.competitive
-        return brentq(
-            lambda h: h + (Kd * h * d0) / (1 + Kd * h) + (Kg * h * g0) / (1 + Kg * h) - h0,
-            1e-20,
-            h0,
-            xtol=1e-14,
-            maxiter=1000,
-        )
-
-    def _absolute_tolerance_ligand(self):
-        K1, K2, core, ligand = self.stepwise
-
-        def balance(x):
-            return x + core * (K1 * x + 2.0 * K1 * K2 * x * x) / (1.0 + K1 * x + K1 * K2 * x * x) - ligand
-
-        return brentq(balance, 0.0, ligand, xtol=1e-15, maxiter=1000)
-
-    def _solve(self):
-        K1, K2, core, ligand = self.stepwise
-        return (
-            competitive_species_point(*self.competitive)['H'],
-            float(hg2_species(K1, K2, core, np.array([ligand]))['G'][0]),
-            float(h2g_species(K1, K2, ligand, np.array([core]))['H'][0]),
-        )
-
-    def test_reproduces_the_absolute_tolerance_solves(self):
-        expected_h, expected_l = self._absolute_tolerance_host(), self._absolute_tolerance_ligand()
-        with legacy_arithmetic():
-            assert self._solve() == (expected_h, expected_l, expected_l)
-        # The case is one where the two arithmetics differ, so the equality above is not vacuous.
-        assert not _brackets_root(_host_balance(*self.competitive), expected_h, 10**6)
-
-    def test_is_off_outside_the_block_even_after_an_error(self):
-        before = self._solve()
-        with pytest.raises(KeyError):
-            with legacy_arithmetic():
-                assert self._solve() != before
-                raise KeyError
-        assert self._solve() == before
-        assert _brackets_root(_host_balance(*self.competitive), before[0], 8)
-
-    def test_does_not_reach_another_thread(self):
-        """A check on the GUI thread leaves a fit running in a worker thread on the present arithmetic."""
-        expected, seen = self._solve(), []
-        with legacy_arithmetic():
-            worker = threading.Thread(target=lambda: seen.append(self._solve()))
-            worker.start()
-            worker.join()
-        assert seen == [expected]
-
-    def test_direct_binding_is_the_same_in_both(self):
-        x = np.array([1e-6, 4e-6, 2e-5])
-        now = dba_species(1e9, x, 4e-6, mode='HtoD')
-        with legacy_arithmetic():
-            then = dba_species(1e9, x, 4e-6, mode='HtoD')
-        for k in now:
-            np.testing.assert_array_equal(now[k], then[k])

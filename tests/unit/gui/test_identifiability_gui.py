@@ -14,14 +14,9 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind  # noqa: E
 from core.pipeline.diagnostics import Conflict, FitDiagnostics, InputShift, MisfitTest, Verdict  # noqa: E402
 from core.pipeline.fit_pipeline import FitResult  # noqa: E402
 from core.pipeline.input_aware import AwareProfile  # noqa: E402
+from core.pipeline.inputs import TITRANT, InputSpec  # noqa: E402
 from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet  # noqa: E402
-from core.pipeline.sensitivity import (  # noqa: E402
-    TITRANT,
-    InputSpec,
-    SensitivityConfig,
-    SensitivityMode,
-    SensitivityResult,
-)
+from core.pipeline.sensitivity import SensitivityConfig, SensitivityMode, SensitivityResult  # noqa: E402
 from core.pipeline.varpro import KaInterval  # noqa: E402
 from core.units import Q_  # noqa: E402
 

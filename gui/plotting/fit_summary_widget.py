@@ -25,15 +25,15 @@ from PyQt6.QtWidgets import (
 from core.assays.registry import AssayType
 from core.optimizer.ensemble import describe, describe_log10
 from core.pipeline.diagnostics import LOF_BOOTSTRAP_DRAWS
-from core.pipeline.fit_pipeline import (
-    FitResult,
+from core.pipeline.fit_pipeline import FitResult
+from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, InputSpec, input_name, shared_key
+from core.pipeline.reporting import (
     ParameterSummary,
     fit_replica_ids,
     input_replica_ids,
     parameters_on_bound,
     summarize_parameters,
 )
-from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, InputSpec, input_name, shared_key
 from core.pipeline.sensitivity import SensitivityMode, SensitivityResult
 from core.pipeline.varpro import LEVEL, SECOND_STEP_LEVEL
 from core.units import Q_, Quantity
@@ -1003,7 +1003,7 @@ class FitSummaryWidget(QWidget):
     With the samples view requested but nothing to summarise (no run, a run
     still going, a heatmap, or no fitted samples), the fit view shows with a
     caption saying why. Rows always come from
-    :func:`~core.pipeline.fit_pipeline.summarize_parameters`, shared with the
+    :func:`~core.pipeline.reporting.summarize_parameters`, shared with the
     plot annotation and the exports.
 
     A fit or a sensitivity run that no longer matches the loaded selection is

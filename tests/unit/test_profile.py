@@ -38,7 +38,7 @@ import pathlib
 
 import numpy as np
 import pytest
-from scipy.optimize import lsq_linear
+from scipy.optimize import brentq, lsq_linear
 from scipy.stats import f as f_dist
 
 from core.assays.dba import DBAAssay
@@ -48,7 +48,6 @@ from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.io import load_measurements
-from core.models.equilibrium import legacy_arithmetic
 from core.optimizer.filters import calculate_fit_metrics
 from core.pipeline import profile as profile_module
 from core.pipeline import varpro
@@ -502,7 +501,7 @@ def test_the_ka_grid_spans_bounds_whose_ratio_no_double_holds():
     assert grid.size > 316 * varpro._PROFILE_PER_DECADE
 
 
-def test_the_profiled_residuals_fall_and_rise_once_across_the_tight_binding_decades():
+def test_the_profiled_residuals_fall_and_rise_once_across_the_tight_binding_decades(monkeypatch):
     # The best SSR at a fixed Ka is a smooth function of Ka: the data make it
     # fall and rise, and it has one minimum over a range where nothing else
     # happens. A speciation whose relative accuracy decays with Ka roughens it
@@ -517,11 +516,17 @@ def test_the_profiled_residuals_fall_and_rise_once_across_the_tight_binding_deca
     ssr = np.array([float(projection.row_ssr({'Ka_guest': ka})[0]) for ka in grid])
     assert _strict_local_minima(ssr) <= 1
 
-    # The same curve solved with the arithmetic that results files of earlier
-    # versions were written with, which is kept to re-score them: it is the
-    # solve, not the data, that these minima come from.
-    with legacy_arithmetic():
-        rough = np.array([float(projection.row_ssr({'Ka_guest': ka})[0]) for ka in grid])
+    # The same curve with free host solved to an absolute 1e-14 M instead, by
+    # Brent's method on the balance summed as it stands: it is the solve, not
+    # the data, that minima come from.
+    def absolute_tolerance_host(Kg, Kd, h0, d0, g0):
+        def balance(h):
+            return h + Kd * h * d0 / (1 + Kd * h) + Kg * h * g0 / (1 + Kg * h) - h0
+
+        return brentq(balance, 1e-20, h0, xtol=1e-14)
+
+    monkeypatch.setattr('core.models.equilibrium._competitive_free_host', absolute_tolerance_host)
+    rough = np.array([float(projection.row_ssr({'Ka_guest': ka})[0]) for ka in grid])
     assert _strict_local_minima(rough) > 10
 
 

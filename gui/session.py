@@ -13,15 +13,15 @@ from typing import TYPE_CHECKING, Callable, Sequence
 
 from core.assays.registry import AssayType
 from core.pipeline.diagnostics import MisfitTest
-from core.pipeline.fit_pipeline import (
-    FitResult,
+from core.pipeline.fit_pipeline import FitResult
+from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, InputSpec, SpecKind, shared_key
+from core.pipeline.reporting import (
     ParameterSummary,
     fit_replica_ids,
     input_replica_ids,
     parameters_on_bound,
     summarize_parameters,
 )
-from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, InputSpec, SpecKind, shared_key
 from core.pipeline.sensitivity import SensitivityMode
 from core.pipeline.varpro import SECOND_STEP_LEVEL
 from core.units import Quantity

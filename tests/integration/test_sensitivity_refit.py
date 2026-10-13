@@ -20,13 +20,8 @@ import pytest
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measurement_set, fit_view
-from core.pipeline.sensitivity import (
-    ErrorModel,
-    InputSpec,
-    SensitivityConfig,
-    SensitivityMode,
-    run_sensitivity,
-)
+from core.pipeline.inputs import ErrorModel, InputSpec
+from core.pipeline.sensitivity import SensitivityConfig, SensitivityMode, run_sensitivity
 from core.pipeline.varpro import Projection
 from core.units import Q_
 from tests.conftest import (

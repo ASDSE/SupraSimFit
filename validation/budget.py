@@ -26,15 +26,10 @@ from scipy.stats import truncnorm
 
 from core.assays import ASSAY_CLASSES
 from core.assays.registry import AssayType
+from core.pipeline.budget import homogeneity_sum, what_if
 from core.pipeline.fit_pipeline import FitConfig
 from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec, SpecKind, perturbable_inputs, shared_key
-from core.pipeline.sensitivity import (
-    SensitivityConfig,
-    SensitivityMode,
-    homogeneity_sum,
-    run_sensitivity,
-    what_if,
-)
+from core.pipeline.sensitivity import SensitivityConfig, SensitivityMode, run_sensitivity
 from validation.generate import dataset
 from validation.scenarios import (
     SHARED_STOCK,
@@ -208,7 +203,7 @@ def exact_row(case: BudgetCase, seed: int) -> dict[str, Any]:
 def _narrowed(spec: InputSpec, ratio: float) -> InputSpec:
     """*spec* at *ratio* of its width: a standard deviation scaled, a range shrunk about its centre.
 
-    That is the reduced distribution :func:`~core.pipeline.sensitivity.what_if`
+    That is the reduced distribution :func:`~core.pipeline.budget.what_if`
     re-weights the samples towards, so the second analysis and the cross-check
     answer about the same source.
     """

@@ -55,11 +55,12 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
-from core.pipeline.fit_pipeline import FitResult, fit_replica_ids, input_replica_ids, summarize_parameters
+from core.pipeline.fit_pipeline import FitResult
 from core.pipeline.input_aware import AwareProfile
-from core.pipeline.inputs import ErrorModel
+from core.pipeline.inputs import TITRANT, ErrorModel
 from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet
-from core.pipeline.sensitivity import TITRANT, SensitivityResult
+from core.pipeline.reporting import fit_replica_ids, input_replica_ids, summarize_parameters
+from core.pipeline.sensitivity import SensitivityResult
 from core.pipeline.varpro import SECOND_STEP_LEVEL, KaInterval
 from gui.plotting.colors import INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
 from gui.plotting.labels import (

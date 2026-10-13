@@ -50,19 +50,22 @@ pytest.importorskip('PyQt6')
 import pyqtgraph as pg  # noqa: E402
 
 from core.assays.registry import AssayType  # noqa: E402
+from core.pipeline.budget import Budget, BudgetRow, WhatIf  # noqa: E402
 from core.pipeline.fit_pipeline import FitResult  # noqa: E402
-from core.pipeline.inputs import AdditionError, ErrorModel, SharedSource, shared_key  # noqa: E402
-from core.pipeline.sensitivity import (  # noqa: E402
-    _SOBOL_BLOCKS,
+from core.pipeline.inputs import (  # noqa: E402
     ADDITIONS,
     TITRANT,
-    Budget,
-    BudgetRow,
+    AdditionError,
+    ErrorModel,
     InputSpec,
+    SharedSource,
+    shared_key,
+)
+from core.pipeline.sensitivity import (  # noqa: E402
+    _SOBOL_BLOCKS,
     SensitivityConfig,
     SensitivityMode,
     SensitivityResult,
-    WhatIf,
 )
 from core.units import Q_  # noqa: E402
 
@@ -1733,7 +1736,8 @@ def test_one_run_is_quoted_the_same_number_of_fits_wherever_it_is_counted(qapp, 
     """
     from PyQt6.QtWidgets import QMessageBox
 
-    from core.pipeline.sensitivity import estimated_fit_count, perturbable_inputs
+    from core.pipeline.inputs import perturbable_inputs
+    from core.pipeline.sensitivity import estimated_fit_count
     from gui import workers
 
     def run(ms, assay_cls, conditions, fit_config, sens_config, *, progress, **kwargs):
@@ -1922,7 +1926,7 @@ def test_the_header_line_states_the_spread_and_the_interval_of_the_spread(qapp):
 
 def test_a_budget_no_run_could_pin_down_says_so_instead_of_writing_nan(qapp):
     """Too few finished fits leave no variance; the line says that, rather than printing a number that is not one."""
-    from core.pipeline.sensitivity import Budget
+    from core.pipeline.budget import Budget
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
     result = _sobol_result()
@@ -1972,27 +1976,6 @@ def test_the_what_if_sentence_leads_with_the_re_weighted_answer(qapp, monkeypatc
         '(1,111 effective samples). Cross-check by the formula: 0.056. '
         f'{w._input_label(AssayType.IDA, "h0")} would then be the largest item.'
     )
-
-
-def test_the_what_if_sentence_leads_with_the_formula_when_too_few_samples_carry_the_re_weighting(qapp, monkeypatch):
-    """Under _REWEIGHT_MIN_EFFECTIVE the re-weighted variance is no more certain than the formula it would check.
-
-    So the formula states the spread, and the sentence says the re-weighted
-    number is missing rather than quietly leading with it.
-    """
-    from dataclasses import replace as replace_dc
-
-    from gui.plotting import sensitivity_widget as widget_module
-    from gui.plotting.sensitivity_widget import SensitivityWidget
-
-    monkeypatch.setattr(widget_module, 'what_if', lambda *args: replace_dc(_KNOWN_WHAT_IF, effective_samples=150.0))
-    w = SensitivityWidget()
-    w.update_result(_sobol_result())
-    _, _, sentence = w._what_if['Ka_guest']
-
-    assert 'to 0.056 decades (×/÷&nbsp;1.14). ' in sentence.text()
-    assert '0.057' not in sentence.text()
-    assert '(no cross-check: too few samples carry weight at this reduction).' in sentence.text()
 
 
 def test_the_what_if_sentence_says_when_no_cross_check_backs_it(qapp, monkeypatch):
@@ -2357,7 +2340,7 @@ def test_the_exported_budget_carries_the_numbers_the_table_rounds(qapp):
 
 def test_the_exported_budget_leaves_out_what_the_run_could_not_pin_down(qapp):
     """A cell the analysis has no number for is empty in the file, never the text 'nan'."""
-    from core.pipeline.sensitivity import Budget, BudgetRow
+    from core.pipeline.budget import Budget, BudgetRow
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
     result = _sobol_result()

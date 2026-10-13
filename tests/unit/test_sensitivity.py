@@ -27,6 +27,14 @@ implementation:
 - the Sobol' design is made of independent scrambles, and the t-intervals the
   delete-one-block jackknife over them gives cover the analytic Ishigami
   indices at close to their stated 95 %;
+- the estimator's variance, explained variances and spreads-if-exact are the
+  sums of squares of a linear-additive Gaussian function, and a group of
+  columns (Ishigami inputs 1 and 3) is reported as one item whose first-order
+  and total index are both ``1 - S_2``;
+- the Saltelli design of the stated sources (``sobol_jobs``): own sources
+  reproduce ``spec_fraction`` column by column, a shared source moves every
+  input it loads, and the additions add one column per titration point,
+  reported as one item and sampled at ``sigma / sqrt(replicates)``;
 - a stopped run keeps the sample blocks all of whose fits finished, and its
   indices are those of the design over exactly those blocks;
 - the indices, budget and elasticities of a constant are flagged as withheld
@@ -44,6 +52,7 @@ Runs that need real worker processes live in
 
 import ast
 import dataclasses
+import math
 import os
 import pathlib
 import threading
@@ -51,6 +60,7 @@ from itertools import count
 
 import numpy as np
 import pytest
+from scipy.stats import norm
 from scipy.stats import t as student_t
 
 import core.pipeline.sensitivity as sens
@@ -62,27 +72,36 @@ from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.optimizer.filters import calculate_fit_metrics
+from core.pipeline.budget import homogeneity_sum
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measurement_set
-from core.pipeline.profile import fit_profile
-from core.pipeline.sensitivity import (
-    LONG_RUN_SOLVES,
+from core.pipeline.inputs import (
+    ADDITIONS,
     TITRANT,
+    AdditionError,
     ErrorModel,
     InputSpec,
+    SharedSource,
+    input_name,
+    nominal_value,
+    perturbable_inputs,
+    shared_key,
+    spec_bounds,
+    spec_fraction,
+)
+from core.pipeline.profile import fit_profile
+from core.pipeline.reporting import fit_replica_ids
+from core.pipeline.sensitivity import (
+    LONG_RUN_SOLVES,
     SensitivityConfig,
     SensitivityMode,
     default_worker_count,
     estimated_fit_count,
     estimated_model_solves,
-    input_name,
-    nominal_value,
-    perturbable_inputs,
     run_sensitivity,
     sobol_design,
     sobol_indices_from_outputs,
     sobol_indices_with_ci,
-    spec_bounds,
-    spec_fraction,
+    sobol_jobs,
 )
 from core.pipeline.varpro import FitCancelled, FitRefused, Projection
 from core.units import Q_
@@ -102,6 +121,8 @@ from tests.conftest import (
 )
 
 _N_POINTS = 20
+_BLOCKS = sens._SOBOL_BLOCKS
+_N = 2048
 
 
 @pytest.fixture
@@ -117,6 +138,7 @@ _IDA_CONDITIONS = {
     'h0': Q_(IDA_TRUE['h0'], 'M'),
     'd0': Q_(IDA_TRUE['d0'], 'M'),
 }
+_STOCK = SharedSource('Host and dye stock', 4.0, ('h0', 'd0'))
 
 
 def _noisy_ida_setup(n_replicas: int, *, per_replica: bool, noise_frac: float = 0.02, proportional: bool = False):
@@ -417,17 +439,6 @@ def test_elasticities_that_break_the_homogeneity_identity_are_withheld(monkeypat
     assert result.withheld == {'Ka_guest': withheld}
 
 
-def test_the_tolerance_on_the_identity_is_a_few_refit_resolutions():
-    """Ten times the slope error two refits resolved to ``_LOG_KA_XTOL`` leave, per input.
-
-    Well above what identified fits miss by (at most 6e-4 over the six binding
-    assays) and far below what a flat or jumping refit misses by (0.8 and more).
-    """
-    per_slope = 2 * 1e-7 * np.log(10) / (np.log1p(1e-3) - np.log1p(-1e-3))
-    assert sens.homogeneity_tolerance(4) == pytest.approx(10 * 4 * per_slope, rel=1e-12)
-    assert 6e-4 < sens.homogeneity_tolerance(2) < sens.homogeneity_tolerance(4) < 0.8
-
-
 def test_a_signal_coefficient_held_by_a_finite_bound_takes_the_identity_out_of_play(monkeypatch):
     """A coefficient on a bound a change of unit would move keeps the refits from following the scaling.
 
@@ -438,7 +449,7 @@ def test_a_signal_coefficient_held_by_a_finite_bound_takes_the_identity_out_of_p
     """
     _use_small_design(monkeypatch, 2)
     setup = _noisy_ida_setup(1, per_replica=False)
-    held = sens._resolve_bounds(setup[0].to_assay(IDAAssay, conditions=setup[2]), setup[3].custom_bounds)
+    held = _resolve_bounds(setup[0].to_assay(IDAAssay, conditions=setup[2]), setup[3].custom_bounds)
     baseline = fit_measurement_set(*setup)
     assert any(
         baseline.parameters[key].to(held[key][0].units).magnitude in (end.magnitude for end in held[key])
@@ -487,7 +498,7 @@ def test_an_identified_fit_obeys_the_identity_through_the_run(monkeypatch):
     )
 
     kinds = dict(perturbable_inputs(setup[2]))
-    assert result.homogeneity['Ka_guest'] == pytest.approx(sens.homogeneity_sum(result.elasticity['Ka_guest'], kinds))
+    assert result.homogeneity['Ka_guest'] == pytest.approx(homogeneity_sum(result.elasticity['Ka_guest'], kinds))
     assert abs(result.homogeneity['Ka_guest'] + 1) < 1e-3
     assert result.withheld == {'Ka_guest': ''}
 
@@ -701,6 +712,16 @@ def test_estimated_fit_count_heatmap_is_grid_squared():
     assert estimated_fit_count(cfg, 4) == 49
 
 
+def test_fit_count_is_one_matrix_per_reported_item_plus_the_elasticity_refits():
+    """Three single sources and the additions are four items whatever the number of points: N (4 + 2) + 2 x 4."""
+    errors = ErrorModel(
+        specs={'h0': InputSpec.sigma_pct(3.0), 'd0': InputSpec.sigma_pct(0.0), TITRANT: InputSpec.sigma_pct(2.0)},
+        shared=(_STOCK,),
+        additions=AdditionError(1.0, sequential=True),
+    )
+    assert estimated_fit_count(SensitivityConfig(SensitivityMode.SOBOL, 1024, errors), 4) == 1024 * 6 + 8
+
+
 _SIZING_CONFIG = SensitivityConfig(
     SensitivityMode.HEATMAP,
     1,
@@ -872,6 +893,29 @@ def test_dye_alone_has_no_ka_to_analyse():
     cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}))
     with pytest.raises(ValueError, match='association constant'):
         run_sensitivity(ms, DyeAloneAssay, {}, FitConfig(), cfg)
+
+
+def test_sequential_additions_on_a_falling_series_are_refused_before_any_fit(ida_setup, monkeypatch):
+    ms, assay_cls, conditions, fit_config = ida_setup
+    x = np.array(ms.concentrations)
+    x[[4, 5]] = x[[5, 4]]
+    falling = MeasurementSet(concentrations=x, signals=ms.signals, replica_ids=ms.replica_ids)
+    monkeypatch.setattr(sens, 'fit_measurement_set', lambda *a, **k: pytest.fail('no fit may run'))
+    errors = ErrorModel(additions=AdditionError(1.0, sequential=True))
+
+    with pytest.raises(FitRefused, match='falls at point 6'):
+        run_sensitivity(
+            falling, assay_cls, conditions, fit_config, SensitivityConfig(SensitivityMode.SOBOL, 1024, errors)
+        )
+
+
+def test_a_heatmap_needs_an_input_with_an_uncertainty_of_its_own(ida_setup):
+    """Shared sources and the additions are sampled by the Sobol analysis only; a heatmap of them alone sweeps nothing."""
+    ms, assay_cls, conditions, fit_config = ida_setup
+    cfg = SensitivityConfig(SensitivityMode.HEATMAP, 1, ErrorModel(shared=(_STOCK,)), x_key='h0', y_key='d0', n_steps=3)
+
+    with pytest.raises(FitRefused, match='uncertainty of its own'):
+        run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
 
 
 _MESSAGE_CONFIGS = {
@@ -1174,6 +1218,167 @@ def test_sobol_run_reports_an_index_per_varied_input(ida_setup, monkeypatch):
     assert result.n_total == result.n_planned == estimated_fit_count(cfg, 4)
 
 
+def _outputs(function, n_columns: int, groups: list[list[int]], seed: int):
+    """``(f_A, f_B, [f_AB_g])`` of *function* on a design, ``AB_g`` being A with the columns of g from B."""
+    a_points, b_points = sobol_design(_N, n_columns, _BLOCKS, seed)
+    mixed = []
+    for group in groups:
+        points = a_points.copy()
+        points[:, group] = b_points[:, group]
+        mixed.append(function(points))
+    return function(a_points), function(b_points), mixed
+
+
+def test_budget_of_a_linear_gaussian_function_is_its_sum_of_squares():
+    """``Y = sum a_i z_i`` with standard normal ``z``: V = sum a_i², V_i = a_i², SD without i = sqrt(V - a_i²)."""
+    a = np.array([0.08, 0.05, 0.02])
+    estimate = sobol_indices_with_ci(
+        *_outputs(lambda points: 3.0 + norm.ppf(points) @ a, 3, [[0], [1], [2]], seed=11), _BLOCKS
+    )
+
+    variance = float(np.sum(a**2))
+    assert estimate.variance == pytest.approx(variance, rel=0.03)
+    np.testing.assert_allclose(estimate.source_variance, a**2, rtol=0.05, atol=0.02 * variance)
+    np.testing.assert_allclose(estimate.sd_if_exact, np.sqrt(variance - a**2), rtol=0.03)
+    np.testing.assert_allclose(estimate.s1, a**2 / variance, atol=0.02)
+    np.testing.assert_allclose(estimate.st, a**2 / variance, atol=0.02)
+    # Every interval is around its own estimate and no wider than the quantity is known to a tenth of the variance.
+    for value, interval in (
+        (estimate.variance, np.array([estimate.variance_ci])),
+        (estimate.source_variance, estimate.source_variance_ci),
+        (estimate.sd_if_exact, estimate.sd_if_exact_ci),
+    ):
+        assert np.all(interval[:, 0] < value) and np.all(value < interval[:, 1])
+    assert np.all(np.diff(estimate.source_variance_ci, axis=1) < 0.1 * variance)
+
+
+def test_a_group_of_columns_is_reported_as_one_item():
+    """Ishigami inputs 1 and 3 interact with each other and not with input 2.
+
+    The closed first-order index of the group {1, 3} is everything input 2 does
+    not explain alone, and so is its total index: both are ``1 - S_2``, while
+    the single first-order indices of 1 and 3 add up to less (their interaction
+    is inside the group). ``S_2 = (a²/8) / V`` in closed form.
+    """
+    a, b = 7.0, 0.1
+
+    def ishigami(points):
+        x = np.pi * (2.0 * points - 1.0)
+        return np.sin(x[:, 0]) + a * np.sin(x[:, 1]) ** 2 + b * x[:, 2] ** 4 * np.sin(x[:, 0])
+
+    variance = a**2 / 8 + b * np.pi**4 / 5 + b**2 * np.pi**8 / 18 + 0.5
+    s2 = (a**2 / 8) / variance
+    estimate = sobol_indices_with_ci(*_outputs(ishigami, 3, [[1], [0, 2]], seed=5), _BLOCKS)
+
+    assert estimate.variance == pytest.approx(variance, rel=0.03)
+    np.testing.assert_allclose(estimate.s1, [s2, 1 - s2], atol=0.03)
+    np.testing.assert_allclose(estimate.st, [s2, 1 - s2], atol=0.03)
+    assert estimate.source_variance[1] == pytest.approx((1 - s2) * variance, rel=0.05)
+
+
+# ---------------------------------------------------------------------------
+# The Saltelli design of the stated sources
+# ---------------------------------------------------------------------------
+
+
+def _quantiles(points: np.ndarray) -> np.ndarray:
+    return np.clip(points, sens._QUANTILE_EPS, 1 - sens._QUANTILE_EPS)
+
+
+def test_own_sources_are_mapped_column_by_column_in_the_order_stated():
+    """Without a shared source a job is ``spec_fraction`` of its design row, float for float, and carries no deltas."""
+    specs = {
+        'h0': InputSpec.sigma_pct(5.0),
+        'Ka_dye': InputSpec.sigma_pct(0.0),  # stated, does not vary: no column
+        TITRANT: InputSpec.interval_pct(-8.0, 4.0),
+        'd0': InputSpec.sigma_abs(2e-7),
+    }
+    built = sobol_jobs(ErrorModel(specs=specs), _IDA_CONDITIONS, 16, 20, 1, seed=13)
+
+    varying = ['h0', TITRANT, 'd0']
+    a_points, b_points = sobol_design(16, 3, _BLOCKS, 13)
+    matrices = [a_points, b_points]
+    for column in range(3):
+        mixed = a_points.copy()
+        mixed[:, column] = b_points[:, column]
+        matrices.append(mixed)
+    expected = [
+        {
+            key: spec_fraction(specs[key], nominal_value(key, _IDA_CONDITIONS), key, float(q))
+            for key, q in zip(varying, row)
+        }
+        for row in _quantiles(np.vstack(matrices))
+    ]
+    assert built.sources == tuple(varying)
+    assert [offsets for offsets, _ in built.jobs] == expected
+    assert built.source_offsets == expected
+    assert all(deltas is None for _, deltas in built.jobs)
+
+
+def test_a_shared_source_moves_every_input_it_loads():
+    errors = ErrorModel(specs={'h0': InputSpec.sigma_pct(3.0), TITRANT: InputSpec.sigma_pct(2.0)}, shared=(_STOCK,))
+    built = sobol_jobs(errors, _IDA_CONDITIONS, 1024, 20, 1, seed=2)
+
+    stock = shared_key(_STOCK.name)
+    assert built.sources == ('h0', TITRANT, stock)
+    assert len(built.jobs) == 1024 * (3 + 2)
+    for e, (offsets, _) in zip(built.source_offsets, built.jobs):
+        assert set(e) == {'h0', TITRANT, stock} and set(offsets) == {'h0', 'd0', TITRANT}
+        # The perturbed inputs by hand: entered x prod(1 + e) over the sources that move each.
+        assert 1 + offsets['h0'] == pytest.approx((1 + e['h0']) * (1 + e[stock]), rel=1e-15)
+        assert offsets['d0'] == e[stock]
+        assert offsets[TITRANT] == e[TITRANT]
+    # The shared column is the 4 % normal it was stated as: the A and B rows have that spread.
+    shared = np.array([e[stock] for e in built.source_offsets[:2048]])
+    assert np.std(shared) == pytest.approx(0.04, rel=0.02)
+
+
+def test_a_shared_source_moves_a_binding_constant_measured_with_it_the_other_way():
+    """A stock ``1 + e`` times stronger than assumed: [Host]0 is ``1 + e`` times, and a Ka(dye) fitted with it ``1 / (1 + e)`` times, the entered value."""
+    stock = SharedSource('Host stock', 4.0, ('h0', 'Ka_dye'))
+    built = sobol_jobs(ErrorModel(shared=(stock,)), _IDA_CONDITIONS, 1024, 20, 1, seed=2)
+
+    key = shared_key(stock.name)
+    for e, (offsets, _) in zip(built.source_offsets, built.jobs):
+        assert offsets['h0'] == e[key]
+        assert (1 + offsets['Ka_dye']) * (1 + e[key]) == pytest.approx(1.0, rel=1e-14)
+
+
+@pytest.mark.parametrize('n_replicates', [1, 4])
+def test_the_additions_are_one_item_of_one_column_per_point(n_replicates):
+    """Sources + n_points columns; ``ADDITIONS`` last; deltas at sigma / sqrt(replicates).
+
+    In the matrix of the additions every delta comes from ``B`` and every
+    single source from ``A``; in a single source's matrix the deltas are A's.
+    """
+    n_points, n_base, sigma = 12, 1024, 2.0
+    errors = ErrorModel(specs={'h0': InputSpec.sigma_pct(3.0)}, additions=AdditionError(sigma, sequential=True))
+    designs = []
+    real = sens.sobol_design
+
+    def spy(*args, **kwargs):
+        designs.append(real(*args, **kwargs))
+        return designs[-1]
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sens, 'sobol_design', spy)
+        built = sobol_jobs(errors, _IDA_CONDITIONS, n_base, n_points, n_replicates, seed=3)
+
+    ((a_points, _),) = designs
+    assert a_points.shape == (n_base, 1 + n_points)
+    assert built.sources == ('h0', ADDITIONS)
+    assert len(built.jobs) == n_base * (2 + 2)
+    deltas = np.array([d for _, d in built.jobs])
+    assert deltas.shape == (4 * n_base, n_points)
+    assert np.std(deltas[: 2 * n_base]) == pytest.approx(sigma / 100 / math.sqrt(n_replicates), rel=0.02)
+    h0 = np.array([offsets['h0'] for offsets, _ in built.jobs])
+    in_a, in_b, in_ab_h0, in_ab_additions = (slice(i * n_base, (i + 1) * n_base) for i in range(4))
+    np.testing.assert_array_equal(h0[in_ab_h0], h0[in_b])
+    np.testing.assert_array_equal(deltas[in_ab_h0], deltas[in_a])
+    np.testing.assert_array_equal(h0[in_ab_additions], h0[in_a])
+    np.testing.assert_array_equal(deltas[in_ab_additions], deltas[in_b])
+
+
 # ---------------------------------------------------------------------------
 # Running the work across processes
 # ---------------------------------------------------------------------------
@@ -1350,7 +1555,7 @@ def test_baseline_is_the_unperturbed_sample(n_replicas, per_replica, proportiona
     assert result.ka_grid['Ka_guest'][1, 1] == result.baseline_ka['Ka_guest']
     assert result.r2_grid[1, 1] == pytest.approx(result.baseline_fit.r_squared, abs=1e-12)
     ms, assay_cls, conditions, fit_config = setup
-    used = ms.with_active(sens.fit_replica_ids(result.baseline_fit))
+    used = ms.with_active(fit_replica_ids(result.baseline_fit))
     weights = result.baseline_fit.point_weights
     assert proportional == (weights is not None), 'the weighted case has to weight the points differently'
     unperturbed, r_squared, _ = sens._fit_perturbed(

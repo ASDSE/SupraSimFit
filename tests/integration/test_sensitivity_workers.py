@@ -26,8 +26,8 @@ import core.pipeline.sensitivity as sens
 from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig
+from core.pipeline.inputs import TITRANT
 from core.pipeline.noise import NoiseBasis, NoiseLaw
-from core.pipeline.sensitivity import TITRANT
 from core.units import Q_
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
 

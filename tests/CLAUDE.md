@@ -90,7 +90,7 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
   never a share copied from a run.
 - **An input-aware fit costs seconds.** Letting the inputs move turns each point
   of a profile into a small bounded optimisation: typically 1–2 s per fit, up to
-  about 20 s for one association constant and 45 s for two on hard designs with
+  about 25 s for one association constant and 50 s for two on hard designs with
   few points. A test that states an input uncertainty belongs in
   `tests/integration/`; the fast layer states none, or drives
   `core.pipeline.input_aware` on a handful of points.

@@ -28,9 +28,9 @@ from core.pipeline.fit_pipeline import (
     fit_assay,
     fit_linear_assay,
     fit_measurement_set,
-    summarize_parameters,
 )
 from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec
+from core.pipeline.reporting import summarize_parameters
 from core.units import Q_
 from tests.conftest import (
     DBA_RECOVERY_BOUNDS,

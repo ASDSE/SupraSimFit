@@ -27,17 +27,11 @@ from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
-from core.pipeline.fit_pipeline import (
-    FitConfig,
-    FitResult,
-    fit_replica_ids,
-    input_replica_ids,
-    parameters_on_bound,
-    summarize_parameters,
-    verify_imported_result,
-)
+from core.pipeline.fit_pipeline import FitConfig, FitResult
 from core.pipeline.inputs import TITRANT, TITRANT_STOCK, ErrorModel, InputSpec, source_name
 from core.pipeline.profile import ProfileSet
+from core.pipeline.reporting import fit_replica_ids, input_replica_ids, parameters_on_bound, summarize_parameters
+from core.pipeline.results_io import verify_imported_result
 from core.pipeline.sensitivity import (
     _SOBOL_BLOCKS,
     LONG_RUN_SOLVES,
@@ -868,12 +862,13 @@ class FittingSession(QWidget):
 
         With no data loaded, the results' source file is loaded first when it
         still exists. Each result is then checked by
-        :func:`~core.pipeline.fit_pipeline.verify_imported_result`: one that
-        does not describe the loaded data, or cannot be checked, is refused
+        :func:`~core.pipeline.results_io.verify_imported_result`: one that
+        does not describe the loaded data, or whose check fails, is refused
         with the reason (:func:`_refusal_reason`); the others replace the held
         results and are shown or hidden like a fit made here. The replicate
         selection is never changed. Without data the stored numbers are shown
-        with a note that they could not be checked. Refused while a fit runs,
+        with a note that they could not be checked, and with data loaded a
+        notice names the results the check could not judge. Refused while a fit runs,
         whose result would replace the imported ones as it finished.
         """
         if self.fit_running():
@@ -902,7 +897,7 @@ class FittingSession(QWidget):
 
         accepted: list[FitResult] = []
         refused: dict[str, int] = {}  # reason -> how many results it refuses
-        rescored = recomputed = False
+        rescored = unverified = False
         for result in results:
             try:
                 status, checked = verify_imported_result(result, ms)
@@ -913,13 +908,8 @@ class FittingSession(QWidget):
                 reason = 'unchecked' if status == 'unchecked' else _refusal_reason(result, ms)
                 refused[reason] = refused.get(reason, 0) + 1
                 continue
-            if status == 'rescored_legacy':
-                rescored = True
-            # A file that records no arithmetic and had its numbers rebuilt was measured again
-            # with the present equilibrium solution, whichever reason named the status.
-            recomputed = recomputed or (
-                status in ('rescored_precision', 'rescored_legacy') and 'model_arithmetic' not in result.metadata
-            )
+            rescored = rescored or status == 'rescored_legacy'
+            unverified = unverified or (status == 'unverifiable' and ms is not None)
             accepted.append(checked)
         if refused:
             imported = 'nothing was imported' if not accepted else 'they were left out'
@@ -943,10 +933,11 @@ class FittingSession(QWidget):
                 f'Some numbers stored in {name} did not describe the replicates each fit used, so the R², RMSE and '
                 'curve were recomputed on those replicates.'
             )
-        if recomputed:
+        if unverified:
             notices.append(
-                f'{name} was written by an earlier version of SupraSimFit. Its R², RMSE and fit curve were '
-                'computed again with the equilibrium solution this version uses. The fitted values are unchanged.'
+                f'Some results in {name} could not be checked against the data loaded now, because this version '
+                'cannot recompute their R² and RMSE closely enough to tell. They are shown as stored in the file; '
+                'fit the data again to get results that are checked.'
             )
         if notices:
             QMessageBox.information(self, 'Imported Results', '\n\n'.join(notices))

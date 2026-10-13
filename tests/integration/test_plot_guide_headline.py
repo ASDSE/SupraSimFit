@@ -19,8 +19,9 @@ def test_the_headline_example_is_the_fit_demo_ida_reports():
     from core.data_processing.measurement_set import MeasurementSet
     from core.data_processing.preprocessing import get_step
     from core.io import load_measurements
-    from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set, summarize_parameters
+    from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
     from core.pipeline.inputs import ErrorModel
+    from core.pipeline.reporting import summarize_parameters
     from core.units import Q_
     from gui.fitting_session import _DEMO_UNCERTAINTIES
     from gui.plot_guide import FIT_CURVE, PLOT_GUIDE, SUMMARY

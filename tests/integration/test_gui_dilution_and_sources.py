@@ -28,8 +28,9 @@ pytest.importorskip('PyQt6')
 from core.assays.ida import IDAAssay  # noqa: E402
 from core.assays.registry import AssayType  # noqa: E402
 from core.data_processing.measurement_set import MeasurementSet  # noqa: E402
-from core.pipeline.fit_pipeline import FitConfig, verify_imported_result  # noqa: E402
+from core.pipeline.fit_pipeline import FitConfig  # noqa: E402
 from core.pipeline.inputs import SharedSource, shared_key  # noqa: E402
+from core.pipeline.results_io import verify_imported_result  # noqa: E402
 from core.units import Q_  # noqa: E402
 from tests.conftest import IDA_TRUE  # noqa: E402
 

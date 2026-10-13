@@ -8,17 +8,10 @@ import numpy as np
 import pytest
 
 from core.pipeline.diagnostics import Conflict, FitDiagnostics, InputShift, MisfitTest, Verdict
-from core.pipeline.fit_pipeline import (
-    RESULT_FORMAT,
-    ConditionalFit,
-    FitConfig,
-    FitResult,
-    _config_to_dict,
-    offsets_held_at_zero,
-    summarize_parameters,
-)
+from core.pipeline.fit_pipeline import RESULT_FORMAT, ConditionalFit, FitConfig, FitResult, _config_to_dict
 from core.pipeline.inputs import TITRANT, AdditionError, ErrorModel, InputSpec, SharedSource, specs_to_dict
 from core.pipeline.noise import NoiseBasis, NoiseLaw
+from core.pipeline.reporting import offsets_held_at_zero, summarize_parameters
 from core.pipeline.varpro import LEVEL, KaInterval
 from core.units import Q_, Quantity
 
@@ -687,7 +680,8 @@ class TestWhatWidenedTheInterval:
 def test_a_signal_parameter_the_fit_ended_on_an_entered_bound_is_named_with_that_bound():
     """A bound below what the data need holds the curve away from them; the result has to say which one did."""
     from core.assays.gda import GDAAssay
-    from core.pipeline.fit_pipeline import fit_assay, parameters_on_bound
+    from core.pipeline.fit_pipeline import fit_assay
+    from core.pipeline.reporting import parameters_on_bound
     from tests.conftest import GDA_TRUE, _make_gda_data
 
     x, y = _make_gda_data(GDA_TRUE, n_points=15)
@@ -741,7 +735,7 @@ def test_the_diagnostics_and_the_tests_they_could_not_run_are_written_as_strict_
 
 def test_a_bound_with_no_limit_is_written_as_strict_json_and_read_back_as_no_limit():
     """A results file is read by other programs too, and JSON has no token for an infinite number."""
-    from core.pipeline.fit_pipeline import parameters_on_bound
+    from core.pipeline.reporting import parameters_on_bound
 
     floor = Q_(1.0, 'au')
     result = _sample_fit_result(

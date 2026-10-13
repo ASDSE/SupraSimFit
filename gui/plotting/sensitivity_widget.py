@@ -66,21 +66,19 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.pipeline.inputs import is_shared
-from core.pipeline.sensitivity import (
-    _SOBOL_BLOCKS,
+from core.pipeline.budget import what_if
+from core.pipeline.inputs import (
     ADDITIONS,
     TITRANT,
     InputSpec,
-    SensitivityMode,
-    SensitivityResult,
     SpecKind,
     _to_fraction,
+    is_shared,
     nominal_value,
     source_name,
     spec_bounds,
-    what_if,
 )
+from core.pipeline.sensitivity import _SOBOL_BLOCKS, SensitivityMode, SensitivityResult
 from gui.plotting.colors import INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
 from gui.plotting.fit_summary_widget import ParameterTable, unfitted_sentence
 from gui.plotting.labels import (
@@ -204,15 +202,6 @@ _WITHHELD_SHORT = {
 # the range it can be asked over, so the sentence shows a reduction from the
 # start without favouring any particular one.
 _WHAT_IF_START = 0.5
-
-# Effective sample size from which the re-weighted what-if is the answer the row
-# leads with rather than the first-order formula. The relative error of a
-# variance re-weighted from m samples is about sqrt(2 / m), which is 10 % at 200
-# — the accuracy the formula itself reaches (the `what-if-accuracy` check
-# measures its relative error against a second analysis at the reduced
-# uncertainty at an rms of 5–15 %). Above 200 the re-weighted value is the
-# better of the two, measured there at an rms of 0.9–1.5 %.
-_REWEIGHT_MIN_EFFECTIVE = 200
 
 
 def _wire_x_exponent(plot_item: pg.PlotItem, axis: ScientificAxisItem, base_label: str) -> None:
@@ -1846,9 +1835,9 @@ class SensitivityWidget(QWidget):
         """What reducing *source* to *reduced_pct* would do to the spread, and what would then be largest.
 
         The spread after the reduction is the one re-weighted from the samples
-        wherever ``_REWEIGHT_MIN_EFFECTIVE`` of them effectively carry it, with
-        the first-order formula behind it as the cross-check; otherwise the
-        formula is the answer and the sentence says what is missing.
+        wherever :func:`~core.pipeline.budget.what_if` gives one, with the
+        first-order formula behind it as the cross-check; otherwise the formula
+        is the answer and the sentence says what is missing.
         """
         result = self._result
         assay_type = self._assay_type(result)
@@ -1858,8 +1847,7 @@ class SensitivityWidget(QWidget):
         answer = what_if(result, ka_key, source, min(reduced_pct / stated, 1.0) if stated > 0 else 0.0)
         if not (np.isfinite(before) and np.isfinite(answer.sd)):
             return f'Too few fits finished to say what a smaller uncertainty on {label} would do.'
-        carried = answer.sd_reweighted is not None and (answer.effective_samples or 0.0) >= _REWEIGHT_MIN_EFFECTIVE
-        if carried:
+        if answer.sd_reweighted is not None:
             after = fmt_spread(answer.sd_reweighted, html=True)
             tail = (
                 f', read from the samples re-weighted towards the narrower uncertainty '

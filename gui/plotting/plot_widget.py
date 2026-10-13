@@ -1105,7 +1105,7 @@ class PlotWidget(QWidget):
         summary table; printed here it would read as this curve's interval.
         Every other parameter is its fitted value alone, starred where the data
         determine it only in combination with others. Rows come from
-        :func:`~core.pipeline.fit_pipeline.summarize_parameters` and numbers
+        :func:`~core.pipeline.reporting.summarize_parameters` and numbers
         from :func:`~gui.plotting.labels.fmt_value`, so the plot, the summary
         table and the exports quote the same numbers the same way.
 
@@ -1118,7 +1118,7 @@ class PlotWidget(QWidget):
         rows stay in the table — repeating them here would double the box
         height for no new information.
         """
-        from core.pipeline.fit_pipeline import fit_replica_ids, summarize_parameters
+        from core.pipeline.reporting import fit_replica_ids, summarize_parameters
 
         lines: list[str] = []
         for idx, result in enumerate(self._fit_results):

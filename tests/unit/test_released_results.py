@@ -3,10 +3,11 @@
 The fixtures under ``tests/fixtures/results`` are genuine exports, each written
 by the version of the app its entry in that folder's README names. The five
 released files and the two ``pr42`` ones fit IDA data with the conditions named
-there; ``unmarked_gda.json`` fits the synthetic GDA titration beside it and
-records no ``model_arithmetic``, so its scores are those of the earlier
-equilibrium arithmetic; ``input_aware_ida.json`` was fitted with two of its
-inputs free within a stated uncertainty and reports where it put them; and
+there; ``unmarked_gda.json`` fits the synthetic GDA titration beside it, at
+binding tight enough that its scores — those of the solve every file without
+a ``model_arithmetic`` entry was written by — differ from the present ones by
+more than 1e-6; ``input_aware_ida.json`` was fitted with two of its inputs
+free within a stated uncertainty and reports where it put them; and
 ``diluted_shared_ida.json`` was fitted with the titrant stock declared, so its
 fixed totals fall along the titration, and with an error source two of its
 inputs share. What the app shows for such a file is decided by
@@ -19,28 +20,35 @@ independently of the masking and averaging the pipeline does.
 
 from __future__ import annotations
 
-import contextlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
+from scipy.optimize import brentq
 
 from core.assays.gda import GDAAssay
+from core.assays.h2g import H2GAssay
+from core.assays.hg2 import HG2Assay
 from core.assays.ida import IDAAssay
+from core.assays.registry import ASSAY_REGISTRY
 from core.data_processing.measurement_set import MeasurementSet
 from core.io import load_measurements
-from core.models.equilibrium import MODEL_ARITHMETIC, legacy_arithmetic
+from core.models import equilibrium
+from core.models.equilibrium import MODEL_ARITHMETIC
 from core.optimizer.filters import calculate_fit_metrics
-from core.pipeline.fit_pipeline import (
-    FitResult,
-    _fitted_offsets,
-    fit_replica_ids,
-    fit_view,
-    verify_imported_result,
-)
+from core.pipeline.fit_pipeline import FitResult, fit_view
 from core.pipeline.inputs import ErrorModel, shared_key
 from core.pipeline.noise import NoiseBasis
+from core.pipeline.reporting import fit_replica_ids
+from core.pipeline.results_io import (
+    _fitted_offsets,
+    _parameter_vector,
+    _record_assay,
+    _reproduces,
+    verify_imported_result,
+)
 from core.units import Q_
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -235,27 +243,120 @@ def _vector(result: FitResult) -> np.ndarray:
     return np.array([float(result.parameters[k].magnitude) for k in _KEYS])
 
 
-def test_a_file_without_an_arithmetic_marker_keeps_its_fit_and_shows_present_scores(unmarked_data):
-    """Its stored scores were computed by an earlier, less precise equilibrium solve.
+def _absolute_tolerance_host(Ka_guest, Ka_dye, h0, d0, g0):
+    """Free host as the releases that wrote unmarked files solved it: Brent's method to an absolute 1e-14 M."""
 
-    The fit itself — its parameters — is the file's; only the numbers measured
-    from it are computed again.
+    def balance(h):
+        return h + Ka_dye * h * d0 / (1 + Ka_dye * h) + Ka_guest * h * g0 / (1 + Ka_guest * h) - h0
+
+    return brentq(balance, 1e-20, h0, xtol=1e-14, maxiter=1000)
+
+
+def test_a_file_without_an_arithmetic_marker_is_verified_at_the_precision_of_the_solve_that_wrote_it(
+    unmarked_data, monkeypatch
+):
+    """Its stored scores are those of a solve to an absolute 1e-14 M, which the present one does not reproduce to 1e-6.
+
+    Checked against the present arithmetic within what that precision allows,
+    the file verifies and is shown with every number it stores.
     """
     released = _released('unmarked_gda')
     assert 'model_arithmetic' not in released.metadata
+    with monkeypatch.context() as patch:
+        patch.setattr(equilibrium, '_competitive_free_host', _absolute_tolerance_host)
+        then = _gda_scores(unmarked_data, _vector(released))
+    assert then == pytest.approx((released.rmse, released.r_squared), rel=1e-12), "the file holds that solve's scores"
+    now = _gda_scores(unmarked_data, _vector(released))
+    assert abs(now[0] / released.rmse - 1) > 1e-6, 'the present solve alone would not reproduce them'
 
     status, shown = verify_imported_result(released, unmarked_data)
 
-    assert status == 'rescored_precision'
-    for key in _KEYS:
-        assert shown.parameters[key].magnitude == released.parameters[key].magnitude
-    rmse, r_squared = _gda_scores(unmarked_data, _vector(shown))
-    assert shown.rmse == pytest.approx(rmse, rel=1e-12)
-    assert shown.r_squared == pytest.approx(r_squared, rel=1e-12)
-    assert shown.metadata['model_arithmetic'] == MODEL_ARITHMETIC
-    # The file's own number really differs from this one, so the import exercised
-    # both arithmetics rather than passing on a score nothing moves.
-    assert abs(shown.rmse / released.rmse - 1) > 1e-6
+    assert status == 'verified'
+    assert (shown.rmse, shown.r_squared) == (released.rmse, released.r_squared)
+    np.testing.assert_array_equal(shown.y_fit.magnitude, released.y_fit.magnitude)
+    assert 'model_arithmetic' not in shown.metadata, 'the numbers shown are still those of the solve that wrote them'
+
+
+@pytest.mark.parametrize('sign', [1.0, -1.0])
+def test_scores_of_a_solve_at_the_documented_precision_verify_and_those_of_a_coarser_one_do_not(
+    unmarked_data, monkeypatch, sign
+):
+    """Free host moved by the full documented tolerance at every point stays inside the check; 1000 times it does not."""
+    released = _released('unmarked_gda')
+    present = equilibrium._competitive_free_host
+
+    def scores_off_by(factor):
+        def solve(*args):
+            h = present(*args)
+            return h + sign * factor * (1e-14 + 4 * np.finfo(float).eps * h)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(equilibrium, '_competitive_free_host', solve)
+            stored = _released('unmarked_gda')
+            stored.rmse, stored.r_squared = _gda_scores(unmarked_data, _vector(released))
+        return stored
+
+    assert verify_imported_result(scores_off_by(1.0), unmarked_data)[0] == 'verified'
+    assert verify_imported_result(scores_off_by(1000.0), unmarked_data)[0] == 'different_data'
+
+
+@pytest.mark.parametrize('assay_cls, free_key', [(HG2Assay, 'G'), (H2GAssay, 'H')])
+def test_a_stepwise_file_is_checked_at_the_precision_of_its_free_ligand_solve(monkeypatch, assay_cls, free_key):
+    """The stepwise releases solved the free ligand to an absolute 1e-15 M: free guest for HG2, free host for H2G.
+
+    At nanomolar totals and tight binding that tolerance is up to 3e-5 of a
+    free concentration. Scores written by a solve off by that much at every
+    point verify, and scores 1000 times further off do not.
+    """
+    x = np.linspace(0.0, 4e-8, 15)
+    template = assay_cls(x_data=Q_(x, 'M'), y_data=Q_(np.ones_like(x), 'au'), h0=Q_(1e-8, 'M'))
+    true = {'Ka_HG': 1e10, 'Ka_HG2': 1e9, 'Ka_H2G': 1e9, 'I0': 0.0, 'I_G': 1e6, 'I_H': 0.0}
+    true.update(I_HG=1e10, I_HG2=5e9, I_H2G=5e9)
+    vector = np.array([true[k] for k in template.parameter_keys])
+    signal = template.forward_model(vector).magnitude
+    signal = signal + np.random.default_rng(3).normal(0.0, 0.01 * np.ptp(signal), signal.size)
+    ms = MeasurementSet(concentrations=x, signals=signal[np.newaxis], replica_ids=('0',))
+    assay = ms.to_assay(assay_cls, conditions={'h0': Q_(1e-8, 'M')})
+    free = assay.species(vector)[free_key]
+    assert 1e-5 < np.max(1e-15 / free[free > 0]) < 1e-4
+    present = equilibrium._solve_free_ligand_12
+
+    def result_off_by(factor):
+        def solve(*args):
+            root = present(*args)
+            return root + factor * (1e-15 + 4 * np.finfo(float).eps * root) if root > 0 else root
+
+        with monkeypatch.context() as patch:
+            patch.setattr(equilibrium, '_solve_free_ligand_12', solve)
+            rmse, r_squared, x_fit, y_fit = fit_view(assay, vector)
+        units = ASSAY_REGISTRY[assay.assay_type].units
+        return FitResult(
+            parameters={k: Q_(v, units[k]) for k, v in zip(assay.parameter_keys, vector)},
+            rmse=rmse,
+            r_squared=r_squared,
+            x_fit=x_fit,
+            y_fit=y_fit,
+            assay_type=assay.assay_type.name,
+            model_name=assay.model_name,
+            conditions=assay.get_conditions(),
+        )
+
+    assert verify_imported_result(result_off_by(1.0), ms)[0] == 'verified'
+    assert verify_imported_result(result_off_by(1000.0), ms)[0] == 'different_data'
+
+
+def test_a_file_whose_solve_left_a_free_concentration_undetermined_cannot_be_checked(unmarked_data):
+    """At a binding constant where free host falls to the solve's own tolerance, its scores pin nothing down."""
+    released = _released('unmarked_gda')
+    released.parameters['Ka_guest'] = Q_(1e18, '1/M')
+    vector = _vector(released)
+    free_host = _gda_assay(unmarked_data).species(vector)['H']
+    assert np.max(1e-14 / free_host) > 1e-2, 'the documented tolerance is a sizeable part of a free concentration'
+
+    status, shown = verify_imported_result(released, unmarked_data)
+
+    assert status == 'unverifiable'
+    assert shown is released
 
 
 def test_a_file_without_a_marker_is_still_refused_on_other_data(unmarked_data):
@@ -281,11 +382,11 @@ def test_a_file_without_a_marker_is_still_refused_on_other_data(unmarked_data):
 
 
 def test_a_file_naming_an_arithmetic_this_version_does_not_have_is_not_checked(unmarked_data):
-    """The marker names the arithmetic that wrote the scores, and only two can be computed here.
+    """The marker names the arithmetic that wrote the scores.
 
-    A file written by a later version records a third; neither the present
-    solve nor the earlier one reproduces its scores, so nothing about it is
-    confirmed and its numbers are shown as stored.
+    A file written by a later version records one this version does not have,
+    whose precision it does not know, so nothing about it is confirmed and its
+    numbers are shown as stored.
     """
     later = _released('unmarked_gda')
     later.metadata['model_arithmetic'] = MODEL_ARITHMETIC + 1
@@ -296,15 +397,8 @@ def test_a_file_naming_an_arithmetic_this_version_does_not_have_is_not_checked(u
     assert shown is later
 
 
-def test_a_file_checked_with_the_present_arithmetic_alone_is_refused(unmarked_data, monkeypatch):
-    """Without the arithmetic that wrote it, its stored scores do not reproduce."""
-    monkeypatch.setattr('core.pipeline.fit_pipeline.legacy_arithmetic', contextlib.nullcontext)
-
-    assert verify_imported_result(_released('unmarked_gda'), unmarked_data)[0] == 'different_data'
-
-
 def test_a_shown_file_exported_again_verifies_on_its_own_numbers(unmarked_data):
-    """Its numbers and its marker are the present arithmetic's, so the next import checks it directly."""
+    """The copy keeps the file's numbers and records no arithmetic, so the next import checks it the same way."""
     _, shown = verify_imported_result(_released('unmarked_gda'), unmarked_data)
 
     status, again = verify_imported_result(FitResult.from_dict(json.loads(json.dumps(shown.to_dict()))), unmarked_data)
@@ -313,34 +407,57 @@ def test_a_shown_file_exported_again_verifies_on_its_own_numbers(unmarked_data):
     assert (again.rmse, again.r_squared) == (shown.rmse, shown.r_squared)
 
 
-def test_a_file_whose_curve_alone_does_not_reproduce_is_shown_with_the_curve_drawn_now(unmarked_data):
-    """Scores that reproduce do not vouch for the curve stored beside them.
+_FIXTURE_DATA = {
+    'v1_3_0_avg': _DEMO_DATA,
+    'v1_3_0_pr_drop': _DEMO_DATA,
+    'v150_avg': _DEMO_DATA,
+    'v150_pr_all': _DEMO_DATA,
+    'v150_pr_drop': _DEMO_DATA,
+    'pr42_avg': _PR42_DATA,
+    'pr42_pr': _PR42_DATA,
+    'unmarked_gda': _UNMARKED_DATA,
+    'input_aware_ida': _AWARE_DATA,
+    'diluted_shared_ida': _DILUTED_DATA,
+}
 
-    The check measures the curve as well, so a copy that kept one the present
-    arithmetic does not draw would be refused the next time it is imported. The
-    file here stores the scores both arithmetics reach — its binding constant
-    is weak enough for that — beside a curve that is not the one drawn now, as
-    a file written where the two arithmetics part company carries.
+
+@pytest.mark.parametrize('name', sorted(_FIXTURE_DATA))
+def test_other_data_move_the_scores_of_every_fixture_past_the_check(name):
+    """A 1 % change of either axis, or one replicate more or fewer, is other data to the check.
+
+    It moves the RMSE by 8e-6 relative or more and the R² by 1.9e-6 or more,
+    beyond the 1e-6 a fit of the same model reproduces to; and for a file
+    without an arithmetic marker no such change stays inside the slack its
+    solve leaves either.
     """
-    released = _released('unmarked_gda')
-    vector = _vector(released)
-    vector[0] = 1e6  # weak binding: both arithmetics score this fit within the gate
-    assay = _gda_assay(unmarked_data)
-    with legacy_arithmetic():
-        stored_rmse, stored_r_squared, stored_x, stored_y = fit_view(assay, vector)
-    rmse, r_squared, _, y_fit = fit_view(assay, vector)
-    assert (stored_rmse, stored_r_squared) == pytest.approx((rmse, r_squared), rel=1e-6), 'the scores pass the gate'
-    released.parameters = {k: Q_(vector[i], released.parameters[k].units) for i, k in enumerate(_KEYS)}
-    released.rmse, released.r_squared, released.x_fit = stored_rmse, stored_r_squared, stored_x
-    released.y_fit = stored_y * (1.0 + 2e-6)  # a curve the present arithmetic does not draw
-
-    status, shown = verify_imported_result(released, unmarked_data)
-
-    assert status == 'rescored_precision'
-    np.testing.assert_allclose(shown.y_fit.magnitude, y_fit.magnitude, rtol=1e-15)
-    assert verify_imported_result(FitResult.from_dict(json.loads(json.dumps(shown.to_dict()))), unmarked_data)[0] == (
-        'verified'
-    )
+    released = _released(name)
+    path = _FIXTURE_DATA[name]
+    ms = MeasurementSet.from_dataframe(load_measurements(path), source_file=str(path))
+    used = fit_replica_ids(released) or ms.active_replica_ids
+    vector = _parameter_vector(released, _record_assay(ms, released, used))
+    offsets = _fitted_offsets(released)
+    rmse, r_squared, _, _ = fit_view(_record_assay(ms, released, used), vector, offsets)
+    others = [
+        _record_assay(
+            MeasurementSet(concentrations=ms.concentrations * 1.01, signals=ms.signals, replica_ids=ms.replica_ids),
+            released,
+            used,
+        ),
+        _record_assay(
+            MeasurementSet(concentrations=ms.concentrations, signals=ms.signals * 1.01, replica_ids=ms.replica_ids),
+            released,
+            used,
+        ),
+    ]
+    for rid in ms.replica_ids:
+        alternative = [r for r in used if r != rid] if rid in used else [*used, rid]
+        if alternative:
+            others.append(_record_assay(ms, released, alternative))
+    for other in others:
+        moved_rmse, moved_r_squared, _, _ = fit_view(other, vector, offsets)
+        assert abs(moved_rmse / rmse - 1) >= 8e-6
+        assert abs(moved_r_squared - r_squared) >= 1.9e-6
+        assert _reproduces(replace(released, rmse=rmse, r_squared=r_squared), other, vector, offsets) is False
 
 
 # ---------------------------------------------------------------------------

@@ -236,7 +236,7 @@ def test_the_budget_is_written_as_the_sensitivity_tab_reports_it(analysed_sessio
 
 def test_a_budget_with_no_number_in_it_is_refused_rather_than_written_empty(analysed_session, tmp_path):
     """A run whose samples gave too few fits has a budget of NaN; a file of empty cells would answer nothing."""
-    from core.pipeline.sensitivity import Budget
+    from core.pipeline.budget import Budget
     from tests.unit.gui.test_sensitivity_gui import _sobol_result
 
     result = _sobol_result()

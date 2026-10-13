@@ -47,12 +47,14 @@ proportional Gaussian noise (NumPy seed 20260918). With that tree on
 
 ## A file that records no equilibrium arithmetic
 
-`unmarked_gda.json` carries no `model_arithmetic` entry, so its stored scores
-are those of the earlier equilibrium arithmetic and an import reproduces them
-with `core.models.equilibrium.legacy_arithmetic` before showing the numbers of
-the present one. Its pool reaches binding constants of 1e12 M⁻¹, where the two
-arithmetics differ by up to 3e-5 relative in RMSE; on the demo IDA data above
-they differ by at most 3e-7, which the import gate would let pass unnoticed.
+`unmarked_gda.json` carries no `model_arithmetic` entry, as no file written
+before that entry existed does: its stored scores are those of free host solved
+by Brent's method to an absolute 1e-14 M. At its sub-micromolar totals and
+tight binding that solve puts the RMSE 1.4e-6 relative from the present
+arithmetic's, beyond the 1e-6 a file of the present arithmetic is checked to,
+so importing it exercises the check at the precision of the solve that wrote it
+(`core.pipeline.results_io.verify_imported_result`). On the demo IDA data above
+the two RMSEs differ by at most 9e-8.
 
 `unmarked_gda_data.txt` beside it holds the data the fit was made on: a
 synthetic GDA titration of 15 dye concentrations up to 2 µM into

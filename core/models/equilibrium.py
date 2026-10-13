@@ -73,20 +73,17 @@ References
 See docs/scientific-summary.md for detailed derivations.
 """
 
-import contextlib
 import math
 import sys
-from contextvars import ContextVar
-from typing import Iterator
 
 import numpy as np
-from scipy.optimize import brentq
 
 # Identifier of the equilibrium arithmetic, recorded with every fit as
-# ``FitResult.metadata['model_arithmetic']``.  The scores stored in a results
-# file are reproducible only with the arithmetic that wrote them; a file
-# without the entry stores scores of the absolute-tolerance Brent solves kept
-# below as ``_legacy_competitive_free_host`` and ``_legacy_free_ligand_12``.
+# ``FitResult.metadata['model_arithmetic']``.  A results file without the entry
+# was written by a release whose competitive and stepwise solves were Brent's
+# method to an absolute tolerance on the free concentration;
+# :func:`core.pipeline.results_io.verify_imported_result` checks its scores at
+# that precision.
 MODEL_ARITHMETIC: int = 2
 
 # Relative step at which the iterative solves stop.  The minority-species
@@ -111,26 +108,6 @@ _ROOT_MAXITER = 1000
 # lies below it reports no speciation (NaN), and it is the floor a solve starts
 # its search from.
 _TINY = sys.float_info.min
-
-_LEGACY: ContextVar[bool] = ContextVar('equilibrium_legacy_arithmetic', default=False)
-
-
-@contextlib.contextmanager
-def legacy_arithmetic() -> Iterator[None]:
-    """Solve the iterative balances with the arithmetic of unmarked results files.
-
-    Inside the block the competitive (GDA/IDA) and stepwise (HG2/H2G) solves
-    are :func:`_legacy_competitive_free_host` and :func:`_legacy_free_ligand_12`,
-    which reproduce the scores stored in a results file that has no
-    ``model_arithmetic`` entry.  DBA is one arithmetic throughout.  The switch
-    is a ``ContextVar``, so it is confined to the calling thread: a check on
-    the GUI thread leaves a fit running in a worker thread untouched.
-    """
-    token = _LEGACY.set(True)
-    try:
-        yield
-    finally:
-        _LEGACY.reset(token)
 
 
 def _all_valid(*values: float) -> bool:
@@ -356,15 +333,12 @@ def _competitive_free_host(Ka_guest: float, Ka_dye: float, h0: float, d0: float,
     Returns NaN for a negative or non-finite input, where a product ``Ka·x0``
     is beyond the range of a double and so leaves ``f′`` infinite at every
     iterate, and where free host itself falls below the smallest normal
-    double.  Inside :func:`legacy_arithmetic` the result is that of
-    :func:`_legacy_competitive_free_host`.
+    double.
     """
     # Python floats: the same IEEE arithmetic as numpy scalars at a third of the cost.
     Kg, Kd, h0, d0, g0 = float(Ka_guest), float(Ka_dye), float(h0), float(d0), float(g0)
     if not _all_valid(Kg, Kd, h0, d0, g0):
         return math.nan
-    if _LEGACY.get():
-        return _legacy_competitive_free_host(Kg, Kd, h0, d0, g0)
     if h0 == 0.0:
         return 0.0
 
@@ -403,28 +377,6 @@ def _competitive_free_host(Ka_guest: float, Ka_dye: float, h0: float, d0: float,
             return new
         h = new
     return math.nan
-
-
-def _legacy_competitive_free_host(Ka_guest: float, Ka_dye: float, h0: float, d0: float, g0: float) -> float:
-    """Free host (M) by Brent's method on ``[1e-20, h0]`` to an absolute 1e-14 M.
-
-    The arithmetic of results files without a ``model_arithmetic`` entry, kept
-    so that their stored scores can be reproduced (:func:`legacy_arithmetic`).
-    Its relative error grows with the binding constant, and it has no solution
-    (NaN) once free host falls below the bracket's lower end.
-    """
-
-    def mass_balance(h):
-        denom_D = 1 + Ka_dye * h
-        denom_G = 1 + Ka_guest * h
-        hd = (Ka_dye * h * d0) / denom_D
-        hg = (Ka_guest * h * g0) / denom_G
-        return h + hd + hg - h0
-
-    try:
-        return brentq(mass_balance, 1e-20, h0, xtol=1e-14, maxiter=1000)
-    except (ValueError, RuntimeError):
-        return math.nan
 
 
 def _competitive_speciation(h, Ka_guest: float, Ka_dye: float, d0, g0) -> dict:
@@ -738,15 +690,11 @@ def _solve_free_ligand_12(K1: float, K2: float, core_total: float, ligand_total:
         step zero wherever the iterate is — and where the free ligand itself
         falls below the smallest normal double, so callers propagate NaN
         rather than raising.
-        Inside :func:`legacy_arithmetic` the result is that of
-        :func:`_legacy_free_ligand_12`.
     """
     # Python floats: the same IEEE arithmetic as numpy scalars at a third of the cost.
     K1, K2, C, L = float(K1), float(K2), float(core_total), float(ligand_total)
     if not _all_valid(K1, K2, C, L):
         return math.nan
-    if _LEGACY.get():
-        return _legacy_free_ligand_12(K1, K2, C, L)
     if L == 0.0:
         return 0.0
 
@@ -792,27 +740,6 @@ def _solve_free_ligand_12(K1: float, K2: float, core_total: float, ligand_total:
                 return new
         x = new
     return math.nan
-
-
-def _legacy_free_ligand_12(K1: float, K2: float, core_total: float, ligand_total: float) -> float:
-    """Free ligand (M) by Brent's method on ``[0, ligand_total]`` to an absolute 1e-15 M.
-
-    The arithmetic of results files without a ``model_arithmetic`` entry, kept
-    so that their stored scores can be reproduced (:func:`legacy_arithmetic`).
-    Its relative error grows with the binding constants.
-    """
-    if ligand_total <= 0.0:
-        return 0.0
-
-    def balance(free_ligand: float) -> float:
-        denom = 1.0 + K1 * free_ligand + K1 * K2 * free_ligand * free_ligand
-        bound = core_total * (K1 * free_ligand + 2.0 * K1 * K2 * free_ligand * free_ligand) / denom
-        return free_ligand + bound - ligand_total
-
-    try:
-        return brentq(balance, 0.0, ligand_total, xtol=1e-15, maxiter=1000)
-    except (ValueError, RuntimeError):
-        return math.nan
 
 
 def _stepwise_species(K1: float, K2: float, core_total, ligand_total) -> tuple:

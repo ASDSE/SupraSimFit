@@ -661,7 +661,8 @@ def test_a_log10_row_is_never_written_coarser_than_the_replicate_spread(qapp):
 
 def _sobol_run(samples, *, sample_r2=None, degenerate_keys=()):
     """A finished Sobol' run whose baseline is :func:`_result` and whose samples are *samples*."""
-    from core.pipeline.sensitivity import InputSpec, SensitivityConfig, SensitivityMode, SensitivityResult
+    from core.pipeline.inputs import InputSpec
+    from core.pipeline.sensitivity import SensitivityConfig, SensitivityMode, SensitivityResult
 
     n = len(next(iter(samples.values())))
     return SensitivityResult(

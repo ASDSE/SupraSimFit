@@ -37,9 +37,10 @@ from core.assays.hg2 import HG2Assay
 from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY
 from core.data_processing.measurement_set import MeasurementSet
+from core.pipeline.budget import homogeneity_sum
 from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measurement_set
 from core.pipeline.inputs import TITRANT, TITRANT_STOCK, ErrorModel, InputSpec, perturbable_inputs
-from core.pipeline.sensitivity import SensitivityConfig, SensitivityMode, homogeneity_sum, run_sensitivity
+from core.pipeline.sensitivity import SensitivityConfig, SensitivityMode, run_sensitivity
 from core.units import Q_, Quantity
 from tests.conftest import (
     DBA_TRUE,

@@ -298,7 +298,7 @@ def fmt_estimate(value: float, at_bound: str, interval, open_ends, fmt=fmt_value
         The estimate, in the row's own scale.
     at_bound : str
         ``''``, or which end of its search box the estimate sits on (``'low'``,
-        ``'high'``), as :class:`~core.pipeline.fit_pipeline.ParameterSummary`
+        ``'high'``), as :class:`~core.pipeline.reporting.ParameterSummary`
         records it.
     interval : tuple[float, float] or None
         The interval beside the estimate, in the same scale; ``None`` where
@@ -319,11 +319,11 @@ def fmt_estimate(value: float, at_bound: str, interval, open_ends, fmt=fmt_value
 def own_estimates(result, keys, *, html: bool) -> list[str]:
     """One replicate's own fit of each of *keys*, as the replicate tables write it; ``—`` for a key it lacks.
 
-    Read through :func:`~core.pipeline.fit_pipeline.summarize_parameters`, so a
+    Read through :func:`~core.pipeline.reporting.summarize_parameters`, so a
     replicate whose own binding constant ran to a bound of its search box reads
     in words, as every other estimate does.
     """
-    from core.pipeline.fit_pipeline import summarize_parameters
+    from core.pipeline.reporting import summarize_parameters
 
     rows = {spec.key: spec for spec in summarize_parameters(result) if not spec.is_log}
     return [
@@ -355,7 +355,7 @@ def replicate_summary(rows, n: int, name, unit) -> str:
 
     Parameters
     ----------
-    rows : Sequence[core.pipeline.fit_pipeline.ParameterSummary]
+    rows : Sequence[core.pipeline.reporting.ParameterSummary]
         The binding-constant rows of the fit (no log₁₀ twins).
     n : int
         How many replicates the fit used, each of which has a fit of its own.
@@ -553,7 +553,7 @@ def fmt_bound_note(on_bound: dict) -> str:
     """What to tell the user about signal parameters a fit ended on an entered bound; ``''`` for none.
 
     *on_bound* maps each such parameter to the bound it sits on, as
-    :func:`core.pipeline.fit_pipeline.parameters_on_bound` returns it.
+    :func:`core.pipeline.reporting.parameters_on_bound` returns it.
     """
     if not on_bound:
         return ''
@@ -579,13 +579,13 @@ def offset_note(result) -> str:
     """:data:`OFFSET_AT_ZERO_NOTE` where it applies to *result*; ``''`` elsewhere.
 
     It applies when the fit holds a signal offset on a lower bound of zero
-    (:func:`~core.pipeline.fit_pipeline.offsets_held_at_zero`) and the misfit
+    (:func:`~core.pipeline.reporting.offsets_held_at_zero`) and the misfit
     test rejects the fit the result reports: an offset held at zero against
     blank-subtracted data is one way a curve comes to miss them. An offset at
     zero under a curve the test does not reject is where the data put it.
     """
     from core.pipeline.diagnostics import Verdict
-    from core.pipeline.fit_pipeline import offsets_held_at_zero
+    from core.pipeline.reporting import offsets_held_at_zero
 
     diagnostics = result.diagnostics
     rejected = diagnostics is not None and diagnostics.verdict in (Verdict.MODEL_INADEQUATE, Verdict.MODEL_AND_INPUTS)
@@ -686,7 +686,7 @@ def widening_sentences(rows, result, name) -> list[str]:
     Parameters
     ----------
     rows : list[ParameterSummary]
-        :func:`~core.pipeline.fit_pipeline.summarize_parameters` of *result*.
+        :func:`~core.pipeline.reporting.summarize_parameters` of *result*.
     result : FitResult
         The fit, whose configuration records the stated additions and whose
         noise law the share set.

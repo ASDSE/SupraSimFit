@@ -8,7 +8,8 @@ truth inside the reported interval. Kept to two representative assays.
 
 from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
-from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set, summarize_parameters
+from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
+from core.pipeline.reporting import summarize_parameters
 from core.simulation import build_concentration_vector, simulate_dataset
 from core.units import Q_
 from tests.conftest import (

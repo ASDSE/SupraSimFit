@@ -27,14 +27,9 @@ from core.assays.ida import IDAAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.models.equilibrium import MODEL_ARITHMETIC
 from core.optimizer.filters import calculate_fit_metrics
-from core.pipeline.fit_pipeline import (
-    FitConfig,
-    FitResult,
-    fit_measurement_set,
-    fit_replica_ids,
-    input_replica_ids,
-    verify_imported_result,
-)
+from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set
+from core.pipeline.reporting import fit_replica_ids, input_replica_ids
+from core.pipeline.results_io import verify_imported_result
 from core.units import Q_
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
 
@@ -222,6 +217,7 @@ def test_a_file_scored_on_every_replicate_is_rescored_on_the_ones_the_fit_used(f
         assert shown.parameters[key].magnitude == result.parameters[key].magnitude
     assert shown.metadata['quality_scored_on'] == 'fitted_replicates'
     assert shown.metadata['data_fingerprint'] == ms.fingerprint()
+    assert shown.metadata['model_arithmetic'] == MODEL_ARITHMETIC, "the numbers shown are the present arithmetic's"
 
 
 def test_results_on_other_data_are_refused(fitted):
@@ -239,7 +235,7 @@ def _with_scores_scaled(result: FitResult, factor: float) -> FitResult:
 
 
 def test_scores_written_by_other_arithmetic_of_the_same_model_still_verify(fitted):
-    """A score shifted by far less than the import gate still verifies; another dataset moves every score by 1e-3."""
+    """A score shifted by far less than the import gate still verifies; one shifted by 1e-4 is not this fit's."""
     ms, result = fitted
     selection = ms.with_active(fit_replica_ids(result))
 
