@@ -20,7 +20,12 @@ interval, each written here again in the reference's own terms:
   the ends of its box, a signal coefficient only where moving it to its bound
   changes the curve by more than ``_ON_BOUND_RTOL`` of the signal's weighted
   variation about its weighted mean, and an input stated as a range only off
-  the ends of that range. What the best fit fitted is the ``p`` of ``n - p``;
+  the ends of that range. A Ka rests on the end of its box nearer it wherever
+  the profile there is no higher than the lowest objective found, to the
+  resolution of R²
+  (the rule of both fit engines, :func:`core.pipeline.varpro._rest_on_bounds`,
+  applied here at any distance from the end). What the best fit fitted is the
+  ``p`` of ``n - p``;
   the numerator ``m`` of a tested Ka counts it and every coefficient the best
   fit fits and the fit at that Ka holds on a bound, so the cut-off is a step
   function of the fitted rank.
@@ -124,6 +129,11 @@ _RANK_RTOL = 1e-8
 #: zero from the scatter a fitted coefficient keeps.
 _ON_BOUND_RTOL = 1e-8
 
+#: Resolution of R²: a residual sum of squares higher by less than this fraction of
+#: the signal's weighted variation is the same fit. A Ka rests on the end of its box
+#: wherever the profile there is no higher than at the best fit by more than that.
+_R2_RESOLUTION = 1e-10
+
 #: Distance from an end of the Ka box, in decades, within which the reference's
 #: best fit counts as resting on that end. An end node the refinement cannot
 #: beat is kept exactly, and the bounded Brent refinement comes to within
@@ -169,6 +179,12 @@ def _column_rank(columns: np.ndarray) -> int:
 def _axis(ends: tuple[float, float], per_decade: int) -> np.ndarray:
     """Log-spaced Ka from one end to the other, at least *per_decade* points per decade."""
     return np.geomspace(*ends, int(np.ceil(np.log10(ends[1] / ends[0]) * per_decade)) + 1)
+
+
+def _to_end(ka: float, bounds: tuple[float, float]) -> tuple[float, float]:
+    """The end of the Ka box nearer *ka* in decades, and how many decades from it *ka* lies."""
+    below, above = np.log10(ka / bounds[0]), np.log10(bounds[1] / ka)
+    return (bounds[0], below) if below <= above else (bounds[1], above)
 
 
 def _on_box(ka: float, bounds: tuple[float, float]) -> bool:
@@ -246,7 +262,12 @@ def reference_intervals(
     ``p`` counts what the best fit placed itself: the free Ka it leaves off
     the ends of the box (``_ON_BOX_DECADES``), ``r(k_hat)``, and every input
     stated as a range it leaves off the ends of that range (``_ON_EDGE``). A
-    parameter held on an end takes no dimension from the residual.
+    parameter held on an end takes no dimension from the residual. A Ka is
+    first put on the end of its box nearer it wherever the profile there, a Ka
+    put on an end before it held there, exceeds the lowest objective found,
+    ``P_min`` or a lower one a Ka put on an end reached, by no more than
+    ``N log(1 + _R2_RESOLUTION variation² / S_w)``: a residual higher by less
+    than the resolution of R² is the same fit.
 
     With no uncertain input the minimum over a second Ka is a scan of the SSR
     grid refined by Brent and ``nu = N - p``: the F test on the SSR. With
@@ -397,11 +418,17 @@ def reference_intervals(
     coord_starts = np.clip(np.vstack([entered_coords, draws]), box_lo, box_hi)
     jitter = np.append(0.0, rng.standard_normal(_STARTS - 1))
 
-    def profile(key: str, value: float) -> tuple[float, dict[str, float], np.ndarray]:
-        """Lowest objective at ``key = value``, the Ka pair and the input coordinates reaching it."""
-        others = [k for k in free_ka if k != key]
+    def profile(
+        key: str, value: float, held: Mapping[str, float] | None = None
+    ) -> tuple[float, dict[str, float], np.ndarray]:
+        """Lowest objective at ``key = value``, the Ka pair and the input coordinates reaching it.
+
+        A free Ka in *held* is held at the value it names as well.
+        """
+        fixed = {key: value, **(held or {})}
+        others = [k for k in free_ka if k not in fixed]
         if not others and not input_keys:
-            return objective({key: value}), {key: value}, entered_coords
+            return objective(fixed), fixed, entered_coords
         start_other = []
         if others:
             other = others[0]
@@ -420,7 +447,7 @@ def reference_intervals(
             other_box = np.log10(bounds[other])
 
         def fun(v: np.ndarray) -> float:
-            ka = {key: value, **({other: 10.0 ** v[0]} if others else {})}
+            ka = {**fixed, **({other: 10.0 ** v[0]} if others else {})}
             return objective(ka, v[len(others) :])
 
         box = [*([tuple(other_box)] if others else []), *zip(box_lo, box_hi)]
@@ -436,7 +463,7 @@ def reference_intervals(
             if lowest < found[0]:
                 found = (lowest, v)
         v = found[1]
-        return found[0], {key: value, **({other: float(10.0 ** v[0])} if others else {})}, v[len(others) :]
+        return found[0], {**fixed, **({other: float(10.0 ** v[0])} if others else {})}, v[len(others) :]
 
     # Best fit: the profile of the first free Ka, minimised along its axis.
     first = free_ka[0]
@@ -444,6 +471,23 @@ def reference_intervals(
     on_first = np.array([point[0] for point in node_points[first]])
     best_ka1, p_min = _refine(lambda k: profile(first, k)[0], axes[first], on_first)
     _, best_ka, best_coords = profile(first, best_ka1)
+    # A Ka rests on the end of its box nearer it wherever the profile there, the Ka put on an end before it held
+    # there, is no higher than the lowest objective found, to the resolution of R²: the residual sum of squares at
+    # most _R2_RESOLUTION of the signal's variation higher. The nearest first, at any distance from the end.
+    lowest = p_min
+    resolution = n * float(
+        np.log1p(_R2_RESOLUTION * variation**2 / np.exp((lowest - best_coords[is_sigma] @ best_coords[is_sigma]) / n))
+    )
+    ends: dict[str, float] = {}
+    for key in sorted(free_ka, key=lambda k: _to_end(best_ka[k], bounds[k])[1]):
+        end = _to_end(best_ka[key], bounds[key])[0]
+        if best_ka[key] != end:
+            found, ka, coords = profile(key, end, ends)
+            if found > lowest + resolution:
+                continue
+            p_min, best_ka, best_coords = found, ka, coords
+            lowest = min(lowest, found)
+        ends[key] = end
     best_fitted = fitted_rank(best_ka, best_coords)
     # What the best fit placed itself: a Ka off the ends of its box and an input stated as a range off
     # the ends of its range. One held on an end, like a coefficient on its bound, takes no dimension

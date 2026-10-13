@@ -667,6 +667,39 @@ def test_a_binding_constant_whose_minimum_lies_on_its_bound_is_put_on_it_and_not
     assert result.fit.ka_fitted == ('Ka_HG',) and result.fit.n_params == 5
 
 
+@pytest.mark.parametrize(
+    'assay_type, ka_hg, ka_second, n, noise, seed',
+    [
+        (AssayType.DBA_H2G, 2902916.6898986776, 16416694.18737613, 20, 0.02, 710983164),
+        (AssayType.DBA_HG2, 29531.854796112406, 29847.003735592458, 8, 0.005, 533310309),
+    ],
+    ids=['H2G-n20', 'HG2-n8'],
+)
+def test_at_a_vanishing_sigma_both_engines_rest_the_same_constant_on_its_bound(assay_type, ka_hg, ka_second, n, noise,
+                                                                                seed):  # fmt: skip
+    """Stepwise titrations whose second constant's objective falls all the way to the top of its box.
+
+    With the inputs known to 0.001 % the input-aware fit is the fixed-input one, so the two must agree on where that
+    constant lies — on the bound, held and not fitted — and therefore on ``p``, the degrees of freedom and the
+    one-step test; with a different count their intervals of the first constant would differ by tenths of a decade.
+    """
+    projection, second = _stepwise(assay_type, ka_hg, ka_second, 3, seed, n=n, noise=noise)
+    fit = projection.fit()
+    conditional = {key: projection.interval(key, fit) for key in projection.free_ka}
+    tiny = InputSpec.sigma_pct(1e-3)
+    cons = constraints(ErrorModel(specs={'h0': tiny, TITRANT: tiny}), projection.assay.get_conditions())
+    result = input_aware(projection, fit, cons, conditional=conditional)
+
+    top = projection.ka_bounds[second][1]
+    assert fit.ka[second] == top and result.fit.ka[second] == top
+    assert result.fit.n_params == projection.n_params(fit)
+    for key, fixed in conditional.items():
+        aware = result.profiles[key].interval
+        assert aware.dof == pytest.approx(fixed.dof, abs=1e-6)
+        assert abs(np.log10(aware.low / fixed.low)) < 1e-3 and abs(np.log10(aware.high / fixed.high)) < 1e-3
+    assert result.profiles[second].interval.one_step_p == pytest.approx(conditional[second].one_step_p, rel=1e-3)
+
+
 def test_the_drawn_profile_is_never_below_the_fixed_input_one_on_the_r2_axis(ida_case):
     """The entered inputs are feasible, so freeing them can only lower the objective."""
     assay, projection, _, result = ida_case

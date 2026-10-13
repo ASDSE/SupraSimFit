@@ -12,6 +12,7 @@ reading of the same definition is a second, independent one.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from core.assays.hg2 import HG2Assay
 from core.pipeline.inputs import ErrorModel, InputSpec
@@ -88,9 +89,10 @@ def test_the_fitted_parameters_are_read_where_the_optimum_lies():
 def test_a_stretch_the_stepped_cut_off_accepts_between_two_rejected_nodes_is_found():
     """Where the fitted rank changes inside a grid cell, the stretch the higher cut-off accepts there is in the interval.
 
-    On this 2:1 titration the profile of the first constant gives up a signal
-    coefficient over about a tenth of a decade below the closed stretch, and
-    the stepped cut-off accepts it; no node of the reference's grid lies in it.
+    On this 2:1 titration, its cut-off widened by a design effect of 1.2, the
+    profile of the first constant gives up a signal coefficient below the
+    closed stretch, and the stepped cut-off accepts a stretch of a tenth of a
+    decade there, between two nodes of the reference's grid that it rejects.
     The engine's own test at one Ka inside it is the independent reading.
     """
     case = _CASES['DBA_H2G,K=10,n=12,noise=0.01']
@@ -98,11 +100,13 @@ def test_a_stretch_the_stepped_cut_off_accepts_between_two_rejected_nodes_is_fou
     signals = data.signals.mean(axis=0)[np.newaxis, :]
     projection = Projection(data.assay, data.assay.get_default_bounds(), signals=signals)
     fit = projection.fit()
-    inside = 3.5e6
+    inside, kappa = 3.7e6, 1.2
     _, value, fitted = projection.profile_point('Ka_HG', inside, inner_per_decade=64)
-    assert value <= projection.cut_off(fit)(fitted), 'the engine must accept the Ka this test is built on'
-    low, _ = reference_intervals(data.assay, signals, case.error_model, 1, case.id)['Ka_HG']
-    assert low <= inside
+    assert value <= projection.cut_off(fit, inflation=kappa)(fitted), (
+        'the engine must accept the Ka this test is built on'
+    )
+    found = reference_intervals(data.assay, signals, case.error_model, 1, case.id, inflation={'Ka_HG': kappa})
+    assert found['Ka_HG'][0] <= inside
 
 
 def test_an_input_known_to_a_vanishing_sigma_gives_the_interval_of_exact_inputs():
@@ -120,3 +124,32 @@ def test_an_input_known_to_a_vanishing_sigma_gives_the_interval_of_exact_inputs(
     stated = ErrorModel(specs={'h0': InputSpec.sigma_pct(1e-4)})
     free = reference_intervals(data.assay, signals, stated, 0, case.id)['Ka_guest']
     assert _decades_apart(free, exact) <= 1e-3
+
+
+def _engine_and_reference(case_id: str, seed: int) -> tuple[dict, dict]:
+    """The engine's interval of every free Ka and the reference's, on the average of one grid dataset's replicates."""
+    case = _CASES[case_id]
+    data = dataset(case, seed)
+    signals = data.signals.mean(axis=0)[np.newaxis, :]
+    projection = Projection(data.assay, data.assay.get_default_bounds(), signals=signals)
+    fit = projection.fit()
+    engine = {key: projection.interval(key, fit) for key in projection.free_ka}
+    return engine, reference_intervals(data.assay, signals, case.error_model, seed, case.id)
+
+
+@pytest.mark.parametrize(
+    'case_id, seed',
+    [('DBA_HG2,K=0.1,n=8,noise=0.01', 0), ('DBA_H2G,K=10,n=8,noise=0.01', 1)],
+    ids=['HG2-on-top', 'H2G-on-floor'],
+)
+def test_a_constant_whose_objective_falls_to_its_bound_rests_on_it_in_both_computations(case_id, seed):
+    """Where the objective is no higher on a bound than where a search stopped, both fits rest the constant there.
+
+    The second constant of the first titration runs to the top of its box, of the second to the bottom, along a
+    valley so flat that a search can stop short of the bound by up to a tenth of a decade. Held on the bound, the
+    constant is not fitted, and both computations count the same ``n - p``; counted as fitted by one of them, the
+    intervals of the first constant lie tenths of a decade apart.
+    """
+    engine, found = _engine_and_reference(case_id, seed)
+    for key, interval in engine.items():
+        assert _decades_apart(found[key], (interval.low, interval.high)) <= AGREEMENT_DECADES, key

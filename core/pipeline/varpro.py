@@ -38,7 +38,11 @@ A parameter held on a bound is not fitted: it takes no dimension from the
 residual. What a fit at K fitted (:meth:`Projection.fitted_parameters`) is the
 free binding constants strictly inside their box and the rank ``r(K)`` of the
 design columns whose coefficient lies strictly inside its bounds; their count
-at the best fit ``K_hat`` is the ``p`` of every test here. The F test of a
+at the best fit ``K_hat`` is the ``p`` of every test here. A free binding
+constant rests on a bound wherever the objective there is no higher than where
+the search for it stopped, to the resolution of R², so a minimum the data do
+not place inside the box is held on its bound (:func:`_rest_on_bounds`, the
+rule of both fit engines). The F test of a
 tested Ka compares two fits, and its numerator counts the parameters the best
 fit has and the fit at the tested Ka has not: the tested Ka, and every signal
 parameter the bounded solve holds on a bound there while the best fit leaves it
@@ -75,7 +79,7 @@ passes the range of a double.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence, TypeVar
 
 import numpy as np
 from scipy.optimize import brentq, least_squares, lsq_linear, minimize_scalar
@@ -240,12 +244,14 @@ def projectable(assay_type: AssayType) -> bool:
 def on_ka_bound(ka: float, bounds: tuple[float, float]) -> bool:
     """Whether a fitted binding constant rests on a bound of its box instead of inside it.
 
-    The search works on log10(Ka) and resolves it to ``_LOG_KA_XTOL``, so an
-    estimate within that of either end is one it could not move off: the data do
-    not limit Ka on that side and the fit reports the bound. The single reading
-    of "on its bound", wherever a fit is asked whether it ran to the edge of the
-    box — a parameter held there is not one the residual paid for. A constant
-    at or beyond an end of the box is not inside it either, such as the zero
+    Every search puts a constant exactly on a bound wherever the objective there
+    is no higher than where it stopped (:func:`_rest_on_bounds`), and resolves
+    log10(Ka) to ``_LOG_KA_XTOL`` everywhere else, so an estimate within that of
+    either end is one it could not move off: the data do not limit Ka on that
+    side and the fit reports the bound. The single reading of "on its bound",
+    wherever a fit is asked whether it ran to the edge of the box — a parameter
+    held there is not one the residual paid for. A constant at or beyond an end
+    of the box is not inside it either, such as the zero
     :meth:`Projection.one_step_p` sets the second constant of a stepwise model
     to.
 
@@ -261,6 +267,74 @@ def on_ka_bound(ka: float, bounds: tuple[float, float]) -> bool:
     low, high = np.log10(bounds)
     estimate = np.log10(ka)
     return not min(estimate - low, high - estimate) > _LOG_KA_XTOL
+
+
+#: Whatever a fit engine's search stops at: :func:`_rest_on_bounds` hands it back or the solution it moves to.
+_Found = TypeVar('_Found')
+
+
+def _nearer_bound(ka: float, bounds: tuple[float, float]) -> tuple[float, float]:
+    """The bound of the Ka box nearer *ka* on the log scale, and how many decades from it *ka* lies."""
+    low, high = np.log10(bounds)
+    estimate = np.log10(ka)
+    return (bounds[0], estimate - low) if estimate - low <= high - estimate else (bounds[1], high - estimate)
+
+
+def _rest_on_bounds(
+    found: _Found,
+    ka: Mapping[str, float],
+    value: float,
+    moving: Sequence[str],
+    ka_bounds: Mapping[str, tuple[float, float]],
+    held: Callable[[_Found, dict[str, float], bool], tuple[_Found, Mapping[str, float], float]],
+    resolution: float,
+) -> _Found:
+    """*found*, or the solution with binding constants moved onto their bounds where the objective there is no higher.
+
+    The one rule of both fit engines for whether a constant a search was free
+    to move rests on a bound of its box: wherever the objective with that
+    constant on its nearer bound is no higher than the lowest objective found,
+    *value* where the search stopped (at *found*, its constants *ka*) or a
+    lower one a move onto a bound reached, plus *resolution*, the resolution of
+    the objective at the resolution of R² — ``_R2_RESOLUTION`` of the total
+    sum of squares. A residual lower by less than that is not data,
+    so a minimum no deeper inside the box is not one the data place there: the
+    constant is held on the bound, takes no dimension from the residual and is
+    reported as not limited on that side. Read by position alone, the same
+    constant counts as fitted or not by how close a search happened to stop.
+
+    The constants of *moving* are tried nearest their bound first, each held
+    with those already put on a bound. *held* gives the solution at a trial —
+    from the current *found*, the constants to hold, and whether to minimise
+    the other parameters again — with its constants and objective. Within the
+    last search cell before the bound they are minimised again: there a search
+    runs down a valley along which the other parameters compensate, the stepwise
+    models' K₁·K₂ valley, and the trust-region solves of both engines, which
+    keep their iterates strictly inside the box, stop short of a bound the
+    objective falls all the way to (by up to 0.13 decades over the
+    reference-agreement grid and 40 random stepwise designs). Further out the
+    other parameters stay where the search stopped, which bounds the minimum at
+    the bound from above, so the move stands wherever the objective does not
+    depend on the constant — the second constant of a stepwise model with no
+    second step, left decades from its bound by a search over a flat objective.
+    The independent reference minimises again at every distance
+    (:mod:`validation.reference`), so a valley that runs further shows there as
+    a disagreement.
+    """
+    if not np.isfinite(value):
+        return found
+    pinned: dict[str, float] = {}
+    for key in sorted(moving, key=lambda k: _nearer_bound(ka[k], ka_bounds[k])[1]):
+        bound, apart = _nearer_bound(ka[key], ka_bounds[key])
+        pinned[key] = bound
+        if ka[key] == bound:
+            continue
+        candidate, candidate_ka, candidate_value = held(found, dict(pinned), apart <= 1.0 / _SEARCH_PER_DECADE)
+        if candidate_value <= value + resolution:
+            found, ka, value = candidate, candidate_ka, min(value, candidate_value)
+        else:
+            del pinned[key]
+    return found
 
 
 def _ka_text(value: float) -> str:
@@ -718,7 +792,11 @@ class Projection:
         trust-region least squares on the projected residual from the
         ``_N_REFINE`` best grid local minima over the whole box, keeping a node
         that its refinement does not beat; the best of the refinements wins. A
-        pinned Ka takes its axis out of the search.
+        pinned Ka takes its axis out of the search. A free Ka is then put on its
+        nearer bound where the objective there is no higher than where the
+        search stopped, to the resolution of R² (:func:`_rest_on_bounds`); in
+        the last search cell before the bound the other free Ka is minimised
+        again for that, as at a profile point.
 
         Parameters
         ----------
@@ -744,6 +822,15 @@ class Projection:
             ka = self._full_ka({key: best_ka})
         else:
             ka, q = self._search_two(w)
+        ka, q = _rest_on_bounds(
+            (ka, q),
+            ka,
+            q,
+            self.free_ka,
+            self.ka_bounds,
+            lambda found, pinned, again: self._held(found, pinned, again, w),
+            self._resolution(w),
+        )
         if not np.isfinite(q):
             ranges = ' or '.join(f'between {_ka_text(lo)} and {_ka_text(hi)}' for lo, hi in self.ka_bounds.values())
             which = 'its upper bound' if len(self.ka_bounds) == 1 else 'their upper bounds'
@@ -780,6 +867,29 @@ class Projection:
         ii, jj = np.nonzero((q_grid <= neighbours) & np.isfinite(q_grid))
         order = np.argsort(q_grid[ii, jj], kind='stable')[:_N_REFINE]
         return [(int(ii[k]), int(jj[k])) for k in order]
+
+    def _resolution(self, w: np.ndarray) -> float:
+        """Resolution of ``sum_r w_r S_r``: ``_R2_RESOLUTION`` of the same weighted sum of the total sums of squares."""
+        return _R2_RESOLUTION * float(self.ss_tot @ w)
+
+    def _held(
+        self, found: tuple[dict[str, float], float], pinned: Mapping[str, float], again: bool, w: np.ndarray
+    ) -> tuple[tuple[dict[str, float], float], dict[str, float], float]:
+        """The fit *found* with the free binding constants *pinned* held, as :func:`_rest_on_bounds` asks for it.
+
+        Minimised *again*, another free Ka is found as a profile point's is,
+        over its search-grid axis from the cached grid where the held value is
+        a node; otherwise it stays where *found* has it.
+        """
+        others = [k for k in self.free_ka if k not in pinned]
+        if again and others:
+            ((key, value),) = pinned.items()
+            other_ka, q = self._inner_minimum(key, value, w, _SEARCH_PER_DECADE)
+            ka = self._full_ka({key: value, others[0]: other_ka})
+        else:
+            ka = {**found[0], **pinned}
+            q = self._objective(w)(ka)
+        return (ka, q), ka, q
 
     def two_ka_starts(self) -> list[dict[str, float]]:
         """The grid local minima a two-Ka search refines, lowest first, as binding constants."""
@@ -988,12 +1098,12 @@ class Projection:
         The other binding constant of a two-Ka model is not counted among what
         a tested value gives up when it rests on its bound there. Where it
         does, the objective is flat towards that bound — the data no longer
-        tell the constant's value — and whether the inner search lands on the
-        bound or a millionth of a decade inside it is arbitrary: on a stepwise
-        titration of the weak regime the reading flips from one profile point
-        to the next and the cut-off with it, by a third of the rise the test
-        allows. Whether that bound, and not the data, closes the interval is
-        what :meth:`_bound_behind` decides.
+        tell the constant's value — and whether the inner minimum lies on the
+        bound or just inside it turns on differences of the objective at the
+        resolution of R²: counted, that reading would move the cut-off from one
+        profile point to the next, by a third of the rise the test allows on a
+        stepwise titration of the weak regime. Whether that bound, and not the
+        data, closes the interval is what :meth:`_bound_behind` decides.
         """
         fitted = self.fitted_parameters(fit.ka).rank
         cuts: dict[int, float] = {}
@@ -1056,7 +1166,11 @@ class Projection:
         return {k: v for k, v in point.items() if k != ka_key}
 
     def _inner_minimum(self, ka_key: str, ka: float, w: np.ndarray, per_decade: int) -> tuple[float | None, float]:
-        """The other free Ka that minimises the objective at ``ka_key = ka`` (``None`` without one), and that minimum."""
+        """The other free Ka that minimises the objective at ``ka_key = ka`` (``None`` without one), and that minimum.
+
+        The other Ka rests on its bound where the objective there is no higher
+        than where the refinement stopped (:func:`_rest_on_bounds`).
+        """
         objective = self._objective(w)
         others = [k for k in self.free_ka if k != ka_key]
         if not others:
@@ -1071,7 +1185,15 @@ class Projection:
         else:
             other_axis = _ka_grid(*self.ka_bounds[other], per_decade)
             scan = np.array([objective({ka_key: ka, other: k}) for k in other_axis])
-        return _refine_minima(lambda k: objective({ka_key: ka, other: k}), other_axis, scan)
+        found = _refine_minima(lambda k: objective({ka_key: ka, other: k}), other_axis, scan)
+
+        def held(
+            found: tuple[float, float], pinned: dict[str, float], again: bool
+        ) -> tuple[tuple[float, float], dict[str, float], float]:
+            value = objective({ka_key: ka, **pinned})
+            return (pinned[other], value), pinned, value
+
+        return _rest_on_bounds(found, {other: found[0]}, found[1], [other], self.ka_bounds, held, self._resolution(w))
 
     def interval(
         self, ka_key: str, fit: ProjectedFit, level: float = LEVEL, inflation: float = 1.0
@@ -1211,8 +1333,7 @@ class Projection:
         if not on_ka_bound(other_ka, (lo, hi)):
             return ''
         step = 10.0 ** (1.0 / _SEARCH_PER_DECADE)
-        on_low = abs(np.log10(other_ka) - np.log10(lo)) <= abs(np.log10(hi) - np.log10(other_ka))
-        inside = min(lo * step, hi) if on_low else max(hi / step, lo)
+        inside = min(lo * step, hi) if _nearer_bound(other_ka, (lo, hi))[0] == lo else max(hi / step, lo)
         return other if rise(inside) > _BOUND_RISE * allowed else ''
 
 

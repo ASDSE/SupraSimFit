@@ -108,6 +108,7 @@ from core.pipeline.varpro import (
     _refine_at,
     _require_dof,
     _require_inflation,
+    _rest_on_bounds,
     _rise_p,
     _with_one_step_test,
 )
@@ -398,6 +399,44 @@ class _Problem:
     def solve(self, fixed: Mapping[str, float], start: _Point) -> _Point:
         """Minimum of ``n log S + z'z`` at the *fixed* binding constants, from one start.
 
+        The other free binding constants and the inputs move (:meth:`_minimum`),
+        and a moving binding constant rests on its bound where the objective
+        there is no higher (:meth:`rest`).
+        """
+        point = self._minimum(fixed, start)
+        return self.rest(point, [key for key in self.projection.free_ka if key not in fixed], fixed)
+
+    def rest(self, point: _Point, moving: Sequence[str], fixed: Mapping[str, float] | None = None) -> _Point:
+        """*point*, or its solution with constants of *moving* on their bounds where the objective there is no higher.
+
+        The rule of the fixed-input fit (:func:`~core.pipeline.varpro._rest_on_bounds`)
+        on the penalised objective: a constant is held on its nearer bound —
+        within the last search cell before it every other moving constant and
+        the inputs solved again from the point tried, further out left where
+        they are — and the move stands where ``n log S + z'z`` is no higher
+        than at *point* plus ``n log(1 + floor / S)``, the rise of a residual
+        sum of squares by the resolution of R², ``floor``.
+        """
+        fixed = fixed or {}
+
+        def held(start: _Point, pinned: dict[str, float], again: bool) -> tuple[_Point, dict[str, float], float]:
+            solved = self._minimum({**fixed, **pinned}, start) if again else self._at({**start.ka, **pinned}, start)
+            return solved, solved.ka, solved.value
+
+        resolution = self.n * float(np.log1p(self.floor / max(point.ssr, self.floor)))
+        return _rest_on_bounds(point, point.ka, point.value, moving, self.projection.ka_bounds, held, resolution)
+
+    def _at(self, ka: Mapping[str, float], start: _Point) -> _Point:
+        """The objective at the free binding constants *ka* with the inputs where *start* has them, from one solve."""
+        ssr, fitted = self.projection.solved(ka, self.input_offsets(start.coords))
+        if not np.isfinite(ssr[0]):
+            return self.unsolvable(ka)
+        value = self.n * float(np.log(max(ssr[0], self.floor))) + float(np.sum(start.coords[self.is_sigma] ** 2))
+        return _Point(value, dict(ka), start.coords, float(ssr[0]), fitted)
+
+    def _minimum(self, fixed: Mapping[str, float], start: _Point) -> _Point:
+        """Minimum of ``n log S + z'z`` at the *fixed* binding constants from one start, wherever the solver stops.
+
         The other free binding constants and the inputs move. Trust-region
         least squares on ``[r / s ; z]`` minimises ``S / s² + z'z``, which has
         the minimiser of the objective exactly where ``s² = S / n``. That fixed
@@ -453,20 +492,7 @@ class _Problem:
         value = self.n * float(np.log(max(ssr, self.floor))) + float(np.sum(coords[self.is_sigma] ** 2))
         ka = {**fixed, **{key: float(10.0 ** x[i]) for i, key in enumerate(moving)}}
         fitted = self.projection.fitted_parameters(ka, self.input_offsets(coords))
-        point = _Point(value, {key: ka[key] for key in self.projection.free_ka}, coords, ssr, fitted)
-        # The trust-region solver keeps its iterates strictly inside the box, so a binding constant whose minimum
-        # lies on a bound stops short of it by as much as the objective is flat there, which can be more than the
-        # resolution on_ka_bound reads a bound at. A moving binding constant within one search-grid step of a bound
-        # is therefore also solved for held on that bound, and that solution is the answer where it is no higher, to
-        # the resolution of the objective.
-        best = point
-        for i, key in enumerate(moving):
-            end = min(bounds[0][i], bounds[1][i], key=lambda bound: abs(bound - x[i]))
-            if 0.0 < abs(x[i] - end) <= 1.0 / _SEARCH_PER_DECADE:
-                held = self.solve({**fixed, key: float(10.0**end)}, point)
-                if held.value <= best.value + _P_RESOLUTION:
-                    best = held
-        return best
+        return _Point(value, {key: ka[key] for key in self.projection.free_ka}, coords, ssr, fitted)
 
     def count(self, point: _Point) -> int:
         """Parameters *point* fitted: its ``p``.
@@ -835,8 +861,10 @@ def input_aware(
     stretch or a better basin. With two free Ka the joint optimum is first
     sought by one least-squares solve over both constants and the inputs from
     each grid local minimum the fixed-input search refines and from the
-    fixed-input fit itself. ``P_min`` is the lowest objective found anywhere and
-    the estimate is where it was found, so every profile is cut above the same minimum.
+    fixed-input fit itself. The estimate is the lowest point found anywhere,
+    put on a Ka bound where the objective there is no higher, to the resolution
+    of R², as the fixed-input fit is (:meth:`_Problem.rest`); ``P_min`` is its
+    objective, so every profile is cut above the same minimum.
     The accepted stretch is extended node by node, and the interval is cut by
     the routine of the fixed-input interval
     (:func:`~core.pipeline.varpro._cut_interval`), every point off the node
@@ -947,7 +975,10 @@ def input_aware(
 
     profiles: dict[str, AwareProfile] = {}
     for _ in range(_MAX_PASSES):
-        optimum = best[0]
+        # The search ends at the lowest point found, which rests on a Ka bound as the fixed-input fit does.
+        optimum = problem.rest(best[0], projection.free_ka)
+        consider(optimum)
+        found = best[0]
         jacobian = problem.jacobian(optimum)
         ka_fitted = [key in optimum.fitted.ka for key in projection.free_ka]
         offsets = problem.offsets(optimum.coords)
@@ -978,7 +1009,7 @@ def input_aware(
                 cut=cuts,
                 r2_cut=1.0 - np.exp(cuts / n) / ss_tot,
             )
-        if best[0] is optimum:
+        if best[0] is found:
             break
     else:
         raise FitRefused(

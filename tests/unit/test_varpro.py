@@ -452,7 +452,7 @@ def test_two_ka_interval_edges_lie_on_the_cut_off_of_the_profile_over_the_other_
     for key, other in (('Ka_HG', 'Ka_HG2'), ('Ka_HG2', 'Ka_HG')):
         interval = projection.interval(key, fit)
         profile = projection.profile(key)
-        assert interval.low < fit.ka[key] < interval.high
+        assert interval.low <= fit.ka[key] <= interval.high
         for edge, is_open in ((interval.low, interval.open_low), (interval.high, interval.open_high)):
             if not is_open:
                 assert profile(edge) == pytest.approx(threshold, rel=1e-6)
@@ -589,6 +589,137 @@ def test_a_ka_on_its_bound_is_not_counted_among_what_the_fit_fitted():
     # The same data over bounds the estimate lies inside: the constant is counted.
     free = Projection(assay, bounds)
     assert free.fitted_parameters(free.fit().ka).count == 3
+
+
+def _independent_first_constant_minimum(projection: Projection, ka_second: float) -> tuple[float, float, int]:
+    """The residual of a stepwise titration minimised over its first constant, the second held at *ka_second*.
+
+    ``(SSR, first constant, fitted rank)`` from the model's species and a bounded solve of this function's own on
+    norm-scaled columns (the offset, free guest and both complexes, every coefficient at or above zero; the free-host
+    coefficient is held at zero): the first constant read on a 16-per-decade scan of its whole box and refined by
+    bounded Brent between the neighbours of the best node. The rank is that of the columns whose coefficient the
+    solve leaves off zero.
+    """
+    assay, y = projection.assay, projection.signals[0]
+    names = [ASSAY_REGISTRY[assay.assay_type].signal_species.get(k) for k in projection.coef_keys if k != 'I_H']
+
+    def solve(t: float) -> tuple[float, int]:
+        params = np.zeros(len(assay.parameter_keys))
+        params[:2] = 10.0**t, ka_second
+        species = assay.species(params)
+        columns = np.column_stack([np.ones(y.size) if name is None else species[name] for name in names])
+        scaled = columns / np.linalg.norm(columns, axis=0)
+        found = lsq_linear(scaled, y, bounds=(0.0, np.inf), method='bvls', tol=1e-14)
+        inside = scaled[:, found.active_mask == 0]
+        singular = np.linalg.svd(inside, compute_uv=False) if inside.shape[1] else np.zeros(1)
+        return float(np.sum((scaled @ found.x - y) ** 2)), int(np.sum(singular > 1e-8 * singular.max()))
+
+    low, high = np.log10(projection.ka_bounds[projection.ka_keys[0]])
+    scan = np.linspace(low, high, int(round((high - low) * 16)) + 1)
+    i = int(np.argmin([solve(t)[0] for t in scan]))
+    found = minimize_scalar(
+        lambda t: solve(t)[0],
+        bounds=(scan[max(i - 1, 0)], scan[min(i + 1, scan.size - 1)]),
+        method='bounded',
+        options={'xatol': 1e-10},
+    )
+    ssr, rank = solve(found.x)
+    return ssr, float(10.0**found.x), rank
+
+
+# Stepwise titrations whose second constant the least-squares fit puts on the top of its box: the objective, the
+# first constant minimised, falls all the way to that bound, along a valley so flat that the two-constant search can
+# stop up to a tenth of a decade short of it. One is a dataset of the reference-agreement grid (1:2, K₂/K₁ = 0.1, eight
+# points, 1 % noise, seed 0), the others random designs from the vanishing-sigma comparison of the two engines.
+_ON_TOP = {
+    'grid-HG2-n8': lambda: _grid_projection('DBA_HG2,K=0.1,n=8,noise=0.01', 0),
+    'H2G-n20': lambda: _stepwise(
+        AssayType.DBA_H2G, 2902916.6898986776, 16416694.18737613, 3, 710983164, n=20, noise=0.02
+    )[0],
+    'HG2-n8': lambda: _stepwise(AssayType.DBA_HG2, 29531.854796112406, 29847.003735592458, 3, 533310309, n=8)[0],
+}
+
+
+def _grid_projection(case_id: str, seed: int) -> Projection:
+    """The average of the replicates of one reference-agreement dataset, every point counted equally."""
+    from validation.checks import CHECKS
+    from validation.generate import dataset
+
+    (case,) = (case for case in CHECKS['reference-agreement'].cases if case.id == case_id)
+    data = dataset(case, seed)
+    return Projection(data.assay, data.assay.get_default_bounds(), signals=data.signals.mean(axis=0)[np.newaxis, :])
+
+
+@pytest.mark.parametrize('case', list(_ON_TOP))
+def test_a_constant_whose_objective_falls_to_its_bound_is_fitted_on_that_bound_and_not_counted(case):
+    """Where the objective is no higher on the bound than anywhere in the last search cell before it, the fit rests there.
+
+    Resting on the bound, the constant is held and not fitted, so ``p`` counts the first constant and the signal
+    columns the bounded solve leaves free there — and the report says the data do not limit it from above.
+    """
+    projection = _ON_TOP[case]()
+    second = projection.second_step
+    top = projection.ka_bounds[second][1]
+    resolution = varpro._R2_RESOLUTION * float(projection.ss_tot[0])
+    on_top, first, rank = _independent_first_constant_minimum(projection, top)
+    inside = [_independent_first_constant_minimum(projection, top * 10.0**-d)[0] for d in (1e-6, 1e-3, 0.03, 0.13)]
+    assert all(on_top <= value + resolution for value in inside)
+    assert not varpro.on_ka_bound(first, projection.ka_bounds[projection.ka_keys[0]])
+
+    fit = projection.fit()
+    assert fit.ka[second] == top
+    assert fit.objective <= on_top + resolution
+    assert projection.n_params(fit) == 1 + rank
+
+
+def test_a_fit_inside_its_box_is_where_the_search_stopped_to_the_last_bit():
+    """Where the objective rises towards every bound, nothing is moved: the fit is the search's own optimum."""
+    projection = Projection(*_noisy_hg2())
+    stopped, objective = projection._search_two(np.ones(1))
+    fit = projection.fit()
+    assert fit.ka == stopped and fit.objective == objective
+
+
+def test_a_constant_rests_on_its_bound_only_where_the_objective_there_is_no_higher_than_where_the_search_stopped():
+    """The rule both fit engines share, on a stated objective, from a stop of objective one at a resolution of 1e-10.
+
+    In the last search cell before its bound a constant is tried with the other parameters minimised again, further
+    out with them where the search stopped; the nearer bound first, a constant put on its bound held there while the
+    next is tried.
+    """
+    bounds = {'K1': (1e-8, 1e12), 'K2': (1e-8, 1e12)}
+    asked = []
+
+    def rest(ka: dict, on_bound) -> object:
+        def held(found, pinned: dict, again: bool):
+            asked.append((dict(pinned), again))
+            return ('moved', tuple(sorted(pinned))), {**ka, **pinned}, on_bound(pinned)
+
+        asked.clear()
+        return varpro._rest_on_bounds('stopped', ka, 1.0, list(ka), bounds, held, 1e-10)
+
+    near = {'K1': 1e12 * 10.0**-0.1}
+    assert rest(near, lambda pinned: 1.0 - 1e-13) == ('moved', ('K1',))
+    assert asked == [({'K1': 1e12}, True)]
+    assert rest(near, lambda pinned: 1.0 + 0.5e-10) == ('moved', ('K1',))
+    assert rest(near, lambda pinned: 1.0 + 2e-10) == 'stopped'
+    assert rest({'K1': 1e12 * 10.0**-3}, lambda pinned: 1.0) == ('moved', ('K1',))
+    assert asked == [({'K1': 1e12}, False)]
+    two = {'K1': 1e12 * 10.0**-0.2, 'K2': 1e-8 * 10.0**0.01}
+    assert rest(two, lambda pinned: 1.0) == ('moved', ('K1', 'K2'))
+    assert asked == [({'K2': 1e-8}, True), ({'K2': 1e-8, 'K1': 1e12}, True)]
+    assert rest(two, lambda pinned: 1.0 if pinned.keys() == {'K1'} else 2.0) == ('moved', ('K1',))
+    assert asked == [({'K2': 1e-8}, True), ({'K1': 1e12}, True)]
+    assert rest({'K1': 1e12, 'K2': 1e-8 * 10.0**0.1}, lambda pinned: 1.0) == ('moved', ('K1', 'K2'))
+    assert asked == [({'K1': 1e12, 'K2': 1e-8}, True)]
+    # The second constant is measured against the lowest objective found: the first, put on its bound, lowered it
+    # by ten resolutions, and holding the second as well would raise it by ten and a half.
+    far = {'K1': 1e12 * 10.0**-0.05, 'K2': 1e-8 * 10.0**0.2}
+    assert rest(far, lambda pinned: 1.0 - 10e-10 if pinned.keys() == {'K1'} else 1.0 + 0.5e-10) == ('moved', ('K1',))
+    assert rest(far, lambda pinned: 1.0 - 10e-10 if pinned.keys() == {'K1'} else 1.0 - 9.5e-10) == (
+        'moved',
+        ('K1', 'K2'),
+    )
 
 
 def test_the_cut_off_steps_on_the_signal_parameters_a_tested_value_pins_and_not_on_the_other_binding_constant():
@@ -938,15 +1069,25 @@ _STEPWISE_SPECIES = {AssayType.DBA_HG2: hg2_species, AssayType.DBA_H2G: h2g_spec
 _STEPWISE_SIGNAL = {AssayType.DBA_HG2: hg2_signal, AssayType.DBA_H2G: h2g_signal}
 
 
-def _stepwise(assay_type: AssayType, ka_hg: float, ka_second: float, equivalents: float, seed: int, **bounds):
-    """Twelve points of guest up to *equivalents* times a 10 µM host, noise 0.5 % of the range, the default bounds."""
+def _stepwise(
+    assay_type: AssayType,
+    ka_hg: float,
+    ka_second: float,
+    equivalents: float,
+    seed: int,
+    *,
+    n: int = 12,
+    noise: float = 0.005,
+    **bounds,
+):
+    """*n* points of guest up to *equivalents* times a 10 µM host, noise *noise* of the range, the default bounds."""
     h0 = 1e-5
-    x = np.linspace(0.0, equivalents * h0, 12)
+    x = np.linspace(0.0, equivalents * h0, n)
     keys = ASSAY_REGISTRY[assay_type].parameter_keys
     y = _STEPWISE_SIGNAL[assay_type](
         I0=100.0, Ka_HG=ka_hg, **{keys[1]: ka_second}, I_G=1e6, I_H=0.0, I_HG=1e7, **{keys[-1]: 5e6}, h0=h0, g0_values=x
     )
-    assay = _assay(assay_type, x, _homoscedastic(y, 0.005, seed), h0=Q_(h0, 'M'))
+    assay = _assay(assay_type, x, _homoscedastic(y, noise, seed), h0=Q_(h0, 'M'))
     return Projection(assay, {**ASSAY_REGISTRY[assay_type].default_bounds, **bounds}), keys[1]
 
 
