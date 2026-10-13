@@ -3,14 +3,16 @@
 The truth is drawn inside the scenario: the concentration scale, the titrant
 span, the signal coefficients and the exact binding constants that put the
 model in the scenario's regime. The randomness comes only from
-``np.random.default_rng``, in four independent streams — the truth, the
-measurement noise, the scale factor of each replicate and the entry errors —
-each seeded from the seed and a key of the scenario: the titration for the
-first three (:attr:`~validation.scenarios.Scenario.data_id`) and the titration
-with the uncertainties stated for its inputs for the last
+``np.random.default_rng``, in five independent streams — the truth, the
+measurement noise, the scale factor of each replicate, the error of each
+titrant addition and the entry errors — each seeded from the seed and a key of
+the scenario: the titration for the first four
+(:attr:`~validation.scenarios.Scenario.data_id`) and the titration with the
+uncertainties stated for its inputs for the last
 (:attr:`~validation.scenarios.Scenario.entry_id`). A dataset is reproducible
-from ``(scenario.id, seed)`` alone; its noise does not change when the entered
-inputs start moving, and its entry errors are one draw scaled by the multiple.
+from ``(scenario.id, seed)`` alone; its noise and its additions do not change
+when the entered inputs start moving or the addition error is stated otherwise,
+and its entry errors are one draw scaled by the multiple.
 
 The draws are those of the studies these checks come from: the fixed
 concentration spans 0.3 µM to 100 µM, the titrant reaches 1.5 to 20 times it,
@@ -30,7 +32,7 @@ from core.assays import ASSAY_CLASSES
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.models.equilibrium import dba_signal, gda_signal, h2g_signal, hg2_signal, ida_signal
-from core.pipeline.inputs import TITRANT, TITRANT_STOCK, shared_key
+from core.pipeline.inputs import TITRANT, TITRANT_STOCK, perturb_titrant, shared_key
 from core.units import Q_
 from validation.scenarios import COMPETITIVE, NOISY_FACTOR, TWO_KA, Scenario, fixed_concentrations
 
@@ -76,15 +78,28 @@ class Dataset:
         The concentration (M) the regime refers to: the host, or the fixed
         partner of a DBA titration.
     x : np.ndarray
-        True titrant concentrations (M).
+        Titrant concentrations (M) of the titration as planned: the true ones
+        of every replicate where no addition is in error.
+    deltas : np.ndarray
+        Relative error of each titrant addition, shape ``(replicates,
+        points)``: of the addition that made each point (sequential), or of
+        the one addition of its sample. Zero where the scenario draws no
+        addition error; every row the same where the replicates are repeated
+        reads of one titration.
+    titrant : np.ndarray
+        True titrant concentrations (M) of each replicate, shape
+        ``(replicates, points)``: *x* moved by *deltas* through
+        :func:`~core.pipeline.inputs.perturb_titrant`, and *x* itself in
+        every row where no addition is in error.
     clean : np.ndarray
         The model's signal at ``truth`` on ``x``, plus any planted misfit —
-        what was measured before noise.
+        what the planned titration measures before noise.
     signals : np.ndarray
-        Measured signals, shape ``(replicates, points)``.
+        Measured signals, shape ``(replicates, points)``: each replicate's
+        model signal on its own true titrant series, plus the noise.
     noise_sigma : np.ndarray
         Standard deviation of the independent noise at each point of one
-        replicate; a noisy replicate (:attr:`~validation.scenarios.Scenario.noisy_rows`)
+        replicate, sized on *clean*; a noisy replicate (:attr:`~validation.scenarios.Scenario.noisy_rows`)
         carries :data:`~validation.scenarios.NOISY_FACTOR` times it. A
         replicate scale factor is a difference between whole replicates rather
         than noise within one, so it is not in this.
@@ -111,6 +126,8 @@ class Dataset:
     truth: dict[str, float]
     fixed_conc: float
     x: np.ndarray
+    deltas: np.ndarray
+    titrant: np.ndarray
     clean: np.ndarray
     signals: np.ndarray
     noise_sigma: np.ndarray
@@ -306,6 +323,21 @@ def _entry_errors(scenario: Scenario, rng: np.random.Generator) -> tuple[dict[st
     return errors, z
 
 
+def _addition_errors(scenario: Scenario, rng: np.random.Generator) -> np.ndarray:
+    """Relative error of every titrant addition of every replicate, shape ``(replicates, points)``.
+
+    Each error is Gaussian with the scenario's standard deviation. Repeated
+    reads of one titration share one draw; separate titrations draw their own.
+    Without an addition error nothing is drawn and every error is zero.
+    """
+    shape = (scenario.replicates, scenario.n_points)
+    if not scenario.additions:
+        return np.zeros(shape)
+    rows = 1 if scenario.repeated_reads else scenario.replicates
+    draws = scenario.additions / 100 * rng.standard_normal((rows, scenario.n_points))
+    return np.broadcast_to(draws, shape).copy()
+
+
 def _normal_quantile(u: float) -> float:
     """Standard normal quantile of *u*, by the error function's inverse."""
     from scipy.special import ndtri
@@ -336,6 +368,7 @@ def dataset(scenario: Scenario, seed: int) -> Dataset:
     truth_rng, noise_rng, scale_rng = (
         np.random.default_rng(child) for child in stream_seed(scenario.data_id, seed).spawn(3)
     )
+    addition_rng = np.random.default_rng(stream_seed(f'{scenario.data_id}|additions', seed))
     entry_rng = np.random.default_rng(stream_seed(f'{scenario.entry_id}|entry', seed))
     truth, conditions, conc, x, stock = _truth(scenario, truth_rng)
     totals = _point_totals(scenario, conditions, x, stock)
@@ -351,10 +384,22 @@ def dataset(scenario: Scenario, seed: int) -> Dataset:
     # A shifted replicate is the same titration on other binding constants:
     # its signal coefficients, offset and planted misfit are the others'.
     rows = np.tile(clean, (scenario.replicates, 1))
+    moved = {k: v * scenario.replicate_shift if k in ka_keys(scenario.assay) else v for k, v in truth.items()}
     if scenario.shifted_replicates:
-        moved = {k: v * scenario.replicate_shift if k in ka_keys(scenario.assay) else v for k, v in truth.items()}
         shifted = _clean_signal(scenario, moved, totals, x) + offset
         rows[list(scenario.shifted_rows)] = shifted if sine is None else shifted + sine
+    # A replicate whose additions are in error is measured on its own true
+    # titrant series: the model's signal there, the stock's dilution included.
+    deltas = _addition_errors(scenario, addition_rng)
+    titrant = np.tile(x, (scenario.replicates, 1))
+    if scenario.additions:
+        for r in range(scenario.replicates):
+            titrant[r] = perturb_titrant(x, deltas[r], scenario.sequential, stock)
+            params = moved if r in scenario.shifted_rows else truth
+            rows[r] = _clean_signal(
+                scenario, params, _point_totals(scenario, conditions, titrant[r], stock), titrant[r]
+            )
+            rows[r] += offset if sine is None else offset + sine
 
     if scenario.proportional:
         sigma = scenario.noise * np.abs(clean)
@@ -411,6 +456,8 @@ def dataset(scenario: Scenario, seed: int) -> Dataset:
         truth={key: truth[key] for key in assay.parameter_keys},
         fixed_conc=conc,
         x=x,
+        deltas=deltas,
+        titrant=titrant,
         clean=clean,
         signals=signals,
         noise_sigma=sigma,

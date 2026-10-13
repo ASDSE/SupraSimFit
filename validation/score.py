@@ -80,10 +80,12 @@ def interval_facts(
     dict
         ``covers``, ``width`` in decades of Ka, the ``open``/``split``/
         ``limited`` flags, ``open_low`` — the lower side runs to the Ka bound —
-        and the two edges, with ``estimate`` beside them, and ``one_step_p``,
-        the p-value of the one-step model the second constant of a two-step
-        model is tested against (``None`` for every other constant). ``None``
-        fields where there is no interval.
+        and the two edges, with ``estimate`` beside them, ``one_step_p``, the
+        p-value of the one-step model the second constant of a two-step model
+        is tested against (``None`` for every other constant), and
+        ``inflation``, the factor the interval's cut-off was widened by
+        (exactly 1 where nothing widened it). ``None`` fields where there is no
+        interval.
     """
     if interval is None:
         return {
@@ -95,6 +97,7 @@ def interval_facts(
             'limited': None,
             'estimate': estimate,
             'one_step_p': None,
+            'inflation': None,
         }
     covers = bool(interval.low <= truth <= interval.high)
     if covers and interval.split and accepts is not None:
@@ -110,6 +113,7 @@ def interval_facts(
         'high': float(interval.high),
         'estimate': estimate,
         'one_step_p': interval.one_step_p,
+        'inflation': float(interval.inflation),
     }
 
 
@@ -154,24 +158,23 @@ def _entered_accepts(data: Dataset, result: FitResult) -> Callable[[str], Callab
 
     That interval is the profile interval of the entered inputs, so a
     projection of the same assay and bounds re-cuts the profile it came from.
-    The projection carries the point weights of the noise law *result* was
-    fitted under, so what is re-cut is the profile the judged interval was cut
-    from rather than another one on the same data. It is built on the first
-    call, which only a split interval makes.
+    The projection carries the point weights *result* was fitted with and the
+    cut-off is widened by the factor the interval of that constant carries,
+    so what is re-cut is the profile the judged interval was cut from rather
+    than another one on the same data. It is built on the first call, which
+    only a split interval makes.
     """
     held: dict[str, Any] = {}
 
     def for_key(key: str) -> Callable[[float], bool]:
         def accepts(ka: float) -> bool:
             if not held:
-                projection = Projection(
-                    data.assay,
-                    data.assay.get_default_bounds(),
-                    point_weights=result.noise.weights(data.assay.y_data.magnitude),
-                )
+                projection = Projection(data.assay, data.assay.get_default_bounds(), point_weights=result.point_weights)
                 held['projection'] = projection
-                held['threshold'] = projection.threshold(projection.fit())
-            return bool(held['projection'].profile(key)(ka) <= held['threshold'])
+                held['fit'] = projection.fit()
+            inflation = result.conditional.intervals[key].inflation
+            threshold = held['projection'].threshold(held['fit'], inflation=inflation)
+            return bool(held['projection'].profile(key)(ka) <= threshold)
 
         return accepts
 
@@ -203,14 +206,9 @@ def _bound_active(result, data: Dataset) -> bool:
     return False
 
 
-def _weight_ratio(result: FitResult, data: Dataset) -> float:
-    """The largest point weight of the fit over its smallest.
-
-    The weights are the law's at the mean signal of the replicates, which is
-    what the fit was handed them at.
-    """
-    weights = result.noise.weights(data.assay.y_data.magnitude)
-    return float(weights.max() / weights.min())
+def _weight_ratio(weights: np.ndarray | None) -> float:
+    """The largest of *weights* over the smallest; exactly 1 where there are none, which is every weight one."""
+    return 1.0 if weights is None else float(weights.max() / weights.min())
 
 
 def score(scenario: Scenario, seed: int) -> dict[str, Any]:
@@ -235,9 +233,14 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
     ``noise_share`` and ``noise_basis`` say what the replicates showed about
     the noise and therefore how the fit was weighted; a single titration
     carries no law and reads ``single_titration`` with a share of zero.
-    ``weight_ratio`` is the largest weight of the fit over its smallest —
-    exactly 1 where the weights are all one — which says how far an estimated
-    law spread the weights.
+    ``share_set`` is the range of shares the replicates allow, which the
+    interval is widened to hold for. ``weight_ratio`` is the largest weight
+    the law gives at the mean signal of the replicates over its smallest —
+    exactly 1 where the weights are all one — which says how far the law
+    spread the weights where it was read; ``fit_weight_ratio`` is the same of
+    the weights the fit ran with, and ``refit`` whether those were read off
+    the fitted curve of a first fit, which the fit does wherever the law gives
+    the signal a share above zero.
 
     ``misfit_reference`` names what the misfit test's p-value was read against:
     for the lack-of-fit test ``'F'``, the F distribution, or ``'bootstrap'``
@@ -296,7 +299,12 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
             # grows with the signal, and what the law was read from.
             'noise_share': None if result.noise is None else float(result.noise.share),
             'noise_basis': None if result.noise is None else result.noise.basis.value,
-            'weight_ratio': None if result.noise is None else _weight_ratio(result, data),
+            'share_set': None if result.noise is None else [float(share) for share in result.noise.share_set],
+            'weight_ratio': (
+                None if result.noise is None else _weight_ratio(result.noise.weights(data.assay.y_data.magnitude))
+            ),
+            'fit_weight_ratio': _weight_ratio(result.point_weights),
+            'refit': result.point_weights is not None,
             't_fit': t_fit,
         }
         if scenario.dilution is not None or scenario.shared_sources:
@@ -428,8 +436,11 @@ def region_excess(region: JointRegion, pair: tuple[float, float]) -> float:
 def joint_region_row(scenario: Scenario, seed: int) -> dict[str, Any]:
     """Whether the joint region of a two-constant model holds the true pair.
 
-    The row goes through :func:`~core.pipeline.profile.fit_profile`, the call
-    the Identifiability tab makes, and asks the
+    The row fits the data as the application does and profiles that fit
+    through :func:`~core.pipeline.profile.fit_profile` with the fit's own
+    point weights and design effects
+    (:meth:`~core.pipeline.fit_pipeline.FitResult.profile_arguments`), the
+    call the Identifiability tab makes, and asks the
     :class:`~core.pipeline.profile.JointRegion` it returns whether the true
     pair lies in it — the same surface, the same cut-off per cell and the same
     bounding box the tab draws, so a region the tab would draw wrongly is a
@@ -440,24 +451,27 @@ def joint_region_row(scenario: Scenario, seed: int) -> dict[str, Any]:
     dict
         ``inside`` — the true pair lies in the region — with the pair's excess
         over the threshold in residual sum of squares beside it, and whether
-        each one-dimensional interval holds its own truth.
+        each one-dimensional interval drawn under the region holds its own truth.
     """
     started = time.perf_counter()
     data = dataset(scenario, seed)
 
     def work() -> dict[str, Any]:
-        profiles = fit_profile(
+        ms, assay_cls, conditions = (
             measurement_set(data),
             ASSAY_CLASSES[AssayType[scenario.assay]],
             dict(data.conditions),
-            FitConfig(per_replica=False),
         )
+        config = FitConfig(per_replica=False, errors=scenario.error_model)
+        result = fit_measurement_set(ms, assay_cls, conditions, config)
+        profiles = fit_profile(ms, assay_cls, conditions, config, **result.profile_arguments())
         region = profiles.region
         if region is None:
             return {'inside': None}
         pair = tuple(data.truth[key] for key in region.ka_keys)
         excess = region_excess(region, pair)
-        intervals = {key: profile.interval for key, profile in profiles.profiles.items()}
+        # The two intervals drawn as bands under the region, at its own footing.
+        intervals = region.intervals
         return {
             'inside': bool(np.isfinite(excess) and excess <= 1.0),
             'excess': None if not np.isfinite(excess) else excess,

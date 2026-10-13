@@ -14,9 +14,10 @@ is the interval its definition names, rather than an artefact of how it
 searches.
 
 Where the replicates show a noise law, both computations carry it: the
-reference whitens its own target and design with the same point weights the
-engine is given, so what the agreement tests is still the definition and not
-the weighting. :func:`agreement_row` answers the engine's own question — the
+reference whitens its own target and design with the point weights the
+application's fit ran with and widens its cut-off by the factor the
+application's interval carries, so what the agreement tests is still the
+definition and not the weighting. :func:`agreement_row` answers the engine's own question — the
 average of the replicates, weighted — and :func:`pooling_row` the alternative
 it is measured against, every replicate's point kept as an observation of its
 own.
@@ -25,19 +26,21 @@ own.
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import numpy as np
 from scipy.optimize import brentq, lsq_linear, minimize, minimize_scalar
 from scipy.stats import f as f_dist
 
+from core.assays import ASSAY_CLASSES
 from core.assays.base import BaseAssay
+from core.assays.registry import AssayType
+from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
 from core.pipeline.inputs import ErrorModel, SpecKind
-from core.pipeline.noise import noise_law
 from core.pipeline.varpro import LEVEL, Projection
 from validation.generate import dataset, stream_seed
 from validation.scenarios import Scenario
-from validation.score import guard
+from validation.score import guard, measurement_set
 
 __all__ = ['agreement_row', 'pooling_row', 'reference_intervals']
 
@@ -133,6 +136,7 @@ def reference_intervals(
     seed: int,
     stream: str,
     weights: np.ndarray | None = None,
+    inflation: Mapping[str, float] | None = None,
 ) -> dict[str, tuple[float, float]] | None:
     """95 % interval per free Ka, computed from the model's species by machinery of its own.
 
@@ -144,7 +148,8 @@ def reference_intervals(
     The profile is ``P(k) = min [N log S_w + z'z]``, the minimum over the other
     free Ka and over the offsets of the inputs *errors* states, ``z`` the offsets
     stated with a standard deviation in units of it, and the interval holds the
-    Ka with ``P(k) - P_min <= N log(1 + m F(0.95; m, nu) / nu)``.
+    Ka with ``P(k) - P_min <= N log(1 + kappa m F(0.95; m, nu) / nu)``,
+    ``kappa`` the factor *inflation* names for that Ka.
 
     The numerator counts the parameters the best fit has and the fit at ``k``
     has not: the tested Ka, and every signal parameter the best fit fits while
@@ -202,6 +207,9 @@ def reference_intervals(
         Weight of each titration point, tiled over the rows of *signals*.
         Equal weights when omitted, which is the fit of a titration whose
         replicates show no noise law.
+    inflation : Mapping[str, float], optional
+        Factor the cut-off of each free Ka is widened by; 1 for a Ka it does
+        not name, and for every Ka when omitted.
 
     Returns
     -------
@@ -392,27 +400,29 @@ def reference_intervals(
         dof -= float(np.clip(np.linalg.eigvalsh(np.eye(z_columns.size) - covariance), 0.0, 1.0).sum())
     if dof < 1:
         return None
-    cuts: dict[int, float] = {}
+    cuts: dict[tuple[str, int], float] = {}
+    factors = dict(inflation or {})
 
-    def cut_off(rank_here: int) -> float:
-        """Objective a fit of fitted rank *rank_here* is accepted below."""
+    def cut_off(key: str, rank_here: int) -> float:
+        """Objective a fit of fitted rank *rank_here* is accepted below on the profile of *key*."""
         released = max(0, best_fitted - rank_here)
-        if released not in cuts:
+        if (key, released) not in cuts:
             # m: the tested Ka plus the signal parameters a fit of this rank gives up.
             tested = 1 + released
-            cuts[released] = p_min + n * float(np.log1p(tested * f_dist.ppf(LEVEL, tested, dof) / dof))
-        return cuts[released]
+            kappa = factors.get(key, 1.0)
+            cuts[key, released] = p_min + n * float(np.log1p(kappa * tested * f_dist.ppf(LEVEL, tested, dof) / dof))
+        return cuts[key, released]
 
     def excess(key: str, value: float) -> float:
         """How far the profile at ``key = value`` stands above the cut-off its own fitted rank names."""
         found, ka, coords = profile(key, value)
-        return found - cut_off(fitted_rank(ka, coords))
+        return found - cut_off(key, fitted_rank(ka, coords))
 
     intervals = {}
     for key in free_ka:
         nodes = axes[key]
         points = node_points.get(key) or [profile(key, v) for v in nodes]
-        above_cut = np.array([found - cut_off(fitted_rank(ka, coords)) for found, ka, coords in points])
+        above_cut = np.array([found - cut_off(key, fitted_rank(ka, coords)) for found, ka, coords in points])
         inside = np.append(nodes[above_cut <= 0.0], best_ka[key])
         low_in, high_in = float(inside.min()), float(inside.max())
         below, above = nodes[nodes < low_in], nodes[nodes > high_in]
@@ -429,30 +439,35 @@ def reference_intervals(
 def _row(scenario: Scenario, seed: int, pooled: bool) -> dict[str, Any]:
     """One dataset through both computations, with the law its replicates show carried by both.
 
-    The engine fits the average of the replicates, weighted by that law. The
-    reference is handed the same average when *pooled* is false and every
-    replicate's points when it is true, weighted the same way either way, so
-    what a pooled row compares is the pooling and not the weighting. A pooled
-    row carries a third interval beside them: the engine's own fit of the same
-    average with every point counted equally.
+    The engine's interval is the one the application reports at the entered
+    inputs: its fit of the average of the replicates, weighted by that law and
+    widened by the factor the law's uncertainty asks for. The reference is
+    handed the same average when *pooled* is false and every replicate's
+    points when it is true, with the same point weights and the same factor
+    either way, so what a pooled row compares is the pooling and not the
+    weighting. A pooled row carries a third interval beside them: the engine's
+    own fit of the same average with every point counted equally.
     """
     started = time.perf_counter()
     data = dataset(scenario, seed)
 
     def work() -> dict[str, Any]:
-        mean = data.signals.mean(axis=0)
-        weights = noise_law(data.signals).weights(mean)
+        result = fit_measurement_set(
+            measurement_set(data),
+            ASSAY_CLASSES[AssayType[scenario.assay]],
+            dict(data.conditions),
+            FitConfig(per_replica=False, errors=scenario.error_model),
+        )
+        engine = result.conditional.intervals
         bounds = data.assay.get_default_bounds()
-        projection = Projection(data.assay, bounds, point_weights=weights)
-        fit = projection.fit()
-        engine = {key: projection.interval(key, fit) for key in projection.free_ka}
         found = reference_intervals(
             data.assay,
-            data.signals if pooled else mean[np.newaxis, :],
+            data.signals if pooled else data.signals.mean(axis=0)[np.newaxis, :],
             scenario.error_model,
             seed,
             scenario.id,
-            weights=weights,
+            weights=result.point_weights,
+            inflation={key: interval.inflation for key, interval in engine.items()},
         )
         if found is None:
             # The keys of the question that was asked, empty: a metric reads
@@ -500,8 +515,8 @@ def _row(scenario: Scenario, seed: int, pooled: bool) -> dict[str, Any]:
 def agreement_row(scenario: Scenario, seed: int) -> dict[str, Any]:
     """The engine's interval and the independent one on the same data, and how far apart their edges lie.
 
-    Both are computed from the average of the replicates, weighted by the law
-    they show, which is the fit the application reports.
+    Both are computed from the average of the replicates, with the point
+    weights and the widening of the fit the application reports.
 
     Returns
     -------

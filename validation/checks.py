@@ -13,7 +13,8 @@ the package reads:
     the truth, over every draw. That is the property the level promises, and
     an interval that runs to a Ka bound covers that side by telling the user
     the data do not limit Ka there. Beside it the tables report
-    ``~open.KEY``, ``~split.KEY``, ``~limited.KEY``, ``~width.KEY`` and the
+    ``~open.KEY``, ``~split.KEY``, ``~limited.KEY``, ``~width.KEY``, the
+    factor the interval's cut-off was widened by, ``~inflation.KEY``, and the
     coverage over the draws closed on both sides, ``~closed_cov.KEY``.
 ``closed_cov.KEY``
     That coverage judged as well, where the claim is about the intervals a
@@ -147,9 +148,10 @@ def _interval_metrics(
 
     The coverage over every draw is the judged series, and with
     *closed_judged* the coverage over the draws closed on both sides as well.
-    The open, split and bound-limited fractions and the width are reported
-    beside them. With *judged* false every series is reported, which is how
-    the conditional interval appears beside a reported one.
+    The open, split and bound-limited fractions, the width and the factor the
+    cut-off was widened by are reported beside them. With *judged* false every
+    series is reported, which is how the conditional interval appears beside a
+    reported one.
     """
     out: dict[str, Any] = {}
     cov = f'{prefix}cov' if judged else f'~{prefix}cov'
@@ -161,6 +163,7 @@ def _interval_metrics(
         out[f'~{prefix}split.{key}'] = facts['split']
         out[f'~{prefix}limited.{key}'] = facts['limited']
         out[f'~{prefix}width.{key}'] = facts['width']
+        out[f'~{prefix}inflation.{key}'] = facts.get('inflation')
     return out
 
 
@@ -268,12 +271,12 @@ _WEIGHT_BINS = ((10.0, 'le10'), (1e3, '10-1e3'), (float('inf'), 'gt1e3'))
 
 
 def coverage_by_weight_ratio(row: dict[str, Any]) -> dict[str, Any]:
-    """The conditional interval's coverage in the bin of the fit's largest weight over its smallest.
+    """The conditional interval's coverage in the bin of the largest weight over the smallest the law gives at the means.
 
     A law read off few replicates can weight some points a thousand times
-    others, and where it does the interval rests on a handful of points.
-    Reported, never judged: it says at which spread of the weights the rate
-    over the grid holds.
+    others where it is read at the measured means, since a mean its own noise
+    pushes near zero takes a weight that noise sets. Reported, never judged:
+    it says at which spread of those weights the rate over the grid holds.
     """
     ratio = row.get('weight_ratio')
     if ratio is None:
@@ -283,18 +286,60 @@ def coverage_by_weight_ratio(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def noise_law_conditional(row: dict[str, Any]) -> dict[str, Any]:
-    """The conditional interval of a weighted fit, with the share the law read and the spread of its weights."""
+    """The conditional interval of a weighted fit, with the law it was weighted by and the spread of its weights.
+
+    Beside the share: the width of the range of shares the replicates allow,
+    which the interval is widened to hold for, whether the fit was weighted
+    by the fitted curve of a first fit, and the spread of the weights at the
+    means and of the weights the fit ran with.
+    """
+    share_set = row.get('share_set')
     return {
         **conditional_coverage(row),
         **_noise_metrics(row),
         **coverage_by_weight_ratio(row),
         '~weight_ratio': row.get('weight_ratio'),
+        '~fit_weight_ratio': row.get('fit_weight_ratio'),
+        '~refit': row.get('refit'),
+        '~share_set_width': None if share_set is None else share_set[1] - share_set[0],
     }
 
 
 def noise_law_aware(row: dict[str, Any]) -> dict[str, Any]:
     """The reported interval of a weighted fit, with the share the law read beside it."""
     return {**aware_coverage(row), **_noise_metrics(row)}
+
+
+def _widening(row: dict[str, Any]) -> dict[str, Any]:
+    """How much wider the reported interval is than the conditional one on the same data, in their ratio of widths.
+
+    Read where both are closed on both sides, since an open interval's width
+    is the distance to a bound of the Ka box and not a spread the data set.
+    It is what the reported interval's widening costs on that measurement.
+    """
+    out: dict[str, Any] = {}
+    conditional = row.get('cond') or {}
+    for key, facts in (row.get('aware') or {}).items():
+        other = conditional.get(key) or {}
+        closed = facts['open'] is False and other.get('open') is False and other['width'] > 0
+        out[f'~width_ratio.{key}'] = facts['width'] / other['width'] if closed else None
+    return out
+
+
+def addition_coverage(row: dict[str, Any]) -> dict[str, Any]:
+    """The reported interval of titrations whose additions are in error, with what its widening costs beside it."""
+    return {**aware_coverage(row), **_widening(row)}
+
+
+def addition_misfit(row: dict[str, Any]) -> dict[str, Any]:
+    """Whether the misfit test rejects, named by the test: the runs test of one titration, the lack-of-fit of replicates."""
+    kind = row.get('misfit_kind')
+    return {} if kind is None else {f'reject.{kind}': _rejects(row.get('misfit_p'))}
+
+
+def addition_misstated(row: dict[str, Any]) -> dict[str, Any]:
+    """The reported interval, what its widening costs and the misfit test, where the additions are stated otherwise."""
+    return {**addition_coverage(row), **addition_misfit(row)}
 
 
 def one_step_closure(row: dict[str, Any]) -> dict[str, Any]:
@@ -358,6 +403,11 @@ def false_alarm(row: dict[str, Any]) -> dict[str, Any]:
         return {'alarm': None}
     quiet = (Verdict.CONSISTENT.value, Verdict.INPUTS_EXPLAIN.value)
     return {'alarm': verdict not in quiet, '~inputs_explain': verdict == Verdict.INPUTS_EXPLAIN.value}
+
+
+def conflict_and_verdict(row: dict[str, Any]) -> dict[str, Any]:
+    """Whether the conflict statistic rejects and whether the verdict blames anything, on one fit."""
+    return {**conflict_rate(row), **false_alarm(row)}
 
 
 def replicate_exclusion(row: dict[str, Any]) -> dict[str, Any]:
@@ -886,9 +936,9 @@ CHECKS: dict[str, Check] = {
             'The interval reported when every entered input is taken as exact holds the true binding '
             'constant as often as its 95 % level says on replicated titrations, whatever the noise does '
             'along them: constant, growing with the signal, and the two together, at two, three and '
-            'eight replicates and 8 and 20 points for every one-Ka assay in the medium and strong '
-            'regimes; with whole replicates differing by a scale factor of three percent; and for the '
-            'two-step model under the same noise at 12 points.'
+            'eight replicates and 8 and 20 points and at four replicates and 12 points for every one-Ka '
+            'assay in the medium and strong regimes; with whole replicates differing by a scale factor '
+            'of three percent; and for the two-step model under the same noise at 12 points.'
         ),
         metrics=noise_law_conditional,
         cases=tuple(scenarios.noise_law_grid()),
@@ -898,10 +948,14 @@ CHECKS: dict[str, Check] = {
             _COVERAGE_REASON + ' The weights the fit uses are read off the same replicates the interval '
             'is computed from, so a law read too eagerly — or read off differences between whole '
             'replicates that are not noise about the curve at all — shows up here as an interval that '
-            'no longer holds its level. The share each fit read and the largest weight over the '
-            'smallest are reported beside the rate, with the coverage in bins of that ratio (up to 10, '
-            '10 to 1000, above 1000), since a law that spreads the weights far rests the interval on a '
-            'few points.'
+            'no longer holds its level. Where the law gives the signal a share above zero the fit is '
+            'weighted by the law at the fitted curve of a first fit, and the interval is widened to hold '
+            'for every share the replicates allow. Beside the rate are reported the share each fit read, '
+            'the width of the range of shares allowed, the factor the interval was widened by, how often '
+            'the fit was weighted by a fitted curve, and the largest weight over the smallest — of the '
+            'law at the measured means and of the weights the fit ran with — with the coverage in bins '
+            'of the first (up to 10, 10 to 1000, above 1000), since a law that spreads the weights far '
+            'where it is read rests a fit weighted there on a few points.'
         ),
     ),
     'noise-law-lof-null': Check(
@@ -974,6 +1028,136 @@ CHECKS: dict[str, Check] = {
         metrics=conflict_rate,
         cases=tuple(case for case in scenarios.robustness_grid() if case.proportional),
         derived_from='robustness',
+    ),
+    'addition-coverage': Check(
+        name='addition-coverage',
+        claim=(
+            'The reported interval holds the true binding constant as often as its 95 % level says when '
+            'every titrant addition carries a random error and the fit is told its size and how the '
+            'additions were made, the inputs otherwise exact. It spans every one-Ka assay with the '
+            'additions made one after another into one cuvette or as separate samples, at 1 % and 3 %: '
+            'one titration of 12 points with constant noise of 0.2 % of the signal range and three '
+            'separate titrations of 12 points with 0.5 %, each in the medium and strong regimes; one '
+            'titration of 8 and of 30 points with 0.5 % and additions of 1 %; three separate titrations '
+            'whose noise is 1 % of the signal itself, additions of 3 %; one titration with sequential '
+            'additions of 3 % diluting the sample by two to twenty percent, the titrant stock declared; '
+            'and three replicates that are repeated reads of one titration sharing its additions of 3 %, '
+            'stated so, with 0.5 % — these in the medium regime. Beside them both two-step models, one '
+            'titration with sequential additions of 3 % in the medium and strong regimes.'
+        ),
+        metrics=addition_coverage,
+        cases=tuple(scenarios.addition_grid()),
+        row=score,
+        criterion=COVERAGE,
+        criterion_reason=(
+            _COVERAGE_REASON + ' The stated addition error enters the interval as a factor its cut-off is '
+            'widened by and never narrowed, so beside the rate are reported that factor, how often the '
+            'interval is closed on both sides, its width and its width over that of the interval the '
+            'same data give with the additions taken as exact — what the widening costs, which coverage '
+            'alone does not show.'
+        ),
+    ),
+    'addition-misfit-null': Check(
+        name='addition-misfit-null',
+        claim=(
+            'On the same titrations, every one of which the model describes and whose addition error is '
+            'stated as it was drawn, the misfit test — the runs test of one titration, the lack-of-fit '
+            'test of replicates — calls the model inadequate about as often as its level allows.'
+        ),
+        metrics=addition_misfit,
+        cases=tuple(scenarios.addition_grid()),
+        criterion=NULL_RATE,
+        criterion_reason=(
+            _NULL_REASON + ' An error in each addition moves the points along the titrant axis, so the '
+            'residuals of a correct model are correlated along a titration, and between replicates that '
+            'are repeated reads of one titration. Each test reads its p-value against a reference that '
+            'carries the stated addition error for that reason, and this rate says whether that '
+            'reference holds the level. The two tests are named apart, so a pooled row never mixes them.'
+        ),
+        derived_from='addition-coverage',
+    ),
+    'addition-misstated': Check(
+        name='addition-misstated',
+        claim=(
+            'What the reported interval and the misfit test do when the addition error is stated '
+            'otherwise than it was drawn: 3 % stated where the additions carry none, on one titration and '
+            'on three separate titrations — the coverage and what the widening costs; 1 % stated where '
+            'they carry 3 %, on one titration; and three repeated reads of one titration sharing '
+            'additions of 3 %, stated as three separate titrations. Every one-Ka assay, sequential and '
+            'separate additions, the medium regime, 12 points. Described, not judged.'
+        ),
+        metrics=addition_misstated,
+        cases=tuple(scenarios.addition_misstated_grid()),
+        row=score,
+        stages=(200,),
+    ),
+    'addition-aware-coverage': Check(
+        name='addition-aware-coverage',
+        claim=(
+            'The reported interval holds the true binding constant as often as its 95 % level says when the '
+            'inputs are entered as wrongly as stated and every titrant addition carries a random error the fit '
+            'is told, so that the inputs and the additions widen it together: every one-Ka assay, sequential '
+            'and separate additions of 3 % on one titration of 12 points with 0.2 % noise in the medium and '
+            'strong regimes and on three separate titrations with 0.5 % in the medium regime, and additions of '
+            '1 % on one titration in the medium regime.'
+        ),
+        metrics=addition_coverage,
+        cases=tuple(scenarios.addition_aware_grid()),
+        row=score,
+        criterion=COVERAGE,
+        criterion_reason=_COVERAGE_REASON,
+    ),
+    'addition-verdict-null': Check(
+        name='addition-verdict-null',
+        claim=(
+            'On the same titrations the check on the entered inputs calls them in conflict, and the verdict '
+            'blames the model, the inputs or both, about as often as the level allows: the additions move the '
+            'curve much as an input does, and the conflict reference carries the share of them a fit free to '
+            'move the inputs puts there.'
+        ),
+        metrics=conflict_and_verdict,
+        cases=tuple(scenarios.addition_aware_grid()),
+        criterion=NULL_RATE,
+        criterion_reason=(
+            _NULL_REASON + ' Two rates are judged on every case: the conflict statistic on its own, over the '
+            'fits whose data inform an input direction, and the verdict, whose Holm step-down holds the misfit '
+            'test and the conflict statistic to one 5 % level between them.'
+        ),
+        derived_from='addition-aware-coverage',
+    ),
+    'addition-replicate-exclusion-null': Check(
+        name='addition-replicate-exclusion-null',
+        claim=(
+            'Fitted replicate by replicate, replicates measured alike whose every addition carries a random '
+            'error the fit is told lose a replicate that agrees with the rest in at most one fit in twenty: '
+            'three and five separate titrations of every one-Ka assay with sequential and with separate '
+            'additions of 3 %, in the medium and strong regimes, and three repeated reads of one titration '
+            'sharing its additions.'
+        ),
+        metrics=replicate_exclusion,
+        cases=tuple(scenarios.addition_replicate_grid()),
+        row=score_replicates,
+        criterion=FALSE_EXCLUSION,
+        criterion_reason=(
+            "Separate titrations each carry their own addition errors, which move each replicate's own Ka "
+            'apart from the others by more than its scatter, and the replicate test allows for the share of '
+            'them the user states. A replicate left out here is a measurement thrown away and a sentence '
+            'blaming it, so the rate is judged as the rate of replicate-exclusion-null is.'
+        ),
+    ),
+    'addition-joint-region': Check(
+        name='addition-joint-region',
+        claim=(
+            'The joint region of a two-constant model holds the true pair as often as its level says when '
+            'every addition carries a random error the fit is told: both stepwise models, one titration of 12 '
+            'points with sequential additions of 3 % and 0.2 % noise, the first step at K1·h0 of 1, 10 and '
+            '1000 and the second constant a tenth and a hundredth of the first.'
+        ),
+        metrics=joint_region,
+        cases=tuple(scenarios.addition_joint_grid()),
+        row=joint_region_row,
+        criterion=COVERAGE,
+        criterion_reason=_COVERAGE_REASON,
     ),
     'budget-coverage': Check(
         name='budget-coverage',

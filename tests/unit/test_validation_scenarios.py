@@ -112,13 +112,18 @@ GRID_IDS: dict[str, tuple[int, str]] = {
     'misfit_power_grid': (84, 'GDA,K=0.1,n=12,noise=0.01,m=4,sine=0.02,sig'),
     'robustness_grid': (66, 'GDA,K=0.1,n=12,noise=0.005,sig,ent=0.5'),
     'robustness_strained_grid': (72, 'GDA,K=0.1,n=12,noise=0.005,sig,ent=2'),
-    'noise_law_grid': (164, 'GDA,K=10,n=8,noise=0.02,m=2'),
+    'noise_law_grid': (188, 'GDA,K=10,n=8,noise=0.02,m=2'),
     'one_step_null_grid': (16, 'DBA_HG2,K=1,n=12,noise=0.01,kr=1e+06'),
     'noise_law_aware_grid': (16, 'GDA,K=10,n=12,noise=0.02,prop,m=4,sig'),
     'reference_grid': (42, 'GDA,K=0.1,n=8,noise=0.01'),
     'pooling_grid': (36, 'GDA,K=0.1,n=12,noise=0.02,m=4'),
     'joint_grid': (48, 'DBA_HG2,K=0.3,n=12,noise=0.01,kr=10'),
     'before_after_grid': (72, 'GDA,K=0.1,n=8,noise=0.005'),
+    'addition_grid': (104, 'DBA_HtoD,K=10,n=12,noise=0.002,add=1:seq,stated_add=1:seq'),
+    'addition_misstated_grid': (32, 'DBA_HtoD,K=10,n=12,noise=0.002,stated_add=3:seq'),
+    'addition_aware_grid': (32, 'DBA_HtoD,K=10,n=12,noise=0.002,add=3:seq,sig,stated_add=3:seq'),
+    'addition_replicate_grid': (36, 'DBA_HtoD,K=10,n=12,noise=0.005,m=3,add=3:seq,stated_add=3:seq'),
+    'addition_joint_grid': (12, 'DBA_HG2,K=1,n=12,noise=0.002,kr=10,add=3:seq,stated_add=3:seq'),
 }
 
 
@@ -297,7 +302,8 @@ def test_the_noise_law_grid_runs_every_structure_the_replicates_can_carry():
     """The claim is about the law under each of them; a structure left out is a claim nobody measured.
 
     Every one-Ka assay at both regimes carries constant, proportional and mixed
-    noise at every replicate count and design the claim names — constant noise
+    noise at every replicate count and design the claim names — two and three
+    and eight replicates at 8 and 20 points, four at 12 points; constant noise
     at two replicates is where an estimated law misweights the most — and the
     lamp case beside them; the two-step model keeps its six structures at 12
     points.
@@ -312,7 +318,8 @@ def test_the_noise_law_grid_runs_every_structure_the_replicates_can_carry():
                 for case in one_ka
                 if case.assay == assay and case.regime == regime
             }
-            assert cell == {(*shape, m, n) for shape in shapes for m in (2, 3, 8) for n in (8, 20)}, (assay, regime)
+            designs = {(m, n) for m in (2, 3, 8) for n in (8, 20)} | {(4, 12)}
+            assert cell == {(*shape, m, n) for shape in shapes for m, n in designs}, (assay, regime)
     lamp = {(case.assay, case.regime) for case in grid if case.replicate_scale == 0.03}
     assert {(assay, regime) for assay in scenarios.ONE_KA for regime in (10.0, 1000.0)} <= lamp
     two_step = [case for case in grid if case.assay == 'DBA_HG2']

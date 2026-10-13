@@ -61,11 +61,14 @@ The fit goes through the calls the interface makes — `fit_measurement_set` on 
 interval, the interval conditional on the entered inputs, where the fit put the inputs, what the
 misfit tests and the conflict statistic say, what the replicates showed about the noise
 (`noise_share`, `noise_basis` — the share of the variance that grows with the signal, and what
-the law was read from — and `weight_ratio`, the fit's largest point weight over its smallest),
-and the wall time. Each interval carries its edges, whether it is open and whether its lower side
-is (`open_low`), and `one_step_p`: for the second constant of a two-step model, the p-value of the
-one-step model that sets it to zero, which is what decides whether that constant is limited below;
-`None` for every other constant. `misfit_reference` says what the misfit test's p-value was read
+the law was read from — `share_set`, the range of shares the replicates allow, `weight_ratio`,
+the largest weight the law gives at the measured means over its smallest, `fit_weight_ratio`, the
+same of the weights the fit ran with, and `refit`, whether those were read off the fitted curve of
+a first fit), and the wall time. Each interval carries its edges, whether it is open and whether
+its lower side is (`open_low`), `inflation`, the factor its cut-off was widened by — exactly 1
+where nothing widened it — and `one_step_p`: for the second constant of a two-step model, the
+p-value of the one-step model that sets it to zero, which is what decides whether that constant is
+limited below; `None` for every other constant. `misfit_reference` says what the misfit test's p-value was read
 against — the F distribution, or a parametric bootstrap where the law was read off the replicates;
 for the runs test of a single titration, its simulated runs.
 
@@ -76,6 +79,17 @@ is a difference between whole replicates and not noise about the curve. A replic
 make some replicates depart from the rest: `shifted_replicates` measured at `replicate_shift` times
 every binding constant the fit moves, and `noisy_replicates` at three times the noise. Each of these
 enters a scenario's key only where it is stated.
+
+A scenario can put a random error on every titrant addition as well: `additions` is its standard
+deviation in percent, `sequential` says whether the additions went into one cuvette one after
+another or each sample was prepared on its own, and `repeated_reads` whether the replicates are
+reads of one titration that share its errors rather than titrations of their own. Each replicate is
+then measured on its own true titrant series — the planned one moved by
+`core.pipeline.inputs.perturb_titrant`, the dilution by a declared stock following the volume
+actually added — while the fit is handed the planned series. What the fit is told is separate:
+`stated_additions` and `stated_repeated_reads` enter the case's id and not the key of its
+measurement, so an error stated too large, too small or for the wrong kind of replicate is a
+statement about the same data a correctly stated twin was fitted to.
 
 A fit the application declines is stored with the message a user would see and counted as
 **refused**; anything else that escapes is stored with its type and counted as an **error**.
@@ -350,15 +364,15 @@ shared-source-coverage 36 cases                                 95 % interval
   concentration of the sample — one stock behind the host, the fixed partner and the titrant — the
   entries are drawn from exactly that model and the fit is told it.
 
-noise-law-coverage     164 cases                                95 % interval
+noise-law-coverage     188 cases                                95 % interval
   The interval reported when every entered input is taken as exact holds the true binding constant
   as often as its 95 % level says on replicated titrations, whatever the noise does along them:
   constant, growing with the signal, and the two together, at two, three and eight replicates and 8
-  and 20 points for every one-Ka assay in the medium and strong regimes; with whole replicates
-  differing by a scale factor of three percent; and for the two-step model under the same noise at
-  12 points.
+  and 20 points and at four replicates and 12 points for every one-Ka assay in the medium and strong
+  regimes; with whole replicates differing by a scale factor of three percent; and for the two-step
+  model under the same noise at 12 points.
 
-noise-law-lof-null     reads 164 cases of noise-law-coverage    5 % test
+noise-law-lof-null     reads 188 cases of noise-law-coverage    5 % test
   On the same replicated titrations, every one of which the model does describe, the lack-of-fit
   test calls the model inadequate about as often as its level allows — with the fit weighted by the
   law the replicates show, the pure error taken as their scatter about their own image of the mean
@@ -380,6 +394,59 @@ conflict-single-proportional reads 18 cases of robustness             reported
   statistic is read against a reference that assumes it. Reported, not required: it is the rate
   that stays where no law can be estimated, and the summary and the plot guide say the noise was
   taken as constant.
+
+addition-coverage      104 cases                                95 % interval
+  The reported interval holds the true binding constant as often as its 95 % level says when every
+  titrant addition carries a random error and the fit is told its size and how the additions were
+  made, the inputs otherwise exact. It spans every one-Ka assay with the additions made one after
+  another into one cuvette or as separate samples, at 1 % and 3 %: one titration of 12 points with
+  constant noise of 0.2 % of the signal range and three separate titrations of 12 points with 0.5 %,
+  each in the medium and strong regimes; one titration of 8 and of 30 points with 0.5 % and
+  additions of 1 %; three separate titrations whose noise is 1 % of the signal itself, additions of
+  3 %; one titration with sequential additions of 3 % diluting the sample by two to twenty percent,
+  the titrant stock declared; and three replicates that are repeated reads of one titration sharing
+  its additions of 3 %, stated so, with 0.5 % — these in the medium regime. Beside them both
+  two-step models, one titration with sequential additions of 3 % in the medium and strong regimes.
+
+addition-misfit-null   reads 104 cases of addition-coverage     5 % test
+  On the same titrations, every one of which the model describes and whose addition error is stated
+  as it was drawn, the misfit test — the runs test of one titration, the lack-of-fit test of
+  replicates — calls the model inadequate about as often as its level allows.
+
+addition-misstated     32 cases                                 reported
+  What the reported interval and the misfit test do when the addition error is stated otherwise than
+  it was drawn: 3 % stated where the additions carry none, on one titration and on three separate
+  titrations — the coverage and what the widening costs; 1 % stated where they carry 3 %, on one
+  titration; and three repeated reads of one titration sharing additions of 3 %, stated as three
+  separate titrations. Every one-Ka assay, sequential and separate additions, the medium regime, 12
+  points. Described, not judged.
+
+addition-aware-coverage 32 cases                                95 % interval
+  The reported interval holds the true binding constant as often as its 95 % level says when the
+  inputs are entered as wrongly as stated and every titrant addition carries a random error the fit
+  is told, so that the inputs and the additions widen it together: every one-Ka assay, sequential and
+  separate additions of 3 % on one titration of 12 points with 0.2 % noise in the medium and strong
+  regimes and on three separate titrations with 0.5 % in the medium regime, and additions of 1 % on
+  one titration in the medium regime.
+
+addition-verdict-null  reads 32 cases of addition-aware-coverage 5 % test
+  On the same titrations the check on the entered inputs calls them in conflict, and the verdict
+  blames the model, the inputs or both, about as often as the level allows: the additions move the
+  curve much as an input does, and the conflict reference carries the share of them a fit free to
+  move the inputs puts there.
+
+addition-replicate-exclusion-null 36 cases                      <= 0.05
+  Fitted replicate by replicate, replicates measured alike whose every addition carries a random
+  error the fit is told lose a replicate that agrees with the rest in at most one fit in twenty:
+  three and five separate titrations of every one-Ka assay with sequential and with separate
+  additions of 3 %, in the medium and strong regimes, and three repeated reads of one titration
+  sharing its additions.
+
+addition-joint-region  12 cases                                 95 % region
+  The joint region of a two-constant model holds the true pair as often as its level says when
+  every addition carries a random error the fit is told: both stepwise models, one titration of 12
+  points with sequential additions of 3 % and 0.2 % noise, the first step at K1·h0 of 1, 10 and 1000
+  and the second constant a tenth and a hundredth of the first.
 
 budget-coverage        4 cases                                  95 % interval
   The 95 % intervals the Ka uncertainty budget draws — around the variance of the output, around
@@ -452,14 +519,44 @@ constant, and the rate is reported rather than judged — it is what the fit doe
 estimated, and the summary and the plot guide say so.
 
 `noise-law-coverage` spans constant, proportional and mixed noise at two, three and eight
-replicates and 8 and 20 points for every one-Ka assay in the medium and strong regimes, the lamp
-case beside them, and the two-step model at 12 points. A law read off few replicates can weight
-some points a thousand times others, so beside the judged rate the table gives the coverage in bins
-of the fit's largest weight over its smallest — `cov_wratio_le10.KEY`, `cov_wratio_10-1e3.KEY` and
-`cov_wratio_gt1e3.KEY` — and the distribution of that ratio, `weight_ratio`. `noise-law-lof-null`
-reads the same fits; wherever the law was read off the replicates the misfit test's F ratio is read
-against a parametric bootstrap at that law, and its rate says whether that reference holds the
-level.
+replicates and 8 and 20 points and at four replicates and 12 points for every one-Ka assay in the
+medium and strong regimes, the lamp case beside them, and the two-step model at 12 points. Where
+the law gives the signal a share above zero the fit is weighted by the law at the fitted curve of a
+first fit and its interval is widened to hold for every share the replicates allow; the rows say how
+often that happened (`refit`), how wide that range of shares was (`share_set_width`) and by what
+factor each interval was widened (`inflation.KEY`). A law read at the measured means of few
+replicates can weight some points a thousand times others, so beside the judged rate the table
+gives the coverage in bins of that spread — `cov_wratio_le10.KEY`, `cov_wratio_10-1e3.KEY` and
+`cov_wratio_gt1e3.KEY` — with the distribution of the ratio at the means, `weight_ratio`, and of the
+weights the fit ran with, `fit_weight_ratio`. `noise-law-lof-null` reads the same fits; wherever
+the law was read off the replicates the misfit test's F ratio is read against a parametric
+bootstrap at that law, and its rate says whether that reference holds the level.
+
+The three `addition-*` entries read the random error of each titrant addition. `addition-coverage`
+states the error exactly as it was drawn, the inputs otherwise exact, and judges the reported
+interval, which the stated error widens by a factor and never narrows; beside the rate it reports
+that factor (`inflation.KEY`), how often the interval is closed on both sides (`open.KEY` is the
+rest), its width, and its width over the width of the interval the same data give with the
+additions taken as exact (`width_ratio.KEY`, read where both are closed) — what the widening costs,
+which a coverage rate alone does not show. `addition-misfit-null` reads the same fits and asks the
+misfit test of each — the runs test of one titration, the lack-of-fit test of replicates, named
+apart — how often it calls a model that describes the data inadequate. `addition-misstated` runs
+the same measurements stated otherwise: an error stated where none was drawn, one stated at a third
+of its size, and repeated reads stated as separate titrations. It describes what the interval and
+the misfit test do then and judges nothing, since the interval's premise is that the statement is
+right.
+
+Four more read the additions where something else moves with them. `addition-aware-coverage` states
+the inputs as wrongly as they were entered beside the additions, so the input-aware interval and the
+design effect widen the interval together, and `addition-verdict-null` reads its fits for the two
+false alarms the additions could cause: the additions move the curve much as a titrant scale or a
+concentration does, a fit free to move those inputs puts part of them there, and the conflict
+statistic's reference carries that part. `addition-replicate-exclusion-null` runs the per-replicate
+mode on separate titrations, each with its own addition errors, which move the replicates' own Ka
+apart by more than their scatter; the replicate test divides its statistic by each replicate's
+design effect and compares their scatter with the addition residue taken out.
+`addition-joint-region` judges the region of the pair, which the additions widen as they widen the
+two intervals.
 
 `one-step-null` fits both stepwise models to titrations that carry no second step — the second
 constant a millionth of the first — and asks how often the reported interval of that constant is

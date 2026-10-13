@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterator
 
-from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec, SharedSource
+from core.pipeline.inputs import TITRANT, AdditionError, ErrorModel, InputSpec, SharedSource
 
 __all__ = [
     'ASSAYS',
@@ -32,6 +32,11 @@ __all__ = [
     'Scenario',
     'SharedEntry',
     'SpecEntry',
+    'addition_aware_grid',
+    'addition_grid',
+    'addition_joint_grid',
+    'addition_misstated_grid',
+    'addition_replicate_grid',
     'concentration_inputs',
     'conflict_grid',
     'dilution_grid',
@@ -288,6 +293,27 @@ class Scenario:
         Errors several entered inputs carry together. Each is drawn once per
         dataset and multiplies into every input it loads, and the fit is told
         the same sources.
+    additions : float
+        Standard deviation of the random relative error of each titrant
+        addition, in percent: the true titrant series of a replicate is the
+        planned one moved by one error per addition
+        (:func:`~core.pipeline.inputs.perturb_titrant`). 0 draws none.
+    sequential : bool
+        The additions go into one cuvette one after another, so every point
+        carries the errors of the additions before it; otherwise every point
+        is a sample prepared on its own. It describes both the additions drawn
+        and the ones stated, and says nothing where neither is.
+    repeated_reads : bool
+        The replicates are repeated reads of one titration and carry one set
+        of addition errors between them; otherwise every replicate is a
+        titration of its own with its own errors.
+    stated_additions : float
+        Standard deviation of each addition's error the fit is told, in
+        percent; 0 tells it nothing. What is stated is independent of what is
+        drawn, so a scenario can state more or less than its data carry.
+    stated_repeated_reads : bool
+        The fit is told the replicates are repeated reads of one titration
+        rather than separate titrations.
     """
 
     assay: str
@@ -315,6 +341,11 @@ class Scenario:
     stock_contains: tuple[str, ...] = ()
     declare_stock: bool = True
     shared_sources: tuple[SharedEntry, ...] = ()
+    additions: float = 0.0
+    sequential: bool = True
+    repeated_reads: bool = False
+    stated_additions: float = 0.0
+    stated_repeated_reads: bool = False
 
     def __post_init__(self) -> None:
         if self.assay not in ASSAYS:
@@ -359,6 +390,16 @@ class Scenario:
                 'shifted and noisy replicates have to be fewer than half of the replicates, so that the rest are '
                 'a majority to hold them against.'
             )
+        if self.additions < 0 or self.stated_additions < 0:
+            raise ValueError('the error of an addition is a standard deviation and cannot be negative.')
+        if not self.sequential and not (self.additions or self.stated_additions):
+            raise ValueError('how the additions were made says nothing where no addition error is drawn or stated.')
+        if self.repeated_reads and not (self.additions and self.replicates > 1):
+            raise ValueError(
+                'repeated reads share the addition errors of several replicates; draw some, on two or more.'
+            )
+        if self.stated_repeated_reads and not (self.stated_additions and self.replicates > 1):
+            raise ValueError('repeated reads are stated of two or more replicates whose addition error is stated.')
 
     @property
     def data_id(self) -> str:
@@ -399,6 +440,8 @@ class Scenario:
             parts.append(f'dil={self.dilution[0]:g}:{self.dilution[1]:g}')
         if self.stock_contains:
             parts.append('instock(' + '/'.join(self.stock_contains) + ')')
+        if self.additions:
+            parts.append(_additions_token('add', self.additions, self.sequential, self.repeated_reads))
         return ','.join(parts)
 
     @property
@@ -444,6 +487,10 @@ class Scenario:
             parts.append('nostock')
         if self.shared_sources:
             parts.append('src(' + '/'.join(s.token for s in self.shared_sources) + ')')
+        if self.stated_additions:
+            parts.append(
+                _additions_token('stated_add', self.stated_additions, self.sequential, self.stated_repeated_reads)
+            )
         return ','.join(parts)
 
     @property
@@ -468,7 +515,19 @@ class Scenario:
         return ErrorModel(
             specs=self.input_specs,
             shared=tuple(source.to_source() for source in self.shared_sources),
+            additions=(
+                AdditionError(
+                    self.stated_additions, self.sequential, separate_titrations=not self.stated_repeated_reads
+                )
+                if self.stated_additions
+                else None
+            ),
         )
+
+
+def _additions_token(name: str, sigma: float, sequential: bool, repeated_reads: bool) -> str:
+    """An addition error as an id writes it: its size, how the additions were made, and whether replicates share it."""
+    return f'{name}={sigma:g}:' + ('seq' if sequential else 'sep') + (':reads' if repeated_reads else '')
 
 
 # --------------------------------------------------------------------------
@@ -613,13 +672,18 @@ _TWO_STEP_SCATTER: tuple[dict[str, Any], ...] = (
 )
 
 
+#: Replicate counts and point counts the noise law is read under: two, three
+#: and eight replicates at 8 and 20 points, and four replicates at 12 points.
+_NOISE_LAW_DESIGNS: tuple[tuple[int, int], ...] = ((2, 8), (2, 20), (3, 8), (3, 20), (8, 8), (8, 20), (4, 12))
+
+
 def noise_law_grid() -> list[Scenario]:
     """Replicated titrations whose noise the fit reads a law off, inputs exact.
 
     Every one-Ka assay in the medium and strong regimes, against each shape of
-    :data:`_NOISE_LAW_SHAPES` at two, three and eight replicates and at 8 and
-    20 points — two replicates of constant noise are where a law read off
-    their scatter can spread the weights furthest — and against the lamp case
+    :data:`_NOISE_LAW_SHAPES` at the designs of :data:`_NOISE_LAW_DESIGNS` —
+    two replicates of constant noise are where a law read off their scatter
+    can spread the weights furthest — and against the lamp case
     (:data:`_LAMP`) at 12 points. Beside them the two-step model in the same
     regimes under :data:`_TWO_STEP_SCATTER` at 12 points. The inputs are
     exact, so the reported interval is the conditional one and what the rows
@@ -630,8 +694,7 @@ def noise_law_grid() -> list[Scenario]:
         for assay in ONE_KA
         for regime in (10.0, 1000.0)
         for shape in _NOISE_LAW_SHAPES
-        for m in (2, 3, 8)
-        for n in (8, 20)
+        for m, n in _NOISE_LAW_DESIGNS
     ]
     grid += [
         Scenario(assay=assay, regime=regime, n_points=12, **_LAMP) for assay in ONE_KA for regime in (10.0, 1000.0)
@@ -990,6 +1053,178 @@ def before_after_grid() -> list[Scenario]:
     ]
 
 
+#: The one-Ka assays the addition checks span.
+_ADDITION_ASSAYS = ('DBA_HtoD', 'DBA_DtoH', 'IDA', 'GDA')
+
+
+def _additions(sigma: float, sequential: bool, **design: Any) -> Scenario:
+    """One titration whose additions carry an error of *sigma* percent, stated to the fit as exactly that."""
+    return Scenario(additions=sigma, stated_additions=sigma, sequential=sequential, **design)
+
+
+def addition_grid() -> list[Scenario]:
+    """Titrations whose every addition carries a random error, stated to the fit as it was drawn, inputs exact.
+
+    Every one-Ka assay, the additions made one after another into one cuvette
+    or each sample prepared on its own, at 1 % and 3 %:
+
+    - one titration of 12 points with constant noise of 0.2 % of the signal
+      range, in the medium and strong regimes;
+    - three replicates, each a titration of its own, of 12 points with
+      constant noise of 0.5 %, in both regimes;
+    - one titration of 8 and of 30 points with constant noise of 0.5 % and
+      additions of 1 %, in the medium regime;
+    - three separate titrations of 12 points whose noise is 1 % of the signal
+      itself, additions of 3 %, in the medium regime;
+    - one titration of 12 points, sequential additions of 3 %, at a final
+      dilution of two to twenty percent with the titrant stock declared, in
+      the medium regime;
+    - three replicates that are repeated reads of one titration, sharing its
+      additions of 3 % and stated so, constant noise of 0.5 %, in the medium
+      regime.
+
+    Beside them both two-step models, one titration of 12 points with
+    sequential additions of 3 % and constant noise of 0.2 %, in both regimes.
+    """
+    grid = []
+    for assay in _ADDITION_ASSAYS:
+        for sequential in (True, False):
+            for sigma in (1.0, 3.0):
+                for regime in (10.0, 1000.0):
+                    grid.append(_additions(sigma, sequential, assay=assay, regime=regime, n_points=12, noise=0.002))
+                    grid.append(
+                        _additions(
+                            sigma, sequential, assay=assay, regime=regime, n_points=12, noise=0.005, replicates=3
+                        )
+                    )
+            for n in (8, 30):
+                grid.append(_additions(1.0, sequential, assay=assay, regime=10.0, n_points=n, noise=0.005))
+            grid.append(
+                _additions(
+                    3.0, sequential, assay=assay, regime=10.0, n_points=12, noise=0.01, proportional=True, replicates=3
+                )
+            )
+            grid.append(
+                Scenario(
+                    assay=assay,
+                    regime=10.0,
+                    n_points=12,
+                    noise=0.005,
+                    replicates=3,
+                    additions=3.0,
+                    sequential=sequential,
+                    repeated_reads=True,
+                    stated_additions=3.0,
+                    stated_repeated_reads=True,
+                )
+            )
+        grid.append(_additions(3.0, True, assay=assay, regime=10.0, n_points=12, noise=0.002, dilution=DILUTION))
+    grid += [
+        _additions(3.0, True, assay=assay, regime=regime, n_points=12, noise=0.002)
+        for assay in TWO_KA
+        for regime in (10.0, 1000.0)
+    ]
+    return grid
+
+
+def addition_misstated_grid() -> list[Scenario]:
+    """Addition errors stated otherwise than they were drawn, inputs exact, in the medium regime at 12 points.
+
+    Every one-Ka assay, sequential and separate additions:
+
+    - 3 % stated where the additions carry none, on one titration with
+      constant noise of 0.2 % and on three separate titrations with 0.5 %;
+    - 1 % stated where they carry 3 %, on one titration with 0.2 %;
+    - 3 % drawn once and shared by three replicates that are repeated reads of
+      one titration, with 0.5 %, stated as three separate titrations.
+
+    Each understated and each shared case is the measurement of a case of
+    :func:`addition_grid` stated otherwise: the two share their
+    :attr:`~Scenario.data_id`, so what the rows show is the statement alone.
+    """
+    grid = []
+    for assay in _ADDITION_ASSAYS:
+        for sequential in (True, False):
+            common = dict(assay=assay, regime=10.0, n_points=12, sequential=sequential)
+            grid.append(Scenario(noise=0.002, stated_additions=3.0, **common))
+            grid.append(Scenario(noise=0.005, replicates=3, stated_additions=3.0, **common))
+            grid.append(Scenario(noise=0.002, additions=3.0, stated_additions=1.0, **common))
+            grid.append(
+                Scenario(noise=0.005, replicates=3, additions=3.0, repeated_reads=True, stated_additions=3.0, **common)
+            )
+    return grid
+
+
+def addition_aware_grid() -> list[Scenario]:
+    """Inputs stated and entered as wrongly as stated, and every addition in error, stated as it was drawn.
+
+    Every one-Ka assay, sequential and separate additions of 3 %, 12 points:
+    one titration with constant noise of 0.2 % in the medium and strong
+    regimes, and three separate titrations with 0.5 % in the medium regime;
+    additions of 1 % on one titration in the medium regime beside them. The
+    additions move the curve much as an input does, so these are the cases in
+    which the fit may put addition errors into the inputs.
+    """
+    grid = []
+    for assay in _ADDITION_ASSAYS:
+        for sequential in (True, False):
+            common = dict(assay=assay, n_points=12, specs=stated_specs(assay))
+            for regime in (10.0, 1000.0):
+                grid.append(_additions(3.0, sequential, regime=regime, noise=0.002, **common))
+            grid.append(_additions(3.0, sequential, regime=10.0, noise=0.005, replicates=3, **common))
+            grid.append(_additions(1.0, sequential, regime=10.0, noise=0.002, **common))
+    return grid
+
+
+def addition_replicate_grid() -> list[Scenario]:
+    """Replicates fitted replicate by replicate whose every addition is in error, stated as it was drawn, inputs exact.
+
+    Every one-Ka assay, three and five replicates of 12 points with constant
+    noise of 0.5 %, additions of 3 %, in the medium and strong regimes:
+    separate titrations with sequential and with separate additions, each
+    replicate its own errors; and in the medium regime three repeated reads of
+    one titration sharing its sequential additions. Every replicate is
+    measured alike, so a replicate the test leaves out is a false exclusion.
+    """
+    grid = []
+    for assay in _ADDITION_ASSAYS:
+        for regime in (10.0, 1000.0):
+            for m in (3, 5):
+                for sequential in (True, False):
+                    grid.append(
+                        _additions(3.0, sequential, assay=assay, regime=regime, n_points=12, noise=0.005, replicates=m)
+                    )
+        grid.append(
+            Scenario(
+                assay=assay,
+                regime=10.0,
+                n_points=12,
+                noise=0.005,
+                replicates=3,
+                additions=3.0,
+                repeated_reads=True,
+                stated_additions=3.0,
+                stated_repeated_reads=True,
+            )
+        )
+    return grid
+
+
+def addition_joint_grid() -> list[Scenario]:
+    """Both two-step models, one titration of 12 points with sequential additions of 3 %, stated, inputs exact.
+
+    Constant noise of 0.2 %, the first step at ``K1·h0`` of 1, 10 and 1000
+    and the second constant a tenth and a hundredth of the first: the joint
+    region of the pair, widened by the additions as the two intervals are.
+    """
+    return [
+        _additions(3.0, True, assay=assay, regime=regime, k_ratio=k_ratio, n_points=12, noise=0.002)
+        for assay in TWO_KA
+        for regime in (1.0, 10.0, 1000.0)
+        for k_ratio in (10.0, 100.0)
+    ]
+
+
 def all_scenarios() -> Iterator[Scenario]:
     """Every scenario of every named grid, for the uniqueness check."""
     for grid in (
@@ -1012,6 +1247,11 @@ def all_scenarios() -> Iterator[Scenario]:
         dilution_grid,
         dilution_ignored_grid,
         shared_source_grid,
+        addition_grid,
+        addition_misstated_grid,
+        addition_aware_grid,
+        addition_replicate_grid,
+        addition_joint_grid,
     ):
         yield from grid()
     yield from conflict_grid((1.0,))

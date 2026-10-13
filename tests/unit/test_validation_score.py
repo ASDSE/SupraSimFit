@@ -15,6 +15,9 @@ import pytest
 from scipy.optimize import lsq_linear, minimize_scalar
 from scipy.stats import f as f_dist
 
+from core.assays import ASSAY_CLASSES
+from core.assays.registry import AssayType
+from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
 from core.pipeline.inputs import TITRANT
 from core.pipeline.noise import noise_law
 from core.pipeline.profile import JointRegion
@@ -23,7 +26,7 @@ from validation import checks, reference
 from validation.generate import dataset
 from validation.reference import agreement_row, pooling_row, reference_intervals
 from validation.scenarios import Scenario, SharedEntry, SpecEntry
-from validation.score import _profile_accepts, interval_facts, region_excess, score, score_replicates
+from validation.score import _profile_accepts, interval_facts, measurement_set, region_excess, score, score_replicates
 
 
 def interval(low: float, high: float, split: bool = False) -> KaInterval:
@@ -179,6 +182,13 @@ def test_a_row_says_what_the_replicates_showed_about_the_noise():
     # then differ along the titration.
     assert replicated['noise_share'] > 0.0
     assert replicated['weight_ratio'] > 1.0
+    # A share above zero is read again at the fitted curve of a first fit, and
+    # the interval allows for every share the replicates leave possible.
+    assert replicated['refit'] is True
+    assert replicated['fit_weight_ratio'] > 1.0
+    low, high = replicated['share_set']
+    assert 0.0 <= low <= replicated['noise_share'] <= high <= 1.0
+    assert replicated['cond']['Ka_guest']['inflation'] >= 1.0
     # A law read off the replicates is a law the F distribution does not
     # describe, so the misfit test's reference is the bootstrap.
     assert replicated['misfit_reference'] == 'bootstrap'
@@ -191,6 +201,10 @@ def test_a_single_titration_reports_that_its_noise_was_taken_as_constant():
     assert row['noise_basis'] == 'single_titration'
     assert row['noise_share'] == 0.0
     assert row['weight_ratio'] == 1.0, 'weights of one are no weights, and their ratio is exactly one'
+    assert row['fit_weight_ratio'] == 1.0 and row['refit'] is False
+    assert row['share_set'] == [0.0, 0.0]
+    # Nothing to widen for: no law, no stated addition, so the interval is today's.
+    assert row['cond']['Ka_guest']['inflation'] == 1.0 == row['aware']['Ka_guest']['inflation']
 
 
 def replace_replicates(scenario: Scenario, m: int) -> Scenario:
@@ -233,16 +247,18 @@ WEIGHTED_SEED = 2
 
 
 def test_the_weighted_reference_places_the_weighted_engine_s_edges():
-    """Both carry the law the replicates show, so an edge that moved would be a defect in one of them."""
+    """Both carry the weights and the widening of the app's fit, so an edge that moved would be a defect in one of them."""
     data = dataset(WEIGHTED, WEIGHTED_SEED)
-    law = noise_law(data.signals)
-    weights = law.weights(data.signals.mean(axis=0))
-    assert law.estimated and law.share > 0.0
+    result = fit_measurement_set(
+        measurement_set(data), ASSAY_CLASSES[AssayType[WEIGHTED.assay]], dict(data.conditions), FitConfig()
+    )
+    weights = result.point_weights
+    assert result.noise.estimated and result.noise.share > 0.0
     assert weights.max() / weights.min() > 3.0, 'the weights have to vary for this to say anything'
     projection = Projection(data.assay, data.assay.get_default_bounds(), point_weights=weights)
     fit = projection.fit()
     key = projection.free_ka[0]
-    interval = projection.interval(key, fit)
+    interval = result.conditional.intervals[key]
     ranks = {projection.fitted_parameters({key: ka}).rank for ka in (fit.ka[key], interval.low, interval.high)}
     assert len(ranks) == 1, 'the weights, and not a stepping cut-off, are what this case is about'
     row = agreement_row(WEIGHTED, WEIGHTED_SEED)
@@ -476,6 +492,7 @@ def test_an_interval_s_facts_carry_its_one_step_p_value_and_whether_its_lower_si
         limited_by_low='',
         limited_by_high='',
         one_step_p=0.3,
+        inflation=1.0,
     )
     facts = interval_facts(second, truth=1.0, estimate=10.0)
     assert facts['one_step_p'] == 0.3
@@ -484,6 +501,14 @@ def test_an_interval_s_facts_carry_its_one_step_p_value_and_whether_its_lower_si
     assert closed['open_low'] is False and closed['one_step_p'] is None
     missing = interval_facts(None, truth=1.0, estimate=10.0)
     assert missing['open_low'] is None and missing['one_step_p'] is None
+
+
+def test_an_interval_s_facts_carry_the_factor_its_cut_off_was_widened_by():
+    """What a widened interval costs is read off this factor; a row without it cannot say why an interval is wide."""
+    widened = KaInterval(low=1e5, high=1e7, open_low=False, open_high=False, level=0.95, dof=8, inflation=2.5)
+    assert interval_facts(widened, truth=1e6, estimate=2e6)['inflation'] == 2.5
+    assert interval_facts(interval(1e5, 1e7), truth=1e6, estimate=2e6)['inflation'] == 1.0
+    assert interval_facts(None, truth=1.0, estimate=10.0)['inflation'] is None
 
 
 #: A two-step titration whose second step is absent: the second constant is a
