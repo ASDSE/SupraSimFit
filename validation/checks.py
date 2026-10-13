@@ -42,7 +42,7 @@ from typing import Any, Callable, Sequence
 
 from core.pipeline.diagnostics import DIAGNOSTIC_LEVEL, Verdict
 from validation import budget, legacy, reference, scenarios, sobol
-from validation.criteria import AGREEMENT, COVERAGE, FALSE_EXCLUSION, NULL_RATE, ONE_STEP_NULL, Criterion
+from validation.criteria import AGREEMENT, COVERAGE, FALSE_EXCLUSION, NULL_RATE, ONE_STEP_NULL, REGION, Criterion
 from validation.score import joint_region_row, score, score_replicates
 
 __all__ = ['CHECKS', 'Check', 'case_by_id', 'matches', 'matching_cases']
@@ -836,7 +836,7 @@ CHECKS: dict[str, Check] = {
         metrics=joint_region,
         cases=tuple(scenarios.joint_grid()),
         row=joint_region_row,
-        criterion=COVERAGE,
+        criterion=REGION,
         criterion_reason=_COVERAGE_REASON,
     ),
     'replicate-pooling': Check(
@@ -1050,11 +1050,11 @@ CHECKS: dict[str, Check] = {
         row=score,
         criterion=COVERAGE,
         criterion_reason=(
-            _COVERAGE_REASON + ' The stated addition error enters the interval as a factor its cut-off is '
-            'widened by and never narrowed, so beside the rate are reported that factor, how often the '
-            'interval is closed on both sides, its width and its width over that of the interval the '
-            'same data give with the additions taken as exact — what the widening costs, which coverage '
-            'alone does not show.'
+            _COVERAGE_REASON + ' The stated addition error enters the interval through the factor its '
+            'cut-off is widened by, which is never below 1, so beside the rate are reported that factor, how '
+            'often the interval is closed on both sides, its width and its width over that of the interval '
+            'the same data give with the additions taken as exact — what allowing for the additions costs, '
+            'which coverage alone does not show.'
         ),
     ),
     'addition-misfit-null': Check(
@@ -1156,7 +1156,7 @@ CHECKS: dict[str, Check] = {
         metrics=joint_region,
         cases=tuple(scenarios.addition_joint_grid()),
         row=joint_region_row,
-        criterion=COVERAGE,
+        criterion=REGION,
         criterion_reason=_COVERAGE_REASON,
     ),
     'budget-coverage': Check(

@@ -162,6 +162,10 @@ class Criterion:
 #: pass, and a pass above 0.975 is conservative.
 COVERAGE = Criterion(text='95 % interval', safe_high=True, nominal=0.95, acceptable=0.925, conservative=0.975)
 
+#: A 95 % joint confidence region's coverage of the true pair of constants,
+#: judged as :data:`COVERAGE` judges an interval.
+REGION = Criterion(text='95 % region', safe_high=True, nominal=0.95, acceptable=0.925, conservative=0.975)
+
 #: How often a test run at the 5 % level rejects data its model does describe.
 #: Bradley's range is [0.025, 0.075].
 NULL_RATE = Criterion(text='5 % test', safe_high=False, nominal=0.05, acceptable=0.075, conservative=0.025)
