@@ -15,10 +15,13 @@
 - with a stated random error in each titrant addition, the bootstrap draws it
   too and holds the 5 % level where the F tail rejects most consistent fits —
   replicates that share one titration's additions — and where each replicate
-  is a titration of its own; an addition error of zero draws the reference of
-  none; the runs test drawn with the covariance the additions add holds its
-  level on a single titration where independent noise rejects three times as
-  often, and only the shape of that covariance matters;
+  is a titration of its own, where it draws the noise beside the additions
+  and not the whole scatter between the replicates; an addition error of zero
+  draws the reference of none; the runs test drawn with the covariance the
+  additions add holds its level on a single titration where independent noise
+  rejects three times as often, with the noise beside the additions read off
+  the residual where the fit leaves it, and only the shape of that covariance
+  matters;
 - the weights of the conflict reference are g / (1 + g) for the information g
   the data hold on an input: 1 for an input the data determine, 0 for one the
   residual does not depend on; they do not depend on the units a parameter's
@@ -55,6 +58,8 @@ from core.pipeline.diagnostics import (
     InputShift,
     MisfitTest,
     Verdict,
+    _noise_fraction,
+    addition_noise_covariance,
     conflict_added,
     conflict_p_value,
     conflict_reference,
@@ -64,7 +69,7 @@ from core.pipeline.diagnostics import (
     runs_test,
     verdict,
 )
-from core.pipeline.noise import NoiseBasis, NoiseLaw, noise_law
+from core.pipeline.noise import NoiseBasis, NoiseLaw, noise_law, replicate_scatter
 
 
 def test_runs_test_of_unfitted_residuals_is_the_binomial_distribution_of_sign_changes():
@@ -433,7 +438,7 @@ def test_the_bootstrap_with_the_stated_additions_holds_its_level(shared):
     see it, and the F tail rejects 85 % of these consistent fits. Separate: each
     replicate is its own titration, and the F tail rejects 10 %. With the
     additions drawn in its reference, the bootstrap rejects within Bradley's
-    liberal band [0.025, 0.075] either way: 0.035 shared and 0.059 separate
+    liberal band [0.025, 0.075] either way: 0.032 shared and 0.041 separate
     over 2 000 datasets.
     """
     rng = np.random.default_rng(31)
@@ -504,6 +509,69 @@ def test_the_runs_reference_with_the_covariance_of_the_additions_holds_its_level
         rejected['additions'] += runs_test(residual, x, design, draws=5_000, covariance=covariance).p_value < 0.05
     assert rejected['independent'] / datasets > 0.1
     assert 0.025 <= rejected['additions'] / datasets <= 0.075
+
+
+def test_the_bootstrap_draws_separate_titrations_at_the_noise_beside_their_additions():
+    """Three separate titrations of a straight line, 3 % sequential additions, noise of sd 0.01, 400 datasets.
+
+    Each replicate carries its own addition errors, so the scatter between the
+    replicates holds them beside the noise: its variance per point is six
+    times sd² here. The bootstrap draws the additions on top of the noise, so
+    the noise it draws is the part of the scatter the additions leave, which is
+    sd² (median within 20 %).
+    """
+    rng = np.random.default_rng(38)
+    additions = AdditionDraws(_LOADING, 0.03, shared=False)
+    beside, scatter = [], []
+    for _ in range(400):
+        signals = _titrated_lines(rng, 3, shared=False, sd=0.01)
+        residuals, _ = replicate_scatter(signals)
+        pure_error = float(np.sum(residuals**2)) / (2 * 10)
+        fraction = _noise_fraction(residuals, signals.mean(axis=0), np.ones(12), additions, pure_error, 2 * 10)
+        beside.append(fraction * pure_error / 0.01**2)
+        scatter.append(pure_error / 0.01**2)
+    assert np.median(scatter) > 4.0
+    assert 0.8 <= np.median(beside) <= 1.25
+
+
+def _tight_binding(x, ka, host=0.5):
+    """The complex of a 1:1 binding at total host *host* and titrant *x*, by the root of the mass balance."""
+    b = host + x + 1.0 / ka
+    return (b - np.sqrt(b * b - 4.0 * host * x)) / 2.0
+
+
+def test_the_runs_reference_reads_the_noise_beside_the_additions_where_the_fit_leaves_it():
+    """12 points through the sharp break of a tight binding (Ka·host = 500), 3 % sequential additions, noise 3e-4.
+
+    The additions move the signal about ten times as far as the noise, and the
+    fit — an offset, an amplitude and the Ka, linearised at the true Ka —
+    follows most of what they do. The noise variance beside them is read from
+    the residual alone, so its estimate is near the truth, sd² (median within
+    30 %), and the runs reference drawn with it rejects within Bradley's band.
+    Read against the whole covariance of the additions, which takes the part of
+    their effect the fit left for noise, the estimate is 6.5 times sd² and the
+    reference rejects 0.30 of these consistent fits.
+    """
+    n, sigma, sd, ka = 12, 0.03, 3e-4, 1000.0
+    added = np.full(n, 1.0 / n)
+    x = np.cumsum(added)
+    step = 1e-5
+    per_decade = (_tight_binding(x, ka * 10**step) - _tight_binding(x, ka * 10**-step)) / (2 * step)
+    design = np.column_stack([np.ones(n), _tight_binding(x, ka), per_decade])
+    slope = (_tight_binding(x + 1e-7, ka) - _tight_binding(x - 1e-7, ka)) / 2e-7
+    rng = np.random.default_rng(37)
+    rejected, ratios, datasets = 0, [], 400
+    for _ in range(datasets):
+        titrant = np.cumsum(added * (1.0 + sigma * rng.standard_normal(n)))
+        signal = _tight_binding(titrant, ka) + sd * rng.standard_normal(n)
+        coefficients = np.linalg.lstsq(design, signal, rcond=None)[0]
+        residual = signal - design @ coefficients
+        loading = (coefficients[1] * slope)[:, np.newaxis] * np.tril(np.ones((n, n))) * added
+        covariance = addition_noise_covariance(residual, design, 3, loading, sigma)
+        ratios.append(float(np.mean(np.diag(covariance - sigma**2 * loading @ loading.T))) / sd**2)
+        rejected += runs_test(residual, x, design, draws=5_000, covariance=covariance).p_value <= 0.05
+    assert 0.7 <= np.median(ratios) <= 1.3
+    assert 0.025 <= rejected / datasets <= 0.075
 
 
 def test_only_the_shape_of_the_runs_covariance_matters_and_a_wrong_one_is_refused():

@@ -44,6 +44,7 @@ from core.pipeline.diagnostics import (
     FitDiagnostics,
     InputShift,
     MisfitTest,
+    addition_noise_covariance,
     lack_of_fit,
     no_scatter,
     runs_test,
@@ -53,7 +54,6 @@ from core.pipeline.inflation import (
     addition_signal_loading,
     inflation,
     joint_inflation,
-    paule_mandel,
     replicate_scatter_ssr,
 )
 from core.pipeline.input_aware import (
@@ -1046,22 +1046,22 @@ def _runs_covariance(
 ) -> np.ndarray:
     """Covariance of the noise in the whitened residual of one titration whose additions carry a random error.
 
-    ``sigma2 I + G_w`` with ``G_w = s² W½ H H' W½`` the whitened covariance of
-    the addition errors, *loading* ``H`` and ``s`` the stated relative σ of
-    one addition, and ``sigma2`` the Paule-Mandel residual variance beside it
-    (Paule and Mandel 1982, J. Res. NBS 87:377): the root of
-    ``r' (sigma2 I + G_w)⁻¹ r = n - p``. It is in the units of the residual
-    rows of :func:`fit_jacobian`, the noise scale ``sqrt(S / n)``, so it sits
-    beside the penalty rows the inputs held by a standard deviation add, whose
-    noise is standard.
+    :func:`~core.pipeline.diagnostics.addition_noise_covariance` of the
+    whitened residual, the whitened columns of the parameters the fit counts
+    (:func:`misfit_design`) and the whitened *loading* ``H``: ``sigma2 I + G_w``
+    with ``G_w = s² W½ H H' W½``, ``s`` the stated relative σ of one addition
+    and ``sigma2`` the noise beside the additions, read on the residual space.
+    It is in the units of the residual rows of :func:`fit_jacobian`, the noise
+    scale ``sqrt(S / n)``, so it sits beside the penalty rows the inputs held
+    by a standard deviation add, whose noise is standard.
     """
     fit, n = aware.fit, projection.n_points
-    whitened = np.sqrt(projection.point_weights)[:, np.newaxis] * loading
-    added = (additions.sigma_pct / 100.0) ** 2 * (whitened @ whitened.T)
-    dof = n - fit.n_params
-    beside = paule_mandel(residual, added, float(residual @ residual) / dof, dof)
+    root = np.sqrt(projection.point_weights)[:, np.newaxis]
+    covariance = addition_noise_covariance(
+        residual, root * misfit_design(projection, aware), fit.n_params, root * loading, additions.sigma_pct / 100.0
+    )
     scale = max(fit.ssr, _R2_RESOLUTION * aware.ss_tot) / n
-    return (beside * np.eye(n) + added) / scale
+    return covariance / scale
 
 
 def fit_linear_assay(

@@ -16,7 +16,8 @@ inputs free to move:
 - :func:`runs_test` otherwise: a systematic deviation leaves long runs of
   residuals of one sign along the titration, fewer runs than the fitted model
   leaves of pure noise — noise that carries the stated addition errors where
-  they are stated.
+  they are stated, beside a noise variance read off the part of the residual
+  the fit leaves (:func:`addition_noise_covariance`).
 
 The conflict statistic measures how far the fit moved the inputs, in units of
 their stated standard deviations, along the directions the data inform.
@@ -46,6 +47,7 @@ from typing import Sequence
 import numpy as np
 from scipy.stats import f as f_dist
 
+from core.pipeline.inflation import paule_mandel
 from core.pipeline.noise import _SHARE_NODES, NoiseLaw, _read_share, _scatter, _scattering_points, replicate_scatter
 from core.pipeline.varpro import _R2_RESOLUTION, _RANK_RTOL, LEVEL, _norms
 
@@ -249,10 +251,16 @@ def lack_of_fit(
       ``pure_error / w_i``; and with *additions*, every replicate shifted by
       ``H·delta``, ``delta`` normal with the stated relative standard
       deviation, one draw for all replicates when they share their additions
-      and one per replicate otherwise. With an estimated law the share is read
-      again in each draw by the same estimator on its grid, with ``u``,
-      ``u_floor`` and the points that scatter held at the data's, and the
-      weights follow from it; otherwise the weights are *weights*. The mean
+      and one per replicate otherwise. Where each replicate is a titration
+      of its own, its addition errors move it apart from the others, so the
+      scatter holds the additions beside the noise; the variance is then
+      scaled to the part of the scatter the additions leave, its Paule-Mandel
+      root on the scatter's own space (:func:`_noise_fraction`), since drawn
+      at the whole scatter the additions would be counted twice. With an
+      estimated law the share is read again in each draw by the same
+      estimator on its grid, with ``u``, ``u_floor`` and the points that
+      scatter held at the data's, and the weights follow from it; otherwise
+      the weights are *weights*. The mean
       of the draw is refitted by weighted least squares, linearised at the
       fit, on the columns of *design*, and the ratio is formed by the same
       formula on the same degrees of freedom. The p-value is
@@ -340,6 +348,9 @@ def lack_of_fit(
     ratio = misfit / pure_error
     if not estimated and additions is None:
         return MisfitTest('lack_of_fit', ratio, float(f_dist.sf(ratio, *dof)), dof=dof)
+    # Separate titrations scatter by their own addition errors as well, which
+    # the reference draws on top of its noise.
+    own = additions is not None and not additions.shared and additions.sigma > 0
     drawn = _bootstrap_ratios(
         y,
         np.asarray(fitted, dtype=float),
@@ -349,6 +360,7 @@ def lack_of_fit(
         np.asarray(design, dtype=float),
         dof,
         additions,
+        _noise_fraction(scatter, mean, w, additions, pure_error, dof[1]) if own else None,
     )
     p_value = (1 + int(np.sum(drawn >= ratio))) / (LOF_BOOTSTRAP_DRAWS + 1)
     return MisfitTest('lack_of_fit', ratio, p_value, dof=dof, reference='bootstrap')
@@ -363,6 +375,7 @@ def _bootstrap_ratios(
     design: np.ndarray,
     dof: tuple[int, int],
     additions: AdditionDraws | None,
+    noise_fraction: float | None = None,
 ) -> np.ndarray:
     """The lack-of-fit ratio of :data:`LOF_BOOTSTRAP_DRAWS` replicate sets drawn about *fitted* (see :func:`lack_of_fit`).
 
@@ -374,7 +387,8 @@ def _bootstrap_ratios(
     least-squares refit, linearised at the fit, on the leading
     ``n - dof[0]`` directions of the whitened design. The addition offsets
     are drawn after the noise, from the same stream, so a draw with an
-    addition error of zero is the draw with none stated.
+    addition error of zero is the draw with none stated. *noise_fraction*,
+    where given, scales the variance the noise is drawn at.
     """
     m, n = signals.shape
     n_params = n - dof[0]
@@ -382,6 +396,8 @@ def _bootstrap_ratios(
     rng = np.random.default_rng(seed)
     noise = rng.standard_normal((LOF_BOOTSTRAP_DRAWS, m, n))
     variance = pure_error / weights if law is None else law.level * law.relative_variance(fitted)
+    if noise_fraction is not None:
+        variance = noise_fraction * variance
     draws = fitted + np.sqrt(variance) * noise
     if additions is not None:
         delta = additions.sigma * rng.standard_normal((LOF_BOOTSTRAP_DRAWS, 1 if additions.shared else m, n))
@@ -413,6 +429,29 @@ def _bootstrap_ratios(
     return misfit / pure
 
 
+def _noise_fraction(
+    scatter: np.ndarray, mean: np.ndarray, weights: np.ndarray, additions: AdditionDraws, pure_error: float, dof: int
+) -> float:
+    """The part of the replicate scatter that is noise, where every replicate carries addition errors of its own.
+
+    The scatter ``e_r`` of :func:`~core.pipeline.noise.replicate_scatter` lies
+    in the complement of the whitened columns ``[1, ybar]``; on an orthonormal
+    basis ``Q`` of it, the deviations of the replicates from their mean carry
+    the noise and their own addition offsets, of covariance ``σ² I + Q'G Q``
+    with ``G = s² W^½ H H' W^½``, and ``sum_r (Q'e_r)' (σ² I + Q'G Q)⁻¹ (Q'e_r)``
+    is chi-squared on the ``(m - 1)(n - 2)`` degrees of freedom of the scatter
+    (the deviations from the mean are ``m - 1`` independent contrasts). Its
+    root ``σ²`` (:func:`~core.pipeline.inflation.paule_mandel`), between
+    ``1e-12`` and 1 of the pure error, over the pure error is the fraction.
+    """
+    root = np.sqrt(weights)
+    columns = root[:, np.newaxis] * np.column_stack([np.ones(mean.size), mean])
+    rest = np.linalg.svd(columns, full_matrices=True)[0][:, 2:]
+    loading = rest.T @ (root[:, np.newaxis] * np.asarray(additions.loading, dtype=float))
+    added = additions.sigma**2 * (loading @ loading.T)
+    return paule_mandel(scatter @ rest, added, pure_error, dof) / pure_error
+
+
 def runs_test(
     residuals: np.ndarray,
     x: np.ndarray,
@@ -439,9 +478,10 @@ def runs_test(
     A random error in each titrant addition is such noise: the error of one
     addition moves every later point of the same cuvette, and with 3 %
     sequential additions the reference of independent noise rejects 13 to
-    29 % of consistent fits at the 5 % level. *covariance* states that noise,
-    and ``e`` is then drawn from ``N(0, covariance)`` on the residual rows,
-    the penalty rows staying standard normal and independent of them.
+    29 % of consistent fits at the 5 % level. *covariance* states that noise
+    (:func:`addition_noise_covariance`), and ``e`` is then drawn from
+    ``N(0, covariance)`` on the residual rows, the penalty rows staying
+    standard normal and independent of them.
 
     The p-value is the mid-p, ``P(fewer runs) + P(as many) / 2``: the number
     of runs takes few values, and with all of ``P(as many)`` counted a test
@@ -500,6 +540,73 @@ def runs_test(
     return MisfitTest(
         'runs', float(runs), fewer / draws + 0.5 * (same / draws), expected=total / draws, reference='simulated'
     )
+
+
+def addition_noise_covariance(
+    residual: np.ndarray, design: np.ndarray, n_params: int, loading: np.ndarray, sigma: float
+) -> np.ndarray:
+    """Covariance ``σ² I + s² H H'`` of the noise in the residual of one titration whose additions carry a random error.
+
+    *loading* ``H`` is the change of the signal at every point per unit
+    relative error of every addition and *sigma* ``s`` the relative standard
+    deviation of one addition; ``G = s² H H'`` is what the additions add.
+    ``σ²`` is the noise beside them, the Paule-Mandel root (Paule and Mandel
+    1982, J. Res. NBS 87:377; :func:`~core.pipeline.inflation.paule_mandel`)
+    on the residual space: with ``Q`` an orthonormal basis of the complement
+    of the *n_params* leading directions of *design*, every column scaled to
+    unit length, the root of
+
+        (Q'r)' (σ² I + Q'G Q)⁻¹ (Q'r) = n - p,
+
+    between ``1e-12 σ̂²`` and ``σ̂² = r'r / (n - p)``. In the linearised model
+    ``Q'r`` is ``Q'`` of the noise and the addition offsets alone, whatever the
+    fit did, so the left side is chi-squared on ``n - p`` degrees of freedom at
+    the true ``σ²``. The root has to be taken there: an error of the additions
+    moves the curve much as another Ka would, the fit follows most of it, and
+    the remainder lies along ``(I - P) H``, which ``G`` taken whole hardly
+    weighs down; the remainder then counts as noise, the root comes out at
+    several times the noise where the additions dominate it, and the runs
+    reference drawn with it is close to independent noise and rejects 8 to 11 %
+    of consistent fits at the 5 % level (3 % additions, noise 0.2 % of the
+    signal range, 12 points).
+
+    Parameters
+    ----------
+    residual : np.ndarray
+        The residual of the fit, ``n`` values.
+    design : np.ndarray
+        The derivatives of the fitted signal with respect to the parameters
+        the fit fitted, shape ``(n, k)`` with ``k >= n_params``, in the units
+        of *residual*.
+    n_params : int
+        The parameter count ``p`` of the fit, the rank of *design*.
+    loading : np.ndarray
+        ``H``, shape ``(n, n)``, in the units of *residual*.
+    sigma : float
+        ``s``: ``0.01`` for 1 %.
+
+    Raises
+    ------
+    ValueError
+        With a design or a loading that is not one row per point, or no
+        residual degree of freedom.
+    """
+    r = np.asarray(residual, dtype=float)
+    n = r.size
+    columns, h = np.asarray(design, dtype=float), np.asarray(loading, dtype=float)
+    if columns.ndim != 2 or columns.shape[0] != n or columns.shape[1] < n_params or h.shape != (n, n):
+        raise ValueError(
+            f'The noise beside the additions needs a design of {n} rows and {n_params} or more columns and an '
+            f'addition loading of {n} x {n}; they have shapes {columns.shape} and {h.shape}.'
+        )
+    dof = n - n_params
+    if dof < 1:
+        raise ValueError(f'The noise beside the additions needs more points ({n}) than fitted parameters ({n_params}).')
+    added = sigma**2 * (h @ h.T)
+    norms = np.linalg.norm(columns, axis=0)
+    rest = np.linalg.svd(columns / np.where(norms > 0.0, norms, 1.0), full_matrices=True)[0][:, n_params:]
+    beside = paule_mandel(rest.T @ r, rest.T @ added @ rest, float(r @ r) / dof, dof)
+    return beside * np.eye(n) + added
 
 
 def _covariance_root(covariance: np.ndarray, order: np.ndarray) -> np.ndarray:

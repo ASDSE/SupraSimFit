@@ -414,10 +414,14 @@ def paule_mandel(residual: np.ndarray, added: np.ndarray, variance: float, dof: 
 
     The root of ``r' (σ² I + G)⁻¹ r = dof`` (Paule & Mandel 1982, J. Res. NBS
     87:377), truncated to ``[_PM_FLOOR σ̂², σ̂²]`` with ``σ̂²`` = *variance*, the
-    residual variance with no ``G``.
+    residual variance with no ``G``. A *residual* of shape ``(rows, k)`` holds
+    several residuals of the same covariance, and the left side is the sum of
+    their quadratic forms.
     """
     values, vectors = np.linalg.eigh(added)
-    projected = (vectors.T @ residual) ** 2
+    projected = (vectors.T @ residual.T) ** 2
+    if projected.ndim == 2:
+        projected = projected.sum(axis=1)
     values = np.maximum(values, 0.0)
 
     def excess(log_variance: float) -> float:
