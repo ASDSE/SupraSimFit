@@ -79,9 +79,10 @@ bounds and input uncertainties always give the same numbers.</p>
 
 <p><b>Example</b></p>
 <p>With every input as entered: K<sub>a(G)</sub> = 2.81&times;10<sup>8</sup> M<sup>&minus;1</sup>
-[1.74&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>], R&sup2; 0.9906. At 11 of the 12 concentrations
+[1.52&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>] &dagger;, R&sup2; 0.9906. At 11 of the 12 concentrations
 all 7 replicates sit on the same side of the curve: a systematic miss, which no width of interval
-accounts for.</p>
+accounts for. &dagger; marks an interval whose accepted K<sub>a</sub> come in separate stretches; the
+Identifiability tab shows them.</p>
 <p>The headline, with the uncertainties Demo IDA states: K<sub>a(G)</sub> = 1.59&times;10<sup>8</sup>
 M<sup>&minus;1</sup> [1.14&times;10<sup>8</sup>, 2.08&times;10<sup>8</sup>], R&sup2; 0.999984, under the red
 line <i>The inputs together are further from their entered values than you stated</i>. Moving the
@@ -170,14 +171,16 @@ since changed inputs can absorb a systematic miss. <i>Show sensitivity samples</
 
 <p><b>Example</b></p>
 <p>Best fit 2.81&times;10<sup>8</sup> M<sup>&minus;1</sup> (weighted R&sup2; 0.9957); CI
-[1.74&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>] M<sup>&minus;1</sup> (&minus;38&thinsp;% / +60&thinsp;%), cut-off
+[1.52&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>] M<sup>&minus;1</sup> (&minus;46&thinsp;% / +60&thinsp;%), cut-off
 0.9918 from 12 data points and 3 fitted parameters. The cut-off sits lower than those alone would
 put it: the 7 replicates leave the share of proportional noise anywhere between 0.63 and 1, and the
 interval is widened (variance &times;1.57) to hold for every share they allow. The best weighted
 R&sup2; is 0.9873 at twice the best K<sub>a</sub> and 0.9859 at half: small R&sup2; differences set a
 3-fold interval. Below 1.6&times;10<sup>8</sup> M<sup>&minus;1</sup> the fit holds the signal offset
-on zero, so the cut-off steps down to 0.9892 there; the interval ends above that step, at the level
-where every signal parameter is free.</p>
+on zero, so the cut-off steps down to 0.9892 there. Above the step the curve crosses the cut-off that
+holds while every signal parameter is free at 1.74&times;10<sup>8</sup> M<sup>&minus;1</sup>; below the
+step it clears the lower cut-off again, from the step down to 1.52&times;10<sup>8</sup> M<sup>&minus;1</sup>.
+The interval spans both stretches, and the K<sub>a</sub> between them are rejected.</p>
 <p>The curve misses the replicates&rsquo; mean by 7.2&times;10<sup>3</sup> a.u. (RMSE) while they
 scatter by about 1.0&times;10<sup>3</sup> a.u.: they depart from the model in the same way (see Fit
 Curve), so the true uncertainty is wider than this interval.</p>
@@ -409,7 +412,7 @@ spread, even 0 &plusmn; 0, says nothing about precision.</p>
 <p><b>Example</b></p>
 <p>With every input as entered: RMSE 7.24&times;10<sup>3</sup> a.u. on signals up to
 2.9&times;10<sup>5</sup> a.u., R&sup2; 0.9906, 7 of 7 replicates used; K<sub>a(G)</sub> =
-2.81&times;10<sup>8</sup> M<sup>&minus;1</sup> [1.74&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>].
+2.81&times;10<sup>8</sup> M<sup>&minus;1</sup> [1.52&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>] &dagger;.
 With the uncertainties Demo IDA states, <i>Fit Quality</i> describes the headline fit instead: RMSE
 300 a.u. and R&sup2; 0.999984, while the <i>Conditional on entered inputs</i> column keeps the interval
 above.</p>

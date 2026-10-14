@@ -14,7 +14,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from core.assays import ASSAY_CLASSES
 from core.assays.hg2 import HG2Assay
+from core.assays.registry import AssayType
+from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
 from core.pipeline.inputs import ErrorModel, InputSpec
 from core.pipeline.varpro import Projection
 from core.units import Q_
@@ -22,6 +25,7 @@ from tests.conftest import HG2_TRUE, _make_hg2_data
 from validation.checks import CHECKS
 from validation.generate import dataset
 from validation.reference import AGREEMENT_DECADES, reference_intervals
+from validation.score import measurement_set
 
 _CASES = {case.id: case for case in CHECKS['reference-agreement'].cases}
 
@@ -126,6 +130,71 @@ def test_an_input_known_to_a_vanishing_sigma_gives_the_interval_of_exact_inputs(
     assert _decades_apart(free, exact) <= 1e-3
 
 
+@pytest.mark.parametrize(
+    'case_id, seed, key, side, edge',
+    [
+        ('GDA,K=1000,n=12,noise=0.01', 200, 'Ka_guest', 0, 7.0970200),
+        ('DBA_HG2,K=10,n=8,noise=0.01', 357, 'Ka_HG', 0, 0.2929054),
+        ('DBA_H2G,K=10,n=12,noise=0.01', 46, 'Ka_HG', 0, 4.8647116),
+        ('IDA,K=0.1,n=12,noise=0.01', 344, 'Ka_guest', 0, 3.09834),
+        ('DBA_HG2,K=0.1,n=12,noise=0.01', 67, 'Ka_HG', 0, -4.92649),
+        ('DBA_HG2,K=10,n=12,noise=0.02,prop,m=4', 186, 'Ka_HG', 0, 5.8109314),
+    ],
+    ids=[
+        'best-fit-in-a-narrow-basin',
+        'best-fit-along-the-valley',
+        'inner-minimum-in-a-narrow-valley',
+        'stretch-narrower-than-the-dense-reading',
+        'rank-dip-between-nodes-of-one-rank',
+        'inner-minimum-off-the-node-axis',
+    ],
+)
+def test_the_reference_edge_is_where_an_exhaustive_computation_puts_it(case_id, seed, key, side, edge):
+    """Each edge is the one a brute-force computation of the same definition finds, to the agreement margin.
+
+    The expected log10 edges come from computations that share no code with
+    either engine: exact bounded least squares by enumerating every active
+    set, the other Ka scanned at 40 to 200 points per decade and refined from
+    every local minimum, and the excess read at hundreds of points per decade
+    and bisected. Each case is a way a search over a grid can miss what the
+    definition accepts or rejects:
+
+    - the lowest node of the profile lies in a broad basin while the global
+      minimum is a narrower one elsewhere, so a refinement of the lowest node
+      alone reports a best fit that is not the minimum and a cut-off too high;
+    - the K₁·K₂ valley of a stepwise model crosses the grid, and the profile of
+      one Ka dips to the minimum inside a cell whose nodes both read high;
+    - at a fixed first Ka the narrow valley of the other Ka is the lowest one
+      but reads high at its nodes, and it carries another fitted rank, so a
+      profile from the wrong valley moves the edge;
+    - the fitted rank drops at a step and the higher cut-off accepts a stretch
+      narrower than the dense reading of the cell;
+    - the rank dips between two nodes of the same rank, and the stretch it
+      opens lies in a cell whose nodes differ in nothing;
+    - next to a rank step the other Ka has two valleys a tenth of a decade
+      apart inside one cell of the node axis, the lower of them no local
+      minimum of that axis (four replicates, proportional noise: weighted and
+      widened as the application's fit is).
+    """
+    case = _CASES[case_id]
+    data = dataset(case, seed)
+    signals = data.signals.mean(axis=0)[np.newaxis, :]
+    weights = inflation = None
+    if data.signals.shape[0] > 1:
+        result = fit_measurement_set(
+            measurement_set(data),
+            ASSAY_CLASSES[AssayType[case.assay]],
+            dict(data.conditions),
+            FitConfig(per_replica=False, errors=case.error_model),
+        )
+        weights = result.point_weights
+        inflation = {k: interval.inflation for k, interval in result.conditional.intervals.items()}
+    found = reference_intervals(
+        data.assay, signals, case.error_model, seed, case.id, weights=weights, inflation=inflation
+    )[key]
+    assert abs(np.log10(found[side]) - edge) <= AGREEMENT_DECADES
+
+
 def _engine_and_reference(case_id: str, seed: int) -> tuple[dict, dict]:
     """The engine's interval of every free Ka and the reference's, on the average of one grid dataset's replicates."""
     case = _CASES[case_id]
@@ -151,5 +220,16 @@ def test_a_constant_whose_objective_falls_to_its_bound_rests_on_it_in_both_compu
     intervals of the first constant lie tenths of a decade apart.
     """
     engine, found = _engine_and_reference(case_id, seed)
+    for key, interval in engine.items():
+        assert _decades_apart(found[key], (interval.low, interval.high)) <= AGREEMENT_DECADES, key
+
+
+def test_a_coefficient_the_minimum_holds_on_its_bound_is_not_counted_in_either_computation():
+    """A 1:2 titration of the reference-agreement grid (K₂/K₁ = 1000, eight points) whose minimum holds the signal
+    offset on zero: within a millionth of a decade of the minimiser the bounded solve leaves the offset inside its
+    bound on one side, while the objective differs by rounding. Held there, it is not fitted, and both computations
+    count the same ``n - p``; counted as fitted by one of them, that one's intervals reach about half a decade
+    further down."""
+    engine, found = _engine_and_reference('DBA_HG2,K=1000,n=8,noise=0.01', 7)
     for key, interval in engine.items():
         assert _decades_apart(found[key], (interval.low, interval.high)) <= AGREEMENT_DECADES, key

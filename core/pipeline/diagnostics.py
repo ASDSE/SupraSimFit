@@ -526,7 +526,7 @@ def runs_test(
     j[:n] = j[:n][order]
     norms = np.linalg.norm(j, axis=0)
     u, s, _ = np.linalg.svd(j / np.where(norms > 0, norms, 1.0), full_matrices=False)
-    u = u[:, s > _RANK_RTOL * s.max()] if s.size else u
+    u = u[:, s > _RANK_RTOL * s.max(initial=0.0)]
     runs = int(_count_runs(np.sign(r[r != 0])))
     rng = np.random.default_rng(seed)
     chunk = max(1, _RUNS_CHUNK // j.shape[0])
@@ -741,7 +741,10 @@ def conflict_reference(
     tuple[np.ndarray, np.ndarray]
         The eigenvalues of ``V`` on the inputs stated with a standard
         deviation, ascending and clipped to ``[0, 1]``, and the matching
-        eigenvectors as columns.
+        eigenvectors as columns. Both are empty for a Jacobian with no
+        column — every binding constant on a bound of its box, and every
+        varying input stated as a range and resting on an end of it: there
+        is then no input direction for the data to inform.
     """
     root, _ = _shift_operator(jacobian, n_free_ka, sigma_mask, scale)
     weights, directions = np.linalg.eigh(np.eye(root.shape[0]) - root @ root.T)
@@ -791,7 +794,8 @@ def _shift_operator(
 
     Their product is ``A_r``, the map of :func:`conflict_added`, and the first
     times its transpose is ``[H⁻¹]_zz`` of :func:`conflict_reference`. Only the
-    singular directions above ``_RANK_RTOL`` of the largest are kept.
+    singular directions above ``_RANK_RTOL`` of the largest are kept; a
+    Jacobian with no column has none, and both maps are empty.
     """
     mask = np.asarray(sigma_mask, dtype=bool)
     k = int(mask.sum())
@@ -800,7 +804,7 @@ def _shift_operator(
     j[:residual_rows] /= scale
     norms = _norms(j)
     u, s, vt = np.linalg.svd(j / norms, full_matrices=False)
-    kept = s > _RANK_RTOL * s.max()
+    kept = s > _RANK_RTOL * s.max(initial=0.0)
     columns = n_free_ka + np.flatnonzero(mask)
     return vt[kept][:, columns].T / s[kept] / norms[columns, np.newaxis], u[:residual_rows, kept]
 

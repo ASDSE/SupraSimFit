@@ -64,9 +64,10 @@ profile, never below it wherever the entered inputs are allowed.
 
 The interval is cut from the penalised profile by the routine that cuts the
 fixed-input one (:func:`core.pipeline.varpro._cut_interval`), the objective and
-its cut-off handed in: the same reading of the profile where its verdict turns,
-the same root finding of the edges, split and open sides, and the same rule for
-an edge that only the bound of the other binding constant closes
+its cut-off by rank handed in: the same reading of the profile wherever the
+test can accept Ka between the points read and on both sides of every step of
+its cut-off, the same root finding of the edges, split and open sides, and the
+same rule for an edge that only the bound of the other binding constant closes
 (:meth:`core.pipeline.varpro.Projection._bound_behind`). What differs follows
 from the objective: a point of the penalised profile is a bounded optimisation
 over the inputs, so the search-grid nodes are traced outward from the estimate
@@ -108,9 +109,11 @@ from core.pipeline.varpro import (
     _refine_at,
     _require_dof,
     _require_inflation,
+    _rest_coefficients,
     _rest_on_bounds,
     _rise_p,
     _with_one_step_test,
+    on_ka_bound,
 )
 
 __all__ = [
@@ -325,6 +328,11 @@ class _Point:
     ssr: float
     fitted: FittedParameters | None = None  # Projection.fitted_parameters at (ka, coords); None for a start
 
+    @property
+    def rank(self) -> int:
+        """Rank of the signal columns the solve here leaves inside their bounds; zero for a start."""
+        return 0 if self.fitted is None else self.fitted.rank
+
 
 class _Problem:
     """The penalised objective of one single-row projection and its inner solve."""
@@ -411,11 +419,11 @@ class _Problem:
 
         The rule of the fixed-input fit (:func:`~core.pipeline.varpro._rest_on_bounds`)
         on the penalised objective: a constant is held on its nearer bound —
-        within the last search cell before it every other moving constant and
-        the inputs solved again from the point tried, further out left where
-        they are — and the move stands where ``n log S + z'z`` is no higher
-        than at *point* plus ``n log(1 + floor / S)``, the rise of a residual
-        sum of squares by the resolution of R², ``floor``.
+        every other moving constant and the inputs left where they are or
+        solved again from the point tried — and the move stands where
+        ``n log S + z'z`` is no higher than at *point* plus
+        ``n log(1 + floor / S)``, the rise of a residual sum of squares by the
+        resolution of R², ``floor``.
         """
         fixed = fixed or {}
 
@@ -425,6 +433,36 @@ class _Problem:
 
         resolution = self.n * float(np.log1p(self.floor / max(point.ssr, self.floor)))
         return _rest_on_bounds(point, point.ka, point.value, moving, self.projection.ka_bounds, held, resolution)
+
+    def rest_coefficients(self, point: _Point) -> _Point:
+        """*point*, or the minimiser next to it where that holds a signal coefficient on its bound.
+
+        The rule of the fixed-input fit (:func:`~core.pipeline.varpro._rest_coefficients`)
+        on the penalised objective: a coefficient is held on its bound, the
+        binding constants inside their box and the inputs solved again from
+        *point*, and the solution stands where ``n log S + z'z`` is no higher
+        than at *point* plus the resolution :meth:`rest` allows and the
+        bounded solve there, at its own inputs, fits fewer columns.
+        """
+        projection = self.projection
+
+        def held(start: _Point, k: int, bound: float) -> tuple[_Point, float, int]:
+            holding = _Problem(projection._holding(k, bound), self.constraints, self._should_cancel, self._loading)
+            on_bound = {key: value for key, value in start.ka.items() if on_ka_bound(value, projection.ka_bounds[key])}
+            moved = holding._minimum(on_bound, start)
+            if not np.isfinite(moved.value):
+                return moved, np.inf, 0
+            solved = self._at(moved.ka, moved)
+            return solved, solved.value, solved.rank
+
+        resolution = self.n * float(np.log1p(self.floor / max(point.ssr, self.floor)))
+        return _rest_coefficients(
+            point,
+            point.value,
+            lambda found: projection._coefficient_trials(found.ka, self.input_offsets(found.coords)),
+            held,
+            resolution,
+        )
 
     def _at(self, ka: Mapping[str, float], start: _Point) -> _Point:
         """The objective at the free binding constants *ka* with the inputs where *start* has them, from one solve."""
@@ -609,18 +647,18 @@ class _Trace:
 
     # -- edges and the drawn curve ------------------------------------------------
 
-    def _close(self, hat: _Point, cut: Callable[[_Point], float], d: int) -> None:
+    def _close(self, hat: _Point, cut: Callable[[int], float], d: int) -> None:
         """Solve the nodes beyond the accepted point furthest out on side *d* until one is rejected or unsolvable.
 
-        A point is accepted at or below *cut*, the cut-off of its own
-        solution. The node beyond the accepted stretch is solved again from the
-        accepted point's solution, because a basin can be reachable from one
-        side only; if that brings it under its cut-off it joins the stretch and
-        the next node out is solved.
+        A point is accepted at or below *cut* at the rank of its own solution.
+        The node beyond the accepted stretch is solved again from the accepted
+        point's solution, because a basin can be reachable from one side only;
+        if that brings it under its cut-off it joins the stretch and the next
+        node out is solved.
         """
         key, nodes = self.key, self.nodes
         while True:
-            accepted = [hat, *(point for point in self.table.values() if point.value <= cut(point))]
+            accepted = [hat, *(point for point in self.table.values() if point.value <= cut(point.rank))]
             inner = (max if d > 0 else min)(accepted, key=lambda point: point.ka[key])
             beyond = np.flatnonzero(nodes > inner.ka[key]) if d > 0 else np.flatnonzero(nodes < inner.ka[key])[::-1]
             if not beyond.size:
@@ -628,22 +666,24 @@ class _Trace:
             i = int(beyond[0])
             if i not in self.table or np.isfinite(self.table[i].value):
                 self._node(i, [inner])
-            if not np.isfinite(self.table[i].value) or self.table[i].value > cut(self.table[i]):
+            if not np.isfinite(self.table[i].value) or self.table[i].value > cut(self.table[i].rank):
                 return
 
     def profile(
-        self, hat: _Point, cut: Callable[[_Point], float], floor: float, level: float, dof: float, inflation: float
+        self, hat: _Point, cut: Callable[[int], float], floor: float, level: float, dof: float, inflation: float
     ) -> tuple[KaInterval, list[_Point]]:
         """Interval of this Ka under *cut* and the points its curve is drawn through, ascending in Ka.
 
-        *cut* gives the cut-off of a point's own solution, widened by the
-        design effect *inflation* that the interval records, and *floor* is the
-        optimum's objective, which every cut-off stands above. The accepted
-        stretch is first extended node by node (:meth:`_close`), and the
-        interval is then cut from the solved nodes by the routine of the
-        fixed-input interval (:func:`~core.pipeline.varpro._cut_interval`): the
-        profile is read again at ``_PROFILE_PER_DECADE`` wherever its verdict
-        turns, the edges are roots of the profile minus that cut-off — where
+        *cut* gives the cut-off of a solution of each rank, a point judged at
+        the rank of its own, widened by the design effect *inflation* that the
+        interval records, and *floor* is the optimum's objective, which every
+        cut-off stands above. The accepted stretch is first extended node by
+        node (:meth:`_close`), and the interval is then cut from the solved
+        nodes by the routine of the fixed-input interval
+        (:func:`~core.pipeline.varpro._cut_interval`): the profile is read
+        again at ``_PROFILE_PER_DECADE`` wherever the test can accept Ka between
+        the nodes and on both sides of every step of the cut-off between the
+        points read, the edges are roots of the profile minus that cut-off — where
         the cut-off steps, the step itself — and a closed edge of a two-Ka
         interval that only the bound of the other Ka produces opens that side
         (:meth:`~core.pipeline.varpro.Projection._bound_behind`), the rise
@@ -676,7 +716,7 @@ class _Trace:
         return interval, [drawn[ka] for ka in sorted(drawn)]
 
     def _cut(
-        self, hat: _Point, cut: Callable[[_Point], float], floor: float, level: float, dof: float, inflation: float
+        self, hat: _Point, cut: Callable[[int], float], floor: float, level: float, dof: float, inflation: float
     ) -> tuple[KaInterval, np.ndarray, Callable[[float], _Point], dict[float, _Point]]:
         """The interval cut from the table as it stands, the Ka it was cut from, the profile there and its closed edges."""
         key, projection = self.key, self.problem.projection
@@ -697,8 +737,8 @@ class _Trace:
                 read[ka] = self.at(ka, starts)
             return read[ka]
 
-        def above_cut(point: _Point) -> float:
-            return point.value - cut(point)
+        def judged(point: _Point) -> tuple[float, int]:
+            return point.value - cut(point.rank), point.rank
 
         edges: dict[float, _Point] = {}
 
@@ -711,13 +751,14 @@ class _Trace:
                 key,
                 point.ka[other],
                 lambda inside: self.problem.solve({key: edge, other: inside}, point).value - point.value,
-                cut(point) - floor,
+                cut(point.rank) - floor,
             )
 
         interval, grid = _cut_interval(
-            lambda ka: above_cut(value(ka)),
-            {point.ka[key]: above_cut(point) for point in self.table.values()},
+            lambda ka: judged(value(ka)),
+            {point.ka[key]: judged(point) for point in self.table.values()},
             hat.ka[key],
+            cut,
             level,
             dof,
             inflation,
@@ -727,7 +768,7 @@ class _Trace:
         return interval, grid, value, edges
 
     def _fill_gaps(
-        self, interval: KaInterval, grid: np.ndarray, value: Callable[[float], _Point], cut: Callable[[_Point], float]
+        self, interval: KaInterval, grid: np.ndarray, value: Callable[[float], _Point], cut: Callable[[int], float]
     ) -> bool:
         """Solve every node the test rejects inside *interval* again from its neighbours on *grid*; whether one fell.
 
@@ -739,7 +780,7 @@ class _Trace:
         key, fell = self.key, False
         for i, point in list(self.table.items()):
             ka = point.ka[key]
-            if not (interval.low < ka < interval.high and point.value > cut(point)):
+            if not (interval.low < ka < interval.high and point.value > cut(point.rank)):
                 continue
             j = int(np.searchsorted(grid, ka))
             beside = [value(float(grid[k])) for k in (j - 1, j + 1) if 0 <= k < grid.size]
@@ -863,8 +904,10 @@ def input_aware(
     each grid local minimum the fixed-input search refines and from the
     fixed-input fit itself. The estimate is the lowest point found anywhere,
     put on a Ka bound where the objective there is no higher, to the resolution
-    of R², as the fixed-input fit is (:meth:`_Problem.rest`); ``P_min`` is its
-    objective, so every profile is cut above the same minimum.
+    of R², as the fixed-input fit is (:meth:`_Problem.rest`), and moved onto the
+    minimiser next to it where that holds a signal coefficient on its bound
+    (:meth:`_Problem.rest_coefficients`); ``P_min`` is its objective, so every
+    profile is cut above the same minimum.
     The accepted stretch is extended node by node, and the interval is cut by
     the routine of the fixed-input interval
     (:func:`~core.pipeline.varpro._cut_interval`), every point off the node
@@ -932,8 +975,8 @@ def input_aware(
             best[:] = [point]
         return point
 
-    def cut(optimum: _Point, dof: float, key: str) -> Callable[[_Point], float]:
-        """Cut-off of a point's own solution on *key*'s profile: one more parameter per signal parameter it pins.
+    def cut(optimum: _Point, dof: float, key: str) -> Callable[[int], float]:
+        """Cut-off on *key*'s profile of a solution of each rank: one more parameter per signal parameter it pins.
 
         As in :meth:`Projection.cut_off`, only the signal parameters: the other
         binding constant and an input stated as a range reach a bound where the
@@ -941,12 +984,7 @@ def input_aware(
         or just inside it is arbitrary. Widened by the design effect of *key*.
         """
         fitted = optimum.fitted.rank
-        return lambda point: (
-            optimum.value
-            + _excess(
-                n, dof, level, 1 + max(0, fitted - (0 if point.fitted is None else point.fitted.rank)), kappa[key]
-            )
-        )
+        return lambda rank: optimum.value + _excess(n, dof, level, 1 + max(0, fitted - rank), kappa[key])
 
     # Refused on what the model has free, wherever a fit puts it, so that whether a fit is made does
     # not depend on where the data happen to put its parameters.
@@ -971,12 +1009,12 @@ def input_aware(
         while lowest != trace.lowest():
             lowest = trace.lowest()
             trace.refine()
-            trace.sweep(lambda point: point.value <= cut(best[0], search_dof, key)(point), excess)
+            trace.sweep(lambda point: point.value <= cut(best[0], search_dof, key)(point.rank), excess)
 
     profiles: dict[str, AwareProfile] = {}
     for _ in range(_MAX_PASSES):
         # The search ends at the lowest point found, which rests on a Ka bound as the fixed-input fit does.
-        optimum = problem.rest(best[0], projection.free_ka)
+        optimum = problem.rest_coefficients(problem.rest(best[0], projection.free_ka))
         consider(optimum)
         found = best[0]
         jacobian = problem.jacobian(optimum)
@@ -992,7 +1030,7 @@ def input_aware(
             hat = optimum if len(traces) == 1 else trace.at(optimum.ka[key], [optimum])
             interval, drawn = trace.profile(hat, cut(optimum, dof, key), optimum.value, level, dof, kappa[key])
             objective = np.array([point.value for point in drawn])
-            cuts = np.array([cut(optimum, dof, key)(point) for point in drawn])
+            cuts = np.array([cut(optimum, dof, key)(point.rank) for point in drawn])
             with np.errstate(over='ignore'):
                 r2 = np.where(np.isfinite(objective), 1.0 - np.exp(objective / n) / ss_tot, np.nan)
             other = [k for k in projection.free_ka if k != key]
@@ -1057,7 +1095,7 @@ def _one_step_p(problem: _Problem, trace: _Trace, optimum: _Point, dof: float, i
     zero = {trace.key: 0.0}
     starts = [optimum, trace.table[min(trace.table)], trace.entered(0.0, optimum.coords)]
     point = min((problem.solve(zero, start) for start in starts), key=lambda solved: solved.value)
-    m = 1 + max(0, optimum.fitted.rank - (0 if point.fitted is None else point.fitted.rank))
+    m = 1 + max(0, optimum.fitted.rank - point.rank)
     return _rise_p(np.expm1((point.value - optimum.value) / problem.n), m, dof, inflation)
 
 

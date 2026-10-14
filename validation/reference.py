@@ -4,10 +4,12 @@ The engine projects the signal parameters out, searches the binding constants
 on a log grid and cuts the interval where the profile crosses an F threshold.
 The reference here writes all of that itself: the design comes from the model's
 species at each Ka, the coefficients from bounded linear least squares on
-norm-scaled columns, the search from a denser grid refined by bounded Brent,
-and the edges from root finding on the profile. Where an input may move, the
-profile is minimised by Nelder-Mead, which needs no derivative of an objective
-that has a kink wherever a signal parameter reaches a bound.
+norm-scaled columns, the search from a denser grid with bounded Brent run from
+every local minimum of it and, for two free Ka, Nelder-Mead in both from the
+lowest minima of the joint grid, and the edges from root finding on the
+profile, every step of the fitted rank located by bisection. Where an input
+may move, the profile is minimised by Nelder-Mead, which needs no derivative
+of an objective that has a kink wherever a signal parameter reaches a bound.
 
 The two agreeing to a fraction of a decade is what says the engine's interval
 is the interval its definition names, rather than an artefact of how it
@@ -22,10 +24,12 @@ interval, each written here again in the reference's own terms:
   variation about its weighted mean, and an input stated as a range only off
   the ends of that range. A Ka rests on the end of its box nearer it wherever
   the profile there is no higher than the lowest objective found, to the
-  resolution of R²
-  (the rule of both fit engines, :func:`core.pipeline.varpro._rest_on_bounds`,
-  applied here at any distance from the end). What the best fit fitted is the
-  ``p`` of ``n - p``;
+  resolution of R² (the rule of both fit engines,
+  :func:`core.pipeline.varpro._rest_on_bounds`), and a coefficient lies on its
+  bound at the minimum wherever the minimum with it held there is no higher,
+  to the same resolution, and fits fewer columns (their rule
+  :func:`core.pipeline.varpro._rest_coefficients`). What the best fit fitted
+  is the ``p`` of ``n - p``;
   the numerator ``m`` of a tested Ka counts it and every coefficient the best
   fit fits and the fit at that Ka holds on a bound, so the cut-off is a step
   function of the fitted rank.
@@ -57,7 +61,7 @@ import time
 from typing import Any, Callable, Mapping
 
 import numpy as np
-from scipy.optimize import brentq, lsq_linear, minimize, minimize_scalar
+from scipy.optimize import brentq, least_squares, lsq_linear, minimize, minimize_scalar
 from scipy.stats import f as f_dist
 
 from core.assays import ASSAY_CLASSES
@@ -85,12 +89,32 @@ _PER_DECADE = 8
 #: the side of that step the optimum lies on only at this precision.
 _REFINE_XATOL = 1e-10
 
-#: Density, in points per decade, at which a grid cell is profiled again where
-#: the fitted rank differs between its two nodes. The cut-off steps with the
-#: rank, so a stretch the test accepts can begin and end between two rejected
-#: nodes there; at this density a stretch of a sixtieth of a decade holds a
-#: point.
-_DENSE_PER_DECADE = 64
+#: Units in the last place within which two neighbouring grid values are the
+#: same value when local minima are picked for refinement: where the objective
+#: is flat towards an end of the box its grid values wiggle by a few units of
+#: rounding, and those wiggles are no valleys.
+_TIE_ULPS = 64
+
+#: Density, in points per decade, at which a grid cell outside the accepted
+#: Ka is profiled again where the fitted rank can differ inside it from the
+#: rank its nodes read. The cut-off steps with the rank, so a stretch the test
+#: accepts can begin and end between two rejected nodes; the dense reading
+#: finds the rank steps a cell holds, a dip of the rank a thirtieth of a
+#: decade wide included, and each step is then located to ``_STEP_DECADES``.
+#: Off the nodes the other Ka of a two-Ka profile is scanned at this density
+#: too: next to a rank step its objective can hold two shallow valleys a tenth
+#: of a decade apart within a cell of the node axis, and the lower one is then
+#: no local minimum of that axis.
+_DENSE_PER_DECADE = 32
+
+#: Width, in decades of Ka, to which a step of the fitted rank between two Ka
+#: read is located by bisection before the profile is judged on both sides of
+#: it: a stretch the step opens begins at the step, and is read however narrow
+#: it is. Three orders below the agreement margin, the engine's edge
+#: tolerance, and above the width within which the rank the inner minimum of a
+#: two-Ka profile reads at a step can differ between two Ka a rounding error
+#: apart (seen at 7e-9 decades).
+_STEP_DECADES = 1e-7
 
 #: The rule that names the other constant's bound as what closes an edge: the
 #: profile, at the other constant one step of a quarter decade inside its
@@ -106,6 +130,28 @@ _BOUND_RISE = 1e-3
 _STARTS = 3
 _NELDER_MEAD = {'xatol': 1e-8, 'fatol': 1e-10, 'maxiter': 4000, 'maxfev': 4000, 'adaptive': True}
 _RESTART_GAIN = 1e-8
+
+#: Local minima of the full two-Ka grid the best fit of a model with two free
+#: Ka is polished from in both constants at once, by the same restarted
+#: Nelder-Mead: the lowest eight. From these the polish reached the minimum an
+#: exhaustive 20/decade search finds on every stepwise titration where the
+#: refined profile of one Ka stopped in a higher basin.
+_PAIR_STARTS = 8
+
+#: Distance, in decades of Ka, within which a coefficient the best fit leaves
+#: inside its bounds must reach one along a Ka off an end for the minimum to be
+#: tried with it held there: the reach of the rule of both fit engines,
+#: :data:`core.pipeline.varpro._FACE_REACH`.
+_FACE_REACH = 1e-3
+
+#: Settings of the least-squares polish of a minimum with a coefficient held on
+#: its bound: steps of 1e-12 decades and relative changes of 1e-15, the
+#: arithmetic of the residual, with a characteristic step of a tenth of a decade.
+_POLISH = dict(x_scale=0.1, xtol=1e-12, ftol=1e-15, gtol=1e-15)
+
+#: Residual of every point where the model has no solution, for the polish:
+#: any value far above the signal places such a Ka outside the minimum.
+_UNSOLVED_RESIDUAL = 1e100
 
 #: Central-difference step of the reference's Jacobian, in decades of Ka and in
 #: stated standard deviations of an input: the cube root of machine precision,
@@ -193,16 +239,30 @@ def _on_box(ka: float, bounds: tuple[float, float]) -> bool:
 
 
 def _refine(fn: Callable[[float], float], grid: np.ndarray, on_grid: np.ndarray) -> tuple[float, float]:
-    """Minimum of *fn* in log Ka between the neighbours of the best grid node, as ``(Ka, value)``."""
-    i = int(np.argmin(on_grid))
-    centre = np.log10(grid[i])
-    lo, hi = np.log10(grid[max(i - 1, 0)]) - centre, np.log10(grid[min(i + 1, grid.size - 1)]) - centre
-    res = minimize_scalar(
-        lambda u: fn(10.0 ** (centre + u)), bounds=(lo, hi), method='bounded', options={'xatol': _REFINE_XATOL}
-    )
-    if res.fun < on_grid[i]:
-        return float(10.0 ** (centre + res.x)), float(res.fun)
-    return float(grid[i]), float(on_grid[i])
+    """Minimum of *fn* in log Ka, refined between the neighbours of every local minimum of the grid: ``(Ka, value)``.
+
+    A valley narrower than a grid cell reads high at its nearest node and can
+    lose the lowest node to a broader valley decades away, so each local
+    minimum is refined and the lowest result kept, never worse than the best
+    node. A node is a local minimum where it lies below its left neighbour and
+    not above its right one by more than ``_TIE_ULPS`` units in its last
+    place, so a flat stretch, wiggles of rounding included, is refined once,
+    from its left end; the lowest node is always refined.
+    """
+    pad = np.pad(on_grid, 1, constant_values=np.inf)
+    tie = _TIE_ULPS * np.spacing(np.abs(on_grid))
+    lowest = int(np.argmin(on_grid))
+    best = (float(grid[lowest]), float(on_grid[lowest]))
+    minima = np.flatnonzero((on_grid < pad[:-2] - tie) & (on_grid <= pad[2:] + tie))
+    for i in np.union1d(minima, [lowest]):
+        centre = np.log10(grid[i])
+        lo, hi = np.log10(grid[max(i - 1, 0)]) - centre, np.log10(grid[min(i + 1, grid.size - 1)]) - centre
+        res = minimize_scalar(
+            lambda u: fn(10.0 ** (centre + u)), bounds=(lo, hi), method='bounded', options={'xatol': _REFINE_XATOL}
+        )
+        if res.fun < best[1]:
+            best = (float(10.0 ** (centre + res.x)), float(res.fun))
+    return best
 
 
 def reference_intervals(
@@ -239,10 +299,17 @@ def reference_intervals(
     so the cut-off is a step function of ``k``: the constant cut-off of the
     plain F test wherever the profile gives no signal parameter up, one step
     higher wherever it gives one up. Every edge and every accepted point is
-    judged against the cut-off its own fitted rank names, and every grid cell
-    whose two nodes differ in fitted rank is profiled again at
-    ``_DENSE_PER_DECADE``, since the step can open a stretch the test accepts
-    between two nodes it rejects.
+    judged against the cut-off its own fitted rank names. The step can open a
+    stretch the test accepts between two nodes it rejects, so every grid cell
+    outside the accepted nodes is profiled again at ``_DENSE_PER_DECADE``
+    where its two nodes differ in fitted rank, or where the profile at a node
+    is at or below the cut-off of one rank less than the nodes': there a rank
+    that dips between the nodes would accept a Ka. Every rank step between two
+    neighbouring Ka read outside the accepted ones is then located by
+    bisection to ``_STEP_DECADES`` and the profile judged on both sides of it,
+    so a stretch that begins at the step is read however narrow it is. The
+    interval is the envelope of every Ka read that the test accepts, its edges
+    root-found between the outermost of them and the nearest Ka read beyond.
 
     The second constant of a stepwise model, the second binding constant in
     the registry's order, is open below at its lower bound unless the data
@@ -269,8 +336,12 @@ def reference_intervals(
     ``N log(1 + _R2_RESOLUTION variation² / S_w)``: a residual higher by less
     than the resolution of R² is the same fit.
 
-    With no uncertain input the minimum over a second Ka is a scan of the SSR
-    grid refined by Brent and ``nu = N - p``: the F test on the SSR. With
+    With no uncertain input the minimum over a second Ka is a scan of it — its
+    row of the SSR grid at a node, at ``_DENSE_PER_DECADE`` anywhere else —
+    refined by Brent from every local minimum of the scan, the best fit
+    of two free Ka is then polished in both by Nelder-Mead from the lowest
+    ``_PAIR_STARTS`` local minima of the full grid, and ``nu = N - p``: the F
+    test on the SSR. With
     uncertain inputs it is Nelder-Mead over (the other Ka, the offsets) from
     ``_STARTS`` start points drawn from *stream* and the seed, each run
     restarted where it stopped until it gains nothing, and
@@ -435,13 +506,14 @@ def reference_intervals(
             # The nearest node, the lower bound's for the zero the one-step pretest profiles at.
             i = int(np.argmin(np.abs(np.log10(axes[key]) - np.log10(np.clip(value, *bounds[key])))))
             on_node = axes[key][i] == value
-            scan = (
-                np.take(grid, i, axis=free_ka.index(key))
-                if on_node or input_keys
-                else np.array([objective({key: value, other: k}) for k in axes[other]])
-            )
+            if on_node or input_keys:
+                inner_axis = axes[other]
+                scan = np.take(grid, i, axis=free_ka.index(key))
+            else:
+                inner_axis = _axis(bounds[other], _DENSE_PER_DECADE)
+                scan = np.array([objective({key: value, other: k}) for k in inner_axis])
             if not input_keys:
-                best_other, best = _refine(lambda k: objective({key: value, other: k}), axes[other], scan)
+                best_other, best = _refine(lambda k: objective({key: value, other: k}), inner_axis, scan)
                 return best, {key: value, other: best_other}, entered_coords
             start_other = [np.log10(axes[other][int(np.argmin(scan))])]
             other_box = np.log10(bounds[other])
@@ -471,6 +543,31 @@ def reference_intervals(
     on_first = np.array([point[0] for point in node_points[first]])
     best_ka1, p_min = _refine(lambda k: profile(first, k)[0], axes[first], on_first)
     _, best_ka, best_coords = profile(first, best_ka1)
+    if grid is not None and not input_keys:
+        # Both Ka at once from the lowest local minima of the full grid: the stepwise models' K1·K2 valley runs
+        # across the axes, and along it the profile of one Ka can dip inside a grid cell whose nodes both read high.
+        padded = np.pad(grid, 1, constant_values=np.inf)
+        rows, cols = grid.shape
+        around = np.min(
+            [padded[1 + a : rows + 1 + a, 1 + b : cols + 1 + b] for a in (-1, 0, 1) for b in (-1, 0, 1) if a or b],
+            axis=0,
+        )
+        starts = np.argwhere((grid <= around) & np.isfinite(grid))
+        box = [tuple(np.log10(bounds[k])) for k in free_ka]
+
+        def pair(v: np.ndarray) -> float:
+            return objective({k: 10.0 ** v[j] for j, k in enumerate(free_ka)})
+
+        for index in starts[np.argsort(grid[tuple(starts.T)], kind='stable')[:_PAIR_STARTS]]:
+            v = np.log10([axes[k][i] for k, i in zip(free_ka, index)])
+            lowest = float(grid[tuple(index)])
+            while True:
+                res = minimize(pair, v, method='Nelder-Mead', bounds=box, options=_NELDER_MEAD)
+                if not res.fun < lowest - _RESTART_GAIN:
+                    break
+                v, lowest = res.x, float(res.fun)
+            if lowest < p_min:
+                p_min, best_ka = lowest, {k: float(10.0 ** v[j]) for j, k in enumerate(free_ka)}
     # A Ka rests on the end of its box nearer it wherever the profile there, the Ka put on an end before it held
     # there, is no higher than the lowest objective found, to the resolution of R²: the residual sum of squares at
     # most _R2_RESOLUTION of the signal's variation higher. The nearest first, at any distance from the end.
@@ -489,6 +586,78 @@ def reference_intervals(
             lowest = min(lowest, found)
         ends[key] = end
     best_fitted = fitted_rank(best_ka, best_coords)
+    # What the minimum itself holds on a bound. Next to the minimiser the bounded solve can leave a coefficient
+    # inside its bounds on one side and on its bound on the other while the objective changes by rounding, so the
+    # rank read where the search stopped is a matter of which side it stopped on. A coefficient the solve leaves
+    # inside its bounds there, and holds on its nearer bound within _FACE_REACH decades along a Ka off an end, lies
+    # on that bound at the minimum wherever the minimum with it held there, every Ka off an end and every input
+    # moved again, is no higher than the lowest objective found, to the resolution of R², and the solve with it
+    # free holds it there of itself, fitting fewer columns.
+    moving = [k for k in free_ka if k not in ends]
+
+    def held_minimum(j: int, value: float) -> tuple[float, dict[str, float], np.ndarray]:
+        """Minimum with coefficient *j* held at *value*, from the best fit: objective, Ka and inputs."""
+        saved = lb[j], ub[j], pinned[j]
+        lb[j] = ub[j] = value
+        pinned[j] = True
+        try:
+            box = [*(tuple(np.log10(bounds[k])) for k in moving), *zip(box_lo, box_hi)]
+
+            def fun(v: np.ndarray) -> float:
+                return objective({**best_ka, **{k: 10.0 ** v[i] for i, k in enumerate(moving)}}, v[len(moving) :])
+
+            v = np.array([*np.log10([best_ka[k] for k in moving]), *best_coords])
+            lowest_held = fun(v)
+            while True:
+                res = minimize(fun, v, method='Nelder-Mead', bounds=box, options=_NELDER_MEAD)
+                if not res.fun < lowest_held - _RESTART_GAIN:
+                    break
+                v, lowest_held = res.x, float(res.fun)
+            if not input_keys:
+                # Located to the arithmetic of the residual: the solve with the coefficient free then reads at the
+                # minimiser itself whether it holds the coefficient on its bound.
+                low, high = (np.log10([bounds[k][end] for k in moving]) for end in (0, 1))
+
+                def misfit(t: np.ndarray) -> np.ndarray:
+                    r = residual({**best_ka, **{k: 10.0 ** t[i] for i, k in enumerate(moving)}}, entered_coords)
+                    return np.full(n, _UNSOLVED_RESIDUAL) if r is None else r
+
+                polished = least_squares(misfit, np.clip(v, low, high), bounds=(low, high), **_POLISH).x
+                if fun(polished) <= lowest_held:
+                    v, lowest_held = polished, fun(polished)
+        finally:
+            lb[j], ub[j], pinned[j] = saved
+        return lowest_held, {**best_ka, **{k: float(10.0 ** v[i]) for i, k in enumerate(moving)}}, v[len(moving) :]
+
+    while moving:
+        solved = bounded(best_ka, best_coords)
+        if solved is None:
+            break
+        _, _, scale, x, _ = solved
+        free_index = np.flatnonzero(~pinned)
+        to_low, to_high = x - lb[~pinned] * scale, ub[~pinned] * scale - x
+        margin = np.minimum(to_low, to_high)
+        reached = np.zeros(margin.size, dtype=bool)
+        for key in moving:
+            for factor in (10.0**-_FACE_REACH, 10.0**_FACE_REACH):
+                near = bounded({**best_ka, key: float(np.clip(best_ka[key] * factor, *bounds[key]))}, best_coords)
+                if near is not None:
+                    _, _, near_scale, near_x, _ = near
+                    near_margin = np.minimum(near_x - lb[~pinned] * near_scale, ub[~pinned] * near_scale - near_x)
+                    reached |= near_margin <= _ON_BOUND_RTOL * variation
+        for i in np.argsort(margin, kind='stable'):
+            j = int(free_index[i])
+            bound = lb[j] if to_low[i] <= to_high[i] else ub[j]
+            if not (margin[i] > _ON_BOUND_RTOL * variation and reached[i] and np.isfinite(bound)):
+                continue
+            found, ka, coords = held_minimum(j, float(bound))
+            rank = fitted_rank(ka, coords)
+            if found <= lowest + resolution and rank < best_fitted:
+                p_min, best_ka, best_coords, best_fitted = found, ka, coords, rank
+                lowest = min(lowest, found)
+                break
+        else:
+            break
     # What the best fit placed itself: a Ka off the ends of its box and an input stated as a range off
     # the ends of its range. One held on an end, like a coefficient on its bound, takes no dimension
     # from the residual and moves nothing the Jacobian could read.
@@ -564,21 +733,57 @@ def reference_intervals(
     for key in free_ka:
         nodes = axes[key]
         points = node_points.get(key) or [profile(key, v) for v in nodes]
-        ranks = np.array([fitted_rank(ka, coords) for _, ka, coords in points])
-        values = list(nodes)
-        excesses = [found - cut_off(key, rank) for (found, _, _), rank in zip(points, ranks)]
-        for i in np.flatnonzero(ranks[:-1] != ranks[1:]):
-            for value in _axis((nodes[i], nodes[i + 1]), _DENSE_PER_DECADE)[1:-1]:
-                values.append(float(value))
-                excesses.append(judged(key, value)[0])
-        order = np.argsort(values)
-        values, excesses = np.array(values)[order], np.array(excesses)[order]
+        ranks = [fitted_rank(ka, coords) for _, ka, coords in points]
+        on_nodes = [point[0] for point in points]
+        # Every Ka the profile was read at: its excess over the cut-off of its own fitted rank, and that rank.
+        read = {float(v): (value - cut_off(key, rank), rank) for v, value, rank in zip(nodes, on_nodes, ranks)}
+
+        def envelope(key: str = key) -> tuple[float, float]:
+            inside = [v for v, (excess, _) in read.items() if excess <= 0.0] + [best_ka[key]]
+            return min(inside), max(inside)
+
+        # A cell inside the envelope cannot move it. Outside it, a cell is read again densely where its nodes
+        # differ in rank, and where the profile at either node is at or below the cut-off of one rank less than
+        # theirs: a rank lower between the nodes would accept a Ka there.
+        low_in, high_in = envelope()
+        for i in range(nodes.size - 1):
+            if low_in <= nodes[i] and nodes[i + 1] <= high_in:
+                continue
+            lower = min(ranks[i], ranks[i + 1]) - 1
+            if ranks[i] != ranks[i + 1] or (lower >= 0 and min(on_nodes[i], on_nodes[i + 1]) <= cut_off(key, lower)):
+                for value in _axis((nodes[i], nodes[i + 1]), _DENSE_PER_DECADE)[1:-1]:
+                    read[float(value)] = judged(key, value)
+        # Every rank step between two neighbouring Ka read outside the envelope is located by bisection to
+        # _STEP_DECADES and judged on both sides, so a stretch the step opens is read however narrow it is.
+        low_in, high_in = envelope()
+        ordered = sorted(read)
+        steps = [
+            (a, b)
+            for a, b in zip(ordered[:-1], ordered[1:])
+            if read[a][1] != read[b][1] and not (low_in <= a and b <= high_in)
+        ]
+        while steps:
+            a, b = steps.pop()
+            if np.log10(b / a) <= _STEP_DECADES:
+                continue
+            middle = float(np.sqrt(a * b))
+            read[middle] = judged(key, middle)
+            steps += [(a, middle)] if read[middle][1] != read[a][1] else []
+            steps += [(middle, b)] if read[middle][1] != read[b][1] else []
+        values = np.array(sorted(read))
+        excesses = np.array([read[v][0] for v in values])
         inside = np.append(values[excesses <= 0.0], best_ka[key])
         low_in, high_in = float(inside.min()), float(inside.max())
         below, above = values[values < low_in], values[values > high_in]
 
         def edge(outside: float, within: float, key: str = key) -> float:
-            return float(10 ** brentq(lambda t: judged(key, 10**t)[0], np.log10(outside), np.log10(within)))
+            # The ends keep the excess they were read with, so the bracket is the one the reading found: next to a
+            # rank step, the rank the inner minimum reads can differ between two Ka a rounding error apart.
+            ends = {
+                t: read[v][0] if v in read else judged(key, v)[0]
+                for t, v in zip(np.log10([outside, within]), [outside, within])
+            }
+            return float(10 ** brentq(lambda t: ends[t] if t in ends else judged(key, 10**t)[0], *ends))
 
         low = edge(below[-1], low_in) if below.size else float(nodes[0])
         high = edge(above[0], high_in) if above.size else float(nodes[-1])

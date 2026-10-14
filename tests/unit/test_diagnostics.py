@@ -683,6 +683,49 @@ def test_a_direction_the_data_cannot_see_is_no_evidence_for_or_against_the_input
     assert both.weights == (0.8,) and both.q == pytest.approx(4.0)
 
 
+def test_a_fit_that_moved_nothing_informs_no_input_direction():
+    """Every Ka on a bound of its box and every range input on an end of its range: the stacked Jacobian has no
+    column. There is no input direction for the data to inform and no shift for the additions to move, so the
+    reference is empty and the conflict statistic is not formed."""
+    n = 12
+    nothing = np.empty((n, 0))
+    weights, directions = conflict_reference(nothing, 0, [], 0.1)
+    assert weights.shape == (0,) and directions.shape == (0, 0)
+    assert conflict_added(nothing, 0, [], 0.1, np.eye(n)).shape == (0, 0)
+    assert conflict_test([], weights, directions, n_points=n, n_params=2) is None
+
+
+def test_with_no_fitted_column_the_misfit_references_remove_nothing():
+    """A design with no column: the whole residual is residual space.
+
+    The noise beside the additions is then the root ``σ²`` of
+    ``r'(σ² I + G)⁻¹ r = n`` over every point, solved here by bisection; and
+    with fixed weights and no addition error the bootstrap draws exactly the F
+    ratio on ``(n, (m - 1)(n - 2))``, so its p-value is the F tail within the
+    Monte-Carlo error of 199 draws.
+    """
+    rng = np.random.default_rng(41)
+    n = 10
+    residual = rng.standard_normal(n)
+    loading = 0.3 * np.tril(np.ones((n, n))) / n
+    sigma = 0.5
+    added = sigma**2 * loading @ loading.T
+    low, high = 1e-12 * float(residual @ residual) / n, float(residual @ residual) / n
+    for _ in range(200):
+        mid = 0.5 * (low + high)
+        statistic = residual @ np.linalg.solve(mid * np.eye(n) + added, residual)
+        low, high = (mid, high) if statistic > n else (low, mid)
+    covariance = addition_noise_covariance(residual, np.empty((n, 0)), 0, loading, sigma)
+    assert covariance == pytest.approx(0.5 * (low + high) * np.eye(n) + added, rel=1e-8)
+
+    mean = np.linspace(0.0, 1.0, n)
+    signals = mean + 0.05 * rng.standard_normal((3, n))
+    plain = lack_of_fit(signals, mean, 0)
+    drawn = lack_of_fit(signals, mean, 0, design=np.empty((n, 0)), additions=AdditionDraws(np.eye(n), 0.0, True))
+    assert drawn.statistic == plain.statistic and drawn.reference == 'bootstrap'
+    assert drawn.p_value == pytest.approx(plain.p_value, abs=0.1)
+
+
 def test_conflict_p_value_is_the_weighted_chi_squared_tail_and_repeats_exactly():
     # One unit weight: a chi-squared with one degree of freedom.
     assert conflict_p_value(3.841, [1.0]) == pytest.approx(chi2.sf(3.841, 1), abs=2e-3)

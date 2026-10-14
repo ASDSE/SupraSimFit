@@ -120,6 +120,7 @@ def test_the_examples_still_describe_the_demo_data():
     fails this.
     """
     import numpy as np
+    from scipy.optimize import brentq
 
     from core.assays import IDAAssay
     from core.data_processing.measurement_set import MeasurementSet
@@ -159,10 +160,20 @@ def test_the_examples_still_describe_the_demo_data():
     assert (profile.best_ka, profile.interval.low) == (best, lo), 'the tab and the fit report the same numbers'
 
     # Where the cut-off steps down because the fit holds the signal offset on
-    # its bound, and whether that lower level sets the end of the interval.
+    # its bound: the profile falls under the upper level above the step and
+    # clears the lower one again below it, so the interval spans two stretches.
     grid, cut = np.asarray(profile.grid, dtype=float), np.asarray(profile.r2_cut, dtype=float)
     (step,) = np.flatnonzero(np.diff(cut) != 0)
     edge = float(np.sqrt(grid[step] * grid[step + 1]))  # the step falls between two drawn Ka
+    assert lo < grid[step] and interval.split, 'the interval no longer reaches past the step the guide describes'
+    assert abs(at(lo / best) - cut[step]) < 1e-6, 'the low edge is where the profile crosses the lower cut-off'
+    below = grid[(grid > lo) & (grid <= grid[step])]
+    assert below.size and all(at(k / best) >= cut[step] for k in below)
+    # The upper stretch begins where the profile crosses the upper cut-off, between
+    # the last drawn Ka above the step it rejects and the first it accepts.
+    above = grid[(grid > grid[step]) & (grid < best)]
+    rejected = above[[at(k / best) < cut[step + 1] for k in above]]
+    start = brentq(lambda k: at(k / best) - cut[step + 1], rejected.max(), best)
 
     identifiability = re.sub(r'\s+', ' ', PLOT_GUIDE[IDENTIFIABILITY][1])
     for phrase in (
@@ -176,10 +187,11 @@ def test_the_examples_still_describe_the_demo_data():
         f'set a {hi / lo:.0f}-fold interval',
         f'Below {edge / 1e8:.1f}&times;10<sup>8</sup>',
         f'steps down to {cut[step]:.4f}',
+        f'is free at {start / 1e8:.2f}&times;10<sup>8</sup>',
+        f'from the step down to {lo / 1e8:.2f}&times;10<sup>8</sup>',
         f'by {result.rmse / 1e3:.1f}&times;10<sup>3</sup> a.u. (RMSE)',
     ):
         assert phrase in identifiability
-    assert lo > grid[step + 1], 'the interval no longer ends above the step the guide describes'
 
     # Why the cut-off sits below the plain F test's: the shares the replicates
     # allow and the design effect the interval was widened by over them.
@@ -198,7 +210,7 @@ def test_the_examples_still_describe_the_demo_data():
     # significant figures every view writes a fitted value with.
     headline = (
         f'{best / 1e8:.2f}&times;10<sup>8</sup> M<sup>&minus;1</sup> [{lo / 1e8:.2f}&times;10<sup>8</sup>, '
-        f'{hi / 1e8:.2f}&times;10<sup>8</sup>]'
+        f'{hi / 1e8:.2f}&times;10<sup>8</sup>]' + (' &dagger;' if interval.split else '')
     )
     used = len(result.metadata['active_replica_ids'])
     signals = ms.signals[[ms.replica_ids.index(r) for r in ms.active_replica_ids]]

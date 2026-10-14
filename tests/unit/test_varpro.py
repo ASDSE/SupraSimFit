@@ -9,11 +9,18 @@ least-squares solve. These tests pin what makes the engine trustworthy:
   residual equals an independent bounded least-squares solve;
 - noise-free data give the true Ka back to the search's own resolution for
   every assay, one or two binding constants alike, and a repeat is bit-identical;
-- the two-Ka search is at least as good as a dense brute-force grid;
+- the two-Ka search is at least as good as a dense brute-force grid, and both
+  searches reach a basin or valley narrower than a search cell where the
+  minimum lies;
+- a constant whose objective falls to its bound rests there however far short
+  of it the search stopped, and a signal offset the minimum holds on zero is
+  not counted however close to the minimiser the search stopped;
 - the interval edges lie exactly on the F-test cut-off, a saturated design is
   reported open on the side the data cannot close, and a pinned Ka has none;
 - the routine both interval engines cut a profile with finds, on an excess of
-  known roots, a stretch and a gap that lie between two search-grid nodes, and
+  known roots, a stretch and a gap that lie between two search-grid nodes and
+  a stretch that begins where the cut-off steps up, however narrow and however
+  far out, as an independent F test finds it on measured titrations, and
   the other constant closes an edge only on its bound and where the objective
   still falls towards it;
 - structurally degenerate coefficients are named per assay;
@@ -35,6 +42,8 @@ least-squares solve. These tests pin what makes the engine trustworthy:
   that cut-off passes the profile at the Ka bound, and raises the one-step
   p-value to the F tail of the ratio divided by it.
 """
+
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -340,6 +349,46 @@ def test_two_ka_search_is_at_least_as_good_as_a_dense_brute_force_grid():
     assert fit.n_free_ka == 2
 
 
+def test_a_one_ka_fit_finds_a_basin_whose_grid_node_is_not_the_lowest():
+    """A weighted one-Ka titration (GDA, 1:1000 dye to guest, proportional noise, the weights its four replicates
+    give) whose objective has three basins on the search grid: the lowest node lies at 10^3.75, but the minimum,
+    3.6 % lower, lies in a narrow basin near 10^7.9 whose own node reads higher. An independent 400-per-decade scan
+    refined by bounded Brent puts the minimum there."""
+    from core.pipeline.noise import noise_law
+    from validation.checks import CHECKS
+    from validation.generate import dataset
+
+    (case,) = (case for case in CHECKS['reference-agreement'].cases if case.id == 'GDA,K=1000,n=12,noise=0.02,prop,m=4')
+    data = dataset(case, 64)
+    mean = data.signals.mean(axis=0)
+    projection = Projection(
+        data.assay,
+        data.assay.get_default_bounds(),
+        signals=mean[np.newaxis, :],
+        point_weights=noise_law(data.signals).weights(mean),
+    )
+    fit = projection.fit()
+    best, s_min, _ = _independent_one_ka(projection, per_decade=400)
+    assert fit.objective <= s_min + varpro._R2_RESOLUTION * float(projection.ss_tot[0])
+    assert np.log10(fit.ka['Ka_guest']) == pytest.approx(best, abs=1e-4)
+
+
+@pytest.mark.parametrize(
+    ('case', 'seed', 'second'),
+    [('DBA_HG2,K=0.1,n=8,noise=0.01', 137, 3500.80), ('DBA_H2G,K=10,n=12,noise=0.01', 11, 13672.8)],
+    ids=['HG2-valley', 'H2G-plateau'],
+)
+def test_a_two_ka_fit_reaches_a_valley_narrower_than_a_search_cell(case, seed, second):
+    """Stepwise titrations whose K₁·K₂ valley leaves no local minimum on the search grid, which shows a lower
+    plateau of the second constant or another valley instead. With the second constant held where an independent
+    brute force puts the minimum, an independent scan of the first constant reaches 2.8e-3 and 1e-2 of the objective
+    below where the grid local minima alone lead; the fit is no higher than that."""
+    projection = _grid_projection(case, seed)
+    fit = projection.fit()
+    independent, _, _ = _independent_first_constant_minimum(projection, second)
+    assert fit.objective <= independent + varpro._R2_RESOLUTION * float(projection.ss_tot[0])
+
+
 def test_no_solvable_ka_is_refused_in_plain_language(monkeypatch):
     x, y = _make_ida_data(IDA_TRUE, n_points=12)
     assay = _assay(AssayType.IDA, x, y, **_IDA_CONDITIONS)
@@ -629,10 +678,14 @@ def _independent_first_constant_minimum(projection: Projection, ka_second: float
 
 # Stepwise titrations whose second constant the least-squares fit puts on the top of its box: the objective, the
 # first constant minimised, falls all the way to that bound, along a valley so flat that the two-constant search can
-# stop up to a tenth of a decade short of it. One is a dataset of the reference-agreement grid (1:2, K₂/K₁ = 0.1, eight
-# points, 1 % noise, seed 0), the others random designs from the vanishing-sigma comparison of the two engines.
+# stop a tenth of a decade to several decades short of it. Four are datasets of the reference-agreement grid (the
+# last three stop 4.3, 1.5 and 1.6 decades short, where the first constant left where the search stopped is far off
+# the valley), the others random designs from the vanishing-sigma comparison of the two engines.
 _ON_TOP = {
     'grid-HG2-n8': lambda: _grid_projection('DBA_HG2,K=0.1,n=8,noise=0.01', 0),
+    'grid-H2G-n12-far': lambda: _grid_projection('DBA_H2G,K=0.1,n=12,noise=0.01', 5),
+    'grid-HG2-n12-far': lambda: _grid_projection('DBA_HG2,K=0.1,n=12,noise=0.01', 317),
+    'grid-HG2-K10-n8-far': lambda: _grid_projection('DBA_HG2,K=10,n=8,noise=0.01', 343),
     'H2G-n20': lambda: _stepwise(
         AssayType.DBA_H2G, 2902916.6898986776, 16416694.18737613, 3, 710983164, n=20, noise=0.02
     )[0],
@@ -672,6 +725,51 @@ def test_a_constant_whose_objective_falls_to_its_bound_is_fitted_on_that_bound_a
     assert projection.n_params(fit) == 1 + rank
 
 
+@pytest.mark.parametrize(
+    ('case', 'seed'), [('DBA_HG2,K=1000,n=12,noise=0.01', 273), ('DBA_HG2,K=1000,n=8,noise=0.01', 164)]
+)
+def test_a_signal_offset_the_minimum_holds_on_zero_is_not_counted_among_what_the_fit_fitted(case, seed):
+    """1:2 titrations of the reference-agreement grid (K₂/K₁ = 1000, 1 % noise) whose minimum holds the second
+    constant on the top of its box and the signal offset on zero.
+
+    Minimised over the first constant with the offset held at zero (16-per-decade scan and bounded Brent to 1e-10
+    decade, this test's own bounded solves), the residual is the least the model reaches, and there the solve with
+    the offset free to go below zero takes it below zero: the bound binds at the minimum. Within 1e-7 decade of that
+    point the solve leaves the offset inside its bound on one side while the residual differs by rounding, so only
+    the minimiser itself says what the fit fitted: the first constant and the rank of the coefficients left free.
+    """
+    projection = _grid_projection(case, seed)
+    assay, y = projection.assay, projection.signals[0]
+    top = projection.ka_bounds['Ka_HG2'][1]
+    names = [ASSAY_REGISTRY[assay.assay_type].signal_species[k] for k in projection.coef_keys if k not in ('I0', 'I_H')]
+
+    def solve(t: float, offset_free: bool = False) -> tuple[float, int, float]:
+        params = np.zeros(len(assay.parameter_keys))
+        params[:2] = 10.0**t, top
+        species = assay.species(params)
+        columns = np.column_stack([np.ones(y.size)] * offset_free + [species[name] for name in names])
+        scaled = columns / np.linalg.norm(columns, axis=0)
+        lower = np.r_[[-np.inf] * offset_free, np.zeros(len(names))]
+        found = lsq_linear(scaled, y, bounds=(lower, np.inf), method='bvls', tol=1e-14)
+        inside = scaled[:, offset_free:][:, found.active_mask[offset_free:] == 0]
+        singular = np.linalg.svd(inside, compute_uv=False) if inside.shape[1] else np.zeros(1)
+        return float(np.sum((scaled @ found.x - y) ** 2)), int(np.sum(singular > 1e-8 * singular.max())), found.x[0]
+
+    low, high = np.log10(projection.ka_bounds['Ka_HG'])
+    scan = np.linspace(low, high, int(round((high - low) * 16)) + 1)
+    i = int(np.argmin([solve(t)[0] for t in scan]))
+    face = minimize_scalar(
+        lambda t: solve(t)[0], bounds=(scan[i - 1], scan[i + 1]), method='bounded', options={'xatol': 1e-10}
+    ).x
+    s_face, rank, _ = solve(face)
+    assert solve(face, offset_free=True)[2] < 0.0
+
+    fit = projection.fit()
+    assert fit.ka['Ka_HG2'] == top
+    assert fit.objective <= s_face + varpro._R2_RESOLUTION * float(projection.ss_tot[0])
+    assert projection.n_params(fit) == 1 + rank
+
+
 def test_a_fit_inside_its_box_is_where_the_search_stopped_to_the_last_bit():
     """Where the objective rises towards every bound, nothing is moved: the fit is the search's own optimum."""
     projection = Projection(*_noisy_hg2())
@@ -683,9 +781,9 @@ def test_a_fit_inside_its_box_is_where_the_search_stopped_to_the_last_bit():
 def test_a_constant_rests_on_its_bound_only_where_the_objective_there_is_no_higher_than_where_the_search_stopped():
     """The rule both fit engines share, on a stated objective, from a stop of objective one at a resolution of 1e-10.
 
-    In the last search cell before its bound a constant is tried with the other parameters minimised again, further
-    out with them where the search stopped; the nearer bound first, a constant put on its bound held there while the
-    next is tried.
+    A trial is made with the other parameters minimised again and with them where the search stopped — the first
+    within the last search cell before the bound, the second further out — and the move stands where either is within
+    the resolution; the nearer bound first, a constant put on its bound held there while the next is tried.
     """
     bounds = {'K1': (1e-8, 1e12), 'K2': (1e-8, 1e12)}
     asked = []
@@ -693,30 +791,37 @@ def test_a_constant_rests_on_its_bound_only_where_the_objective_there_is_no_high
     def rest(ka: dict, on_bound) -> object:
         def held(found, pinned: dict, again: bool):
             asked.append((dict(pinned), again))
-            return ('moved', tuple(sorted(pinned))), {**ka, **pinned}, on_bound(pinned)
+            return ('moved', tuple(sorted(pinned))), {**ka, **pinned}, on_bound(pinned, again)
 
         asked.clear()
         return varpro._rest_on_bounds('stopped', ka, 1.0, list(ka), bounds, held, 1e-10)
 
     near = {'K1': 1e12 * 10.0**-0.1}
-    assert rest(near, lambda pinned: 1.0 - 1e-13) == ('moved', ('K1',))
+    assert rest(near, lambda pinned, again: 1.0 - 1e-13) == ('moved', ('K1',))
     assert asked == [({'K1': 1e12}, True)]
-    assert rest(near, lambda pinned: 1.0 + 0.5e-10) == ('moved', ('K1',))
-    assert rest(near, lambda pinned: 1.0 + 2e-10) == 'stopped'
-    assert rest({'K1': 1e12 * 10.0**-3}, lambda pinned: 1.0) == ('moved', ('K1',))
+    assert rest(near, lambda pinned, again: 1.0 + 0.5e-10) == ('moved', ('K1',))
+    assert rest(near, lambda pinned, again: 1.0 + 2e-10) == 'stopped'
+    assert asked == [({'K1': 1e12}, True), ({'K1': 1e12}, False)]
+    assert rest(near, lambda pinned, again: 1.0 + 2e-10 if again else 1.0) == ('moved', ('K1',))
+    far = {'K1': 1e12 * 10.0**-3}
+    assert rest(far, lambda pinned, again: 1.0) == ('moved', ('K1',))
     assert asked == [({'K1': 1e12}, False)]
+    # A valley the other parameters follow to the bound: left where the search stopped, they are far off it.
+    assert rest(far, lambda pinned, again: 1.0 - 1e-7 if again else 1.2) == ('moved', ('K1',))
+    assert asked == [({'K1': 1e12}, False), ({'K1': 1e12}, True)]
     two = {'K1': 1e12 * 10.0**-0.2, 'K2': 1e-8 * 10.0**0.01}
-    assert rest(two, lambda pinned: 1.0) == ('moved', ('K1', 'K2'))
+    assert rest(two, lambda pinned, again: 1.0) == ('moved', ('K1', 'K2'))
     assert asked == [({'K2': 1e-8}, True), ({'K2': 1e-8, 'K1': 1e12}, True)]
-    assert rest(two, lambda pinned: 1.0 if pinned.keys() == {'K1'} else 2.0) == ('moved', ('K1',))
-    assert asked == [({'K2': 1e-8}, True), ({'K1': 1e12}, True)]
-    assert rest({'K1': 1e12, 'K2': 1e-8 * 10.0**0.1}, lambda pinned: 1.0) == ('moved', ('K1', 'K2'))
+    assert rest(two, lambda pinned, again: 1.0 if pinned.keys() == {'K1'} else 2.0) == ('moved', ('K1',))
+    assert asked == [({'K2': 1e-8}, True), ({'K2': 1e-8}, False), ({'K1': 1e12}, True)]
+    assert rest({'K1': 1e12, 'K2': 1e-8 * 10.0**0.1}, lambda pinned, again: 1.0) == ('moved', ('K1', 'K2'))
     assert asked == [({'K1': 1e12, 'K2': 1e-8}, True)]
     # The second constant is measured against the lowest objective found: the first, put on its bound, lowered it
     # by ten resolutions, and holding the second as well would raise it by ten and a half.
-    far = {'K1': 1e12 * 10.0**-0.05, 'K2': 1e-8 * 10.0**0.2}
-    assert rest(far, lambda pinned: 1.0 - 10e-10 if pinned.keys() == {'K1'} else 1.0 + 0.5e-10) == ('moved', ('K1',))
-    assert rest(far, lambda pinned: 1.0 - 10e-10 if pinned.keys() == {'K1'} else 1.0 - 9.5e-10) == (
+    both = {'K1': 1e12 * 10.0**-0.05, 'K2': 1e-8 * 10.0**0.2}
+    lowered = 1.0 - 10e-10
+    assert rest(both, lambda pinned, again: lowered if pinned.keys() == {'K1'} else 1.0 + 0.5e-10) == ('moved', ('K1',))
+    assert rest(both, lambda pinned, again: lowered if pinned.keys() == {'K1'} else 1.0 - 9.5e-10) == (
         'moved',
         ('K1', 'K2'),
     )
@@ -997,16 +1102,201 @@ def test_the_interval_routine_finds_a_stretch_and_a_gap_that_lie_between_two_sea
     read at the nodes alone the interval would be [10^2.59, 10^3.41] and whole.
     """
 
-    def excess(ka: float) -> float:
+    def judge(ka: float) -> tuple[float, int]:
         t = np.log10(ka)
-        return min((t - 3.0) ** 2 - 0.41**2, 50.0 * ((t - 2.4) ** 2 - 0.04**2))
+        return min((t - 3.0) ** 2 - 0.41**2, 50.0 * ((t - 2.4) ** 2 - 0.04**2)), 0
 
     nodes = varpro._ka_grid(1.0, 1e5, varpro._SEARCH_PER_DECADE)
-    points = {float(ka): excess(ka) for ka in nodes.tolist()}
-    interval, _ = varpro._cut_interval(excess, points, 1e3, LEVEL, 7, 1.0, nodes=nodes)
+    points = {float(ka): judge(ka) for ka in nodes.tolist()}
+    interval, _ = varpro._cut_interval(judge, points, 1e3, lambda rank: 0.0, LEVEL, 7, 1.0, nodes=nodes)
     assert np.log10(interval.low) == pytest.approx(2.36, abs=2e-7)
     assert np.log10(interval.high) == pytest.approx(3.41, abs=2e-7)
     assert interval.split and not (interval.open_low or interval.open_high)
+
+
+@pytest.mark.parametrize('coarse', [False, True], ids=['profile-density', 'search-nodes'])
+@pytest.mark.parametrize(
+    ('step', 'outer'),
+    [(3.5713, 3.5913), (4.6213, 4.6413)],
+    ids=['just-past-the-edge', 'beyond-a-rejected-search-cell'],
+)
+def test_an_accepted_stretch_that_begins_where_the_cut_off_steps_up_is_inside_the_interval(coarse, step, outer):
+    """A continuous profile ``(t - 3)²`` against a cut-off that steps up at *step*, t = log10 Ka.
+
+    Below the step the fit has rank one and the cut-off is 0.41², so the profile crosses it at t = 3.41; from the step
+    on the rank is zero and the cut-off ``(outer - 3)²``, so the stretch from *step* to *outer* is accepted again, past
+    a stretch the test rejects. The stretch is 0.02 decade wide, between two points of the 20-per-decade profile and
+    inside a search cell whose two nodes the test rejects; the second lies more than a whole search cell beyond the
+    first edge. By the definition of the interval — every Ka the test accepts — its upper edge is *outer*, and the gap
+    makes it split.
+    """
+
+    cut = {1: 0.41**2, 0: (outer - 3.0) ** 2}
+
+    def judge(ka: float) -> tuple[float, int]:
+        t = np.log10(ka)
+        rank = 1 if t < step else 0
+        return (t - 3.0) ** 2 - cut[rank], rank
+
+    density = varpro._SEARCH_PER_DECADE if coarse else varpro._PROFILE_PER_DECADE
+    read = varpro._ka_grid(1.0, 1e6, density)
+    points = {float(ka): judge(ka) for ka in read.tolist()}
+    interval, _ = varpro._cut_interval(judge, points, 1e3, cut.get, LEVEL, 7, 1.0, nodes=read if coarse else None)
+    assert np.log10(interval.low) == pytest.approx(2.59, abs=2e-7)
+    assert np.log10(interval.high) == pytest.approx(outer, abs=2e-7)
+    assert interval.split and not (interval.open_low or interval.open_high)
+
+
+def _independent_one_ka(projection: Projection, per_decade: int = 40) -> tuple[float, float, Callable[[float], bool]]:
+    """The least-squares fit of a one-Ka titration and its F test, from this function's own solves.
+
+    ``(log10 Ka of the best fit, its residual, verdict)``: the design from the model's species, every point weighted
+    by the projection's point weights, a bounded solve on norm-scaled columns (every signal parameter at or above
+    zero), a coefficient fitted where it lies above 1e-8 of the signal's weighted variation in those units, the rank of
+    the fitted columns by their singular values at 1e-8; the best fit from a *per_decade* scan of the whole box refined
+    by bounded Brent; and ``verdict(t)`` whether ``log10 Ka = t`` lies at or under
+    ``S_min (1 + m F(0.95; m, n - p) / (n - p))``, ``m`` one plus the coefficients the best fit fits beyond the fit
+    at t.
+    """
+    assay, root = projection.assay, np.sqrt(projection.point_weights)
+    y = projection.signals[0] * root
+    (key,) = projection.ka_keys
+    names = [ASSAY_REGISTRY[assay.assay_type].signal_species.get(k) for k in projection.coef_keys]
+    centre = np.sum(root * y) / np.sum(root**2)
+    variation = float(np.sqrt(np.sum((y - root * centre) ** 2)))
+
+    def solve(t: float) -> tuple[float, int]:
+        params = np.zeros(len(assay.parameter_keys))
+        params[assay.parameter_keys.index(key)] = 10.0**t
+        species = assay.species(params)
+        columns = np.column_stack([np.ones(y.size) if name is None else species[name] for name in names])
+        columns = columns * root[:, np.newaxis]
+        scaled = columns / np.linalg.norm(columns, axis=0)
+        found = lsq_linear(scaled, y, bounds=(0.0, np.inf), method='bvls', tol=1e-14)
+        inside = scaled[:, found.x > 1e-8 * variation]
+        singular = np.linalg.svd(inside, compute_uv=False) if inside.shape[1] else np.zeros(1)
+        return float(np.sum((scaled @ found.x - y) ** 2)), int(np.sum(singular > 1e-8 * singular.max()))
+
+    low, high = np.log10(projection.ka_bounds[key])
+    scan = np.linspace(low, high, int(round((high - low) * per_decade)) + 1)
+    i = int(np.argmin([solve(t)[0] for t in scan]))
+    best = minimize_scalar(
+        lambda t: solve(t)[0], bounds=(scan[max(i - 1, 0)], scan[min(i + 1, scan.size - 1)]), method='bounded'
+    ).x
+    s_min, r_best = solve(best)
+    dof = y.size - 1 - r_best
+
+    def verdict(t: float) -> bool:
+        ssr, rank = solve(t)
+        m = 1 + max(0, r_best - rank)
+        return ssr <= s_min * (1.0 + m * f_dist.ppf(LEVEL, m, dof) / dof)
+
+    return float(best), s_min, verdict
+
+
+@pytest.mark.parametrize(('case', 'seed'), [('DBA_DtoH,K=0.1,n=8,noise=0.01', 32), ('GDA,K=0.1,n=8,noise=0.01', 150)])
+def test_a_one_ka_interval_holds_every_ka_the_test_accepts_past_a_step_of_the_cut_off(case, seed):
+    """Past the upper edge of the stretch around the estimate the fit puts a signal parameter on its bound, the cut-off
+    steps up, and the test accepts a few hundredths of a decade again, 0.36 and 0.14 decade further out. An
+    independent F test, read every two-thousandth of a decade over half a decade beyond each edge, accepts nothing
+    outside the interval and accepts the Ka just inside each edge."""
+    projection = _grid_projection(case, seed)
+    (key,) = projection.ka_keys
+    interval = projection.interval(key, projection.fit())
+    best, _, accepts = _independent_one_ka(projection)
+    low, high = np.log10([interval.low, interval.high])
+    assert low < best < high
+    assert accepts(low + 1e-6) and accepts(high - 1e-6)
+    beyond = np.concatenate([np.arange(low - 0.5, low - 1e-6, 5e-4), np.arange(high + 1e-6, high + 0.5, 5e-4)])
+    assert not any(accepts(t) for t in beyond)
+    assert interval.split
+
+
+def _independent_two_ka(projection: Projection, fit, key: str, per_decade: int = 32) -> Callable[[float], bool]:
+    """Whether the F test accepts ``log10 key = t`` on a stepwise titration, from this function's own solves.
+
+    The design from the model's species, a bounded solve on norm-scaled columns (the offset, free guest and both
+    complexes, every coefficient at or above zero; the free-host coefficient held at zero), the rank of the columns
+    whose coefficient the solve leaves off zero. The profile at t scans the other constant at *per_decade* over its
+    whole box, ends included, and refines the eight lowest local minima by bounded Brent. ``S_min`` and the rank
+    ``r_best`` are this solve's at the fitted constants, ``p`` counts ``r_best`` and the fitted constants more than
+    1e-7 decade inside their box, and t is accepted where the profile lies at or under
+    ``S_min (1 + m F(0.95; m, n - p) / (n - p))``, ``m`` one plus how far its rank falls short of ``r_best``.
+    """
+    assay, y = projection.assay, projection.signals[0]
+    names = [ASSAY_REGISTRY[assay.assay_type].signal_species.get(k) for k in projection.coef_keys if k != 'I_H']
+    (other,) = (k for k in projection.ka_keys if k != key)
+    position = {k: assay.parameter_keys.index(k) for k in projection.ka_keys}
+
+    def solve(ka: dict) -> tuple[float, int]:
+        params = np.zeros(len(assay.parameter_keys))
+        for k, value in ka.items():
+            params[position[k]] = value
+        species = assay.species(params)
+        columns = np.column_stack([np.ones(y.size) if name is None else species[name] for name in names])
+        scaled = columns / np.linalg.norm(columns, axis=0)
+        found = lsq_linear(scaled, y, bounds=(0.0, np.inf), method='bvls', tol=1e-14)
+        inside = scaled[:, found.active_mask == 0]
+        singular = np.linalg.svd(inside, compute_uv=False) if inside.shape[1] else np.zeros(1)
+        return float(np.sum((scaled @ found.x - y) ** 2)), int(np.sum(singular > 1e-8 * singular.max()))
+
+    low, high = np.log10(projection.ka_bounds[other])
+    scan = np.linspace(low, high, int(round((high - low) * per_decade)) + 1)
+
+    def profile(t: float) -> tuple[float, int]:
+        def at(u: float) -> float:
+            return solve({key: 10.0**t, other: 10.0**u})[0]
+
+        values = np.array([at(u) for u in scan])
+        best = int(np.argmin(values))
+        u_best, s_best = scan[best], values[best]
+        padded = np.pad(values, 1, constant_values=np.inf)
+        minima = np.flatnonzero(values <= np.minimum(padded[:-2], padded[2:]))
+        for i in minima[np.argsort(values[minima])][:8]:
+            bracket = (scan[max(i - 1, 0)], scan[min(i + 1, scan.size - 1)])
+            found = minimize_scalar(at, bounds=bracket, method='bounded', options={'xatol': 1e-10})
+            if found.fun < s_best:
+                u_best, s_best = found.x, found.fun
+        return s_best, solve({key: 10.0**t, other: 10.0**u_best})[1]
+
+    s_min, r_best = solve(fit.ka)
+    inside = sum(
+        min(np.log10(fit.ka[k] / lo), np.log10(hi / fit.ka[k])) > 1e-7 for k, (lo, hi) in projection.ka_bounds.items()
+    )
+    dof = y.size - inside - r_best
+
+    def verdict(t: float) -> bool:
+        ssr, rank = profile(t)
+        m = 1 + max(0, r_best - rank)
+        return ssr <= s_min * (1.0 + m * f_dist.ppf(LEVEL, m, dof) / dof)
+
+    return verdict
+
+
+@pytest.mark.parametrize(
+    ('case', 'seed', 'stretch'),
+    [
+        ('DBA_H2G,K=1000,n=8,noise=0.01', 11, 4.64),
+        ('DBA_HG2,K=10,n=8,noise=0.01', 160, -3.62),
+        ('DBA_HG2,K=10,n=8,noise=0.01', 358, 0.85),
+    ],
+    ids=['profile-dips-where-the-rank-changes', 'rank-dips-between-nodes-of-one-rank', 'rank-dips-far-below-the-edge'],
+)
+def test_a_two_ka_interval_holds_a_stretch_the_test_accepts_beyond_where_the_outward_reading_stops(case, seed, stretch):
+    """1:2 and 2:1 titrations of the reference-agreement grid on which the test accepts a stretch of the first
+    constant a tenth of a decade wide around 10^*stretch*, between two search-grid nodes it rejects and one to two
+    decades below the stretch around the estimate: where the fitted rank changes between the nodes and the profile
+    dips under an unchanged cut-off, and where the rank dips by one inside a cell whose nodes share it and the
+    profile there lies under the cut-off of the lower rank. An independent F test accepts the stretch and the Ka just
+    inside the lower edge, and nothing over the tenth of a decade below it."""
+    projection = _grid_projection(case, seed)
+    fit = projection.fit()
+    interval = projection.interval('Ka_HG', fit)
+    accepts = _independent_two_ka(projection, fit, 'Ka_HG')
+    low = np.log10(interval.low)
+    assert low < stretch and interval.split
+    assert accepts(stretch) and accepts(low + 1e-6)
+    assert not any(accepts(t) for t in np.arange(low - 0.1, low - 1e-6, 0.01))
 
 
 def test_the_other_constant_closes_an_edge_only_on_its_bound_and_where_the_objective_still_falls_towards_it():

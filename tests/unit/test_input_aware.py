@@ -78,7 +78,7 @@ from core.pipeline.varpro import (
 )
 from core.units import Q_
 from tests.conftest import DBA_TRUE, GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
-from tests.unit.test_varpro import _ONE_STEP, _hg2_truth_signal, _stepwise
+from tests.unit.test_varpro import _ONE_STEP, _grid_projection, _hg2_truth_signal, _stepwise
 
 _IDA_SIGMAS = {'Ka_dye': 0.10, 'h0': 0.03, 'd0': 0.03, TITRANT: 0.03}
 
@@ -627,6 +627,30 @@ def test_a_gap_inside_one_search_cell_is_reported_as_the_fixed_input_interval_re
     assert abs(np.log10(aware.high / conditional.high)) < 2e-7
 
 
+def test_an_accepted_stretch_past_a_step_of_the_cut_off_is_inside_the_input_aware_interval_too():
+    """Dye-to-host DBA of the reference-agreement grid (K₂ h0 of 0.1, eight points, 1 % noise, seed 32).
+
+    Past the upper edge of the stretch around the estimate the fit puts a signal coefficient on its bound, the
+    cut-off steps up, and the test accepts Ka from 10^5.874 to 10^5.889 again, 0.35 decade further out and between
+    two search-grid nodes it rejects. The independent fixed-input profile accepts that stretch; at a vanishing σ the
+    input-aware interval reaches as far as the fixed-input one.
+    """
+    projection = _grid_projection('DBA_DtoH,K=0.1,n=8,noise=0.01', 32)
+    assay = projection.assay
+    index = assay.parameter_keys.index('Ka_dye')
+
+    def species_of(k: float) -> dict:
+        params = np.zeros(len(assay.parameter_keys))
+        params[index] = k
+        return assay.species(params)
+
+    conditional, aware = _vanishing(projection, ('fixed_conc', TITRANT))
+    accepted = 10.0 ** np.array([5.876, 5.882, 5.888])
+    assert (_independent_one_ka_excess(projection, species_of, accepted) < 0).all()
+    assert aware.high > accepted[-1] and not aware.open_high
+    assert abs(np.log10(aware.high / conditional.high)) < 2e-7
+
+
 def test_a_binding_constant_whose_minimum_lies_on_its_bound_is_put_on_it_and_not_counted_as_fitted():
     """A 2:1 titration whose second constant runs to the top of its box.
 
@@ -668,22 +692,26 @@ def test_a_binding_constant_whose_minimum_lies_on_its_bound_is_put_on_it_and_not
 
 
 @pytest.mark.parametrize(
-    'assay_type, ka_hg, ka_second, n, noise, seed',
+    'titration',
     [
-        (AssayType.DBA_H2G, 2902916.6898986776, 16416694.18737613, 20, 0.02, 710983164),
-        (AssayType.DBA_HG2, 29531.854796112406, 29847.003735592458, 8, 0.005, 533310309),
+        lambda: _stepwise(AssayType.DBA_H2G, 2902916.6898986776, 16416694.18737613, 3, 710983164, n=20, noise=0.02),
+        lambda: _stepwise(AssayType.DBA_HG2, 29531.854796112406, 29847.003735592458, 3, 533310309, n=8, noise=0.005),
+        lambda: (_grid_projection('DBA_H2G,K=0.1,n=12,noise=0.01', 5), 'Ka_H2G'),
+        lambda: (_grid_projection('DBA_HG2,K=1000,n=12,noise=0.01', 273), 'Ka_HG2'),
     ],
-    ids=['H2G-n20', 'HG2-n8'],
+    ids=['H2G-n20', 'HG2-n8', 'grid-H2G-n12-far', 'grid-HG2-offset-on-zero'],
 )
-def test_at_a_vanishing_sigma_both_engines_rest_the_same_constant_on_its_bound(assay_type, ka_hg, ka_second, n, noise,
-                                                                                seed):  # fmt: skip
+def test_at_a_vanishing_sigma_both_engines_rest_the_same_constant_on_its_bound(titration):
     """Stepwise titrations whose second constant's objective falls all the way to the top of its box.
 
     With the inputs known to 0.001 % the input-aware fit is the fixed-input one, so the two must agree on where that
     constant lies — on the bound, held and not fitted — and therefore on ``p``, the degrees of freedom and the
     one-step test; with a different count their intervals of the first constant would differ by tenths of a decade.
+    In the third titration the searches stop 4.3 decades short of the bound, along a K₁·K₂ valley the first constant
+    follows all the way; in the fourth the minimum also holds the signal offset on zero, which each solve leaves a
+    hair inside its bound on the side of the minimiser it stops on.
     """
-    projection, second = _stepwise(assay_type, ka_hg, ka_second, 3, seed, n=n, noise=noise)
+    projection, second = titration()
     fit = projection.fit()
     conditional = {key: projection.interval(key, fit) for key in projection.free_ka}
     tiny = InputSpec.sigma_pct(1e-3)

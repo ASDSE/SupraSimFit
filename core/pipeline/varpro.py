@@ -42,7 +42,9 @@ at the best fit ``K_hat`` is the ``p`` of every test here. A free binding
 constant rests on a bound wherever the objective there is no higher than where
 the search for it stopped, to the resolution of R², so a minimum the data do
 not place inside the box is held on its bound (:func:`_rest_on_bounds`, the
-rule of both fit engines). The F test of a
+rule of both fit engines). ``K_hat`` is the minimiser itself where a signal
+parameter reaches its bound there, so that ``r(K_hat)`` is not decided by the
+side of it a search stops on (:func:`_rest_coefficients`). The F test of a
 tested Ka compares two fits, and its numerator counts the parameters the best
 fit has and the fit at the tested Ka has not: the tested Ka, and every signal
 parameter the bounded solve holds on a bound there while the best fit leaves it
@@ -78,6 +80,7 @@ passes the range of a double.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass, replace
 from typing import Callable, Mapping, Sequence, TypeVar
 
@@ -129,11 +132,10 @@ REPLICATE_TEST_MIN = 3
 SECOND_STEP_LEVEL = 0.005
 
 # Ka grid densities, in points per decade across the Ka bounds. The search grid
-# only has to land in the basin of the optimum: the refinement finds it from
-# there. Against a 16/decade brute force on 84 random HG2/H2G designs (K 1e1 to
-# 1e9, h0 10^-6.5 to 10^-3 M, 8 to 30 points, noise 0.2 to 8 %) the 4/decade
-# search was never beaten by more than 1.2e-6 relative SSR. The profile grid is
-# where a one-Ka interval scans and a drawn curve starts.
+# only has to give the refinement a start in the basin of the optimum: the
+# refinement finds it from there, and a basin narrower than a grid cell is
+# reached from the profiles at the grid nodes (see ``Projection._search_two``).
+# The profile grid is where a one-Ka interval scans and a drawn curve starts.
 _SEARCH_PER_DECADE = 4
 _PROFILE_PER_DECADE = 20
 
@@ -161,12 +163,31 @@ _INNER_PER_DECADE = 16
 # than that moves it by under 0.05 % of the interval's half-width.
 _BOUND_RISE = 1e-3
 
-# Grid local minima refined in a two-Ka search. On the same 84 designs the worst
-# relative SSR miss against the brute force is 3.4e-5 with one start, 3.8e-6
-# with two, 2.5e-6 with three, 1.2e-6 with five and 5e-9 with eight; every one
-# of these is far below the interval threshold (relative F/(n - p) of 0.1 or
-# more), and five starts cost under 0.3 s.
+# Local minima refined in a search: of the grid in one dimension, and in two of
+# the grid and, as further starts, of the profiles at the grid nodes. Against a
+# 16/decade brute force on 84 random HG2/H2G designs (K 1e1 to 1e9, h0 10^-6.5 to
+# 10^-3 M, 8 to 30 points, noise 0.2 to 8 %) the grid local minima alone miss the
+# minimum by up to 3.4e-5 relative SSR with one start, 1.2e-6 with five and 5e-9
+# with eight; five starts cost under 0.3 s.
 _N_REFINE = 5
+
+# Distance, in decades of Ka, within which a signal coefficient the fit leaves
+# inside its bounds must reach a bound for the fit to be tried with it held there
+# (see ``_rest_coefficients``). On the reference-agreement grid the fixed-input
+# search stops up to 1.3e-5 decades short of a minimiser where a coefficient
+# reaches its bound and the input-aware solve 4e-6; 1e-3 is seventy times the
+# farther. Reading it costs two solves per free constant, and only a coefficient
+# that reaches its bound within it costs a trust-region solve.
+_FACE_REACH = 1e-3
+
+# Tolerance, in decades of Ka, of the refinement of the node profiles that gives
+# a two-Ka search its further starts: a start only has to lie in the valley the
+# trust-region solve from it runs down, which finds the floor to _TRF_OPTIONS.
+# At 1e-2 the profiles of both constants lead to the same minima as at
+# _LOG_KA_XTOL on the ten stepwise titrations of the reference-agreement grid
+# whose grid local minima miss it, and the whole two-Ka search takes 0.2 s on
+# average over 300 others.
+_START_XTOL = 1e-2
 
 # Tolerance of the one-dimensional refinement and of the interval edges, in
 # decades of Ka.
@@ -286,7 +307,7 @@ def _rest_on_bounds(
     value: float,
     moving: Sequence[str],
     ka_bounds: Mapping[str, tuple[float, float]],
-    held: Callable[[_Found, dict[str, float], bool], tuple[_Found, Mapping[str, float], float]],
+    held: Callable[[_Found, dict[str, float], bool], tuple[_Found, Mapping[str, float], float] | None],
     resolution: float,
 ) -> _Found:
     """*found*, or the solution with binding constants moved onto their bounds where the objective there is no higher.
@@ -306,20 +327,23 @@ def _rest_on_bounds(
     The constants of *moving* are tried nearest their bound first, each held
     with those already put on a bound. *held* gives the solution at a trial —
     from the current *found*, the constants to hold, and whether to minimise
-    the other parameters again — with its constants and objective. Within the
-    last search cell before the bound they are minimised again: there a search
-    runs down a valley along which the other parameters compensate, the stepwise
-    models' K₁·K₂ valley, and the trust-region solves of both engines, which
-    keep their iterates strictly inside the box, stop short of a bound the
-    objective falls all the way to (by up to 0.13 decades over the
-    reference-agreement grid and 40 random stepwise designs). Further out the
-    other parameters stay where the search stopped, which bounds the minimum at
-    the bound from above, so the move stands wherever the objective does not
-    depend on the constant — the second constant of a stepwise model with no
-    second step, left decades from its bound by a search over a flat objective.
-    The independent reference minimises again at every distance
-    (:mod:`validation.reference`), so a valley that runs further shows there as
-    a disagreement.
+    the other parameters again or leave them where the search stopped — with
+    its constants and objective, or ``None`` when asked to minimise again with
+    nothing left to minimise, where the other trial is the only one. Either is
+    an upper bound on the minimum with the constant on its bound, so the move
+    stands wherever either is within the resolution, and both are tried before
+    a move is turned down. Along a valley
+    in which the other parameters compensate, the stepwise models' K₁·K₂
+    valley, the trust-region solves of both engines keep their iterates
+    strictly inside the box and stop short of a bound the objective falls all
+    the way to, by up to 5.6 decades over the reference-agreement grid: only
+    the solution minimised again lies in that valley at the bound. Where the
+    objective does not depend on the constant — the second constant of a
+    stepwise model with no second step, left decades from its bound by a search
+    over a flat objective — the parameters where the search stopped already
+    show it, and a minimisation started elsewhere can land in a worse basin
+    than theirs. Within the last search cell before the bound the parameters
+    are minimised again first, further out they are first left where they are.
     """
     if not np.isfinite(value):
         return found
@@ -329,11 +353,61 @@ def _rest_on_bounds(
         pinned[key] = bound
         if ka[key] == bound:
             continue
-        candidate, candidate_ka, candidate_value = held(found, dict(pinned), apart <= 1.0 / _SEARCH_PER_DECADE)
-        if candidate_value <= value + resolution:
-            found, ka, value = candidate, candidate_ka, min(value, candidate_value)
+        near = apart <= 1.0 / _SEARCH_PER_DECADE
+        for again in (near, not near):
+            trial = held(found, dict(pinned), again)
+            if trial is None:
+                continue
+            candidate, candidate_ka, candidate_value = trial
+            if candidate_value <= value + resolution:
+                found, ka, value = candidate, candidate_ka, min(value, candidate_value)
+                break
         else:
             del pinned[key]
+    return found
+
+
+def _rest_coefficients(
+    found: _Found,
+    value: float,
+    trials: Callable[[_Found], tuple[list[tuple[int, float]], int]],
+    held: Callable[[_Found, int, float], tuple[_Found, float, int]],
+    resolution: float,
+) -> _Found:
+    """*found*, or the minimiser next to it where that holds a signal coefficient on its bound.
+
+    The rule of both fit engines for what the fit at a minimum fitted.
+    Where the minimum holds a signal coefficient on a bound, the bounded
+    solve leaves it inside its bounds on one side of the minimiser and on
+    the bound on the other, and the coefficient moves by 1e3 to 8e3 in the
+    norm-scaled units it is read in per decade of Ka there, while the
+    objective changes by less than its own rounding over the 4e-8 to 1.3e-5
+    decades a search stops short by. The side a search stops on would
+    then decide the rank the fit is read at, and with it ``p``, and the
+    objective cannot. The conditions of the bounded minimum decide it
+    instead: a coefficient lies on its bound at the minimiser where the
+    minimum with it held there is the minimum, to the resolution of R², and
+    the bounded solve at that point holds it there of itself.
+
+    *trials* gives at a solution the coefficients to try, nearest their
+    bound first, each with that bound
+    (:meth:`Projection._coefficient_trials`), and the rank of the fitted
+    columns there; *held* the solution with one of them held on its bound
+    and everything else the engine moves solved again from *found*, its
+    objective and the rank its own bounded solve fits there. The solution
+    replaces *found* where its objective is no higher than *value*, the
+    lowest found, plus *resolution*, and the rank there is lower; the
+    coefficients are then tried again from it.
+    """
+    while np.isfinite(value):
+        near, rank = trials(found)
+        for k, bound in near:
+            candidate, candidate_value, candidate_rank = held(found, k, bound)
+            if candidate_value <= value + resolution and candidate_rank < rank:
+                found, value = candidate, min(value, candidate_value)
+                break
+        else:
+            break
     return found
 
 
@@ -788,15 +862,17 @@ class Projection:
         """Least-squares fit of every row with one shared set of binding constants.
 
         One free Ka: the search grid, then bounded Brent refinement between the
-        neighbours of the best node. Two free Ka: the search grid, then
-        trust-region least squares on the projected residual from the
-        ``_N_REFINE`` best grid local minima over the whole box, keeping a node
-        that its refinement does not beat; the best of the refinements wins. A
-        pinned Ka takes its axis out of the search. A free Ka is then put on its
+        neighbours of each of its ``_N_REFINE`` lowest local minima; the lowest
+        refinement wins. Two free Ka: the search grid, then trust-region least
+        squares on the projected residual from the ``_N_REFINE`` best grid
+        local minima over the whole box and from the ``_N_REFINE`` lowest
+        points of the profiles at the search-grid nodes (:meth:`_search_two`),
+        keeping a start that its refinement does not beat. A pinned Ka takes
+        its axis out of the search. A free Ka is then put on its
         nearer bound where the objective there is no higher than where the
-        search stopped, to the resolution of R² (:func:`_rest_on_bounds`); in
-        the last search cell before the bound the other free Ka is minimised
-        again for that, as at a profile point.
+        search stopped, to the resolution of R² (:func:`_rest_on_bounds`), the
+        other free Ka there left where the search stopped or minimised again
+        as at a profile point.
 
         Parameters
         ----------
@@ -818,7 +894,7 @@ class Projection:
             ka, q = dict(self._pinned_ka), objective({})
         elif len(self.free_ka) == 1:
             (key,), (axis,) = self.free_ka, self._grid()[0]
-            best_ka, q = _refine_best(lambda k: objective({key: k}), axis, self._weighted_grid(w))
+            best_ka, q = _refine_minima(lambda k: objective({key: k}), axis, self._weighted_grid(w))
             ka = self._full_ka({key: best_ka})
         else:
             ka, q = self._search_two(w)
@@ -831,6 +907,15 @@ class Projection:
             lambda found, pinned, again: self._held(found, pinned, again, w),
             self._resolution(w),
         )
+        if self.signals.shape[0] == 1:
+            # A fit of several rows reports the rank of every free column, which holding one changes nowhere.
+            ka, q = _rest_coefficients(
+                (ka, q),
+                q,
+                lambda found: self._coefficient_trials(found[0]),
+                lambda found, k, bound: self._held_coefficient(found, k, bound, w),
+                self._resolution(w),
+            )
         if not np.isfinite(q):
             ranges = ' or '.join(f'between {_ka_text(lo)} and {_ka_text(hi)}' for lo, hi in self.ka_bounds.values())
             which = 'its upper bound' if len(self.ka_bounds) == 1 else 'their upper bounds'
@@ -874,15 +959,18 @@ class Projection:
 
     def _held(
         self, found: tuple[dict[str, float], float], pinned: Mapping[str, float], again: bool, w: np.ndarray
-    ) -> tuple[tuple[dict[str, float], float], dict[str, float], float]:
+    ) -> tuple[tuple[dict[str, float], float], dict[str, float], float] | None:
         """The fit *found* with the free binding constants *pinned* held, as :func:`_rest_on_bounds` asks for it.
 
         Minimised *again*, another free Ka is found as a profile point's is,
         over its search-grid axis from the cached grid where the held value is
-        a node; otherwise it stays where *found* has it.
+        a node, and there is no such trial without another free Ka; otherwise
+        it stays where *found* has it.
         """
         others = [k for k in self.free_ka if k not in pinned]
-        if again and others:
+        if again and not others:
+            return None
+        if again:
             ((key, value),) = pinned.items()
             other_ka, q = self._inner_minimum(key, value, w, _SEARCH_PER_DECADE)
             ka = self._full_ka({key: value, others[0]: other_ka})
@@ -900,34 +988,153 @@ class Projection:
         ]
 
     def _search_two(self, w: np.ndarray) -> tuple[dict[str, float], float]:
-        """Two-Ka search: the best of ``_N_REFINE`` refined grid local minima."""
+        """Two-Ka search: the best of ``_N_REFINE`` refined grid local minima and refined node-profile minima.
+
+        The grid local minima are refined first and the best of them is the
+        search's optimum, unless a refinement from one of the ``_N_REFINE``
+        lowest points of the profiles at the search-grid nodes lies lower by
+        more than the resolution of R². Cut at a fixed value of one constant,
+        the stepwise models' K₁·K₂ valley is narrower than a search cell, so its
+        floor leaves no local minimum on the grid, which there shows a plateau
+        of the second constant or a corner of the box instead; the profile at a
+        node refines the other constant between the neighbours of the lowest
+        node of its grid row (:func:`_refine_at`, to ``_START_XTOL``), so it
+        reaches the floor where the valley crosses a row near it. On 10 of the
+        5600 stepwise titrations of the reference-agreement grid the grid local
+        minima alone stop above the minimum by 3.7e-6 to 1e-2 of the objective;
+        on those and on 300 further ones (seeds 100 to 124) the profiles reach
+        the minimum that refining the five lowest local minima of every row
+        reaches, at under half its cost.
+        """
         axes, _ = self._grid()
         q_grid = self._weighted_grid(w)
         starts = self._grid_minima(q_grid)
         if not starts:
             return self._full_ka({k: axes[j][0] for j, k in enumerate(self.free_ka)}), np.inf
 
+        def refined(value: float, ka: dict[str, float]) -> tuple[float, dict[str, float]]:
+            """The refinement from a start of objective *value*, or the start where the refinement does not beat it."""
+            s, found = self._least_squares(w, ka, self.free_ka)
+            return (s, found) if s < value else (value, ka)
+
+        best = min(
+            (
+                refined(float(q_grid[i, j]), {self.free_ka[0]: float(axes[0][i]), self.free_ka[1]: float(axes[1][j])})
+                for i, j in starts
+            ),
+            key=lambda found: found[0],
+        )
+        objective = self._objective(w)
+        profiled = []
+        for a, key in enumerate(self.free_ka):
+            other = self.free_ka[1 - a]
+            for i, node in enumerate(axes[a].tolist()):
+                row = np.take(q_grid, i, axis=a)
+                other_ka, value = _refine_at(
+                    lambda k: objective({key: node, other: k}), axes[1 - a], row, int(np.argmin(row)), _START_XTOL
+                )
+                profiled.append((value, {key: node, other: other_ka}))
+        resolution = self._resolution(w)
+        for value, ka in sorted(profiled, key=lambda found: found[0])[:_N_REFINE]:
+            candidate = refined(value, ka)
+            if candidate[0] < best[0] - resolution:
+                best = candidate
+        return self._full_ka(best[1]), best[0]
+
+    def _least_squares(
+        self, w: np.ndarray, ka: Mapping[str, float], moving: Sequence[str]
+    ) -> tuple[float, dict[str, float]]:
+        """Trust-region least squares on the projected residual over the *moving* Ka, from *ka*: objective and Ka.
+
+        The other free Ka stay as *ka* has them.
+        """
         used = w > 0
         sqrt_w = np.sqrt(w[used])
         y_used = self.signals[used]
-        lo = np.array([np.log10(self.ka_bounds[k][0]) for k in self.free_ka])
-        hi = np.array([np.log10(self.ka_bounds[k][1]) for k in self.free_ka])
+        lo = np.log10([self.ka_bounds[k][0] for k in moving])
+        hi = np.log10([self.ka_bounds[k][1] for k in moving])
 
         def residual(t: np.ndarray) -> np.ndarray:
-            design = self._design({k: 10.0 ** t[j] for j, k in enumerate(self.free_ka)})
+            design = self._design({**ka, **{k: 10.0 ** t[j] for j, k in enumerate(moving)}})
             _, coef = self._solve(design)
             return (((design @ coef[used].T).T - y_used) * sqrt_w[:, None] * self._whiten[None, :]).ravel()
 
-        best: tuple[float, dict[str, float]] | None = None
-        for i, j in starts:
-            node = (float(q_grid[i, j]), {self.free_ka[0]: float(axes[0][i]), self.free_ka[1]: float(axes[1][j])})
-            start = np.array([np.log10(axes[0][i]), np.log10(axes[1][j])])
-            res = least_squares(residual, start, bounds=(lo, hi), **_TRF_OPTIONS)
-            s = float(res.fun @ res.fun)
-            candidate = (s, {key: 10.0 ** res.x[m] for m, key in enumerate(self.free_ka)}) if s < node[0] else node
-            if best is None or candidate[0] < best[0]:
-                best = candidate
-        return self._full_ka(best[1]), best[0]
+        res = least_squares(residual, np.log10([ka[k] for k in moving]), bounds=(lo, hi), **_TRF_OPTIONS)
+        return float(res.fun @ res.fun), {**ka, **{k: 10.0 ** res.x[m] for m, k in enumerate(moving)}}
+
+    def _coefficient_trials(
+        self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None
+    ) -> tuple[list[tuple[int, float]], int]:
+        """What :func:`_rest_coefficients` tries at *ka*, the inputs moved by *offsets*, and the rank read there.
+
+        The signal coefficients the bounded solve of the first row leaves
+        inside their bounds at *ka* and holds on a bound ``_FACE_REACH``
+        decades away along a free binding constant inside its box, and whose
+        column the other fitted columns do not reproduce, so that holding it
+        lowers the rank; each with its nearer bound, nearest first; and the
+        rank of the fitted columns at *ka*.
+        """
+        design, ssr, coef = self._solve_at(ka, offsets)
+        if not np.isfinite(ssr[0]):
+            return [], 0
+        margin, inside = self._inside(coef[0], self._free_columns(design * self._whiten[:, np.newaxis])[1])
+        columns = self._free_columns(design)[0]
+        rank = _rank(columns[:, inside] / _norms(columns[:, inside]))
+        reached = np.zeros_like(inside)
+        for key in self.free_ka:
+            if on_ka_bound(ka[key], self.ka_bounds[key]):
+                continue
+            for factor in (10.0**-_FACE_REACH, 10.0**_FACE_REACH):
+                moved = {**ka, key: min(max(ka[key] * factor, self.ka_bounds[key][0]), self.ka_bounds[key][1])}
+                design_moved, ssr_moved, coef_moved = self._solve_at(moved, offsets)
+                if np.isfinite(ssr_moved[0]):
+                    scale = self._free_columns(design_moved * self._whiten[:, np.newaxis])[1]
+                    reached |= ~self._inside(coef_moved[0], scale)[1]
+        near = inside & reached
+        free = np.flatnonzero(self._lb != self._ub)
+        trials = []
+        for j in np.flatnonzero(near)[np.argsort(margin[near], kind='stable')]:
+            others = inside.copy()
+            others[j] = False
+            k = int(free[j])
+            bound = self._lb[k] if coef[0, k] - self._lb[k] <= self._ub[k] - coef[0, k] else self._ub[k]
+            if np.isfinite(bound) and _rank(columns[:, others] / _norms(columns[:, others])) < rank:
+                trials.append((k, float(bound)))
+        return trials, rank
+
+    def _holding(self, k: int, bound: float) -> Projection:
+        """This projection with signal coefficient *k* (in ``coef_keys`` order) held on *bound*."""
+        held = copy.copy(self)
+        held._lb, held._ub = self._lb.copy(), self._ub.copy()
+        held._lb[k] = held._ub[k] = bound
+        held._grid_cache = None
+        return held
+
+    def _held_coefficient(
+        self, found: tuple[dict[str, float], float], k: int, bound: float, w: np.ndarray
+    ) -> tuple[tuple[dict[str, float], float], float, int]:
+        """The fit *found* with coefficient *k* held on *bound* and the binding constants inside their box solved again.
+
+        As :func:`_rest_coefficients` asks for it: the solution, its objective
+        and the rank of what the projection's own bounded solve fits there.
+        """
+        ka = found[0]
+        moving = [key for key in self.free_ka if not on_ka_bound(ka[key], self.ka_bounds[key])]
+        if not moving:
+            return found, np.inf, 0
+        candidate = self._holding(k, bound)._least_squares(w, ka, moving)[1]
+        q = self._objective(w)(candidate)
+        return (candidate, q), q, self.fitted_parameters(candidate).rank
+
+    def _inside(self, coef: np.ndarray, scale: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """How far each free coefficient of one row lies inside its bounds and whether it counts as inside them.
+
+        The distance is the coefficient's distance from its nearer bound times
+        the norm of its whitened column, *scale*, as :meth:`solved` reads it.
+        """
+        free = self._lb != self._ub
+        margin = np.minimum(coef - self._lb, self._ub - coef)[free] * scale
+        return margin, margin > _RANK_RTOL * np.sqrt(self.ss_tot[0])
 
     # ------------------------------------------------------------------
     # Reporting
@@ -977,13 +1184,11 @@ class Projection:
         the rows by positive factors, which leaves a rank as it is.
         """
         design, ssr, coef = self._solve_at(ka, offsets)
-        free = self._lb != self._ub
         whitened, scale = self._free_columns(design * self._whiten[:, np.newaxis])
         if np.isfinite(ssr[0]):
-            margin = np.minimum(coef[0] - self._lb, self._ub - coef[0])[free] * scale
-            inside = margin > _RANK_RTOL * np.sqrt(self.ss_tot[0])
+            inside = self._inside(coef[0], scale)[1]
         else:
-            inside = np.zeros(np.count_nonzero(free), dtype=bool)
+            inside = np.zeros(whitened.shape[1], dtype=bool)
         columns = self._free_columns(design)[0][:, inside]
         ka_inside = tuple(key for key in self.free_ka if not on_ka_bound(ka[key], self.ka_bounds[key]))
         return ssr, FittedParameters(ka=ka_inside, columns=whitened[:, inside], rank=_rank(columns / _norms(columns)))
@@ -1105,11 +1310,18 @@ class Projection:
         stepwise titration of the weak regime. Whether that bound, and not the
         data, closes the interval is what :meth:`_bound_behind` decides.
         """
+        by_rank = self._cut_by_rank(fit, level, n_constrained, inflation)
+        return lambda point: by_rank(point.rank)
+
+    def _cut_by_rank(
+        self, fit: ProjectedFit, level: float = LEVEL, n_constrained: int = 1, inflation: float = 1.0
+    ) -> Callable[[int], float]:
+        """:meth:`cut_off` by the rank of the signal columns the fit at a tested Ka leaves inside their bounds."""
         fitted = self.fitted_parameters(fit.ka).rank
         cuts: dict[int, float] = {}
 
-        def at(point: FittedParameters) -> float:
-            released = max(0, fitted - point.rank)
+        def at(rank: int) -> float:
+            released = max(0, fitted - rank)
             if released not in cuts:
                 cuts[released] = self.threshold(fit, level, n_constrained, released, inflation)
             return cuts[released]
@@ -1189,7 +1401,9 @@ class Projection:
 
         def held(
             found: tuple[float, float], pinned: dict[str, float], again: bool
-        ) -> tuple[tuple[float, float], dict[str, float], float]:
+        ) -> tuple[tuple[float, float], dict[str, float], float] | None:
+            if again:
+                return None  # with both constants held nothing is left to minimise
             value = objective({ka_key: ka, **pinned})
             return (pinned[other], value), pinned, value
 
@@ -1212,7 +1426,10 @@ class Projection:
         search-grid nodes are read first, their scan of the other Ka a row of
         the cached grid, and the profile is read again at
         ``_PROFILE_PER_DECADE``, the other Ka scanned at ``_INNER_PER_DECADE``,
-        wherever its verdict turns (:func:`_scan_turns`). A closed edge of a
+        wherever the test can accept Ka between the nodes (:func:`_scan_turns`).
+        Either way both sides of every step of the cut-off between the points
+        read are judged (:func:`_read_steps`), so a stretch the test accepts
+        past such a step is found however narrow it is. A closed edge of a
         two-Ka interval that only the bound of the other Ka produces is
         reported open and names that Ka (:meth:`_bound_behind`).
 
@@ -1236,20 +1453,20 @@ class Projection:
         self._require_one_row('A confidence interval')
         if ka_key not in self.free_ka:
             return None
-        cut = self.cut_off(fit, level, inflation=inflation)
+        cut = self._cut_by_rank(fit, level, inflation=inflation)
 
-        def excess(inner_per_decade: int) -> Callable[[float], float]:
-            def at(ka: float) -> float:
+        def judge(inner_per_decade: int) -> Callable[[float], tuple[float, int]]:
+            def at(ka: float) -> tuple[float, int]:
                 _, value, fitted = self.profile_point(ka_key, ka, inner_per_decade)
-                return value - cut(fitted)
+                return value - cut(fitted.rank), fitted.rank
 
             return at
 
         dof = self.n_points - self.n_params(fit)
         if len(self.free_ka) == 1:
-            excess_at = excess(_SEARCH_PER_DECADE)
-            points = {ka: excess_at(ka) for ka in _ka_grid(*self.ka_bounds[ka_key], _PROFILE_PER_DECADE)}
-            interval, _ = _cut_interval(excess_at, points, fit.ka[ka_key], level, dof, inflation)
+            judge_at = judge(_SEARCH_PER_DECADE)
+            points = {ka: judge_at(ka) for ka in _ka_grid(*self.ka_bounds[ka_key], _PROFILE_PER_DECADE)}
+            interval, _ = _cut_interval(judge_at, points, fit.ka[ka_key], cut, level, dof, inflation)
         else:
             (other,) = (k for k in self.free_ka if k != ka_key)
             objective = self._objective(self._weights(None))
@@ -1261,14 +1478,14 @@ class Projection:
                     ka_key,
                     point[other],
                     lambda inside: objective({ka_key: edge, other: inside}) - at_edge,
-                    cut(fitted) - floor,
+                    cut(fitted.rank) - floor,
                 )
 
             nodes = self._grid()[0][self.free_ka.index(ka_key)]
-            node_excess = excess(_SEARCH_PER_DECADE)
-            points = {float(ka): node_excess(ka) for ka in nodes.tolist()}
+            node_judge = judge(_SEARCH_PER_DECADE)
+            points = {float(ka): node_judge(ka) for ka in nodes.tolist()}
             interval, _ = _cut_interval(
-                excess(_INNER_PER_DECADE), points, fit.ka[ka_key], level, dof, inflation, limited_by, nodes
+                judge(_INNER_PER_DECADE), points, fit.ka[ka_key], cut, level, dof, inflation, limited_by, nodes
             )
         if ka_key == self.second_step:
             return _with_one_step_test(interval, self.one_step_p(fit, inflation), self.ka_bounds[ka_key][0])
@@ -1584,31 +1801,33 @@ def _rank(columns: np.ndarray) -> int:
     return int(np.sum(singular > _RANK_RTOL * singular.max()))
 
 
-def _refine_best(ssr_fn: Callable[[float], float], grid: np.ndarray, ssr_grid: np.ndarray) -> tuple[float, float]:
-    """Minimum of *ssr_fn*, refined in log Ka between the best grid point's neighbours."""
-    return _refine_at(ssr_fn, grid, ssr_grid, int(np.argmin(ssr_grid)))
-
-
-def _refine_minima(ssr_fn: Callable[[float], float], grid: np.ndarray, ssr_grid: np.ndarray) -> tuple[float, float]:
+def _refine_minima(
+    ssr_fn: Callable[[float], float], grid: np.ndarray, ssr_grid: np.ndarray, xatol: float = _LOG_KA_XTOL
+) -> tuple[float, float]:
     """Minimum of *ssr_fn*, refined from the ``_N_REFINE`` best local minima of *ssr_grid*: ``(Ka, value)``.
 
     A valley narrower than the grid step shows on the grid as a local minimum
     whose own value is high — the stepwise models' K₁·K₂ valley is that narrow
-    where one of the two constants is held fixed — so refining the lowest grid
-    point alone can return a minimum that belongs to another valley and lies
-    well above the true one.
+    where one of the two constants is held fixed, and a weighted one-Ka fit
+    can have a basin that narrow — so refining the lowest grid point alone can
+    return a minimum that belongs to another valley and lies well above the
+    true one. The lowest point is refined first and a later minimum replaces
+    it only where it is lower. *xatol* is the tolerance of the refinement in
+    decades of Ka.
     """
     pad = np.pad(ssr_grid, 1, constant_values=np.inf)
     minima = np.flatnonzero((ssr_grid <= np.minimum(pad[:-2], pad[2:])) & np.isfinite(ssr_grid))
     lowest = int(np.argmin(ssr_grid))
     best = (float(grid[lowest]), float(ssr_grid[lowest]))
     for i in minima[np.argsort(ssr_grid[minima], kind='stable')][:_N_REFINE]:
-        best = min(best, _refine_at(ssr_fn, grid, ssr_grid, int(i)), key=lambda found: found[1])
+        best = min(best, _refine_at(ssr_fn, grid, ssr_grid, int(i), xatol), key=lambda found: found[1])
     return best
 
 
-def _refine_at(ssr_fn: Callable[[float], float], grid: np.ndarray, ssr_grid: np.ndarray, i: int) -> tuple[float, float]:
-    """Minimum of *ssr_fn* between the neighbours of grid point *i*, never worse than that point.
+def _refine_at(
+    ssr_fn: Callable[[float], float], grid: np.ndarray, ssr_grid: np.ndarray, i: int, xatol: float = _LOG_KA_XTOL
+) -> tuple[float, float]:
+    """Minimum of *ssr_fn* between the neighbours of grid point *i*, to *xatol* decades, never worse than that point.
 
     A neighbour the model cannot solve (infinite SSR) is no bracket, so the
     refinement stops at the grid point on that side.
@@ -1619,16 +1838,17 @@ def _refine_at(ssr_fn: Callable[[float], float], grid: np.ndarray, ssr_grid: np.
         return float(grid[i]), float(ssr_grid[i])
     a = np.log10(grid[lo_i])
     b = np.log10(grid[hi_i])
-    res = minimize_scalar(lambda t: ssr_fn(10.0**t), bounds=(a, b), method='bounded', options={'xatol': _LOG_KA_XTOL})
+    res = minimize_scalar(lambda t: ssr_fn(10.0**t), bounds=(a, b), method='bounded', options={'xatol': xatol})
     if res.fun < ssr_grid[i]:
         return float(10.0**res.x), float(res.fun)
     return float(grid[i]), float(ssr_grid[i])
 
 
 def _cut_interval(
-    excess_at: Callable[[float], float],
-    points: dict[float, float],
+    judge: Callable[[float], tuple[float, int]],
+    points: dict[float, tuple[float, int]],
     best_ka: float,
+    cut: Callable[[int], float],
     level: float,
     dof: float,
     inflation: float,
@@ -1637,20 +1857,31 @@ def _cut_interval(
 ) -> tuple[KaInterval, np.ndarray]:
     """The interval of one binding constant cut from its profile: the one routine of both interval engines.
 
-    Each engine hands in its own objective through *excess_at*, the profile
-    at a Ka minus the cut-off of that profile point's own fit, and the Ka it
-    has read the profile at with their excess, *points*; *best_ka*, the
+    Each engine hands in its own objective through *judge*, which gives at a
+    Ka the profile there minus the cut-off of that profile point's own fit
+    (its excess) and the rank of the signal columns that fit leaves inside
+    their bounds, and the Ka it has read the profile at with both, *points*;
+    *cut* gives the cut-off of a fit of each rank, and *best_ka*, the
     estimate, is always accepted. The fixed-input profile is the residual sum
-    of squares against :meth:`Projection.cut_off`, the penalised one ``n log S
-    + z'z`` against its own step cut-off (:mod:`core.pipeline.input_aware`).
+    of squares against :meth:`Projection.cut_off`, the penalised one
+    ``n log S + z'z`` against its own step cut-off
+    (:mod:`core.pipeline.input_aware`).
 
-    With the search-grid *nodes* of the constant given, *points* are a coarse
-    reading, and the profile is read again at ``_PROFILE_PER_DECADE`` wherever
-    its verdict turns (:func:`_scan_turns`); without them *points* are the
-    whole profile. :func:`_interval` then closes the envelope of the accepted
-    points by root finding, and *limited_by*, called at each closed edge, low
-    then high, names the binding constant whose bound and not the data closes
-    it (:meth:`Projection._bound_behind`), which opens that side.
+    The profile is continuous in Ka and the cut-off is a step function of the
+    rank, so the accepted Ka are bounded by roots of the excess and by the
+    steps of the cut-off. Where the cut-off steps up, an accepted stretch can
+    begin past a stretch the test rejects, however narrow it is, so every step
+    of the cut-off between two points read is located (:func:`_read_steps`)
+    and the profile judged on both sides of it. With the search-grid *nodes*
+    of the constant given, *points* are a coarse reading of the profile at
+    those nodes: the steps between them are located first, the profile is
+    read again at ``_PROFILE_PER_DECADE`` wherever an accepted stretch can lie
+    between two nodes (:func:`_scan_turns`), and the steps between the points
+    read are then located once more; without them *points* are the whole
+    profile at that density. :func:`_interval` closes the envelope of the
+    accepted points by root finding. *limited_by*, called at each closed edge,
+    low then high, names the binding constant whose bound and not the data
+    closes it (:meth:`Projection._bound_behind`), which opens that side.
 
     Returns
     -------
@@ -1659,11 +1890,13 @@ def _cut_interval(
         from, ascending.
     """
     if nodes is not None:
-        _scan_turns(points, excess_at, best_ka, nodes)
+        _read_steps(points, judge, cut)
+        _scan_turns(points, judge, cut, best_ka, nodes)
+    _read_steps(points, judge, cut)
     grid = np.array(sorted(points))
-    excess_grid = np.array([points[ka] for ka in grid.tolist()])
+    excess_grid = np.array([points[ka][0] for ka in grid.tolist()])
     (low, high), (open_low, open_high), split, (unsolvable_low, unsolvable_high) = _interval(
-        excess_at, grid, excess_grid, best_ka
+        lambda ka: judge(ka)[0], grid, excess_grid, best_ka
     )
     limited_by_low = '' if open_low or limited_by is None else limited_by(low)
     limited_by_high = '' if open_high or limited_by is None else limited_by(high)
@@ -1684,31 +1917,101 @@ def _cut_interval(
     return interval, grid
 
 
-def _scan_turns(
-    points: dict[float, float], excess_at: Callable[[float], float], best_ka: float, nodes: np.ndarray
+def _read_steps(
+    points: dict[float, tuple[float, int]],
+    judge: Callable[[float], tuple[float, int]],
+    cut: Callable[[int], float],
 ) -> None:
-    """Read a coarse profile again at ``_PROFILE_PER_DECADE`` wherever its verdict turns, adding to *points*.
+    """Locate every step of the cut-off between neighbouring points by bisection, adding what it reads to *points*.
 
-    *points* holds the excess of the profile at the Ka read so far, at most
-    one per search-grid node of *nodes*. What the interval depends on is
-    where the verdict of the test turns over, so exactly those stretches are
-    read again at the density a one-Ka fixed-input interval uses everywhere:
-    every stretch between two neighbouring points that disagree, and then
-    search cell by search cell outward past the accepted points until a whole
-    cell holds nothing the test accepts, or a Ka bound is reached. An edge is
-    therefore closed only where a full search cell, read five times finer,
-    rejects every Ka in it, while a stretch the coarse points accept
-    throughout costs nothing further. When no coarse point is accepted, the
-    stretch around the estimate is read.
-
-    The stepwise models need that resolution at the turning points: their
-    profile is a minimum that moves from one K₁·K₂ valley to another, and the
-    cut-off steps where a signal parameter reaches its bound, so the accepted
-    Ka can break into stretches narrower than a search cell. Read from the
-    nodes alone the envelope stops short of Ka the test accepts and the gap
-    inside it goes unreported.
+    *points* holds the excess and the fitted rank of the profile at the Ka
+    read so far, and *cut* the cut-off of a fit of each rank. Wherever two
+    neighbouring points carry different cut-offs, the stretch between them is
+    halved in log Ka, each half that still holds a step halved again, down to
+    ``_LOG_KA_XTOL``, so both sides of every step the two points show are
+    read: where the cut-off steps up, the profile is then judged just past the
+    step, where an accepted stretch that begins there shows however narrow it
+    is. Such a stretch begins where the profile lies under the higher of the
+    two cut-offs. Between two points read the profile can turn, where the
+    other binding constant moves from one valley to another, but not by much
+    more than the cut-off steps; so a stretch is read only where the profile
+    at one of its points lies above the higher cut-off by no more than the
+    step. Of the 117 stretches with a step in 28 stepwise fits of the
+    reference-agreement grid, 12 lie at or under the higher cut-off, 11 within
+    one step above it and 94 further above. A half is smooth on its own scale,
+    so it is halved again only where the profile at one of its points also
+    lies above the higher cut-off by no more than the profile changes across
+    it: where both lie further above, the profile between them does not reach
+    that cut-off either. Not read either are a stretch both of whose points
+    the test accepts, which lies inside the interval whatever the steps in
+    it, and a stretch with a point the model cannot be solved at, which has no
+    step to find. A step of the rank that leaves the cut-off where it is
+    leaves the excess continuous, so it opens no stretch and is not located.
     """
-    coarse = np.array(sorted(points))
+
+    def halve(a: float, b: float, top: bool) -> None:
+        (excess_a, rank_a), (excess_b, rank_b) = points[a], points[b]
+        cut_a, cut_b = cut(rank_a), cut(rank_b)
+        if (
+            cut_a == cut_b
+            or (excess_a <= 0 and excess_b <= 0)
+            or not (np.isfinite(excess_a) and np.isfinite(excess_b))
+            or np.log10(b) - np.log10(a) <= _LOG_KA_XTOL
+        ):
+            return
+        value_a, value_b = excess_a + cut_a, excess_b + cut_b
+        slack = abs(cut_a - cut_b) if top else min(abs(cut_a - cut_b), abs(value_a - value_b))
+        if min(value_a, value_b) > max(cut_a, cut_b) + slack:
+            return
+        middle = float(10.0 ** (0.5 * (np.log10(a) + np.log10(b))))
+        points[middle] = judge(middle)
+        halve(a, middle, False)
+        halve(middle, b, False)
+
+    read = sorted(points)
+    for a, b in zip(read[:-1], read[1:]):
+        halve(a, b, True)
+
+
+def _scan_turns(
+    points: dict[float, tuple[float, int]],
+    judge: Callable[[float], tuple[float, int]],
+    cut: Callable[[int], float],
+    best_ka: float,
+    nodes: np.ndarray,
+) -> None:
+    """Read a coarse profile again at ``_PROFILE_PER_DECADE`` wherever the test can accept Ka between its points.
+
+    *points* holds the excess and the fitted rank of the profile at the Ka
+    read so far: search-grid nodes of *nodes* and both sides of every step of
+    the cut-off between them. *cut* gives the cut-off of a fit of each rank.
+    What the interval depends on is where the verdict of the test turns over,
+    so those stretches are read again at the density a one-Ka fixed-input
+    interval uses everywhere: every stretch between two neighbouring nodes
+    read where the points read from one to the other disagree; every search
+    cell outside the accepted points whose two nodes were both read, where
+    they differ in rank or where the profile at either lies at or under the
+    cut-off of a fit of one rank less than theirs; and then search cell by
+    search cell outward past the accepted points until a whole cell holds
+    nothing the test accepts, or a Ka bound is reached. A stretch the points
+    accept throughout costs nothing further. When no point is accepted, the
+    stretch around the estimate is read. A node is read again there, at the
+    density of the reading, and the sides of a step are not.
+
+    The stepwise models need that resolution: their profile is a minimum that
+    moves from one K₁·K₂ valley to another, so the accepted Ka can break into
+    stretches narrower than a search cell, and read from the nodes alone the
+    envelope stops short of Ka the test accepts and the gap inside it goes
+    unreported. Such a stretch can lie decades beyond the cell where the
+    outward reading stops. Where the rank changes inside a cell the minimum
+    moves where a signal coefficient meets its bound, and the profile can dip
+    under the cut-off between two nodes the test rejects; where the rank dips
+    and returns inside a cell, the cut-off of the lower rank accepts the
+    profile wherever it lies under it.
+    """
+    read = np.array(sorted(points))
+    accepted_read = np.array([points[ka][0] <= 0 for ka in read.tolist()])
+    coarse = read[np.isin(read, nodes)]
     logs = np.log10(coarse)
     node_logs = np.log10(nodes)
     lo, hi = float(node_logs[0]), float(node_logs[-1])
@@ -1721,20 +2024,33 @@ def _scan_turns(
         for ka in _ka_grid(10.0**a, 10.0**b, _PROFILE_PER_DECADE).tolist():
             if ka not in dense:
                 dense.add(ka)
-                points[ka] = excess_at(ka)
-            accepts = accepts or points[ka] <= 0
+                points[ka] = judge(ka)
+            accepts = accepts or points[ka][0] <= 0
         return accepts
 
-    accepted = np.array([points[ka] <= 0 for ka in coarse.tolist()])
-    turns = np.flatnonzero(accepted[:-1] != accepted[1:])
+    excess = np.array([points[ka][0] for ka in coarse.tolist()])
+    rank = [points[ka][1] for ka in coarse.tolist()]
+    at = np.searchsorted(read, coarse)
+    verdicts = [accepted_read[at[i] : at[i + 1] + 1] for i in range(coarse.size - 1)]
+    turns = [i for i, verdict in enumerate(verdicts) if verdict.any() and not verdict.all()]
     for i in turns:
         scan(float(logs[i]), float(logs[i + 1]))
-    if not turns.size and not accepted.any():
+    if not turns and not accepted_read.any():
         # The estimate is the only Ka the test is known to accept, and it lies
         # between two coarse points: that stretch is where the interval is.
         i = int(np.clip(np.searchsorted(logs, np.log10(best_ka)) - 1, 0, max(coarse.size - 2, 0)))
         scan(float(logs[i]), float(logs[min(i + 1, coarse.size - 1)]))
-    reached = [ka for ka, e in points.items() if e <= 0] + [best_ka]
+    inside = np.append(read[accepted_read], best_ka)
+    low_in, high_in = float(inside.min()), float(inside.max())
+    value = excess + np.array([cut(r) for r in rank])
+    node_index = np.searchsorted(nodes, coarse)
+    for i in range(coarse.size - 1):
+        if node_index[i + 1] - node_index[i] != 1 or (low_in <= coarse[i] and coarse[i + 1] <= high_in):
+            continue
+        lower = min(rank[i], rank[i + 1]) - 1
+        if rank[i] != rank[i + 1] or (lower >= 0 and min(value[i], value[i + 1]) <= cut(lower)):
+            scan(float(logs[i]), float(logs[i + 1]))
+    reached = [ka for ka, (e, _) in points.items() if e <= 0] + [best_ka]
     left = max(float(np.log10(min(reached))), lo)
     right = min(float(np.log10(max(reached))), hi)
     while left > lo and scan(max(left - cell, lo), left):
