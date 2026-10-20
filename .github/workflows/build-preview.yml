@@ -1,15 +1,36 @@
 name: Build preview
 
-# Executables of a branch for testing, without a tag or a release: each OS's
-# zip is attached to the run as an artifact.
+# Executables of a branch for testing, without a published release: each OS's
+# zip is attached to one draft release, which only repository members see and
+# which creates no tag. Release assets do not count against the Actions
+# artifact storage quota.
 on:
   push:
     branches:
       - feat/ka-uncertainty-framework
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+env:
+  PREVIEW_TAG: preview-ka-uncertainty-framework
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Replace the draft release with an empty one for this commit
+        run: |
+          gh release delete "$PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+          gh release create "$PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" --draft \
+            --target "$GITHUB_SHA" \
+            --title "Preview build (${GITHUB_REF_NAME}, ${GITHUB_SHA::7})" \
+            --notes "Unofficial executables of ${GITHUB_REF_NAME} at ${GITHUB_SHA}. Not a release."
+
   build:
+    needs: draft
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -48,10 +69,6 @@ jobs:
         run: Compress-Archive -Path 'dist\SupraSimFit\*' -DestinationPath "SupraSimFit-preview-windows.zip"
         shell: pwsh
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SupraSimFit-preview-${{ matrix.os }}
-          path: ./SupraSimFit-preview-*.zip
-          if-no-files-found: error
-          retention-days: 14
+      - name: Attach to the draft release
+        run: gh release upload "$PREVIEW_TAG" SupraSimFit-preview-*.zip --repo "$GITHUB_REPOSITORY" --clobber
+        shell: bash
