@@ -27,8 +27,6 @@ from gui.plotting.colors import (
 )
 from gui.plotting.labels import (
     SHIFTED_CURVE_NOTE,
-    SPLIT_MARK,
-    VERDICT_TONES,
     _format_exponent_unicode,
     fmt_estimate,
     fmt_interval_html,
@@ -36,7 +34,6 @@ from gui.plotting.labels import (
     fmt_r2,
     fmt_unit_html,
     fmt_value,
-    verdict_headline,
 )
 from gui.plotting.plot_style import DEFAULT_STYLE, line_style_to_qt
 from gui.widgets.replica_panel import _display_label, describe_replicates
@@ -1096,27 +1093,20 @@ class PlotWidget(QWidget):
     def _annotation_html(self) -> str:
         """Body of the fit-summary overlay — what an exported figure says about the fit.
 
-        Each binding constant reads ``estimate [low, high]``: the fit the curve
-        is drawn from and the confidence interval of that same fit, which is
-        the fit with every input the user gave an uncertainty free to move
-        inside it. An estimate that sits on an end of its Ka search box reads
-        in words, as the limit the data set (``not limited below 2.41×10³``).
-        The fit conditional on the entered inputs has its own column in the
-        summary table; printed here it would read as this curve's interval.
-        Every other parameter is its fitted value alone, starred where the data
-        determine it only in combination with others. Rows come from
-        :func:`~core.pipeline.reporting.summarize_parameters` and numbers
-        from :func:`~gui.plotting.labels.fmt_value`, so the plot, the summary
-        table and the exports quote the same numbers the same way.
-
-        Under R² the verdict of the diagnostics in a few words, in the colour of
-        what it asks of the reader, and — where the fit moved an input — that
-        the curve is drawn at the inputs where it put them, so a saved figure
-        never shows a fit the app flags, or a curve at other inputs than the
-        entered ones, without saying so. RMSE is omitted: it is already in the
-        Fit Quality panel and is monotone in the R² shown here. The log₁₀ twin
-        rows stay in the table — repeating them here would double the box
-        height for no new information.
+        Each binding constant reads ``estimate unit, 95 % CI [low, high]``: the
+        fit the curve is drawn from and the confidence interval of that same
+        fit, labelled by its level as a table or caption would write it. An estimate
+        that sits on an end of its Ka search box reads in words, as the limit
+        the data set (``not limited below 2.41×10³``). Every other parameter is
+        its fitted value alone. Under R², where the fit moved an input, a line
+        says the curve is drawn at the inputs where it put them. Rows come from
+        :func:`~core.pipeline.reporting.summarize_parameters` and numbers from
+        :func:`~gui.plotting.labels.fmt_value`, so the plot, the summary table
+        and the exports quote the same numbers the same way. The verdict of the
+        diagnostics, the marks of degenerate coefficients and split intervals,
+        and the conditional fit beside an input-aware one are in the summary
+        table, not on the figure. RMSE is omitted: it is already in the Fit
+        Quality panel and is monotone in the R² shown here.
         """
         from core.pipeline.reporting import fit_replica_ids, summarize_parameters
 
@@ -1136,27 +1126,20 @@ class PlotWidget(QWidget):
             lines.append(f'<b>{title}</b>')
 
             for spec in rows:
-                # The unit is appended once, after the numbers.
+                # The unit follows the estimate; the interval is labelled by its level.
                 unit_html = f' {fmt_unit_html(spec.unit)}' if spec.unit else ''
-                star = '*' if spec.degenerate else ''
                 ends = None if spec.interval is None else tuple(map(fmt_value, spec.interval))
                 estimate = fmt_estimate(
                     spec.estimate, spec.estimate_at_bound, spec.interval, spec.interval_open, html=True
                 )
                 # Words read as a statement about the constant, a number as its value.
-                text = f'{fmt_param(spec.key)}{star}{": " if spec.estimate_at_bound else " = "}{estimate}'
+                text = f'{fmt_param(spec.key)}{": " if spec.estimate_at_bound else " = "}{estimate}{unit_html}'
                 if ends is not None:
-                    text += f' {fmt_interval_html(*ends, *spec.interval_open)}'
-                    # A bracket that spans values the data reject must not read
-                    # as one connected range; the Fit Summary explains the mark.
-                    if spec.interval_split:
-                        text += f' {SPLIT_MARK}'
-                lines.append(f'{text}{unit_html}')
+                    level = f'{100 * spec.level:g} % CI ' if spec.level is not None else ''
+                    text += f', {level}{fmt_interval_html(*ends, *spec.interval_open)}'
+                lines.append(text)
 
             lines.append(f'<b>R\u00b2:</b> {fmt_r2(result.r_squared)}')
-            if result.diagnostics is not None:
-                headline, tone = verdict_headline(result.diagnostics)
-                lines.append(f'<span style="color:{VERDICT_TONES[tone][0]}">{headline}</span>')
             if result.input_shifts:
                 lines.append(SHIFTED_CURVE_NOTE)
 

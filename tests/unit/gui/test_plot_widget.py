@@ -312,7 +312,7 @@ def _ka_line(text):
 
 
 def test_annotation_reports_the_estimate_and_its_interval(qapp):
-    """The binding constant reads 'estimate [low, high]' — the fit, and the interval of that same fit."""
+    """The binding constant reads 'estimate unit, 95 % CI [low, high]' — the fit, and the interval of that same fit."""
     pw = _binding_plot(qapp)
     text = pw._annotation_item.textItem.toPlainText()
 
@@ -323,7 +323,7 @@ def test_annotation_reports_the_estimate_and_its_interval(qapp):
 
     # The pair is the interval the result carries, written as the table writes it.
     line = _ka_line(text)
-    assert line.startswith('Ka(G) = 1.24×10⁶ [9.00×10⁵, 2.10×10⁶]')
+    assert line.startswith('Ka(G) = 1.24×10⁶ M−1, 95 % CI [9.00×10⁵, 2.10×10⁶]')
 
 
 def test_the_annotation_quotes_the_headline_fit_and_not_the_conditional_one(qapp):
@@ -367,24 +367,36 @@ def test_annotation_writes_an_open_side_in_words(qapp):
     assert '10¹²' not in line, 'the bound the profile ran to is not an upper limit'
 
 
-def test_annotation_marks_an_interval_that_spans_values_the_data_reject(qapp):
-    """The bracket of a split interval covers Ka the F test rejects; unmarked it reads as one accepted range."""
+def test_the_figure_carries_no_marks_and_no_verdict(qapp):
+    """The figure states the fit and what its brackets are; marks and the verdict are the summary table's."""
+    from core.pipeline.diagnostics import FitDiagnostics, MisfitTest, Verdict
     from core.pipeline.varpro import KaInterval
-    from gui.plotting.labels import SPLIT_MARK
+    from gui.plotting.labels import SPLIT_MARK, verdict_headline
 
-    plain = _binding_plot(qapp, intervals={'Ka_guest': KaInterval(9.0e5, 2.1e6, False, False, 0.95, 21)})
-    pw = _binding_plot(qapp, intervals={'Ka_guest': KaInterval(9.0e5, 2.1e6, False, False, 0.95, 21, split=True)})
-
-    assert SPLIT_MARK not in _ka_line(plain._annotation_item.textItem.toPlainText())
-    assert SPLIT_MARK in _ka_line(pw._annotation_item.textItem.toPlainText())
-
-
-def test_annotation_stars_a_parameter_the_data_fix_only_in_combination(qapp):
-    pw = _binding_plot(qapp, degenerate_keys=('I_0',))
+    diagnostics = FitDiagnostics(
+        conditional_misfit=MisfitTest('lack_of_fit', 200.0, 1e-9, dof=(9, 72)),
+        misfit=MisfitTest('lack_of_fit', 200.0, 1e-9, dof=(9, 72)),
+        conflict=None,
+        verdict=Verdict.MODEL_INADEQUATE,
+    )
+    pw = _binding_plot(
+        qapp,
+        intervals={'Ka_guest': KaInterval(9.0e5, 2.1e6, False, False, 0.95, 21, split=True)},
+        degenerate_keys=('I_0',),
+        diagnostics=diagnostics,
+    )
     text = pw._annotation_item.textItem.toPlainText()
 
-    assert 'I_0* =' in text
-    assert not _ka_line(text).startswith('Ka(G)* ')
+    assert SPLIT_MARK not in text
+    assert '*' not in text
+    assert verdict_headline(diagnostics)[0] not in text
+
+
+def test_the_figure_labels_the_interval_by_its_level(qapp):
+    """An interval on a saved figure is read on its own, so it says what it is, as a table would."""
+    line = _ka_line(_binding_plot(qapp)._annotation_item.textItem.toPlainText())
+
+    assert line == 'Ka(G) = 1.24×10⁶ M−1, 95 % CI [9.00×10⁵, 2.10×10⁶]'
 
 
 def test_an_imported_legacy_fit_shows_its_estimate_and_no_interval(qapp):
@@ -773,24 +785,17 @@ def test_an_estimate_on_its_search_bound_reads_as_the_limit_the_data_set(qapp):
     )
     line = _ka_line(pw._annotation_item.textItem.toPlainText())
 
-    assert line == 'Ka(G): not limited below 2.41×10³ [no lower limit, 2.41×10³] M−1'
+    assert line == 'Ka(G): not limited below 2.41×10³ M−1, 95 % CI [no lower limit, 2.41×10³]'
 
 
-def test_the_figure_carries_the_verdict_and_says_the_curve_is_drawn_at_moved_inputs(qapp):
-    """A saved figure is read on its own: a conflict and a curve at shifted inputs have to be on it."""
-    from core.pipeline.diagnostics import Conflict, FitDiagnostics, InputShift, MisfitTest, Verdict
-    from gui.plotting.labels import SHIFTED_CURVE_NOTE, verdict_headline
+def test_the_figure_says_the_curve_is_drawn_at_moved_inputs(qapp):
+    """A curve drawn at shifted inputs is not the curve of the entered ones, and a saved figure has to say so."""
+    from core.pipeline.diagnostics import InputShift
+    from gui.plotting.labels import SHIFTED_CURVE_NOTE
 
-    diagnostics = FitDiagnostics(
-        conditional_misfit=MisfitTest('lack_of_fit', 200.0, 1e-9, dof=(9, 72)),
-        misfit=MisfitTest('lack_of_fit', 1.1, 0.4, dof=(9, 72)),
-        conflict=Conflict(q=15.1, k=1, p_value=1e-4, weights=(0.9,)),
-        verdict=Verdict.INPUTS_CONFLICT,
-    )
-    pw = _binding_plot(qapp, diagnostics=diagnostics, input_shifts={'h0': InputShift('h0', -0.194, -3.9, False)})
+    pw = _binding_plot(qapp, input_shifts={'h0': InputShift('h0', -0.194, -3.9, False)})
     text = pw._annotation_item.textItem.toPlainText()
 
-    assert verdict_headline(diagnostics)[0] in text
     assert SHIFTED_CURVE_NOTE in text
     assert text.index('R²') < text.index(SHIFTED_CURVE_NOTE)
 

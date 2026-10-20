@@ -38,11 +38,10 @@ far more than the others).</li>
 &#9656; Show average</i> adds a dashed line through the means).</li>
 <li>Cyan dashed curve: the fit &mdash; the model evaluated at the fitted values, against the average of
 the replicates it used. Where the fit moved an input, the curve is drawn at the moved inputs.</li>
-<li>Fit Summary box: each association constant as <i>estimate</i> followed by its 95&thinsp;%
+<li>Fit Summary box: each association constant as <i>estimate</i>, then <i>95&thinsp;% CI</i> and its
 confidence interval in square brackets, the signal parameters as their fitted values, and
-R&sup2;. A value marked * is one the data fix only in combination with the others. Under
-R&sup2; the verdict in a few words, coloured as in the summary, and &mdash; where the fit moved an
-input &mdash; <i>Curve drawn at the fitted input shifts</i>. A saved figure carries both.</li>
+R&sup2;. Where the fit moved an input, <i>Curve drawn at the fitted input shifts</i> follows. A saved figure carries both. The verdict, the marks on parameters and
+intervals, and the fit at the entered inputs are in the summary table.</li>
 </ul>
 
 <p><b>The interval and the inputs</b></p>
