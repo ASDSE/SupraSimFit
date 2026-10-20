@@ -577,12 +577,15 @@ class FittingMainWindow(QMainWindow):
     def _discard_update_worker(self, worker: UpdateCheckWorker) -> None:
         """Let go of the check that just reported, and clear the reference when it is the one held.
 
-        A check whose thread has ended reports on the interface thread, which
-        can be busy long enough for the user to start a second check first.
-        Only the check that reported is deleted; a newer one has the reference
-        by then and runs on.
+        A check reports from inside its thread's ``run()``, so the thread may
+        still be ending when the report arrives; :func:`~gui.workers.retire`
+        deletes the worker only once it has, since destroying a running
+        ``QThread`` aborts the app. The interface thread can be busy long
+        enough for the user to start a second check first. Only the check that
+        reported is let go of; a newer one has the reference by then and runs
+        on.
         """
-        worker.deleteLater()
+        retire(worker)
         if self._update_worker is worker:
             self._update_worker = None
 
