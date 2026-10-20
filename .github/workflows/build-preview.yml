@@ -1,0 +1,57 @@
+name: Build preview
+
+# Executables of a branch for testing, without a tag or a release: each OS's
+# zip is attached to the run as an artifact.
+on:
+  push:
+    branches:
+      - feat/ka-uncertainty-framework
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Install dependencies (frozen)
+        run: uv sync --frozen
+
+      - name: Build with PyInstaller
+        run: uv run --with pyinstaller pyinstaller --clean -y --distpath ./dist --workpath ./build SupraSimFit.spec
+
+      - name: Package artifact (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/SupraSimFit.app SupraSimFit-preview-macos.zip
+
+      - name: Package artifact (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd dist
+          zip -r ../SupraSimFit-preview-linux.zip ./SupraSimFit
+
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path 'dist\SupraSimFit\*' -DestinationPath "SupraSimFit-preview-windows.zip"
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SupraSimFit-preview-${{ matrix.os }}
+          path: ./SupraSimFit-preview-*.zip
+          if-no-files-found: error
+          retention-days: 14
