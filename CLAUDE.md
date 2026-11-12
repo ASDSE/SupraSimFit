@@ -2,7 +2,7 @@
 
 Guidance for Claude Code when working in this repository.
 
-## graphify (NON-NEGOTIABLE)
+## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
@@ -60,8 +60,7 @@ Use `uv run` to execute, `uv add`/`uv remove` for dependencies. Never edit `uv.l
 - Don't introduce new abstractions unless something is used in three or more places. When in doubt, inline it.
 - If you write 200 lines and it could be 50, rewrite it.
 
-**THE SENIOR DEV OVERRIDE:**
-If architecture is flawed, state is duplicated, or patterns are inconsistent — propose and implement structural fixes. Ask: "What would a senior, perfectionist dev reject in code review?" Fix all of it.
+**Structural fixes:** where the code you touch has flawed architecture, duplicated state or inconsistent patterns, propose and implement the structural fix — what a careful senior reviewer would reject in review.
 
 **When simplifying or refactoring:**
 - State what you changed and why — don't silently refactor alongside a feature change.
