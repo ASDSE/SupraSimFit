@@ -126,8 +126,13 @@ marks. The set is `gui/design/icons.py`; a new icon is added there in the same s
 
 ### Themes
 
-Appearance follows the System / Light / Dark setting (§8, Settings). **Exported figures
-always use the light plot theme on a white background**, whatever the window shows.
+Appearance follows the System / Light / Dark setting (§8, Settings), applied at once to
+every open window. One app-level object holds the current `Theme` and emits a signal when
+it changes; under *System* it follows the operating system's colour scheme
+(`QStyleHints.colorScheme`). On a change it re-applies the stylesheet and palette, and
+every painted component, which reads the theme from that object, repaints. **Exported
+figures always use the light plot theme on a white background**, whatever the window
+shows.
 
 ### The stylesheet contract
 
@@ -167,8 +172,9 @@ without them gets no styling.
   sidebar 232                                               side panel 320
 ```
 
-- **Sidebar** (`bg-sidebar`): a 52-px top row with the window controls (on macOS the
-  native controls over a transparent title bar) and the sidebar toggle; the **session
+- **Sidebar** (`bg-sidebar`): a 52-px top row with the sidebar toggle — on macOS the
+  sidebar reaches up under a transparent title bar and the row also holds the native
+  window controls; Windows and Linux keep the system's own title bar above the window — the **session
   switcher**; the navigation in three groups — *Experiment* (Measurements, Binding model,
   Input uncertainty), *Analysis* (Fit results, Ka confidence, Sensitivity),
   *Presentation* (Plot appearance); and the **file card** at its foot.
@@ -181,7 +187,8 @@ without them gets no styling.
 - **Toolbar** (`bg-surface`): the view title in `title` and its summary badge; at the
   right *Load data ▾*, *Export ▾*, a divider, Help, the side-panel toggle and the
   **primary button** — *Run fit* (⌘R), or *Run analysis* in Sensitivity — at one fixed
-  width in every view, so the toolbar never shifts. *Export ▾* holds: Results file… (⌘S,
+  width in every view, so the toolbar never shifts. It belongs to the session on screen:
+  while that session runs it reads *Stop* (⌘R stops too). *Export ▾* holds: Results file… (⌘S,
   re-opens with its fit), Report (TXT)…, Table (CSV)…, Raw data…, Plot image…, and
   Export several… (⇧⌘E).
 - **Canvas** (`bg-surface`): headline first — its row may end in one detail link at the
@@ -193,13 +200,20 @@ without them gets no styling.
   link (*Reading this plot →*), and closes it. Fit results and Ka confidence keep fit
   quality, diagnostics and notes in the side panel.
 - **Status bar** (`bg-sidebar`): left, a dot — accent while work runs, `text-tertiary`
-  when idle — and what the app is doing (`Ready · DBA_HtoD_0411 is fitting in the
-  background (62 %)`); right, the model line in `text-tertiary` (`Indicator displacement
+  when idle — and a summary of all running work (`2 running · IDA_system fitting ·
+  DBA_HtoD_0411 Sensitivity 62 %`, or `Ready` with the session on screen's last message);
+  clicking it opens the session switcher; right, the model line in `text-tertiary` (`Indicator displacement
   · 1 binding constant · Profile likelihood, 95 % · Weighted by noise law`).
 - **Menu bar**: *File* (New session ⌘T, Load data…, Open results file…, the export
   commands, Settings… on Windows and Linux, Quit), *Tools* (Simulate…, Demo IDA), *View*,
   *Help* (Reading the plots…, Check for updates…). On macOS *Settings…* ⌘, is in the app
   menu.
+
+**Shortcuts** are written here in macOS notation. In code a command uses Qt's standard
+key where one exists (`QKeySequence.StandardKey`: Open, Save, Close, Preferences, Quit),
+otherwise a `Ctrl+…` sequence, which Qt shows as ⌘ on macOS; every shortcut on screen is
+rendered from its key sequence. A platform with no standard key for a command gives it no
+shortcut.
 
 One primary (filled accent) button per window. Every other toolbar command is a tool
 button.
@@ -233,11 +247,22 @@ session, reached through the session switcher.
   are added later and removed one at a time from the Files table in Measurements. A file
   on a different grid is refused with a message that says so. A multi-channel file
   (EnSight) is loaded alone, one channel at a time.
-- **Background work** continues when another session is on screen. The switcher's dot and
-  the status bar name the busy session. Each session keeps its own last status message,
-  and the status bar shows that of the session on screen. ⌘O loads into the session on
-  screen and leaves every other session as it is. Closing a session stops its running
-  work and says so.
+- **Running work.** Each session runs its own fit or analysis, and work continues when
+  another session is on screen. A running session shows its progress along a thin accent
+  line at the top of its canvas — indeterminate until the work can be counted, then
+  filling — and in its switcher row (ring and `Fitting · 62 %`). Its canvas keeps the last
+  result, marked out of date. The controls that feed the run (binding model, input
+  uncertainties, Sensitivity settings) are locked until it finishes or is stopped. The
+  toolbar's primary button reads *Stop* for the session on screen while it runs; the
+  status bar lists everything running, with no combined percentage, because a fit and a
+  Sobol' run are counted in different units. Each session keeps its own last status
+  message. ⌘O loads into the session on screen and leaves every other session as it is.
+- **Session names.** A session is *New session* until data is loaded, then the first
+  file's name without its extension (`IDA_system`); a results file opens under its saved
+  name. Double-clicking a name in the switcher renames it.
+- **Closing.** Closing a running session asks first (*Stop the fit and close
+  IDA_system?*) and then stops its work. Closing the last session leaves one empty *New
+  session*, so the window is never blank.
 
 ---
 
@@ -461,21 +486,12 @@ and the tokens.
    outlined pair) and the species of the stepwise models in Simulation; new series
    colours become tokens in both themes.
 3. **Two binding constants** — how Fit results, Ka confidence and Sensitivity lay out
-   two Ka, and what Sensitivity shows for a Ka whose indices are withheld.
+   two Ka, what Sensitivity shows for a Ka whose indices are withheld, and the switcher
+   summary of a two-Ka session.
 4. **Sensitivity heatmap** — its canvas, colour map (sequential tokens in both themes),
    readout and its Run settings.
 5. **Plot against each source →** — what it opens in Sensitivity.
-6. **Running work** — what the primary button, canvas and status bar show while the
-   session on screen runs, and where its Stop control sits.
-7. **Session switcher behaviour** — where a session's name comes from and whether it is
-   renamed; what an empty session shows; the summary of a two-Ka session; what closing a
-   running or the last session does.
-8. **Theme switching** — the one place the current theme is read from, how painted
-   components repaint on a change.
-9. **Window controls on Windows and Linux.**
-10. **Inputs during a run** — whether the settings of the session on screen are locked
-    while its fit or analysis runs, or stay editable for the next run.
-11. **Fit in new session** (Simulation) — it sends the noisy replicates as shown; the
-    simulated values do not travel as starting values.
-12. **Simulation noise** — an absolute σ in a.u., which the engine does not yet offer.
-13. **Plot appearance for new sessions** — what is stored and where.
+6. **Fit in new session** (Simulation) — it sends the noisy replicates as shown; the
+   simulated values do not travel as starting values.
+7. **Simulation noise** — an absolute σ in a.u., which the engine does not yet offer.
+8. **Plot appearance for new sessions** — what is stored and where.
