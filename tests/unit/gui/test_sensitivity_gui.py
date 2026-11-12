@@ -1348,7 +1348,7 @@ def _demo_session(monkeypatch):
 
 def _wait_for_worker(session, qapp):
     """Wait for the running sensitivity worker to finish, then deliver its signals."""
-    worker = session._sensitivity_worker
+    worker = session.model._sensitivity_worker
     deadline = time.monotonic() + 30
     while not worker.isFinished():
         assert time.monotonic() < deadline, 'timed out waiting for the sensitivity worker'
@@ -1364,14 +1364,14 @@ def test_throttled_run_fills_the_bar_and_estimates_time_left(qapp, monkeypatch):
     monkeypatch.setattr(workers, 'run_sensitivity', _fake_run(40, pause=0.01))
     session, warnings = _demo_session(monkeypatch)
     messages = []
-    session.status_message.connect(messages.append)
+    session.model.status_changed.connect(messages.append)
 
     session.run_sensitivity()
     _wait_for_worker(session, qapp)
 
     bar = session._sensitivity_widget._progress_bar
     assert warnings == []
-    assert session._state.sensitivity_result is not None
+    assert session.model.sensitivity_result is not None
     assert (bar.value(), bar.maximum()) == (40, 40)
     assert any(message.startswith('Analysing') and message.endswith('left') for message in messages)
     # At the last count there is no time left to estimate.
@@ -1379,7 +1379,7 @@ def test_throttled_run_fills_the_bar_and_estimates_time_left(qapp, monkeypatch):
 
 
 def test_time_left_reads_as_plain_english():
-    from gui.fitting_session import _format_remaining
+    from gui.session_model import _format_remaining
 
     assert _format_remaining(0.3) == '1 second'
     assert _format_remaining(12) == '12 seconds'
@@ -1423,18 +1423,18 @@ def test_cancelled_run_says_it_stopped(qapp, monkeypatch):
     monkeypatch.setattr(workers, 'run_sensitivity', run)
     session, warnings = _demo_session(monkeypatch)
     messages = []
-    session.status_message.connect(messages.append)
+    session.model.status_changed.connect(messages.append)
 
     session.run_sensitivity()
-    session._cancel_sensitivity()
+    session.model.cancel_sensitivity()
     _wait_for_worker(session, qapp)
 
     assert warnings == []
     # A cancel is an outcome, not an error. This result's baseline records no
     # data, so the tab hides it and the status bar says so in place of counts
     # from a result no tab is showing.
-    assert messages[-1] == f'Sensitivity stopped but hidden — {session._state.sensitivity_note}'
-    assert session._state.sensitivity_note is not None
+    assert messages[-1] == f'Sensitivity stopped but hidden — {session.model.sensitivity_note}'
+    assert session.model.sensitivity_note is not None
 
 
 def test_a_stopping_run_reads_the_same_on_the_page_and_in_the_status_bar(qapp, monkeypatch):
@@ -1458,7 +1458,7 @@ def test_a_stopping_run_reads_the_same_on_the_page_and_in_the_status_bar(qapp, m
     monkeypatch.setattr(workers, 'run_sensitivity', run)
     session, warnings = _demo_session(monkeypatch)
     messages = []
-    session.status_message.connect(messages.append)
+    session.model.status_changed.connect(messages.append)
 
     session.run_sensitivity()
     session._sensitivity_widget._cancel_button.click()  # the button the user presses
@@ -1494,7 +1494,7 @@ def test_failed_run_takes_the_tab_off_the_progress_page(qapp, monkeypatch):
     monkeypatch.setattr(workers, 'run_sensitivity', _fake_run(5))
     session.run_sensitivity()
     _wait_for_worker(session, qapp)
-    earlier = session._state.sensitivity_result
+    earlier = session.model.sensitivity_result
     monkeypatch.setattr(workers, 'run_sensitivity', failing)
     session.run_sensitivity()
     _wait_for_worker(session, qapp)
@@ -1582,7 +1582,7 @@ def test_summary_never_shows_a_run_that_is_not_the_tabs(qapp, monkeypatch):
     monkeypatch.setattr(workers, 'run_sensitivity', _fake_run(3))
     session.run_sensitivity()
     _wait_for_worker(session, qapp)
-    earlier = session._state.sensitivity_result
+    earlier = session.model.sensitivity_result
     assert summary._sensitivity is earlier and _in_samples_view(summary)
 
     # While a run is going, the earlier run's statistics are gone; a failure brings them back with the tab.
@@ -1608,7 +1608,7 @@ def test_summary_never_shows_a_run_that_is_not_the_tabs(qapp, monkeypatch):
     assert summary._caption.text().startswith('The last analysis is a heatmap.')
 
     session._data_panel.load_file('data/IDA_system.txt')
-    assert session._state.sensitivity_result is None
+    assert session.model.sensitivity_result is None
     assert session._sensitivity_widget._stack.currentWidget() is session._sensitivity_widget._placeholder
     assert summary._sensitivity is None
     assert summary._caption.text().startswith('Run a sensitivity analysis with Sensitivity indices')
@@ -1618,7 +1618,7 @@ def test_summary_never_shows_a_run_that_is_not_the_tabs(qapp, monkeypatch):
     _wait_for_worker(session, qapp)
     assert _in_samples_view(summary)
     session._data_panel.data_cleared.emit()
-    assert session._state.sensitivity_result is None
+    assert session.model.sensitivity_result is None
     assert summary._sensitivity is None and not _in_samples_view(summary)
 
 
@@ -1634,15 +1634,15 @@ def test_new_data_discards_a_run_still_going(qapp, monkeypatch):
     monkeypatch.setattr(workers, 'run_sensitivity', slow)
     session, warnings = _demo_session(monkeypatch)
     session.run_sensitivity()
-    worker = session._sensitivity_worker
+    worker = session.model._sensitivity_worker
 
     session._data_panel.load_file('data/IDA_system.txt')
     worker.wait()
     qapp.processEvents()
 
     assert warnings == []
-    assert session._sensitivity_worker is None
-    assert session._state.sensitivity_result is None
+    assert session.model._sensitivity_worker is None
+    assert session.model.sensitivity_result is None
     assert session._summary_widget._sensitivity is None
     assert session._sensitivity_widget._stack.currentWidget() is session._sensitivity_widget._placeholder
 
@@ -1751,13 +1751,13 @@ def test_one_run_is_quoted_the_same_number_of_fits_wherever_it_is_counted(qapp, 
     monkeypatch.setattr(workers, 'run_sensitivity', run)
     session, warnings = _demo_session(monkeypatch)
     asked = []
-    monkeypatch.setattr('gui.fitting_session.LONG_RUN_SOLVES', 0)  # so the cost dialog is offered
+    monkeypatch.setattr('gui.session_model.LONG_RUN_SOLVES', 0)  # so the cost dialog is offered
     monkeypatch.setattr(
         'gui.fitting_session.QMessageBox.question',
         lambda parent, title, text, *args: (asked.append(text), QMessageBox.StandardButton.Yes)[1],
     )
     messages = []
-    session.status_message.connect(messages.append)
+    session.model.status_changed.connect(messages.append)
 
     session.run_sensitivity()
     _wait_for_worker(session, qapp)

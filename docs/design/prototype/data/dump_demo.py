@@ -79,18 +79,18 @@ def main():
     session.resize(1440, 900)
     session.show()
     statuses = []
-    session.status_message.connect(statuses.append)
+    session.model.status_changed.connect(statuses.append)
 
     session.load_demo_ida()
     t0 = time.monotonic()
-    while (session.fit_running() or session._profile_worker is not None) and time.monotonic() - t0 < 900:
+    while (session.model.fit_running() or session.model.profile_running()) and time.monotonic() - t0 < 900:
         app.processEvents()
         time.sleep(0.02)
     for _ in range(50):
         app.processEvents()
     fit_seconds = time.monotonic() - t0
 
-    st = session._state
+    st = session.model
     result = st.fit_results[-1]
     ms = st.measurement_set
 
@@ -292,7 +292,7 @@ def main():
 
     (OUT / 'demo.json').write_text(json.dumps(clean(data), indent=1, ensure_ascii=False, default=str))
     print('ok', fit_seconds, ka, result.r_squared, result.rmse)
-    session._stop_profile()
+    session.model._stop_profile()
     session.close()
 
 

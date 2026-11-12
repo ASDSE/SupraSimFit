@@ -193,7 +193,7 @@ class ExportMultipleDialog(QDialog):
             self._folder_edit.setText(self._default_folder())
 
         # Base: prefer the saved value only if it's still relevant.
-        default_base = self._session._default_filename_base()
+        default_base = self._default_base()
         self._base_edit.setText(saved_base if saved_base and saved_dataset == default_base else default_base)
 
     def _save_settings(self) -> None:
@@ -206,14 +206,17 @@ class ExportMultipleDialog(QDialog):
             )
             s.setValue('folder', self._folder_edit.text())
             s.setValue('filename_base', self._base_edit.text())
-            s.setValue('filename_dataset', self._session._default_filename_base())
+            s.setValue('filename_dataset', self._default_base())
         finally:
             s.endGroup()
 
+    def _default_base(self) -> str:
+        """The stem of the session's data file, which file names start with by default."""
+        src = self._session.model.dataset_file()
+        return Path(src).stem if src else 'output'
+
     def _default_folder(self) -> str:
-        src = self._session._state.source_file
-        if not src and self._session._state.fit_results:
-            src = self._session._state.fit_results[-1].source_file
+        src = self._session.model.dataset_file()
         if src:
             parent = Path(src).parent
             if parent.exists():

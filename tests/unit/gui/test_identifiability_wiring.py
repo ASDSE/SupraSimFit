@@ -143,7 +143,7 @@ def test_fit_then_profile_reach_identifiability_tab(qapp, make_session, warnings
 
     assert warnings == []
     ((result, profile_set, assay_type_name),) = calls
-    assert result is session._state.fit_results[-1]
+    assert result is session.model.fit_results[-1]
     assert assay_type_name == 'IDA'
     assert isinstance(profile_set, ProfileSet)
     assert profile_set is session._identifiability_widget._profile
@@ -181,7 +181,7 @@ def test_profile_leaves_out_the_replicates_the_fit_skipped(qapp, make_session, w
     ((result, profile_set, _),) = calls
     assert list(result.metadata['replica_failures']) == ['C']
     assert set(profile_set.profiles['Ka_guest'].replica_r2) == {'A', 'B'}
-    assert session._state.measurement_set.is_active('C')
+    assert session.model.measurement_set.is_active('C')
     assert 'Replicate C is left out' in session._identifiability_widget._notes.text()
 
 
@@ -197,10 +197,10 @@ def test_an_assay_without_a_binding_constant_gets_no_profile(qapp, make_session,
 
     assert warnings == []
     ((result, profile_set, assay_type_name),) = calls
-    assert result is session._state.fit_results[-1]
+    assert result is session.model.fit_results[-1]
     assert profile_set is None
     assert assay_type_name == 'DYE_ALONE'
-    assert session._profile_worker is None
+    assert session.model._profile_worker is None
     assert session._identifiability_widget._profile is None
 
 
@@ -209,7 +209,7 @@ def test_sensitivity_result_reaches_identifiability_tab(make_session):
     calls = _spy(session._identifiability_widget, 'update_sensitivity')
     result = _sobol_result()
 
-    session._on_sensitivity_complete(result)
+    session.model._on_sensitivity_complete(result)
 
     assert calls == [(result,)]
 
@@ -222,8 +222,8 @@ def test_loading_data_clears_tab_and_discards_pending_profile(qapp, make_session
     clears = _spy(widget, 'clear')
 
     session.run_fit()
-    _wait_until(qapp, lambda: session._profile_worker is not None or warnings)
-    pending = session._profile_worker
+    _wait_until(qapp, lambda: session.model._profile_worker is not None or warnings)
+    pending = session.model._profile_worker
     assert fits == []  # the profiles of the finished fit are still being computed
 
     session._data_panel.data_loaded.emit(_ida_set(noise_seed=1))

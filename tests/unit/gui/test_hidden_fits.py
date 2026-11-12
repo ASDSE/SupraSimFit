@@ -158,12 +158,12 @@ def _deliver(session, result: FitResult) -> None:
     """Hand *result* to *session* as the fit worker started by Run Fit does."""
     from gui.workers import FitWorker
 
-    ms = session._state.measurement_set
+    ms = session.model.measurement_set
     conditions = session._assay_panel.current_conditions()
     worker = FitWorker(copy.deepcopy(ms), IDAAssay, conditions, FitConfig(), parent=session)
-    worker.finished.connect(session._on_fit_complete)
-    worker.error.connect(session._on_fit_error)
-    session._fit_worker = worker
+    worker.finished.connect(session.model._on_fit_complete)
+    worker.error.connect(session.model._on_fit_error)
+    session.model._fit_worker = worker
     worker.finished.emit(result)
 
 
@@ -184,14 +184,14 @@ def _deliver_sensitivity(session, fit):
     """
     from core.pipeline.inputs import specs_to_dict
 
-    ms = session._state.measurement_set
+    ms = session.model.measurement_set
     result = _made_on(_sobol_result(), ms, session._assay_panel.current_conditions())
     # A run's baseline is fitted under the bounds and the replicate mode set, and records them as a fit does.
     result.baseline_fit.fit_config = {key: fit.fit_config[key] for key in ('custom_bounds', 'per_replicate')}
     fit.fit_config['input_uncertainty'] = specs_to_dict(result.config.errors.specs)
     for key, spec in result.config.errors.specs.items():
         session._input_panel._rows[key].set_spec(spec)
-    session._on_sensitivity_complete(result)
+    session.model._on_sensitivity_complete(result)
     return result
 
 
@@ -228,8 +228,8 @@ def _assert_hidden(session, note: str, *, profiled: bool = True) -> None:
     *profiled* says whether Identifiability holds the fit: an imported fit has no Ka profile to hide.
     """
     summary = session._summary_widget
-    assert session._state.fit_results == []
-    assert session.hidden_results_note() == note
+    assert session.model.fit_results == []
+    assert session.model.hidden_results_note() == note
     assert summary._table.rowCount() == 0
     assert summary._r2_label.text() == '—'
     assert summary._caption.text() == note
@@ -251,8 +251,8 @@ def test_switching_the_left_out_replicate_keeps_the_fit_and_its_numbers(qapp, ma
 
     for on in (False, True):
         _toggle(session, 'c', on)
-        assert session._state.fit_results == [fit]
-        assert session.hidden_results_note() is None
+        assert session.model.fit_results == [fit]
+        assert session.model.hidden_results_note() is None
         assert _numbers(session) == before
 
 
@@ -275,11 +275,11 @@ def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_bac
     )
     assert sensitivity._stack.currentWidget() is sensitivity._mismatch_label
     assert sensitivity._mismatch_label.text() == run_note
-    assert session._state.sensitivity_result is not None and session._state.held_fit_results == [fit]
+    assert session.model.sensitivity_result is not None and session.model.held_fit_results == [fit]
 
     _toggle(session, 'a', True)
 
-    assert session._state.fit_results == [fit] and session.hidden_results_note() is None
+    assert session.model.fit_results == [fit] and session.model.hidden_results_note() is None
     assert _numbers(session) == before
     assert session._plot_widget._fit_results == [fit] and session._plot_widget._mismatch_note is None
     assert session._identifiability_widget._stack.currentWidget() is session._identifiability_widget._content
@@ -290,8 +290,8 @@ def test_the_status_bar_stops_describing_results_that_have_been_hidden(qapp, mak
     """A completion message would otherwise report numbers no tab is showing any more."""
     session = _shown_session(qapp, make_session, fit)
     messages: list[str] = []
-    session.status_message.connect(messages.append)
-    session.status_message.emit('Fit complete — R²=0.9991, RMSE=1.23×10¹, 2 of 3 replicates used')
+    session.model.status_changed.connect(messages.append)
+    session.model.show_status('Fit complete — R²=0.9991, RMSE=1.23×10¹, 2 of 3 replicates used')
 
     _toggle(session, 'a', False)
 
@@ -305,14 +305,14 @@ def test_a_sensitivity_run_is_hidden_and_shown_on_its_own_record(qapp, make_sess
 
     _toggle(session, 'c', False)
 
-    assert session._state.fit_results == [fit]
-    assert session._state.sensitivity_note.startswith('This sensitivity analysis was made on replicates A–C.')
-    assert session._summary_widget._sensitivity_note == session._state.sensitivity_note
+    assert session.model.fit_results == [fit]
+    assert session.model.sensitivity_note.startswith('This sensitivity analysis was made on replicates A–C.')
+    assert session._summary_widget._sensitivity_note == session.model.sensitivity_note
     identifiability = session._identifiability_widget
     assert 'The sensitivity samples are not shown.' in identifiability._notes.text()
     assert identifiability._controls.isHidden(), 'no colour control for dots that are not drawn'
     _toggle(session, 'c', True)
-    assert session._state.sensitivity_note is None
+    assert session.model.sensitivity_note is None
     assert not identifiability._controls.isHidden()
 
 
@@ -322,20 +322,20 @@ def test_changing_an_uncertainty_hides_the_sensitivity_run_it_was_drawn_from(qap
 
     session = _shown_session(qapp, make_session, fit)
     _deliver_sensitivity(session, fit)
-    assert session._state.sensitivity_note is None
+    assert session.model.sensitivity_note is None
 
     session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(30.0))
 
-    assert session._state.sensitivity_note == (
+    assert session.model.sensitivity_note == (
         'The input uncertainties have changed since this analysis; set them back under Input Uncertainty, or '
         'run the analysis again.'
     )
-    assert session._summary_widget._sensitivity_note == session._state.sensitivity_note
-    assert session._sensitivity_widget._mismatch_label.text() == session._state.sensitivity_note
+    assert session._summary_widget._sensitivity_note == session.model.sensitivity_note
+    assert session._sensitivity_widget._mismatch_label.text() == session.model.sensitivity_note
 
     session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(5.0))
 
-    assert session._state.sensitivity_note is None
+    assert session.model.sensitivity_note is None
 
 
 def test_a_condition_edit_hides_the_fit_once_finished_and_the_same_value_restores_it(qapp, make_session, fit, dialogs):
@@ -343,7 +343,7 @@ def test_a_condition_edit_hides_the_fit_once_finished_and_the_same_value_restore
     before = _numbers(session)
 
     _type_into(session, 'h0', '12', finish=False)
-    assert session._state.fit_results == [fit], 'hidden while still typing'
+    assert session.model.fit_results == [fit], 'hidden while still typing'
 
     QTest.keyClick(session._assay_panel._field_widgets['h0']._spinbox, Qt.Key.Key_Return)
     _assert_hidden(
@@ -353,11 +353,11 @@ def test_a_condition_edit_hides_the_fit_once_finished_and_the_same_value_restore
     )
 
     _type_into(session, 'h0', '10')
-    assert session._state.fit_results == [fit]
+    assert session.model.fit_results == [fit]
     assert _numbers(session) == before
 
     session._assay_panel._field_widgets['h0']._combo.setCurrentText('nM')
-    assert session._state.fit_results == [fit]
+    assert session.model.fit_results == [fit]
     assert _numbers(session) == before
 
 
@@ -388,7 +388,7 @@ def _diluted_session(qapp, make_session, diluted_fit):
     _state_dilution(session, _STOCK.magnitude)
     _deliver(session, diluted_fit)
     _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
-    assert session.hidden_results_note() is None
+    assert session.model.hidden_results_note() is None
     return session
 
 
@@ -464,10 +464,10 @@ def test_a_pause_in_typing_finishes_a_condition_edit(qapp, make_session, fit, di
     session = _shown_session(qapp, make_session, fit)
 
     _type_into(session, 'd0', '6', finish=False)
-    assert session._state.fit_results == [fit]
-    _wait_until(qapp, lambda: not session._state.fit_results, timeout=5.0)
+    assert session.model.fit_results == [fit]
+    _wait_until(qapp, lambda: not session.model.fit_results, timeout=5.0)
 
-    assert '[Dye]₀ is now 6 µM' in session.hidden_results_note()
+    assert '[Dye]₀ is now 6 µM' in session.model.hidden_results_note()
 
 
 def test_the_ka_profile_is_given_the_fit_s_own_penalised_profiles(qapp, make_session, fit, dialogs, monkeypatch):
@@ -509,7 +509,7 @@ def test_stating_an_uncertainty_hides_the_fit_until_it_is_run_again(qapp, make_s
 
     session._input_panel._rows['h0'].set_spec(None)
 
-    assert session._state.fit_results == [fit]
+    assert session.model.fit_results == [fit]
     assert _numbers(session) == before
 
 
@@ -524,7 +524,7 @@ def test_the_note_names_the_uncertainties_the_hidden_fit_was_made_with(qapp, mak
 
     session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(5.0))
 
-    assert session.hidden_results_note() == (
+    assert session.model.hidden_results_note() == (
         'This fit was made with [Host]₀ σ 10 % and Guest (titrant, whole series) σ 3 %. The input uncertainties '
         'set now differ: set them back under Input Uncertainty, or fit again to update the interval.'
     )
@@ -536,7 +536,7 @@ def test_typing_a_condition_does_not_hide_the_fit_through_the_uncertainty_rows(q
 
     _type_into(session, 'h0', '12', finish=False)
 
-    assert session._state.fit_results == [fit]
+    assert session.model.fit_results == [fit]
 
 
 def test_switching_the_assay_type_hides_the_fit_and_switching_back_restores_it(qapp, make_session, fit, dialogs):
@@ -556,7 +556,7 @@ def test_switching_the_assay_type_hides_the_fit_and_switching_back_restores_it(q
     for key, text in (('Ka_dye', '500000'), ('h0', '10'), ('d0', '5')):
         _type_into(session, key, text)
 
-    assert session._state.fit_results == [fit]
+    assert session.model.fit_results == [fit]
     assert _numbers(session) == before
 
 
@@ -580,7 +580,7 @@ def test_editing_a_bound_hides_the_fit_and_the_bound_it_was_made_under_restores_
 
     session._bounds_panel._rows['Ka_guest']._hi.setText('1e12')
 
-    assert session._state.fit_results == [fit] and session.hidden_results_note() is None
+    assert session.model.fit_results == [fit] and session.model.hidden_results_note() is None
     assert _numbers(session) == before
 
 
@@ -590,7 +590,7 @@ def test_a_bound_that_cannot_be_read_hides_the_fit(qapp, make_session, fit, dial
 
     session._bounds_panel._rows['I0']._lo.setText('')
 
-    assert session.hidden_results_note() == (
+    assert session.model.hidden_results_note() == (
         'This fit was made on replicates A and B. The I₀ bounds cannot be read now. Set them back to −100 to 100 '
         'a.u., or run the fit again.'
     )
@@ -611,7 +611,7 @@ def test_switching_the_replicate_mode_hides_the_fit_and_switching_back_restores_
 
     session._fit_panel.set_config(FitConfig(per_replica=True))
 
-    assert session._state.fit_results == [fit] and _numbers(session) == before
+    assert session.model.fit_results == [fit] and _numbers(session) == before
 
 
 def test_a_sensitivity_run_is_hidden_by_a_bound_or_the_replicate_mode_its_baseline_was_not_fitted_under(
@@ -619,21 +619,21 @@ def test_a_sensitivity_run_is_hidden_by_a_bound_or_the_replicate_mode_its_baseli
 ):
     session = _shown_session(qapp, make_session, fit)
     _deliver_sensitivity(session, fit)
-    assert session._state.sensitivity_note is None
+    assert session.model.sensitivity_note is None
 
     session._bounds_panel._rows['Ka_guest']._hi.setText('1e6')
 
-    assert session._state.sensitivity_note == (
+    assert session.model.sensitivity_note == (
         'This sensitivity analysis was made on replicates A–C. The Ka(G) bounds are now 1×10⁻⁸ to 1×10⁶ M⁻¹. Set '
         'them back to 1×10⁻⁸ to 1×10¹² M⁻¹, or run the analysis again.'
     )
-    assert session._sensitivity_widget._mismatch_label.text() == session._state.sensitivity_note
+    assert session._sensitivity_widget._mismatch_label.text() == session.model.sensitivity_note
 
     session._bounds_panel._rows['Ka_guest']._hi.setText('1e12')
-    assert session._state.sensitivity_note is None
+    assert session.model.sensitivity_note is None
 
     session._fit_panel.set_config(FitConfig(per_replica=False))
-    assert 'Fitting each replicate separately is now switched off.' in session._state.sensitivity_note
+    assert 'Fitting each replicate separately is now switched off.' in session.model.sensitivity_note
 
 
 def test_window_disables_result_exports_while_the_fit_is_hidden(qapp, make_session, fit, dialogs, monkeypatch):
@@ -653,7 +653,7 @@ def test_window_disables_result_exports_while_the_fit_is_hidden(qapp, make_sessi
     assert all(action.isEnabled() for action in exports)
 
     _toggle(session, 'b', False)
-    note = session.hidden_results_note()
+    note = session.model.hidden_results_note()
     assert note.startswith('This fit was made on replicates A and B. Replicate B is now off.')
     assert all(not action.isEnabled() and action.toolTip() == note for action in exports)
     artefacts = {artefact.key: artefact for artefact in build_artefacts(session)}
@@ -724,7 +724,7 @@ def test_import_of_a_fit_made_on_the_loaded_data_is_shown_unchanged(
     _import(session, monkeypatch, tmp_path, [fit])
 
     assert dialogs == {'warning': [], 'information': []}
-    (shown,) = session._state.fit_results
+    (shown,) = session.model.fit_results
     assert (shown.r_squared, shown.rmse) == (fit.r_squared, fit.rmse)
     assert shown.intervals['Ka_guest'].low == fit.intervals['Ka_guest'].low
     assert shown.degenerate_keys == fit.degenerate_keys
@@ -740,8 +740,8 @@ def test_import_keeps_the_replicate_selection_and_hides_a_fit_it_does_not_match(
 
     _import(session, monkeypatch, tmp_path, [fit])
 
-    assert session._state.measurement_set.active_replica_ids == ['a', 'c']
-    assert len(session._state.held_fit_results) == 1
+    assert session.model.measurement_set.active_replica_ids == ['a', 'c']
+    assert len(session.model.held_fit_results) == 1
     _assert_hidden(
         session,
         'This fit was made on replicates A and B. Replicate B is now off. Switch it back on, or run the fit again.',
@@ -764,7 +764,7 @@ def test_import_of_an_older_per_replicate_file_recomputes_its_quality_on_the_use
 
     _import(session, monkeypatch, tmp_path, [legacy])
 
-    (shown,) = session._state.fit_results
+    (shown,) = session.model.fit_results
     assert shown.r_squared == pytest.approx(fit.r_squared, rel=1e-12)
     assert shown.rmse == pytest.approx(fit.rmse, rel=1e-12)
     ((_, _, text),) = dialogs['information']
@@ -779,7 +779,7 @@ def test_import_onto_other_data_is_refused(qapp, make_session, fit, dialogs, mon
 
     _import(session, monkeypatch, tmp_path, [fit])
 
-    assert session._state.held_fit_results == []
+    assert session.model.held_fit_results == []
     ((_, title, text),) = dialogs['warning']
     assert title == 'Results Not Imported'
     assert 'were made on other data than the data loaded now, so nothing was imported' in text
@@ -795,7 +795,7 @@ def test_import_whose_numbers_do_not_reproduce_on_its_own_data_says_so(
 
     _import(session, monkeypatch, tmp_path, [altered])
 
-    assert session._state.held_fit_results == []
+    assert session.model.held_fit_results == []
     ((_, _, text),) = dialogs['warning']
     assert 'were made on the data loaded now, but their numbers could not be reproduced on it' in text
     assert 'other data' not in text
@@ -821,7 +821,7 @@ def test_import_of_a_file_without_a_replicate_record_names_the_selection_when_re
     _toggle(session, 'c', True)
     _import(session, monkeypatch, tmp_path, [released])
     assert dialogs['warning'] == []
-    (shown,) = session._state.fit_results
+    (shown,) = session.model.fit_results
     assert shown.metadata['active_replica_ids'] == ['a', 'b', 'c']
 
 
@@ -831,12 +831,12 @@ def test_import_that_cannot_be_checked_is_refused_in_plain_words(
     def broken(result, ms):
         raise TypeError('Ka_dye must be a pint Quantity, got float')
 
-    monkeypatch.setattr('gui.fitting_session.verify_imported_result', broken)
+    monkeypatch.setattr('gui.session_model.verify_imported_result', broken)
     session = make_session(_data())
 
     _import(session, monkeypatch, tmp_path, [fit])
 
-    assert session._state.held_fit_results == []
+    assert session.model.held_fit_results == []
     ((_, title, text),) = dialogs['warning']
     assert title == 'Results Not Imported'
     assert 'could not be checked against the data loaded now, so nothing was imported' in text
@@ -858,10 +858,10 @@ def test_import_of_a_released_file_with_bare_number_conditions_is_checked_and_sh
     session.import_results()
 
     assert dialogs['warning'] == []
-    (shown,) = session._state.fit_results
+    (shown,) = session.model.fit_results
     assert shown.r_squared == average_fit.r_squared
     _type_into(session, 'h0', '12')
-    assert 'This fit was made on replicates A–C with [Host]₀ = 10 µM.' in session.hidden_results_note()
+    assert 'This fit was made on replicates A–C with [Host]₀ = 10 µM.' in session.model.hidden_results_note()
 
 
 def test_import_of_a_file_written_before_the_arithmetic_marker_is_shown_as_stored(
@@ -890,7 +890,7 @@ def test_import_of_a_file_written_before_the_arithmetic_marker_is_shown_as_store
 
     assert dialogs['warning'] == []
     assert dialogs['information'] == []
-    (shown,) = session._state.fit_results
+    (shown,) = session.model.fit_results
     stored = json.loads((fixtures / 'unmarked_gda.json').read_text())
     assert (shown.rmse, shown.r_squared) == (stored['rmse'], stored['r_squared'])
     assert shown.intervals is None, 'a file written before intervals were reported carries none'
@@ -931,7 +931,7 @@ def test_import_of_results_that_cannot_be_checked_on_the_loaded_data_says_so(
 
     _import(session, monkeypatch, tmp_path, [FitResult.from_dict(later)])
 
-    (shown,) = session._state.held_fit_results
+    (shown,) = session.model.held_fit_results
     assert (shown.rmse, shown.r_squared) == (fit.rmse, fit.r_squared)
     ((_, title, text),) = dialogs['information']
     assert title == 'Imported Results'
@@ -948,7 +948,7 @@ def test_import_without_data_shows_the_stored_numbers_unchecked(
 
     _import(session, monkeypatch, tmp_path, [fit])
 
-    (shown,) = session._state.fit_results
+    (shown,) = session.model.fit_results
     summary = session._summary_widget
     assert shown.r_squared == fit.r_squared
     assert summary._r2_label.text() != '—'
@@ -964,15 +964,15 @@ def test_import_without_data_hides_a_fit_of_another_assay_type_and_labels_the_ax
     _import(session, monkeypatch, tmp_path, [fit])
 
     plot = session._plot_widget
-    assert session._state.fit_results == [] and plot._fit_items == []
-    assert session.hidden_results_note().startswith('This fit was made for IDA (Indicator Displacement Assay).')
+    assert session.model.fit_results == [] and plot._fit_items == []
+    assert session.model.hidden_results_note().startswith('This fit was made for IDA (Indicator Displacement Assay).')
 
     session._assay_panel.set_assay_type(AssayType.IDA)  # the form and the bounds come back as the defaults
     _set_bounds(session, GDA_IDA_RECOVERY_BOUNDS)
     for key, text in (('Ka_dye', '500000'), ('h0', '10'), ('d0', '5')):
         _type_into(session, key, text)
 
-    assert len(session._state.fit_results) == 1
+    assert len(session.model.fit_results) == 1
     assert len(plot._fit_items) == 1
     assert plot._pg_widget.getPlotItem().getAxis('bottom').labelText.startswith('Guest')
 
@@ -994,9 +994,9 @@ def test_one_hidden_result_leaves_the_shown_one_drawn_and_exportable(
     session = make_session(_data())  # fitting each replicate separately, as `fit` was made
     _import(session, monkeypatch, tmp_path, [average_fit, fit])
 
-    (shown,) = session._state.fit_results
+    (shown,) = session.model.fit_results
     assert shown.id == fit.id
-    assert session.hidden_results_note() is None
+    assert session.model.hidden_results_note() is None
     plot = session._plot_widget
     assert plot._mismatch_note is None and len(plot._fit_items) == 1 and plot._fit_results == [shown]
     assert plot._note.text() == (
@@ -1008,7 +1008,7 @@ def test_one_hidden_result_leaves_the_shown_one_drawn_and_exportable(
 
     session._fit_panel.set_config(FitConfig(per_replica=False))
 
-    (shown,) = session._state.fit_results
+    (shown,) = session.model.fit_results
     assert shown.id == average_fit.id and len(plot._fit_items) == 1
     assert 'Fitting each replicate separately is now switched off. Switch it back on' in plot._note.text()
 
@@ -1041,15 +1041,15 @@ def slow_fit(monkeypatch, fitted):
 def test_loading_other_data_mid_fit_never_shows_that_fit(qapp, make_session, dialogs, slow_fit):
     session = make_session(_data())
     session.run_fit()
-    worker = session._fit_worker
+    worker = session.model._fit_worker
 
     session._data_panel.data_loaded.emit(_data())
     worker.wait()
     for _ in range(5):
         qapp.processEvents()
 
-    assert not session.fit_running()
-    assert session._state.held_fit_results == []
+    assert not session.model.fit_running()
+    assert session.model.held_fit_results == []
     assert session._summary_widget._r2_label.text() == '—'
     assert dialogs['warning'] == []
 
@@ -1069,8 +1069,8 @@ def test_importing_results_is_refused_while_a_fit_runs(
         'A fit is running in this session, and its result would replace the imported results when it finishes. '
         'Wait for it to finish, or stop it with Cancel Fit, then import the results.'
     )
-    assert session._state.held_fit_results == []
-    _wait_until(qapp, lambda: not session.fit_running())
+    assert session.model.held_fit_results == []
+    _wait_until(qapp, lambda: not session.model.fit_running())
 
 
 def test_the_status_bar_keeps_saying_that_too_few_replicates_were_tested(qapp, make_session, fit, dialogs, slow_fit):
@@ -1078,14 +1078,14 @@ def test_the_status_bar_keeps_saying_that_too_few_replicates_were_tested(qapp, m
     session = make_session(_data())
     _toggle(session, 'c', False)
     messages: list[str] = []
-    session.status_message.connect(messages.append)
+    session.model.status_changed.connect(messages.append)
 
     session.run_fit()
 
     assert messages[-1] == (
         'Fitting 2 replicates — too few to test against each other (the test needs three), so all of them are used…'
     )
-    session.shutdown()
+    session.model.shutdown()
 
     two = copy.deepcopy(fit)  # the per-replicate fit of A and B, as the pipeline records it
     two.metadata['active_replica_ids'] = two.metadata['replica_ids_fit'] = ['a', 'b']
@@ -1103,25 +1103,29 @@ def test_a_fit_finishing_after_a_used_replicate_was_switched_off_is_held_hidden_
     session = make_session(_data())
     session.run_fit()
     messages: list[str] = []
-    session.status_message.connect(lambda text: messages.append(text) if text.startswith('Fit') else None)
+    session.model.status_changed.connect(lambda text: messages.append(text) if text.startswith('Fit') else None)
 
     _toggle(session, 'b', False)
     _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
 
     assert slow_fit[0].active_replica_ids == ['a', 'b', 'c']
-    (held,) = session._state.held_fit_results
-    assert session._state.fit_results == []
-    assert session.hidden_results_note().startswith('This fit was made on replicates A and B. Replicate B is now off.')
+    (held,) = session.model.held_fit_results
+    assert session.model.fit_results == []
+    assert session.model.hidden_results_note().startswith(
+        'This fit was made on replicates A and B. Replicate B is now off.'
+    )
     profile = session._identifiability_widget._profile.profiles['Ka_guest']
     assert set(profile.replica_r2) == set(held.metadata['replica_ids_fit'])
-    assert messages == [f'Fit complete but hidden — {session.hidden_results_note()}']
+    assert messages == [f'Fit complete but hidden — {session.model.hidden_results_note()}']
 
 
 def test_a_finished_fit_names_the_replicates_it_left_out_and_why(qapp, make_session, dialogs, slow_fit):
     """Minutes of data must not be dropped without a word — the no-silent-fallbacks rule."""
     session = make_session(_data())
     messages: list[str] = []
-    session.status_message.connect(lambda text: messages.append(text) if text.startswith('Fit complete') else None)
+    session.model.status_changed.connect(
+        lambda text: messages.append(text) if text.startswith('Fit complete') else None
+    )
 
     session.run_fit()
     _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
@@ -1143,8 +1147,8 @@ def test_the_status_bar_names_the_test_a_rejected_model_failed_and_not_the_verdi
     room for it.
     """
     from core.pipeline.diagnostics import FitDiagnostics, MisfitTest, Verdict
-    from gui.fitting_session import _verdict_note
     from gui.plotting.labels import verdict_sentence
+    from gui.session_model import _verdict_note
 
     diagnostics = FitDiagnostics(
         conditional_misfit=MisfitTest(kind='lack_of_fit', statistic=199.6, p_value=3.2e-47, dof=(9, 72)),
@@ -1202,14 +1206,14 @@ def test_the_fit_action_offers_cancel_while_a_fit_runs(qapp, dialogs, slow_fit, 
     session._data_panel.data_loaded.emit(_data())
 
     session.run_fit()
-    worker = session._fit_worker
+    worker = session.model._fit_worker
     assert window._act_fit.text() == 'Cancel Fit' and window._act_fit.isEnabled()
     session.run_fit()
-    assert session._fit_worker is worker and len(slow_fit) <= 1
+    assert session.model._fit_worker is worker and len(slow_fit) <= 1
     assert dialogs['warning'][-1][1] == 'Already Running'
     assert dialogs['warning'][-1][2].startswith('A fit is already running in this session.')
 
-    _wait_until(qapp, lambda: not session.fit_running())
+    _wait_until(qapp, lambda: not session.model.fit_running())
     assert window._act_fit.text() == 'Run Fit' and window._act_fit.isEnabled()
     for thread in session.findChildren(QThread):
         thread.wait()
@@ -1257,6 +1261,6 @@ def test_a_dilution_difference_without_data_reads_as_a_sentence(
 
     _import(session, monkeypatch, tmp_path, [diluted_fit])
 
-    assert session.hidden_results_note() == (
+    assert session.model.hidden_results_note() == (
         'The dilution by the titrant is now switched off. Switch it back on, or run the fit again.'
     )

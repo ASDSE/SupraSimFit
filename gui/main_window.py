@@ -101,8 +101,9 @@ _CANCEL_FIT_TIP = 'Stop the fit running in this session (Ctrl+R)'
 class FittingMainWindow(QMainWindow):
     """Main application window: tab management + toolbar + menu routing.
 
-    All fitting state lives in each :class:`~gui.fitting_session.FittingSession`
-    tab.  The main window holds no fitting state of its own.
+    All fitting state lives in the :class:`~gui.session_model.SessionModel` of
+    each :class:`~gui.fitting_session.FittingSession` tab. The main window holds
+    no fitting state of its own.
     """
 
     def __init__(self, parent=None):
@@ -370,8 +371,8 @@ class FittingMainWindow(QMainWindow):
 
     def _new_session(self) -> None:
         session = FittingSession()
-        session.title_changed.connect(lambda title, s=session: self._rename_tab(s, title))
-        session.status_message.connect(self._statusbar.showMessage)
+        session.model.name_changed.connect(lambda title, s=session: self._rename_tab(s, title))
+        session.model.status_changed.connect(self._statusbar.showMessage)
         session.actions_changed.connect(self._sync_actions)
         idx = self._tabs.addTab(session, 'Untitled')
         self._tabs.setCurrentIndex(idx)
@@ -389,8 +390,8 @@ class FittingMainWindow(QMainWindow):
         again.
         """
         session = self.active_session()
-        busy = None if session is None else session.busy_note()
-        fitting = session is not None and session.fit_running()
+        busy = None if session is None else session.model.busy_note()
+        fitting = session is not None and session.model.fit_running()
         self._act_fit.setText(_CANCEL_FIT if fitting else _RUN_FIT)
         self._act_fit.setEnabled(fitting or busy is None)
         self._act_fit.setToolTip(_CANCEL_FIT_TIP if fitting else (busy or self._action_tips[self._act_fit]))
@@ -399,7 +400,7 @@ class FittingMainWindow(QMainWindow):
         self._act_save_plot.setEnabled(plot_note is None)
         self._act_save_plot.setToolTip(plot_note or self._action_tips[self._act_save_plot])
 
-        note = None if session is None else session.hidden_results_note()
+        note = None if session is None else session.model.hidden_results_note()
         for action in (self._act_export, self._act_export_txt, self._act_export_csv):
             action.setEnabled(note is None)
             action.setToolTip(note or self._action_tips[action])
@@ -415,8 +416,8 @@ class FittingMainWindow(QMainWindow):
         self._tabs.removeTab(idx)
         if session is not None:
             if isinstance(session, FittingSession):
-                stopped = session.running_work()
-                session.shutdown()
+                stopped = session.model.running_work()
+                session.model.shutdown()
                 # The line on the status bar is the closed session's last word.
                 # Left standing, its progress count reads as a run still going
                 # in a window where nothing is running any more.
@@ -433,7 +434,7 @@ class FittingMainWindow(QMainWindow):
     def _on_tab_renamed(self, index: int, name: str) -> None:
         session = self._tabs.widget(index)
         if isinstance(session, FittingSession):
-            session.set_custom_tab_name(name)
+            session.model.set_custom_name(name)
 
     # ------------------------------------------------------------------
     # Toolbar / menu slots
@@ -442,7 +443,7 @@ class FittingMainWindow(QMainWindow):
     def _on_load(self) -> None:
         session = self.active_session()
         if session:
-            session._data_panel.load_file()
+            session.load_data()
 
     def _on_load_demo(self) -> None:
         session = self.active_session()
@@ -464,8 +465,8 @@ class FittingMainWindow(QMainWindow):
         session = self.active_session()
         if session is None:
             return
-        if session.fit_running():
-            session.cancel_fit()
+        if session.model.fit_running():
+            session.model.cancel_fit()
         else:
             session.run_fit()
 
@@ -607,9 +608,9 @@ class FittingMainWindow(QMainWindow):
             if isinstance(self._tabs.widget(index), FittingSession)
         ]
         for session in sessions:
-            session.cancel_running()
+            session.model.cancel_running()
         for session in sessions:
-            session.shutdown()
+            session.model.shutdown()
         retire(self._update_worker)
         self._update_worker = None
         super().closeEvent(event)

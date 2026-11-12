@@ -27,7 +27,9 @@ from gui.plotting.colors import (
 )
 from gui.plotting.labels import (
     SHIFTED_CURVE_NOTE,
+    _display_label,
     _format_exponent_unicode,
+    describe_replicates,
     fmt_estimate,
     fmt_interval_html,
     fmt_param,
@@ -36,7 +38,6 @@ from gui.plotting.labels import (
     fmt_value,
 )
 from gui.plotting.plot_style import DEFAULT_STYLE, line_style_to_qt
-from gui.widgets.replica_panel import _display_label, describe_replicates
 
 # Overlay auto-placement (legend + fit-summary annotation). PyQtGraph has no
 # equivalent of matplotlib's legend loc='best' — upstream issue #2769 asking for

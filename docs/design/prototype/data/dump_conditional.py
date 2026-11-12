@@ -36,13 +36,13 @@ def main():
     session = fs.FittingSession()
     session.load_demo_ida()
     t0 = time.monotonic()
-    while session.fit_running() and time.monotonic() - t0 < 600:
+    while session.model.fit_running() and time.monotonic() - t0 < 600:
         app.processEvents()
         time.sleep(0.02)
     for _ in range(20):
         app.processEvents()
 
-    st = session._state
+    st = session.model
     result = st.fit_results[-1]
     ms = st.measurement_set
     cond = session._assay_panel.current_conditions()

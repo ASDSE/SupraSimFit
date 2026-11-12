@@ -82,6 +82,7 @@ from core.pipeline.sensitivity import _SOBOL_BLOCKS, SensitivityMode, Sensitivit
 from gui.plotting.colors import INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
 from gui.plotting.fit_summary_widget import ParameterTable, unfitted_sentence
 from gui.plotting.labels import (
+    STOPPING_TEXT,
     fmt_interval_html,
     fmt_param,
     fmt_r2,
@@ -140,7 +141,6 @@ _MIN_CHANGE_TICK_RATIO = 1e-3
 _RUNNING_TEXT = 'Running…'
 #: What a stopping run says. The progress page and the status bar show it at the
 #: same time, so they read as one message rather than two answers.
-STOPPING_TEXT = 'Stopping — finishing the fits already running…'
 # Most tick labels a heatmap axis carries; with more offsets than this it labels
 # every second, third … one, so the labels stay apart.
 _MAX_HEATMAP_TICKS = 9

@@ -10,10 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
+import numpy as np
+
 from core.assays import ASSAY_CLASSES, AssayType
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY
 from core.pipeline.inputs import TITRANT, ErrorModel, shared_key
+from core.units import Q_, Quantity
 
 
 @dataclass(frozen=True)
@@ -175,6 +178,50 @@ def assay_class(assay_type: AssayType) -> type[BaseAssay]:
 def condition_fields(assay_type: AssayType) -> tuple[ConditionField, ...]:
     """Return the condition field schemas for the given assay type."""
     return ASSAY_CONDITIONS[assay_type]
+
+
+def condition_field(assay_type: AssayType, key: str) -> ConditionField | None:
+    """The field condition *key* has in *assay_type*'s form, the titrant stock included; ``None`` when it has none."""
+    if key == TITRANT_STOCK_FIELD.key:
+        return TITRANT_STOCK_FIELD
+    return next((field for field in ASSAY_CONDITIONS[assay_type] if field.key == key), None)
+
+
+def condition_name(field: ConditionField) -> str:
+    """*field*'s label in plain text: ``[Host]₀``."""
+    # Imported here for the reason given in result_input_labels.
+    from gui.plotting.labels import plain_label
+
+    return plain_label(field.label)
+
+
+def format_condition(field: ConditionField, value: Quantity, unit: str) -> str:
+    """*value* of *field* in plain text in *unit*, one of the units its form offers: ``4.3 µM``.
+
+    *unit* is ignored for a field without a unit, whose value is written bare.
+    """
+    from gui.plotting.labels import plain_number
+
+    if not field.unit:
+        return plain_number(float(value.magnitude))
+    scale = float(Q_(1, unit).to(field.unit).magnitude)
+    return f'{plain_number(value.to(field.unit).magnitude / scale)} {unit}'.rstrip()
+
+
+def same_inputs(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    """Whether two assay-condition dicts hold the same inputs, compared in base units."""
+    if a.keys() != b.keys():
+        return False
+    for key, x in a.items():
+        y = b[key]
+        if hasattr(x, 'dimensionality') and hasattr(y, 'dimensionality'):
+            if x.dimensionality != y.dimensionality:
+                return False
+            if not np.isclose(x.to_base_units().magnitude, y.to_base_units().magnitude, rtol=1e-9, atol=0.0):
+                return False
+        elif x != y:
+            return False
+    return True
 
 
 def input_labels(assay_type: AssayType) -> dict[str, str]:

@@ -45,7 +45,9 @@ from gui.plotting.labels import (
     SPLIT_NOTE,
     UNSOLVABLE_NOTE,
     VERDICT_TONES,
+    _display_label,
     and_join,
+    describe_replicates,
     fmt_bound_note,
     fmt_concentration,
     fmt_estimate,
@@ -72,9 +74,8 @@ from gui.plotting.labels import (
     verdict_sentence,
     widening_sentences,
 )
-from gui.widgets.assay_conditions import result_input_labels
+from gui.widgets.assay_conditions import result_input_labels, same_inputs
 from gui.widgets.info_button import InfoGroupBox
-from gui.widgets.replica_panel import _display_label, describe_replicates
 
 _LEVEL_TEXT = f'{LEVEL * 100:g} %'
 
@@ -835,22 +836,6 @@ def unfitted_sentence(result: SensitivityResult, n: int, total: int, noun: str) 
         f'{n:,} of {total:,} {noun} have no fit, either because the analysis was stopped before reaching them or '
         f'because they could not be fitted, and {are} left out.'
     )
-
-
-def same_inputs(a: dict, b: dict) -> bool:
-    """Whether two assay-condition dicts hold the same inputs, compared in base units."""
-    if a.keys() != b.keys():
-        return False
-    for key, x in a.items():
-        y = b[key]
-        if hasattr(x, 'dimensionality') and hasattr(y, 'dimensionality'):
-            if x.dimensionality != y.dimensionality:
-                return False
-            if not np.isclose(x.to_base_units().magnitude, y.to_base_units().magnitude, rtol=1e-9, atol=0.0):
-                return False
-        elif x != y:
-            return False
-    return True
 
 
 def _differences(baseline: FitResult, fit: FitResult) -> list[str]:

@@ -25,13 +25,13 @@ def main():
     session.show()
     session.load_demo_ida()
     t0 = time.monotonic()
-    while (session.fit_running() or session._profile_worker is not None) and time.monotonic() - t0 < 900:
+    while (session.model.fit_running() or session.model.profile_running()) and time.monotonic() - t0 < 900:
         app.processEvents()
         time.sleep(0.02)
     for _ in range(50):
         app.processEvents()
     w = session._identifiability_widget
-    result = session._state.fit_results[-1]
+    result = session.model.fit_results[-1]
     from core.pipeline.reporting import summarize_parameters
     from gui.widgets.assay_conditions import result_input_labels
 
@@ -56,7 +56,7 @@ def main():
     }
     OUT.write_text(json.dumps(out, indent=1, ensure_ascii=False))
     print('ok', time.monotonic() - t0)
-    session._stop_profile()
+    session.model._stop_profile()
     session.close()
 
 

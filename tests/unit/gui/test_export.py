@@ -195,16 +195,16 @@ def analysed_session(qapp, monkeypatch):
         session._data_panel.load_file(str(_IDA_DATA))
         if result is None:
             return session
-        run = _made_on(result, session._state.measurement_set, session._assay_panel.current_conditions())
+        run = _made_on(result, session.model.measurement_set, session._assay_panel.current_conditions())
         for key, spec in run.config.errors.specs.items():
             session._input_panel._rows[key].set_spec(spec)
-        session._on_sensitivity_complete(run)
-        assert session._state.sensitivity_note is None, 'the run has to be the one the session is showing'
+        session.model._on_sensitivity_complete(run)
+        assert session.model.sensitivity_note is None, 'the run has to be the one the session is showing'
         return session
 
     yield build
     for session in sessions:
-        session.shutdown()
+        session.model.shutdown()
 
 
 def _artefact(session, key):

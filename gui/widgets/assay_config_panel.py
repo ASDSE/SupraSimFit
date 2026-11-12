@@ -11,8 +11,15 @@ from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.units import Q_, Quantity
 from gui.assay_descriptions import ASSAY_DESCRIPTIONS
-from gui.plotting.labels import and_join, plain_label
-from gui.widgets.assay_conditions import TITRANT_STOCK_FIELD, ConditionField, assay_class, condition_fields
+from gui.plotting.labels import and_join
+from gui.widgets.assay_conditions import (
+    TITRANT_STOCK_FIELD,
+    ConditionField,
+    assay_class,
+    condition_fields,
+    condition_name,
+    format_condition,
+)
 from gui.widgets.info_button import InfoButton, InfoGroupBox
 from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, decimals_for_scale
 
@@ -26,8 +33,6 @@ _LOCALE_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
 
 # Pause in typing or stepping after which a conditions edit counts as finished.
 _EDIT_SETTLE_MS = 600
-
-_SUPERSCRIPT = str.maketrans('-0123456789', '⁻⁰¹²³⁴⁵⁶⁷⁸⁹')
 
 # What the two entries of the dilution combo stand for, as their item data.
 _CONSTANT_TOTALS = 'constant'
@@ -43,12 +48,6 @@ def _set_form_geometry(form: QFormLayout) -> None:
     """
     form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-
-
-def plain_number(value: float) -> str:
-    """Up to four significant figures, with a power of ten written as ``1.68×10⁷``."""
-    mantissa, _, exponent = f'{value:.4g}'.partition('e')
-    return f'{mantissa}×10{str(int(exponent)).translate(_SUPERSCRIPT)}' if exponent else mantissa
 
 
 class _UnitWidget(QWidget):
@@ -74,7 +73,7 @@ class _UnitWidget(QWidget):
 
     def __init__(self, field: ConditionField, parent=None):
         super().__init__(parent)
-        self._label = field.label
+        self._field = field
         self._base_unit: str = field.unit or ''
         entry = _UNIT_TYPE_CHOICES.get(field.unit_type)
         choices = entry[0] if entry else ()
@@ -125,13 +124,15 @@ class _UnitWidget(QWidget):
 
     def name(self) -> str:
         """This field's label in plain text: ``[Host]₀``."""
-        return plain_label(self._label)
+        return condition_name(self._field)
+
+    def unit(self) -> str:
+        """The unit this field shows now: ``µM``."""
+        return self._combo.currentText() if self._combo is not None else self._base_unit
 
     def format(self, value: Quantity) -> str:
         """*value* in plain text in the unit this field shows now: ``4.3 µM``."""
-        magnitude = value.to(self._base_unit).magnitude if self._base_unit else float(value.magnitude)
-        unit = self._combo.currentText() if self._combo is not None else self._base_unit
-        return f'{plain_number(magnitude / self._current_scale)} {unit}'.rstrip()
+        return format_condition(self._field, value, self.unit())
 
     def setValue(self, base_value: float) -> None:
         """Set widget from a base-unit value."""
@@ -313,6 +314,13 @@ class AssayConfigPanel(InfoGroupBox):
         """
         if self._settle_timer.isActive():
             self._finish_edit()
+
+    def condition_units(self) -> dict[str, str]:
+        """The unit each condition's field shows now, the titrant stock included."""
+        return {
+            **{key: widget.unit() for key, widget in self._field_widgets.items()},
+            TITRANT_STOCK_FIELD.key: self._stock_widget.unit(),
+        }
 
     def condition_name(self, key: str) -> str | None:
         """Plain-text label of condition *key* (``[Host]₀``), or ``None`` when the form has no such field."""

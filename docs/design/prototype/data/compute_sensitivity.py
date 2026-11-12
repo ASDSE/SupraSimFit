@@ -60,6 +60,7 @@ def main():
     from core.optimizer.ensemble import describe, describe_log10
     from core.pipeline.budget import what_if
     from core.pipeline.sensitivity import estimated_fit_count, run_sensitivity
+    from gui import preferences
     from gui.plotting.labels import plain_label
     from gui.plotting.sensitivity_widget import SensitivityWidget, _stated_pct, _stated_text
 
@@ -68,15 +69,15 @@ def main():
     session.show()
     session.load_demo_ida()
     t0 = time.monotonic()
-    while (session.fit_running() or session._profile_worker is not None) and time.monotonic() - t0 < 900:
+    while (session.model.fit_running() or session.model.profile_running()) and time.monotonic() - t0 < 900:
         app.processEvents()
         time.sleep(0.02)
     for _ in range(50):
         app.processEvents()
     print('fit done in', round(time.monotonic() - t0, 1), 's', flush=True)
 
-    # Exactly what FittingSession.run_sensitivity() hands the worker.
-    ms = session._state.measurement_set
+    # Exactly what SessionModel.run_sensitivity() hands the worker.
+    ms = session.model.measurement_set
     errors = session._input_panel.current_errors()
     panel = session._sensitivity_panel
     sens_config = panel.current_config(errors)
@@ -89,7 +90,7 @@ def main():
     labels = session._input_panel.input_labels()
     n_inputs = len(labels)
     planned = estimated_fit_count(sens_config, n_inputs) + 1
-    workers = fs.preferences.worker_count() if hasattr(fs, 'preferences') else None
+    workers = preferences.worker_count()
     print('config', sens_config.mode, sens_config.n_samples, 'fits', planned, 'workers', workers, flush=True)
 
     t1 = time.monotonic()
@@ -224,7 +225,7 @@ def main():
         out['n_samples_total'] = int(stacked.shape[1])
 
     # The fit summary the session floats over a Sobol' run.
-    session._state.sensitivity_result = result
+    session.model._sensitivity_result = result
     try:
         session._summary_widget.set_sensitivity(result)
         session._summary_widget.show_samples(True)

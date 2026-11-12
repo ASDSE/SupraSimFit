@@ -30,6 +30,7 @@ from gui.plotting.labels import (
     NO_UNCERTAINTY,
     NOT_RUN,
     SPLIT_NOTE,
+    _display_label,
     fmt_against,
     fmt_bound_note,
     fmt_concentration,
@@ -57,7 +58,6 @@ from gui.plotting.labels import (
     widening_sentences,
 )
 from gui.widgets.assay_conditions import result_input_labels
-from gui.widgets.replica_panel import _display_label
 
 if TYPE_CHECKING:
     from gui.fitting_session import FittingSession
@@ -1015,19 +1015,19 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     While every held result is hidden, the result artefacts give the note
     hiding them as the reason, as the window's own export actions do.
     """
-    state = session._state
-    ms_loaded = state.measurement_set is not None
-    has_results = bool(state.fit_results)
-    has_sensitivity = state.sensitivity_result is not None and state.sensitivity_note is None
-    has_budget = has_sensitivity and state.sensitivity_result.mode is SensitivityMode.SOBOL
+    model = session.model
+    ms_loaded = model.measurement_set is not None
+    has_results = bool(model.fit_results)
+    has_sensitivity = model.sensitivity_result is not None and model.sensitivity_note is None
+    has_budget = has_sensitivity and model.sensitivity_result.mode is SensitivityMode.SOBOL
     # The Identifiability tab is cleared by an import of results fitted elsewhere,
     # so what it has to save is a question for the tab, not for the held results.
     has_identifiability = session._identifiability_widget.has_chart()
 
     no_data_msg = 'Load a measurement file first.'
-    no_fit_msg = session.hidden_results_note() or 'Run a fit first.'
-    no_identifiability_msg = session.hidden_results_note() or 'Run a fit in this session first.'
-    no_sensitivity_msg = state.sensitivity_note or 'Run a sensitivity analysis first.'
+    no_fit_msg = model.hidden_results_note() or 'Run a fit first.'
+    no_identifiability_msg = model.hidden_results_note() or 'Run a fit in this session first.'
+    no_sensitivity_msg = model.sensitivity_note or 'Run a sensitivity analysis first.'
     no_budget_msg = (
         no_sensitivity_msg
         if not has_sensitivity
@@ -1041,21 +1041,21 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     from gui.plotting.plot_style import save_style_json
 
     def _write_raw_txt(path: Path) -> None:
-        write_measurements_txt(state.measurement_set, str(path))
+        write_measurements_txt(model.measurement_set, str(path))
 
     def _write_raw_csv(path: Path) -> None:
-        write_measurements_csv(state.measurement_set, str(path))
+        write_measurements_csv(model.measurement_set, str(path))
 
     def _write_results_json(path: Path) -> None:
-        export_results(state.fit_results, path)
+        export_results(model.fit_results, path)
 
-    replica_ids = state.measurement_set.replica_ids if ms_loaded else None
+    replica_ids = model.measurement_set.replica_ids if ms_loaded else None
 
     def _write_results_txt(path: Path) -> None:
-        export_results_txt(state.fit_results, path, replica_ids=replica_ids)
+        export_results_txt(model.fit_results, path, replica_ids=replica_ids)
 
     def _write_results_csv(path: Path) -> None:
-        export_results_csv(state.fit_results, path, replica_ids=replica_ids)
+        export_results_csv(model.fit_results, path, replica_ids=replica_ids)
 
     def _write_fit_plot(path: Path) -> None:
         session._plot_widget.export_image(str(path))
@@ -1068,7 +1068,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
 
     def _write_budget_csv(path: Path) -> None:
         """The budget table as the Ka Sensitivity tab reports it, one row per source and Ka."""
-        result = state.sensitivity_result
+        result = model.sensitivity_result
         budgets = (result.budget or {}).values()
         # A Sobol run always has a budget per binding constant; whether it holds
         # a number is the question, and a file of empty cells answers nothing.

@@ -64,6 +64,7 @@ from core.pipeline.sensitivity import SensitivityResult
 from core.pipeline.varpro import SECOND_STEP_LEVEL, KaInterval
 from gui.plotting.colors import INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
 from gui.plotting.labels import (
+    describe_replicates,
     fmt_estimate,
     fmt_interval_html,
     fmt_param,
@@ -80,7 +81,6 @@ from gui.plotting.labels import (
 from gui.plotting.plot_style import DEFAULT_STYLE
 from gui.plotting.sensitivity_widget import _LogKaAxis
 from gui.widgets.assay_conditions import condition_fields, result_input_labels
-from gui.widgets.replica_panel import describe_replicates
 
 _BAND = (82, 81, 78, 28)
 # The input-aware curve, its band, its cut-off and its estimate: one colour for

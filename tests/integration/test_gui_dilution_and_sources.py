@@ -106,7 +106,7 @@ def make_session(qapp, monkeypatch):
 
     yield build
     for session in built:
-        session.shutdown()
+        session.model.shutdown()
 
 
 def test_a_diluted_fit_with_a_shared_source_is_read_back_as_the_fit_it_was(qapp, make_session, tmp_path):
@@ -115,8 +115,8 @@ def test_a_diluted_fit_with_a_shared_source_is_read_back_as_the_fit_it_was(qapp,
 
     fitting, dialogs = make_session()
     fitting.run_fit()
-    _wait_until(qapp, lambda: fitting._state.fit_results)
-    (made,) = fitting._state.fit_results
+    _wait_until(qapp, lambda: fitting.model.fit_results)
+    (made,) = fitting.model.fit_results
     assert dialogs == [], 'nothing about the configuration stopped the fit'
 
     # The two facts are in the fit's own record, where every report reads them.
@@ -136,8 +136,7 @@ def test_a_diluted_fit_with_a_shared_source_is_read_back_as_the_fit_it_was(qapp,
 
     # A second session, set up the same way, shows the imported fit with no note.
     other, _ = make_session()
-    other._state.held_fit_results = [checked]
-    other._show_results(force=True)
+    other.model.show_imported([checked], str(path))
 
-    assert other._state.fit_results == [checked]
-    assert other.hidden_results_note() is None
+    assert other.model.fit_results == [checked]
+    assert other.model.hidden_results_note() is None

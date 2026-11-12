@@ -33,6 +33,7 @@ from __future__ import annotations
 import math
 import re
 from html import escape, unescape
+from typing import Iterable, Sequence
 
 from core.units import ureg
 from gui.plotting.colors import INK_2, NOTE_SURFACE
@@ -42,6 +43,9 @@ _SUBSCRIPT_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉'
 _SUB_TAG_RE = re.compile(r'<sub>(.*?)</sub>')
 _SUP_TAG_RE = re.compile(r'<sup>(.*?)</sup>')
 _ANY_TAG_RE = re.compile(r'<[^>]+>')
+
+#: What a sensitivity run says while it stops: the status bar and the Ka Sensitivity tab both show it.
+STOPPING_TEXT = 'Stopping — finishing the fits already running…'
 
 # Decimals that separate every R² a double can hold from 1: the largest double
 # below 1 is 1 − 1.1×10⁻¹⁶.
@@ -1287,3 +1291,50 @@ def _shift_order(shift) -> tuple:
     if shift.z is None:
         return (1, -abs(shift.fraction), shift.key)
     return (0, -abs(shift.z), shift.key)
+
+
+def plain_number(value: float) -> str:
+    """Up to four significant figures, with a power of ten written as ``1.68×10⁷``."""
+    mantissa, _, exponent = f'{value:.4g}'.partition('e')
+    return f'{mantissa}×10{str(int(exponent)).translate(_SUPERSCRIPT_DIGITS)}' if exponent else mantissa
+
+
+def _display_label(index: int) -> str:
+    """Map a zero-based replica index to an A–Z display label.
+
+    For indices 0–25 returns 'A'–'Z'.  Beyond that, returns 'AA', 'AB', etc.
+    """
+    if index < 26:
+        return chr(65 + index)
+    # Overflow: AA, AB, ...
+    return chr(65 + index // 26 - 1) + chr(65 + index % 26)
+
+
+def describe_replicates(replica_ids: Iterable[str], order: Sequence[str] | None = None) -> str:
+    """Name *replica_ids* as the Replicates panel does: ``replicate B``, ``replicates B–H``, ``replicates A, C and E``.
+
+    A replicate is named by its display label, from its position in *order*
+    (the loaded data's replicate ids), with three or more neighbours joined
+    into a span. When *order* is missing or lacks one of them, the ids are
+    named as they are.
+    """
+    ids = list(replica_ids)
+    noun = 'replicate' if len(ids) == 1 else 'replicates'
+    order = list(order or ())
+    if all(rid in order for rid in ids):
+        runs: list[list[int]] = []
+        for pos in sorted(order.index(rid) for rid in ids):
+            if runs and pos == runs[-1][-1] + 1:
+                runs[-1].append(pos)
+            else:
+                runs.append([pos])
+        names = []
+        for run in runs:
+            if len(run) >= 3:
+                names.append(f'{_display_label(run[0])}–{_display_label(run[-1])}')
+            else:
+                names.extend(_display_label(pos) for pos in run)
+    else:
+        names = ids
+    joined = names[0] if len(names) == 1 else f'{", ".join(names[:-1])} and {names[-1]}'
+    return f'{noun} {joined}'
