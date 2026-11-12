@@ -171,6 +171,7 @@ class ExportMultipleDialog(QDialog):
             saved_sel = s.value('selected', None)
             saved_folder = s.value('folder', '', type=str)
             saved_base = s.value('filename_base', '', type=str)
+            saved_dataset = s.value('filename_dataset', '', type=str)
         finally:
             s.endGroup()
 
@@ -193,7 +194,7 @@ class ExportMultipleDialog(QDialog):
 
         # Base: prefer the saved value only if it's still relevant.
         default_base = self._session._default_filename_base()
-        self._base_edit.setText(saved_base or default_base)
+        self._base_edit.setText(saved_base if saved_base and saved_dataset == default_base else default_base)
 
     def _save_settings(self) -> None:
         s = _settings()
@@ -205,6 +206,7 @@ class ExportMultipleDialog(QDialog):
             )
             s.setValue('folder', self._folder_edit.text())
             s.setValue('filename_base', self._base_edit.text())
+            s.setValue('filename_dataset', self._session._default_filename_base())
         finally:
             s.endGroup()
 
