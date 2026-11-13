@@ -79,33 +79,38 @@ class InfoButton(QToolButton):
         self.setToolTip(title or 'Info')
 
     def _show(self) -> None:
-        dlg = QDialog(self.window())
-        dlg.setWindowTitle(self._title or 'Info')
-        dlg.setMinimumSize(560, 420)
+        show_help(self.window(), self._title or 'Info', self._html)
 
-        layout = QVBoxLayout(dlg)
 
-        label = QLabel(self._html)
-        label.setWordWrap(True)
-        label.setTextFormat(Qt.TextFormat.RichText)
-        label.setOpenExternalLinks(True)
-        label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.LinksAccessibleByMouse
-        )
-        label.setMargin(8)
-        label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+def show_help(parent, title: str, html_body: str) -> None:
+    """Show *html_body* in a modal dialog titled *title* over *parent*, scrolled, with a Close button."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setMinimumSize(560, 420)
 
-        scroll = QScrollArea()
-        scroll.setWidget(label)
-        scroll.setWidgetResizable(True)
-        layout.addWidget(scroll)
+    layout = QVBoxLayout(dlg)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(dlg.reject)
-        buttons.accepted.connect(dlg.accept)
-        layout.addWidget(buttons)
+    label = QLabel(html_body)
+    label.setWordWrap(True)
+    label.setTextFormat(Qt.TextFormat.RichText)
+    label.setOpenExternalLinks(True)
+    label.setTextInteractionFlags(
+        Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.LinksAccessibleByMouse
+    )
+    label.setMargin(8)
+    label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
-        dlg.exec()
+    scroll = QScrollArea()
+    scroll.setWidget(label)
+    scroll.setWidgetResizable(True)
+    layout.addWidget(scroll)
+
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+    buttons.rejected.connect(dlg.reject)
+    buttons.accepted.connect(dlg.accept)
+    layout.addWidget(buttons)
+
+    dlg.exec()
 
 
 class InfoGroupBox(QGroupBox):

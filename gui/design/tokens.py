@@ -32,6 +32,12 @@ SIZE = {
     'menu-item': 32,
     'axis-left': 56,
     'axis-bottom': 44,
+    # The column grid of the Input uncertainty inputs table; the span column takes the rest.
+    'input-name': 168,
+    'input-kind': 156,
+    'stated-in': 88,
+    'spread-bar': 96,
+    'input-row': 60,
 }
 
 # ── Colour: one map per theme, the same keys in both.

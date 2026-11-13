@@ -74,12 +74,12 @@ from core.units import Q_  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-def test_the_heatmap_axes_offer_the_inputs_the_uncertainty_panel_names(qapp):
-    """A heatmap sweeps two of the assay's inputs, so its axes are the rows of the panel that states them."""
-    from gui.widgets.input_uncertainty_panel import InputUncertaintyPanel
+def test_the_heatmap_axes_offer_the_inputs_input_uncertainty_names(qapp):
+    """A heatmap sweeps two of the assay's inputs, so its axes are the inputs Input uncertainty states."""
+    from gui.uncertainty import UncertaintyForm
     from gui.widgets.sensitivity_panel import SensitivityPanel
 
-    inputs, panel = InputUncertaintyPanel(), SensitivityPanel()
+    inputs, panel = UncertaintyForm(), SensitivityPanel()
 
     for assay_type, keys in (
         (AssayType.IDA, {TITRANT, 'Ka_dye', 'h0', 'd0'}),
@@ -87,7 +87,7 @@ def test_the_heatmap_axes_offer_the_inputs_the_uncertainty_panel_names(qapp):
         # A single-condition assay: just the titrant + its one fixed concentration.
         (AssayType.DBA_HtoD, {TITRANT, 'fixed_conc'}),
     ):
-        inputs.set_assay_type(assay_type)
+        inputs.set_assay(assay_type)
         panel.set_assay_type(assay_type)
         panel.set_inputs(inputs.input_labels())
 
@@ -545,7 +545,7 @@ def test_ka_sensitivity_tab_names_the_indices_one_way_and_the_uncertainty_group(
     from gui.plotting.sensitivity_widget import SensitivityWidget
 
     w = SensitivityWidget()
-    assert 'Input Uncertainty' in w._placeholder.text() and 'Δ' not in w._placeholder.text()
+    assert 'Input uncertainty' in w._placeholder.text() and 'Δ' not in w._placeholder.text()
 
     w.update_result(replace(_sobol_result(), sobol_rows_left_out={'Ka_guest': 3}, sobol_s1={'Ka_guest': {'h0': 4.0}}))
     (index_panel,) = [
@@ -1339,8 +1339,9 @@ def _demo_session(monkeypatch):
     session.model.load_files(['data/IDA_system.txt'])
     # Every uncertainty row opens fixed, so the analysis has nothing to vary
     # until one is stated: σ 5 % on each of the assay's four inputs.
-    for row in session._input_panel._rows.values():
-        row.set_spec(InputSpec.sigma_pct(5.0))
+    form = session.model.uncertainty
+    form.set_specs({key: InputSpec.sigma_pct(5.0) for key in form.keys})
+    session.model.uncertainty_edited()
     combo = session._sensitivity_panel._samples_combo
     combo.setCurrentIndex(combo.findData(1024))
     return session, warnings
@@ -1671,7 +1672,7 @@ def _no_index_result(*, stopped: bool):
 
 @pytest.mark.parametrize(
     ('stopped', 'fix'),
-    [(True, 'let it finish'), (False, 'Input Uncertainty')],
+    [(True, 'let it finish'), (False, 'Input uncertainty')],
     ids=['stopped', 'failed'],
 )
 def test_an_index_panel_with_no_bars_says_why_it_is_empty(qapp, stopped, fix):
@@ -2120,7 +2121,7 @@ def test_the_additions_row_says_the_interval_the_fit_reports_holds_it_when_state
     w.update_result(_shared_source_result())
     texts = [label.text() for label in w._results_host.widget().findChildren(QLabel)]
     assert any(
-        'The random error of each addition is part of the reported interval when stated under Input Uncertainty' in text
+        'The random error of each addition is part of the reported interval when stated under Input uncertainty' in text
         for text in texts
     )
     assert not any('does not include the random error of each addition' in text for text in texts)
@@ -2140,7 +2141,7 @@ def test_the_page_says_it_propagates_the_stated_uncertainties_and_how_that_diffe
     w.update_result(_sobol_result())
     (caption,) = [text for text in _labels(w) if 'GUM Supplement 1' in text]
 
-    assert 'propagate the uncertainties stated under Input Uncertainty' in caption
+    assert 'propagate the uncertainties stated under Input uncertainty' in caption
     assert 'input-aware interval on the Fit Curve tab also weighs what the data say about the inputs' in caption
     assert 'can differ' in caption and 'splits' not in caption
 

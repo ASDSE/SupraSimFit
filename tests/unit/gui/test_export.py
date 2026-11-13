@@ -197,7 +197,8 @@ def analysed_session(qapp, monkeypatch):
             return session
         run = _made_on(result, session.model.measurement_set, session._assay_panel.current_conditions())
         for key, spec in run.config.errors.specs.items():
-            session._input_panel._rows[key].set_spec(spec)
+            session.model.uncertainty.set_spec(key, spec)
+            session.model.uncertainty_edited()
         session.model._on_sensitivity_complete(run)
         assert session.model.sensitivity_note is None, 'the run has to be the one the session is showing'
         return session

@@ -1,6 +1,6 @@
 """The Ka Sensitivity panel: the run's own settings, on specs stated elsewhere.
 
-The error model is stated in the Input Uncertainty panel (its own test file); this panel
+The error model is stated in Input uncertainty (its own test files); this panel
 takes it from the caller. Pins:
 
 - the axis combos offer the inputs it was given, named as that panel names them, and
@@ -43,7 +43,7 @@ _KA_DYE = 16.8e6  # M⁻¹, the Ka,dye set in the conditions form
 _H0 = 4.3e-6  # M
 _D0 = 6e-6  # M
 
-#: The IDA inputs as the Input Uncertainty panel names them.
+#: The IDA inputs as Input uncertainty names them.
 _IDA_LABELS = {
     'Ka_dye': 'Ka,dye',
     'h0': '[Host]₀',
@@ -68,7 +68,7 @@ def _heatmap(panel, x_key: str, y_key: str) -> None:
     panel._y_combo.setCurrentIndex(panel._y_combo.findData(y_key))
 
 
-def test_the_axis_combos_offer_the_inputs_they_were_given_named_as_the_uncertainty_panel_names_them(qapp):
+def test_the_axis_combos_offer_the_inputs_they_were_given_named_as_input_uncertainty_names_them(qapp):
     from gui.widgets.sensitivity_panel import SensitivityPanel
 
     panel = SensitivityPanel()
@@ -134,7 +134,7 @@ def test_indices_need_a_source_that_varies_and_say_so(qapp):
     (problem,) = panel.run_problems(ErrorModel())
     assert problem == (
         'No input varies, so there is no spread to split. Set an uncertainty for at least one input '
-        'under Input Uncertainty.'
+        'under Input uncertainty.'
     )
     with pytest.raises(ValueError, match='No input varies'):
         panel.current_config(ErrorModel())
@@ -149,7 +149,7 @@ def test_a_heatmap_axis_that_is_fixed_or_used_twice_blocks_the_run_naming_the_in
     _heatmap(panel, TITRANT, 'h0')
 
     assert panel.run_problems(ErrorModel(specs={TITRANT: InputSpec.sigma_pct(7.0)})) == [
-        '[Host]₀ is a heatmap axis, so it cannot be fixed: set a σ or a range for it under Input Uncertainty.'
+        '[Host]₀ is a heatmap axis, so it cannot be fixed: set a σ or a range for it under Input uncertainty.'
     ]
 
     _heatmap(panel, 'Ka_dye', 'Ka_dye')
@@ -209,7 +209,7 @@ def test_an_assay_with_no_association_constant_is_unavailable_and_says_why(qapp)
 
 
 def test_a_panel_never_told_its_inputs_refuses_to_configure_a_run(qapp):
-    """The axis names come from the uncertainty panel; without them the panel guesses nothing."""
+    """The axis names come from Input uncertainty; without them the panel guesses nothing."""
     from gui.widgets.sensitivity_panel import SensitivityPanel
 
     panel = SensitivityPanel()
@@ -261,7 +261,7 @@ def test_the_help_says_what_one_sample_is_and_where_the_uncertainties_are_set():
     text = ' '.join(sensitivity_panel._SECTION_HELP_HTML.split())
     assert 'one complete, deterministic fit of the averaged signal of the replicates your fit used' in text
     assert 'the same inputs always give the same K<sub>a</sub>' in text
-    assert 'the uncertainty you set under <i>Input Uncertainty</i>' in text
+    assert 'the uncertainty you set under <i>Input uncertainty</i>' in text
     assert 'a propagation of the uncertainties you stated (GUM Supplement 1)' in text
     assert 'also weighs what the data say about the inputs, so the two can differ' in text
     assert 'the same uncertainties widen the interval' not in text

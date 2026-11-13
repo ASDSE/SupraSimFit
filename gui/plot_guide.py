@@ -23,7 +23,7 @@ DEMO_NOTE = (
     'K<sub>a,dye</sub> and &sigma; 3&thinsp;% on [Host]<sub>0</sub>, [Dye]<sub>0</sub> and the titrant. '
     'Unless an example says otherwise, its numbers are the fit at the inputs as entered: the '
     '<i>Conditional on entered inputs</i> column and the black curve on the Identifiability tab, and every '
-    'view once each row of Input Uncertainty is set to <i>fixed</i>.'
+    'view once each row of Input uncertainty is set to <i>fixed</i>.'
 )
 
 _FIT_CURVE_HTML = """
@@ -46,7 +46,7 @@ intervals, and the fit at the entered inputs are in the summary table.</li>
 
 <p><b>The interval and the inputs</b></p>
 <p>The interval is the range of K<sub>a</sub> your data do not reject. What it covers depends on
-what you state under <i>Input Uncertainty</i> in the sidebar &mdash; how well you know the titrant
+what you state under <i>Input uncertainty</i> in the sidebar &mdash; how well you know the titrant
 concentrations, <i>[Host]<sub>0</sub></i>, <i>[Dye]<sub>0</sub></i>, <i>K<sub>a,dye</sub></i>:</p>
 <ul>
 <li>Every input <i>fixed</i> (how the panel opens): the interval takes those numbers as exact. It
@@ -115,7 +115,7 @@ hovering over that axis explains the step.</li>
 <li>A per-replicate fit of a model with one K<sub>a</sub> adds a thin grey line per replicate: that
 replicate on its own. The black line and the CI use their average.</li>
 <li>Second curve, <i>with input uncertainties</i>: shown when you state an uncertainty for an input
-under <i>Input Uncertainty</i>. At each K<sub>a</sub> the fit may also move those inputs inside what
+under <i>Input uncertainty</i>. At each K<sub>a</sub> the fit may also move those inputs inside what
 you stated, so this curve runs at or above the black one and its band &mdash; the interval the app
 reports &mdash; is usually the wider of the two. The black curve and the faint band under it are the
 same profile with every input held exactly as entered. Where you state only the random error of each
@@ -193,7 +193,7 @@ baseline used &mdash; with the inputs moved by the error sources you stated: a &
 normal distribution, a range evenly between its ends.</p>
 
 <p><b>What is ranked: sources, not inputs</b></p>
-<p>The sources come from <i>Input Uncertainty</i> in the sidebar, the same statement the fit&rsquo;s
+<p>The sources come from <i>Input uncertainty</i> in the sidebar, the same statement the fit&rsquo;s
 own interval rests on; this panel sets only how the analysis is run. There are three kinds:</p>
 <ul>
 <li>an input&rsquo;s <b>own</b> uncertainty &mdash; the error that input alone has;</li>
@@ -295,7 +295,7 @@ samples that effectively carry the weight, and a first-order formula follows it 
 Where too few samples carry the weight, or you take the source as exact and leave none to re-weight,
 the formula gives the spread instead and the sentence says so. No fit is run for a what-if.</p>
 <p>The random error of each addition is part of the reported interval when stated under Input
-Uncertainty; here it is sampled and ranked against the other sources. With <i>m</i> replicates
+uncertainty; here it is sampled and ranked against the other sources. With <i>m</i> replicates
 made as separate titrations it is drawn at &sigma;/&radic;<i>m</i>, the error of their average;
 replicates stated as repeated reads of one titration share their additions, and it is drawn at
 &sigma;.</p>

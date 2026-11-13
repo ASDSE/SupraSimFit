@@ -57,7 +57,7 @@ the dye concentrations are the titrant series read from the data file.
 GDA will only give a meaningful K<sub>a,guest</sub> if these inputs are
 accurate &mdash; errors in K<sub>a,dye</sub> propagate directly into the
 fitted K<sub>a,guest</sub>. How well each of them, and the titrant series, is
-known belongs under <b>Input Uncertainty</b>: state it and the fit may move that
+known belongs under <b>Input uncertainty</b>: state it and the fit may move that
 input within what you stated, so the reported confidence interval covers the
 entry error as well as the scatter of the data.</p>
 
@@ -104,7 +104,7 @@ and host&ndash;guest equilibria at each guest concentration
 K<sub>a,dye</sub> is typically obtained from a prior DBA fit of the same
 host&ndash;dye pair &mdash; which gives it a confidence interval of its own.
 Enter that interval, and the uncertainty of the concentrations and of the
-titrant series, under <b>Input Uncertainty</b>: the fit may then move each input
+titrant series, under <b>Input uncertainty</b>: the fit may then move each input
 within what you stated, and the reported interval for K<sub>a,guest</sub> covers
 that freedom instead of assuming the numbers are exact.</p>
 
@@ -163,7 +163,7 @@ of the experiment, not of the fitter.</p>
 <p><b>Known Conditions</b></p>
 <p>The fixed dye concentration [D]<sub>0</sub> is the one condition you supply,
 and the host concentrations are the titrant series. Both come from a weighing
-and a dilution: state how well you know them under <b>Input Uncertainty</b> and
+and a dilution: state how well you know them under <b>Input uncertainty</b> and
 the reported interval for K<sub>a,dye</sub> covers that error too.</p>
 
 <p><b>When to Use It</b></p>
@@ -201,7 +201,7 @@ them, the summary marks those coefficients with *.</p>
 <p><b>Known Conditions</b></p>
 <p>The fixed host concentration [H]<sub>0</sub> is the one condition you supply,
 and the dye concentrations are the titrant series. State how well you know them
-under <b>Input Uncertainty</b> and the reported interval for
+under <b>Input uncertainty</b> and the reported interval for
 K<sub>a,dye</sub> covers that error as well as the scatter of the data.</p>
 
 <p><b>When to Use It</b></p>
@@ -296,7 +296,7 @@ at the values you entered.</p>
 <p><b>Known Conditions</b></p>
 <p>Only the fixed total host <i>[H]<sub>0</sub></i> is required. State how well
 you know it, and the guest concentrations of the titrant series, under
-<b>Input Uncertainty</b> to have the reported intervals cover that error.</p>
+<b>Input uncertainty</b> to have the reported intervals cover that error.</p>
 """
 
 _DBA_H2G_HTML = """
@@ -346,7 +346,7 @@ region of the pair holds them at the values you entered.</p>
 <p><b>Known Conditions</b></p>
 <p>Only the fixed total host <i>[H]<sub>0</sub></i> is required. State how well
 you know it, and the guest concentrations of the titrant series, under
-<b>Input Uncertainty</b> to have the reported intervals cover that error.</p>
+<b>Input uncertainty</b> to have the reported intervals cover that error.</p>
 """
 
 ASSAY_DESCRIPTIONS: dict[str, tuple[str, str]] = {

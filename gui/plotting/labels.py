@@ -476,6 +476,21 @@ PARAM_LABELS_PLAIN: dict[str, str] = {
 }
 
 
+#: A binding constant as the interface names it (DESIGN.md §9): its subscript and its name.
+CONSTANT_NAMES: dict[str, str] = {
+    'Ka_guest': 'K<sub>a</sub> guest',
+    'Ka_dye': 'K<sub>a,dye</sub>',
+    'Ka_HG': 'K<sub>a</sub> HG',
+    'Ka_HG2': 'K<sub>a</sub> HG₂',
+    'Ka_H2G': 'K<sub>a</sub> H₂G',
+}
+
+
+def fmt_constant(key: str) -> str:
+    """Binding constant *key* as the glossary names it, in HTML: ``K<sub>a</sub> guest``; *key* itself if unknown."""
+    return CONSTANT_NAMES.get(key, key)
+
+
 def fmt_param_plain(name: str) -> str:
     """Return a plain-text (no HTML) parameter label, fallback to raw name."""
     return PARAM_LABELS_PLAIN.get(name, name)
@@ -916,7 +931,7 @@ def fmt_shift(shift, label: str, *, html: bool) -> str:
     shift : core.pipeline.diagnostics.InputShift
         The fitted offset of one input.
     label : str
-        The input's name as the Input Uncertainty panel writes it.
+        The input's name as Input uncertainty writes it (:meth:`~gui.uncertainty.UncertaintyForm.input_labels`).
     html : bool
         Whether the result goes into a rich-text widget, which needs its
         markup characters escaped.
@@ -1080,7 +1095,7 @@ def verdict_sentence(diagnostics, shifts, labels, *, html: bool) -> str:
         Where the fit put every input it was free to move; empty when every
         input was taken as entered.
     labels : Mapping[str, str]
-        Each input's name as the Input Uncertainty panel writes it.
+        Each input's name as Input uncertainty writes it (:meth:`~gui.uncertainty.UncertaintyForm.input_labels`).
     html : bool
         Whether the result goes into a rich-text widget.
     """
@@ -1117,7 +1132,7 @@ def _verdict_text(diagnostics, shifts, labels) -> str:
             )
         return (
             f'The model does not describe the data at the entered inputs ({fmt_misfit(test, named=False)}). '
-            f'{_MODEL_TAIL} Enter the uncertainty of the inputs under Input Uncertainty to test whether the '
+            f'{_MODEL_TAIL} Enter the uncertainty of the inputs under Input uncertainty to test whether the '
             'inputs explain it.'
         )
 
@@ -1264,7 +1279,7 @@ def verdict_headline(diagnostics) -> tuple[str, str]:
 
 
 def fmt_shifts(shifts, labels, *, html: bool) -> str:
-    """Every shift of one fit, largest ``|z|`` first, named as the Input Uncertainty panel names its inputs.
+    """Every shift of one fit, largest ``|z|`` first, named as Input uncertainty names its inputs.
 
     The inputs stated as a range come after the ones stated with a standard
     deviation — a range carries no ``z`` to rank by — and two that moved
@@ -1276,7 +1291,7 @@ def fmt_shifts(shifts, labels, *, html: bool) -> str:
     shifts : Mapping[str, core.pipeline.diagnostics.InputShift]
         Where the fit put every input it was free to move.
     labels : Mapping[str, str]
-        Each input's name as the Input Uncertainty panel writes it.
+        Each input's name as Input uncertainty writes it (:meth:`~gui.uncertainty.UncertaintyForm.input_labels`).
     html : bool
         Whether the result goes into a rich-text widget.
     """

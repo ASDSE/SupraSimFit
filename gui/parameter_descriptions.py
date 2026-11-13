@@ -38,7 +38,7 @@ Assays</b> (DBA Host&rarr;Dye and DBA Dye&rarr;Host). In IDA and GDA it
 is a <i>known</i> input that you supply in the Assay Configuration
 panel &mdash; those assays fit K<sub>a,guest</sub> instead. A value taken
 from an earlier DBA fit is known to within that fit&rsquo;s own interval:
-state it under <b>Input Uncertainty</b>, as a &sigma; or as
+state it under <b>Input uncertainty</b>, as a &sigma; or as
 the range itself, and the K<sub>a,guest</sub> interval reported covers that
 uncertainty rather than assuming the number exact.</p>
 
@@ -91,7 +91,7 @@ curve to lower guest concentrations.</p>
       guest is too weak to displace the dye under your conditions
       &mdash; decrease [H]<sub>0</sub> or use a weaker indicator.</li>
   <li>The interval reported covers whatever uncertainty you state for the
-      entered inputs under <b>Input Uncertainty</b>, with the interval
+      entered inputs under <b>Input uncertainty</b>, with the interval
       conditional on those inputs shown beside it. If stating a few percent
       on K<sub>a,dye</sub> or [Host]<sub>0</sub> widens it sharply, your
       K<sub>a,guest</sub> is limited by those numbers rather than by the
@@ -245,7 +245,7 @@ _KA_HG_HTML = _with_sci_note("""
 second-step constant, so judge it from its confidence interval and from the
 joint region of the pair on the <i>Identifiability</i> tab, not from the
 estimate alone. Its interval covers the uncertainty you state for the entered
-inputs under <b>Input Uncertainty</b>; the region of the pair holds them at the
+inputs under <b>Input uncertainty</b>; the region of the pair holds them at the
 values you entered.</p>
 """)
 

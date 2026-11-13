@@ -112,7 +112,7 @@ def test_the_side_panel_toggle_hides_the_side_panel_of_every_view(qapp, window):
 
     for session in window.sessions():
         assert all(view.side is None or view.side.isHidden() for view in session._views.values())
-    window.show_view('Input uncertainty')  # a view with no side panel offers no toggle
+    window.show_view('Binding model')  # a view with no side panel offers no toggle
     assert not window._toolbar.side.isEnabled()
 
 

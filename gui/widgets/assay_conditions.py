@@ -52,8 +52,7 @@ class ConditionField:
         ``"concentration"`` → nM / µM / mM / M selector (default µM),
         ``"binding_constant"`` → M⁻¹ selector,
         ``""`` → no selector, plain spinbox.
-        The choices and the default of each are listed in
-        ``_UNIT_TYPE_CHOICES`` in ``gui/widgets/assay_config_panel.py``.
+        The choices and the default of each are listed in :data:`UNIT_CHOICES`.
     """
 
     key: str
@@ -62,6 +61,13 @@ class ConditionField:
     default: float
     unit: str = ''
     unit_type: str = ''
+
+
+#: The units a condition of each ``unit_type`` can be entered in, and the one its field opens on.
+UNIT_CHOICES: dict[str, tuple[tuple[str, ...], str]] = {
+    'concentration': (('nM', 'µM', 'mM', 'M'), 'µM'),
+    'binding_constant': (('M⁻¹',), 'M⁻¹'),
+}
 
 
 # Maps AssayType → the condition fields its form shows, in the order they appear.
@@ -240,7 +246,7 @@ def input_labels(assay_type: AssayType) -> dict[str, str]:
     """Every input a fit of *assay_type* rests on, as an HTML display label.
 
     Its conditions, plus the titrant, which moves as one factor over the whole
-    series. One definition: the Input Uncertainty panel writes these names on
+    series. One definition: Input uncertainty writes these names on
     screen and the exported report writes them for the same inputs, so the two
     must not drift apart.
     """

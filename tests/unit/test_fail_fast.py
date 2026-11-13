@@ -316,7 +316,7 @@ class TestInputsTooFreeForTheData:
 
         message = str(refused.value)
         assert '[Host]₀' in message and 'Guest (titrant)' in message
-        assert 'Input Uncertainty' in message, 'the message has to say where to change it'
+        assert 'Input uncertainty' in message, 'the message has to say where to change it'
         assert 'h0' not in message, 'a message shows the labels the panel writes, never a dict key'
 
     def test_inputs_the_data_determine_take_the_same_room_and_the_fit_is_refused(self):

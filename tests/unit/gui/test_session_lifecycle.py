@@ -7,7 +7,7 @@ its widgets go. The long runs are stood in for by functions that do nothing but
 watch their cancel flag: what these tests pin is the stopping, not the science.
 
 One analysis at a time is checked here too, and so is what the two runs are
-given: both read the error sources from the one Input Uncertainty panel and
+given: both read the error sources from Input uncertainty and
 the dilution by the titrant from the Assay Configuration panel, and neither
 starts while what a panel states cannot be used as set.
 """
@@ -99,7 +99,8 @@ def _state_an_uncertainty(session, spec: InputSpec | None = None) -> None:
     Every row opens fixed, so without this the analysis is refused before a
     worker is ever started.
     """
-    session._input_panel._rows['h0'].set_spec(spec or InputSpec.sigma_pct(5.0))
+    session.model.uncertainty.set_spec('h0', spec or InputSpec.sigma_pct(5.0))
+    session.model.uncertainty_edited()
 
 
 def _state_dilution(session, stock: float, contains: tuple[str, ...] = ()) -> None:
@@ -117,9 +118,9 @@ def _state_dilution(session, stock: float, contains: tuple[str, ...] = ()) -> No
 
 
 def _state_shared_source(session, source: SharedSource) -> None:
-    """State *source* on the Input Uncertainty panel, as adding a row and filling it in does."""
-    session._input_panel._add_shared_row(source)
-    session._input_panel.specs_changed.emit()
+    """State *source* in Input uncertainty, as adding a source and filling it in does."""
+    session.model.uncertainty.add_source(source)
+    session.model.uncertainty_edited()
 
 
 def _session(dialogs):
@@ -329,7 +330,8 @@ def test_stopping_a_fit_leaves_the_session_as_it_was_and_lets_the_next_fit_start
     from gui import workers
 
     session = _session(dialogs)
-    session._input_panel.set_specs({})  # every input exact, so this first fit is the quick one
+    session.model.uncertainty.set_specs({})  # every input exact, so this first fit is the quick one
+    session.model.uncertainty_edited()
     session.run_fit()
     _wait_until(qapp, lambda: session.model.fit_results)
     _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
@@ -430,7 +432,7 @@ def test_the_demo_states_typical_input_uncertainties_and_says_so(qapp, dialogs, 
             TITRANT: InputSpec.sigma_pct(3.0),
         }
     )
-    assert session._input_panel.current_errors() == stated
+    assert session.model.uncertainty.errors() == stated
     assert session._bounds_panel.current_bounds() is None
     assert session.model.fit_running()
     assert session.model._fit_worker.config.errors == stated
@@ -592,15 +594,15 @@ def test_the_analysis_is_told_what_the_panel_calls_each_input(qapp, monkeypatch,
     session.run_sensitivity()
     _wait_until(qapp, lambda: session.model.sensitivity_result is not None)
 
-    assert seen == [session._input_panel.input_labels()]
+    assert seen == [session.model.uncertainty.input_labels()]
     assert seen[0], 'the panel names every input it offers'
 
 
 def test_the_fit_is_given_the_uncertainties_stated_in_the_panel(qapp, dialogs, watchful_fit):
     """The interval the fit reports covers these, so the fit has to be told exactly what the panel holds."""
     session = _session(dialogs)
-    session._input_panel._rows['d0'].set_spec(InputSpec.interval_pct(-6.0, 6.0))
-
+    session.model.uncertainty.set_spec('d0', InputSpec.interval_pct(-6.0, 6.0))
+    session.model.uncertainty_edited()
     session.run_fit()
     _wait_until(qapp, session.model._fit_worker.isRunning)
     _wait_until(qapp, lambda: bool(watchful_fit))
@@ -609,7 +611,7 @@ def test_the_fit_is_given_the_uncertainties_stated_in_the_panel(qapp, dialogs, w
     (config,) = watchful_fit
     assert config.errors == ErrorModel(specs={'h0': InputSpec.sigma_pct(5.0), 'd0': InputSpec.interval_pct(-6.0, 6.0)})
     # A refusal has to name an input the way the sidebar names it.
-    assert config.input_labels == session._input_panel.input_labels()
+    assert config.input_labels == session.model.uncertainty.input_labels()
     assert dialogs == []
 
 
@@ -622,7 +624,7 @@ def test_the_fit_is_refused_while_an_uncertainty_cannot_be_used_as_set(qapp, dia
 
     assert not session.model.fit_running()
     assert watchful_fit == []
-    assert dialogs[-1][1] == 'Input Uncertainty'
+    assert dialogs[-1][1] == 'Input uncertainty'
     assert 'would be taken down to zero' in dialogs[-1][2]
     assert '[Host]₀' in dialogs[-1][2]
 
@@ -701,7 +703,7 @@ def test_the_analysis_is_refused_while_a_shared_source_applies_to_one_input(qapp
     session.run_sensitivity()
 
     assert not session.model.sensitivity_running()
-    assert dialogs[-1][1] == 'Input Uncertainty'
+    assert dialogs[-1][1] == 'Input uncertainty'
     assert "'Host stock' applies to one" in dialogs[-1][2]
     assert 'tick a second input' in dialogs[-1][2]
 
@@ -738,13 +740,13 @@ def test_the_analysis_varies_the_inputs_the_shared_panel_states(qapp, monkeypatc
 
     monkeypatch.setattr(workers, 'run_sensitivity', record)
     session = _session(dialogs)
-    session._input_panel._rows['Ka_dye'].set_spec(InputSpec.sigma_pct(2.0))
-
+    session.model.uncertainty.set_spec('Ka_dye', InputSpec.sigma_pct(2.0))
+    session.model.uncertainty_edited()
     session.run_sensitivity()
     _wait_until(qapp, lambda: session.model.sensitivity_result is not None)
 
     (fit_config, sens_config) = seen[0]
-    assert sens_config.errors == session._input_panel.current_errors()
+    assert sens_config.errors == session.model.uncertainty.errors()
     assert set(sens_config.errors.specs) == {'h0', 'Ka_dye'}  # the rows left fixed are not drawn
     # The analysis perturbs the inputs itself, so every one of its fits takes them as given.
     assert fit_config.errors == ErrorModel()
@@ -754,29 +756,30 @@ def test_the_analysis_varies_the_inputs_the_shared_panel_states(qapp, monkeypatc
 def test_the_uncertainty_rows_are_locked_while_a_run_reads_them(qapp, dialogs, watchful_fit):
     """A run is reported against the uncertainties it was given, so they cannot be edited under it."""
     session = _session(dialogs)
-    row = session._input_panel._rows['h0']
-    assert row.isEnabled()
+    view = session._uncertainty
+    controls = [*view._rows['h0'].controls(), view.add_source, view.mode]
+    assert all(control.isEnabled() for control in controls)
 
     session.run_fit()
     _wait_until(qapp, session.model._fit_worker.isRunning)
 
-    assert not row.isEnabled()
+    assert not any(control.isEnabled() for control in controls)
 
     session.model.shutdown()
 
-    assert row.isEnabled()
+    assert all(control.isEnabled() for control in controls)
 
 
 def test_the_analysis_is_refused_while_every_input_is_fixed(qapp, dialogs):
     """With nothing to vary there is no spread to split, and the message says where to state one."""
     session = _session(dialogs)
-    session._input_panel._rows['h0'].set_spec(None)
-
+    session.model.uncertainty.set_spec('h0', None)
+    session.model.uncertainty_edited()
     session.run_sensitivity()
 
     assert not session.model.sensitivity_running()
     assert dialogs[-1][1] == 'Sensitivity Analysis'
-    assert 'Every input is set to fixed under Input Uncertainty' in dialogs[-1][2]
+    assert 'Every input is set to fixed under Input uncertainty' in dialogs[-1][2]
 
 
 def test_a_finished_analysis_leaves_no_worker_behind(qapp, monkeypatch, dialogs):
@@ -803,7 +806,8 @@ def _deliver_sensitivity(session):
     """
     run = _made_on(_sobol_result(), session.model.measurement_set, session._assay_panel.current_conditions())
     for key, spec in run.config.errors.specs.items():
-        session._input_panel._rows[key].set_spec(spec)
+        session.model.uncertainty.set_spec(key, spec)
+        session.model.uncertainty_edited()
     session.model._on_sensitivity_complete(run)
     return run
 

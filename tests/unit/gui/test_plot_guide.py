@@ -295,7 +295,7 @@ def test_the_sensitivity_entry_calls_the_per_addition_item_what_the_widget_label
 
     assert f'<b>{_ADDITIONS_LABEL}</b>' in text
     # A stated error of each addition is part of the fit's interval, and both texts say so.
-    statement = 'The random error of each addition is part of the reported interval when stated under Input Uncertainty'
+    statement = 'The random error of each addition is part of the reported interval when stated under Input uncertainty'
     assert _ADDITIONS_NOTE.startswith(statement)
     assert statement in text
     assert 'does not include the random error of each addition' not in text

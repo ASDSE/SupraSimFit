@@ -179,13 +179,13 @@ _BUDGET_CSV_COLUMNS = (
 )
 # How the additions entry relates to the interval the fit reports.
 _ADDITIONS_NOTE = (
-    'The random error of each addition is part of the reported interval when stated under Input Uncertainty; '
+    'The random error of each addition is part of the reported interval when stated under Input uncertainty; '
     'it is listed here to be ranked against the other sources.'
 )
 # What the numbers of a Sobol run are, said once above them: a propagation of the
 # stated uncertainties, and how that differs from the fit's input-aware interval.
 _PROPAGATION_NOTE = (
-    'The spread and the budget below propagate the uncertainties stated under Input Uncertainty (GUM Supplement 1): '
+    'The spread and the budget below propagate the uncertainties stated under Input uncertainty (GUM Supplement 1): '
     'every sample is a fit at inputs drawn from them, and each counts the same however well it fits the data. The '
     'input-aware interval on the Fit Curve tab also weighs what the data say about the inputs, so the two can '
     'differ, the spread here being the wider where the titration itself pins an input down.'
@@ -483,7 +483,7 @@ def _stated_pct(result: SensitivityResult, source: str) -> float:
 
 
 def _stated_text(result: SensitivityResult, source: str) -> str:
-    """The budget table's "Stated uncertainty" cell: what was entered under Input Uncertainty.
+    """The budget table's "Stated uncertainty" cell: what was entered under Input uncertainty.
 
     In percent of the entered value, whichever way it was stated, so the column
     compares. A range reads as its two ends, a standard deviation as ``σ``, the
@@ -903,7 +903,7 @@ def _no_index_reason(result: SensitivityResult) -> str:
         counts += f', although {fitted:,} sample{"" if fitted == 1 else "s"} {"was" if fitted == 1 else "were"} fitted'
     return (
         f'No index: {counts}. A group needs all of its fits, and none has them, so there is nothing to rank the '
-        'sources by. Narrow the uncertainties under Input Uncertainty, or widen the bounds under Parameter '
+        'sources by. Narrow the uncertainties under Input uncertainty, or widen the bounds under Parameter '
         'Bounds, and run it again.'
     )
 
@@ -944,7 +944,7 @@ class SensitivityWidget(QWidget):
         super().__init__(parent)
         self.setToolTip(
             '<qt>Spread of the fitted association constant when the inputs are '
-            'drawn from the error sources you stated under Input Uncertainty, each '
+            'drawn from the error sources you stated under Input uncertainty, each '
             'draw counted the same (a propagation of the stated uncertainties).<br>'
             'Sobol indices rank each source by how much of that spread it explains; '
             'the heatmap maps Ka over two swept inputs.<br>Every sample is one '
@@ -968,7 +968,7 @@ class SensitivityWidget(QWidget):
         self._stack = QStackedLayout(self._stack_host)
 
         self._placeholder = QLabel(
-            'Set how uncertain each input is under Input Uncertainty, then press Run Sensitivity Analysis.'
+            'Set how uncertain each input is under Input uncertainty, then press Run Sensitivity Analysis.'
         )
         self._placeholder.setWordWrap(True)
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1791,8 +1791,7 @@ class SensitivityWidget(QWidget):
         middle.setStyleSheet(f'color: {INK_2};')
         controls.addWidget(middle)
         spin = NoScrollDoubleSpinBox()
-        # The same reading as the percent boxes of the Input Uncertainty panel,
-        # so the figure asked for matches the figure stated.
+        # A percentage of the entered value, as an uncertainty is stated in Input uncertainty.
         spin.setDecimals(1)
         spin.setSingleStep(1.0)
         spin.setSuffix(' %')

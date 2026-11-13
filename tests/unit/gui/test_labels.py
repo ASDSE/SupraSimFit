@@ -504,14 +504,14 @@ class TestVerdictSentence:
             'The interval assumes a model the data reject; try another binding model or check the data.'
         )
 
-    def test_model_inadequate_with_nothing_varying_points_at_the_input_uncertainty_panel(self):
+    def test_model_inadequate_with_nothing_varying_points_at_input_uncertainty(self):
         from gui.plotting.labels import verdict_sentence
 
         d = _diagnostics('model_inadequate', conditional=_f_test(200.0, 1e-9), misfit=_f_test(200.0, 1e-9))
         assert verdict_sentence(d, {}, _LABELS, html=False) == (
             'The model does not describe the data at the entered inputs (F(9, 72) = 200, p < 0.001). '
             'The interval assumes a model the data reject; try another binding model or check the data. '
-            'Enter the uncertainty of the inputs under Input Uncertainty to test whether the inputs explain it.'
+            'Enter the uncertainty of the inputs under Input uncertainty to test whether the inputs explain it.'
         )
 
     def test_a_single_moved_input_is_not_named_as_the_cause(self):

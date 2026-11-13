@@ -98,8 +98,8 @@ def make_session(qapp, monkeypatch):
             session._assay_panel._field_widgets[key].setValue(value)
         session._assay_panel._stock_widget.setValue(_STOCK.magnitude)
         session._assay_panel._dilution_combo.setCurrentIndex(1)
-        session._input_panel._add_shared_row(_SHARED)
-        session._input_panel.specs_changed.emit()
+        session.model.uncertainty.add_source(_SHARED)
+        session.model.uncertainty_edited()
         session._fit_panel.set_config(FitConfig(per_replica=False))
         session.model.load(_diluted_data(), None)
         return session, dialogs

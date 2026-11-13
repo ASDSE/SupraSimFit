@@ -170,7 +170,7 @@ def main():
     ident_texts = texts(session._identifiability_widget)
 
     # ---- inputs
-    labels = session._input_panel.input_labels()
+    labels = session.model.uncertainty.input_labels()
     unc = []
     for key, spec in fs._DEMO_UNCERTAINTIES.items():
         unc.append(

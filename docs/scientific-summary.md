@@ -323,7 +323,7 @@ The $F$ cut-off takes the residual of the fit as the whole of its noise, of one 
 $$P_k(k) \;\le\; \mathrm{SSR}_{\min}\left(1 + \frac{\kappa_k\, m\, F(\alpha;\, m,\, n - p)}{n - p}\right).$$
 
 - **A noise law the replicates leave uncertain.** The weights of Section 4.4 are those of one share $\hat\lambda$ among the shares $\Lambda$ the replicates accept; under another the points have other relative variances.
-- **A random error of each titrant addition** (Section 9.5), stated under Input Uncertainty. It moves every point along the titrant axis; for additions into one cuvette most of it moves the whole curve the way another $K_a$ would, so the residual shows little of it while the estimate carries it all.
+- **A random error of each titrant addition** (Section 9.5), stated under Input uncertainty. It moves every point along the titrant axis; for additions into one cuvette most of it moves the whole curve the way another $K_a$ would, so the residual shows little of it while the estimate carries it all.
 
 With $J = [C \mid K]$ the Jacobian of the whitened fitted curve — $C$ the signal columns the fit leaves strictly inside their bounds, $K$ the derivative per decade of every free association constant with the coefficients held — partialling the signal parameters out gives $Q = (I - P_C)K$ and the linearised estimator $M = (Q'Q)^{-1}Q'$. Under a covariance $\Omega$ of the whitened residual rows its variance is the sandwich $M\Omega M'$, while the profile assumes $\hat\sigma^2 (Q'Q)^{-1}$, $\hat\sigma^2 = S/(n-p)$, and
 

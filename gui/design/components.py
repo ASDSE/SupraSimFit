@@ -174,6 +174,8 @@ class Button(QAbstractButton):
         self.setChecked(checked)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setFixedHeight(SIZE['control'])
+        # The label is painted, so it is also the name a screen reader announces.
+        self.setAccessibleName(text)
         self._font = font('body-strong' if variant == 'primary' else 'body')
         if variant == 'icon':
             self.setFixedWidth(SIZE['control'])
@@ -185,6 +187,8 @@ class Button(QAbstractButton):
 
     def set_text(self, text: str, icon_name: str | None = None) -> None:
         """Change the label (and the icon, *icon_name*) in place; the width stays, so a toolbar never shifts."""
+        if self.accessibleName() == self._text:
+            self.setAccessibleName(text)
         self._text = text
         if icon_name is not None:
             self._icon = icon_name
@@ -1002,11 +1006,14 @@ class Field(QWidget):
 
     ``number`` shows *text* right-aligned in tabular figures, with an optional quiet
     *prefix* (σ, from, to) at the left and *suffix* unit at the right; ``choice`` shows
-    *text* with a trailing chevron (a unit menu, a model menu). *width* 0 lets it fill
-    its column. *focused* draws the accent outline and the focus halo.
+    *text* with a trailing chevron (a unit menu, a model menu); an editable ``text`` field
+    takes words, left-aligned (a name). *width* 0 lets it fill its column. *focused* draws
+    the accent outline and the focus halo. A disabled field is drawn sunken, its text quiet.
     """
 
     edited = pyqtSignal(str)
+    #: The text as it is typed, before the edit is finished.
+    typed = pyqtSignal(str)
 
     def __init__(
         self,
@@ -1033,12 +1040,25 @@ class Field(QWidget):
         if editable:
             editor = QLineEdit(text, self)
             editor.setProperty('role', 'field')
-            editor.setFont(font('number'))
-            editor.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            words = kind == 'text'
+            editor.setFont(font('body' if words else 'number'))
+            side = Qt.AlignmentFlag.AlignLeft if words else Qt.AlignmentFlag.AlignRight
+            editor.setAlignment(side | Qt.AlignmentFlag.AlignVCenter)
             editor.editingFinished.connect(lambda: self.edited.emit(editor.text().strip()))
+            editor.textEdited.connect(self.typed)
             editor.installEventFilter(self)
             self.setFocusProxy(editor)
             self.editor = editor
+
+    @staticmethod
+    def width_for(sample: str, prefix: str = '', suffix: str = '') -> int:
+        """The width a number field needs to show *sample* in full beside *prefix* and *suffix*."""
+        width = 2 * space(3) + QFontMetrics(font('number')).horizontalAdvance(sample + '0')
+        if prefix:
+            width += QFontMetrics(font('body')).horizontalAdvance(prefix) + space(2)
+        if suffix:
+            width += QFontMetrics(font('small')).horizontalAdvance(suffix) + space(2)
+        return width
 
     def set_text(self, text: str) -> None:
         """Show *text*, in the editor too when the field is editable."""
@@ -1075,8 +1095,9 @@ class Field(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = _rounded(r, RADIUS['control'])
-        p.fillPath(path, t.q('bg-window' if t.dark else 'bg-surface'))
-        p.setPen(QPen(t.q('accent') if self.focused else t.q('border-strong', 0.9), 1))
+        on = self.isEnabled()
+        p.fillPath(path, t.q(('bg-window' if t.dark else 'bg-surface') if on else 'bg-subtle'))
+        p.setPen(QPen(t.q('accent') if self.focused else t.q('border-strong' if on else 'border', 0.9), 1))
         p.drawPath(path)
         if self.focused:
             p.setPen(QPen(t.q('accent', 0.25), 3))
@@ -1101,7 +1122,7 @@ class Field(QWidget):
             right += QFontMetrics(p.font()).horizontalAdvance(self.suffix) + space(2)
         if self.editor is None:
             p.setFont(font('number'))
-            p.setPen(t.q('text-primary'))
+            p.setPen(t.q('text-primary' if on else 'text-tertiary'))
             p.drawText(r.adjusted(0, 0, -right, 0), middle | Qt.AlignmentFlag.AlignRight, self.text)
         p.end()
 
@@ -1248,7 +1269,7 @@ class Segmented(QWidget):
         for i, opt in enumerate(self.options):
             seg = QRectF(2 + i * sw, 2, sw, r.height() - 4)
             sel = i == self.current
-            off = i in self.disabled
+            off = i in self.disabled or not self.isEnabled()
             if sel:
                 sp = _rounded(seg.adjusted(0.5, 0.5, -0.5, -0.5) if self.dividers else seg, RADIUS['control'] - 1)
                 p.fillPath(sp, t.q('bg-raised' if t.dark else 'bg-surface', 0.5 if off else 1.0))
@@ -1271,31 +1292,77 @@ class Segmented(QWidget):
             _focus_ring(p, t, r)
         p.end()
 
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange:
+            self.update()
+
 
 class Checkbox(QWidget):
-    """A 15-px box with its label: accent fill and a check when *checked*."""
+    """A 15-px box with its label: accent fill and a check when *checked*; a click or Space toggles it.
 
-    def __init__(self, t: Theme, text: str, checked: bool = False):
+    *rich* reads *text* as HTML, so an input's name keeps its subscript.
+    """
+
+    toggled = pyqtSignal(bool)
+
+    def __init__(self, t: Theme, text: str, checked: bool = False, rich: bool = False):
         super().__init__()
-        self.t, self.text, self.checked = t, text, checked
-        self.setFixedSize(QFontMetrics(font('body')).horizontalAdvance(text) + 24, SIZE['control'])
+        self.t, self.text, self.checked, self.rich = t, text, checked, rich
+        width = rich_width(text, 'body') if rich else QFontMetrics(font('body')).horizontalAdvance(text)
+        self.setFixedSize(math.ceil(width) + 24, SIZE['control'])
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_checked(self, checked: bool) -> None:
+        """Tick or untick the box without emitting :attr:`toggled`."""
+        self.checked = checked
+        self.update()
+
+    def _toggle(self) -> None:
+        self.checked = not self.checked
+        self.update()
+        self.toggled.emit(self.checked)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._toggle()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Space:
+            self._toggle()
+        else:
+            super().keyPressEvent(event)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange:
+            self.update()
 
     def paintEvent(self, _):
         t = self.t
         h = SIZE['control']
+        on = self.isEnabled()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = _rounded(QRectF(0.5, 6.5, 15, 15), 4)
         if self.checked:
-            p.fillPath(path, t.q('accent'))
+            p.fillPath(path, t.q('accent', 1.0 if on else 0.5))
             icons.paint(p, 'check', t.q('on-accent'), 2, 8, 12, 2.6)
         else:
-            p.fillPath(path, t.q('bg-raised' if t.dark else 'bg-surface'))
-            p.setPen(QPen(t.q('border-strong'), 1))
+            p.fillPath(path, t.q(('bg-raised' if t.dark else 'bg-surface') if on else 'bg-subtle'))
+            p.setPen(QPen(t.q('border-strong' if on else 'border'), 1))
             p.drawPath(path)
-        p.setFont(font('body'))
-        p.setPen(t.q('text-primary'))
-        p.drawText(QRectF(24, 0, self.width() - 24, h), Qt.AlignmentFlag.AlignVCenter, self.text)
+        tone = t.q('text-primary' if on else 'text-tertiary')
+        text_rect = QRectF(24, 0, self.width() - 24, h)
+        if self.rich:
+            paint_rich(p, text_rect, self.text, 'body', tone)
+        else:
+            p.setFont(font('body'))
+            p.setPen(tone)
+            p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter, self.text)
+        if self.hasFocus():
+            _focus_ring(p, t, QRectF(self.rect()))
         p.end()
 
 
@@ -1847,6 +1914,152 @@ class ShiftBar(QWidget):
         z = max(-4, min(4, self.z))
         x1, x2 = sorted((cx, cx + z * s))
         p.fillPath(_rounded(QRectF(x1, 5, max(x2 - x1, 1.5), h - 10), 1.5), t.q('text-secondary'))
+        p.end()
+
+
+class SpreadBar(QWidget):
+    """What an input's stated uncertainty spans, on one ±20 % axis shared by every row so the
+    inputs compare at a glance: the band from *span*'s low to high offset in percent (±2σ, or a
+    range's ends), the entered value at the centre. *span* ``None`` draws the entered value alone;
+    a band past the axis runs to its edge."""
+
+    TICK = 20.0  # the outermost tick, in percent
+    INSET = 20  # px from the column edge to that tick, room to centre its label
+
+    @classmethod
+    def scale(cls, width: int) -> float:
+        """Pixels per percent on a bar *width* wide."""
+        return (width / 2 - cls.INSET) / cls.TICK
+
+    def __init__(self, t: Theme, span: tuple[float, float] | float | None, width: int = 104):
+        super().__init__()
+        self.t = t
+        self.setFixedSize(width, 20)
+        self.set_span(span)
+
+    def set_span(self, span: tuple[float, float] | float | None) -> None:
+        """Show *span*: ``(low, high)`` offsets in percent, a half-width, or ``None``."""
+        self.span = (-span, span) if isinstance(span, (int, float)) else span
+        self.update()
+
+    def paintEvent(self, _):
+        t = self.t
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        s = self.scale(w)
+        p.setPen(QPen(t.q('border'), 1))
+        p.drawLine(QPointF(2, cy), QPointF(w - 2, cy))
+        for v in (-20, -10, 10, 20):
+            x = cx + v * s
+            p.drawLine(QPointF(x, cy - 2), QPointF(x, cy + 2))
+        if self.span is not None and self.span[1] > self.span[0]:
+            x1, x2 = (min(max(cx + v * s, 1.0), w - 1.0) for v in self.span)
+            p.fillPath(_rounded(QRectF(x1, cy - 4, x2 - x1, 8), 2), t.q('accent', 0.22))
+            pen = QPen(t.q('accent'), 2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            for x in (x1, x2):
+                p.drawLine(QPointF(x, cy - 5), QPointF(x, cy + 5))
+        p.setPen(QPen(t.q('text-primary'), 1.5))
+        p.drawLine(QPointF(cx, cy - 6), QPointF(cx, cy + 6))
+        p.end()
+
+
+class AxisScale(QWidget):
+    """The tick labels of a column of :class:`SpreadBar`, read once in the column's header."""
+
+    def __init__(self, t: Theme, width: int = 104):
+        super().__init__()
+        self.t = t
+        self.setFixedSize(width, 28)
+        self.setToolTip('Offset from the entered value, in percent.')
+
+    def paintEvent(self, _):
+        t = self.t
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setFont(font('small-number'))
+        p.setPen(t.q('text-tertiary'))
+        w, h = self.width(), self.height()
+        s = SpreadBar.scale(w)
+        # every label centred on its tick; the last one carries the axis unit
+        for v, txt in ((-20, '−20'), (0, '0'), (20, '+20 %')):
+            x = w / 2 + v * s
+            p.drawText(QRectF(x - 20, 0, 40, h), Qt.AlignmentFlag.AlignCenter, txt)
+        p.end()
+
+
+class CompactIntervals(QWidget):
+    """The interval chart stacked for the side panel: each row's label and numbers on one line,
+    its bar on a shared log axis below, the tick labels once at the bottom.
+
+    *rows* are as :class:`IntervalChart` takes them; ticks are labelled divided by *tick_scale*.
+    A row may carry a ``note`` in place of its bars, for a reading whose bars cannot be drawn.
+    """
+
+    ROW = 46
+
+    def __init__(self, t: Theme, rows: list[dict], lo: float, hi: float, ticks: list[float], tick_scale: float = 1.0):
+        super().__init__()
+        self.t = t
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.set_rows(rows, lo, hi, ticks, tick_scale)
+
+    def set_rows(self, rows: list[dict], lo: float, hi: float, ticks: list[float], tick_scale: float = 1.0) -> None:
+        """Show *rows* on the axis *lo* to *hi* with *ticks*."""
+        self.rows, self.lo, self.hi, self.ticks, self.tick_scale = rows, lo, hi, ticks, tick_scale
+        self.setFixedHeight(len(rows) * self.ROW + 20)
+        self.setAccessibleDescription(
+            '; '.join(
+                f'{row["label"]}: {row["text"]}' + (f' ({row["note"]})' if row.get('note') else '') for row in rows
+            )
+        )
+        self.update()
+
+    def _x(self, v: float) -> float:
+        w = self.width() - 12
+        return 6 + (math.log10(v) - math.log10(self.lo)) / (math.log10(self.hi) - math.log10(self.lo)) * w
+
+    def paintEvent(self, _):
+        t = self.t
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self.width()
+        bottom = len(self.rows) * self.ROW
+        for tk in self.ticks:
+            x = self._x(tk)
+            p.setPen(QPen(t.q('grid'), 1))
+            p.drawLine(QPointF(x, 22), QPointF(x, bottom))
+            p.setFont(font('small-number'))
+            p.setPen(t.q('text-tertiary'))
+            p.drawText(QRectF(x - 20, bottom + 2, 40, 16), Qt.AlignmentFlag.AlignHCenter, f'{tk / self.tick_scale:g}')
+        for i, row in enumerate(self.rows):
+            y = i * self.ROW
+            p.setFont(font('small'))
+            p.setPen(t.q('text-secondary'))
+            p.drawText(QRectF(0, y, w, 18), Qt.AlignmentFlag.AlignVCenter, row['label'])
+            p.setFont(font('number'))
+            p.setPen(t.q('text-primary'))
+            p.drawText(QRectF(0, y, w, 18), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, row['text'])
+            cy = y + 31
+            p.setPen(QPen(t.q('border'), 1))
+            p.drawLine(QPointF(6, cy), QPointF(w - 6, cy))
+            col = t.q(row['color'])
+            if row.get('note'):
+                p.setFont(font('small'))
+                p.setPen(t.q('text-tertiary'))
+                p.drawText(QRectF(6, cy - 9, w - 12, 18), Qt.AlignmentFlag.AlignVCenter, row['note'])
+            for a, b in row['segments']:
+                pen = QPen(col, 4)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                p.drawLine(QPointF(self._x(a), cy), QPointF(self._x(b), cy))
+            if row.get('est') is not None:
+                p.setPen(QPen(t.q('bg-surface'), 2))
+                p.setBrush(col)
+                p.drawEllipse(QPointF(self._x(row['est']), cy), 5, 5)
         p.end()
 
 

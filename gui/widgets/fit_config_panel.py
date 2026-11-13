@@ -59,7 +59,7 @@ replicates which share a wrong K<sub>a</sub> cannot pull the shared fit their
 way and push a good replicate out instead. The replicates kept are then
 compared for scatter (Cochran&rsquo;s test), and one whose scatter is far larger
 than the others&rsquo; is left out as well. Where you stated a random error of each
-addition under <b>Input Uncertainty</b> and the replicates are separate titrations,
+addition under <b>Input uncertainty</b> and the replicates are separate titrations,
 both steps allow for each replicate&rsquo;s own additions, which move its K<sub>a</sub>
 and its points apart from the others&rsquo;.</p>
 <p>Both steps work at a 1&thinsp;% level (the outlier level of
@@ -79,7 +79,7 @@ every binding constant, and the binding constants are searched over the whole
 range set under Parameter Bounds, so the same data and settings always give the
 same answer.</p>
 <p>What the reported confidence interval covers is set elsewhere, under
-<b>Input Uncertainty</b>: with every input fixed, as that panel starts, the
+<b>Input uncertainty</b>: with every input fixed, as that panel starts, the
 interval takes the conditions you entered as exact; state an uncertainty for one
 and the fit may move it within what you stated, and the interval covers that as
 well.</p>

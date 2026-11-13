@@ -8,7 +8,7 @@ result exports; undoing the change shows it again with identical numbers.
 Imports are checked against the loaded data, and work still running never
 reaches data it was not given.
 
-A change to what the Input Uncertainty panel states hides the fit too: the
+A change to what Input uncertainty states hides the fit too: the
 interval it reports is the one that covers the uncertainties the fit was given,
 so a different set of them asks a different question of the same data.
 
@@ -190,7 +190,8 @@ def _deliver_sensitivity(session, fit):
     result.baseline_fit.fit_config = {key: fit.fit_config[key] for key in ('custom_bounds', 'per_replicate')}
     fit.fit_config['input_uncertainty'] = specs_to_dict(result.config.errors.specs)
     for key, spec in result.config.errors.specs.items():
-        session._input_panel._rows[key].set_spec(spec)
+        session.model.uncertainty.set_spec(key, spec)
+        session.model.uncertainty_edited()
     session.model._on_sensitivity_complete(result)
     return result
 
@@ -324,17 +325,19 @@ def test_changing_an_uncertainty_hides_the_sensitivity_run_it_was_drawn_from(qap
     _deliver_sensitivity(session, fit)
     assert session.model.sensitivity_note is None
 
-    session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(30.0))
+    session.model.uncertainty.set_spec('h0', InputSpec.sigma_pct(30.0))
 
+    session.model.uncertainty_edited()
     assert session.model.sensitivity_note == (
-        'The input uncertainties have changed since this analysis; set them back under Input Uncertainty, or '
+        'The input uncertainties have changed since this analysis; set them back under Input uncertainty, or '
         'run the analysis again.'
     )
     assert session._summary_widget._sensitivity_note == session.model.sensitivity_note
     assert session._sensitivity_widget._mismatch_label.text() == session.model.sensitivity_note
 
-    session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(5.0))
+    session.model.uncertainty.set_spec('h0', InputSpec.sigma_pct(5.0))
 
+    session.model.uncertainty_edited()
     assert session.model.sensitivity_note is None
 
 
@@ -456,7 +459,7 @@ def test_changing_a_shared_source_hides_the_fit_and_names_it(qapp, make_session,
     _assert_hidden(
         session,
         'This fit was made with Host and dye stock (shared by [Host]₀, [Dye]₀) σ 4 %. The input uncertainties '
-        'set now differ: set them back under Input Uncertainty, or fit again to update the interval.',
+        'set now differ: set them back under Input uncertainty, or fit again to update the interval.',
     )
 
 
@@ -497,18 +500,20 @@ def test_stating_an_uncertainty_hides_the_fit_until_it_is_run_again(qapp, make_s
     session = _shown_session(qapp, make_session, fit)
     before = _numbers(session)
 
-    session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(5.0))
+    session.model.uncertainty.set_spec('h0', InputSpec.sigma_pct(5.0))
 
+    session.model.uncertainty_edited()
     # The note names what the fit was made with, so the panel can be set back
     # to it without opening the file the fit came from.
     _assert_hidden(
         session,
         'This fit was made with every input taken as exact. The input uncertainties set now differ: set them '
-        'back under Input Uncertainty, or fit again to update the interval.',
+        'back under Input uncertainty, or fit again to update the interval.',
     )
 
-    session._input_panel._rows['h0'].set_spec(None)
+    session.model.uncertainty.set_spec('h0', None)
 
+    session.model.uncertainty_edited()
     assert session.model.fit_results == [fit]
     assert _numbers(session) == before
 
@@ -522,11 +527,12 @@ def test_the_note_names_the_uncertainties_the_hidden_fit_was_made_with(qapp, mak
         {'h0': InputSpec.sigma_pct(10.0), '__titrant__': InputSpec.sigma_pct(3.0)}
     )
 
-    session._input_panel._rows['h0'].set_spec(InputSpec.sigma_pct(5.0))
+    session.model.uncertainty.set_spec('h0', InputSpec.sigma_pct(5.0))
 
+    session.model.uncertainty_edited()
     assert session.model.hidden_results_note() == (
         'This fit was made with [Host]₀ σ 10 % and Guest (titrant, whole series) σ 3 %. The input uncertainties '
-        'set now differ: set them back under Input Uncertainty, or fit again to update the interval.'
+        'set now differ: set them back under Input uncertainty, or fit again to update the interval.'
     )
 
 

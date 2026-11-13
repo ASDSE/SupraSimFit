@@ -56,6 +56,7 @@ from gui.plotting.labels import (
     stated_uncertainty,
     verdict_headline,
 )
+from gui.uncertainty import UncertaintyForm
 from gui.widgets.assay_conditions import (
     ASSAY_NAMES,
     assay_class,
@@ -96,7 +97,7 @@ _RESULTS_HIDDEN_NOTE = 'Results hidden — they do not describe the data and set
 #: only pointed at, as the conditions a fit was made with are.
 _INPUTS_CHANGED_NOTE = (
     'This fit was made with {stated}. The input uncertainties set now differ: set them back under Input '
-    'Uncertainty, or fit again to update the interval.'
+    'uncertainty, or fit again to update the interval.'
 )
 
 #: Read for ``{stated}`` of a fit that was made with every input taken as exact.
@@ -125,7 +126,7 @@ _STOCK_NOT_ABOVE_DATA = (
 #: ones set now. They are what the analysis samples, so the spread it reports
 #: and a heatmap's axes are entirely a function of them.
 _SENSITIVITY_INPUTS_NOTE = (
-    'The input uncertainties have changed since this analysis; set them back under Input Uncertainty, or run '
+    'The input uncertainties have changed since this analysis; set them back under Input uncertainty, or run '
     'the analysis again.'
 )
 
@@ -275,7 +276,7 @@ def _capitalized(text: str) -> str:
 def _stated_as(result: FitResult) -> str:
     """What *result* was told about its inputs and about what they share, read back from its own record.
 
-    Each source named and valued as the Input Uncertainty panel writes it — an
+    Each source named and valued as Input uncertainty writes it — an
     input's own uncertainty, after them the ones several inputs share, and last
     the random error of each addition with its mode and what the replicates
     are — so a note about a fit made with other uncertainties says which ones
@@ -409,6 +410,8 @@ class SessionModel(QObject):
         run ended without one and the previous result stands.
     warning(str, str)
         Work in the background failed: a title and a message to show.
+    uncertainty_changed()
+        The statement of the input uncertainties (:attr:`uncertainty`) changed.
     """
 
     status_changed = pyqtSignal(str)
@@ -420,10 +423,13 @@ class SessionModel(QObject):
     profile_changed = pyqtSignal()
     sensitivity_changed = pyqtSignal(bool)
     warning = pyqtSignal(str, str)
+    uncertainty_changed = pyqtSignal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._settings = SessionSettings()
+        #: What the user states about the inputs; :meth:`uncertainty_edited` after every change.
+        self.uncertainty = UncertaintyForm(self._settings.assay_type)
         self._dataset: Dataset | None = None
         self._custom_name: str | None = None
         self._progress: tuple[int, int] | None = None  # the running analysis's count, done of total
@@ -645,6 +651,20 @@ class SessionModel(QObject):
         self._settings = new
         if any(getattr(old, key) != getattr(new, key) for key in _CHECKED_SETTINGS & changes.keys()):
             self.check_results()
+
+    def uncertainty_settings(self) -> dict[str, Any]:
+        """The settings :attr:`uncertainty` states: the error model, the inputs' names and its problems."""
+        form = self.uncertainty
+        return {
+            'errors': form.errors(),
+            'input_labels': form.input_labels(),
+            'input_problems': tuple(form.problems()),
+        }
+
+    def uncertainty_edited(self) -> None:
+        """Take the statement of :attr:`uncertainty` as it reads now, and say it changed."""
+        self.update_settings(**self.uncertainty_settings())
+        self.uncertainty_changed.emit()
 
     def edit_finished(self) -> None:
         """Check the held results against the conditions, once an edit of them is finished."""
@@ -1248,7 +1268,7 @@ class SessionModel(QObject):
         for title, problems in (
             ('Assay Configuration', self._assay_problems(ms)),
             ('Parameter Bounds', self._settings.bound_problems),
-            ('Input Uncertainty', self._settings.input_problems),
+            ('Input uncertainty', self._settings.input_problems),
         ):
             if problems:
                 return Refusal(title, _problem_list(verb, problems))
@@ -1449,7 +1469,7 @@ class SessionModel(QObject):
         if not self._settings.errors.varies:
             return Refusal(
                 'Sensitivity Analysis',
-                'Every input is set to fixed under Input Uncertainty, so the analysis has nothing to vary. '
+                'Every input is set to fixed under Input uncertainty, so the analysis has nothing to vary. '
                 'Choose a σ or a range for at least one input.',
             )
         if problems:

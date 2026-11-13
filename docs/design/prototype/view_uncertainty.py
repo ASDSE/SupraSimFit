@@ -17,137 +17,14 @@ from __future__ import annotations
 
 import math
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QWidget
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QScrollArea, QWidget
 
 from gui.design import components as C
 from gui.design import icons
-from gui.design.tokens import Theme, font, space
+from gui.design.tokens import Theme, space
 
 from .common import DEMO, THIN, sci, split_stretches, sub
-
-# ── Painted pieces of this view ──────────────────────────────────────────────────────────
-
-
-class SpreadBar(QWidget):
-    """What a σ spans, on one shared ±20 % axis for every row so the inputs compare at
-    a glance: the ±2σ band (about 95 of every 100 draws), the entered value at the centre."""
-
-    TICK = 20.0  # the outermost tick, in percent
-    INSET = 20  # px from the column edge to that tick, room to centre its label
-
-    @classmethod
-    def scale(cls, width: int) -> float:
-        return (width / 2 - cls.INSET) / cls.TICK
-
-    def __init__(self, t: Theme, half_pct: float | None, width: int = 104):
-        super().__init__()
-        self.t, self.half = t, half_pct
-        self.setFixedSize(width, 20)
-
-    def paintEvent(self, _):
-        t = self.t
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        cx, cy = w / 2, h / 2
-        s = self.scale(w)
-        p.setPen(QPen(t.q('border'), 1))
-        p.drawLine(QPointF(2, cy), QPointF(w - 2, cy))
-        for v in (-20, -10, 10, 20):
-            x = cx + v * s
-            p.drawLine(QPointF(x, cy - 2), QPointF(x, cy + 2))
-        if self.half:
-            x1, x2 = cx - self.half * s, cx + self.half * s
-            band = QPainterPath()
-            band.addRoundedRect(QRectF(x1, cy - 4, x2 - x1, 8), 2, 2)
-            p.fillPath(band, t.q('accent', 0.22))
-            pen = QPen(t.q('accent'), 2)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(pen)
-            for x in (x1, x2):
-                p.drawLine(QPointF(x, cy - 5), QPointF(x, cy + 5))
-        p.setPen(QPen(t.q('text-primary'), 1.5))
-        p.drawLine(QPointF(cx, cy - 6), QPointF(cx, cy + 6))
-        p.end()
-
-
-class AxisScale(QWidget):
-    """Tick labels under the SpreadBar column, so its axis is read once, in the header."""
-
-    def __init__(self, t: Theme, width: int = 104):
-        super().__init__()
-        self.t = t
-        self.setFixedSize(width, 28)
-
-    def paintEvent(self, _):
-        t = self.t
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setFont(font('small-number'))
-        h = self.height()
-        p.setPen(t.q('text-tertiary'))
-        w = self.width()
-        s = SpreadBar.scale(w)
-        # every label centred on its tick; the last one carries the axis unit
-        for v, txt in ((-20, '−20'), (0, '0'), (20, '+20 %')):
-            x = w / 2 + v * s
-            p.drawText(QRectF(x - 20, 0, 40, h), Qt.AlignmentFlag.AlignCenter, txt)
-        p.end()
-
-
-class MiniIntervals(QWidget):
-    """The two intervals of Ka guest stacked for a 288-px inspector: label and numbers
-    on one line, the bar on a shared log axis below, tick labels once at the bottom."""
-
-    ROW = 46
-
-    def __init__(self, t: Theme, rows: list[dict], lo: float, hi: float, ticks: list[float]):
-        super().__init__()
-        self.t, self.rows, self.lo, self.hi, self.ticks = t, rows, lo, hi, ticks
-        self.setFixedHeight(len(rows) * self.ROW + 20)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def _x(self, v: float) -> float:
-        w = self.width() - 12
-        return 6 + (math.log10(v) - math.log10(self.lo)) / (math.log10(self.hi) - math.log10(self.lo)) * w
-
-    def paintEvent(self, _):
-        t = self.t
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        W = self.width()
-        bottom = len(self.rows) * self.ROW
-        for tk in self.ticks:
-            x = self._x(tk)
-            p.setPen(QPen(t.q('grid'), 1))
-            p.drawLine(QPointF(x, 22), QPointF(x, bottom))
-            p.setFont(font('small-number'))
-            p.setPen(t.q('text-tertiary'))
-            p.drawText(QRectF(x - 20, bottom + 2, 40, 16), Qt.AlignmentFlag.AlignHCenter, f'{tk / 1e8:g}')
-        for i, row in enumerate(self.rows):
-            y = i * self.ROW
-            p.setFont(font('small'))
-            p.setPen(t.q('text-secondary'))
-            p.drawText(QRectF(0, y, W, 18), Qt.AlignmentFlag.AlignVCenter, row['label'])
-            p.setFont(font('number'))
-            p.setPen(t.q('text-primary'))
-            p.drawText(QRectF(0, y, W, 18), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, row['text'])
-            cy = y + 31
-            p.setPen(QPen(t.q('border'), 1))
-            p.drawLine(QPointF(6, cy), QPointF(W - 6, cy))
-            col = t.q(row['color'])
-            for a, b in row['segments']:
-                pen = QPen(col, 4)
-                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                p.setPen(pen)
-                p.drawLine(QPointF(self._x(a), cy), QPointF(self._x(b), cy))
-            p.setPen(QPen(t.q('bg-surface'), 2))
-            p.setBrush(col)
-            p.drawEllipse(QPointF(self._x(row['est']), cy), 5, 5)
-        p.end()
-
 
 # ── Data ───────────────────────────────────────────────────────────────────────────
 
@@ -231,7 +108,7 @@ def inputs_table(t: Theme) -> QWidget:
     heads = ['Input', 'Kind', 'Amount', 'Stated in', None, '±2σ spans']
     for c, h in enumerate(heads):
         if h is None:
-            cell = AxisScale(t, COL_BAR)
+            cell = C.AxisScale(t, COL_BAR)
             cell.setToolTip('Offset from the entered value, in percent.')
         else:
             cell = C.label(h, 'label', 'tertiary')
@@ -261,7 +138,7 @@ def inputs_table(t: Theme) -> QWidget:
         if inp.get('unit_disabled'):
             unit.setToolTip('The titrant is a series with no single value, so its uncertainty is a percentage.')
         g.addWidget(unit, r, 3, Qt.AlignmentFlag.AlignVCenter)
-        g.addWidget(SpreadBar(t, 2 * inp['sigma'], COL_BAR), r, 4, Qt.AlignmentFlag.AlignVCenter)
+        g.addWidget(C.SpreadBar(t, 2 * inp['sigma'], COL_BAR), r, 4, Qt.AlignmentFlag.AlignVCenter)
         g.addWidget(C.label(inp['span'], 'number', 'secondary'), r, 5, Qt.AlignmentFlag.AlignVCenter)
         if i < len(INPUTS) - 1:
             g.addWidget(C.hairline(), r + 1, 0, 1, 6)
@@ -433,7 +310,7 @@ def inspector(t: Theme) -> QWidget:
             'text': f'{ci["estimate_MM"] / 100:.2f}  [{ci["low_MM"] / 100:.2f}, {ci["high_MM"] / 100:.2f}]',
         },
     ]
-    chart = MiniIntervals(t, rows, 0.95e8, 5.3e8, [1e8, 1.5e8, 2e8, 3e8, 4e8, 5e8])
+    chart = C.CompactIntervals(t, rows, 0.95e8, 5.3e8, [1e8, 1.5e8, 2e8, 3e8, 4e8, 5e8], 1e8)
     unit_line = C.label(f'K{sub("a")} guest, 95 % interval, ×{THIN}10⁸ M⁻¹', 'small', 'tertiary', rich=True)
     cap = wrap(
         'Letting the inputs move within what you stated explains a misfit the entered values could not, '

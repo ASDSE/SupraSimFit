@@ -97,7 +97,7 @@ _PARAMS_HELP_HTML = f"""
 bring the model closest to the data you fitted, and the ones the curve on the
 plot is drawn from. For a fit of several replicates, that is the fit of the
 average of the replicates it used. Where you stated an uncertainty for an input
-under <b>Input Uncertainty</b>, the fit was free to move that input inside it,
+under <b>Input uncertainty</b>, the fit was free to move that input inside it,
 and the estimate is the fit that follows.</p>
 
 <p><b>{_LEVEL_TEXT} interval</b> &mdash; for each association constant, the
@@ -108,7 +108,7 @@ resulting misfit is not significantly worse than the best fit&rsquo;s (an F test
 at {_LEVEL_TEXT}). So it answers what the data say about K<sub>a</sub> when the
 inputs are known no better than you stated. With no uncertainty stated, every
 input counts as exact and the interval is conditional on it. A random error of
-each addition you state under <b>Input Uncertainty</b>, and a noise law the
+each addition you state under <b>Input uncertainty</b>, and a noise law the
 replicates leave uncertain, are allowed for as well: the test then allows for a
 larger spread of the estimate than the scatter of the data alone implies, by the
 factor the line under the table names. The signal parameters get no
@@ -241,7 +241,7 @@ inputs where the fit put them, and the plot says so.</p>
 
 <p><b>Input uncertainties used</b> &mdash; what the fit was told, so the numbers
 above can be read against it. Uncertainties are entered in the <b>Input
-Uncertainty</b> panel; with none stated, every input counts as exact.</p>
+uncertainty</b> panel; with none stated, every input counts as exact.</p>
 """
 
 
@@ -261,7 +261,7 @@ the table, not R&sup2;.</p>
 
 <p>Both are measured for the fit shown above, at the inputs where that fit put
 them &mdash; which are the values you entered unless you gave an input an
-uncertainty under <b>Input Uncertainty</b>.</p>
+uncertainty under <b>Input uncertainty</b>.</p>
 
 <p><b>Noise</b> &mdash; how large the scatter of your measurements is and how it
 grows with the signal, read from how far your replicates fall from the curve

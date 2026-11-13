@@ -874,7 +874,7 @@ def _require_aware_dof(n: int, n_model: int, constraints: Sequence[InputConstrai
     if dof < 1:
         raise FitRefused(
             f'The data have {n} titration points, too few to fit this model and also let '
-            f'{", ".join(dict.fromkeys(names))} move{how}. {remedy} at its entered value under Input Uncertainty, '
+            f'{", ".join(dict.fromkeys(names))} move{how}. {remedy} at its entered value under Input uncertainty, '
             'or add titration points, and fit again.'
         )
     return dof

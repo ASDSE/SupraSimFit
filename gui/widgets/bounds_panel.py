@@ -191,7 +191,7 @@ automatically.</p>
 bounds, and an end that reaches one is reported as open rather than as a
 measured limit. The interval holds if the model is right, the conditions you
 entered are right to within the uncertainty you stated for them under
-<b>Input Uncertainty</b>, and the scatter is independent from point to point
+<b>Input uncertainty</b>, and the scatter is independent from point to point
 and as large at each point as the noise law under Fit Quality says; it says
 nothing about an error in any of those.</p>
 """

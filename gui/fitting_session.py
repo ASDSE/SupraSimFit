@@ -32,10 +32,10 @@ from gui.plotting.plot_widget import PlotWidget
 from gui.plotting.sensitivity_widget import SensitivityWidget
 from gui.session_model import CONCENTRATIONS_REQUIRED, SessionModel
 from gui.views.measurements import MeasurementsView
+from gui.views.uncertainty import UncertaintyView
 from gui.widgets.assay_config_panel import AssayConfigPanel
 from gui.widgets.bounds_panel import BoundsPanel
 from gui.widgets.fit_config_panel import FitConfigPanel
-from gui.widgets.input_uncertainty_panel import InputUncertaintyPanel
 from gui.widgets.sensitivity_panel import SensitivityPanel
 
 #: A session's views as the sidebar groups them: (group, ((view, icon), …)).
@@ -221,6 +221,8 @@ class FittingSession(QWidget):
         """The summary beside the title of *view*, or ``None`` for a view that states none yet."""
         if view == 'Measurements':
             return self._measurements.badge()
+        if view == 'Input uncertainty':
+            return self._uncertainty.badge()
         return None
 
     def _plot_widget_of(self, view: str):
@@ -300,7 +302,8 @@ class FittingSession(QWidget):
 
         self._assay_panel.set_assay_type(AssayType.IDA)
         self._bounds_panel.reset_to_defaults()
-        self._input_panel.set_specs(_DEMO_UNCERTAINTIES)
+        self.model.uncertainty.set_specs(_DEMO_UNCERTAINTIES)
+        self.model.uncertainty_edited()
         self._fit_panel.set_config(FitConfig(per_replica=False))
 
         # Loading resets the replicates and clears the results.
@@ -548,7 +551,7 @@ class FittingSession(QWidget):
     def _setup_ui(self) -> None:
         self._measurements = MeasurementsView(self.model, self)
         self._assay_panel = AssayConfigPanel()
-        self._input_panel = InputUncertaintyPanel()
+        self._uncertainty = UncertaintyView(self.model, self)
         self._fit_panel = FitConfigPanel()
         self._sensitivity_panel = SensitivityPanel()
         self._bounds_panel = BoundsPanel()
@@ -569,7 +572,7 @@ class FittingSession(QWidget):
         self._views: dict[str, _View] = {
             'Measurements': _View(self._measurements.canvas, side('Measurement settings', self._measurements.side)),
             'Binding model': _View(_canvas(self._assay_panel, self._bounds_panel, self._fit_panel, scroll=True)),
-            'Input uncertainty': _View(_canvas(self._input_panel, scroll=True)),
+            'Input uncertainty': _View(self._uncertainty.canvas, side('Effect on the fit', self._uncertainty.side)),
             'Fit results': _View(_canvas(self._fit_split(self._plot_widget))),
             'Ka confidence': _View(_canvas(self._identifiability_widget)),
             'Sensitivity': _View(
@@ -585,10 +588,10 @@ class FittingSession(QWidget):
         self.show_view('Fit results')
 
         # Open the panels that follow the assay on the default assay type. The
-        # heatmap axes are the uncertainty panel's inputs, named as it names them.
+        # heatmap axes are the inputs of Input uncertainty, named as it names them.
         assay_type = self._assay_panel.current_assay_type()
         self._bounds_panel.set_assay_type(assay_type)
-        self._input_panel.set_assay_type(assay_type)
+        self.model.uncertainty.set_assay(assay_type)
         self._sensitivity_panel.set_assay_type(assay_type)
         self._name_inputs()
         self._on_conditions_changed()
@@ -620,7 +623,8 @@ class FittingSession(QWidget):
 
         # Every setting a result is checked against goes to the model as it
         # changes; the model decides what a change puts out of date.
-        self._input_panel.specs_changed.connect(self._push_settings)
+        self._uncertainty.review_requested.connect(lambda: self.view_requested.emit('Ka confidence'))
+        self.model.uncertainty_changed.connect(self.changed)
         self._fit_panel.config_changed.connect(self._push_settings)
         self._bounds_panel.bounds_changed.connect(self._push_settings)
 
@@ -652,7 +656,7 @@ class FittingSession(QWidget):
         results the view starts, so the model reads the panels as they read
         at that moment.
         """
-        assay, bounds, inputs = self._assay_panel, self._bounds_panel, self._input_panel
+        assay, bounds = self._assay_panel, self._bounds_panel
         self.model.update_settings(
             assay_type=assay.current_assay_type(),
             conditions=assay.current_conditions(),
@@ -662,9 +666,7 @@ class FittingSession(QWidget):
             custom_bounds=bounds.current_bounds(),
             bound_problems=tuple(bounds.problems()),
             per_replica=self._fit_panel.current_config().per_replica,
-            errors=inputs.current_errors(),
-            input_labels=inputs.input_labels(),
-            input_problems=tuple(inputs.problems()),
+            **self.model.uncertainty_settings(),
         )
 
     # ------------------------------------------------------------------
@@ -681,29 +683,31 @@ class FittingSession(QWidget):
 
     def _on_assay_type_changed(self, assay_type: AssayType) -> None:
         self._bounds_panel.set_assay_type(assay_type)
-        # The new assay has its own inputs: the uncertainty rows are rebuilt for
-        # them first, and the heatmap axes then offer exactly those inputs.
-        self._input_panel.set_assay_type(assay_type)
+        # The new assay has its own inputs: they are stated for it first, and the
+        # heatmap axes then offer exactly those inputs.
+        self.model.uncertainty.set_assay(assay_type)
         self._name_inputs()
         meta = ASSAY_REGISTRY[assay_type]
         self._plot_widget.set_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
         self._push_settings()
+        self.model.uncertainty_edited()
 
     def _name_inputs(self) -> None:
-        """Offer the heatmap axes the selected assay's inputs, named as the uncertainty panel names them.
+        """Offer the heatmap axes the selected assay's inputs, named as Input uncertainty names them.
 
         A finished fit names its own inputs from the assay it was made for
         (:func:`~gui.widgets.assay_conditions.result_input_labels`), so what is
         reported about a fit does not follow the assay selected now.
         """
-        self._sensitivity_panel.set_inputs(self._input_panel.input_labels())
+        self._sensitivity_panel.set_inputs(self.model.uncertainty.input_labels())
 
     def _on_conditions_changed(self) -> None:
-        """Give both panels the conditions' set values, which an uncertainty in percent is read against."""
+        """Give the uncertainties and the Sensitivity panel the conditions' set values and units."""
         conditions = self._assay_panel.current_conditions()
-        self._input_panel.set_nominal_values(conditions)
+        self.model.uncertainty.set_conditions(conditions, self._assay_panel.condition_units())
         self._sensitivity_panel.set_nominal_values(conditions)
         self._push_settings()
+        self.model.uncertainty_edited()
 
     def _on_conditions_edited(self) -> None:
         self._push_settings()
@@ -760,7 +764,7 @@ class FittingSession(QWidget):
         work = model.fit_running() or model.sensitivity_running()
         for panel in (self._assay_panel, self._bounds_panel, self._fit_panel):
             panel.setEnabled(not work)
-        self._input_panel.set_running(work)
+        self._uncertainty.set_locked(work)
         self.changed.emit()
 
     def _on_profile_changed(self) -> None:

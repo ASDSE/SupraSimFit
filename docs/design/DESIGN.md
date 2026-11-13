@@ -110,7 +110,8 @@ the TXT/CSV reports use `estimate [low, high]`.
   spacings take only these.
 - **Fixed sizes** (`SIZE`): sidebar 232, side panel 320 (at least 280), toolbar 52,
   status bar 28, nav item 28, session switcher 44, controls 28, badges 18, plot axes 56
-  (left) and 44 (bottom) px.
+  (left) and 44 (bottom) px; the inputs grid of Input uncertainty: name 168, kind 156,
+  stated in 88 and spread bar 96 px wide, rows 60 px high.
 - **Radius** (`RADIUS`): 6 px controls, 8 px cards, 10 px popovers, menus and the
   Settings window, pill for badges and toggles.
 - **Hairlines** are 1 px `border`. Panels are separated by hairlines, not gaps or shadows.

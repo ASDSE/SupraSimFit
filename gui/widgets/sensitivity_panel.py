@@ -4,7 +4,7 @@ The panel exposes the knobs of :class:`~core.pipeline.sensitivity.SensitivityCon
 that belong to the run itself: the analysis *mode* (Sobol indices / heatmap), the
 SOBOL sample size, the two heatmap axes, and an optional fixed seed. The error sources
 are stated once in
-:class:`~gui.widgets.input_uncertainty_panel.InputUncertaintyPanel`, which also feeds
+Input uncertainty (:class:`~gui.uncertainty.UncertaintyForm`), which also feeds
 the interval of every fit; the owning session passes that
 :class:`~core.pipeline.inputs.ErrorModel` to :meth:`SensitivityPanel.run_problems` and
 :meth:`SensitivityPanel.current_config`.
@@ -52,7 +52,7 @@ the model — the titrant concentrations and the fixed conditions
 Each carries pipetting / calibration error, and the fit silently absorbs it by
 shifting the reported K<sub>a</sub>.</p>
 <p>This tool re-runs the fit many times with those inputs drawn from the
-uncertainty you set under <i>Input Uncertainty</i>, and shows the resulting spread
+uncertainty you set under <i>Input uncertainty</i>, and shows the resulting spread
 of K<sub>a</sub> and which error source it comes from. Set at least one input there to
 something other than <i>fixed</i>.</p>
 <p>It is a propagation of the uncertainties you stated (GUM Supplement 1): every
@@ -82,7 +82,7 @@ _MODE_HELP_HTML = """
   <li><b>Heatmap</b> — sweep two chosen inputs on a regular grid and fit at
       every cell, giving a 2-D K<sub>a</sub> surface.</li>
 </ul>
-<p>The shares are shares of the error sources you stated under <i>Input Uncertainty</i>.
+<p>The shares are shares of the error sources you stated under <i>Input uncertainty</i>.
 An error several inputs share is one source of its own, reported as one item: its share
 is what re-making that one stock, or recalibrating that one pipette, would take
 away.</p>
@@ -117,7 +117,7 @@ _HEATMAP_HELP_HTML = """
 <p>Choose two different inputs to sweep; every other input keeps its set value. An axis
 set as a range runs from its <i>from</i> to its <i>to</i>. An axis set as a σ runs
 from −2σ to +2σ, so its σ must stay below half the set value (50 %) for the axis to
-stay above zero. A heatmap axis cannot be <i>fixed</i> under <i>Input Uncertainty</i>.</p>
+stay above zero. A heatmap axis cannot be <i>fixed</i> under <i>Input uncertainty</i>.</p>
 <p>Each axis is split into <i>Grid steps</i> points and the fit runs once per cell —
 cost grows as <i>steps²</i>, so 11×11 = 121 fits is a good starting resolution.</p>
 """
@@ -154,7 +154,8 @@ class SensitivityPanel(InfoGroupBox):
         super().__init__('Ka Sensitivity', 'Ka Sensitivity Analysis', _SECTION_HELP_HTML, parent)
         self._assay_type: AssayType = AssayType.GDA
         self._running = False
-        # input key -> the plain display name a message calls it by, from the uncertainty panel.
+        # input key -> the plain display name a message calls it by, as Input uncertainty names it
+        # (UncertaintyForm.input_labels).
         self._labels: dict[str, str] = {}
         # Condition key -> its set value in the base unit; an axis stated in the input's
         # own unit is read against it.
@@ -180,10 +181,10 @@ class SensitivityPanel(InfoGroupBox):
             self._unavailable.setText(_unavailable_reason(assay_type))
 
     def set_inputs(self, labels: dict[str, str]) -> None:
-        """Offer these inputs as heatmap axes, named as the uncertainty panel names them.
+        """Offer these inputs as heatmap axes, named as Input uncertainty names them.
 
         *labels* maps each input key to its plain display name, the titrant included
-        (:meth:`~gui.widgets.input_uncertainty_panel.InputUncertaintyPanel.input_labels`).
+        (:meth:`~gui.uncertainty.UncertaintyForm.input_labels`).
         The axes default to the first two inputs.
         """
         self._labels = dict(labels)
@@ -205,8 +206,8 @@ class SensitivityPanel(InfoGroupBox):
         """Why the analysis cannot run on *errors* as stated, one sentence per problem; empty when it can.
 
         *errors* is the stated error model
-        (:meth:`~gui.widgets.input_uncertainty_panel.InputUncertaintyPanel.current_errors`);
-        whether each source can be read at all is that panel's own check. Sensitivity
+        (:meth:`~gui.uncertainty.UncertaintyForm.errors`);
+        whether each source can be read at all is that form's own check. Sensitivity
         indices split the spread of Ka between the sources, so at least one must vary. A
         heatmap sweeps two inputs on a grid and holds everything else at its set value,
         so only the two axes are checked here.
@@ -218,7 +219,7 @@ class SensitivityPanel(InfoGroupBox):
                 return []
             return [
                 'No input varies, so there is no spread to split. Set an uncertainty for at least one input '
-                'under Input Uncertainty.'
+                'under Input uncertainty.'
             ]
         x_key, y_key = self._x_combo.currentData(), self._y_combo.currentData()
         if x_key == y_key:
@@ -355,7 +356,7 @@ class SensitivityPanel(InfoGroupBox):
         name = self._labels[key]
         if spec is None:
             return (
-                f'{name} is a heatmap axis, so it cannot be fixed: set a σ or a range for it under Input Uncertainty.'
+                f'{name} is a heatmap axis, so it cannot be fixed: set a σ or a range for it under Input uncertainty.'
             )
         if not axis_reaches_zero(spec, self._nominals.get(key), name):
             return None

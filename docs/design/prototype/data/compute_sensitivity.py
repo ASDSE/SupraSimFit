@@ -78,7 +78,7 @@ def main():
 
     # Exactly what SessionModel.run_sensitivity() hands the worker.
     ms = session.model.measurement_set
-    errors = session._input_panel.current_errors()
+    errors = session.model.uncertainty.errors()
     panel = session._sensitivity_panel
     sens_config = panel.current_config(errors)
     assay_cls = session._assay_panel.get_assay_class()
@@ -87,7 +87,7 @@ def main():
     custom_bounds = session._bounds_panel.current_bounds()
     if custom_bounds:
         fit_config = replace(fit_config, custom_bounds=custom_bounds)
-    labels = session._input_panel.input_labels()
+    labels = session.model.uncertainty.input_labels()
     n_inputs = len(labels)
     planned = estimated_fit_count(sens_config, n_inputs) + 1
     workers = preferences.worker_count()

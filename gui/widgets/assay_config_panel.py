@@ -14,6 +14,7 @@ from gui.assay_descriptions import ASSAY_DESCRIPTIONS
 from gui.plotting.labels import and_join
 from gui.widgets.assay_conditions import (
     TITRANT_STOCK_FIELD,
+    UNIT_CHOICES,
     ConditionField,
     assay_class,
     condition_fields,
@@ -24,10 +25,6 @@ from gui.widgets.info_button import InfoButton, InfoGroupBox
 from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, decimals_for_scale
 
 # Display choices derived from ConditionField.unit_type
-_UNIT_TYPE_CHOICES: dict[str, tuple[tuple[str, ...], str]] = {
-    'concentration': (('nM', 'µM', 'mM', 'M'), 'µM'),
-    'binding_constant': (('M⁻¹',), 'M⁻¹'),
-}
 
 _LOCALE_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
 
@@ -75,7 +72,7 @@ class _UnitWidget(QWidget):
         super().__init__(parent)
         self._field = field
         self._base_unit: str = field.unit or ''
-        entry = _UNIT_TYPE_CHOICES.get(field.unit_type)
+        entry = UNIT_CHOICES.get(field.unit_type)
         choices = entry[0] if entry else ()
         default_lbl = entry[1] if entry else ''
         self._units: list[tuple[str, float]] = (
