@@ -84,7 +84,7 @@ inside the middle 90 % and 22 % outside; the S_T bar fill `text-secondary` at 16
 and 24 % (dark) inside a 72 % edge; interval bands `accent` at 8 %. The reported result
 and fitted curve take `accent`; the reading at the inputs as entered takes
 `text-secondary` (its marker line in the sensitivity histogram is dashed `text-primary`).
-Series beyond these are open (§10).
+S₁ and S_T take `series-1` and `series-2` (§8); the species colours of Simulation are open (§10).
 
 ### Type
 
@@ -386,8 +386,10 @@ and the bounds of the fitted parameters.
 ### Input uncertainty — `uncertainty_*.jpg`
 Canvas: an intro sentence with *About input uncertainty*; **Each input** — one row per
 input on a shared column grid: name and entered value, Fixed / σ / Range, amount, stated
-in (% or unit), the ±2σ span on one shared ±20 % axis, and the span in numbers;
-**Shared error sources** with *Add shared source*; **Random error of each addition**.
+in (% or unit), the ±2σ span on one shared ±20 % axis, and the span in numbers. A range
+states its *from* and *to* in two fields stacked in the amount column; the unit is the one
+the input's condition is entered in, and the titrant, a series, is stated in % only. A
+fixed input shows no amount. **Shared error sources** with *Add shared source*; **Random error of each addition**.
 Side panel *Effect on the fit*: the interval of the last fit (Input-aware against Inputs
 as entered, compact interval chart), the three tests against what was stated, and
 *Also used by*.
@@ -396,7 +398,8 @@ as entered, compact interval chart), the three tests against what was stated, an
 Canvas: the headline — Ka in `metric` with its Input-aware badge and 95 % interval —
 the interval chart against the reading at the inputs as entered, *All results and
 diagnostics →*, any callout, and the **Titration** plot with a replicate-display tool.
-Side panel *Fit details*: Fit quality (R², RMSE, replicates used, noise), Diagnostics
+With two binding constants the headline stacks: one row per Ka (K₁, K₂), each with its
+value, interval and interval-chart rows, above the plot. Side panel *Fit details*: Fit quality (R², RMSE, replicates used, noise), Diagnostics
 (each test with its mark and p-value), Parameters (estimate and unit; degenerate ones
 starred and explained), Input shifts, Display.
 
@@ -406,8 +409,12 @@ the interval has a gap), any callout, and **one profile plot per binding constan
 holding both profiles, an enlarge tool, the pointer readout card, and the accepted
 stretches of each interval in a strip under the plot. Side panel *Notes* with *Reading
 this plot →*: the input conflict with the shifts, how to read the curves, the split
-interval, what the intervals rest on. The y axis is open (§10);
-`confidence_shared_*.jpg` shows the weighted-R² form.
+interval, what the intervals rest on. The y axis is each profile's **scaled drop**: its
+rise above its own minimum divided by the rise its own 95 % test allows, so every curve
+crosses one cut-off line at 1 and a Ka below the line is one the data accept. Each curve
+is an exact rescaling of its own test, so the interval edges are unchanged; exported
+figures use the same axis. With two binding constants the profile plots stack, one per
+Ka, with the joint region below them.
 
 ### Sensitivity — `sensitivity_*.jpg`
 Canvas: the spread of Ka from the stated inputs (×/÷ factor, 1 SD in decades, the centre
@@ -415,7 +422,13 @@ it is read around) beside the sample histogram with both intervals marked and *P
 against each source →*; any callout — the samples are drawn around the inputs as
 entered, so an input conflict is stated here; **Share of the variance, by source** — S₁
 and S_T as two bars per source with their 95 % whiskers and values; the **Variance
-budget** table; **What if one source were known better**. Side panel *Analysis
+budget** table; **What if one source were known better**. S₁ and S_T take two series
+colours of their own (`series-1`, `series-2`). *Plot against each source →* opens a
+window of small plots, one per error source: each sample's Ka against that source's
+draw, so a source that matters shows as a trend. The **heatmap** colours Ka on a
+perceptual multi-hue scale (viridis-like), defined in both themes, with the value under
+the pointer as a readout. With two binding constants the canvas holds one block per Ka;
+a Ka whose indices are withheld shows a callout saying why in place of its bars. Side panel *Analysis
 settings*: Run (mode Sensitivity indices / Heatmap, sample size N of 1024, 2048 or 4096,
 fixed seed), Error sources (*Edit in Input uncertainty →*), This run, Display (log₁₀ or
 linear Ka axis).
@@ -479,19 +492,10 @@ sessions** (concentration unit; plot appearance for new sessions), **Analysis**
 Put to the owner when the view is built; the answer then becomes part of this document
 and the tokens.
 
-1. **Ka confidence y axis** — each profile's drop in R² as a share of the drop its own
-   95 % test allows (`confidence_*.jpg`: both curves cross one cut-off line at 1), or
-   weighted R² (`confidence_shared_*.jpg`). The scaled axis needs a finer profile grid
-   and a rewritten *Reading this plot*; exported figures may keep weighted R².
-2. **Data-series colours** — the S₁ / S_T pair (the screen shows a neutral solid and
-   outlined pair) and the species of the stepwise models in Simulation; new series
-   colours become tokens in both themes.
-3. **Two binding constants** — how Fit results, Ka confidence and Sensitivity lay out
-   two Ka, and what Sensitivity shows for a Ka whose indices are withheld.
-4. **Sensitivity heatmap** — its canvas, colour map (sequential tokens in both themes),
-   readout and its Run settings.
-5. **Plot against each source →** — what it opens in Sensitivity.
-6. **Fit in new session** (Simulation) — it sends the noisy replicates as shown; the
+1. **Species colours** of the stepwise models in Simulation; new series colours become
+   tokens in both themes.
+2. **Sensitivity heatmap** — its Run settings.
+3. **Fit in new session** (Simulation) — it sends the noisy replicates as shown; the
    simulated values do not travel as starting values.
-7. **Simulation noise** — an absolute σ in a.u., which the engine does not yet offer.
-8. **Plot appearance for new sessions** — what is stored and where.
+4. **Simulation noise** — an absolute σ in a.u., which the engine does not yet offer.
+5. **Plot appearance for new sessions** — what is stored and where.

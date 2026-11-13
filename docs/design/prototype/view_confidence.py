@@ -5,8 +5,7 @@ Both profiles share one log-Ka axis. Up the plot, each is read against its own 9
 the fit falls from its best, as a share of the drop its test allows at that Ka, computed point by
 point so a stepped cut-off is handled. Both curves are 0 at their best fit and cross the one line at
 1 where their interval ends; a strip under the plot shows the accepted Ka of each, the split of the
-as-entered interval included. ``view_confidence_shared`` draws the same curves on one shared
-weighted-R² axis, built from the pieces here.
+as-entered interval included.
 
 The fit is scored differently by the two curves: the as-entered one by weighted R², the input-aware
 one by weighted R² less the penalty for moving the inputs (``1 - exp(P/n)/SS_tot`` with

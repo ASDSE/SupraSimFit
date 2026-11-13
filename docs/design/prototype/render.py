@@ -49,7 +49,6 @@ VIEWS = (
     'measurements_load',
     'uncertainty',
     'confidence',
-    'confidence_shared',
     'sensitivity',
     'simulation',
     'simulation_scrolled',
