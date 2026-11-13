@@ -50,6 +50,12 @@ def readable_extensions() -> list[str]:
     return sorted(READERS)
 
 
+def file_filter() -> str:
+    """The open-file filter of every format a reader is registered for."""
+    exts = ' '.join(f'*{ext}' for ext in readable_extensions())
+    return f'Measurement files ({exts});;All files (*)'
+
+
 def _unreadable(paths: list[str]) -> InvalidData:
     """Why *paths* did not load, naming them, for an error no reader wrote for the user."""
     names = ', '.join(Path(p).name for p in paths)

@@ -1,9 +1,7 @@
 """AssayTypeSelector — a standalone two-level (category → subtype) assay picker.
 
 Derived from ``ASSAY_REGISTRY`` (grouped by ``AssayMetadata.category``), it emits
-``assay_type_changed`` exactly once per selection.  Used by the simulation applet;
-``AssayConfigPanel`` keeps its own equivalent selector (only two call sites, so no
-shared abstraction is forced).
+``assay_type_changed`` exactly once per selection. Used by the simulation applet.
 """
 
 from __future__ import annotations

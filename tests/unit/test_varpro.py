@@ -418,8 +418,8 @@ def test_a_fit_asked_to_stop_stops_before_its_next_solve():
 @pytest.mark.parametrize(
     'bad, says',
     [
-        ((Q_(0, '1/M'), Q_(1e12, '1/M')), 'lower bound 0 M⁻¹ under Parameter Bounds.*above zero'),
-        ((Q_(-5, '1/M'), Q_(1e12, '1/M')), 'lower bound -5 M⁻¹ under Parameter Bounds.*above zero'),
+        ((Q_(0, '1/M'), Q_(1e12, '1/M')), 'lower bound 0 M⁻¹ under Binding model.*above zero'),
+        ((Q_(-5, '1/M'), Q_(1e12, '1/M')), 'lower bound -5 M⁻¹ under Binding model.*above zero'),
         ((Q_(1e8, '1/M'), Q_(1e6, '1/M')), 'lower bound of 1×10⁸ M⁻¹ above its upper bound of 1×10⁶ M⁻¹'),
     ],
     ids=['zero', 'negative', 'inverted'],

@@ -15,9 +15,9 @@ from PyQt6.QtCore import QThread  # noqa: E402
 
 from core.assays.registry import AssayType  # noqa: E402
 from core.data_processing.measurement_set import MeasurementSet  # noqa: E402
-from core.pipeline.fit_pipeline import FitConfig  # noqa: E402
 from core.pipeline.profile import ProfileSet  # noqa: E402
 from tests.conftest import DYE_ALONE_TRUE, IDA_TRUE, _make_dye_alone_data, _make_ida_data  # noqa: E402
+from tests.unit.gui.session_setup import state_binding
 from tests.unit.gui.test_identifiability_gui import _fit  # noqa: E402
 from tests.unit.gui.test_sensitivity_gui import _sobol_result  # noqa: E402
 
@@ -73,10 +73,7 @@ def make_session(qapp):
 
     def build(assay_type: AssayType, ms: MeasurementSet, conditions: dict | None = None, *, per_replica=False):
         session = FittingSession()
-        session._assay_panel.set_assay_type(assay_type)
-        for key, value in (conditions or {}).items():
-            session._assay_panel._field_widgets[key].setValue(value)
-        session._fit_panel.set_config(FitConfig(per_replica=per_replica))
+        state_binding(session, assay_type=assay_type, conditions=conditions, per_replica=per_replica)
         session.model.load(ms, None)
         sessions.append(session)
         return session
@@ -111,7 +108,7 @@ def test_the_tab_names_a_shifted_input_from_the_fit_s_own_assay(make_session):
 
     assert '[Host]₀ −4.1 % (1.4 σ)' in widget._verdict_html()
 
-    session._assay_panel.set_assay_type(AssayType.GDA)
+    state_binding(session, assay_type=AssayType.GDA)
     assert '[Host]₀ −4.1 % (1.4 σ)' in widget._verdict_html()
 
 

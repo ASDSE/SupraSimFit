@@ -123,52 +123,6 @@ def _nice_ticks(lo: float, hi: float) -> list[float]:
     return inside
 
 
-def _section(title: str, content: QWidget, summary: str = '', first: bool = False) -> QWidget:
-    """A canvas section: a hairline above unless *first*, the plain title on the canvas edge, then *content*."""
-    w = QWidget()
-    lay = C.vbox(spacing=0)
-    if not first:
-        lay.addSpacing(space(6))
-        lay.addWidget(C.hairline())
-        lay.addSpacing(space(5))
-    head = [C.label(title, 'body-strong')]
-    if summary:
-        head += [3, C.label(summary, 'small', 'tertiary')]
-    lay.addLayout(C.hbox(*head, None, spacing=0))
-    lay.addSpacing(space(3))
-    lay.addWidget(content)
-    w.setLayout(lay)
-    return w
-
-
-def _drop(widget: QWidget) -> None:
-    """Take *widget* off the screen now and delete it once its events are handled."""
-    widget.hide()
-    widget.setParent(None)
-    widget.deleteLater()
-
-
-def _wrapped(text: str, role: str = 'body', tone: str | None = 'secondary') -> QLabel:
-    lbl = C.label(text, role, tone)
-    lbl.setWordWrap(True)
-    lbl.setMinimumWidth(1)
-    return lbl
-
-
-class _Problem(QWidget):
-    """What is wrong with the statement above it: an amber mark and the sentence a run would refuse with."""
-
-    def __init__(self, t):
-        super().__init__()
-        self.text = _wrapped('', 'small', 'secondary')
-        self.setLayout(C.hbox(C.vbox(C.Icon(t, 'alert-circle', 'warning', 14), None, margins=(0, 1, 0, 0)), self.text))
-        self.hide()
-
-    def show_problems(self, problems: list[str]) -> None:
-        self.text.setText('\n'.join(problems))
-        self.setVisible(bool(problems))
-
-
 class _InputRow:
     """The widgets of one input's row on the inputs grid."""
 
@@ -212,9 +166,9 @@ class _InputRow:
 
         self.bar = C.SpreadBar(t, None, COL_BAR)
         grid.addWidget(self.bar, r, 4, Qt.AlignmentFlag.AlignVCenter)
-        self.span = _wrapped('', 'number', 'secondary')
+        self.span = C.wrapped('', 'number', 'secondary')
         grid.addWidget(self.span, r, 5, Qt.AlignmentFlag.AlignVCenter)
-        self.problem = _Problem(t)
+        self.problem = C.Problem(t)
         grid.addWidget(self.problem, r + 1, 1, 1, 5)
 
     def focus_chain(self) -> list[QWidget]:
@@ -251,7 +205,7 @@ class _SourceRow(QWidget):
             self.ticks[key] = box
         moves = C.label('Moves', 'label', 'tertiary')
         moves.setFixedWidth(COL_NAME)
-        self.problem = _Problem(t)
+        self.problem = C.Problem(t)
         self.setLayout(
             C.vbox(
                 C.hbox(self.name, GUTTER, self.sigma, None, self.remove, spacing=0),
@@ -320,13 +274,13 @@ class UncertaintyView(QObject):
         w = QWidget()
         w.setObjectName('Canvas')
         w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        intro = _wrapped(
+        intro = C.wrapped(
             'How far each entered input may be off. A fixed input is taken as exact; the fit lets the others '
             'move within what you state, and the Sensitivity analysis draws them from it.'
         )
         self.help_link = C.link_button('About input uncertainty')
         self.help_link.clicked.connect(self.show_help)
-        self.unavailable = _wrapped('', 'body', 'secondary')
+        self.unavailable = C.wrapped('', 'body', 'secondary')
 
         self.table = QWidget()
         self.grid = QGridLayout()
@@ -353,7 +307,7 @@ class UncertaintyView(QObject):
         shared = QWidget()
         shared.setLayout(
             C.vbox(
-                _wrapped(
+                C.wrapped(
                     'Errors several inputs have in common: one stock, one balance, one pipette. '
                     'Each moves the inputs you tick alike.'
                 ),
@@ -392,11 +346,11 @@ class UncertaintyView(QObject):
                 '', C.label('Choose how the titrant was added to state σ of each addition.', 'small', 'tertiary')
             )
         )
-        self.add_problem = _Problem(t)
+        self.add_problem = C.Problem(t)
         additions = QWidget()
         additions.setLayout(
             C.vbox(
-                _wrapped(
+                C.wrapped(
                     'The titrant entry above moves the whole series by one factor; '
                     'the scatter of single additions goes here.'
                 ),
@@ -416,9 +370,9 @@ class UncertaintyView(QObject):
         self.sections = QWidget()
         self.sections.setLayout(
             C.vbox(
-                _section('Each input', inputs, '±2σ holds about 95 of every 100 draws', first=True),
-                _section('Shared error sources', shared),
-                _section('Random error of each addition', additions),
+                C.canvas_section('Each input', inputs, '±2σ holds about 95 of every 100 draws', first=True),
+                C.canvas_section('Shared error sources', shared),
+                C.canvas_section('Random error of each addition', additions),
                 spacing=0,
             )
         )
@@ -453,7 +407,7 @@ class UncertaintyView(QObject):
         while grid.count():
             item = grid.takeAt(0)
             if item.widget() is not None:
-                _drop(item.widget())
+                C.drop(item.widget())
         for c, width in enumerate((COL_NAME, COL_KIND, self.amount_w, COL_UNIT, COL_BAR)):
             grid.setColumnMinimumWidth(c, width)
         grid.setColumnStretch(5, 1)
@@ -473,7 +427,7 @@ class UncertaintyView(QObject):
     def _build_sources(self) -> None:
         for row in self._sources:
             self.sources_box.removeWidget(row)
-            _drop(row)
+            C.drop(row)
         self._sources = [_SourceRow(self, i, self.amount_w) for i in range(len(self.model.uncertainty.sources))]
         for row in self._sources:
             self.sources_box.addWidget(row)
@@ -491,24 +445,24 @@ class UncertaintyView(QObject):
 
     def _build_side(self) -> QWidget:
         t = self.t
-        self.no_fit = _wrapped('', 'small', 'tertiary')
+        self.no_fit = C.wrapped('', 'small', 'tertiary')
         self.unit_lines: list[QLabel] = []
         self.charts: list[C.CompactIntervals] = []
         self.interval_box = C.vbox(spacing=2)
-        self.interval_caption = _wrapped('', 'small', 'tertiary')
+        self.interval_caption = C.wrapped('', 'small', 'tertiary')
         self.interval_caption.setTextFormat(Qt.TextFormat.RichText)  # it names constants by their glossary HTML
         iv = QWidget()
         iv.setLayout(C.vbox(self.no_fit, self.interval_box, 2, self.interval_caption, spacing=0))
 
         self.test_rows = C.vbox(spacing=0)
-        self.tests_caption = _wrapped('', 'small', 'tertiary')
+        self.tests_caption = C.wrapped('', 'small', 'tertiary')
         self.review = C.link_button('Review in Ka confidence  →')
         self.review.clicked.connect(self.review_requested)
         tests = QWidget()
         tests.setLayout(C.vbox(self.test_rows, 2, self.tests_caption, 3, C.hbox(self.review, None), spacing=0))
         self.interval_section = C.section(t, 'Interval of the last fit', iv, first=True)
         self.tests_section = C.section(t, 'Inputs against what you stated', tests)
-        also = _wrapped(
+        also = C.wrapped(
             'The Sensitivity analysis draws the inputs from what you state here and ranks the sources of the '
             'spread of Kₐ.',
             'small',
@@ -609,12 +563,12 @@ class UncertaintyView(QObject):
         fit, note = self.model.fit_view()
         for widget in (*self.unit_lines, *self.charts):
             self.interval_box.removeWidget(widget)
-            _drop(widget)
+            C.drop(widget)
         self.unit_lines, self.charts = [], []
         while self.test_rows.count():
             item = self.test_rows.takeAt(0)
             if item.widget() is not None:
-                _drop(item.widget())
+                C.drop(item.widget())
         if fit is None or note is not None:
             self.no_fit.setText(
                 'No fit is shown. Run a fit to see the interval and the tests the stated uncertainties give.'

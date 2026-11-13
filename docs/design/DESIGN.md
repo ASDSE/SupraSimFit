@@ -261,7 +261,8 @@ session, reached through the session switcher.
   message. ⌘O loads into the session on screen and leaves every other session as it is.
 - **Session names.** A session is *New session* until data is loaded, then the first
   file's name without its extension (`IDA_system`); a results file opens under its saved
-  name. Double-clicking a name in the switcher renames it.
+  name, and a duplicate under its original's name with ` copy` (`IDA_system copy`).
+  Double-clicking a name in the switcher renames it.
 - **Closing.** Closing a running session asks first (*Stop the fit and close
   IDA_system?*) and then stops its work. Closing the last session leaves one empty *New
   session*, so the window is never blank.
@@ -380,9 +381,14 @@ concentration list, *Load vector…* / *Save vector…*), Replicates (replicate 
 the last result in a sentence).
 
 ### Binding model
-A form from the same components as Input uncertainty: the two-level assay choice
-(category, then model), the entered conditions as fields with units, the titrant stock,
-and the bounds of the fitted parameters.
+A form from the same components as Input uncertainty, under an intro sentence with
+*About this model* (the help of the model chosen): **Model** — the two-level assay choice
+(category, then model) with a one-line summary of what it fits; **Conditions** — the
+entered conditions as fields with units; **Titrant stock** — *Stay constant* / *Are
+diluted*, then the stock and the concentrations it holds; **Bounds of the fitted
+parameters** with *Reset to defaults* and *Bounds from dye alone…*; **Replicates** — *The
+average* / *Each replicate separately*, with a note on what the choice does (a model with
+no binding constant shows only the note: it is fitted from the average). No side panel.
 
 ### Input uncertainty — `uncertainty_*.jpg`
 Canvas: an intro sentence with *About input uncertainty*; **Each input** — one row per

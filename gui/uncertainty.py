@@ -87,8 +87,8 @@ a σ of half its width, centred on the entered value. The spread of the draws ch
 the kind: an even draw between −5 % and +5 % varies less than a σ of 5 %. An amount that
 is not a number cannot be carried over: correct it, or choose <b>Fixed</b>.</p>
 <p>A σ of 0, or a range whose <i>to</i> is not above its <i>from</i>, does not vary
-the input. Nor can a value in the input's unit be used while the input is 0 in the
-conditions, nor a range that reaches down to zero. The input then shows a warning, and
+the input. Nor can a value in the input's unit be used while the input is not a number
+above 0 under <b>Binding model</b>, nor a range that reaches down to zero. The input then shows a warning, and
 neither a fit nor an analysis starts until you change the value or choose
 <b>Fixed</b>.</p>
 <p>Use realistic numbers: pipetting error is often a few percent, a stated
@@ -352,19 +352,25 @@ class UncertaintyForm:
         return {key: self.entry(key).name for key in self.keys}
 
     def nominal(self, key: str) -> float | None:
-        """Input *key*'s entered value in its base unit; ``None`` for the titrant and while none was given."""
+        """Input *key*'s entered value in its base unit; ``None`` for the titrant and while none can be read."""
         return None if key == TITRANT else self.nominals.get(key)
 
-    def set_conditions(self, conditions: Mapping[str, Any], units: Mapping[str, str]) -> None:
+    def set_conditions(self, conditions: Mapping[str, Any], units: Mapping[str, str], finished: bool = True) -> None:
         """Take the entered values and the units they are shown in.
 
         A percentage is read against the entered value when the kind changes, and an
         amount in the input's unit is written in the unit its condition is shown in: one
         whose unit changed is written again in the new one, with every figure kept, and
-        states the very number it stated before. A conversion waiting for an entered value
-        above 0 is made now.
+        states the very number it stated before. A condition that cannot be read (NaN)
+        has no entered value. A conversion waiting for an entered value above 0 is made
+        once the edit of the conditions is *finished* (:meth:`convert_pending`): a value
+        still being typed is not the number the user is entering.
         """
-        self.nominals = {key: float(v.magnitude) for key, v in conditions.items() if isinstance(v, Quantity)}
+        self.nominals = {
+            key: float(v.magnitude)
+            for key, v in conditions.items()
+            if isinstance(v, Quantity) and math.isfinite(v.magnitude)
+        }
         self.units = dict(units)
         for entry in self.entries():
             unit = self._unit(entry)
@@ -375,8 +381,15 @@ class UncertaintyForm:
                     entry.texts = tuple(shifted_text(text, factor) for text in entry.texts)
                     entry.exact = (entry.texts, tuple(values))
                 entry.unit = unit
-            if entry.pending is not None and (self.nominal(entry.key) or 0) > 0:
-                self._write(entry, entry.pending)
+        if finished:
+            self.convert_pending()
+
+    def convert_pending(self) -> bool:
+        """Make every conversion waiting for an entered value above 0 that has one now; say whether any was made."""
+        waiting = [e for e in self.entries() if e.pending is not None and (self.nominal(e.key) or 0) > 0]
+        for entry in waiting:
+            self._write(entry, entry.pending)
+        return bool(waiting)
 
     # ------------------------------------------------------------------
     # Edits of one input
@@ -466,10 +479,7 @@ class UncertaintyForm:
             return None
         if entry.pending is not None:
             target = f'{_kind_name(entry.kind)} in {"%" if entry.relative else self._unit(entry)}'
-            return (
-                f'{name} is 0 in the conditions, so its uncertainty cannot be converted to {target}: '
-                f'set {name} above 0 first.'
-            )
+            return self._no_value(key, f'its uncertainty cannot be converted to {target}')
         refused = f' to carry over to {entry.refused}' if entry.refused else ''
         for text in entry.texts:
             if not text.strip():
@@ -479,10 +489,7 @@ class UncertaintyForm:
                 return f'{name}: “{text}” is not a number{over}. Enter a number, or choose “Fixed”.'
         nominal = self.nominal(key)
         if not entry.relative and not (nominal is not None and nominal > 0):
-            return (
-                f'{name} is 0 in the conditions, so an uncertainty in its unit cannot be used: '
-                f'set {name} above 0 first.'
-            )
+            return self._no_value(key, 'an uncertainty in its unit cannot be used')
         spec = self.spec(key)
         if not spec.varies:
             if spec.kind is SpecKind.SIGMA:
@@ -492,6 +499,17 @@ class UncertaintyForm:
             end = '−100 %' if spec.relative else '0'
             return f'{name} would be taken down to zero: set “from” above {end}.'
         return None
+
+    def _no_value(self, key: str, consequence: str) -> str:
+        """Why input *key* has no entered value above 0 to read its uncertainty against, and *consequence*."""
+        name = self.entry(key).name
+        if self.nominal(key) is None:
+            return (
+                f'{name} cannot be read under Binding model, so {consequence}: enter a number for {name} there first.'
+            )
+        if self.nominal(key) < 0:
+            return f'{name} is below 0 under Binding model, so {consequence}: set {name} above 0 there first.'
+        return f'{name} is 0 in the conditions, so {consequence}: set {name} above 0 first.'
 
     def unit(self, key: str) -> str:
         """The unit input *key* is stated in besides percent: its condition's unit, the titrant's none."""

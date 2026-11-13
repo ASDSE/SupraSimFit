@@ -18,6 +18,8 @@ import pytest
 pytest.importorskip('PyQt6')
 pytest.importorskip('pyqtgraph')
 
+from tests.unit.gui.session_setup import state_binding  # noqa: E402
+
 _IDA_DATA = Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt'
 
 
@@ -191,11 +193,11 @@ def analysed_session(qapp, monkeypatch):
     def build(result=None):
         session = FittingSession()
         sessions.append(session)
-        session._assay_panel.set_assay_type(AssayType.IDA)
+        state_binding(session, assay_type=AssayType.IDA)
         session.model.load_files([str(_IDA_DATA)])
         if result is None:
             return session
-        run = _made_on(result, session.model.measurement_set, session._assay_panel.current_conditions())
+        run = _made_on(result, session.model.measurement_set, session.model.settings.conditions)
         for key, spec in run.config.errors.specs.items():
             session.model.uncertainty.set_spec(key, spec)
             session.model.uncertainty_edited()

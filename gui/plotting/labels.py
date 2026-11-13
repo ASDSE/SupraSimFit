@@ -455,24 +455,25 @@ def fmt_param(name: str) -> str:
     return PARAM_LABELS.get(name, name)
 
 
-# Plain-text (no HTML) labels for widgets that cannot render rich text,
-# e.g. QCheckBox toggle labels. Uses Unicode subscripts where unambiguous.
+#: Each parameter in plain text, for accessible names, sentences and widgets that paint
+#: plain text: a binding constant by its glossary name (DESIGN.md §9), ``Kₐ guest``, and a
+#: signal coefficient as its HTML label writes it, a letter subscript after ``_``: ``I_D``.
 PARAM_LABELS_PLAIN: dict[str, str] = {
-    'Ka_guest': 'Ka(G)',
-    'Ka_dye': 'Ka(D)',
+    'Ka_guest': 'Kₐ guest',
+    'Ka_dye': 'Kₐ,dye',
     'I0': 'I₀',
-    'I_dye_free': 'I(D)',
-    'I_dye_bound': 'I(HD)',
+    'I_dye_free': 'I_D',
+    'I_dye_bound': 'I_HD',
     'slope': 'slope',
     'intercept': 'intercept',
-    'Ka_HG': 'Ka(HG)',
-    'Ka_HG2': 'Ka(HG₂)',
-    'Ka_H2G': 'Ka(H₂G)',
-    'I_G': 'I(G)',
-    'I_H': 'I(H)',
-    'I_HG': 'I(HG)',
-    'I_HG2': 'I(HG₂)',
-    'I_H2G': 'I(H₂G)',
+    'Ka_HG': 'Kₐ HG',
+    'Ka_HG2': 'Kₐ HG₂',
+    'Ka_H2G': 'Kₐ H₂G',
+    'I_G': 'I_G',
+    'I_H': 'I_H',
+    'I_HG': 'I_HG',
+    'I_HG2': 'I_HG₂',
+    'I_H2G': 'I_H₂G',
 }
 
 
@@ -492,7 +493,7 @@ def fmt_constant(key: str) -> str:
 
 
 def fmt_param_plain(name: str) -> str:
-    """Return a plain-text (no HTML) parameter label, fallback to raw name."""
+    """Parameter *name* in plain text (:data:`PARAM_LABELS_PLAIN`): ``Kₐ guest``, ``I_D``; *name* itself if unknown."""
     return PARAM_LABELS_PLAIN.get(name, name)
 
 
@@ -581,7 +582,7 @@ def fmt_bound_note(on_bound: dict) -> str:
         for key, bound in on_bound.items()
     )
     return (
-        f'The fit ended on a bound entered under Parameter Bounds ({held}), which may hold the curve away from '
+        f'The fit ended on a bound entered under Binding model ({held}), which may hold the curve away from '
         'the data. Unless that bound is something you know about the system, widen it and fit again.'
     )
 
@@ -590,7 +591,7 @@ def fmt_bound_note(on_bound: dict) -> str:
 #: curve misses the data: blank-subtracted signals need an offset below zero.
 OFFSET_AT_ZERO_NOTE = (
     'The signal offset rests on its lower bound of 0. If the signals were blank-subtracted, allow a negative '
-    'offset under Parameter Bounds and fit again.'
+    'offset under Binding model and fit again.'
 )
 
 

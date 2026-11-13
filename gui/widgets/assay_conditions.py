@@ -27,7 +27,7 @@ ASSAY_NAMES: dict[AssayType, tuple[str, str]] = {
     AssayType.DBA_DtoH: ('DBA dye → host', 'Direct binding, dye into host'),
     AssayType.DBA_HG2: ('HG₂', 'Host–guest 1:2'),
     AssayType.DBA_H2G: ('H₂G', 'Host–guest 2:1'),
-    AssayType.DYE_ALONE: ('Dye alone', 'Dye calibration'),
+    AssayType.DYE_ALONE: ('Dye alone', 'Dye alone'),
 }
 
 
@@ -48,10 +48,10 @@ class ConditionField:
     unit : str
         Base unit string (e.g. ``"M"`` or ``"M⁻¹"``).
     unit_type : str
-        Controls the unit-selector dropdown shown next to the spinbox:
-        ``"concentration"`` → nM / µM / mM / M selector (default µM),
-        ``"binding_constant"`` → M⁻¹ selector,
-        ``""`` → no selector, plain spinbox.
+        The units the condition is entered in:
+        ``"concentration"`` → nM / µM / mM / M, chosen per condition (default µM),
+        ``"binding_constant"`` → M⁻¹,
+        ``""`` → no unit.
         The choices and the default of each are listed in :data:`UNIT_CHOICES`.
     """
 
@@ -63,6 +63,9 @@ class ConditionField:
     unit_type: str = ''
 
 
+#: The ``mode`` condition of a direct binding assay, fixed by the model chosen.
+DBA_MODES: dict[AssayType, str] = {AssayType.DBA_HtoD: 'HtoD', AssayType.DBA_DtoH: 'DtoH'}
+
 #: The units a condition of each ``unit_type`` can be entered in, and the one its field opens on.
 UNIT_CHOICES: dict[str, tuple[tuple[str, ...], str]] = {
     'concentration': (('nM', 'µM', 'mM', 'M'), 'µM'),
@@ -71,13 +74,13 @@ UNIT_CHOICES: dict[str, tuple[tuple[str, ...], str]] = {
 
 
 # Maps AssayType → the condition fields its form shows, in the order they appear.
-# AssayConfigPanel reads this to build the dynamic conditions form.
+# The binding model (gui.binding) reads this to build the conditions of each model.
 ASSAY_CONDITIONS: dict[AssayType, tuple[ConditionField, ...]] = {
     AssayType.GDA: (
         ConditionField(
             'Ka_dye',
             'K<sub>a,dye</sub>',
-            'Known host–dye association constant (M⁻¹)',
+            'Known host–dye association constant',
             33e3,
             'M⁻¹',
             'binding_constant',
@@ -103,7 +106,7 @@ ASSAY_CONDITIONS: dict[AssayType, tuple[ConditionField, ...]] = {
         ConditionField(
             'Ka_dye',
             'K<sub>a,dye</sub>',
-            'Known host–dye association constant (M⁻¹)',
+            'Known host–dye association constant',
             16800000,
             'M⁻¹',
             'binding_constant',
@@ -173,9 +176,8 @@ ASSAY_CONDITIONS: dict[AssayType, tuple[ConditionField, ...]] = {
 #: samples were made rather than what is in them. A sample of volume V₀ that has
 #: received a cumulative volume W of this stock holds x = c_T·W/(V₀+W) of
 #: titrant, so the fraction of the final volume that came from the stock is
-#: x/c_T and every other total falls by that fraction. Entered in the Assay
-#: Configuration panel only when the user states that the additions dilute the
-#: sample; 0 means nothing has been entered yet.
+#: x/c_T and every other total falls by that fraction. Entered under Binding
+#: model only when the user states that the additions dilute the sample.
 TITRANT_STOCK_FIELD = ConditionField(
     'titrant_stock',
     'Titrant stock concentration',

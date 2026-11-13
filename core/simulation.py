@@ -105,7 +105,7 @@ def _build_assay(
 
     Mirrors :meth:`MeasurementSet.to_assay`: the titrant grid is ``x_data`` and the
     (unused) ``y_data`` is a zero placeholder of matching shape.  ``conditions`` are
-    the same Quantity-valued kwargs ``AssayConfigPanel.current_conditions`` produces
+    the same Quantity-valued kwargs the binding model of a session states
     (plus ``mode`` for DBA).
     """
     x = np.asarray(x_vector, dtype=float)
@@ -133,7 +133,7 @@ def simulate_signal(
         Concrete assay class (e.g. ``GDAAssay``).
     conditions : Mapping[str, Any]
         Quantity-valued conditions (``Ka_dye``, ``h0``, ``fixed_conc``, …) plus
-        ``mode`` for DBA — as returned by ``AssayConfigPanel.current_conditions``.
+        ``mode`` for DBA — as a session's binding model states them.
     parameters : Mapping[str, float]
         Base-unit parameter values keyed by the assay's ``parameter_keys``.
     x_vector : np.ndarray

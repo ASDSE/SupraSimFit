@@ -1052,7 +1052,7 @@ def input_aware(
     else:
         raise FitRefused(
             'The interval did not settle: every attempt to close it found a better fit somewhere else. '
-            'Narrow the bounds of the binding constants under Parameter Bounds and fit again.'
+            'Narrow the bounds of the binding constants under Binding model and fit again.'
         )
 
     if projection.second_step in traces:

@@ -41,8 +41,9 @@ from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set
 from core.pipeline.varpro import FitCancelled, FitRefused  # noqa: E402
 from core.units import Q_  # noqa: E402
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data  # noqa: E402
+from tests.unit.gui.session_setup import state_binding, state_dilution  # noqa: E402
 from tests.unit.gui.test_sensitivity_gui import _made_on, _sobol_result  # noqa: E402
-from tests.unit.gui.test_session_lifecycle import _state_dilution, _state_shared_source  # noqa: E402
+from tests.unit.gui.test_session_lifecycle import _state_shared_source  # noqa: E402
 
 _CONDITIONS = {
     'Ka_dye': Q_(IDA_TRUE['Ka_dye'], '1/M'),
@@ -124,10 +125,7 @@ def make_session(qapp):
 
     def build(ms: MeasurementSet | None = None):
         session = FittingSession()
-        session._assay_panel.set_assay_type(AssayType.IDA)
-        for key, value in _CONDITIONS.items():
-            session._assay_panel._field_widgets[key].setValue(value.magnitude)
-        _set_bounds(session, GDA_IDA_RECOVERY_BOUNDS)
+        state_binding(session, assay_type=AssayType.IDA, conditions=_CONDITIONS, bounds=GDA_IDA_RECOVERY_BOUNDS)
         if ms is not None:
             session.model.load(ms, None)
         sessions.append(session)
@@ -138,12 +136,6 @@ def make_session(qapp):
         for thread in session.findChildren(QThread):
             thread.wait()
     qapp.processEvents()
-
-
-def _set_bounds(session, bounds) -> None:
-    """Enter *bounds* under Parameter Bounds, as the fits of this module were made under them."""
-    for key, (lo, hi) in bounds.items():
-        session._bounds_panel._rows[key].set_values(lo.magnitude, hi.magnitude)
 
 
 def _wait_until(qapp, condition, timeout: float = 60.0) -> None:
@@ -159,7 +151,7 @@ def _deliver(session, result: FitResult) -> None:
     from gui.workers import FitWorker
 
     ms = session.model.measurement_set
-    conditions = session._assay_panel.current_conditions()
+    conditions = session.model.settings.conditions
     worker = FitWorker(copy.deepcopy(ms), IDAAssay, conditions, FitConfig(), parent=session)
     worker.finished.connect(session.model._on_fit_complete)
     worker.error.connect(session.model._on_fit_error)
@@ -185,7 +177,7 @@ def _deliver_sensitivity(session, fit):
     from core.pipeline.inputs import specs_to_dict
 
     ms = session.model.measurement_set
-    result = _made_on(_sobol_result(), ms, session._assay_panel.current_conditions())
+    result = _made_on(_sobol_result(), ms, session.model.settings.conditions)
     # A run's baseline is fitted under the bounds and the replicate mode set, and records them as a fit does.
     result.baseline_fit.fit_config = {key: fit.fit_config[key] for key in ('custom_bounds', 'per_replicate')}
     fit.fit_config['input_uncertainty'] = specs_to_dict(result.config.errors.specs)
@@ -215,12 +207,22 @@ def _numbers(session) -> tuple:
 
 
 def _type_into(session, key: str, text: str, *, finish: bool = True) -> None:
-    """Type *text* over condition *key*, then press Return when *finish*."""
-    spin = session._assay_panel._field_widgets[key]._spinbox
-    spin.selectAll()
-    QTest.keyClicks(spin, text)
+    """Type *text* over condition *key* in Binding model, then press Return when *finish*."""
+    editor = session._binding._conditions[key].value.editor
+    editor.selectAll()
+    QTest.keyClicks(editor, text)
     if finish:
-        QTest.keyClick(spin, Qt.Key.Key_Return)
+        QTest.keyClick(editor, Qt.Key.Key_Return)
+
+
+def _type_bound(session, key: str, index: int, text: str) -> None:
+    """Type *text* over the lower (0) or upper (1) bound of parameter *key* in Binding model."""
+    editor = session._binding._bounds[key].fields[index].editor
+    editor.selectAll()
+    if text:
+        QTest.keyClicks(editor, text)
+    else:
+        QTest.keyClick(editor, Qt.Key.Key_Delete)
 
 
 def _assert_hidden(session, note: str, *, profiled: bool = True) -> None:
@@ -348,7 +350,7 @@ def test_a_condition_edit_hides_the_fit_once_finished_and_the_same_value_restore
     _type_into(session, 'h0', '12', finish=False)
     assert session.model.fit_results == [fit], 'hidden while still typing'
 
-    QTest.keyClick(session._assay_panel._field_widgets['h0']._spinbox, Qt.Key.Key_Return)
+    QTest.keyClick(session._binding._conditions['h0'].value.editor, Qt.Key.Key_Return)
     _assert_hidden(
         session,
         'This fit was made on replicates A and B with [Host]₀ = 10 µM. [Host]₀ is now 12 µM. Set it back to 10 µM, '
@@ -359,7 +361,7 @@ def test_a_condition_edit_hides_the_fit_once_finished_and_the_same_value_restore
     assert session.model.fit_results == [fit]
     assert _numbers(session) == before
 
-    session._assay_panel._field_widgets['h0']._combo.setCurrentText('nM')
+    session._binding._conditions['h0'].unit.chosen.emit(0)  # nM
     assert session.model.fit_results == [fit]
     assert _numbers(session) == before
 
@@ -388,7 +390,7 @@ def test_a_conditions_difference_with_no_name_is_said_even_beside_a_replicate_ch
 def _diluted_session(qapp, make_session, diluted_fit):
     """A session with the dilution stated as the diluted fit was made with it, showing that fit."""
     session = make_session(_data())
-    _state_dilution(session, _STOCK.magnitude)
+    state_dilution(session, _STOCK.magnitude)
     _deliver(session, diluted_fit)
     _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
     assert session.model.hidden_results_note() is None
@@ -399,8 +401,8 @@ def test_changing_the_titrant_stock_hides_the_fit_and_names_it(qapp, make_sessio
     """The stock says how much each addition dilutes the sample, so another one is another model of the data."""
     session = _diluted_session(qapp, make_session, diluted_fit)
 
-    session._assay_panel._stock_widget.setValue(2 * _STOCK.magnitude)
-    session._assay_panel._finish_edit()
+    session.model.binding.set_value('titrant_stock', 2 * _STOCK.magnitude)
+    session.model.binding_edited()
 
     _assert_hidden(
         session,
@@ -413,7 +415,7 @@ def test_switching_the_dilution_off_hides_a_fit_made_with_it(qapp, make_session,
     """Constant totals are a different model of the same data, and no condition field shows the difference."""
     session = _diluted_session(qapp, make_session, diluted_fit)
 
-    session._assay_panel._dilution_combo.setCurrentIndex(0)
+    session._binding.dilution.changed.emit(0)  # Stay constant
 
     _assert_hidden(
         session,
@@ -425,7 +427,7 @@ def test_switching_the_dilution_off_hides_a_fit_made_with_it(qapp, make_session,
 def test_switching_the_dilution_on_hides_a_fit_made_without_it(qapp, make_session, fit, dialogs):
     session = _shown_session(qapp, make_session, fit)
 
-    _state_dilution(session, _STOCK.magnitude)
+    state_dilution(session, _STOCK.magnitude)
 
     _assert_hidden(
         session,
@@ -438,7 +440,7 @@ def test_ticking_a_species_into_the_stock_hides_the_fit(qapp, make_session, dilu
     """A species the stock holds at the sample's concentration does not fall with the additions, so the model changes."""
     session = _diluted_session(qapp, make_session, diluted_fit)
 
-    session._assay_panel._contains_boxes['d0'].setChecked(True)
+    session._binding._contains['d0'].toggled.emit(True)
 
     _assert_hidden(
         session,
@@ -549,16 +551,15 @@ def test_switching_the_assay_type_hides_the_fit_and_switching_back_restores_it(q
     session = _shown_session(qapp, make_session, fit)
     before = _numbers(session)
 
-    session._assay_panel.set_assay_type(AssayType.GDA)
+    state_binding(session, assay_type=AssayType.GDA)
     _assert_hidden(
         session,
-        'This fit was made on replicates A and B for IDA (Indicator Displacement Assay). The assay is now GDA '
-        '(Guest Displacement Assay). Switch the assay back to IDA (Indicator Displacement Assay), or run the fit '
-        'again.',
+        'This fit was made on replicates A and B for IDA. The model is now GDA. Switch the model back to IDA, or '
+        'run the fit again.',
     )
 
-    session._assay_panel.set_assay_type(AssayType.IDA)  # the form and the bounds come back as the defaults
-    _set_bounds(session, GDA_IDA_RECOVERY_BOUNDS)
+    # the form and the bounds come back as the defaults
+    state_binding(session, assay_type=AssayType.IDA, bounds=GDA_IDA_RECOVERY_BOUNDS)
     for key, text in (('Ka_dye', '500000'), ('h0', '10'), ('d0', '5')):
         _type_into(session, key, text)
 
@@ -576,15 +577,15 @@ def test_editing_a_bound_hides_the_fit_and_the_bound_it_was_made_under_restores_
     before = _numbers(session)
     assert fit.parameters['Ka_guest'].magnitude > 1e6
 
-    session._bounds_panel._rows['Ka_guest']._hi.setText('1e6')
+    _type_bound(session, 'Ka_guest', 1, '1e6')
 
     _assert_hidden(
         session,
-        'This fit was made on replicates A and B. The Ka(G) bounds are now 1×10⁻⁸ to 1×10⁶ M⁻¹. Set them back to '
+        'This fit was made on replicates A and B. The Kₐ guest bounds are now 1×10⁻⁸ to 1×10⁶ M⁻¹. Set them back to '
         '1×10⁻⁸ to 1×10¹² M⁻¹, or run the fit again.',
     )
 
-    session._bounds_panel._rows['Ka_guest']._hi.setText('1e12')
+    _type_bound(session, 'Ka_guest', 1, '1e12')
 
     assert session.model.fit_results == [fit] and session.model.hidden_results_note() is None
     assert _numbers(session) == before
@@ -594,11 +595,23 @@ def test_a_bound_that_cannot_be_read_hides_the_fit(qapp, make_session, fit, dial
     """While a row cannot be read, the bounds on screen describe no fit, the one shown included."""
     session = _shown_session(qapp, make_session, fit)
 
-    session._bounds_panel._rows['I0']._lo.setText('')
+    _type_bound(session, 'I0', 0, '')
 
     assert session.model.hidden_results_note() == (
         'This fit was made on replicates A and B. The I₀ bounds cannot be read now. Set them back to −100 to 100 '
         'a.u., or run the fit again.'
+    )
+
+
+def test_a_condition_that_cannot_be_read_hides_the_fit_and_says_so(qapp, make_session, fit, dialogs):
+    """A text that is no number is no value, so the note says it cannot be read rather than giving it as NaN."""
+    session = _shown_session(qapp, make_session, fit)
+
+    _type_into(session, 'h0', 'abc')
+
+    assert session.model.hidden_results_note() == (
+        'This fit was made on replicates A and B with [Host]₀ = 10 µM. [Host]₀ cannot be read now. Set it back '
+        'to 10 µM, or run the fit again.'
     )
 
 
@@ -607,7 +620,7 @@ def test_switching_the_replicate_mode_hides_the_fit_and_switching_back_restores_
     session = _shown_session(qapp, make_session, fit)
     before = _numbers(session)
 
-    session._fit_panel.set_config(FitConfig(per_replica=False))
+    state_binding(session, per_replica=False)
 
     _assert_hidden(
         session,
@@ -615,7 +628,7 @@ def test_switching_the_replicate_mode_hides_the_fit_and_switching_back_restores_
         'back on, or run the fit again.',
     )
 
-    session._fit_panel.set_config(FitConfig(per_replica=True))
+    state_binding(session, per_replica=True)
 
     assert session.model.fit_results == [fit] and _numbers(session) == before
 
@@ -627,18 +640,18 @@ def test_a_sensitivity_run_is_hidden_by_a_bound_or_the_replicate_mode_its_baseli
     _deliver_sensitivity(session, fit)
     assert session.model.sensitivity_note is None
 
-    session._bounds_panel._rows['Ka_guest']._hi.setText('1e6')
+    _type_bound(session, 'Ka_guest', 1, '1e6')
 
     assert session.model.sensitivity_note == (
-        'This sensitivity analysis was made on replicates A–C. The Ka(G) bounds are now 1×10⁻⁸ to 1×10⁶ M⁻¹. Set '
+        'This sensitivity analysis was made on replicates A–C. The Kₐ guest bounds are now 1×10⁻⁸ to 1×10⁶ M⁻¹. Set '
         'them back to 1×10⁻⁸ to 1×10¹² M⁻¹, or run the analysis again.'
     )
     assert session._sensitivity_widget._mismatch_label.text() == session.model.sensitivity_note
 
-    session._bounds_panel._rows['Ka_guest']._hi.setText('1e12')
+    _type_bound(session, 'Ka_guest', 1, '1e12')
     assert session.model.sensitivity_note is None
 
-    session._fit_panel.set_config(FitConfig(per_replica=False))
+    state_binding(session, per_replica=False)
     assert 'Fitting each replicate separately is now switched off.' in session.model.sensitivity_note
 
 
@@ -649,10 +662,7 @@ def test_window_result_exports_say_why_while_the_fit_is_hidden(qapp, make_sessio
     monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
     window = FittingMainWindow()
     session = window.active_session()
-    session._assay_panel.set_assay_type(AssayType.IDA)
-    for key, value in _CONDITIONS.items():
-        session._assay_panel._field_widgets[key].setValue(value.magnitude)
-    _set_bounds(session, GDA_IDA_RECOVERY_BOUNDS)
+    state_binding(session, assay_type=AssayType.IDA, conditions=_CONDITIONS, bounds=GDA_IDA_RECOVERY_BOUNDS)
     session.model.load(_data(), None)
     _deliver(session, fit)
 
@@ -811,7 +821,7 @@ def test_import_of_a_file_without_a_replicate_record_names_the_selection_when_re
     for key in ('active_replica_ids', 'data_fingerprint', 'quality_scored_on'):
         del released.metadata[key]
     session = make_session(_data())
-    session._fit_panel.set_config(FitConfig(per_replica=False))  # the mode the fit was made in
+    state_binding(session, per_replica=False)  # the mode the fit was made in
     _toggle(session, 'c', False)
 
     _import(session, monkeypatch, tmp_path, [released])
@@ -856,7 +866,7 @@ def test_import_of_a_released_file_with_bare_number_conditions_is_checked_and_sh
     path.write_text(json.dumps([d]))
     monkeypatch.setattr('gui.fitting_session.QFileDialog.getOpenFileName', lambda *args: (str(path), ''))
     session = make_session(_data())
-    session._fit_panel.set_config(FitConfig(per_replica=False))  # the mode the fit was made in
+    state_binding(session, per_replica=False)  # the mode the fit was made in
 
     session.import_results()
 
@@ -878,10 +888,8 @@ def test_import_of_a_file_written_before_the_arithmetic_marker_is_shown_as_store
     fixtures = Path(__file__).resolve().parents[2] / 'fixtures' / 'results'
     conditions = {'Ka_dye': 1e7, 'h0': 2e-7, 'g0': 2e-7}
     session = make_session()
-    session._assay_panel.set_assay_type(AssayType.GDA)  # with the GDA default bounds the file was made under
-    session._fit_panel.set_config(FitConfig(per_replica=False))
-    for key, value in conditions.items():
-        session._assay_panel._field_widgets[key].setValue(value)
+    # with the GDA default bounds the file was made under
+    state_binding(session, assay_type=AssayType.GDA, conditions=conditions, per_replica=False)
     session.model.load(MeasurementSet.from_dataframe(load_measurements(fixtures / 'unmarked_gda_data.txt')), None)
     monkeypatch.setattr(
         'gui.fitting_session.QFileDialog.getOpenFileName', lambda *args: (str(fixtures / 'unmarked_gda.json'), '')
@@ -902,9 +910,8 @@ def test_import_of_a_released_per_replicate_file_says_why_its_numbers_changed(qa
     root = Path(__file__).resolve().parents[3]
     fixtures = root / 'tests' / 'fixtures' / 'results'
     session = make_session()
-    session._assay_panel.set_assay_type(AssayType.IDA)  # with the IDA default bounds the file was made under
-    for key, value in (('Ka_dye', 16.8e6), ('h0', 4.3e-6), ('d0', 6e-6)):
-        session._assay_panel._field_widgets[key].setValue(value)
+    # with the IDA default bounds the file was made under
+    state_binding(session, assay_type=AssayType.IDA, conditions={'Ka_dye': 16.8e6, 'h0': 4.3e-6, 'd0': 6e-6})
     session.model.load(MeasurementSet.from_dataframe(load_measurements(root / 'data' / 'IDA_system.txt')), None)
     monkeypatch.setattr(
         'gui.fitting_session.QFileDialog.getOpenFileName', lambda *args: (str(fixtures / 'v150_pr_drop.json'), '')
@@ -958,16 +965,16 @@ def test_import_without_data_hides_a_fit_of_another_assay_type_and_labels_the_ax
     qapp, make_session, fit, dialogs, monkeypatch, tmp_path
 ):
     session = make_session()
-    session._assay_panel.set_assay_type(AssayType.GDA)
+    state_binding(session, assay_type=AssayType.GDA)
 
     _import(session, monkeypatch, tmp_path, [fit])
 
     plot = session._plot_widget
     assert session.model.fit_results == [] and plot._fit_items == []
-    assert session.model.hidden_results_note().startswith('This fit was made for IDA (Indicator Displacement Assay).')
+    assert session.model.hidden_results_note().startswith('This fit was made for IDA.')
 
-    session._assay_panel.set_assay_type(AssayType.IDA)  # the form and the bounds come back as the defaults
-    _set_bounds(session, GDA_IDA_RECOVERY_BOUNDS)
+    # the form and the bounds come back as the defaults
+    state_binding(session, assay_type=AssayType.IDA, bounds=GDA_IDA_RECOVERY_BOUNDS)
     for key, text in (('Ka_dye', '500000'), ('h0', '10'), ('d0', '5')):
         _type_into(session, key, text)
 
@@ -1005,7 +1012,7 @@ def test_one_hidden_result_leaves_the_shown_one_drawn_and_exportable(
     artefacts = {artefact.key: artefact for artefact in build_artefacts(session)}
     assert all(artefacts[key].available for key in ('results_json', 'results_txt', 'results_csv'))
 
-    session._fit_panel.set_config(FitConfig(per_replica=False))
+    state_binding(session, per_replica=False)
 
     (shown,) = session.model.fit_results
     assert shown.id == average_fit.id and len(plot._fit_items) == 1
@@ -1201,7 +1208,7 @@ def test_the_primary_action_offers_stop_while_a_fit_runs(qapp, dialogs, slow_fit
     monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
     window = FittingMainWindow()
     session = window.active_session()
-    session._assay_panel.set_assay_type(AssayType.IDA)
+    state_binding(session, assay_type=AssayType.IDA)
     session.model.load(_data(), None)
 
     session.run_fit()

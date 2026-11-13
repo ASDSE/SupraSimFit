@@ -35,9 +35,6 @@ _CONDITIONS = {
     'd0': Q_(IDA_TRUE['d0'], 'M'),
 }
 
-#: The units the conditions form shows by default, which the notes write the conditions in.
-_UNITS = {'Ka_dye': 'M⁻¹', 'h0': 'µM', 'd0': 'µM', 'titrant_stock': 'µM'}
-
 
 def _data() -> MeasurementSet:
     """Three replicates of the IDA ground truth with 1 % noise."""
@@ -63,9 +60,7 @@ def make_model(qapp):
 
     def build():
         model = SessionModel()
-        model.update_settings(
-            assay_type=AssayType.IDA, conditions=dict(_CONDITIONS), condition_units=_UNITS, per_replica=False
-        )
+        _state(model, _CONDITIONS, per_replica=False)
         models.append(model)
         return model
 
@@ -85,6 +80,19 @@ def watchful_fit(monkeypatch):
         raise FitCancelled('The fit was cancelled.')
 
     monkeypatch.setattr(workers, 'fit_measurement_set', run)
+
+
+def _state(model, conditions, *, per_replica=None, finished=True) -> None:
+    """State the IDA model with *conditions* and the bounds the fit was made under, as Binding model does."""
+    form = model.binding
+    form.choose_model(AssayType.IDA)
+    for key, value in conditions.items():
+        form.set_value(key, value.to(form.entry(key).field.unit).magnitude)
+    for key, (lo, hi) in GDA_IDA_RECOVERY_BOUNDS.items():
+        form.set_bounds(key, lo.magnitude, hi.magnitude)
+    if per_replica is not None:
+        form.set_per_replica(per_replica)
+    model.binding_edited(finished)
 
 
 def _holding(make_model, fit: FitResult):
@@ -107,7 +115,7 @@ def _wait_until(qapp, condition, timeout: float = 10.0) -> None:
 def test_a_condition_hides_the_fit_once_its_edit_is_finished_and_setting_it_back_shows_it_again(make_model, fitted):
     model = _holding(make_model, fitted)
 
-    model.update_settings(conditions={**_CONDITIONS, 'h0': Q_(5e-6, 'M')})
+    _state(model, {**_CONDITIONS, 'h0': Q_(5e-6, 'M')}, finished=False)
     assert model.fit_results == [fitted], 'hidden while the value is still being typed'
 
     model.edit_finished()
@@ -118,7 +126,7 @@ def test_a_condition_hides_the_fit_once_its_edit_is_finished_and_setting_it_back
         'Set it back to 10 µM, or run the fit again.'
     )
 
-    model.update_settings(conditions=dict(_CONDITIONS))
+    _state(model, _CONDITIONS, finished=False)
     model.edit_finished()
     (shown,) = model.fit_results
     assert shown is fitted and model.hidden_results_note() is None
@@ -127,7 +135,7 @@ def test_a_condition_hides_the_fit_once_its_edit_is_finished_and_setting_it_back
 def test_the_replicate_mode_hides_the_fit_as_soon_as_it_changes(make_model, fitted):
     model = _holding(make_model, fitted)
 
-    model.update_settings(per_replica=True)
+    _state(model, {}, per_replica=True)
 
     assert model.fit_results == []
     assert 'Fitting each replicate separately is now switched on.' in model.hidden_results_note()
@@ -195,12 +203,13 @@ def test_a_fit_that_cannot_start_says_why(make_model):
     ms = _data()
     model.load(ms, '/data/ida.txt')
     highest = float(ms.concentrations.max())
-    model.update_settings(conditions={**_CONDITIONS, 'titrant_stock': Q_(highest / 2, 'M'), 'stock_contains': ()})
+    model.binding.set_diluted(True)
+    _state(model, {'titrant_stock': Q_(highest / 2, 'M')})
 
     refusal = model.run_fit()
 
     assert not model.fit_running()
-    assert refusal.title == 'Assay Configuration'
+    assert refusal.title == 'Binding model'
     # Both concentrations in the unit the stock's field shows.
     stock, top = (f'{value * 1e6:.4g} µM' for value in (highest / 2, highest))
     assert f'The titrant stock ({stock}) must be more concentrated than the highest titrant' in refusal.message
@@ -234,7 +243,7 @@ def test_the_switcher_line_reports_the_shown_ka_and_counts_the_warnings_of_its_v
 def test_a_fit_that_needs_a_refit_is_marked_out_of_date_everywhere(make_model, fitted):
     model = _holding(make_model, fitted)
 
-    model.update_settings(per_replica=True)
+    _state(model, {}, per_replica=True)
 
     assert model.summary()[:2] == ('stale', 'Needs refit')
     assert model.view_status('Fit results') == ('stale', 0.0)
@@ -259,6 +268,16 @@ def test_the_file_card_and_the_model_line_describe_the_loaded_data_and_the_model
     assert model.model_line()[:2] == ['Indicator displacement', '1 binding constant']
 
 
+def test_the_model_line_names_a_calibration_as_the_badge_does_and_claims_no_interval(make_model):
+    """Dye alone fits a straight line: no binding constant, so no profile-likelihood interval either."""
+    model = make_model()
+    model.binding.choose_model(AssayType.DYE_ALONE)
+    model.binding_edited()
+
+    assert model.model_line() == ['Dye alone', 'no binding constant']
+    assert model.binding.badge() == 'Dye alone · no binding constant'
+
+
 def test_stop_ends_a_running_fit_and_leaves_the_shown_one(qapp, make_model, fitted, watchful_fit):
     model = _holding(make_model, fitted)
     assert model.run_fit() is None
@@ -269,3 +288,28 @@ def test_stop_ends_a_running_fit_and_leaves_the_shown_one(qapp, make_model, fitt
 
     assert not model.running()
     assert model.fit_results == [fitted]
+
+
+def test_a_waiting_conversion_is_made_against_the_condition_once_its_edit_is_finished(make_model):
+    """Keystroke by keystroke the condition reads 4 then 45 µM; the σ of 5 % waiting for it is 5 % of 45 µM."""
+    from core.pipeline.inputs import InputSpec, SpecKind
+
+    model = make_model()
+    model.uncertainty.set_spec('h0', InputSpec.sigma_pct(5.0))
+    model.binding.edit('h0', '')
+    model.binding_edited(False)
+    model.uncertainty.state_in('h0', False)
+    model.uncertainty_edited()
+
+    for text in ('4', '45'):
+        model.binding.edit('h0', text)
+        model.binding_edited(False)
+    assert model.uncertainty.spec('h0') is None, 'nothing is converted against a value still being typed'
+    assert model.settings.input_problems
+
+    model.edit_finished()
+    spec = model.uncertainty.spec('h0')
+    assert (spec.kind, spec.relative) == (SpecKind.SIGMA, False)
+    assert spec.sigma == pytest.approx(0.05 * 45e-6, rel=1e-12)
+    assert model.settings.input_problems == ()
+    assert model.settings.errors.specs['h0'] == spec

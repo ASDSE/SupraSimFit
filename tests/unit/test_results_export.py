@@ -277,7 +277,7 @@ def test_txt_report_says_when_a_signal_parameter_ended_on_an_entered_bound(tmp_p
     held.fit_config['custom_bounds'] = {'I0': [0.0, 1000.0, 'au'], 'I_dye_free': [0.0, 1.0e9, 'au/M']}
     text = _prose(_txt(tmp_path, [held]))
 
-    assert 'The fit ended on a bound entered under Parameter Bounds (I₀ at 1.0×10³ a.u.)' in text
+    assert 'The fit ended on a bound entered under Binding model (I₀ at 1.0×10³ a.u.)' in text
     assert 'widen it and fit again' in text
     assert 'ended on a bound' not in _prose(_txt(tmp_path, [_result()]))
 
@@ -1077,7 +1077,7 @@ _REJECTED = FitDiagnostics(
 
 _OFFSET_NOTE = (
     'The signal offset rests on its lower bound of 0. If the signals were blank-subtracted, allow a negative '
-    'offset under Parameter Bounds and fit again.'
+    'offset under Binding model and fit again.'
 )
 
 

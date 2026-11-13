@@ -343,8 +343,7 @@ class FittingMainWindow(QMainWindow):
         self._act_load_new = _action(self, 'Load data into a new session…', 'file-plus', 'Ctrl+Shift+O')
         self._act_load_new.triggered.connect(self._on_load_new)
         self._act_open_results = _action(self, 'Open results file…', 'results', None, self._on_open_results)
-        self._act_duplicate = _action(self, 'Duplicate session', 'copy')
-        self._act_duplicate.setEnabled(False)
+        self._act_duplicate = _action(self, 'Duplicate session', 'copy', None, self._duplicate_current)
         self._act_close = _action(self, 'Close session', 'x', keys.Close, self._close_current)
         self._act_results = _action(
             self, 'Results file…', 'save', keys.Save, lambda: self._on_session('export_results')
@@ -491,6 +490,12 @@ class FittingMainWindow(QMainWindow):
         if model is None or model.measurement_set is not None or model.held_fit_results or model.running():
             return self._new_session()
         return session
+
+    def _duplicate_current(self) -> None:
+        """Open a copy of the session on screen: its data, binding model and input uncertainties, and no results."""
+        source = self.active_session()
+        if source is not None:
+            self._new_session().copy_from(source)
 
     def _close_current(self) -> None:
         session = self.active_session()

@@ -1,8 +1,10 @@
 """SessionModel — the data, settings, results, runs and rules of one fitting session, without widgets.
 
-A view builds the panels, reports what they state through
-:meth:`SessionModel.update_settings`, and draws what the model's signals say
-changed. Every rule a session follows reads the model: whether a held result
+The user's settings live in two widget-free forms the model owns — the binding
+model (:class:`~gui.binding.BindingForm`) and the input uncertainties
+(:class:`~gui.uncertainty.UncertaintyForm`). A view edits a form, tells the model
+(:meth:`SessionModel.binding_edited`, :meth:`SessionModel.uncertainty_edited`),
+and draws what the model's signals say changed. Every rule a session follows reads the model: whether a held result
 still describes the loaded data and settings (and the note that says why not),
 whether a run can start (and the message that says why not), the session's
 name, and what is running.
@@ -10,6 +12,7 @@ name, and what is running.
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import time
@@ -20,7 +23,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
+from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import InvalidData, MeasurementSet
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.pipeline.diagnostics import Verdict
@@ -41,6 +44,7 @@ from core.pipeline.sensitivity import (
 from core.pipeline.varpro import REPLICATE_TEST_MIN, projectable
 from core.units import Q_, Quantity
 from gui import preferences
+from gui.binding import BindingForm, binding_constants
 from gui.dataset import Dataset
 from gui.plotting.labels import (
     STOPPING_TEXT,
@@ -196,7 +200,7 @@ class ImportCheck:
 
 @dataclass(frozen=True)
 class SessionSettings:
-    """Everything the user has set in a session, as the views state it.
+    """Everything the user has set in a session, as its forms state it.
 
     Attributes
     ----------
@@ -412,6 +416,8 @@ class SessionModel(QObject):
         Work in the background failed: a title and a message to show.
     uncertainty_changed()
         The statement of the input uncertainties (:attr:`uncertainty`) changed.
+    binding_changed()
+        The binding model as stated (:attr:`binding`) changed.
     """
 
     status_changed = pyqtSignal(str)
@@ -424,12 +430,16 @@ class SessionModel(QObject):
     sensitivity_changed = pyqtSignal(bool)
     warning = pyqtSignal(str, str)
     uncertainty_changed = pyqtSignal()
+    binding_changed = pyqtSignal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._settings = SessionSettings()
+        #: The binding model as stated; :meth:`binding_edited` after every change.
+        self.binding = BindingForm()
         #: What the user states about the inputs; :meth:`uncertainty_edited` after every change.
-        self.uncertainty = UncertaintyForm(self._settings.assay_type)
+        self.uncertainty = UncertaintyForm(self.binding.assay_type)
+        self.uncertainty.set_conditions(self.binding.conditions(), self.binding.condition_units())
+        self._settings = SessionSettings(**self.binding_settings(), **self.uncertainty_settings())
         self._dataset: Dataset | None = None
         self._custom_name: str | None = None
         self._progress: tuple[int, int] | None = None  # the running analysis's count, done of total
@@ -642,15 +652,49 @@ class SessionModel(QObject):
         return self._settings
 
     def update_settings(self, **changes: Any) -> None:
-        """Take the settings the views state now, and check the held results when one they are checked by changed.
+        """Take *changes* to the settings, and check the held results when one they are checked by changed.
 
         The conditions are not checked here: they arrive as they are typed, and
         are checked once the edit is finished (:meth:`edit_finished`).
         """
+        self._take_settings(changes, check=False)
+
+    def _take_settings(self, changes: Mapping[str, Any], check: bool) -> None:
+        """Take *changes*; check the held results when *check* is set or a setting they are checked by changed."""
         old, new = self._settings, replace(self._settings, **changes)
         self._settings = new
-        if any(getattr(old, key) != getattr(new, key) for key in _CHECKED_SETTINGS & changes.keys()):
+        if check or any(getattr(old, key) != getattr(new, key) for key in _CHECKED_SETTINGS & changes.keys()):
             self.check_results()
+
+    def binding_settings(self) -> dict[str, Any]:
+        """The settings :attr:`binding` states: the model, its conditions, the bounds and the replicate mode."""
+        form = self.binding
+        return {
+            'assay_type': form.assay_type,
+            'conditions': form.conditions(),
+            'condition_units': form.condition_units(),
+            'assay_problems': tuple(form.problems()),
+            'bounds': form.bounds(),
+            'custom_bounds': form.custom_bounds(),
+            'bound_problems': tuple(form.bound_problems()),
+            'per_replica': form.per_replica,
+        }
+
+    def binding_edited(self, finished: bool = True) -> None:
+        """Take the binding model as :attr:`binding` states it now, and say it changed.
+
+        The input uncertainties follow it: another model has other inputs, and an
+        uncertainty in percent is read against the conditions as entered. While a
+        condition is still being typed (*finished* false) the held results are not
+        checked against the conditions; every other setting is checked as it changes.
+        """
+        form = self.binding
+        if form.assay_type is not self.uncertainty.assay_type:
+            self.uncertainty.set_assay(form.assay_type)
+        self.uncertainty.set_conditions(form.conditions(), form.condition_units(), finished)
+        self._take_settings({**self.binding_settings(), **self.uncertainty_settings()}, check=finished)
+        self.binding_changed.emit()
+        self.uncertainty_changed.emit()
 
     def uncertainty_settings(self) -> dict[str, Any]:
         """The settings :attr:`uncertainty` states: the error model, the inputs' names and its problems."""
@@ -667,8 +711,46 @@ class SessionModel(QObject):
         self.uncertainty_changed.emit()
 
     def edit_finished(self) -> None:
-        """Check the held results against the conditions, once an edit of them is finished."""
-        self.check_results()
+        """Once an edit of the conditions is finished, make the conversions waiting for them and check the results."""
+        if self.uncertainty.convert_pending():
+            self._take_settings(self.uncertainty_settings(), check=True)
+            self.uncertainty_changed.emit()
+        else:
+            self.check_results()
+
+    def bounds_from_dye_alone(self, path: str) -> Refusal | None:
+        """Bound the signal coefficients by a dye-alone calibration in *path*; say why when it cannot be used.
+
+        A straight line fitted to the calibration gives the free-dye signal (its
+        slope) and the baseline (its intercept); each is bounded to ±20 % of it. The
+        bounds are then shown as bounds typed in, and nothing changes when the file
+        cannot be used.
+        """
+        from core.assays import DyeAloneAssay
+        from core.io import load_measurements
+        from core.pipeline.fit_pipeline import bounds_from_dye_alone, fit_linear_assay
+
+        name = Path(path).name
+        try:
+            ms = MeasurementSet.from_dataframe(load_measurements(path), source_file=path)
+            result = fit_linear_assay(ms.to_assay(DyeAloneAssay, conditions={}))
+            bounds = bounds_from_dye_alone(result, margin=0.2)
+        except InvalidData as exc:
+            # Written for the user: it names the file, the replicate and the point, and the fix.
+            return Refusal('Dye-alone calibration', f'{exc} The signal bounds were not changed.')
+        except Exception:
+            logger.exception('Could not fit the dye-alone data in %s', path)
+            return Refusal(
+                'Dye-alone calibration',
+                f'Could not fit a straight line to the dye-alone data in {name}. Check that the file is a '
+                'measurement of the dye alone, with its concentrations, then load it again. The signal bounds '
+                'were not changed.',
+            )
+        self.binding.apply_dye_alone(bounds)
+        self.binding_edited()
+        names = and_join(fmt_param_plain(key) for key in self.binding.dye_alone_keys())
+        self.show_status(f'Bounds of {names} set from the dye-alone calibration in {name}')
+        return None
 
     # ------------------------------------------------------------------
     # Session
@@ -679,6 +761,28 @@ class SessionModel(QObject):
         if self._custom_name:
             return self._custom_name
         return Path(self._source_file).stem if self._source_file else 'New session'
+
+    def copy_from(self, other: SessionModel) -> None:
+        """Take a copy of everything *other* states, and none of its results.
+
+        Its data — the files, the concentrations as stated, which replicates are
+        used — its binding model, input uncertainties and display unit. The copy is
+        named after *other*, so the two read apart in the switcher.
+        """
+        self.shutdown()
+        self._dataset = copy.deepcopy(other._dataset)
+        self.binding = copy.deepcopy(other.binding)
+        self.uncertainty = copy.deepcopy(other.uncertainty)
+        self._settings = other.settings
+        self._custom_name = f'{other.name()} copy'
+        self._held_fit_results = []
+        self._clear_profile()
+        self._clear_sensitivity()
+        self.name_changed.emit(self.name())
+        self.data_changed.emit()
+        self.binding_changed.emit()
+        self.uncertainty_changed.emit()
+        self.check_results(force=True)
 
     def set_custom_name(self, name: str) -> None:
         """Name the session *name*; an empty name gives it back its automatic one."""
@@ -847,10 +951,10 @@ class SessionModel(QObject):
 
         assay_type = settings.assay_type
         if result.assay_type != assay_type.name:
-            theirs = ASSAY_REGISTRY[AssayType[result.assay_type]].display_name
+            theirs = ASSAY_NAMES[AssayType[result.assay_type]][0]
             made += f' for {theirs}'
-            changes.append(f'the assay is now {ASSAY_REGISTRY[assay_type].display_name}')
-            fixes.append(f'switch the assay back to {theirs}')
+            changes.append(f'the model is now {ASSAY_NAMES[assay_type][0]}')
+            fixes.append(f'switch the model back to {theirs}')
         else:
             entered = settings.conditions
             if not same_inputs(result.conditions, entered):
@@ -866,6 +970,8 @@ class SessionModel(QObject):
                     made += ' with ' + and_join([f'{self._condition_name(key)} = {stored[key]}' for key in keys])
                     changes += [
                         f'{self._condition_name(key)} is now {self._format_condition(key, entered[key])}'
+                        if math.isfinite(entered[key].magnitude)
+                        else f'{self._condition_name(key)} cannot be read now'
                         for key in keys
                     ]
                     fixes.append(f'set it back to {stored[keys[0]]}' if len(keys) == 1 else 'set them back')
@@ -1230,46 +1336,44 @@ class SessionModel(QObject):
         """What the fit is, for the status bar: the model, its binding constants, the interval and the weighting."""
         fit, _ = self.fit_view()
         assay_type = AssayType[fit.assay_type] if fit is not None else self.settings.assay_type
-        kinds = ASSAY_REGISTRY[assay_type].param_kinds.values()
-        n_ka = sum(kind is ParamKind.BINDING_CONSTANT for kind in kinds)
-        parts = [ASSAY_NAMES[assay_type][1], _count(n_ka, 'binding constant'), 'Profile likelihood, 95\u2009%']
+        parts = [ASSAY_NAMES[assay_type][1], binding_constants(assay_type)]
+        if projectable(assay_type):
+            parts.append('Profile likelihood, 95\u2009%')
         noise = None if fit is None else fit.noise
         if noise is not None and noise.share > 0:
             parts.append('Weighted by noise law')
         return parts
 
-    def _assay_problems(self, ms: MeasurementSet) -> list[str]:
-        """Why the assay as configured cannot describe the loaded data, one sentence per problem; empty when it can.
+    def stock_problem(self) -> str | None:
+        """Why the titrant stock entered cannot be the one the loaded data were made from; ``None`` when it can.
 
-        The conditions form's own checks, and the one that needs the data: a
-        sample cannot hold more titrant than the stock it was made from, so
-        the stock has to be more concentrated than every titrant concentration
-        measured. A stock that has not been entered at all is already the
-        form's first sentence, so it is not measured against the data as well.
+        The one check of the conditions that needs the data: a sample cannot hold more
+        titrant than the stock it was made from, so the stock has to be more
+        concentrated than every titrant concentration measured. A stock that has not
+        been entered at all is already the form's own problem, so it is not measured
+        against the data as well.
         """
-        problems = list(self._settings.assay_problems)
+        ms = self.measurement_set
         stock = self._settings.conditions.get(TITRANT_STOCK)
-        if stock is None or not stock.magnitude > 0:
-            return problems
+        if ms is None or stock is None or not stock.magnitude > 0:
+            return None
         concentrations = np.asarray(ms.concentrations, dtype=float)
         finite = concentrations[np.isfinite(concentrations)]
-        if finite.size and float(finite.max()) >= stock.magnitude:
-            entered = self._format_condition(TITRANT_STOCK, stock)
-            highest = self._format_condition(TITRANT_STOCK, Q_(float(finite.max()), 'M'))
-            problems.append(
-                _STOCK_NOT_ABOVE_DATA.format(highest=highest)
-                if entered == highest
-                else _STOCK_BELOW_DATA.format(stock=entered, highest=highest)
-            )
-        return problems
+        if not finite.size or float(finite.max()) < stock.magnitude:
+            return None
+        entered = self._format_condition(TITRANT_STOCK, stock)
+        highest = self._format_condition(TITRANT_STOCK, Q_(float(finite.max()), 'M'))
+        if entered == highest:
+            return _STOCK_NOT_ABOVE_DATA.format(highest=highest)
+        return _STOCK_BELOW_DATA.format(stock=entered, highest=highest)
 
-    def _settings_refusal(self, ms: MeasurementSet, verb: str) -> Refusal | None:
-        """The first section whose settings cannot be used, with every problem it has; ``None`` when all can."""
+    def _settings_refusal(self, verb: str) -> Refusal | None:
+        """The first view whose settings cannot be used, with every problem it has; ``None`` when all can."""
         for title, problems in (
-            ('Assay Configuration', self._assay_problems(ms)),
-            ('Parameter Bounds', self._settings.bound_problems),
+            ('Binding model', [*self._settings.assay_problems, self.stock_problem(), *self._settings.bound_problems]),
             ('Input uncertainty', self._settings.input_problems),
         ):
+            problems = [problem for problem in problems if problem]
             if problems:
                 return Refusal(title, _problem_list(verb, problems))
         return None
@@ -1287,7 +1391,7 @@ class SessionModel(QObject):
         # concentrations sets this flag, whatever the instrument.
         if ms.metadata.get(BMG_PLACEHOLDER_KEY):
             return CONCENTRATIONS_REQUIRED
-        refusal = self._settings_refusal(ms, 'fit')
+        refusal = self._settings_refusal('fit')
         if refusal is not None:
             return refusal
 
@@ -1461,7 +1565,7 @@ class SessionModel(QObject):
                 'The selected assay has no association constant for the analysis to follow. '
                 'Pick a binding assay to run a sensitivity analysis.',
             )
-        refusal = self._settings_refusal(ms, 'analysis')
+        refusal = self._settings_refusal('analysis')
         if refusal is not None:
             return refusal
         # The analysis draws the inputs from the error sources stated, the same

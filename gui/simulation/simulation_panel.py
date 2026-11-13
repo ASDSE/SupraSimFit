@@ -18,11 +18,7 @@ from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from gui.simulation.controls import NoiseControl, ParameterControl, TitrantInput
 from gui.simulation.sim_knob import SECTION_CONCENTRATION, SECTION_ORDER, SECTION_TITLES, TITRANT_RANGE, knobs_for
-from gui.widgets.assay_conditions import assay_class
-
-# DBA carries a categorical titration mode that is NOT a knob — it is fixed by the
-# chosen subtype, exactly as AssayConfigPanel.current_conditions injects it.
-_DBA_MODE = {AssayType.DBA_HtoD: 'HtoD', AssayType.DBA_DtoH: 'DtoH'}
+from gui.widgets.assay_conditions import DBA_MODES, assay_class
 
 
 @dataclass
@@ -108,8 +104,9 @@ class SimulationPanel(QWidget):
                 conditions[key] = ctrl.quantity()
             else:
                 parameters[key] = ctrl.value()
-        if self._assay_type in _DBA_MODE:
-            conditions['mode'] = _DBA_MODE[self._assay_type]
+        # DBA carries a titration mode that is not a knob: the subtype chosen fixes it.
+        if self._assay_type in DBA_MODES:
+            conditions['mode'] = DBA_MODES[self._assay_type]
         conc_mode, conc_kwargs = self._titrant.spec()
         return SimSpec(
             assay_type=self._assay_type,

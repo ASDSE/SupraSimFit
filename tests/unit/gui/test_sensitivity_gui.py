@@ -72,6 +72,7 @@ from core.units import Q_  # noqa: E402
 # ---------------------------------------------------------------------------
 # SensitivityPanel
 # ---------------------------------------------------------------------------
+from tests.unit.gui.session_setup import state_binding
 
 
 def test_the_heatmap_axes_offer_the_inputs_input_uncertainty_names(qapp):
@@ -1335,7 +1336,7 @@ def _demo_session(monkeypatch):
     monkeypatch.setattr('gui.fitting_session.QMessageBox.warning', lambda *args: warnings.append(args))
     monkeypatch.setattr('gui.fitting_session.QMessageBox.question', lambda *args: QMessageBox.StandardButton.Yes)
     session = FittingSession()
-    session._assay_panel.set_assay_type(AssayType.IDA)
+    state_binding(session, assay_type=AssayType.IDA)
     session.model.load_files(['data/IDA_system.txt'])
     # Every uncertainty row opens fixed, so the analysis has nothing to vary
     # until one is stated: σ 5 % on each of the assay's four inputs.
@@ -1520,7 +1521,7 @@ def _in_samples_view(widget) -> bool:
     return widget._params_group.title() == _REPORT_TITLE
 
 
-def test_sensitivity_run_uses_the_bounds_set_in_the_bounds_panel(qapp, monkeypatch):
+def test_sensitivity_run_uses_the_bounds_set_in_binding_model(qapp, monkeypatch):
     """The analysis fits within the same parameter bounds as the fit on the Fit Curve tab."""
     from gui import workers
 
@@ -1532,10 +1533,8 @@ def test_sensitivity_run_uses_the_bounds_set_in_the_bounds_panel(qapp, monkeypat
 
     monkeypatch.setattr(workers, 'run_sensitivity', capture)
     session, warnings = _demo_session(monkeypatch)
-    row = session._bounds_panel._rows['I0']
-    lo, _ = row.values()
-    row.set_values(lo, 5000.0)
-    bounds = session._bounds_panel.current_bounds()
+    state_binding(session, bounds={'I0': (0.0, 5000.0)})
+    bounds = session.model.settings.custom_bounds
     assert bounds['I0'][1] == Q_(5000.0, 'au')
 
     session.run_sensitivity()

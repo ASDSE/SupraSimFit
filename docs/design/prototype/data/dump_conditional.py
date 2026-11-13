@@ -45,7 +45,7 @@ def main():
     st = session.model
     result = st.fit_results[-1]
     ms = st.measurement_set
-    cond = session._assay_panel.current_conditions()
+    cond = session.model.settings.conditions
     used = set(fit_replica_ids(result) or [])
     sigs = np.array([np.asarray(s, dtype=float) for rid, s in zip(ms.replica_ids, ms.signals) if rid in used])
     sd = sigs.std(axis=0, ddof=1)

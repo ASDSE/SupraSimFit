@@ -199,7 +199,7 @@ def test_an_assay_with_no_association_constant_is_unavailable_and_says_why(qapp)
     panel.set_assay_type(AssayType.DYE_ALONE)
     assert not panel.isEnabled()
     assert not panel._unavailable.isHidden()
-    assert panel._unavailable.text() == 'Dye Alone has no association constant, so there is nothing to analyse here.'
+    assert panel._unavailable.text() == 'Dye alone has no association constant, so there is nothing to analyse here.'
 
     # Every assay whose signal the engine can project is open, the two-constant ones included.
     for assay_type in (AssayType.IDA, AssayType.DBA_HG2, AssayType.DBA_H2G):

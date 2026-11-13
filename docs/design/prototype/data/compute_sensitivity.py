@@ -20,7 +20,6 @@ import math
 import os
 import sys
 import time
-from dataclasses import replace
 from pathlib import Path
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -63,6 +62,7 @@ def main():
     from gui import preferences
     from gui.plotting.labels import plain_label
     from gui.plotting.sensitivity_widget import SensitivityWidget, _stated_pct, _stated_text
+    from gui.widgets.assay_conditions import assay_class
 
     session = fs.FittingSession()
     session.resize(1440, 900)
@@ -81,12 +81,10 @@ def main():
     errors = session.model.uncertainty.errors()
     panel = session._sensitivity_panel
     sens_config = panel.current_config(errors)
-    assay_cls = session._assay_panel.get_assay_class()
-    conditions = session._assay_panel.current_conditions()
-    fit_config = session._fit_panel.current_config()
-    custom_bounds = session._bounds_panel.current_bounds()
-    if custom_bounds:
-        fit_config = replace(fit_config, custom_bounds=custom_bounds)
+    settings = session.model.settings
+    assay_cls = assay_class(settings.assay_type)
+    conditions = settings.conditions
+    fit_config = settings.fit_config()
     labels = session.model.uncertainty.input_labels()
     n_inputs = len(labels)
     planned = estimated_fit_count(sens_config, n_inputs) + 1

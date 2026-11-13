@@ -28,7 +28,6 @@ pytest.importorskip('PyQt6')
 from core.assays.ida import IDAAssay  # noqa: E402
 from core.assays.registry import AssayType  # noqa: E402
 from core.data_processing.measurement_set import MeasurementSet  # noqa: E402
-from core.pipeline.fit_pipeline import FitConfig  # noqa: E402
 from core.pipeline.inputs import SharedSource, shared_key  # noqa: E402
 from core.pipeline.results_io import verify_imported_result  # noqa: E402
 from core.units import Q_  # noqa: E402
@@ -93,14 +92,16 @@ def make_session(qapp, monkeypatch):
     def build():
         session = FittingSession()
         built.append(session)
-        session._assay_panel.set_assay_type(AssayType.IDA)
-        for key, value in (('Ka_dye', IDA_TRUE['Ka_dye']), ('h0', IDA_TRUE['h0']), ('d0', IDA_TRUE['d0'])):
-            session._assay_panel._field_widgets[key].setValue(value)
-        session._assay_panel._stock_widget.setValue(_STOCK.magnitude)
-        session._assay_panel._dilution_combo.setCurrentIndex(1)
+        binding = session.model.binding
+        binding.set_assay(AssayType.IDA)
+        for key in ('Ka_dye', 'h0', 'd0'):
+            binding.set_value(key, IDA_TRUE[key])
+        binding.set_value('titrant_stock', _STOCK.magnitude)
+        binding.set_diluted(True)
+        binding.set_per_replica(False)
+        session.model.binding_edited()
         session.model.uncertainty.add_source(_SHARED)
         session.model.uncertainty_edited()
-        session._fit_panel.set_config(FitConfig(per_replica=False))
         session.model.load(_diluted_data(), None)
         return session, dialogs
 

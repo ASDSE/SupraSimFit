@@ -8,7 +8,7 @@ watch their cancel flag: what these tests pin is the stopping, not the science.
 
 One analysis at a time is checked here too, and so is what the two runs are
 given: both read the error sources from Input uncertainty and
-the dilution by the titrant from the Assay Configuration panel, and neither
+the dilution by the titrant from Binding model, and neither
 starts while what a panel states cannot be used as set.
 """
 
@@ -28,6 +28,8 @@ from core.pipeline.fit_pipeline import FitConfig  # noqa: E402
 from core.pipeline.inputs import ErrorModel, InputSpec, SharedSource  # noqa: E402
 from core.pipeline.varpro import FitCancelled  # noqa: E402
 from core.units import Q_  # noqa: E402
+from gui.widgets.assay_conditions import assay_class  # noqa: E402
+from tests.unit.gui.session_setup import state_binding, state_dilution  # noqa: E402
 from tests.unit.gui.test_sensitivity_gui import _fake_run, _made_on, _sobol_result  # noqa: E402
 
 _IDA_DATA = Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt'
@@ -103,20 +105,6 @@ def _state_an_uncertainty(session, spec: InputSpec | None = None) -> None:
     session.model.uncertainty_edited()
 
 
-def _state_dilution(session, stock: float, contains: tuple[str, ...] = ()) -> None:
-    """Say on the panel that the additions dilute the sample, from a stock of *stock* M.
-
-    The stock is set first and the choice last, so the session sees one
-    finished edit with the whole answer in it, as it does when a user picks
-    the entry and then fills the field.
-    """
-    panel = session._assay_panel
-    panel._stock_widget.setValue(stock)
-    for key, box in panel._contains_boxes.items():
-        box.setChecked(key in contains)
-    panel._dilution_combo.setCurrentIndex(1)
-
-
 def _state_shared_source(session, source: SharedSource) -> None:
     """State *source* in Input uncertainty, as adding a source and filling it in does."""
     session.model.uncertainty.add_source(source)
@@ -128,8 +116,7 @@ def _session(dialogs):
     from gui.fitting_session import FittingSession
 
     session = FittingSession()
-    session._assay_panel.set_assay_type(AssayType.IDA)
-    session._fit_panel.set_config(FitConfig(per_replica=False))
+    state_binding(session, assay_type=AssayType.IDA, per_replica=False)
     session.model.load_files([str(_IDA_DATA)])
     _state_an_uncertainty(session)
     return session
@@ -144,7 +131,7 @@ def _window(monkeypatch):
 
 
 def _load(session) -> None:
-    session._assay_panel.set_assay_type(AssayType.IDA)
+    state_binding(session, assay_type=AssayType.IDA)
     session.model.load_files([str(_IDA_DATA)])
     _state_an_uncertainty(session)
 
@@ -290,9 +277,9 @@ def test_every_run_is_asked_to_stop_before_any_of_them_is_waited_for(qapp, monke
     second.run_fit()
     profile = workers.ProfileWorker(
         first.model.measurement_set,
-        first._assay_panel.get_assay_class(),
-        first._assay_panel.current_conditions(),
-        first._fit_panel.current_config(),
+        assay_class(first.model.settings.assay_type),
+        first.model.settings.conditions,
+        first.model.settings.fit_config(),
         parent=first,
     )
     first.model._profile_worker = profile
@@ -418,7 +405,7 @@ def test_the_demo_states_typical_input_uncertainties_and_says_so(qapp, dialogs, 
 
     session = _session(dialogs)
     _state_shared_source(session, SharedSource('Host and dye stock', 4.0, ('h0', 'd0')))
-    session._bounds_panel._rows['Ka_guest']._hi.setText('1e9')
+    state_binding(session, bounds={'Ka_guest': (1e-8, 1e9)})
     messages: list[str] = []
     session.model.status_changed.connect(messages.append)
 
@@ -433,7 +420,7 @@ def test_the_demo_states_typical_input_uncertainties_and_says_so(qapp, dialogs, 
         }
     )
     assert session.model.uncertainty.errors() == stated
-    assert session._bounds_panel.current_bounds() is None
+    assert session.model.settings.custom_bounds is None
     assert session.model.fit_running()
     assert session.model._fit_worker.config.errors == stated
     assert messages[-1].startswith('Demo settings: ')
@@ -445,14 +432,15 @@ def test_the_demo_states_typical_input_uncertainties_and_says_so(qapp, dialogs, 
 def test_the_analysis_is_refused_while_a_bound_cannot_be_used(qapp, dialogs, watchful_sensitivity):
     """The fit refuses such a bound; the analysis refuses it too rather than searching the default there."""
     session = _session(dialogs)
-    session._bounds_panel._rows['Ka_guest']._lo.setText('abc')
+    session.model.binding.edit_bound('Ka_guest', 0, 'abc')
+    session.model.binding_edited()
 
     session.run_sensitivity()
 
     assert not session.model.sensitivity_running()
-    assert dialogs[-1][1] == 'Parameter Bounds'
+    assert dialogs[-1][1] == 'Binding model'
     assert dialogs[-1][2] == (
-        'The analysis cannot start:\n\n• Ka(G): the lower bound “abc” is not a number. Enter a number, such as 1e3.'
+        'The analysis cannot start:\n\n• Kₐ guest: the lower bound “abc” is not a number. Enter a number, such as 1e3.'
     )
 
 
@@ -643,11 +631,10 @@ def test_a_session_that_states_nothing_fits_exactly_as_the_core_does(qapp, dialo
     from gui.fitting_session import FittingSession
 
     session = FittingSession()
-    session._assay_panel.set_assay_type(AssayType.IDA)
-    session._fit_panel.set_config(FitConfig(per_replica=False))
+    state_binding(session, assay_type=AssayType.IDA, per_replica=False)
     session.model.load_files([str(_IDA_DATA)])
     ms = session.model.measurement_set
-    conditions = session._assay_panel.current_conditions()
+    conditions = session.model.settings.conditions
     assert 'titrant_stock' not in conditions and 'stock_contains' not in conditions
 
     session.run_fit()
@@ -667,31 +654,30 @@ def test_a_session_that_states_nothing_fits_exactly_as_the_core_does(qapp, dialo
 def test_the_fit_is_refused_until_the_titrant_stock_is_entered(qapp, dialogs, watchful_fit):
     """Choosing dilution without a stock says nothing about how much each addition dilutes."""
     session = _session(dialogs)
-    _state_dilution(session, 0.0)
+    state_dilution(session, 0.0)
 
     session.run_fit()
 
     assert not session.model.fit_running()
     assert watchful_fit == []
-    assert dialogs[-1][1] == 'Assay Configuration'
-    assert "Enter the titrant stock concentration, or choose 'stay constant'." in dialogs[-1][2]
+    assert dialogs[-1][1] == 'Binding model'
+    assert 'Enter the titrant stock concentration, or choose “Stay constant”.' in dialogs[-1][2]
 
 
 def test_the_fit_is_refused_while_the_titrant_stock_is_below_the_data(qapp, dialogs, watchful_fit):
     """A sample cannot hold more titrant than the stock it was made from, and the note gives both numbers."""
     session = _session(dialogs)
     highest = float(session.model.measurement_set.concentrations.max())
-    _state_dilution(session, highest / 2)
+    state_dilution(session, highest / 2)
 
     session.run_fit()
 
     assert not session.model.fit_running()
     assert watchful_fit == []
-    assert dialogs[-1][1] == 'Assay Configuration'
+    assert dialogs[-1][1] == 'Binding model'
     message = dialogs[-1][2]
-    panel = session._assay_panel
-    assert panel.format_condition('titrant_stock', Q_(highest / 2, 'M')) in message
-    assert panel.format_condition('titrant_stock', Q_(highest, 'M')) in message
+    assert session.model._format_condition('titrant_stock', Q_(highest / 2, 'M')) in message
+    assert session.model._format_condition('titrant_stock', Q_(highest, 'M')) in message
     assert 'Check the stock concentration and its unit.' in message
 
 
@@ -711,7 +697,7 @@ def test_the_analysis_is_refused_while_a_shared_source_applies_to_one_input(qapp
 def test_the_fit_is_given_the_dilution_and_the_sources_the_panels_state(qapp, dialogs, watchful_fit):
     """Both reach the engine as stated: the stock is part of the assay, the shared source part of the model."""
     session = _session(dialogs)
-    _state_dilution(session, 1e-3, contains=('d0',))
+    state_dilution(session, 1e-3, contains=('d0',))
     _state_shared_source(session, SharedSource('Host and dye stock', 4.0, ('h0', 'd0')))
 
     session.run_fit()
@@ -753,21 +739,66 @@ def test_the_analysis_varies_the_inputs_the_shared_panel_states(qapp, monkeypatc
     assert dialogs == []
 
 
-def test_the_uncertainty_rows_are_locked_while_a_run_reads_them(qapp, dialogs, watchful_fit):
+def _start(qapp, session, run: str) -> None:
+    """Start a fit or an analysis (*run*) and wait until its worker is running."""
+    if run == 'fit':
+        session.run_fit()
+        _wait_until(qapp, lambda: session.model._fit_worker is not None and session.model._fit_worker.isRunning())
+    else:
+        session.run_sensitivity()
+        worker = lambda: session.model._sensitivity_worker  # noqa: E731
+        _wait_until(qapp, lambda: worker() is not None and worker().isRunning())
+
+
+@pytest.mark.parametrize('run', ['fit', 'sensitivity'])
+def test_the_uncertainty_rows_are_locked_while_a_run_reads_them(qapp, dialogs, watchful_fit, watchful_sensitivity, run):
     """A run is reported against the uncertainties it was given, so they cannot be edited under it."""
     session = _session(dialogs)
     view = session._uncertainty
     controls = [*view._rows['h0'].controls(), view.add_source, view.mode]
     assert all(control.isEnabled() for control in controls)
 
-    session.run_fit()
-    _wait_until(qapp, session.model._fit_worker.isRunning)
+    _start(qapp, session, run)
 
     assert not any(control.isEnabled() for control in controls)
 
     session.model.shutdown()
 
     assert all(control.isEnabled() for control in controls)
+
+
+@pytest.mark.parametrize('run', ['fit', 'sensitivity'])
+def test_the_binding_model_is_locked_while_a_run_reads_it(qapp, dialogs, watchful_fit, watchful_sensitivity, run):
+    """A run is reported against the binding model it was given, so no control of it can be changed under it."""
+    session = _session(dialogs)
+    state_dilution(session, 1e-3)
+    view = session._binding
+    controls = [view.category, view.assay, view.dilution, view.stock, view.stock_unit, view.reset, view.dye_alone]
+    controls += [view.replicates, *view._contains.values()]
+    controls += [control for row in view._conditions.values() for control in row.controls()]
+    controls += [field for row in view._bounds.values() for field in row.fields]
+    assert all(control.isEnabled() for control in controls)
+
+    _start(qapp, session, run)
+
+    assert not any(control.isEnabled() for control in controls)
+
+    session.model.shutdown()
+
+    assert all(control.isEnabled() for control in controls)
+
+
+def test_a_condition_that_is_not_a_number_refuses_the_fit_under_binding_model(qapp, dialogs, watchful_fit):
+    """No fit starts on a condition that cannot be read; the refusal names it and the view it is entered in."""
+    session = _session(dialogs)
+    session.model.binding.edit('h0', 'abc')
+    session.model.binding_edited()
+
+    session.run_fit()
+
+    assert watchful_fit == [] and not session.model.fit_running()
+    assert dialogs[-1][1] == 'Binding model'
+    assert '[Host]₀: “abc” is not a number. Enter a number, such as 2.5.' in dialogs[-1][2]
 
 
 def test_the_analysis_is_refused_while_every_input_is_fixed(qapp, dialogs):
@@ -804,7 +835,7 @@ def _deliver_sensitivity(session):
     The panel is what a held run is checked against, so a run delivered here
     states its own specs on it, as the analysis the user starts does.
     """
-    run = _made_on(_sobol_result(), session.model.measurement_set, session._assay_panel.current_conditions())
+    run = _made_on(_sobol_result(), session.model.measurement_set, session.model.settings.conditions)
     for key, spec in run.config.errors.specs.items():
         session.model.uncertainty.set_spec(key, spec)
         session.model.uncertainty_edited()
@@ -897,13 +928,13 @@ def test_the_refusal_names_one_number_where_the_stock_reads_as_the_highest_point
     """A stock equal to the highest point would otherwise read as having to be more concentrated than itself."""
     session = _session(dialogs)
     highest = float(session.model.measurement_set.concentrations.max())
-    _state_dilution(session, highest)
+    state_dilution(session, highest)
 
     session.run_fit()
 
     assert not session.model.fit_running()
     message = dialogs[-1][2]
-    shown = session._assay_panel.format_condition('titrant_stock', Q_(highest, 'M'))
+    shown = session.model._format_condition('titrant_stock', Q_(highest, 'M'))
     assert message.count(shown) == 1
     assert 'The titrant stock is no more concentrated than the highest titrant concentration' in message
     assert 'Check the stock concentration and its unit.' in message
@@ -917,6 +948,6 @@ def test_the_status_bar_says_a_constant_on_an_end_of_its_search_box_is_not_limit
     fitted = _sample_fit_result()
     assert _open_note(fitted) == ''
     at_floor = _sample_fit_result(parameters={**fitted.parameters, 'Ka_guest': Q_(1e-8, '1/M')})
-    assert _open_note(at_floor) == 'Ka(G) not limited below by the data'
+    assert _open_note(at_floor) == 'Kₐ guest not limited below by the data'
     # A fit with no diagnostics has no verdict to report.
     assert _verdict_note(fitted) == ''

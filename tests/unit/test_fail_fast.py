@@ -264,8 +264,8 @@ class TestFitRefusals:
     @pytest.mark.parametrize(
         'bounds, says',
         [
-            ((0.0, 1e12), 'lower bound 0 M⁻¹ under Parameter Bounds'),
-            ((-1e6, 1e12), 'lower bound -1e\\+06 M⁻¹ under Parameter Bounds'),
+            ((0.0, 1e12), 'lower bound 0 M⁻¹ under Binding model'),
+            ((-1e6, 1e12), 'lower bound -1e\\+06 M⁻¹ under Binding model'),
             ((1e9, 1e6), 'lower bound of 1×10⁹ M⁻¹ above its upper bound of 1×10⁶ M⁻¹'),
         ],
         ids=['zero', 'negative', 'inverted'],

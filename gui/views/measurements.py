@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import QFileDialog, QGridLayout, QMessageBox, QSizePolicy, 
 
 from core.assays.registry import ASSAY_REGISTRY
 from core.units import Q_
-from gui.dataset import UNITS, readable_extensions
+from gui.dataset import UNITS, file_filter
 from gui.design import components as C
 from gui.design import icons
 from gui.design.appearance import theme
@@ -43,12 +43,6 @@ def molar(value: float) -> str:
     if e == 0:
         return mantissa
     return f'{mantissa}{_THIN}×{_THIN}10{str(e).translate(_SUPERSCRIPT)}'
-
-
-def file_filter() -> str:
-    """The open-file filter of every format a reader is registered for."""
-    exts = ' '.join(f'*{ext}' for ext in readable_extensions())
-    return f'Measurement files ({exts});;All files (*)'
 
 
 class FilesTable(QWidget):

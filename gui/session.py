@@ -133,7 +133,7 @@ _UNSOLVABLE_NOTE = (
 #: the value it produces and not reported as one.
 _LIMITED_BY_NOTE = (
     'the fit is rejected beyond {edge} only because {other} cannot go past its bound there; the data alone set no '
-    'limit on this side. If you know {other}, hold it at that value under Parameter Bounds (equal lower and upper '
+    'limit on this side. If you know {other}, hold it at that value under Binding model (equal lower and upper '
     'bound); otherwise only data that determine it close this side.'
 )
 
@@ -306,7 +306,7 @@ _DILUTION_KEYS = (TITRANT_STOCK, 'stock_contains')
 
 
 def _conditions_lines(result: FitResult) -> list[str]:
-    """The entered conditions, named as the Assay Configuration panel names them and in the unit they read in.
+    """The entered conditions, named as Binding model names them and in the unit they read in.
 
     A concentration reads in the largest unit the form offers that leaves it
     at 1 or more, and a binding constant in M⁻¹ with ``×10ⁿ`` notation, both

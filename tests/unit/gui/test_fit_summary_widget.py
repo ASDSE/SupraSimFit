@@ -250,7 +250,7 @@ def test_a_fit_that_ended_on_an_entered_bound_says_so_above_the_table(qapp):
     config = {'per_replicate': False, 'level': 0.95, 'custom_bounds': {'I_dye_bound': [0.0, 8e4, 'au/M']}}
     widget = _widget(fit_config=config)
 
-    assert 'ended on a bound entered under Parameter Bounds (' in widget._caption.text()
+    assert 'ended on a bound entered under Binding model (' in widget._caption.text()
     assert '8.0×10⁴' in widget._caption.text()
     assert not widget._caption.isHidden()
 

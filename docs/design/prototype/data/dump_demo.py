@@ -183,7 +183,7 @@ def main():
             }
         )
 
-    conds = session._assay_panel.current_conditions()
+    conds = session.model.settings.conditions
     cond_out = {}
     for k, v in conds.items():
         mag = getattr(v, 'magnitude', v)

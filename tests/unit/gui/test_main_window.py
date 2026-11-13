@@ -133,3 +133,62 @@ def test_the_appearance_resolves_the_one_theme_every_window_holds(qapp):
             source.set_mode('sepia')
     finally:
         source.set_mode('light')
+
+
+def test_duplicate_opens_a_session_stating_everything_the_original_states_and_holding_no_results(qapp, window):
+    """The copy is a second experiment set up alike: same data and settings, its own state, no results."""
+    from core.assays.registry import AssayType
+    from core.pipeline.inputs import InputSpec, SharedSource
+    from tests.unit.gui.session_setup import state_binding, state_dilution
+    from tests.unit.test_fit_results import _sample_fit_result
+
+    original = window.active_session()
+    model = original.model
+    model.load_files([str(_IDA_DATA)])
+    model.set_imported_unit('µM')
+    model.set_replicate(model.measurement_set.replica_ids[1], False)
+    state_binding(
+        original,
+        assay_type=AssayType.IDA,
+        conditions={'h0': 5.1e-6},
+        bounds={'Ka_guest': (1e2, 1e10)},
+        per_replica=False,
+    )
+    model.binding.set_unit('d0', 'nM')
+    state_dilution(original, 1e-3, contains=('d0',))
+    model.uncertainty.set_spec('h0', InputSpec.sigma_pct(4.0))
+    model.uncertainty.add_source(SharedSource('Host and dye stock', 2.0, ('h0', 'd0')))
+    model.uncertainty_edited()
+    model.update_settings(display_unit='nM')
+    model._held_fit_results = [_sample_fit_result()]
+
+    window._act_duplicate.trigger()
+
+    copy = window.active_session()
+    assert copy is not original and window.sessions() == [original, copy]
+    duplicate = copy.model
+    assert duplicate.name() == f'{model.name()} copy'
+    assert [f.path for f in duplicate.dataset.files] == [f.path for f in model.dataset.files]
+    assert duplicate.dataset.imported_unit == 'µM'
+    assert duplicate.measurement_set.fingerprint() == model.measurement_set.fingerprint()
+    assert duplicate.measurement_set.active_replica_ids == model.measurement_set.active_replica_ids
+    assert duplicate.settings == model.settings
+    # The copy's own form states those settings: its first edit takes them from the form, not from the original.
+    assert duplicate.binding_settings() == model.binding_settings()
+    assert duplicate.binding.diluted and duplicate.binding.contains == {'d0'}
+    assert duplicate.binding_settings()['per_replica'] is False
+    assert duplicate.binding_settings()['custom_bounds'].keys() == {'Ka_guest'}
+    assert duplicate.binding.condition_units() == model.binding.condition_units()
+    assert duplicate.uncertainty.errors() == model.uncertainty.errors()
+    assert duplicate.held_fit_results == [] and duplicate.sensitivity_result is None
+    assert window._sidebar.switcher._name == duplicate.name()
+
+    # Each session is its own from here: an edit of the copy leaves the original as it was.
+    duplicate.set_replicate(duplicate.measurement_set.replica_ids[0], False)
+    duplicate.binding.set_value('h0', 9e-6)
+    duplicate.binding_edited()
+    duplicate.uncertainty.set_spec('h0', None)
+    duplicate.uncertainty_edited()
+    assert model.measurement_set.is_active(model.measurement_set.replica_ids[0])
+    assert model.settings.conditions['h0'].magnitude == pytest.approx(5.1e-6)
+    assert 'h0' in model.uncertainty.errors().specs

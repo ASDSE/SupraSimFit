@@ -491,7 +491,7 @@ def test_a_ka_bound_far_above_any_real_affinity_still_has_a_curve_at_every_point
 
 
 def test_the_ka_grid_spans_bounds_whose_ratio_no_double_holds():
-    """Parameter Bounds takes any number a double can hold, and the widest pair of them span
+    """A bound under Binding model takes any number a double can hold, and the widest pair of them span
     316 decades while their ratio is no number at all; the grid is counted in decades."""
     grid = varpro._ka_grid(1e-8, 1.7e308, varpro._PROFILE_PER_DECADE)
 

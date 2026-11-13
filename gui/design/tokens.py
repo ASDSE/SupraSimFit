@@ -38,6 +38,8 @@ SIZE = {
     'stated-in': 88,
     'spread-bar': 96,
     'input-row': 60,
+    # The longest line of help or warning text under a control, for a comfortable reading measure.
+    'measure': 640,
 }
 
 # ── Colour: one map per theme, the same keys in both.

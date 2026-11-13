@@ -1071,7 +1071,7 @@ class IdentifiabilityWidget(QWidget):
                 other = fmt_param(limited_by)
                 tail = (
                     f'The fit is rejected beyond {where} only because {other} cannot go past its bound there. If you '
-                    f'know {other}, hold it at that value under Parameter Bounds (equal lower and upper bound); '
+                    f'know {other}, hold it at that value under Binding model (equal lower and upper bound); '
                     'otherwise only data that determine it close this side.'
                 )
             elif unsolvable:

@@ -527,7 +527,7 @@ def test_an_assay_with_no_association_constant_states_nothing_and_says_why():
     form.set_assay(AssayType.DYE_ALONE)
     assert not form.available
     assert form.unavailable_reason() == (
-        'Dye Alone has no association constant, so an uncertainty in the inputs changes nothing here.'
+        'Dye alone has no association constant, so an uncertainty in the inputs changes nothing here.'
     )
     assert form.errors() == ErrorModel() and form.problems() == []
     for assay_type in (AssayType.IDA, AssayType.DBA_HG2, AssayType.DBA_H2G):
@@ -586,3 +586,61 @@ def test_a_nan_amount_is_not_a_number():
 
     assert form.spec('Ka_dye') is None
     assert form.problems() == ['Ka,dye: “nan” is not a number. Enter a number, or choose “Fixed”.']
+
+
+def test_a_condition_that_cannot_be_read_is_named_so_and_never_called_0():
+    """Binding model hands an unreadable condition over as NaN; it has no value, and the sentence says just that."""
+    import math
+
+    form = _ida()
+    form.set_spec('h0', InputSpec.sigma_abs(0.2e-6))
+    form.set_spec('d0', InputSpec.sigma_pct(3.0))
+    form.set_conditions({**_conditions(h0=math.nan), 'd0': Q_(math.nan, 'M')}, _UNITS)
+
+    assert form.nominal('h0') is None and form.nominal('d0') is None
+    form.state_in('d0', False)
+    assert form.problems() == [
+        '[Host]₀ cannot be read under Binding model, so an uncertainty in its unit cannot be used: '
+        'enter a number for [Host]₀ there first.',
+        '[Dye]₀ cannot be read under Binding model, so its uncertainty cannot be converted to a σ in µM: '
+        'enter a number for [Dye]₀ there first.',
+    ]
+
+    # Once it can be read again, the conversion waiting for it is made.
+    form.set_conditions(_conditions(), _UNITS)
+    assert form.problems() == []
+    _assert_spec(form.spec('d0'), InputSpec.sigma_abs(0.03 * 6e-6))
+
+
+def test_a_condition_below_zero_is_named_so_and_never_called_0():
+    """A typed condition can be negative; the sentence says so, as Binding model does."""
+    form = _ida()
+    form.set_spec('h0', InputSpec.sigma_abs(0.2e-6))
+    form.set_spec('d0', InputSpec.sigma_pct(3.0))
+    form.set_conditions({**_conditions(h0=-2e-6), 'd0': Q_(-6e-6, 'M')}, _UNITS)
+
+    form.state_in('d0', False)
+    assert form.problems() == [
+        '[Host]₀ is below 0 under Binding model, so an uncertainty in its unit cannot be used: '
+        'set [Host]₀ above 0 there first.',
+        '[Dye]₀ is below 0 under Binding model, so its uncertainty cannot be converted to a σ in µM: '
+        'set [Dye]₀ above 0 there first.',
+    ]
+
+
+def test_a_waiting_conversion_reads_the_value_once_its_edit_is_finished():
+    """σ = 5 % waits for [Host]₀; typing 4 then 45 converts against 45, the number entered, not the 4 on the way."""
+    import math
+
+    form = _ida()
+    form.set_spec('h0', InputSpec.sigma_pct(5.0))
+    form.set_conditions(_conditions(h0=math.nan), _UNITS)
+    form.state_in('h0', False)
+
+    form.set_conditions(_conditions(h0=4e-6), _UNITS, finished=False)
+    assert form.spec('h0') is None, 'still waiting while the value is being typed'
+    form.set_conditions(_conditions(h0=45e-6), _UNITS, finished=False)
+    assert form.spec('h0') is None
+
+    form.set_conditions(_conditions(h0=45e-6), _UNITS)
+    _assert_spec(form.spec('h0'), InputSpec.sigma_abs(0.05 * 45e-6))

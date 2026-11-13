@@ -106,13 +106,15 @@ def test_the_validation_readme_quotes_each_check_s_own_claim():
     assert not missing, f'validation/README.md states another claim than these checks make: {missing}'
 
 
-def test_the_fit_help_points_at_the_view_the_uncertainties_are_entered_in():
-    """The Fit Configuration help sends the reader to a view, under the name the sidebar gives it."""
+def test_the_binding_model_help_points_at_the_view_the_uncertainties_are_entered_in():
+    """The Binding model help of a model with inputs sends the reader to a view, under the name the sidebar gives it."""
     pytest.importorskip('PyQt6')
-    from gui import uncertainty
+    from core.assays.registry import AssayType
+    from gui import binding, uncertainty
     from gui.fitting_session import VIEWS
-    from gui.widgets import fit_config_panel
 
     heading = uncertainty.HELP_HTML.split('<h3>')[1].split('</h3>')[0].strip()
     assert heading in VIEWS
-    assert heading.lower() in fit_config_panel._SECTION_HELP_HTML.lower()
+    # Dye alone has no entered input to state an uncertainty for, so its help has no view to point at.
+    for assay_type in (at for at in AssayType if at is not AssayType.DYE_ALONE):
+        assert f'<b>{heading}</b>' in binding.help_html(assay_type)

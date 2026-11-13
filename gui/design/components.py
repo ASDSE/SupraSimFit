@@ -2145,3 +2145,57 @@ def section(
     w.header = header
     w.setLayout(lay)
     return w
+
+
+# ── Canvas forms ───────────────────────────────────────────────────────────────────
+
+
+def wrapped(text: str, role: str = 'body', tone: str | None = 'secondary', rich: bool = False) -> QLabel:
+    """A label that wraps to the width it is given, in type role *role* and *tone*."""
+    lbl = label(text, role, tone, rich)
+    lbl.setWordWrap(True)
+    lbl.setMinimumWidth(1)
+    return lbl
+
+
+def drop(widget: QWidget) -> None:
+    """Take *widget* off the screen now and delete it once its events are handled."""
+    widget.hide()
+    widget.setParent(None)
+    widget.deleteLater()
+
+
+def canvas_section(title: str, content: QWidget, summary: str = '', first: bool = False) -> QWidget:
+    """A section of a canvas form: a hairline above unless *first*, the plain title, a quiet *summary*, *content*."""
+    w = QWidget()
+    lay = vbox(spacing=0)
+    if not first:
+        lay.addSpacing(space(6))
+        lay.addWidget(hairline())
+        lay.addSpacing(space(5))
+    head = [label(title, 'body-strong')]
+    if summary:
+        head += [3, label(summary, 'small', 'tertiary')]
+    lay.addLayout(hbox(*head, None, spacing=0))
+    lay.addSpacing(space(3))
+    lay.addWidget(content)
+    w.setLayout(lay)
+    return w
+
+
+class Problem(QWidget):
+    """What is wrong with the statement above it: an amber mark and the sentences a run would refuse with."""
+
+    def __init__(self, t: Theme):
+        super().__init__()
+        self.text = wrapped('', 'small', 'secondary')
+        self.text.setMaximumWidth(SIZE['measure'])
+        lay = hbox(vbox(Icon(t, 'alert-circle', 'warning', 14), None, margins=(0, 1, 0, 0)), self.text, None)
+        lay.setStretchFactor(self.text, 1)  # the text takes the width up to its measure, the stretch the rest
+        self.setLayout(lay)
+        self.hide()
+
+    def show_problems(self, problems: list[str]) -> None:
+        """Show *problems*, one per line; hide the mark when there are none."""
+        self.text.setText('\n'.join(problems))
+        self.setVisible(bool(problems))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -17,8 +18,8 @@ from PyQt6.QtWidgets import (
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.plotting import prepare_plot_data
-from core.pipeline.fit_pipeline import FitConfig
 from core.pipeline.inputs import TITRANT, InputSpec
+from core.units import Quantity
 from gui import plot_guide
 from gui.design import components as C
 from gui.design.appearance import theme
@@ -31,11 +32,9 @@ from gui.plotting.plot_style import PlotStyleWidget
 from gui.plotting.plot_widget import PlotWidget
 from gui.plotting.sensitivity_widget import SensitivityWidget
 from gui.session_model import CONCENTRATIONS_REQUIRED, SessionModel
+from gui.views.binding import BindingView
 from gui.views.measurements import MeasurementsView
 from gui.views.uncertainty import UncertaintyView
-from gui.widgets.assay_config_panel import AssayConfigPanel
-from gui.widgets.bounds_panel import BoundsPanel
-from gui.widgets.fit_config_panel import FitConfigPanel
 from gui.widgets.sensitivity_panel import SensitivityPanel
 
 #: A session's views as the sidebar groups them: (group, ((view, icon), …)).
@@ -69,6 +68,11 @@ _UNCHECKED_NOTE = (
     'No data are loaded, so these numbers are shown as stored in the file and could not be checked against '
     'the data. To check them, load the data first and import the results again.'
 )
+
+
+def _unreadable(value) -> bool:
+    """Whether a condition's value is one the form could not read (NaN)."""
+    return isinstance(value, Quantity) and math.isnan(value.magnitude)
 
 
 class _SidePanel(QWidget):
@@ -135,11 +139,10 @@ class FittingSession(QWidget):
     """One session on screen: data → binding model → inputs → fit → analyses, one view at a time.
 
     Each session of the main window is one FittingSession. Its state and rules
-    live in :attr:`model`, a :class:`~gui.session_model.SessionModel`: the
-    view states what its panels show to the model (:meth:`_push_settings`)
-    whenever a panel reports a change, draws what the model's signals say
-    changed, and keeps the parts that need a screen — file dialogs, message
-    boxes and plot images. Its views are the sidebar's (:data:`NAVIGATION`);
+    live in :attr:`model`, a :class:`~gui.session_model.SessionModel`: each
+    view edits the model's state, draws what the model's signals say changed,
+    and keeps the parts that need a screen — file dialogs, message boxes and
+    plot images. Its views are the sidebar's (:data:`NAVIGATION`);
     :meth:`show_view` puts one on screen, under the progress line the session
     shows while it runs.
 
@@ -167,9 +170,10 @@ class FittingSession(QWidget):
         super().__init__(parent)
         self.model = SessionModel(self)
         self._plot_note: str | None = None  # the note hiding a fit on the Fit Curve
+        self._assay_shown = None  # the model the views that follow it were last given
         self._setup_ui()
         self._connect_signals()
-        self._push_settings()
+        self._on_binding_changed()
 
     # ------------------------------------------------------------------
     # Views
@@ -221,6 +225,8 @@ class FittingSession(QWidget):
         """The summary beside the title of *view*, or ``None`` for a view that states none yet."""
         if view == 'Measurements':
             return self._measurements.badge()
+        if view == 'Binding model':
+            return self._binding.badge()
         if view == 'Input uncertainty':
             return self._uncertainty.badge()
         return None
@@ -300,11 +306,12 @@ class FittingSession(QWidget):
             QMessageBox.warning(self, 'Already Running', busy)
             return
 
-        self._assay_panel.set_assay_type(AssayType.IDA)
-        self._bounds_panel.reset_to_defaults()
+        binding = self.model.binding
+        binding.set_assay(AssayType.IDA)
+        binding.set_per_replica(False)
+        self.model.binding_edited()
         self.model.uncertainty.set_specs(_DEMO_UNCERTAINTIES)
         self.model.uncertainty_edited()
-        self._fit_panel.set_config(FitConfig(per_replica=False))
 
         # Loading resets the replicates and clears the results.
         refusal = self.model.load_files([str(_DEMO_IDA_PATH)]) or self.model.remove_outliers(3.5, 3)
@@ -328,13 +335,11 @@ class FittingSession(QWidget):
         return f'{stem}{("_" + tag) if tag else ""}{suffix}'
 
     def _finish_edits(self) -> None:
-        """Finish a conditions edit still being typed, and check the results against the settings as they read now.
+        """Check the results against the settings as they read now, a condition still being typed included.
 
         An action run from a shortcut leaves the focus in the field being typed
         into, so no edit has ended by itself before the action reads the form.
         """
-        self._assay_panel.finish_edit()
-        self._push_settings()
         self.model.check_results()
 
     def _can_export_results(self) -> bool:
@@ -472,7 +477,6 @@ class FittingSession(QWidget):
             if source_file and Path(source_file).exists():
                 self.model.load_files([source_file])
 
-        self._push_settings()
         check = self.model.check_imported(results, Path(path).name)
         if check.refusal is not None:
             QMessageBox.warning(self, 'Results Not Imported', check.refusal)
@@ -550,11 +554,9 @@ class FittingSession(QWidget):
 
     def _setup_ui(self) -> None:
         self._measurements = MeasurementsView(self.model, self)
-        self._assay_panel = AssayConfigPanel()
+        self._binding = BindingView(self.model, self)
         self._uncertainty = UncertaintyView(self.model, self)
-        self._fit_panel = FitConfigPanel()
         self._sensitivity_panel = SensitivityPanel()
-        self._bounds_panel = BoundsPanel()
         self._style_widget = PlotStyleWidget()
         self._plot_widget = PlotWidget()
         self._identifiability_widget = IdentifiabilityWidget()
@@ -571,7 +573,7 @@ class FittingSession(QWidget):
 
         self._views: dict[str, _View] = {
             'Measurements': _View(self._measurements.canvas, side('Measurement settings', self._measurements.side)),
-            'Binding model': _View(_canvas(self._assay_panel, self._bounds_panel, self._fit_panel, scroll=True)),
+            'Binding model': _View(self._binding.canvas),
             'Input uncertainty': _View(self._uncertainty.canvas, side('Effect on the fit', self._uncertainty.side)),
             'Fit results': _View(_canvas(self._fit_split(self._plot_widget))),
             'Ka confidence': _View(_canvas(self._identifiability_widget)),
@@ -586,15 +588,6 @@ class FittingSession(QWidget):
         self._progress_line = C.ProgressLine(theme())
         self.setLayout(C.vbox(self._progress_line, self._stack, spacing=0))
         self.show_view('Fit results')
-
-        # Open the panels that follow the assay on the default assay type. The
-        # heatmap axes are the inputs of Input uncertainty, named as it names them.
-        assay_type = self._assay_panel.current_assay_type()
-        self._bounds_panel.set_assay_type(assay_type)
-        self.model.uncertainty.set_assay(assay_type)
-        self._sensitivity_panel.set_assay_type(assay_type)
-        self._name_inputs()
-        self._on_conditions_changed()
 
         # The style's x unit is the session's display unit from the first emission.
         self._style_widget.set_x_unit(self.model.settings.display_unit)
@@ -616,17 +609,9 @@ class FittingSession(QWidget):
         self._measurements.display_unit_changed.connect(self._style_widget.set_x_unit)
         self._measurements.new_session_link.clicked.connect(self.new_session_requested)
 
-        self._assay_panel.assay_type_changed.connect(self._on_assay_type_changed)
-        self._assay_panel.assay_type_changed.connect(self._sensitivity_panel.set_assay_type)
-        self._assay_panel.conditions_changed.connect(self._on_conditions_changed)
-        self._assay_panel.conditions_edited.connect(self._on_conditions_edited)
-
-        # Every setting a result is checked against goes to the model as it
-        # changes; the model decides what a change puts out of date.
         self._uncertainty.review_requested.connect(lambda: self.view_requested.emit('Ka confidence'))
         self.model.uncertainty_changed.connect(self.changed)
-        self._fit_panel.config_changed.connect(self._push_settings)
-        self._bounds_panel.bounds_changed.connect(self._push_settings)
+        self.model.binding_changed.connect(self._on_binding_changed)
 
         self._sensitivity_panel.run_requested.connect(self.run_sensitivity)
         # Cancel is offered in two places: the side panel and the running view.
@@ -649,26 +634,6 @@ class FittingSession(QWidget):
         for signal in (model.results_changed, model.name_changed, model.status_changed):
             signal.connect(self.changed)
 
-    def _push_settings(self) -> None:
-        """State to the model every setting the panels show now.
-
-        Called on every change a panel reports, and before every check of the
-        results the view starts, so the model reads the panels as they read
-        at that moment.
-        """
-        assay, bounds = self._assay_panel, self._bounds_panel
-        self.model.update_settings(
-            assay_type=assay.current_assay_type(),
-            conditions=assay.current_conditions(),
-            condition_units=assay.condition_units(),
-            assay_problems=tuple(assay.problems()),
-            bounds=bounds.shown_bounds(),
-            custom_bounds=bounds.current_bounds(),
-            bound_problems=tuple(bounds.problems()),
-            per_replica=self._fit_panel.current_config().per_replica,
-            **self.model.uncertainty_settings(),
-        )
-
     # ------------------------------------------------------------------
     # Panel slots
     # ------------------------------------------------------------------
@@ -681,37 +646,32 @@ class FittingSession(QWidget):
         self._identifiability_widget.set_replica_ids(ids)
         self.changed.emit()
 
-    def _on_assay_type_changed(self, assay_type: AssayType) -> None:
-        self._bounds_panel.set_assay_type(assay_type)
-        # The new assay has its own inputs: they are stated for it first, and the
-        # heatmap axes then offer exactly those inputs.
-        self.model.uncertainty.set_assay(assay_type)
-        self._name_inputs()
-        meta = ASSAY_REGISTRY[assay_type]
-        self._plot_widget.set_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
-        self._push_settings()
-        self.model.uncertainty_edited()
+    def _on_binding_changed(self) -> None:
+        """Give the views that follow the binding model the model chosen and the conditions as entered.
 
-    def _name_inputs(self) -> None:
-        """Offer the heatmap axes the selected assay's inputs, named as Input uncertainty names them.
-
+        The heatmap axes are the inputs of Input uncertainty, named as it names them,
+        and an axis stated in an input's own unit is read against its entered value.
         A finished fit names its own inputs from the assay it was made for
         (:func:`~gui.widgets.assay_conditions.result_input_labels`), so what is
-        reported about a fit does not follow the assay selected now.
+        reported about a fit does not follow the model chosen now.
         """
-        self._sensitivity_panel.set_inputs(self.model.uncertainty.input_labels())
+        assay_type = self.model.binding.assay_type
+        if assay_type is not self._assay_shown:
+            self._assay_shown = assay_type
+            self._sensitivity_panel.set_assay_type(assay_type)
+            self._sensitivity_panel.set_inputs(self.model.uncertainty.input_labels())
+            meta = ASSAY_REGISTRY[assay_type]
+            self._plot_widget.set_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
+            self._measurements.refresh()
+        conditions = self.model.settings.conditions
+        readable = {key: value for key, value in conditions.items() if not _unreadable(value)}
+        self._sensitivity_panel.set_nominal_values(readable)
+        self.changed.emit()
 
-    def _on_conditions_changed(self) -> None:
-        """Give the uncertainties and the Sensitivity panel the conditions' set values and units."""
-        conditions = self._assay_panel.current_conditions()
-        self.model.uncertainty.set_conditions(conditions, self._assay_panel.condition_units())
-        self._sensitivity_panel.set_nominal_values(conditions)
-        self._push_settings()
-        self.model.uncertainty_edited()
-
-    def _on_conditions_edited(self) -> None:
-        self._push_settings()
-        self.model.edit_finished()
+    def copy_from(self, other: FittingSession) -> None:
+        """Take a copy of what *other* states — data, binding model, input uncertainties — and none of its results."""
+        self.model.copy_from(other.model)
+        self._style_widget.set_x_unit(self.model.settings.display_unit)
 
     # ------------------------------------------------------------------
     # Ka sensitivity analysis
@@ -762,8 +722,7 @@ class FittingSession(QWidget):
         # A fit and an analysis each read the binding model and the uncertainties
         # as they were when it started, so those stay as they were read until it ends.
         work = model.fit_running() or model.sensitivity_running()
-        for panel in (self._assay_panel, self._bounds_panel, self._fit_panel):
-            panel.setEnabled(not work)
+        self._binding.set_locked(work)
         self._uncertainty.set_locked(work)
         self.changed.emit()
 

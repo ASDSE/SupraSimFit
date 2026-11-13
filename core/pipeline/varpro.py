@@ -663,14 +663,14 @@ class Projection:
         for lo, hi in self.ka_bounds.values():
             if not 0.0 < lo:
                 raise FitRefused(
-                    f'An association constant has the lower bound {_ka_text(lo)} under Parameter Bounds. Association '
+                    f'An association constant has the lower bound {_ka_text(lo)} under Binding model. Association '
                     'constants are searched on a logarithmic scale, so both of their bounds must be above zero. '
                     f'Enter a positive lower bound, such as the default of {_ka_text(1e-8)}, and fit again.'
                 )
             if not lo <= hi:
                 raise FitRefused(
                     f'An association constant has a lower bound of {_ka_text(lo)} above its upper bound of '
-                    f'{_ka_text(hi)} under Parameter Bounds. Swap the two bounds and fit again.'
+                    f'{_ka_text(hi)} under Binding model. Swap the two bounds and fit again.'
                 )
         self.free_ka = tuple(k for k, (lo, hi) in self.ka_bounds.items() if lo != hi)
         # A model with two binding constants is stepwise, and the registry lists them in the order of the steps.
@@ -921,7 +921,7 @@ class Projection:
             which = 'its upper bound' if len(self.ka_bounds) == 1 else 'their upper bounds'
             raise FitRefused(
                 f'The binding model has no solution at any association constant {ranges}, so there is no fit. '
-                f'Lower {which} under Parameter Bounds and fit again.'
+                f'Lower {which} under Binding model and fit again.'
             )
         design = self._design(ka)
         row_ssr, coef = self._solve(design)
@@ -1736,7 +1736,7 @@ def _require_dof(n_points: int, n_params: int) -> int:
         raise FitRefused(
             f'The data have {n_points} titration points, too few to judge the {n_params} parameters this '
             'model fits, so no fit can be reported. Add titration points, or hold a parameter at one value '
-            'by giving it the same lower and upper bound under Parameter Bounds, and fit again.'
+            'by giving it the same lower and upper bound under Binding model, and fit again.'
         )
     return dof
 
