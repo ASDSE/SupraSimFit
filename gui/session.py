@@ -1090,7 +1090,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
             writer.writerows(rows)
 
     def _write_style(path: Path) -> None:
-        style = session._style_widget.widget.current_style()
+        style = session._style_widget.current_style()
         save_style_json(style, path)
 
     return [

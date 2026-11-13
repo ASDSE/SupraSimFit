@@ -232,7 +232,8 @@ session, reached through the session switcher.
   `<assay> · <n> replicates`, the number of open sessions, and an accent dot when another
   session is busy. Clicking opens a popover headed *Open sessions* (⌘1 – ⌘9): one row per
   session with its name, its second line and a one-line summary at the right — its
-  reported Ka and any warning (`Ka 1.59 × 10⁸ M⁻¹ · 1 warning`, amber dot), its progress
+  reported Ka and any warning (`Ka 1.59 × 10⁸ M⁻¹ · 1 warning`, amber dot; a session with
+  two binding constants gives their count, `2 binding constants · 1 warning`), its progress
   while running (`Fitting · 62 %`, accent ring), or `Needs refit · data changed` (hollow
   ring) — the session on screen marked with ✓; then the commands *New session* ⌘T, *Load
   data into a new session…* ⇧⌘O, *Open results file…*, *Duplicate <session>*, *Close
@@ -486,8 +487,7 @@ and the tokens.
    outlined pair) and the species of the stepwise models in Simulation; new series
    colours become tokens in both themes.
 3. **Two binding constants** — how Fit results, Ka confidence and Sensitivity lay out
-   two Ka, what Sensitivity shows for a Ka whose indices are withheld, and the switcher
-   summary of a two-Ka session.
+   two Ka, and what Sensitivity shows for a Ka whose indices are withheld.
 4. **Sensitivity heatmap** — its canvas, colour map (sequential tokens in both themes),
    readout and its Run settings.
 5. **Plot against each source →** — what it opens in Sensitivity.

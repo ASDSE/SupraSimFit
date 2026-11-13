@@ -636,7 +636,7 @@ def test_a_sensitivity_run_is_hidden_by_a_bound_or_the_replicate_mode_its_baseli
     assert 'Fitting each replicate separately is now switched off.' in session.model.sensitivity_note
 
 
-def test_window_disables_result_exports_while_the_fit_is_hidden(qapp, make_session, fit, dialogs, monkeypatch):
+def test_window_result_exports_say_why_while_the_fit_is_hidden(qapp, make_session, fit, dialogs, monkeypatch):
     from gui.main_window import FittingMainWindow
     from gui.session import build_artefacts
 
@@ -649,19 +649,16 @@ def test_window_disables_result_exports_while_the_fit_is_hidden(qapp, make_sessi
     _set_bounds(session, GDA_IDA_RECOVERY_BOUNDS)
     session._data_panel.data_loaded.emit(_data())
     _deliver(session, fit)
-    exports = (window._act_export, window._act_export_txt, window._act_export_csv)
-    assert all(action.isEnabled() for action in exports)
 
     _toggle(session, 'b', False)
     note = session.model.hidden_results_note()
     assert note.startswith('This fit was made on replicates A and B. Replicate B is now off.')
-    assert all(not action.isEnabled() and action.toolTip() == note for action in exports)
+    for action in (window._act_results, window._act_txt, window._act_csv):
+        action.trigger()
+    assert dialogs['warning'] == [(session, 'Results Hidden', note)] * 3
     artefacts = {artefact.key: artefact for artefact in build_artefacts(session)}
     for key in ('results_json', 'results_txt', 'results_csv'):
         assert not artefacts[key].available and artefacts[key].unavailable_reason == note
-
-    _toggle(session, 'b', True)
-    assert all(action.isEnabled() for action in exports)
     for thread in session.findChildren(QThread):
         thread.wait()
 
@@ -696,7 +693,7 @@ def test_a_plot_saved_straight_after_typing_a_condition_shows_the_note_and_not_t
     )
 
     _type_into(session, 'h0', '12', finish=False)
-    session.export_plot()
+    session.export_plot('Fit results')
 
     (note,) = saved_with
     assert note is not None and note.startswith('This fit was made on replicates A and B with [Host]₀ = 10 µM.')
@@ -1067,7 +1064,7 @@ def test_importing_results_is_refused_while_a_fit_runs(
     assert title == 'Fit Running'
     assert text == (
         'A fit is running in this session, and its result would replace the imported results when it finishes. '
-        'Wait for it to finish, or stop it with Cancel Fit, then import the results.'
+        'Wait for it to finish, or stop it with Stop, then import the results.'
     )
     assert session.model.held_fit_results == []
     _wait_until(qapp, lambda: not session.model.fit_running())
@@ -1195,8 +1192,8 @@ def test_a_new_fit_replaces_the_previous_one_on_identifiability_before_its_profi
     assert identifiability._stack.currentWidget() is identifiability._content
 
 
-def test_the_fit_action_offers_cancel_while_a_fit_runs(qapp, dialogs, slow_fit, monkeypatch):
-    """The one fit action stops the running fit; a second fit is refused while it is still going."""
+def test_the_primary_action_offers_stop_while_a_fit_runs(qapp, dialogs, slow_fit, monkeypatch):
+    """The toolbar's one primary action stops the running fit; a second fit is refused while it is still going."""
     from gui.main_window import FittingMainWindow
 
     monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
@@ -1207,14 +1204,14 @@ def test_the_fit_action_offers_cancel_while_a_fit_runs(qapp, dialogs, slow_fit, 
 
     session.run_fit()
     worker = session.model._fit_worker
-    assert window._act_fit.text() == 'Cancel Fit' and window._act_fit.isEnabled()
+    assert window._act_run.text() == 'Stop' and window._act_run.isEnabled()
     session.run_fit()
     assert session.model._fit_worker is worker and len(slow_fit) <= 1
     assert dialogs['warning'][-1][1] == 'Already Running'
     assert dialogs['warning'][-1][2].startswith('A fit is already running in this session.')
 
-    _wait_until(qapp, lambda: not session.model.fit_running())
-    assert window._act_fit.text() == 'Run Fit' and window._act_fit.isEnabled()
+    _wait_until(qapp, lambda: not session.model.running())
+    assert window._act_run.text() == 'Run fit' and window._act_run.isEnabled()
     for thread in session.findChildren(QThread):
         thread.wait()
 

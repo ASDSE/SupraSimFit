@@ -659,7 +659,7 @@ def test_no_assay_makes_the_window_wider_than_a_laptop_screen(qapp, monkeypatch,
     session = window.active_session()
     w = session._identifiability_widget
     w.update_fit(*_set_for(assay), assay.name)
-    session._plot_tabs.setCurrentWidget(w)
+    window.show_view('Ka confidence')
     window.resize(1280, 820)
     window.show()
     for _ in range(6):
@@ -1144,7 +1144,7 @@ def test_legend_and_notes_start_below_the_ka_axis_label_in_the_default_window(qa
     fit.metadata['replica_failures'] = {'A': 'Its own best fit needs a different Ka than the other replicates share.'}
     w.update_fit(fit, _profile_set(per_replica=True), 'IDA')
     w.update_sensitivity(_sensitivity())
-    session._plot_tabs.setCurrentWidget(w)
+    window.show_view('Ka confidence')
     window.resize(1280, 820)
     window.show()
     for _ in range(5):
@@ -1176,7 +1176,7 @@ def test_the_whole_chart_is_in_view_without_scrolling_in_the_default_windows(qap
     w = session._identifiability_widget
     w.update_fit(_fit(), _profile_set(), 'IDA')
     w.update_sensitivity(_sensitivity())
-    session._plot_tabs.setCurrentWidget(w)
+    window.show_view('Ka confidence')
     window.resize(*size)
     window.show()
     for _ in range(5):

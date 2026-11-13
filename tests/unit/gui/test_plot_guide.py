@@ -45,16 +45,13 @@ def _show(qapp, widget):
     return widget
 
 
-def test_the_guide_lists_a_section_named_after_each_plot_tab_and_the_summary_panel(qapp, guide_off_screen):
-    """Section titles follow the tab labels, so a renamed tab cannot leave its guide section behind."""
-    from gui.fitting_session import FittingSession
+def test_every_section_of_the_guide_is_listed_under_its_own_title(qapp, guide_off_screen):
     from gui.plot_guide import PLOT_GUIDE
 
-    tabs = FittingSession()._plot_tabs
     guide = guide_off_screen()
     listed = [guide._nav.item(row).text() for row in range(guide._nav.count())]
 
-    assert listed == [tabs.tabText(i) for i in range(tabs.count())] + ['Summary panel']
+    assert len(listed) == len(PLOT_GUIDE)
     for row, key in enumerate(PLOT_GUIDE):
         guide._nav.setCurrentRow(row)
         assert guide.current_section() == key
@@ -81,30 +78,23 @@ def test_help_menu_opens_one_non_modal_guide(qapp, monkeypatch, guide_off_screen
     assert guide.windowModality() is Qt.WindowModality.NonModal
 
 
-def test_tab_bar_button_opens_the_section_of_the_tab_on_screen(qapp, guide_off_screen):
-    """The "?" on the plot tab bar opens the guide at the current tab's section, for every tab."""
-    from PyQt6.QtCore import Qt
-
+def test_toolbar_help_opens_the_section_of_the_view_on_screen(qapp, monkeypatch, guide_off_screen):
+    """The toolbar's Help opens the guide at the section of the plot the view shows, for every view with one."""
     from gui import plot_guide
-    from gui.fitting_session import FittingSession
+    from gui.main_window import FittingMainWindow
 
-    session = FittingSession()
-    session.resize(1200, 800)
-    _show(qapp, session)
-    tabs = session._plot_tabs
-    button = tabs.cornerWidget(Qt.Corner.TopRightCorner)
-    assert button.isVisible() and '?' in button.text()
-
+    monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
+    window = _show(qapp, FittingMainWindow())
     expected = {
-        session._sensitivity_widget: plot_guide.SENSITIVITY,
-        session._plot_widget: plot_guide.FIT_CURVE,
-        session._identifiability_widget: plot_guide.IDENTIFIABILITY,
+        'Fit results': plot_guide.FIT_CURVE,
+        'Ka confidence': plot_guide.IDENTIFIABILITY,
+        'Sensitivity': plot_guide.SENSITIVITY,
     }
-    for page, key in expected.items():
-        tabs.setCurrentWidget(page)
-        button.click()
+    for view, key in expected.items():
+        window.show_view(view)
+        window._toolbar.help.click()
         qapp.processEvents()
-        (guide,) = session.findChildren(guide_off_screen)
+        (guide,) = window.findChildren(guide_off_screen)
         assert guide.isVisible()
         assert guide.current_section() == key
         assert guide._text.toPlainText().startswith(plot_guide.PLOT_GUIDE[key][0])

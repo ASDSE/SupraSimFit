@@ -97,6 +97,7 @@ PATHS: dict[str, str] = {
         '5" r="1.6"/><circle cx="7.5" cy="16.5" r="1.6"/><circle cx="16.5" cy="14.5" r="1.6"/>'
     ),
     'sliders': '<path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/>',
+    'stop': '<rect width="12" height="12" x="6" y="6" rx="1.5" fill="C"/>',
     'table': '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M3 15h18M12 3v18"/>',
     'updown': '<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>',
     'x': '<path d="M18 6 6 18M6 6l12 12"/>',

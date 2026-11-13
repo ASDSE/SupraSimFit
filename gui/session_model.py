@@ -20,9 +20,10 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from core.assays.registry import ASSAY_REGISTRY, AssayType
+from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
 from core.data_processing.measurement_set import MeasurementSet
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
+from core.pipeline.diagnostics import Verdict
 from core.pipeline.fit_pipeline import FitConfig, FitResult
 from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, source_name
 from core.pipeline.profile import ProfileSet
@@ -49,11 +50,13 @@ from gui.plotting.labels import (
     fmt_r2,
     fmt_sci,
     fmt_unit_pretty,
+    fmt_value,
     plain_number,
     stated_uncertainty,
     verdict_headline,
 )
 from gui.widgets.assay_conditions import (
+    ASSAY_NAMES,
     assay_class,
     condition_field,
     condition_name,
@@ -66,19 +69,17 @@ from gui.workers import FitWorker, ProfileWorker, SensitivityWorker, retire
 logger = logging.getLogger(__name__)
 
 _FIT_RUNNING_NOTE = (
-    'A fit is already running in this session. Wait for it to finish, or stop it with Cancel Fit, '
-    'then run the fit again.'
+    'A fit is already running in this session. Wait for it to finish, or stop it with Stop, then run the fit again.'
 )
 _SENSITIVITY_RUNNING_NOTE = (
     'A sensitivity analysis is running in this session. Wait for it to finish, or stop it, then run the fit.'
 )
 _FIT_RUNNING_IMPORT_NOTE = (
     'A fit is running in this session, and its result would replace the imported results when it finishes. '
-    'Wait for it to finish, or stop it with Cancel Fit, then import the results.'
+    'Wait for it to finish, or stop it with Stop, then import the results.'
 )
 _FIT_RUNNING_ANALYSIS_NOTE = (
-    'A fit is running in this session. Wait for it to finish, or stop it with Cancel Fit, '
-    'then run the sensitivity analysis.'
+    'A fit is running in this session. Wait for it to finish, or stop it with Stop, then run the sensitivity analysis.'
 )
 _SENSITIVITY_RUNNING_ANALYSIS_NOTE = (
     'A sensitivity analysis is already running in this session. Wait for it to finish, or stop it, '
@@ -367,6 +368,11 @@ def _problem_list(verb: str, problems: Sequence[str]) -> str:
     return f'The {verb} cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in problems)
 
 
+def _count(n: int, noun: str) -> str:
+    """``1 replicate``, ``8 replicates``."""
+    return f'{n} {noun}{"" if n == 1 else "s"}'
+
+
 class SessionModel(QObject):
     """The state and the rules of one fitting session.
 
@@ -419,6 +425,7 @@ class SessionModel(QObject):
         self._measurement_set: MeasurementSet | None = None
         self._source_file: str | None = None
         self._custom_name: str | None = None
+        self._progress: tuple[int, int] | None = None  # the running analysis's count, done of total
         self._status = ''
         # Results. A result is held until the data change or a new result
         # replaces it, and shown while it matches the loaded selection and the
@@ -512,10 +519,10 @@ class SessionModel(QObject):
     # ------------------------------------------------------------------
 
     def name(self) -> str:
-        """The session's name: the custom one, else the loaded file's stem, else 'Untitled'."""
+        """The session's name: the custom one, else the loaded file's stem, else 'New session'."""
         if self._custom_name:
             return self._custom_name
-        return Path(self._source_file).stem if self._source_file else 'Untitled'
+        return Path(self._source_file).stem if self._source_file else 'New session'
 
     def set_custom_name(self, name: str) -> None:
         """Name the session *name*; an empty name gives it back its automatic one."""
@@ -939,6 +946,139 @@ class SessionModel(QObject):
         running = ('fit', self.fit_running()), ('sensitivity analysis', self.sensitivity_running())
         return ' and '.join(name for name, is_running in running if is_running)
 
+    def running(self) -> bool:
+        """Whether this session has any work running: a fit, its Ka profile or a sensitivity analysis."""
+        return self.fit_running() or self.profile_running() or self.sensitivity_running()
+
+    def progress_fraction(self) -> float | None:
+        """How much of the running work is done (0–1), or ``None`` while it cannot be counted."""
+        if self.sensitivity_running() and self._progress is not None and self._progress[1] > 0:
+            done, total = self._progress
+            return done / total
+        return None
+
+    def running_label(self) -> str:
+        """The running work in a few words (``fitting``, ``Ka profile``, ``Sensitivity 62 %``); ``''`` when idle."""
+        if self.fit_running():
+            return 'fitting'
+        if self.sensitivity_running():
+            fraction = self.progress_fraction()
+            return 'Sensitivity' if fraction is None else f'Sensitivity {fraction:.0%}'.replace('%', '\u2009%')
+        if self.profile_running():
+            return 'Ka profile'
+        return ''
+
+    # ------------------------------------------------------------------
+    # Summaries for the window
+    # ------------------------------------------------------------------
+
+    def detail(self) -> str:
+        """The session's second line: ``IDA · 8 replicates``, or ``No data loaded``."""
+        ms = self.measurement_set
+        if ms is None:
+            return 'No data loaded'
+        short = ASSAY_NAMES[self.settings.assay_type][0]
+        return f'{short} · {_count(ms.n_replicas, "replicate")}'
+
+    def file_card(self) -> tuple[str, str]:
+        """The file behind the session and its shape: (``IDA_system.txt``, ``IDA · 8 replicates × 12 points``)."""
+        ms, path = self.measurement_set, self.dataset_file()
+        if ms is None:
+            return 'No data loaded', 'Load data to start'
+        name = Path(path).name if path else 'Data'
+        short = ASSAY_NAMES[self.settings.assay_type][0]
+        return name, f'{short} · {_count(ms.n_replicas, "replicate")} × {ms.n_points} points'
+
+    def warnings(self) -> int:
+        """How many warnings the fit on show carries: a model the data reject, inputs that conflict."""
+        fit = self.fit_results[-1] if self.fit_results else None
+        diagnostics = None if fit is None else fit.diagnostics
+        if diagnostics is None:
+            return 0
+        verdict = diagnostics.verdict
+        conflict = verdict in (Verdict.INPUTS_CONFLICT, Verdict.MODEL_AND_INPUTS)
+        misfit = verdict in (Verdict.MODEL_INADEQUATE, Verdict.MODEL_AND_INPUTS)
+        return int(conflict) + int(misfit)
+
+    def summary(self) -> tuple[str, str, float]:
+        """The session's state for the switcher: (glyph state, state in words, progress 0–1).
+
+        Running work first (``Fitting``, ``Sensitivity · 62 %``), then a result that
+        needs a refit, then the reported Ka with its warnings, one binding constant
+        by its value and two by their count.
+        """
+        if self.running():
+            label = self.running_label()
+            fraction = self.progress_fraction()
+            words = label[:1].upper() + label[1:]
+            if fraction is not None:
+                words = f'Sensitivity · {fraction:.0%}'.replace('%', '\u2009%')
+            return 'running', words, fraction or 0.0
+        fit, note = self.fit_view()
+        if note is not None:
+            return 'stale', 'Needs refit', 0.0
+        if fit is None:
+            return '', 'Not fitted' if self.measurement_set is not None else '', 0.0
+        rows = [row for row in summarize_parameters(fit) if not row.is_log and row.key in (fit.intervals or {})]
+        if len(rows) == 1:
+            row = rows[0]
+            side = {'low': 'below', 'high': 'above'}.get(row.estimate_at_bound)
+            value = fmt_value(row.estimate).replace('×', '\u2009×\u2009')
+            words = f'Ka not limited {side}' if side else f'Ka {value} {fmt_unit_pretty(row.unit)}'
+        else:
+            words = f'{len(rows)} binding constants'
+        n = self.warnings()
+        if n:
+            words += f' · {_count(n, "warning")}'
+        return ('warning' if n else 'done'), words, 0.0
+
+    def view_status(self, view: str) -> tuple[str, float]:
+        """The navigation mark of *view* (see :func:`gui.design.components.paint_status_glyph`) and its progress."""
+        ms = self.measurement_set
+        settings = self.settings
+        if view == 'Measurements':
+            return ('done' if ms is not None else ''), 0.0
+        if view == 'Binding model':
+            ok = ms is not None and not settings.assay_problems and not settings.bound_problems
+            return ('done' if ok else ''), 0.0
+        if view == 'Input uncertainty':
+            return ('done' if ms is not None and not settings.input_problems else ''), 0.0
+        if view == 'Fit results':
+            if self.fit_running():
+                return 'running', 0.0
+            fit, note = self.fit_view()
+            if note is not None:
+                return 'stale', 0.0
+            if fit is None:
+                return '', 0.0
+            return ('warning' if self.warnings() else 'done'), 0.0
+        if view == 'Ka confidence':
+            if self.profile_running():
+                return 'running', 0.0
+            held = self.held_fit_results
+            if self.profile is None or not held:
+                return '', 0.0
+            return ('stale' if held[-1].id in self.hidden_fit_notes else 'done'), 0.0
+        if view == 'Sensitivity':
+            if self.sensitivity_running():
+                return 'running', self.progress_fraction() or 0.0
+            if self.sensitivity_result is None:
+                return '', 0.0
+            return ('stale' if self.sensitivity_note is not None else 'done'), 0.0
+        return '', 0.0
+
+    def model_line(self) -> list[str]:
+        """What the fit is, for the status bar: the model, its binding constants, the interval and the weighting."""
+        fit, _ = self.fit_view()
+        assay_type = AssayType[fit.assay_type] if fit is not None else self.settings.assay_type
+        kinds = ASSAY_REGISTRY[assay_type].param_kinds.values()
+        n_ka = sum(kind is ParamKind.BINDING_CONSTANT for kind in kinds)
+        parts = [ASSAY_NAMES[assay_type][1], _count(n_ka, 'binding constant'), 'Profile likelihood, 95\u2009%']
+        noise = None if fit is None else fit.noise
+        if noise is not None and noise.share > 0:
+            parts.append('Weighted by noise law')
+        return parts
+
     def _assay_problems(self, ms: MeasurementSet) -> list[str]:
         """Why the assay as configured cannot describe the loaded data, one sentence per problem; empty when it can.
 
@@ -1033,7 +1173,7 @@ class SessionModel(QObject):
         if self._fit_worker is None:
             return
         self._stop_fit()
-        self.show_status('Fit cancelled — nothing on the tab was changed.')
+        self.show_status('Fit stopped — nothing in the session was changed.')
 
     def _on_fit_complete(self, result: FitResult) -> None:
         worker = self._fit_worker
@@ -1218,6 +1358,7 @@ class SessionModel(QObject):
         self._sensitivity_worker.error.connect(self._on_sensitivity_error)
 
         self._sensitivity_started = time.monotonic()
+        self._progress = None
         self._sensitivity_worker.start()
         self.run_changed.emit('sensitivity', True)
         self.show_status('Running sensitivity analysis…')
@@ -1237,6 +1378,7 @@ class SessionModel(QObject):
         the status bar beside a page that says it is stopping reads as two
         contradictory answers.
         """
+        self._progress = (done, total)
         self.progress.emit(done, total)
         if self._sensitivity_worker is not None and self._sensitivity_worker.cancelled:
             self.show_status(STOPPING_TEXT)
@@ -1323,6 +1465,21 @@ class SessionModel(QObject):
         self._sensitivity_result = None
         self._sensitivity_note = None
         self.sensitivity_changed.emit(True)
+
+    def stop(self) -> None:
+        """Stop the work running in this session, as the toolbar's Stop does.
+
+        A fit stops leaving every result as it was; an analysis reports what it
+        finished; a Ka profile still being computed is dropped, and the fit it
+        belongs to stays.
+        """
+        if self.fit_running():
+            self.cancel_fit()
+        if self.sensitivity_running():
+            self.cancel_sensitivity()
+        if self.profile_running():
+            self._clear_profile()
+            self.show_status('Ka profile stopped — run the fit again to compute it.')
 
     def cancel_running(self) -> None:
         """Ask every background run this session started to stop, without waiting for any of it.

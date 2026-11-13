@@ -823,6 +823,7 @@ def _shown_summary(qapp, monkeypatch, result, size):
     monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
     window = FittingMainWindow()
     window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    window.show_view('Fit results')
     session = window.active_session()
     widget = session._summary_widget
     widget.set_replica_ids(['0', '1', '2', '3'])

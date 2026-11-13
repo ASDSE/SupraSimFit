@@ -14,16 +14,20 @@ from gui.design import components as C
 from gui.design.tokens import Theme
 
 from . import view_measurements
-from .common import keys
+from .common import command
 
 W = 312  # the menu's card
 
-ITEMS = [
-    ('plus', 'Add files to this session…', keys('Ctrl+O')),
-    ('open', 'Replace data…', ''),
-    None,
-    ('file-plus', view_measurements.NEW_SESSION, keys('Ctrl+Shift+O')),
-]
+
+def items() -> list:
+    return [
+        command('plus', 'Add files to this session…', 'Ctrl+O'),
+        command('open', 'Replace data…'),
+        None,
+        command('file-plus', view_measurements.NEW_SESSION, 'Ctrl+Shift+O'),
+    ]
+
+
 NOTE = 'Added files become replicates and must share this session’s concentrations.'
 
 
@@ -36,7 +40,7 @@ def build(t: Theme) -> dict:
         btn.setChecked(True)
         btn.update()
         pos = btn.mapTo(root, btn.rect().bottomLeft())
-        menu = C.PopoverMenu(t, root, ITEMS, NOTE, W)
+        menu = C.PopoverMenu(t, root, items(), NOTE, W, hover=0)
         menu.move(pos.x() - C.SHADOW, pos.y() + 2)
         menu.show()
         menu.raise_()

@@ -65,3 +65,14 @@ def keys(sequence: str) -> str:
     from PyQt6.QtGui import QKeySequence
 
     return QKeySequence(sequence).toString(QKeySequence.SequenceFormat.NativeText)
+
+
+def command(icon: str, text: str, shortcut: str = ''):
+    """A menu command as the app makes one: a QAction with its design icon and shortcut."""
+    from PyQt6.QtGui import QAction, QKeySequence
+
+    action = QAction(text)
+    action.setProperty('design_icon', icon)
+    if shortcut:
+        action.setShortcut(QKeySequence(shortcut))
+    return action

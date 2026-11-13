@@ -12,7 +12,7 @@ from gui.design import components as C
 from gui.design.tokens import Theme
 
 from . import view_fit
-from .common import keys
+from .common import command, keys
 from .shell import SESSIONS
 
 # Each session's state in words, beside its glyph.
@@ -22,14 +22,16 @@ STATE = {
     'stale': 'Needs refit · data changed',
 }
 
-COMMANDS = [
-    ('plus', 'New session', keys('Ctrl+T')),
-    ('file-plus', 'Load data into a new session…', keys('Ctrl+Shift+O')),
-    ('results', 'Open results file…', ''),
-    None,
-    ('copy', 'Duplicate IDA_system', ''),
-    ('x', 'Close IDA_system', keys('Ctrl+W')),
-]
+
+def commands() -> list:
+    return [
+        command('plus', 'New session', 'Ctrl+T'),
+        command('file-plus', 'Load data into a new session…', 'Ctrl+Shift+O'),
+        command('results', 'Open results file…'),
+        None,
+        command('copy', 'Duplicate IDA_system'),
+        command('x', 'Close IDA_system', 'Ctrl+W'),
+    ]
 
 
 def build(t: Theme) -> dict:
@@ -40,7 +42,7 @@ def build(t: Theme) -> dict:
         sw = root.findChild(QWidget, 'SessionSwitcher')
         pos = sw.mapTo(root, sw.rect().bottomLeft())
         sessions = [{**s, 'status': STATE[s['state']]} for s in SESSIONS]
-        pop = C.SessionPopover(t, root, sessions, COMMANDS, title_hint=f'{keys("Ctrl+1")} – {keys("Ctrl+9")}')
+        pop = C.SessionPopover(t, root, sessions, commands(), title_hint=f'{keys("Ctrl+1")} – {keys("Ctrl+9")}')
         pop.move(pos.x() - C.SHADOW, pos.y() + 2)
         pop.show()
         pop.raise_()

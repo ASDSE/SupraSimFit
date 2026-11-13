@@ -1,42 +1,94 @@
-"""FittingMainWindow — thin shell managing tabbed fitting sessions."""
+"""FittingMainWindow — the window of every open session: sidebar, toolbar, the session on screen and the status bar."""
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QCoreApplication, QEvent, QLocale, QObject, Qt
-from PyQt6.QtGui import QAction, QIcon, QKeySequence
+import sys
+from pathlib import Path
+
+from PyQt6.QtCore import QCoreApplication, QEvent, QLocale, QObject, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
+    QButtonGroup,
     QMainWindow,
-    QMenu,
     QMessageBox,
-    QStatusBar,
-    QToolBar,
-    QToolButton,
+    QSizePolicy,
+    QStackedWidget,
+    QWidget,
 )
 
 from _version import __version__
+from gui.design import components as C
+from gui.design.appearance import appearance, theme
+from gui.design.tokens import SIZE, Theme, space
 from gui.dialogs.plot_guide_dialog import show_plot_guide
-from gui.fitting_session import FittingSession
+from gui.fitting_session import NAVIGATION, VIEWS, FittingSession
 from gui.preferences import APP_NAME, ORG_NAME
 from gui.update_check import UpdateCheckWorker, is_newer
 from gui.update_dialog import UpdateAvailableDialog
-from gui.widgets.flat_tabs import FlatTabWidget
 from gui.workers import retire
+
+#: macOS: the sidebar reaches up under a transparent title bar, which keeps the window controls.
+_MAC = sys.platform == 'darwin'
+
+
+def _hide_title_text(window: QWidget) -> None:
+    """macOS: hide the title text the transparent title bar would draw over the toolbar.
+
+    Qt has no call for it, so it is set on the native window (``NSWindow.titleVisibility``)
+    through the Objective-C runtime. The title stays the window's name in the Window menu
+    and Mission Control.
+    """
+    import ctypes
+    import ctypes.util
+
+    objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library('objc'))
+    objc.sel_registerName.restype = ctypes.c_void_p
+    objc.sel_registerName.argtypes = [ctypes.c_char_p]
+    get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(('objc_msgSend', objc))
+    set_long = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long)(('objc_msgSend', objc))
+    ns_window = get(int(window.winId()), objc.sel_registerName(b'window'))
+    set_long(ns_window, objc.sel_registerName(b'setTitleVisibility:'), 1)  # NSWindowTitleHidden
+
+
+class _TitleBarArea(QWidget):
+    """A stretch of window chrome that moves the window when dragged and zooms it on a double-click.
+
+    On macOS the sidebar's top row and the toolbar sit where the title bar would be, so
+    their empty parts behave as the title bar does; elsewhere the system's title bar does.
+    """
+
+    def mousePressEvent(self, event) -> None:
+        if _MAC and event.button() == Qt.MouseButton.LeftButton:
+            self.window().windowHandle().startSystemMove()
+            return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if _MAC and event.button() == Qt.MouseButton.LeftButton:
+            window = self.window()
+            window.showNormal() if window.isMaximized() else window.showMaximized()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+_ADD_TO_LOADED = (
+    'This session already holds data, and adding files to it as further replicates is not available yet. '
+    'Use Replace data… to load other files in their place, or Load data into a new session… for another experiment.'
+)
 
 
 class _SpinBoxWheelRedirect(QObject):
     """Block non-focused spinboxes from swallowing wheel events.
 
-    Qt's event-filter mechanism cannot propagate a consumed wheel event
-    to the target's parent, so we simply eat the event when a spinbox
-    lacks focus. The user's primary complaint — accidentally changing
-    values while scrolling the sidebar — is fixed; the sidebar scroll
-    pauses while the cursor is over a pyqtgraph ParameterTree spinbox
-    but no longer mutates its value. Our project-owned spinboxes go
-    through :class:`gui.widgets.numeric_inputs.NoScrollSpinBox` /
-    :class:`NoScrollDoubleSpinBox` instead, which ``event.ignore()``
-    and so let Qt forward the wheel up to the scroll area cleanly.
+    Qt's event-filter mechanism cannot propagate a consumed wheel event to the
+    target's parent, so the event is eaten when a spinbox lacks focus: scrolling
+    a panel over a pyqtgraph ParameterTree spinbox pauses rather than changing
+    its value. The project's own spinboxes go through
+    :class:`gui.widgets.numeric_inputs.NoScrollSpinBox` /
+    :class:`NoScrollDoubleSpinBox` instead, which ``event.ignore()`` and so let
+    Qt forward the wheel up to the scroll area.
     """
 
     def eventFilter(self, obj, event):  # type: ignore[override]
@@ -46,409 +98,581 @@ class _SpinBoxWheelRedirect(QObject):
         return False
 
 
-_APP_QSS = """
-QToolBar {
-    spacing: 6px;
-    padding: 4px 10px;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.15);
-}
-/* Scoped to the toolbar so it does not leak into the tab bar's scroll arrows. */
-QToolBar QToolButton {
-    padding: 5px 14px;
-    min-width: 70px;
-    border: 1px solid rgba(0, 0, 0, 0.22);
-    border-radius: 5px;
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba(255,255,255,0.95), stop:1 rgba(225,225,225,0.95));
-    font-size: 12px;
-}
-QToolBar QToolButton:hover {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba(255,255,255,1.0), stop:1 rgba(235,235,235,1.0));
-    border-color: rgba(0, 0, 0, 0.32);
-}
-QToolBar QToolButton:pressed {
-    background: rgba(195, 195, 195, 0.95);
-}
-QGroupBox {
-    font-size: 14px;
-    font-weight: bold;
-    margin-top: 22px;
-    border: 1px solid rgba(0, 0, 0, 0.2);
-    border-radius: 5px;
-    padding: 14px 6px 6px 6px;
-    background-color: palette(window);
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    left: 10px;
-    top: 13px;
-    padding: 2px 28px 2px 8px;
-    color: rgba(20, 40, 90, 0.9);
-    background-color: palette(window);
-}
-"""
+def _action(parent: QObject, text: str, icon: str = '', shortcut=None, slot=None) -> QAction:
+    """A command: its text, design icon (a name in :mod:`gui.design.icons`), shortcut and slot."""
+    action = QAction(text, parent)
+    if icon:
+        action.setProperty('design_icon', icon)
+    if isinstance(shortcut, QKeySequence.StandardKey):
+        action.setShortcuts(shortcut)  # every binding the platform has for it
+    elif shortcut is not None:
+        action.setShortcut(QKeySequence(shortcut))
+    if slot is not None:
+        action.triggered.connect(slot)
+    return action
 
 
-#: The two states of the one fit action: it starts the active session's fit,
-#: and stops that fit while it runs, as the sensitivity panel's own button does.
-_RUN_FIT = 'Run Fit'
-_CANCEL_FIT = 'Cancel Fit'
-_CANCEL_FIT_TIP = 'Stop the fit running in this session (Ctrl+R)'
+class _Sidebar(QWidget):
+    """The sidebar: the sidebar toggle, the session switcher, the views and the file card."""
+
+    view_chosen = pyqtSignal(str)
+
+    def __init__(self, t: Theme):
+        super().__init__()
+        self.setObjectName('Sidebar')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setFixedWidth(SIZE['sidebar'])
+        self.toggle = C.tool_button(t, None, 'panel-left')
+        self.toggle.setToolTip('Hide the sidebar')
+        self.toggle.setAccessibleName('Hide the sidebar')
+        chrome = _TitleBarArea()
+        chrome.setFixedHeight(SIZE['toolbar'])
+        chrome.setLayout(C.hbox(None, self.toggle, margins=(1, 0, 0, 0)))
+        self.switcher = C.SessionSwitcher(t, '', '')
+        self.switcher.setToolTip('Open sessions')
+        self.nav: dict[str, C.NavItem] = {}
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        lay = C.vbox(chrome, self.switcher, 6, spacing=0, margins=(4, 0, 4, 4))
+        for gi, (title, items) in enumerate(NAVIGATION):
+            if gi:
+                lay.addSpacing(space(5))
+            lay.addLayout(C.hbox(C.label(title, 'overline', 'tertiary'), margins=(3, 0, 0, 0)))
+            lay.addSpacing(space(2))
+            for view, icon in items:
+                item = C.NavItem(t, view, icon)
+                item.clicked.connect(lambda _checked=False, v=view: self.view_chosen.emit(v))
+                group.addButton(item)
+                self.nav[view] = item
+                lay.addWidget(item)
+                lay.addSpacing(space(1))
+        lay.addStretch(1)
+        lay.addWidget(C.hairline())
+        self.file_card = C.FileCard(t)
+        lay.addWidget(self.file_card)
+        self.setLayout(lay)
+
+
+class _Toolbar(_TitleBarArea):
+    """The toolbar: the view's title and badge, Load data ▾, Export ▾, Help, the side-panel toggle and Run."""
+
+    def __init__(self, t: Theme):
+        super().__init__()
+        self.setObjectName('Toolbar')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setFixedHeight(SIZE['toolbar'])
+        self.sidebar_toggle = C.tool_button(t, None, 'panel-left')
+        self.sidebar_toggle.setToolTip('Show the sidebar')
+        self.sidebar_toggle.setAccessibleName('Show the sidebar')
+        self.title = C.label('', 'title')
+        self.badge = C.badge('')
+        self.load = C.tool_button(t, 'Load data', 'open', menu=True)
+        self.load.setObjectName('LoadData')
+        self.export = C.tool_button(t, 'Export', 'export', menu=True)
+        self.help = C.tool_button(t, None, 'help')
+        self.help.setToolTip('Reading the plots')
+        self.help.setAccessibleName('Reading the plots')
+        self.side = C.tool_button(t, None, 'panel-right', checked=True)
+        self.side.setToolTip('Show or hide the side panel')
+        self.side.setAccessibleName('Side panel')
+        # One width for every label ('Run fit', 'Run analysis', 'Stop'), so the toolbar never shifts.
+        self.run = C.primary_button(t, 'Run analysis', 'play')
+        divider = C.hairline(vertical=True)
+        divider.setFixedHeight(space(6) - space(2))
+        # Room for the window controls the title bar keeps on macOS while the sidebar is hidden.
+        self.inset = QWidget()
+        self.inset.setFixedWidth(space(8) + space(6))
+        self.inset.setVisible(False)
+        self.sidebar_toggle.setVisible(False)
+        self.setLayout(
+            C.hbox(
+                self.inset,
+                self.sidebar_toggle,
+                self.title,
+                3,
+                self.badge,
+                None,
+                self.load,
+                self.export,
+                2,
+                divider,
+                2,
+                self.help,
+                self.side,
+                2,
+                self.run,
+                spacing=1,
+                margins=(6, 0, 5, 0),
+            )
+        )
+
+
+class _StatusBar(QWidget):
+    """The status bar: what is running in every session (or the last message here) and what the fit is."""
+
+    clicked = pyqtSignal()
+
+    def __init__(self, t: Theme):
+        super().__init__()
+        self.setObjectName('StatusBar')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setFixedHeight(SIZE['statusbar'])
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.dot = C.StatusDot(t, 'text-tertiary')
+        self.text = C.label('Ready', 'small', 'secondary')
+        # The summary gives way to the model line and is cut short with an ellipsis where it does not fit.
+        self.text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._full_text = 'Ready'
+        self.model_line = C.label('', 'small', 'tertiary')
+        lay = C.hbox(self.dot, 2, self.text, 4, self.model_line, spacing=0, margins=(5, 0, 5, 0))
+        lay.setStretchFactor(self.text, 1)
+        self.setLayout(lay)
+
+    def set_text(self, text: str) -> None:
+        """Show *text* as the summary, with the whole of it in the tooltip."""
+        self._full_text = text
+        self.setToolTip(f'{text}\nClick to open the sessions.')
+        self._elide()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        width = self.text.width()
+        self.text.setText(self.text.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, width))
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
 
 
 class FittingMainWindow(QMainWindow):
-    """Main application window: tab management + toolbar + menu routing.
+    """The main window: every open session, one on screen, with the commands that act on it.
 
     All fitting state lives in the :class:`~gui.session_model.SessionModel` of
-    each :class:`~gui.fitting_session.FittingSession` tab. The main window holds
-    no fitting state of its own.
+    each :class:`~gui.fitting_session.FittingSession`; the window holds the
+    sessions, which one is on screen, the view shown and whether the sidebar
+    and side panels are, and draws the sidebar, toolbar and status bar from the
+    sessions' models.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._t = theme()
         self._update_worker: UpdateCheckWorker | None = None
         self._sim_window: QMainWindow | None = None
+        self._sessions: list[FittingSession] = []
+        self._view = 'Measurements'
+        self._side_visible = True
+        self._window_message: str | None = None
+        self._popover: QWidget | None = None
+        if _MAC:
+            self.setWindowFlag(Qt.WindowType.ExpandedClientAreaHint, True)
+            self.setWindowFlag(Qt.WindowType.NoTitleBarBackgroundHint, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
         self._set_title()
-        self.resize(1280, 820)
-        self._setup_tabs()
-        self._setup_toolbar()
+        self.resize(1440, 900)
+        self._setup_ui()
+        self._setup_actions()
         self._setup_menus()
-        self._setup_statusbar()
-        self._tabs.currentChanged.connect(lambda _index: self._sync_actions())
-        # Open one empty session on startup
         self._new_session()
+        appearance().changed.connect(self._refresh)
         # Silent background check for newer releases on GitHub.
         # Failures (offline, rate-limited, etc.) are intentionally swallowed.
         self._run_update_check(silent=True)
 
     def _set_title(self, suffix: str = '') -> None:
-        """Set the window title to ``SupraSimFit <version> [suffix]``.
-
-        Called once at construction with no suffix, and again with
-        ``"(updates available)"`` when the background check finds a newer
-        release.
-        """
-        base = f'SupraSimFit {__version__}'
-        self.setWindowTitle(f'{base} {suffix}'.rstrip())
+        """Set the window title to ``SupraSimFit <version> [suffix]``."""
+        self.setWindowTitle(f'SupraSimFit {__version__} {suffix}'.rstrip())
 
     # ------------------------------------------------------------------
     # Public helpers
     # ------------------------------------------------------------------
 
     def active_session(self) -> FittingSession | None:
-        widget = self._tabs.currentWidget()
+        widget = self._stack.currentWidget()
         return widget if isinstance(widget, FittingSession) else None
+
+    def sessions(self) -> list[FittingSession]:
+        """Every open session, in the order they were opened."""
+        return list(self._sessions)
+
+    def current_view(self) -> str:
+        return self._view
 
     # ------------------------------------------------------------------
     # UI setup
     # ------------------------------------------------------------------
 
-    def _setup_tabs(self) -> None:
-        # Flat/minimal session tabs with an inline "+" glued after the last tab.
-        # Closable + movable; FlatTabWidget hides the sole tab's close control so
-        # the bar can never be emptied.
-        self._tabs = FlatTabWidget(
-            closable=True,
-            movable=True,
-            editable=True,
-            add_callback=self._new_session,
-            add_tooltip='New session (Ctrl+T)',
+    def _setup_ui(self) -> None:
+        t = self._t
+        self._sidebar = _Sidebar(t)
+        self._sidebar_rule = C.hairline(vertical=True)
+        self._toolbar = _Toolbar(t)
+        self._stack = QStackedWidget()
+        self._status = _StatusBar(t)
+        content = QWidget()
+        content.setLayout(C.vbox(self._toolbar, C.hairline(), self._stack, spacing=0))
+        top = QWidget()
+        top.setLayout(C.hbox(self._sidebar, self._sidebar_rule, content, spacing=0))
+        root = QWidget()
+        root.setLayout(C.vbox(top, C.hairline(), self._status, spacing=0))
+        # The window opens with the focus on no control, so no focus ring shows until the keyboard moves it.
+        root.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        if _MAC:
+            # The window reaches up under the transparent title bar.
+            root.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
+            if QApplication.platformName() == 'cocoa':  # a native window to set it on
+                _hide_title_text(self)
+        self.setCentralWidget(root)
+        root.setFocus()
+
+        self._sidebar.view_chosen.connect(self.show_view)
+        self._sidebar.switcher.clicked.connect(self._open_switcher)
+        self._sidebar.file_card.clicked.connect(lambda: self.show_view('Measurements'))
+        self._sidebar.toggle.clicked.connect(lambda: self._set_sidebar_visible(False))
+        self._toolbar.sidebar_toggle.clicked.connect(lambda: self._set_sidebar_visible(True))
+        self._toolbar.load.clicked.connect(self._open_load_menu)
+        self._toolbar.export.clicked.connect(self._open_export_menu)
+        self._toolbar.help.clicked.connect(self._show_guide)
+        self._toolbar.side.clicked.connect(lambda: self._set_side_visible(self._toolbar.side.isChecked()))
+        self._toolbar.run.clicked.connect(self._on_primary)
+        self._status.clicked.connect(self._open_switcher)
+
+    def _setup_actions(self) -> None:
+        keys = QKeySequence.StandardKey
+        self._act_run = _action(self, 'Run fit', 'play', 'Ctrl+R', self._on_primary)
+        self._act_new = _action(self, 'New session', 'plus', keys.AddTab, self._new_session)
+        self._act_add = _action(self, 'Add files to this session…', 'plus', keys.Open, self._on_add_files)
+        self._act_replace = _action(self, 'Replace data…', 'open', None, self._on_replace)
+        self._act_load_new = _action(self, 'Load data into a new session…', 'file-plus', 'Ctrl+Shift+O')
+        self._act_load_new.triggered.connect(self._on_load_new)
+        self._act_open_results = _action(self, 'Open results file…', 'results', None, self._on_open_results)
+        self._act_duplicate = _action(self, 'Duplicate session', 'copy')
+        self._act_duplicate.setEnabled(False)
+        self._act_close = _action(self, 'Close session', 'x', keys.Close, self._close_current)
+        self._act_results = _action(
+            self, 'Results file…', 'save', keys.Save, lambda: self._on_session('export_results')
         )
-        self._tabs.tabCloseRequested.connect(self._close_tab)
-        self._tabs.tab_renamed.connect(self._on_tab_renamed)
-        self.setCentralWidget(self._tabs)
-
-    def _setup_toolbar(self) -> None:
-        tb = QToolBar('Main')
-        tb.setMovable(False)
-        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.addToolBar(tb)
-
-        # Import actions (grouped under the Import button)
-        self._act_load = QAction('Import Data\u2026', self)
-        self._act_load.setShortcut(QKeySequence.StandardKey.Open)
-        self._act_load.setToolTip('Import measurement data into the active session (Ctrl+O)')
-        self._act_load.triggered.connect(self._on_load)
-        # Register action on the main window so the Ctrl+O shortcut is active
-        # even though the action is not placed directly on the toolbar.
-        self.addAction(self._act_load)
-
-        self._act_import = QAction('Import Fit Results\u2026', self)
-        self._act_import.setToolTip('Import fit results from JSON for re-plotting')
-        self._act_import.triggered.connect(self._on_import)
-
-        self._act_load_style = QAction('Load Style Template\u2026', self)
-        self._act_load_style.setToolTip('Load plot style settings from a JSON file')
-        self._act_load_style.triggered.connect(self._on_load_style)
-
-        import_menu = QMenu(self)
-        import_menu.addAction(self._act_load)
-        import_menu.addAction(self._act_import)
-        import_menu.addSeparator()
-        import_menu.addAction(self._act_load_style)
-
-        self._import_btn = self._make_menu_button('Import', import_menu, 'Import / Load options')
-        tb.addWidget(self._import_btn)
-
-        self._act_demo = QAction('Demo IDA', self)
-        self._act_demo.setToolTip(
-            'Load the bundled IDA demo data and fit it with typical input uncertainties (the status bar lists them)'
+        self._act_txt = _action(
+            self, 'Report (TXT)…', 'file-text', None, lambda: self._on_session('export_results_txt')
         )
-        self._act_demo.triggered.connect(self._on_load_demo)
-        tb.addAction(self._act_demo)
-
-        self._act_simulate = QAction('Simulate…', self)
-        self._act_simulate.setToolTip('Open the forward-simulation applet for experiment design (no data needed)')
-        self._act_simulate.triggered.connect(self._on_simulate)
-        tb.addAction(self._act_simulate)
-
-        tb.addSeparator()
-
-        self._act_fit = QAction(_RUN_FIT, self)
-        self._act_fit.setShortcut(QKeySequence('Ctrl+R'))
-        self._act_fit.setToolTip('Fit the active session\u2019s data (Ctrl+R)')
-        self._act_fit.triggered.connect(self._on_fit_action)
-        tb.addAction(self._act_fit)
-
-        tb.addSeparator()
-
-        # Export actions
-        self._act_export = QAction('Export Results (JSON)', self)
-        self._act_export.setShortcut(QKeySequence.StandardKey.Save)
-        self._act_export.setToolTip('Export fit results to JSON (Ctrl+S)')
-        self._act_export.triggered.connect(self._on_export)
-
-        self._act_export_txt = QAction('Export Results (TXT)', self)
-        self._act_export_txt.setToolTip('Export fit results as a human-readable text report')
-        self._act_export_txt.triggered.connect(self._on_export_txt)
-
-        self._act_export_csv = QAction('Export Results (CSV)', self)
-        self._act_export_csv.setToolTip('Export fit results as a CSV table, one row per parameter')
-        self._act_export_csv.triggered.connect(self._on_export_csv)
-
-        self._act_export_raw = QAction('Export Raw Data\u2026', self)
-        self._act_export_raw.setToolTip('Export the currently loaded replicates and concentrations to TXT or CSV')
-        self._act_export_raw.triggered.connect(self._on_export_raw)
-
-        self._act_save_plot = QAction('Save Plot', self)
-        self._act_save_plot.setToolTip(
-            'Save the plot on the tab that is showing — the Fit Curve tab as PNG or SVG, '
-            'the Identifiability and Ka Sensitivity tabs as PNG'
+        self._act_csv = _action(self, 'Table (CSV)…', 'table', None, lambda: self._on_session('export_results_csv'))
+        self._act_raw = _action(self, 'Raw data…', 'file', None, lambda: self._on_session('export_raw_data'))
+        self._act_plot = _action(self, 'Plot image…', 'image', None, self._on_save_plot)
+        self._act_several = _action(self, 'Export several…', 'layers', 'Ctrl+Shift+E', self._on_export_several)
+        self._act_demo = _action(self, 'Demo IDA', '', None, self._on_load_demo)
+        self._act_simulate = _action(self, 'Simulate…', '', None, self._on_simulate)
+        self._act_guide = _action(self, 'Reading the plots…', '', None, self._show_guide)
+        self._act_check_updates = _action(
+            self, 'Check for updates…', '', None, lambda: self._run_update_check(silent=False)
         )
-        self._act_save_plot.triggered.connect(self._on_save_plot)
-
-        self._act_save_style = QAction('Save Style Template', self)
-        self._act_save_style.setToolTip('Save current plot style settings to a JSON file')
-        self._act_save_style.triggered.connect(self._on_save_style)
-
-        self._act_export_all = QAction('Export All…', self)
-        self._act_export_all.setShortcut(QKeySequence('Ctrl+Shift+E'))
-        self._act_export_all.setToolTip('Export selected artefacts (raw data, results, plots, style) into one folder')
-        self._act_export_all.triggered.connect(self._on_export_all)
-
-        # The fit action and the result exports follow the active session
-        # (_sync_actions); their own tooltips are shown whenever they are available.
-        self._action_tips: dict[QAction, str] = {
-            action: action.toolTip()
-            for action in (
-                self._act_fit,
-                self._act_export,
-                self._act_export_txt,
-                self._act_export_csv,
-                self._act_save_plot,
-            )
-        }
-
-        export_menu = QMenu(self)
-        export_menu.setToolTipsVisible(True)
-        export_menu.addAction(self._act_export_all)
-        export_menu.addSeparator()
-        export_menu.addAction(self._act_export)
-        export_menu.addAction(self._act_export_txt)
-        export_menu.addAction(self._act_export_csv)
-        export_menu.addAction(self._act_export_raw)
-        export_menu.addSeparator()
-        export_menu.addAction(self._act_save_plot)
-        export_menu.addSeparator()
-        export_menu.addAction(self._act_save_style)
-
-        self._export_btn = self._make_menu_button('Export', export_menu, 'Export / Save options')
-        tb.addWidget(self._export_btn)
-
-    @staticmethod
-    def _make_menu_button(label: str, menu: QMenu, tooltip: str) -> QToolButton:
-        """Create a toolbar button that pops a menu without the Qt auto-arrow.
-
-        The default ``InstantPopup`` mode draws a dropdown triangle in the
-        bottom-right corner of the button; hiding the ``menu-indicator`` via
-        stylesheet gives a clean text-only button while preserving the menu.
-        """
-        btn = QToolButton()
-        btn.setText(label)
-        btn.setToolTip(tooltip)
-        btn.setAutoRaise(False)
-        btn.setMenu(menu)
-        btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        btn.setStyleSheet('QToolButton::menu-indicator { image: none; width: 0; }')
-        return btn
-
-    def _open_preferences(self) -> None:
-        """Show the application preferences."""
-        from gui.dialogs.preferences_dialog import PreferencesDialog
-
-        PreferencesDialog(self).exec()
+        self._act_settings = _action(self, 'Settings…', '', keys.Preferences, self._open_preferences)
+        self._act_settings.setMenuRole(QAction.MenuRole.PreferencesRole)
+        self._act_quit = _action(self, 'Quit', '', keys.Quit, self.close)
+        self._act_quit.setMenuRole(QAction.MenuRole.QuitRole)
+        self._act_sidebar = _action(self, 'Show sidebar', '', None, lambda on: self._set_sidebar_visible(on))
+        self._act_sidebar.setCheckable(True)
+        self._act_sidebar.setChecked(True)
+        self._act_side = _action(self, 'Show side panel', '', None, lambda on: self._set_side_visible(on))
+        self._act_side.setCheckable(True)
+        self._act_side.setChecked(True)
+        self._view_actions: dict[str, QAction] = {}
+        views = QActionGroup(self)
+        for view in VIEWS:
+            act = _action(self, view, '', None, lambda _on=False, v=view: self.show_view(v))
+            act.setCheckable(True)
+            views.addAction(act)
+            self._view_actions[view] = act
+        # Shortcuts work wherever the focus is in the window, menus or not.
+        self.addActions([self._act_run, self._act_add, self._act_load_new, self._act_close, self._act_several])
+        for n in range(1, 10):
+            act = _action(self, f'Session {n}', '', f'Ctrl+{n}', lambda _on=False, i=n - 1: self._switch_to_index(i))
+            self.addAction(act)
 
     def _setup_menus(self) -> None:
         mb = self.menuBar()
-
-        # File menu
         file_menu = mb.addMenu('&File')
-        file_menu.setToolTipsVisible(True)
-
-        self._act_new = QAction('New Session', self)
-        self._act_new.setShortcut(QKeySequence('Ctrl+T'))
-        self._act_new.setToolTip('Open a new fitting session tab (Ctrl+T)')
-        self._act_new.triggered.connect(self._new_session)
-        file_menu.addAction(self._act_new)
-
-        file_menu.addAction(self._act_load)
+        file_menu.addActions([self._act_new, self._act_add, self._act_replace, self._act_load_new])
+        file_menu.addAction(self._act_open_results)
         file_menu.addSeparator()
-        file_menu.addAction(self._act_fit)
-        file_menu.addAction(self._act_simulate)
+        file_menu.addActions([self._act_results, self._act_txt, self._act_csv, self._act_raw, self._act_plot])
+        file_menu.addAction(self._act_several)
         file_menu.addSeparator()
-        file_menu.addAction(self._act_export_all)
+        file_menu.addAction(self._act_close)
         file_menu.addSeparator()
-        file_menu.addAction(self._act_export)
-        file_menu.addAction(self._act_export_txt)
-        file_menu.addAction(self._act_export_csv)
-        file_menu.addAction(self._act_export_raw)
-        file_menu.addAction(self._act_import)
-        file_menu.addAction(self._act_save_plot)
-        file_menu.addSeparator()
-        file_menu.addAction(self._act_save_style)
-        file_menu.addAction(self._act_load_style)
-        file_menu.addSeparator()
-        prefs_act = QAction('Preferences\u2026', self)
-        prefs_act.setShortcut(QKeySequence.StandardKey.Preferences)
-        prefs_act.setMenuRole(QAction.MenuRole.PreferencesRole)
-        prefs_act.triggered.connect(self._open_preferences)
-        file_menu.addAction(prefs_act)
-
-        file_menu.addSeparator()
-        quit_act = QAction('&Quit', self)
-        quit_act.setShortcut(QKeySequence.StandardKey.Quit)
-        quit_act.triggered.connect(self.close)
-        file_menu.addAction(quit_act)
-
-        # View menu
+        file_menu.addAction(self._act_settings)
+        file_menu.addAction(self._act_quit)
+        tools = mb.addMenu('&Tools')
+        tools.addActions([self._act_simulate, self._act_demo])
         view_menu = mb.addMenu('&View')
-        close_tab_act = QAction('Close Tab', self)
-        close_tab_act.setShortcut(QKeySequence('Ctrl+W'))
-        close_tab_act.triggered.connect(lambda: self._close_tab(self._tabs.currentIndex()))
-        view_menu.addAction(close_tab_act)
-
-        # Help menu
+        view_menu.addActions([self._act_sidebar, self._act_side])
+        view_menu.addSeparator()
+        view_menu.addActions(list(self._view_actions.values()))
         help_menu = mb.addMenu('&Help')
-        self._act_plot_guide = QAction('Reading the plots…', self)
-        self._act_plot_guide.triggered.connect(lambda: show_plot_guide(self))
-        help_menu.addAction(self._act_plot_guide)
+        help_menu.addAction(self._act_guide)
         help_menu.addSeparator()
-        self._act_check_updates = QAction('Check for updates…', self)
-        self._act_check_updates.setToolTip('Query GitHub for a newer release of SupraSimFit')
-        self._act_check_updates.triggered.connect(lambda: self._run_update_check(silent=False))
         help_menu.addAction(self._act_check_updates)
 
-    def _setup_statusbar(self) -> None:
-        self._statusbar = QStatusBar()
-        self.setStatusBar(self._statusbar)
-        self._statusbar.showMessage('Ready')
-
     # ------------------------------------------------------------------
-    # Session management
+    # Drawing the window from the sessions
     # ------------------------------------------------------------------
 
-    def _new_session(self) -> None:
-        session = FittingSession()
-        session.model.name_changed.connect(lambda title, s=session: self._rename_tab(s, title))
-        session.model.status_changed.connect(self._statusbar.showMessage)
-        session.actions_changed.connect(self._sync_actions)
-        idx = self._tabs.addTab(session, 'Untitled')
-        self._tabs.setCurrentIndex(idx)
-        self._sync_actions()
-
-    def _sync_actions(self) -> None:
-        """Set the fit action, Save Plot and the result exports to what the active session can do now.
-
-        The fit action stops the fit of the tab on screen while one runs there
-        and starts a fit otherwise, unavailable while that session's
-        sensitivity analysis is running. Save Plot follows what the plot tab on
-        screen has to save, and the result exports are unavailable while every
-        fit the session holds is hidden; each tooltip then says why. Every one
-        of these belongs to the tab on screen, so switching tabs runs this
-        again.
-        """
+    def _refresh(self) -> None:
+        """Draw the sidebar, toolbar and status bar from the session on screen and every running one."""
         session = self.active_session()
-        busy = None if session is None else session.model.busy_note()
-        fitting = session is not None and session.model.fit_running()
-        self._act_fit.setText(_CANCEL_FIT if fitting else _RUN_FIT)
-        self._act_fit.setEnabled(fitting or busy is None)
-        self._act_fit.setToolTip(_CANCEL_FIT_TIP if fitting else (busy or self._action_tips[self._act_fit]))
-
-        plot_note = None if session is None else session.plot_export_note()
-        self._act_save_plot.setEnabled(plot_note is None)
-        self._act_save_plot.setToolTip(plot_note or self._action_tips[self._act_save_plot])
-
-        note = None if session is None else session.model.hidden_results_note()
-        for action in (self._act_export, self._act_export_txt, self._act_export_csv):
-            action.setEnabled(note is None)
-            action.setToolTip(note or self._action_tips[action])
-
-    def _close_tab(self, idx: int) -> None:
-        """Close one session tab, stopping the work it started before its widgets go, and say so on the status bar."""
-        if self._tabs.count() == 1:
-            # Keep at least one tab
-            QMessageBox.information(self, 'Cannot Close', 'At least one session must remain open.')
+        if session is None:
             return
-        session = self._tabs.widget(idx)
-        name = self._tabs.tabText(idx)
-        self._tabs.removeTab(idx)
-        if session is not None:
-            if isinstance(session, FittingSession):
-                stopped = session.model.running_work()
-                session.model.shutdown()
-                # The line on the status bar is the closed session's last word.
-                # Left standing, its progress count reads as a run still going
-                # in a window where nothing is running any more.
-                self._statusbar.showMessage(
-                    f'Closed {name} — the running {stopped} was stopped' if stopped else 'Ready'
-                )
-            session.deleteLater()
+        model = session.model
+        busy_others = sum(s.model.running() for s in self._sessions if s is not session)
+        self._sidebar.switcher.set_session(model.name(), model.detail(), len(self._sessions), busy_others)
+        self._sidebar.file_card.set_file(*model.file_card())
+        for view, item in self._sidebar.nav.items():
+            item.setChecked(view == self._view)
+            item.set_status(*model.view_status(view))
+        self._view_actions[self._view].setChecked(True)
 
-    def _rename_tab(self, session: FittingSession, title: str) -> None:
-        idx = self._tabs.indexOf(session)
-        if idx >= 0:
-            self._tabs.setTabText(idx, title)
+        bar = self._toolbar
+        bar.title.setText(self._view)
+        bar.badge.setVisible(False)  # each view states its summary once it is rebuilt
+        has_side = session.has_side_panel(self._view)
+        bar.side.setEnabled(has_side)
+        bar.side.setChecked(has_side and self._side_visible)
+        running = model.running()
+        label = 'Stop' if running else ('Run analysis' if self._view == 'Sensitivity' else 'Run fit')
+        bar.run.set_text(label, 'stop' if running else 'play')
+        bar.run.setAccessibleName(label)
+        self._act_run.setText(label)
+        shortcut = self._act_run.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+        bar.run.setToolTip(f'{label} ({shortcut})')
+        self._act_duplicate.setText(f'Duplicate {model.name()}')
+        self._act_close.setText(f'Close {model.name()}')
 
-    def _on_tab_renamed(self, index: int, name: str) -> None:
-        session = self._tabs.widget(index)
-        if isinstance(session, FittingSession):
-            session.model.set_custom_name(name)
+        running_sessions = [s for s in self._sessions if s.model.running()]
+        if running_sessions:
+            parts = [f'{s.model.name()} {s.model.running_label()}' for s in running_sessions]
+            if len(parts) > 1:
+                parts.insert(0, f'{len(parts)} running')
+            text, tone = '  ·  '.join(parts), 'accent'
+        else:
+            message = self._window_message or model.status
+            text, tone = ('Ready  ·  ' + message) if message else 'Ready', 'text-tertiary'
+        self._status.set_text(text)
+        self._status.dot.set_tone(tone)
+        self._status.model_line.setText('  ·  '.join(model.model_line()))
 
     # ------------------------------------------------------------------
-    # Toolbar / menu slots
+    # Sessions
     # ------------------------------------------------------------------
 
-    def _on_load(self) -> None:
+    def _new_session(self) -> FittingSession:
+        session = FittingSession()
+        session.changed.connect(self._refresh)
+        session.side_panel_closed.connect(lambda: self._set_side_visible(False))
+        session.set_side_panels_visible(self._side_visible)
+        session.show_view(self._view)
+        self._sessions.append(session)
+        self._stack.addWidget(session)
+        self._switch_to(session)
+        return session
+
+    def _switch_to(self, session: FittingSession) -> None:
+        session.show_view(self._view)
+        self._stack.setCurrentWidget(session)
+        self._refresh()
+
+    def _switch_to_index(self, index: int) -> None:
+        if 0 <= index < len(self._sessions):
+            self._switch_to(self._sessions[index])
+
+    def _fresh_session(self) -> FittingSession:
+        """The session on screen when it holds nothing and runs nothing, else a new one."""
         session = self.active_session()
-        if session:
+        model = session.model if session is not None else None
+        if model is None or model.measurement_set is not None or model.held_fit_results or model.running():
+            return self._new_session()
+        return session
+
+    def _close_current(self) -> None:
+        session = self.active_session()
+        if session is not None:
+            self._close_session(session)
+
+    def _close_session(self, session: FittingSession) -> None:
+        """Close *session*, asking first when it runs and stopping its work; the window keeps one session."""
+        model = session.model
+        work = model.running_work() or ('Ka profile' if model.running() else '')
+        if work:
+            answer = QMessageBox.question(
+                self,
+                'Close session',
+                f'Stop the {work} and close {model.name()}?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        index = self._sessions.index(session)
+        self._sessions.remove(session)
+        self._stack.removeWidget(session)
+        model.shutdown()
+        session.deleteLater()
+        if not self._sessions:
+            self._new_session()
+        else:
+            self._switch_to(self._sessions[min(index, len(self._sessions) - 1)])
+
+    # ------------------------------------------------------------------
+    # Views, sidebar and side panel
+    # ------------------------------------------------------------------
+
+    def show_view(self, view: str) -> None:
+        """Put *view* of the session on screen."""
+        self._view = view
+        session = self.active_session()
+        if session is not None:
+            session.show_view(view)
+        self._refresh()
+
+    def _set_sidebar_visible(self, visible: bool) -> None:
+        self._sidebar.setVisible(visible)
+        self._sidebar_rule.setVisible(visible)
+        self._toolbar.sidebar_toggle.setVisible(not visible)
+        self._toolbar.inset.setVisible(_MAC and not visible)
+        self._act_sidebar.setChecked(visible)
+
+    def _set_side_visible(self, visible: bool) -> None:
+        self._side_visible = visible
+        for session in self._sessions:
+            session.set_side_panels_visible(visible)
+        self._act_side.setChecked(visible)
+        self._refresh()
+
+    # ------------------------------------------------------------------
+    # Popovers
+    # ------------------------------------------------------------------
+
+    def _show_popover(self, popover: QWidget, anchor: QWidget, right: bool = False) -> None:
+        if self._popover is not None:
+            self._popover.close_popover()
+        self._popover = popover
+        popover.closed.connect(lambda: setattr(self, '_popover', None))
+        popover.popup(anchor, right)
+
+    def _open_switcher(self) -> None:
+        session = self.active_session()
+        rows = []
+        for s in self._sessions:
+            state, words, progress = s.model.summary()
+            rows.append(
+                {
+                    'name': s.model.name(),
+                    'detail': s.model.detail(),
+                    'state': state,
+                    'status': words,
+                    'progress': progress,
+                }
+            )
+        hint = ''
+        first, last = QKeySequence('Ctrl+1'), QKeySequence(f'Ctrl+{min(len(rows), 9)}')
+        if len(rows) > 1:
+            native = QKeySequence.SequenceFormat.NativeText
+            hint = f'{first.toString(native)} – {last.toString(native)}'
+        commands = [
+            self._act_new,
+            self._act_load_new,
+            self._act_open_results,
+            None,
+            self._act_duplicate,
+            self._act_close,
+        ]
+        popover = C.SessionPopover(
+            self._t, self, rows, commands, current=self._sessions.index(session), title_hint=hint
+        )
+        popover.session_chosen.connect(self._switch_to_index)
+        popover.renamed.connect(lambda i, name: self._sessions[i].model.set_custom_name(name))
+        self._sidebar.switcher.setChecked(True)
+        popover.closed.connect(lambda: self._sidebar.switcher.setChecked(False))
+        anchor = self._sidebar.switcher if self._sidebar.isVisible() else self._toolbar.title
+        self._show_popover(popover, anchor)
+
+    def _open_load_menu(self) -> None:
+        actions = [self._act_add, self._act_replace, None, self._act_load_new]
+        note = 'Added files become replicates and must share this session’s concentrations.'
+        self._show_menu(C.PopoverMenu(self._t, self, actions, note), self._toolbar.load)
+
+    def _open_export_menu(self) -> None:
+        actions = [self._act_results, self._act_txt, self._act_csv, self._act_raw, None, self._act_plot]
+        actions += [None, self._act_several]
+        self._show_menu(C.PopoverMenu(self._t, self, actions, width=264), self._toolbar.export)
+
+    def _show_menu(self, menu: C.PopoverMenu, button: C.Button) -> None:
+        button.setCheckable(True)
+        button.setChecked(True)
+
+        def released() -> None:
+            button.setChecked(False)
+            button.setCheckable(False)
+
+        menu.closed.connect(released)
+        self._show_popover(menu, button)
+
+    # ------------------------------------------------------------------
+    # Commands
+    # ------------------------------------------------------------------
+
+    def _on_primary(self) -> None:
+        session = self.active_session()
+        if session is not None:
+            session.run_primary(self._view)
+
+    def _on_session(self, method: str) -> None:
+        session = self.active_session()
+        if session is not None:
+            getattr(session, method)()
+
+    def _on_add_files(self) -> None:
+        session = self.active_session()
+        if session is None:
+            return
+        if session.model.measurement_set is not None:
+            QMessageBox.information(self, 'Add files', _ADD_TO_LOADED)
+            return
+        session.load_data()
+
+    def _on_replace(self) -> None:
+        session = self.active_session()
+        if session is not None:
             session.load_data()
 
+    def _on_load_new(self) -> None:
+        previous = self.active_session()
+        session = self._new_session()
+        session.load_data()
+        if session.model.measurement_set is None and previous is not None:
+            # Nothing was loaded: the new session goes and the one before comes back.
+            self._close_session(session)
+            self._switch_to(previous)
+
+    def _on_open_results(self) -> None:
+        self._fresh_session().import_results()
+
     def _on_load_demo(self) -> None:
+        self._fresh_session().load_demo_ida()
+
+    def _on_save_plot(self) -> None:
         session = self.active_session()
-        if session:
-            session.load_demo_ida()
+        if session is not None:
+            session.export_plot(self._view)
+
+    def _on_export_several(self) -> None:
+        session = self.active_session()
+        if session is not None:
+            session.open_export_multiple_dialog(select_all_default=True)
+
+    def _show_guide(self) -> None:
+        session = self.active_session()
+        show_plot_guide(self, session.guide_section(self._view) if session is not None else None)
 
     def _on_simulate(self) -> None:
         """Open (or re-raise) the non-modal forward-simulation applet."""
@@ -460,64 +684,19 @@ class FittingMainWindow(QMainWindow):
         self._sim_window.raise_()
         self._sim_window.activateWindow()
 
-    def _on_fit_action(self) -> None:
-        """Run the active session's fit, or stop the fit it is running."""
-        session = self.active_session()
-        if session is None:
-            return
-        if session.model.fit_running():
-            session.model.cancel_fit()
-        else:
-            session.run_fit()
+    def _open_preferences(self) -> None:
+        from gui.dialogs.preferences_dialog import PreferencesDialog
 
-    def _on_export(self) -> None:
-        session = self.active_session()
-        if session:
-            session.export_results()
-
-    def _on_export_txt(self) -> None:
-        session = self.active_session()
-        if session:
-            session.export_results_txt()
-
-    def _on_export_csv(self) -> None:
-        session = self.active_session()
-        if session:
-            session.export_results_csv()
-
-    def _on_export_raw(self) -> None:
-        session = self.active_session()
-        if session:
-            session.export_raw_data()
-
-    def _on_import(self) -> None:
-        session = self.active_session()
-        if session:
-            session.import_results()
-
-    def _on_save_plot(self) -> None:
-        session = self.active_session()
-        if session:
-            session.export_plot()
-
-    def _on_export_all(self) -> None:
-        session = self.active_session()
-        if session:
-            session.open_export_multiple_dialog(select_all_default=True)
-
-    def _on_save_style(self) -> None:
-        session = self.active_session()
-        if session:
-            session.save_style_template()
-
-    def _on_load_style(self) -> None:
-        session = self.active_session()
-        if session:
-            session.load_style_template()
+        PreferencesDialog(self).exec()
 
     # ------------------------------------------------------------------
     # Update check
     # ------------------------------------------------------------------
+
+    def _say(self, message: str | None) -> None:
+        """Say *message* on the status bar for the whole window, or give it back to the sessions (``None``)."""
+        self._window_message = message
+        self._refresh()
 
     def _run_update_check(self, *, silent: bool) -> None:
         """Spawn an :class:`UpdateCheckWorker`.
@@ -543,7 +722,7 @@ class FittingMainWindow(QMainWindow):
             return
         if not silent:
             self._act_check_updates.setEnabled(False)
-            self._statusbar.showMessage('Checking for updates…')
+            self._say('Checking for updates…')
 
         worker = UpdateCheckWorker(self)
         self._update_worker = worker
@@ -555,7 +734,7 @@ class FittingMainWindow(QMainWindow):
         self._discard_update_worker(worker)
         if not silent:
             self._act_check_updates.setEnabled(True)
-            self._statusbar.showMessage('Ready')
+            self._say(None)
         if is_newer(info['latest_version'], __version__):
             self._set_title('(updates available)')
             if not silent:
@@ -572,7 +751,7 @@ class FittingMainWindow(QMainWindow):
         if silent:
             return  # Offline / rate-limited / etc. — stay quiet.
         self._act_check_updates.setEnabled(True)
-        self._statusbar.showMessage('Ready')
+        self._say(None)
         QMessageBox.warning(self, 'Could not check for updates', msg)
 
     def _discard_update_worker(self, worker: UpdateCheckWorker) -> None:
@@ -581,10 +760,8 @@ class FittingMainWindow(QMainWindow):
         A check reports from inside its thread's ``run()``, so the thread may
         still be ending when the report arrives; :func:`~gui.workers.retire`
         deletes the worker only once it has, since destroying a running
-        ``QThread`` aborts the app. The interface thread can be busy long
-        enough for the user to start a second check first. Only the check that
-        reported is let go of; a newer one has the reference by then and runs
-        on.
+        ``QThread`` aborts the app. Only the check that reported is let go of;
+        a newer one has the reference by then and runs on.
         """
         retire(worker)
         if self._update_worker is worker:
@@ -597,19 +774,11 @@ class FittingMainWindow(QMainWindow):
         Destroyed while thread is still running``, so every run is seen out
         before the window goes; a sensitivity run's worker processes end with
         it. Every session is asked to stop first and waited for afterwards, so
-        the runs stop side by side rather than one tab's stopping time after
-        another's. A run still going when its wait runs out is seen out in the
-        background, which is how quitting stays quick even on the update check,
-        which has no cancel of its own.
+        the runs stop side by side rather than one after another.
         """
-        sessions = [
-            self._tabs.widget(index)
-            for index in range(self._tabs.count())
-            if isinstance(self._tabs.widget(index), FittingSession)
-        ]
-        for session in sessions:
+        for session in self._sessions:
             session.model.cancel_running()
-        for session in sessions:
+        for session in self._sessions:
             session.model.shutdown()
         retire(self._update_worker)
         self._update_worker = None
@@ -618,21 +787,16 @@ class FittingMainWindow(QMainWindow):
 
 def _app_icon_path() -> str | None:
     """Locate the bundled app icon for both source runs and PyInstaller bundles."""
-    import os
-    import sys
-
-    base = getattr(sys, '_MEIPASS', None) or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    base = getattr(sys, '_MEIPASS', None) or str(Path(__file__).resolve().parent.parent)
     for name in ('AppIcon.ico', 'AppIcon.png'):
-        p = os.path.join(base, 'assets', name)
-        if os.path.exists(p):
-            return p
+        p = Path(base) / 'assets' / name
+        if p.exists():
+            return str(p)
     return None
 
 
 def launch() -> None:
     """Entry point — create the QApplication and launch the main window."""
-    import sys
-
     # Force English locale globally: dot as decimal separator, comma as thousands
     QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
 
@@ -651,18 +815,15 @@ def launch() -> None:
             pass
 
     app = QApplication.instance() or QApplication(sys.argv)
-    # The stylesheet paints light toolbar buttons and navy group titles on the
-    # window colour, which a dark scheme would make unreadable: the app is drawn
-    # in the light scheme whatever the system uses.
-    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
-    app.setStyleSheet(_APP_QSS)
+    app.setStyle('Fusion')
+    appearance()
 
     icon_path = _app_icon_path()
     if icon_path:
         app.setWindowIcon(QIcon(icon_path))
 
     # Block non-focused spinboxes from stealing wheel events while the
-    # user scrolls the sidebar. Kept alive on the app so Qt doesn't GC it.
+    # user scrolls a panel. Kept alive on the app so Qt doesn't GC it.
     app._spinbox_wheel_filter = _SpinBoxWheelRedirect(app)  # type: ignore[attr-defined]
     app.installEventFilter(app._spinbox_wheel_filter)  # type: ignore[attr-defined]
 

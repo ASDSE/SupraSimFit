@@ -93,16 +93,6 @@ def _ida_session(make_session, *, per_replica=False):
     return make_session(AssayType.IDA, _ida_set(), conditions, per_replica=per_replica)
 
 
-def test_the_identifiability_tab_is_one_of_the_plot_tabs(make_session):
-    """The tab is offered under its own name, so the wiring below has somewhere to reach."""
-    from gui.plotting.identifiability_widget import IdentifiabilityWidget
-
-    session = _ida_session(make_session)
-    tabs = session._plot_tabs
-    names = [tabs.tabText(i) for i in range(tabs.count())]
-    assert isinstance(tabs.widget(names.index('Identifiability')), IdentifiabilityWidget)
-
-
 def test_the_tab_names_a_shifted_input_from_the_fit_s_own_assay(make_session):
     """The names belong to the fit being reported, so switching the assay selector cannot rename its inputs."""
     from core.pipeline.diagnostics import FitDiagnostics, InputShift, MisfitTest, Verdict
@@ -128,7 +118,7 @@ def test_the_tab_names_a_shifted_input_from_the_fit_s_own_assay(make_session):
 def test_style_changes_reach_identifiability_tab(make_session):
     session = _ida_session(make_session)
     style = dict(session._identifiability_widget._style)
-    session._style_widget.widget.style_changed.emit(style)
+    session._style_widget.style_changed.emit(style)
     assert session._identifiability_widget._style is style
 
 

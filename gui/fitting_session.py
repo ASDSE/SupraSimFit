@@ -1,20 +1,17 @@
-"""FittingSession — the view of one fitting session (one tab): its panels and plot tabs over a SessionModel."""
+"""FittingSession — the view of one session: its views, each a canvas and a side panel, over a SessionModel."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QObject, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
-    QGroupBox,
-    QHBoxLayout,
     QMessageBox,
     QScrollArea,
     QSplitter,
-    QToolButton,
-    QVBoxLayout,
+    QStackedWidget,
     QWidget,
 )
 
@@ -24,8 +21,9 @@ from core.data_processing.plotting import prepare_plot_data
 from core.pipeline.fit_pipeline import FitConfig
 from core.pipeline.inputs import TITRANT, InputSpec
 from gui import plot_guide
-from gui.dialogs.plot_guide_dialog import show_plot_guide
-from gui.plotting.colors import INK, INK_2, INK_3
+from gui.design import components as C
+from gui.design.appearance import theme
+from gui.design.tokens import SIZE
 from gui.plotting.export import ExportRefused
 from gui.plotting.fit_summary_widget import FitSummaryWidget
 from gui.plotting.identifiability_widget import IdentifiabilityWidget
@@ -38,146 +36,25 @@ from gui.widgets.assay_config_panel import AssayConfigPanel
 from gui.widgets.bounds_panel import BoundsPanel
 from gui.widgets.data_panel import DataPanel
 from gui.widgets.fit_config_panel import FitConfigPanel
-from gui.widgets.flat_tabs import FlatTabWidget
-from gui.widgets.info_button import InfoGroupBox
 from gui.widgets.input_uncertainty_panel import InputUncertaintyPanel
 from gui.widgets.preprocessing_panel import PreprocessingPanel
 from gui.widgets.replica_panel import ReplicaPanel
 from gui.widgets.sensitivity_panel import SensitivityPanel
 
-# Height a plot tab's page keeps however far the summary below is dragged up, so
-# the Fit Curve plot keeps its axis labels apart.
-_PLOT_PAGE_MIN_HEIGHT = 250
+#: A session's views as the sidebar groups them: (group, ((view, icon), …)).
+NAVIGATION = (
+    ('Experiment', (('Measurements', 'table'), ('Binding model', 'flask'), ('Input uncertainty', 'sliders'))),
+    ('Analysis', (('Fit results', 'fit'), ('Ka confidence', 'profile'), ('Sensitivity', 'bars'))),
+    ('Presentation', (('Plot appearance', 'palette'),)),
+)
+VIEWS = tuple(view for _group, items in NAVIGATION for view, _icon in items)
 
-# The plot tab bar's "?" button: secondary ink on a hairline pill, darker on hover.
-_GUIDE_BUTTON_QSS = f"""
-QToolButton {{
-    color: {INK_2};
-    background: transparent;
-    border: 1px solid #d6d5cf;
-    border-radius: 10px;
-    padding: 2px 9px;
-    margin: 4px 8px 4px 0;
-    font-size: 13px;
-}}
-QToolButton:hover {{
-    color: {INK};
-    border-color: {INK_3};
-}}
-"""
-
-
-class _SidebarScrollArea(QScrollArea):
-    """Vertically-scrolling sidebar whose width follows its content.
-
-    A plain ``QScrollArea`` reports a near-zero width hint regardless of its
-    content, so a ``QSplitter`` will shrink it until the content clips. The
-    sidebar scrolls vertically only, so its width must track the content: we
-    advertise the content's *minimum* width (plus the frame and the vertical
-    scrollbar) as both our minimum and preferred width. The splitter then honors
-    it as the sidebar's floor and shrinks the *other* pane instead — content is
-    never clipped — while the sidebar opens compact (the content minimum) rather
-    than at the widest panel's much larger preferred width.
-
-    When the content's minimum width changes (a panel row widens or narrows),
-    the sidebar takes that width in its splitter at once, or the width the user
-    last dragged it to if that is wider.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._dragged_width = 0
-
-    def remember_dragged_width(self) -> None:
-        """Keep the sidebar's current width as the user's choice (connect to ``QSplitter.splitterMoved``)."""
-        self._dragged_width = self.width()
-
-    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        # QScrollArea already filters its content widget's events. A content
-        # layout change alters this area's size hints, which Qt does not pass
-        # on to the splitter by itself.
-        if obj is self.widget() and event.type() == QEvent.Type.LayoutRequest:
-            self.updateGeometry()
-            self._fit_width()
-        return super().eventFilter(obj, event)
-
-    def _fit_width(self) -> None:
-        """Resize within the splitter to the content's width, or the dragged width if wider."""
-        splitter = self.parentWidget()
-        if not isinstance(splitter, QSplitter) or not splitter.isVisible():
-            return
-        sizes = splitter.sizes()
-        i = splitter.indexOf(self)
-        delta = max(self._content_width(), self._dragged_width) - sizes[i]
-        if delta:
-            sizes[i] += delta
-            sizes[i + 1] -= delta
-            splitter.setSizes(sizes)
-
-    def _content_width(self) -> int:
-        # Width needed to show the content un-clipped: the content's own minimum
-        # width + the frame + the vertical scrollbar. Read from Qt at runtime so
-        # it adapts to platform/style and to the panels' current contents.
-        content = self.widget()
-        if content is None:
-            return 0
-        return content.minimumSizeHint().width() + 2 * self.frameWidth() + self.verticalScrollBar().sizeHint().width()
-
-    def minimumSizeHint(self) -> QSize:
-        hint = super().minimumSizeHint()
-        if self.widget() is not None:
-            hint.setWidth(self._content_width())
-        return hint
-
-    def sizeHint(self) -> QSize:
-        hint = super().sizeHint()
-        if self.widget() is not None:
-            hint.setWidth(self._content_width())
-        return hint
-
-
-_PLOT_STYLE_HELP_HTML = """
-<h3>Plot Style</h3>
-
-<p><b>What This Section Is For</b></p>
-<p>Controls for the interactive plot on the right: which series are
-visible (replicates, average, error bars, fit curves), axis/tick/legend
-font sizes, marker shapes and palette, line widths and colors, and the
-x-axis display unit. Changes apply live &mdash; no need to re-run the
-fit.</p>
-
-<p><b>What Affects What</b></p>
-<ul>
-  <li><b>Visibility</b> &mdash; toggles whole series on or off. Hidden
-      series are not drawn and do not appear in the legend.</li>
-  <li><b>Axes</b> &mdash; font sizes for labels/ticks and the x-axis
-      unit (nM / &micro;M / mM / M). Data is stored in M internally and
-      rescaled at render time.</li>
-  <li><b>Replicates, Dropped replicates, Average Line, Fit Curves, Error
-      Bars</b> &mdash; per-series style groups.</li>
-  <li><b>Legend, Annotations</b> &mdash; toggle the legend and the
-      draggable fit-results overlay.</li>
-</ul>
-
-<p><b>Save and Reuse: Style Templates</b></p>
-<p>You can save the entire Plot Style configuration and reload it
-later, so you don&rsquo;t have to reconfigure fonts, colors, and
-visibility every session.</p>
-<ul>
-  <li><b>Import &rarr; Load Style Template&hellip;</b> &mdash; load a
-      <code>.json</code> template (all controls update at once).</li>
-  <li><b>Export &rarr; Save Style Template</b> &mdash; write the
-      current style to a <code>.json</code> file you can share or
-      commit to your project.</li>
-</ul>
-<p>Style templates round-trip exactly, so they&rsquo;re a good way to
-enforce a consistent look across figures in a paper or lab report.</p>
-
-<p><b>Tip</b></p>
-<p>If the fit-results annotation or the legend ends up in an awkward
-spot, drag them with the mouse. The app remembers the drag position
-until you toggle the corresponding overlay off and back on.</p>
-"""
+#: The section of *Reading the plots* each view with a plot opens at.
+_GUIDE_SECTIONS = {
+    'Fit results': plot_guide.FIT_CURVE,
+    'Ka confidence': plot_guide.IDENTIFIABILITY,
+    'Sensitivity': plot_guide.SENSITIVITY,
+}
 
 _DEMO_IDA_PATH = Path(__file__).parent.parent / 'data' / 'IDA_system.txt'
 
@@ -197,26 +74,90 @@ _UNCHECKED_NOTE = (
 )
 
 
-class FittingSession(QWidget):
-    """One complete fitting workflow on screen: data → preprocess → configure → fit → visualize.
+class _SidePanel(QWidget):
+    """A view's side panel: its name and a close button over a scrolled body of *content*."""
 
-    Each tab in the main window is one FittingSession. Its state and rules
+    close_requested = pyqtSignal()
+
+    def __init__(self, title: str, content: QWidget):
+        super().__init__()
+        t = theme()
+        self.setObjectName('Inspector')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setMinimumWidth(SIZE['inspector-min'])
+        close = C.tool_button(t, None, 'x')
+        close.setToolTip('Close the side panel')
+        close.setAccessibleName(f'Close {title}')
+        close.clicked.connect(self.close_requested)
+        header = QWidget()
+        header.setFixedHeight(SIZE['toolbar'])
+        header.setLayout(C.hbox(C.label(title, 'body-strong'), None, close, margins=(5, 0, 3, 0)))
+        body = QWidget()
+        body.setObjectName('InspectorBody')
+        body.setLayout(C.vbox(content, None, spacing=0, margins=(5, 0, 5, 5)))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(body)
+        self.setLayout(C.vbox(header, scroll, spacing=0))
+
+
+def _canvas(*widgets: QWidget, scroll: bool = False) -> QWidget:
+    """A view's canvas holding *widgets*, scrolled when it holds a form taller than the window."""
+    content = QWidget()
+    content.setObjectName('Canvas')
+    content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+    items = [*widgets, None] if scroll else list(widgets)
+    content.setLayout(C.vbox(*items, spacing=5, margins=(6, 5, 6, 5)))
+    if not scroll:
+        return content
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setWidget(content)
+    return area
+
+
+class _View(QSplitter):
+    """One view of a session: its canvas, and its side panel when it has one."""
+
+    def __init__(self, canvas: QWidget, side: _SidePanel | None = None):
+        super().__init__(Qt.Orientation.Horizontal)
+        self.side = side
+        self.setHandleWidth(1)
+        self.setChildrenCollapsible(False)
+        self.addWidget(canvas)
+        if side is not None:
+            self.addWidget(side)
+            self.setStretchFactor(0, 1)
+            self.setStretchFactor(1, 0)
+            self.setSizes([10_000, SIZE['inspector']])
+
+
+class FittingSession(QWidget):
+    """One session on screen: data → binding model → inputs → fit → analyses, one view at a time.
+
+    Each session of the main window is one FittingSession. Its state and rules
     live in :attr:`model`, a :class:`~gui.session_model.SessionModel`: the
     view states what its panels show to the model (:meth:`_push_settings`)
     whenever a panel reports a change, draws what the model's signals say
     changed, and keeps the parts that need a screen — file dialogs, message
-    boxes, plot images and style templates.
+    boxes and plot images. Its views are the sidebar's (:data:`NAVIGATION`);
+    :meth:`show_view` puts one on screen, under the progress line the session
+    shows while it runs.
 
     Signals
     -------
-    actions_changed()
-        Emitted when what the window's actions can do may have changed — a
-        run started or ended, results were shown or hidden, or another plot
-        tab came on screen — so the window can set its fit action, Save Plot
-        and the result exports.
+    changed()
+        Emitted whenever what the window shows of this session may have
+        changed — a run started, advanced or ended, results were shown or
+        hidden, data or settings changed, or the session was renamed.
+    side_panel_closed()
+        Emitted when the side panel's close button is pressed.
     """
 
-    actions_changed = pyqtSignal()
+    changed = pyqtSignal()
+    side_panel_closed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -227,24 +168,79 @@ class FittingSession(QWidget):
         self._push_settings()
 
     # ------------------------------------------------------------------
-    # Public API (called by FittingMainWindow)
+    # Views
     # ------------------------------------------------------------------
 
-    def plot_export_note(self) -> str | None:
-        """Why the plot on the tab on screen cannot be saved — or ``None`` when it can."""
-        widget = self._plot_tabs.currentWidget()
+    def show_view(self, view: str) -> None:
+        """Put *view* (one of :data:`VIEWS`) on screen.
+
+        Fit results and Sensitivity share the summary under their plot: it shows the fit
+        in the one and the samples of the sensitivity run in the other.
+        """
+        for split in self._summary_splits:
+            if split.isAncestorOf(self._views[view]) or self._views[view].isAncestorOf(split):
+                if split.indexOf(self._summary_widget) < 0:
+                    split.addWidget(self._summary_widget)
+                    split.setStretchFactor(0, 3)
+                    split.setStretchFactor(1, 2)
+                self._summary_widget.show_samples(view == 'Sensitivity')
+        self._stack.setCurrentWidget(self._views[view])
+
+    def current_view(self) -> str:
+        widget = self._stack.currentWidget()
+        return next(name for name, page in self._views.items() if page is widget)
+
+    def has_side_panel(self, view: str) -> bool:
+        """Whether *view* has a side panel."""
+        return self._views[view].side is not None
+
+    def set_side_panels_visible(self, visible: bool) -> None:
+        """Show or hide the side panel of every view."""
+        for page in self._views.values():
+            if page.side is not None:
+                page.side.setVisible(visible)
+
+    def guide_section(self, view: str) -> str | None:
+        """The section of *Reading the plots* for *view*, or ``None`` for a view without a plot."""
+        return _GUIDE_SECTIONS.get(view)
+
+    def run_primary(self, view: str) -> None:
+        """The toolbar's primary action in *view*: stop the work running here, else run the analysis or the fit."""
+        if self.model.running():
+            self.model.stop()
+        elif view == 'Sensitivity':
+            self.run_sensitivity()
+        else:
+            self.run_fit()
+
+    def _plot_widget_of(self, view: str):
+        return {
+            'Fit results': self._plot_widget,
+            'Ka confidence': self._identifiability_widget,
+            'Sensitivity': self._sensitivity_widget,
+        }.get(view)
+
+    def plot_export_note(self, view: str) -> str | None:
+        """Why the plot of *view* cannot be saved — or ``None`` when it can."""
+        widget = self._plot_widget_of(view)
         model = self.model
+        if widget is None:
+            return 'This view has no plot to save. Open Fit results, Ka confidence or Sensitivity, then save it.'
         if widget is self._plot_widget:
             if model.measurement_set is None and not model.fit_results:
-                return 'There is nothing on the Fit Curve tab yet. Load a measurement file, then save it.'
+                return 'There is no titration plot yet. Load a measurement file, then save it.'
             return None
         if widget is self._identifiability_widget:
             if not self._identifiability_widget.has_chart():
-                return 'There is no identifiability chart to save yet. Run a fit, then save it.'
+                return 'There is no Ka confidence chart to save yet. Run a fit, then save it.'
             return model.hidden_results_note()
         if model.sensitivity_result is None:
             return 'There is no sensitivity analysis to save yet. Run one, then save it.'
         return model.sensitivity_note
+
+    # ------------------------------------------------------------------
+    # Commands
+    # ------------------------------------------------------------------
 
     def load_data(self) -> None:
         """Ask for a measurement file and load it into this session."""
@@ -460,23 +456,27 @@ class FittingSession(QWidget):
             if not check.accepted:
                 return
         self.model.show_imported(check.accepted, path)
+        if self.model.measurement_set is None:
+            # A results file opens under the name of the data it was made from.
+            source = check.accepted[-1].source_file if check.accepted else None
+            self.model.set_custom_name(Path(source or path).stem)
         if check.notice is not None:
             QMessageBox.information(self, 'Imported Results', check.notice)
 
-    def export_plot(self) -> None:
-        """Save the plot on the tab that is showing.
+    def export_plot(self, view: str) -> None:
+        """Save the plot of *view*.
 
-        The Fit Curve tab offers PNG or SVG. The Identifiability and Ka
-        Sensitivity tabs are saved whole, as one picture, which only PNG can
-        carry: see :func:`~gui.plotting.export.export_widget`. An edit still
-        being typed is finished first, so the picture matches the settings.
+        The titration plot of Fit results offers PNG or SVG. Ka confidence and
+        Sensitivity are saved whole, as one picture, which only PNG can carry:
+        see :func:`~gui.plotting.export.export_widget`. An edit still being
+        typed is finished first, so the picture matches the settings.
         """
         self._finish_edits()
-        note = self.plot_export_note()
+        note = self.plot_export_note(view)
         if note is not None:
             QMessageBox.warning(self, 'Save Plot', note)
             return
-        widget = self._plot_tabs.currentWidget()
+        widget = self._plot_widget_of(view)
         # A whole tab is saved as one picture, which rules out SVG; see
         # gui.plotting.export.export_widget.
         tag, formats = {
@@ -520,79 +520,11 @@ class FittingSession(QWidget):
                 folder = outcomes[0][1].parent
                 self.model.show_status(f'Exported {successes}/{len(outcomes)} artefact(s) to {folder}')
 
-    def save_style_template(self) -> None:
-        """Save current plot style settings to a JSON file."""
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            'Save Style Template',
-            'style_template.json',
-            'JSON (*.json)',
-        )
-        if not path:
-            return
-        from gui.plotting.plot_style import save_style_json
-
-        style = self._style_widget.widget.current_style()
-        save_style_json(style, path)
-        self.model.show_status(f'Style template saved to {path}')
-
-    def load_style_template(self) -> None:
-        """Load plot style settings from a JSON file."""
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            'Load Style Template',
-            '',
-            'JSON (*.json);;All files (*)',
-        )
-        if not path:
-            return
-        try:
-            from gui.plotting.plot_style import load_style_json
-
-            style = load_style_json(path)
-            self._style_widget.widget.load_style(style)
-            # Reflect the loaded x_unit in the Data panel's Display Unit
-            # combo so the two stay in sync after a style import.
-            loaded_unit = style.get('axes', {}).get('x_unit')
-            if loaded_unit:
-                self.model.update_settings(display_unit=loaded_unit)
-                self._data_panel.set_display_unit(loaded_unit)
-            self.model.show_status(f'Style template loaded from {path}')
-        except Exception:
-            QMessageBox.warning(
-                self,
-                'Load Error',
-                'Could not load this style template. Make sure it is a style file (.json) exported by SupraSimFit.',
-            )
-
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
     def _setup_ui(self) -> None:
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-
-        splitter = QSplitter()
-        splitter.setChildrenCollapsible(False)
-        outer.addWidget(splitter)
-
-        # ---- Left panel (scrollable) --------------------------------
-        # The sidebar scrolls vertically only; its width is driven by the
-        # content's own size hints (see _SidebarScrollArea). The splitter honors
-        # that as the sidebar's minimum and shrinks the plot pane instead, so the
-        # content is never clipped. No max-width cap and childrenCollapsible(False)
-        # keep it freely widenable yet never collapsible to zero.
-        self._sidebar_scroll = _SidebarScrollArea()
-        self._sidebar_scroll.setWidgetResizable(True)
-        self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left_scroll = self._sidebar_scroll
-
-        left_container = QWidget()
-        left_layout = QVBoxLayout(left_container)
-        left_layout.setSpacing(6)
-        left_layout.setContentsMargins(6, 6, 6, 6)
-
         self._data_panel = DataPanel(initial_display_unit=self.model.settings.display_unit)
         self._preprocess_panel = PreprocessingPanel()
         self._replica_panel = ReplicaPanel()
@@ -601,71 +533,40 @@ class FittingSession(QWidget):
         self._fit_panel = FitConfigPanel()
         self._sensitivity_panel = SensitivityPanel()
         self._bounds_panel = BoundsPanel()
-        self._style_widget = _Grouped(
-            'Plot Style',
-            PlotStyleWidget(),
-            info_title='Plot Style',
-            info_html=_PLOT_STYLE_HELP_HTML,
-        )
-
-        for widget in (
-            self._data_panel,
-            self._preprocess_panel,
-            self._replica_panel,
-            self._assay_panel,
-            self._input_panel,
-            self._fit_panel,
-            self._sensitivity_panel,
-            self._bounds_panel,
-            self._style_widget,
-        ):
-            left_layout.addWidget(widget)
-
-        left_layout.addStretch()
-        left_scroll.setWidget(left_container)
-        splitter.addWidget(left_scroll)
-        splitter.splitterMoved.connect(left_scroll.remember_dragged_width)
-
-        # ---- Right panel (tabbed plot area + summary, vertically resizable)
-        right_splitter = QSplitter(Qt.Orientation.Vertical)
-        right_splitter.setChildrenCollapsible(False)
-
-        # Tabbed plot area (flat/minimal, white pane):
-        # Fit Curve | Identifiability | Ka Sensitivity.
+        self._style_widget = PlotStyleWidget()
         self._plot_widget = PlotWidget()
         self._identifiability_widget = IdentifiabilityWidget()
         self._sensitivity_widget = SensitivityWidget()
-        self._plot_tabs = FlatTabWidget(white_pane=True)
-        self._plot_tabs.addTab(self._plot_widget, 'Fit Curve')
-        self._plot_tabs.addTab(self._identifiability_widget, 'Identifiability')
-        self._plot_tabs.addTab(self._sensitivity_widget, 'Ka Sensitivity')
-        guide_button = QToolButton()
-        guide_button.setText('? How to read this plot')
-        guide_button.setToolTip('Open the guide to reading the plot on this tab')
-        guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        guide_button.setStyleSheet(_GUIDE_BUTTON_QSS)
-        guide_button.clicked.connect(self._show_plot_guide)
-        self._plot_tabs.setCornerWidget(guide_button, Qt.Corner.TopRightCorner)
-
-        # Every plot page's floor is _PLOT_PAGE_MIN_HEIGHT, whichever tab is showing:
-        # dragging the summary up stops where a plot is still readable, and a page
-        # whose content is taller scrolls or clips rather than limiting the drag.
-        # Only the page on screen sets the tabs' width (FlatTabWidget).
-        for index in range(self._plot_tabs.count()):
-            self._plot_tabs.widget(index).setMinimumHeight(_PLOT_PAGE_MIN_HEIGHT)
-
         self._summary_widget = FitSummaryWidget()
+        self._summary_splits: list[QSplitter] = []
 
-        right_splitter.addWidget(self._plot_tabs)
-        right_splitter.addWidget(self._summary_widget)
-        right_splitter.setStretchFactor(0, 1)
-        right_splitter.setStretchFactor(1, 1)
-        splitter.addWidget(right_splitter)
+        def side(title: str, *widgets: QWidget) -> _SidePanel:
+            content = QWidget()
+            content.setLayout(C.vbox(*widgets, spacing=5))
+            panel = _SidePanel(title, content)
+            panel.close_requested.connect(self.side_panel_closed)
+            return panel
 
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        # No explicit initial split: the sidebar opens at its content-driven
-        # sizeHint width and the plot (stretch factor 1) takes the rest.
+        self._views: dict[str, _View] = {
+            'Measurements': _View(
+                _canvas(self._data_panel, scroll=True),
+                side('Measurement settings', self._replica_panel, self._preprocess_panel),
+            ),
+            'Binding model': _View(_canvas(self._assay_panel, self._bounds_panel, self._fit_panel, scroll=True)),
+            'Input uncertainty': _View(_canvas(self._input_panel, scroll=True)),
+            'Fit results': _View(_canvas(self._fit_split(self._plot_widget))),
+            'Ka confidence': _View(_canvas(self._identifiability_widget)),
+            'Sensitivity': _View(
+                _canvas(self._fit_split(self._sensitivity_widget)), side('Analysis settings', self._sensitivity_panel)
+            ),
+            'Plot appearance': _View(_canvas(self._style_widget, scroll=True)),
+        }
+        self._stack = QStackedWidget()
+        for view in VIEWS:
+            self._stack.addWidget(self._views[view])
+        self._progress_line = C.ProgressLine(theme())
+        self.setLayout(C.vbox(self._progress_line, self._stack, spacing=0))
+        self.show_view('Fit results')
 
         # Open the panels that follow the assay on the default assay type. The
         # heatmap axes are the uncertainty panel's inputs, named as it names them.
@@ -678,7 +579,15 @@ class FittingSession(QWidget):
 
         # Push the initial display unit into PlotStyleWidget so the style
         # dict reflects the DataPanel's combo from the first emission.
-        self._style_widget.widget.set_x_unit(self.model.settings.display_unit)
+        self._style_widget.set_x_unit(self.model.settings.display_unit)
+
+    def _fit_split(self, plot: QWidget) -> QSplitter:
+        """*plot* above the summary, the split between them dragged by the user."""
+        split = QSplitter(Qt.Orientation.Vertical)
+        split.setChildrenCollapsible(False)
+        split.addWidget(plot)
+        self._summary_splits.append(split)
+        return split
 
     # ------------------------------------------------------------------
     # Signal wiring
@@ -706,35 +615,25 @@ class FittingSession(QWidget):
         self._bounds_panel.bounds_changed.connect(self._push_settings)
 
         self._sensitivity_panel.run_requested.connect(self.run_sensitivity)
-        # Cancel is offered in two places: the sidebar panel and the running tab.
+        # Cancel is offered in two places: the side panel and the running view.
         self._sensitivity_panel.cancel_requested.connect(self.model.cancel_sensitivity)
         self._sensitivity_widget.cancel_requested.connect(self.model.cancel_sensitivity)
 
-        # Direct widget-to-widget: style → every plot tab
-        self._style_widget.widget.style_changed.connect(self._plot_widget.apply_style)
-        self._style_widget.widget.style_changed.connect(self._identifiability_widget.apply_style)
-        self._style_widget.widget.style_changed.connect(self._sensitivity_widget.apply_style)
-
-        # The summary under the tabs shows the samples of a sensitivity run while its tab is current.
-        self._plot_tabs.currentChanged.connect(
-            lambda _: self._summary_widget.show_samples(self._plot_tabs.currentWidget() is self._sensitivity_widget)
-        )
-        # Save Plot saves the tab on screen, so what it can do changes with the tab.
-        self._plot_tabs.currentChanged.connect(lambda _: self.actions_changed.emit())
-
-        # A fit and an analysis each read the uncertainties as they were when it
-        # started, so the rows stay as they were read until it ends.
-        self.actions_changed.connect(
-            lambda: self._input_panel.set_running(self.model.fit_running() or self.model.sensitivity_running())
-        )
+        # Direct widget-to-widget: style → every plot
+        self._style_widget.style_changed.connect(self._plot_widget.apply_style)
+        self._style_widget.style_changed.connect(self._identifiability_widget.apply_style)
+        self._style_widget.style_changed.connect(self._sensitivity_widget.apply_style)
 
         model = self.model
         model.run_changed.connect(self._on_run_changed)
         model.progress.connect(self._sensitivity_widget.set_progress)
+        model.progress.connect(lambda _done, _total: self._on_progress())
         model.results_changed.connect(self._on_results_changed)
         model.profile_changed.connect(self._on_profile_changed)
         model.sensitivity_changed.connect(self._on_sensitivity_changed)
         model.warning.connect(lambda title, message: QMessageBox.warning(self, title, message))
+        for signal in (model.results_changed, model.name_changed, model.status_changed):
+            signal.connect(self.changed)
 
     def _push_settings(self) -> None:
         """State to the model every setting the panels show now.
@@ -827,16 +726,7 @@ class FittingSession(QWidget):
     def _on_display_unit_changed(self, unit: str) -> None:
         """DataPanel announces a new plot-display unit — propagate to plot."""
         self.model.update_settings(display_unit=unit)
-        self._style_widget.widget.set_x_unit(unit)
-
-    def _show_plot_guide(self) -> None:
-        """Open Help ▸ Reading the plots at the section for the plot tab on screen."""
-        sections = {
-            self._plot_widget: plot_guide.FIT_CURVE,
-            self._identifiability_widget: plot_guide.IDENTIFIABILITY,
-            self._sensitivity_widget: plot_guide.SENSITIVITY,
-        }
-        show_plot_guide(self, sections[self._plot_tabs.currentWidget()])
+        self._style_widget.set_x_unit(unit)
 
     # ------------------------------------------------------------------
     # Ka sensitivity analysis
@@ -862,7 +752,6 @@ class FittingSession(QWidget):
             return
         self._summary_widget.show_running(config.mode)
         self._sensitivity_widget.show_running()
-        self._plot_tabs.setCurrentWidget(self._sensitivity_widget)
 
     # ------------------------------------------------------------------
     # Model slots
@@ -871,10 +760,31 @@ class FittingSession(QWidget):
     def _on_run_changed(self, kind: str, running: bool) -> None:
         if kind == 'sensitivity':
             self._sensitivity_panel.set_running(running)
-        self.actions_changed.emit()
+        self._show_running()
+
+    def _on_progress(self) -> None:
+        self._progress_line.set_progress(self.model.progress_fraction())
+        self.changed.emit()
+
+    def _show_running(self) -> None:
+        """Show the work running here: the progress line, and the inputs that feed it locked until it ends."""
+        model = self.model
+        running = model.running()
+        if running:
+            self._progress_line.set_progress(model.progress_fraction())
+        else:
+            self._progress_line.stop()
+        # A fit and an analysis each read the binding model and the uncertainties
+        # as they were when it started, so those stay as they were read until it ends.
+        work = model.fit_running() or model.sensitivity_running()
+        for panel in (self._assay_panel, self._bounds_panel, self._fit_panel):
+            panel.setEnabled(not work)
+        self._input_panel.set_running(work)
+        self.changed.emit()
 
     def _on_profile_changed(self) -> None:
-        """Show the latest fit's Ka profile on Identifiability: pending, drawn, or the tab emptied."""
+        """Show the latest fit's Ka profile in Ka confidence: pending, drawn, or emptied."""
+        self._show_running()
         fit = self.model.profiled_fit
         if fit is None:
             self._identifiability_widget.clear()
@@ -923,7 +833,7 @@ class FittingSession(QWidget):
         else:
             unchecked = _UNCHECKED_NOTE if self.model.measurement_set is None else None
             self._summary_widget.update_result(fit, unchecked=unchecked)
-        self.actions_changed.emit()
+        self.changed.emit()
 
     def _refresh_plot(self) -> None:
         """Draw the loaded points with the curves of the shown fits, and say which held fits are hidden.
@@ -962,45 +872,3 @@ class FittingSession(QWidget):
         if note != self._plot_note:
             self._plot_note = note
             self._plot_widget.show_mismatch(note)
-
-
-class _GroupedPlain(QGroupBox):
-    """Thin wrapper that places an existing widget inside a QGroupBox."""
-
-    def __init__(self, title: str, widget: QWidget, parent=None):
-        super().__init__(title, parent)
-        self.widget = widget
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(widget)
-
-
-class _GroupedWithInfo(InfoGroupBox):
-    """Plain wrapper around :class:`InfoGroupBox` exposing ``self.widget``."""
-
-    def __init__(
-        self,
-        title: str,
-        widget: QWidget,
-        info_title: str,
-        info_html: str,
-        parent=None,
-    ):
-        super().__init__(title, info_title, info_html, parent)
-        self.widget = widget
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(widget)
-
-
-def _Grouped(
-    title: str,
-    widget: QWidget,
-    parent=None,
-    info_title: str | None = None,
-    info_html: str | None = None,
-):
-    """Factory: return a plain or info-bearing group-box wrapper."""
-    if info_html is not None:
-        return _GroupedWithInfo(title, widget, info_title or title, info_html, parent)
-    return _GroupedPlain(title, widget, parent)

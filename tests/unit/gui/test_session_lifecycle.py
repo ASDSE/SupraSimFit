@@ -148,7 +148,7 @@ def _load(session) -> None:
     _state_an_uncertainty(session)
 
 
-def test_closing_a_tab_mid_fit_stops_the_fit_and_leaves_no_thread_running(qapp, monkeypatch, dialogs, watchful_fit):
+def test_closing_a_session_mid_fit_stops_the_fit_and_leaves_no_thread_running(qapp, monkeypatch, dialogs, watchful_fit):
     window = _window(monkeypatch)
     window._new_session()
     session = window.active_session()
@@ -157,14 +157,14 @@ def test_closing_a_tab_mid_fit_stops_the_fit_and_leaves_no_thread_running(qapp, 
     worker = session.model._fit_worker
     _wait_until(qapp, lambda: worker.isRunning() and watchful_fit)
 
-    window._close_tab(window._tabs.indexOf(session))
+    window._close_session(session)
 
     assert worker.cancelled  # the fit was told to stop, not merely dropped
-    assert not worker.isRunning()  # and the tab waited for it
+    assert not worker.isRunning()  # and the session waited for it
     assert session.findChildren(QThread) == [] or all(not t.isRunning() for t in session.findChildren(QThread))
 
 
-def test_closing_a_tab_mid_sensitivity_stops_the_run_and_its_worker_processes(
+def test_closing_a_session_mid_sensitivity_stops_the_run_and_its_worker_processes(
     qapp, monkeypatch, dialogs, watchful_sensitivity
 ):
     import multiprocessing
@@ -177,7 +177,7 @@ def test_closing_a_tab_mid_sensitivity_stops_the_run_and_its_worker_processes(
     worker = session.model._sensitivity_worker
     _wait_until(qapp, worker.isRunning)
 
-    window._close_tab(window._tabs.indexOf(session))
+    window._close_session(session)
 
     assert worker.cancelled
     assert not worker.isRunning()
@@ -187,8 +187,8 @@ def test_closing_a_tab_mid_sensitivity_stops_the_run_and_its_worker_processes(
     assert dialogs == []
 
 
-def test_closing_a_tab_mid_run_takes_its_progress_off_the_status_bar(qapp, monkeypatch, dialogs, watchful_sensitivity):
-    """The status bar belongs to the window: a closed session's count left standing reads as a run still going."""
+def test_closing_a_session_mid_run_takes_its_work_off_the_status_bar(qapp, monkeypatch, dialogs, watchful_sensitivity):
+    """The status bar lists every running session: a closed one left standing reads as a run still going."""
     window = _window(monkeypatch)
     window._new_session()
     session = window.active_session()
@@ -196,13 +196,26 @@ def test_closing_a_tab_mid_run_takes_its_progress_off_the_status_bar(qapp, monke
     session.run_sensitivity()
     _wait_until(qapp, session.model._sensitivity_worker.isRunning)
     session.model._on_sensitivity_progress(12207, 16393)
-    assert 'Analysing' in window._statusbar.currentMessage()
+    name = session.model.name()
+    assert f'{name} Sensitivity 74' in window._status._full_text
 
-    window._close_tab(window._tabs.indexOf(session))
+    window._close_session(session)
     _settle(qapp)
 
-    assert 'Analysing' not in window._statusbar.currentMessage()
-    assert 'the running sensitivity analysis was stopped' in window._statusbar.currentMessage()
+    assert name not in window._status._full_text
+    assert window._status._full_text.startswith('Ready')
+
+
+def test_closing_the_last_session_leaves_an_empty_new_session(qapp, monkeypatch, dialogs):
+    window = _window(monkeypatch)
+    (only,) = window.sessions()
+    _load(only)
+
+    window._close_session(only)
+
+    (fresh,) = window.sessions()
+    assert fresh is not only and fresh is window.active_session()
+    assert fresh.model.name() == 'New session' and fresh.model.measurement_set is None
 
 
 def test_closing_the_window_stops_the_work_in_every_session(qapp, monkeypatch, dialogs, watchful_fit):
@@ -311,7 +324,7 @@ def test_loading_other_data_stops_the_running_fit_instead_of_abandoning_it(qapp,
     session.model.shutdown()
 
 
-def test_cancelling_a_fit_leaves_the_tab_as_it_was_and_lets_the_next_fit_start(qapp, dialogs, monkeypatch):
+def test_stopping_a_fit_leaves_the_session_as_it_was_and_lets_the_next_fit_start(qapp, dialogs, monkeypatch):
     """A cancelled fit reports nothing: the result already on the tab stands, and a new fit starts straight away."""
     from gui import workers
 
@@ -339,7 +352,7 @@ def test_cancelling_a_fit_leaves_the_tab_as_it_was_and_lets_the_next_fit_start(q
 
     assert worker.cancelled and not worker.isRunning()  # asked to stop, and its thread seen out
     assert not session.model.fit_running()
-    assert said[-1].startswith('Fit cancelled')
+    assert said[-1].startswith('Fit stopped')
     assert dialogs == []  # a cancel the user asked for is not a failure to warn about
     assert [result.id for result in session.model.fit_results] == shown
     assert session._identifiability_widget._profile is profile
@@ -353,8 +366,10 @@ def test_cancelling_a_fit_leaves_the_tab_as_it_was_and_lets_the_next_fit_start(q
         worker.isRunning()  # the cancelled fit's worker was retired, not left for the tab to destroy
 
 
-def test_the_fit_action_stops_the_running_fit_and_follows_the_tab_on_screen(qapp, monkeypatch, dialogs, watchful_fit):
-    """One action per tab: it starts that tab's fit, and stops it while it runs, as the analysis button does."""
+def test_the_primary_action_stops_the_running_fit_and_follows_the_session_on_screen(
+    qapp, monkeypatch, dialogs, watchful_fit
+):
+    """The toolbar's primary action belongs to the session on screen: it runs that session's fit, and stops it."""
     window = _window(monkeypatch)
     running = window.active_session()
     _load(running)
@@ -362,23 +377,36 @@ def test_the_fit_action_stops_the_running_fit_and_follows_the_tab_on_screen(qapp
     worker = running.model._fit_worker
     _wait_until(qapp, worker.isRunning)
 
-    assert window._act_fit.text() == 'Cancel Fit' and window._act_fit.isEnabled()
-    assert window._act_fit.toolTip() == 'Stop the fit running in this session (Ctrl+R)'
+    assert window._act_run.text() == 'Stop' and window._act_run.isEnabled()
 
-    window._new_session()  # an idle tab: the fit of another tab is not offered here
+    window._new_session()  # an idle session: the fit of another one is not offered here
 
-    assert window._act_fit.text() == 'Run Fit' and window._act_fit.isEnabled()
+    assert window._act_run.text() == 'Run fit'
+    assert window._status._full_text == f'{running.model.name()} fitting'
 
-    window._tabs.setCurrentWidget(running)
+    window._switch_to(running)
 
-    assert window._act_fit.text() == 'Cancel Fit'
+    assert window._act_run.text() == 'Stop'
 
-    window._act_fit.trigger()
+    window._act_run.trigger()
+    _wait_until(qapp, lambda: not running.model.running())
 
     assert worker.cancelled and not running.model.fit_running()
-    assert window._act_fit.text() == 'Run Fit' and window._act_fit.isEnabled()
-    assert window._act_fit.toolTip().startswith('Fit the active session')
+    assert window._act_run.text() == 'Run fit' and window._act_run.isEnabled()
     assert dialogs == []
+    window.close()
+
+
+def test_the_primary_action_runs_the_analysis_in_sensitivity(qapp, monkeypatch, dialogs, watchful_sensitivity):
+    window = _window(monkeypatch)
+    session = window.active_session()
+    _load(session)
+    window.show_view('Sensitivity')
+    assert window._act_run.text() == 'Run analysis'
+
+    window._act_run.trigger()
+
+    assert session.model.sensitivity_running() and not session.model.fit_running()
     window.close()
 
 
@@ -424,35 +452,6 @@ def test_the_analysis_is_refused_while_a_bound_cannot_be_used(qapp, dialogs, wat
     assert dialogs[-1][2] == (
         'The analysis cannot start:\n\n• Ka(G): the lower bound “abc” is not a number. Enter a number, such as 1e3.'
     )
-
-
-def test_the_application_is_drawn_in_the_light_colour_scheme(qapp, monkeypatch):
-    """The stylesheet paints light toolbar buttons and navy group titles, which a dark scheme makes unreadable."""
-    from PyQt6.QtCore import QCoreApplication, QLocale, Qt
-    from PyQt6.QtGui import QStyleHints
-    from PyQt6.QtWidgets import QApplication
-
-    from gui import main_window
-
-    schemes = []
-    monkeypatch.setattr(QStyleHints, 'setColorScheme', lambda self, scheme: schemes.append(scheme))
-    # Everything else launch() does to the one application object of the test run is left out.
-    for owner, name in (
-        (QApplication, 'setStyleSheet'),
-        (QApplication, 'setWindowIcon'),
-        (QApplication, 'installEventFilter'),
-        (QApplication, 'exec'),
-        (QCoreApplication, 'setOrganizationName'),
-        (QCoreApplication, 'setApplicationName'),
-        (QLocale, 'setDefault'),
-    ):
-        monkeypatch.setattr(owner, name, lambda *args: 0)
-    monkeypatch.setattr(main_window, 'FittingMainWindow', lambda: type('Window', (), {'show': lambda self: None})())
-
-    with pytest.raises(SystemExit):
-        main_window.launch()
-
-    assert schemes == [Qt.ColorScheme.Light]
 
 
 def test_a_fit_and_an_analysis_never_run_at_the_same_time(qapp, dialogs, watchful_fit, watchful_sensitivity):
@@ -809,7 +808,7 @@ def _deliver_sensitivity(session):
     return run
 
 
-def test_save_plot_saves_the_tab_on_screen(qapp, monkeypatch, dialogs, tmp_path):
+def test_save_plot_saves_the_plot_of_the_view(qapp, monkeypatch, dialogs, tmp_path):
     saved: list[tuple[str, str]] = []
     session = _session(dialogs)
     _deliver_sensitivity(session)
@@ -822,19 +821,17 @@ def test_save_plot_saves_the_tab_on_screen(qapp, monkeypatch, dialogs, tmp_path)
         type(session._sensitivity_widget), 'export_image', lambda self, path: saved.append(('sensitivity', path))
     )
 
-    session._plot_tabs.setCurrentWidget(session._sensitivity_widget)
-    session.export_plot()
-    session._plot_tabs.setCurrentWidget(session._plot_widget)
-    session.export_plot()
+    session.export_plot('Sensitivity')
+    session.export_plot('Fit results')
 
     assert [where for where, _path in saved] == ['sensitivity', 'fit']
     assert dialogs == []
 
 
-def test_the_save_plot_dialog_offers_only_what_the_tab_can_write(qapp, monkeypatch, dialogs):
-    """A tab saved whole as one picture offers PNG alone; the Fit Curve tab still offers a drawing.
+def test_the_save_plot_dialog_offers_only_what_the_view_can_write(qapp, monkeypatch, dialogs):
+    """A view saved whole as one picture offers PNG alone; the titration plot still offers a drawing.
 
-    Offering SVG where the tab cannot write it sends the user to a message box
+    Offering SVG where the view cannot write it sends the user to a message box
     instead of a file.
     """
     asked: list[tuple[str, str]] = []
@@ -846,9 +843,8 @@ def test_the_save_plot_dialog_offers_only_what_the_tab_can_write(qapp, monkeypat
         lambda _parent, _title, name, filters: asked.append((name, filters)) or ('', ''),
     )
 
-    for widget in (session._plot_widget, session._identifiability_widget, session._sensitivity_widget):
-        session._plot_tabs.setCurrentWidget(widget)
-        session.export_plot()
+    for view in ('Fit results', 'Ka confidence', 'Sensitivity'):
+        session.export_plot(view)
 
     assert [filters for _name, filters in asked] == [
         'PNG image (*.png);;SVG vector (*.svg)',
@@ -859,33 +855,36 @@ def test_the_save_plot_dialog_offers_only_what_the_tab_can_write(qapp, monkeypat
     assert dialogs == []
 
 
-def test_save_plot_says_what_the_tab_on_screen_has_to_save(qapp, dialogs):
+def test_save_plot_says_what_the_view_has_to_save(qapp, dialogs):
     from gui.fitting_session import FittingSession
 
     session = FittingSession()
 
-    session._plot_tabs.setCurrentWidget(session._identifiability_widget)
-    assert session.plot_export_note() == 'There is no identifiability chart to save yet. Run a fit, then save it.'
-    session._plot_tabs.setCurrentWidget(session._sensitivity_widget)
-    assert session.plot_export_note() == 'There is no sensitivity analysis to save yet. Run one, then save it.'
-    session._plot_tabs.setCurrentWidget(session._plot_widget)
-    assert session.plot_export_note().startswith('There is nothing on the Fit Curve tab yet.')
+    assert session.plot_export_note('Ka confidence') == (
+        'There is no Ka confidence chart to save yet. Run a fit, then save it.'
+    )
+    assert session.plot_export_note('Sensitivity') == (
+        'There is no sensitivity analysis to save yet. Run one, then save it.'
+    )
+    assert session.plot_export_note('Fit results').startswith('There is no titration plot yet.')
+    assert session.plot_export_note('Binding model').startswith('This view has no plot to save.')
 
-    session.export_plot()
+    session.export_plot('Fit results')
     assert dialogs[-1][1] == 'Save Plot'
 
 
-def test_save_plot_follows_the_identifiability_tab_not_the_held_fit(qapp, dialogs):
-    """Importing results holds a fit but clears that tab, and Save Plot must not offer an empty page."""
+def test_save_plot_follows_the_ka_confidence_chart_not_the_held_fit(qapp, dialogs):
+    """Importing results holds a fit but clears Ka confidence, and Save Plot must not offer an empty page."""
     from gui.fitting_session import FittingSession
     from gui.session import build_artefacts
 
     session = FittingSession()
     session.model.show_imported([_sobol_result().baseline_fit], 'results.json')
-    session._plot_tabs.setCurrentWidget(session._identifiability_widget)
 
     assert not session._identifiability_widget.has_chart()
-    assert session.plot_export_note() == 'There is no identifiability chart to save yet. Run a fit, then save it.'
+    assert session.plot_export_note('Ka confidence') == (
+        'There is no Ka confidence chart to save yet. Run a fit, then save it.'
+    )
     (artefact,) = [a for a in build_artefacts(session) if a.key == 'identifiability_png']
     assert not artefact.available
 

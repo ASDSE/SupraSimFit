@@ -138,6 +138,10 @@ class Theme:
     """One resolved colour map (light or dark) with the helpers the widgets draw with."""
 
     def __init__(self, dark: bool = False):
+        self.set_dark(dark)
+
+    def set_dark(self, dark: bool) -> None:
+        """Resolve the dark map (*dark*) or the light one; a widget holding this theme paints in it from then on."""
         self.dark = dark
         self.c = DARK if dark else LIGHT
 

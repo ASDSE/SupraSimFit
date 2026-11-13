@@ -163,14 +163,14 @@ def test_a_cancelled_fit_leaves_the_previous_result_as_it_was(qapp, make_model, 
     assert not model.fit_running()
     (shown,) = model.fit_results
     assert shown is fitted and redraws == []
-    assert model.status == 'Fit cancelled — nothing on the tab was changed.'
+    assert model.status == 'Fit stopped — nothing in the session was changed.'
 
 
 def test_the_session_is_named_by_the_user_else_by_its_data_file(make_model):
     model = make_model()
     names: list[str] = []
     model.name_changed.connect(names.append)
-    assert model.name() == 'Untitled'
+    assert model.name() == 'New session'
 
     model.load(_data(), '/data/tryptamine_424.txt')
     assert names[-1] == 'tryptamine_424'
@@ -183,7 +183,7 @@ def test_the_session_is_named_by_the_user_else_by_its_data_file(make_model):
     assert names[-1] == 'other'
 
     model.clear()
-    assert names[-1] == 'Untitled'
+    assert names[-1] == 'New session'
 
 
 def test_a_fit_that_cannot_start_says_why(make_model):
@@ -205,3 +205,67 @@ def test_a_fit_that_cannot_start_says_why(make_model):
     stock, top = (f'{value * 1e6:.4g} µM' for value in (highest / 2, highest))
     assert f'The titrant stock ({stock}) must be more concentrated than the highest titrant' in refusal.message
     assert f'in the data ({top})' in refusal.message
+
+
+def test_the_switcher_line_reports_the_shown_ka_and_counts_the_warnings_of_its_verdict(make_model, fitted):
+    from dataclasses import replace
+
+    from core.pipeline.diagnostics import FitDiagnostics, Verdict
+
+    ka = fitted.parameters['Ka_guest'].magnitude
+    mantissa, exponent = f'{ka:.2e}'.split('e')
+    model = _holding(make_model, fitted)
+    state, words, _ = model.summary()
+    assert words.startswith(f'Ka {mantissa}') and words.endswith('M⁻¹')
+    assert str(int(exponent)).translate(str.maketrans('0123456789', '⁰¹²³⁴⁵⁶⁷⁸⁹')) in words
+
+    for verdict, expected in (
+        (Verdict.CONSISTENT, ('done', '')),
+        (Verdict.INPUTS_CONFLICT, ('warning', ' · 1 warning')),
+        (Verdict.MODEL_AND_INPUTS, ('warning', ' · 2 warnings')),
+    ):
+        diagnostics = FitDiagnostics(conditional_misfit=None, misfit=None, conflict=None, verdict=verdict)
+        model = _holding(make_model, replace(fitted, diagnostics=diagnostics))
+        state, words, _ = model.summary()
+        assert (state, words[len(words.split(' · ')[0]) :]) == expected
+        assert model.view_status('Fit results')[0] == expected[0]
+
+
+def test_a_fit_that_needs_a_refit_is_marked_out_of_date_everywhere(make_model, fitted):
+    model = _holding(make_model, fitted)
+
+    model.update_settings(per_replica=True)
+
+    assert model.summary()[:2] == ('stale', 'Needs refit')
+    assert model.view_status('Fit results') == ('stale', 0.0)
+    assert model.view_status('Measurements') == ('done', 0.0)
+
+
+def test_a_new_session_reads_as_empty(make_model):
+    model = make_model()
+
+    assert model.name() == 'New session'
+    assert model.detail() == 'No data loaded'
+    assert model.summary()[:2] == ('', '')
+    assert all(model.view_status(view) == ('', 0.0) for view in ('Measurements', 'Fit results', 'Sensitivity'))
+
+
+def test_the_file_card_and_the_model_line_describe_the_loaded_data_and_the_model(make_model):
+    model = make_model()
+    model.load(_data(), '/data/ida.txt')
+
+    assert model.detail() == 'IDA · 3 replicates'
+    assert model.file_card() == ('ida.txt', 'IDA · 3 replicates × 20 points')
+    assert model.model_line()[:2] == ['Indicator displacement', '1 binding constant']
+
+
+def test_stop_ends_a_running_fit_and_leaves_the_shown_one(qapp, make_model, fitted, watchful_fit):
+    model = _holding(make_model, fitted)
+    assert model.run_fit() is None
+    assert model.summary()[:2] == ('running', 'Fitting')
+    assert model.view_status('Fit results')[0] == 'running'
+
+    model.stop()
+
+    assert not model.running()
+    assert model.fit_results == [fitted]

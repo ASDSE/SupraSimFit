@@ -1543,34 +1543,28 @@ def test_sensitivity_run_uses_the_bounds_set_in_the_bounds_panel(qapp, monkeypat
     assert seen['bounds'] == bounds
 
 
-def _on_tab(session, name: str) -> None:
-    tabs = session._plot_tabs
-    tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == name))
-
-
-def test_summary_follows_the_plot_tab(qapp, monkeypatch):
-    """On Ka Sensitivity the summary shows the run's samples; every other tab brings the fit back."""
+def test_summary_follows_the_view(qapp, monkeypatch):
+    """In Sensitivity the summary shows the run's samples; Fit results brings the fit back."""
     from gui import workers
 
     monkeypatch.setattr(workers, 'run_sensitivity', _fake_run(3))
     session, warnings = _demo_session(monkeypatch)
     summary = session._summary_widget
+    session.show_view('Sensitivity')
 
     session.run_sensitivity()
     _wait_for_worker(session, qapp)
 
     assert warnings == []
-    assert session._plot_tabs.currentWidget() is session._sensitivity_widget
     assert _in_samples_view(summary)
-    for name in ('Fit Curve', 'Identifiability'):
-        _on_tab(session, name)
-        assert not _in_samples_view(summary)
-        _on_tab(session, 'Ka Sensitivity')
-        assert _in_samples_view(summary)
+    session.show_view('Fit results')
+    assert not _in_samples_view(summary)
+    session.show_view('Sensitivity')
+    assert _in_samples_view(summary)
 
 
-def test_summary_never_shows_a_run_that_is_not_the_tabs(qapp, monkeypatch):
-    """A new run, a failed one, a heatmap and new or cleared data all leave the summary matching the tab."""
+def test_summary_never_shows_a_run_that_is_not_the_views(qapp, monkeypatch):
+    """A new run, a failed one, a heatmap and new or cleared data all leave the summary matching the view."""
     from gui import workers
 
     def failing(*args, progress, **kwargs):
@@ -1578,6 +1572,7 @@ def test_summary_never_shows_a_run_that_is_not_the_tabs(qapp, monkeypatch):
 
     session, warnings = _demo_session(monkeypatch)
     summary = session._summary_widget
+    session.show_view('Sensitivity')
 
     monkeypatch.setattr(workers, 'run_sensitivity', _fake_run(3))
     session.run_sensitivity()

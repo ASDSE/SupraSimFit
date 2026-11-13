@@ -18,6 +18,18 @@ from core.assays.registry import ASSAY_REGISTRY
 from core.pipeline.inputs import TITRANT, ErrorModel, shared_key
 from core.units import Q_, Quantity
 
+#: Each assay's names in the window: short, where a session is named beside its data
+#: (session switcher, file card), and in words, where the model is stated (status bar).
+ASSAY_NAMES: dict[AssayType, tuple[str, str]] = {
+    AssayType.GDA: ('GDA', 'Guest displacement'),
+    AssayType.IDA: ('IDA', 'Indicator displacement'),
+    AssayType.DBA_HtoD: ('DBA host → dye', 'Direct binding, host into dye'),
+    AssayType.DBA_DtoH: ('DBA dye → host', 'Direct binding, dye into host'),
+    AssayType.DBA_HG2: ('HG₂', 'Host–guest 1:2'),
+    AssayType.DBA_H2G: ('H₂G', 'Host–guest 2:1'),
+    AssayType.DYE_ALONE: ('Dye alone', 'Dye calibration'),
+}
+
 
 @dataclass(frozen=True)
 class ConditionField:
