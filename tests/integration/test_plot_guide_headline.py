@@ -14,7 +14,7 @@ _IDA_DATA = Path(__file__).resolve().parents[2] / 'data' / 'IDA_system.txt'
 
 
 def test_the_headline_example_is_the_fit_demo_ida_reports():
-    """The Fit Curve and summary examples quote Demo IDA's headline: its fit, interval, R², RMSE and verdict line."""
+    """The Fit results and Fit details examples quote Demo IDA's headline: its fit, interval, R², RMSE and first callout."""
     from core.assays import IDAAssay
     from core.data_processing.measurement_set import MeasurementSet
     from core.data_processing.preprocessing import get_step
@@ -25,7 +25,8 @@ def test_the_headline_example_is_the_fit_demo_ida_reports():
     from core.units import Q_
     from gui.fitting_session import _DEMO_UNCERTAINTIES
     from gui.plot_guide import FIT_CURVE, PLOT_GUIDE, SUMMARY
-    from gui.plotting.labels import fmt_r2, fmt_value, verdict_headline
+    from gui.plotting.labels import fmt_r2, fmt_value
+    from gui.results import callouts
 
     # Demo IDA as its button fits it: Outlier Removal at its defaults, averaged, its stated uncertainties.
     ms = MeasurementSet.from_dataframe(load_measurements(str(_IDA_DATA)))
@@ -40,9 +41,9 @@ def test_the_headline_example_is_the_fit_demo_ida_reports():
         f'{row.estimate / 1e8:.2f}&times;10<sup>8</sup> M<sup>&minus;1</sup> [{lo / 1e8:.2f}&times;10<sup>8</sup>, '
         f'{hi / 1e8:.2f}&times;10<sup>8</sup>]'
     )
-    words, tone = verdict_headline(result.diagnostics)
+    (callout, *_) = callouts(result, None)
 
     fit_curve = re.sub(r'\s+', ' ', PLOT_GUIDE[FIT_CURVE][1])
-    assert f'{headline}, R&sup2; {fmt_r2(result.r_squared)}, under the {tone} line <i>{words}</i>' in fit_curve
+    assert f'{headline}, R&sup2; {fmt_r2(result.r_squared)}, under the callout <i>{callout.title}</i>' in fit_curve
     summary = re.sub(r'\s+', ' ', PLOT_GUIDE[SUMMARY][1])
     assert f'RMSE {fmt_value(result.rmse)} a.u. and R&sup2; {fmt_r2(result.r_squared)}' in summary

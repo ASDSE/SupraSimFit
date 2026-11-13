@@ -28,7 +28,7 @@ from core.pipeline.inputs import TITRANT, AdditionError, ErrorModel, InputSpec, 
 from core.units import Q_
 from gui.uncertainty import HELP_HTML, UncertaintyForm
 
-_KA_DYE = 16.8e6  # M⁻¹, the Ka,dye set in the conditions form
+_KA_DYE = 16.8e6  # M⁻¹, the Kₐ,dye set in the conditions form
 _H0 = 4.3e-6  # M
 _UNITS = {'Ka_dye': 'M⁻¹', 'h0': 'µM', 'd0': 'µM'}
 
@@ -97,7 +97,7 @@ def test_errors_leave_fixed_inputs_out_and_hand_on_what_each_input_states():
 @pytest.mark.parametrize(
     ('start', 'kind', 'relative', 'expected'),
     [
-        # σ = 5 % of Ka,dye = 16.8e6 M⁻¹, stated four ways.
+        # σ = 5 % of Kₐ,dye = 16.8e6 M⁻¹, stated four ways.
         (InputSpec.sigma_pct(5.0), SpecKind.INTERVAL, True, InputSpec.interval_pct(-5.0, 5.0)),
         (InputSpec.sigma_pct(5.0), SpecKind.SIGMA, False, InputSpec.sigma_abs(0.84e6)),
         (InputSpec.sigma_abs(0.84e6), SpecKind.SIGMA, True, InputSpec.sigma_pct(5.0)),
@@ -194,7 +194,7 @@ def test_a_conversion_waiting_for_an_entered_value_names_the_kind_and_unit_asked
 
     form.state_in('Ka_dye', True)
     assert form.problems() == [
-        'Ka,dye is 0 in the conditions, so its uncertainty cannot be converted to a σ in %: set Ka,dye above 0 first.'
+        'Kₐ,dye is 0 in the conditions, so its uncertainty cannot be converted to a σ in %: set Kₐ,dye above 0 first.'
     ]
 
     form = _ida()
@@ -311,7 +311,7 @@ def test_an_input_that_cannot_vary_is_named_as_a_problem(spec, instruction):
     form = _ida()
     form.set_spec('Ka_dye', spec)
 
-    assert form.problems() == [f'Ka,dye cannot vary: {instruction}, or choose “Fixed”.']
+    assert form.problems() == [f'Kₐ,dye cannot vary: {instruction}, or choose “Fixed”.']
 
 
 def test_a_range_that_reaches_zero_is_named_as_a_problem():
@@ -331,8 +331,8 @@ def test_a_range_that_reaches_zero_is_named_as_a_problem():
 @pytest.mark.parametrize(
     ('text', 'problem'),
     [
-        ('2e', 'Ka,dye: “2e” is not a number. Enter a number, or choose “Fixed”.'),
-        ('', 'Ka,dye has no amount: enter a number, or choose “Fixed”.'),
+        ('2e', 'Kₐ,dye: “2e” is not a number. Enter a number, or choose “Fixed”.'),
+        ('', 'Kₐ,dye has no amount: enter a number, or choose “Fixed”.'),
     ],
 )
 def test_an_amount_that_is_not_a_number_is_named_as_a_problem(text, problem):
@@ -350,7 +350,7 @@ def test_the_inputs_are_the_assays_perturbable_inputs_named_as_every_report_name
 
     form.set_assay(AssayType.IDA)
     assert form.input_labels() == {
-        'Ka_dye': 'Ka,dye',
+        'Ka_dye': 'Kₐ,dye',
         'h0': '[Host]₀',
         'd0': '[Dye]₀',
         TITRANT: 'Guest (titrant, whole series)',
@@ -585,7 +585,7 @@ def test_a_nan_amount_is_not_a_number():
     form.edit('Ka_dye', 0, 'nan')
 
     assert form.spec('Ka_dye') is None
-    assert form.problems() == ['Ka,dye: “nan” is not a number. Enter a number, or choose “Fixed”.']
+    assert form.problems() == ['Kₐ,dye: “nan” is not a number. Enter a number, or choose “Fixed”.']
 
 
 def test_a_condition_that_cannot_be_read_is_named_so_and_never_called_0():

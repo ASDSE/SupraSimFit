@@ -38,6 +38,8 @@ SIZE = {
     'stated-in': 88,
     'spread-bar': 96,
     'input-row': 60,
+    # The headline column of Fit results: a binding constant's name, value and interval.
+    'headline': 264,
     # The longest line of help or warning text under a control, for a comfortable reading measure.
     'measure': 640,
 }

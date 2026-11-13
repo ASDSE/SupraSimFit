@@ -310,7 +310,7 @@ def inspector(t: Theme) -> QWidget:
             'text': f'{ci["estimate_MM"] / 100:.2f}  [{ci["low_MM"] / 100:.2f}, {ci["high_MM"] / 100:.2f}]',
         },
     ]
-    chart = C.CompactIntervals(t, rows, 0.95e8, 5.3e8, [1e8, 1.5e8, 2e8, 3e8, 4e8, 5e8], 1e8)
+    chart = C.CompactIntervals(t, rows, 0.95e8, 5.3e8, [(v * 1e8, f'{v:g}') for v in (1, 1.5, 2, 3, 4, 5)])
     unit_line = C.label(f'K{sub("a")} guest, 95 % interval, ×{THIN}10⁸ M⁻¹', 'small', 'tertiary', rich=True)
     cap = wrap(
         'Letting the inputs move within what you stated explains a misfit the entered values could not, '

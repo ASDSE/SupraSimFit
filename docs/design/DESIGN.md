@@ -111,7 +111,8 @@ the TXT/CSV reports use `estimate [low, high]`.
 - **Fixed sizes** (`SIZE`): sidebar 232, side panel 320 (at least 280), toolbar 52,
   status bar 28, nav item 28, session switcher 44, controls 28, badges 18, plot axes 56
   (left) and 44 (bottom) px; the inputs grid of Input uncertainty: name 168, kind 156,
-  stated in 88 and spread bar 96 px wide, rows 60 px high.
+  stated in 88 and spread bar 96 px wide, rows 60 px high; the headline column of Fit
+  results, 264.
 - **Radius** (`RADIUS`): 6 px controls, 8 px cards, 10 px popovers, menus and the
   Settings window, pill for badges and toggles.
 - **Hairlines** are 1 px `border`. Panels are separated by hairlines, not gaps or shadows.
@@ -352,7 +353,8 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
   outward x ticks.
 - **Titration series:** replicate dots in `replicate` at 45 %, 6 px; switched-off
   replicates as × in `replicate-off`; mean ± SD as 6-px `text-primary` dots with 1-px
-  `text-primary` error bars; the fitted curve 2 px accent, round caps.
+  `text-primary` error bars, capped a hundredth of the x span wide; the fitted curve 2 px
+  accent, round caps.
 - **Sobol' bars:** S₁ solid, S_T outlined, each with a 1.25-px `text-primary` whisker
   with 6-px caps.
 - **Log-Ka strips** (interval chart, histogram) carry no axis title; the shared power of
@@ -406,9 +408,26 @@ Canvas: the headline — Ka in `metric` with its Input-aware badge and 95 % inte
 the interval chart against the reading at the inputs as entered, *All results and
 diagnostics →*, any callout, and the **Titration** plot with a replicate-display tool.
 With two binding constants the headline stacks: one row per Ka (K₁, K₂), each with its
-value, interval and interval-chart rows, above the plot. Side panel *Fit details*: Fit quality (R², RMSE, replicates used, noise), Diagnostics
-(each test with its mark and p-value), Parameters (estimate and unit; degenerate ones
-starred and explained), Input shifts, Display.
+value, interval and interval-chart rows, above the plot. What an interval needs said
+beside it is its tooltip: what *Split* means on the interval chart, what widened it or
+left a side open on the interval line. A fit of each replicate separately adds one line
+of the single-replicate fits under the headline, why they differ from the interval on
+hover. *All results and diagnostics →* shows the Fit details side panel where it is
+hidden and brings Diagnostics into view. Where the curve is drawn at the inputs the fit
+moved, the plot header says so in its description: *curve drawn at the fitted input
+shifts*.
+
+Side panel *Fit details*, which fits its least width beside the vertical scroll bar and
+never scrolls sideways: Fit quality — a 2 × 2 grid of R² and RMSE, then replicates used
+(`7 of 8`, note `A switched off`) and noise (`0.6 % + 80 a.u.`, note `from replicate
+scatter`, the law's sentence on hover); Replicates — each replicate's own fit and its
+p-value, where each was fitted separately; Diagnostics — each test with its mark, finding
+and p-value, a test that could not run reading its reason, the full sentence of each on
+hover; Parameters (estimate and unit; degenerate ones starred, with one footnote naming
+the total the model holds fixed where its balance ties them, `* Not separately determined
+while the dye total is fixed.`, and a note where a signal parameter ended on an entered
+bound); Input shifts; Display — the replicates on the plot as *Replicates and mean ± SD*,
+*Mean ± SD only* or *Replicates only*.
 
 ### Ka confidence — `confidence_*.jpg`
 Canvas: the two readings side by side (Input-aware; Inputs as entered, with *Split* where

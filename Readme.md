@@ -98,7 +98,7 @@ The curves describe the average of the replicates the fit used, and they assume 
 
 ### 4. Read the verdict on the model and the inputs
 
-A coloured line above the summary table gives the verdict in a few words — grey when there is nothing to act on, amber when something is worth checking, red when the result rests on something the data reject — and the same line is printed on the Fit Curve plot and its exported figure. Under the table, **Model and inputs** says what the fit found, in a sentence:
+Fit results calls out what needs acting on above the plot — the inputs conflict, or the curve misses the data — and **Diagnostics**, in the Fit details side panel, marks each test with its p-value, its full sentence on hover. The exported report says what the fit found, in a sentence:
 
 - whether the curve misses the data by more than the data's own scatter allows — measured against the replicates' scatter where you have two or more replicates, and otherwise from runs of residuals on one side of the curve along the titration;
 - whether a shift of the inputs inside the uncertainties you stated turns a miss into a fit — in which case the reported interval already covers it;
@@ -136,7 +136,7 @@ From the **File** menu:
 - **Export Results (CSV)** — one row per parameter: estimate, interval, its level and the design effect its cut-off was widened by, the conditional estimate and interval, the verdict and the test results, the replicate statistics, and the fit statistics with the noise law beside them; plus one row per error source that was allowed to move, holding its shift in percent of the entered value.
 - **Export All…** — the artefacts above plus **Ka uncertainty budget (CSV)**: the budget table of the analysis on screen, one row per source and association constant, with the spread, the elasticity of every input and the run's seed.
 - **Export Raw Data** — round-trip the loaded measurements back to `.txt` or `.csv`.
-- **Save Plot** — save the plot on the tab that is showing. The Fit Curve tab offers PNG or SVG. The Identifiability and Ka Sensitivity tabs are saved whole — heading, plots, key and notes in one picture, without the controls that change what the tab shows — and Qt's SVG painter draws that without the clip that keeps each plot's curves inside its axes, so those two are PNG.
+- **Save Plot** — save the plot on the tab that is showing. Fit results saves its titration plot as PNG or SVG, with each shown fit's numbers in a caption above it. The Identifiability and Ka Sensitivity tabs are saved whole — heading, plots, key and notes in one picture, without the controls that change what the tab shows — and Qt's SVG painter draws that without the clip that keeps each plot's curves inside its axes, so those two are PNG.
 
 ## Scientific background
 

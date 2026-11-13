@@ -92,12 +92,10 @@ class AssayMetadata:
         :class:`BaseAssay` use it.
     x_label : str
         Default name portion of the x-axis label (e.g. ``"Guest"``).
-        The unit suffix is appended at render time by ``PlotWidget`` from
-        ``style['axes']['x_unit']``.
+        The plot appends the unit it shows the concentrations in at render time.
     y_label : str
         Default name portion of the y-axis label (e.g. ``"Signal"``).
-        The unit suffix is appended at render time by ``PlotWidget`` from
-        ``y_unit``.
+        The plot appends ``y_unit`` at render time.
     category : str
         Top-level grouping label for the GUI assay-type selector
         (e.g. ``"Direct binding"``).  Assays sharing a ``category`` populate

@@ -13,7 +13,6 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QMainWindow,
     QMessageBox,
-    QSizePolicy,
     QStackedWidget,
     QWidget,
 )
@@ -25,6 +24,7 @@ from gui.design.tokens import SIZE, Theme, space
 from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.fitting_session import NAVIGATION, VIEWS, FittingSession
 from gui.preferences import APP_NAME, ORG_NAME
+from gui.results import RUN_FIT_KEY
 from gui.update_check import UpdateCheckWorker, is_newer
 from gui.update_dialog import UpdateAvailableDialog
 from gui.workers import retire
@@ -213,10 +213,8 @@ class _StatusBar(QWidget):
         self.setFixedHeight(SIZE['statusbar'])
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.dot = C.StatusDot(t, 'text-tertiary')
-        self.text = C.label('Ready', 'small', 'secondary')
         # The summary gives way to the model line and is cut short with an ellipsis where it does not fit.
-        self.text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._full_text = 'Ready'
+        self.text = C.ElidedLabel('Ready', 'small', 'secondary')
         self.model_line = C.label('', 'small', 'tertiary')
         lay = C.hbox(self.dot, 2, self.text, 4, self.model_line, spacing=0, margins=(5, 0, 5, 0))
         lay.setStretchFactor(self.text, 1)
@@ -224,17 +222,8 @@ class _StatusBar(QWidget):
 
     def set_text(self, text: str) -> None:
         """Show *text* as the summary, with the whole of it in the tooltip."""
-        self._full_text = text
+        self.text.set_full_text(text)
         self.setToolTip(f'{text}\nClick to open the sessions.')
-        self._elide()
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._elide()
-
-    def _elide(self) -> None:
-        width = self.text.width()
-        self.text.setText(self.text.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, width))
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -336,7 +325,7 @@ class FittingMainWindow(QMainWindow):
 
     def _setup_actions(self) -> None:
         keys = QKeySequence.StandardKey
-        self._act_run = _action(self, 'Run fit', 'play', 'Ctrl+R', self._on_primary)
+        self._act_run = _action(self, 'Run fit', 'play', RUN_FIT_KEY, self._on_primary)
         self._act_new = _action(self, 'New session', 'plus', keys.AddTab, self._new_session)
         self._act_add = _action(self, 'Add files to this session…', 'plus', keys.Open, self._on_add_files)
         self._act_replace = _action(self, 'Replace data…', 'open', None, self._on_replace)
@@ -465,6 +454,7 @@ class FittingMainWindow(QMainWindow):
         session = FittingSession()
         session.changed.connect(self._refresh)
         session.side_panel_closed.connect(lambda: self._set_side_visible(False))
+        session.side_panel_requested.connect(lambda: self._set_side_visible(True))
         session.view_requested.connect(self.show_view)
         session.new_session_requested.connect(self._on_load_new)
         session.set_side_panels_visible(self._side_visible)

@@ -806,7 +806,7 @@ class IdentifiabilityWidget(QWidget):
             if widened:
                 notes.append(f'{widened} Its two bands are the intervals at the entered inputs, widened alike.')
         # What the fit found out about the model and the entered inputs, in the
-        # words the summary table and the report use.
+        # words Fit details and the report use.
         verdict = self._verdict_html()
         if verdict:
             summary.append(verdict)
@@ -1002,7 +1002,7 @@ class IdentifiabilityWidget(QWidget):
         """``95% CI [1.30×10⁸, 1.90×10⁸] M⁻¹ (−31% / +52%)``: the interval and how far each closed end lies.
 
         The ends are written by :func:`~gui.plotting.labels.fmt_value`, as the
-        summary table, the plot annotation and the report write them. How far
+        Fit results and the report write them. How far
         an end lies is a percentage of the estimate, which an estimate on an
         end of its search box (*at_bound*) is not: there it is left out.
         """

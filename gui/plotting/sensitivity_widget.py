@@ -32,7 +32,7 @@ A model with two binding constants gets one row of panels, and one map, per
 constant: the widget draws whatever keys the run reports.
 
 The fitted parameters across a SOBOL run's samples are tabled under the plot
-tabs, by :class:`gui.plotting.fit_summary_widget.FitSummaryWidget`, while this
+tabs, by :class:`gui.plotting.samples_summary.SamplesSummary`, while this
 tab is the current one.
 
 The page is a :class:`QStackedLayout` with a placeholder page, a progress page,
@@ -80,7 +80,6 @@ from core.pipeline.inputs import (
 )
 from core.pipeline.sensitivity import _SOBOL_BLOCKS, SensitivityMode, SensitivityResult
 from gui.plotting.colors import INK, INK_2, INK_3, SERIES, SERIES_TOTAL, SURFACE
-from gui.plotting.fit_summary_widget import ParameterTable, unfitted_sentence
 from gui.plotting.labels import (
     STOPPING_TEXT,
     fmt_interval_html,
@@ -93,6 +92,7 @@ from gui.plotting.labels import (
 )
 from gui.plotting.plot_style import DEFAULT_STYLE
 from gui.plotting.plot_widget import ScientificAxisItem, _format_exponent_unicode
+from gui.plotting.samples_summary import ParameterTable, unfitted_sentence
 from gui.widgets.assay_conditions import ASSAY_CONDITIONS
 from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox
 
@@ -187,7 +187,7 @@ _ADDITIONS_NOTE = (
 _PROPAGATION_NOTE = (
     'The spread and the budget below propagate the uncertainties stated under Input uncertainty (GUM Supplement 1): '
     'every sample is a fit at inputs drawn from them, and each counts the same however well it fits the data. The '
-    'input-aware interval on the Fit Curve tab also weighs what the data say about the inputs, so the two can '
+    'input-aware interval in Fit results also weighs what the data say about the inputs, so the two can '
     'differ, the spread here being the wider where the titration itself pins an input down.'
 )
 # Why a binding constant's indices, budget and elasticities are withheld, per

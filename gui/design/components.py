@@ -11,12 +11,23 @@ from __future__ import annotations
 
 import math
 
-from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QVariantAnimation, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen, QTextDocument
+from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTextBoundaryFinder, QVariantAnimation, pyqtSignal
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QFontMetrics,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QTextDocument,
+    QTextDocumentFragment,
+)
 from PyQt6.QtWidgets import (
     QAbstractButton,
     QApplication,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -27,6 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.design import icons
+from gui.design.plot_theme import replicate_alpha
 from gui.design.tokens import RADIUS, SIZE, Theme, font, space
 
 #: The platform's window-button colours (close, minimise, zoom): drawn where a frameless
@@ -52,6 +64,13 @@ def label(text: str, role: str = 'body', tone: str | None = None, rich: bool = F
     if tone:
         lbl.setProperty('tone', tone)
     lbl.setTextFormat(Qt.TextFormat.RichText if rich else Qt.TextFormat.PlainText)
+    return lbl
+
+
+def copyable(lbl: QLabel) -> QLabel:
+    """*lbl* made selectable with the mouse, so the result it shows can be copied (DESIGN.md §6)."""
+    lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    lbl.setCursor(Qt.CursorShape.IBeamCursor)
     return lbl
 
 
@@ -1720,94 +1739,175 @@ class SettingsCard(QWidget):
 
 
 class Callout(QFrame):
-    """One message across the canvas: tinted fill and border of *tone* (``warning``,
-    ``danger``), its icon, the title, the body and an optional trailing *action* link."""
+    """One message across the canvas (DESIGN.md §5): tinted fill and border of *tone*, its icon,
+    the title, the body and an optional trailing *action* link, :attr:`action`.
+
+    ``warning`` carries a result's warning on ``warning-bg`` inside ``warning-border``;
+    ``neutral`` a note on ``bg-subtle``. The body wraps, so a long note grows the callout.
+    """
+
+    #: Per tone: fill, border, icon and icon colour.
+    TONES = {
+        'warning': ('warning-bg', 'warning-border', 'alert', 'warning'),
+        'neutral': ('bg-subtle', 'border', 'info', 'text-secondary'),
+    }
 
     def __init__(self, theme: Theme, tone: str, title: str, body: str, action: str | None = None):
         super().__init__()
         self.t, self.tone = theme, tone
-        ic = QLabel()
-        ic.setPixmap(icons.pixmap('alert', theme[tone], 16))
-        ic.setFixedSize(16, 16)
-        row = hbox(ic, label(title, 'body-strong'), label(body, 'body', 'secondary'), None, margins=(4, 0, 4, 0))
-        if action:
-            row.addWidget(link_button(action))
+        fill, edge, icon, ink = self.TONES[tone]
+        ic = Icon(theme, icon, ink)
+        self.body = label(body, 'body', 'secondary')
+        self.body.setWordWrap(True)
+        self.body.setMinimumWidth(1)
+        self.body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        row = hbox(ic, label(title, 'body-strong'), margins=(4, 3, 4, 3))
+        row.addWidget(self.body, 1)
+        self.action = link_button(action) if action else None
+        if self.action is not None:
+            row.addWidget(self.action)
         self.setLayout(row)
-        self.setFixedHeight(40)
+        self.setMinimumHeight(40)
+        self.setAccessibleName(f'{title}: {body}')
 
     def paintEvent(self, _):
+        fill, edge, _icon, _ink = self.TONES[self.tone]
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = _rounded(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), RADIUS['surface'])
-        p.fillPath(path, self.t.q(f'{self.tone}-bg'))
-        p.setPen(QPen(self.t.q(f'{self.tone}-border'), 1))
+        p.fillPath(path, self.t.q(fill))
+        p.setPen(QPen(self.t.q(edge), 1))
         p.drawPath(path)
         p.end()
+
+
+def spaced_ticks(
+    ticks: list[tuple[float, str]], x_of, fm: QFontMetrics, left: float, right: float
+) -> list[tuple[str, QRectF]]:
+    """The tick labels a log axis draws, each with its box at the top of the label line.
+
+    Each label is centred on its tick and kept inside *left* to *right*. Where two would
+    come closer than ``space(2)``, the rounder value keeps its label — a power of ten,
+    then 5, 2 and 3, then values of more figures — and the other is left out; its grid
+    line still marks the axis.
+    """
+
+    def rank(value: float) -> tuple[int, int]:
+        mantissa = float(f'{value / 10.0 ** math.floor(math.log10(value)):.6g}')
+        return len(f'{mantissa:g}'.replace('.', '')), {1.0: 0, 5.0: 1, 2.0: 2, 3.0: 3}.get(mantissa, 4)
+
+    placed: list[tuple[str, QRectF]] = []
+    for i in sorted(range(len(ticks)), key=lambda i: (rank(ticks[i][0]), i)):
+        value, text = ticks[i]
+        width = fm.horizontalAdvance(text) + 4
+        x = min(max(x_of(value) - width / 2, left), right - width)
+        box = QRectF(x, 0, width, 16)
+        if all(box.left() >= r.right() + space(2) or box.right() + space(2) <= r.left() for _t, r in placed):
+            placed.append((text, box))
+    return sorted(placed, key=lambda item: item[1].left())
 
 
 class IntervalChart(QWidget):
     """A small forest plot on a log axis: one row per interval, each with its estimate.
 
     Each of *rows* is a dict with ``label``, ``color`` (a token), ``segments`` (the
-    accepted stretches, ``(low, high)`` pairs), ``est``, ``text`` (the numbers, drawn on
-    the right in tabular figures) and an optional ``badge``. The axis spans *lo* to *hi*;
-    *ticks* are labelled divided by *tick_scale*, with *unit* after them.
+    accepted stretches, ``(low, high)`` pairs), ``est`` (``None`` for an estimate that is
+    no number, one on an end of its search box), ``text`` (the numbers, drawn on the right
+    in tabular figures, in a column as wide as the widest of them), an optional ``badge``
+    and an optional ``note`` drawn in place of the bars. The axis spans *lo* to *hi*;
+    *ticks* are ``(value, label)`` pairs, with *unit* after them.
     """
 
     ROW_H = 26
+    LABEL_W = 116  # the column of row labels, left of the axis
 
-    def __init__(
-        self,
-        theme: Theme,
-        rows: list[dict],
-        lo: float,
-        hi: float,
-        ticks: list[float],
-        unit: str,
-        tick_scale: float = 1.0,
-    ):
+    def __init__(self, theme: Theme, rows: list[dict], lo: float, hi: float, ticks: list[tuple[float, str]], unit: str):
         super().__init__()
-        self.t, self.rows, self.lo, self.hi, self.ticks, self.unit = theme, rows, lo, hi, ticks, unit
-        self.tick_scale = tick_scale
-        self.setFixedHeight(len(rows) * self.ROW_H + 26)
+        self.t = theme
         self.setMinimumWidth(420)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.set_rows(rows, lo, hi, ticks, unit)
+
+    def set_rows(self, rows: list[dict], lo: float, hi: float, ticks: list[tuple[float, str]], unit: str) -> None:
+        """Show *rows* on the axis *lo* to *hi* with *ticks*, labelled in *unit*."""
+        self.rows, self.lo, self.hi, self.ticks, self.unit = rows, lo, hi, ticks, unit
+        self.setFixedHeight(len(rows) * self.ROW_H + 26)
+        self.setMinimumWidth(420 - 176 + self._numbers_width())  # the axis keeps its room beside wider numbers
+        self.setAccessibleDescription(
+            '; '.join(
+                f'{row["label"]}: {row["text"]}' + (f' ({row["badge"]})' if row.get('badge') else '') for row in rows
+            )
+        )
+        self.update()
 
     def _x(self, v: float, x0: float, w: float) -> float:
         return x0 + (math.log10(v) - math.log10(self.lo)) / (math.log10(self.hi) - math.log10(self.lo)) * w
+
+    def _numbers_width(self) -> int:
+        """The width of the numbers column: the widest row's text and badge, the axis unit, 176 px at least."""
+        numbers, badges = QFontMetrics(font('number')), QFontMetrics(font('label'))
+        widths = [QFontMetrics(font('small-number')).horizontalAdvance(self.unit)]
+        for row in self.rows:
+            width = numbers.horizontalAdvance(row['text'])
+            if row.get('badge'):
+                width += space(3) + badges.horizontalAdvance(row['badge']) + 14
+            widths.append(width)
+        return max(176, math.ceil(max(widths)) + space(1))
+
+    def _axis(self) -> tuple[float, float]:
+        """Where the axis starts and how wide it is at the chart's width."""
+        return self.LABEL_W, self.width() - self.LABEL_W - self._numbers_width() - space(5)
+
+    def tick_room(self) -> tuple[float, float]:
+        """The span the tick labels keep to: from the chart's left edge to a step short of the axis unit."""
+        x0, w = self._axis()
+        return 0.0, x0 + w + space(5) - space(2)
+
+    def tick_rects(self) -> list[tuple[str, QRectF]]:
+        """The tick labels drawn at the chart's width, and their boxes (:func:`spaced_ticks`)."""
+        x0, w = self._axis()
+        return spaced_ticks(
+            self.ticks, lambda v: self._x(v, x0, w), QFontMetrics(font('small-number')), *self.tick_room()
+        )
 
     def paintEvent(self, _):
         t = self.t
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        lab_w, num_w = 116, 176
-        x0, w = lab_w, self.width() - lab_w - num_w - space(5)
+        num_w = self._numbers_width()
+        x0, w = self._axis()
         top = 2
         bottom = top + len(self.rows) * self.ROW_H
         p.setFont(font('small-number'))
-        for tk in self.ticks:
+        p.setPen(QPen(t.q('grid'), 1))
+        for tk, _text in self.ticks:
             x = self._x(tk, x0, w)
-            p.setPen(QPen(t.q('grid'), 1))
             p.drawLine(QPointF(x, top), QPointF(x, bottom))
-            p.setPen(t.q('text-tertiary'))
-            p.drawText(QRectF(x - 30, bottom + 4, 60, 16), Qt.AlignmentFlag.AlignHCenter, f'{tk / self.tick_scale:g}')
+        p.setPen(t.q('text-tertiary'))
+        for text, box in self.tick_rects():
+            p.drawText(box.translated(0, bottom + 4), Qt.AlignmentFlag.AlignHCenter, text)
         p.drawText(QRectF(x0 + w + space(5), bottom + 4, num_w, 16), Qt.AlignmentFlag.AlignLeft, self.unit)
         for i, row in enumerate(self.rows):
             cy = top + i * self.ROW_H + self.ROW_H / 2
             p.setFont(font('small'))
             p.setPen(t.q('text-secondary'))
-            p.drawText(QRectF(0, cy - 9, lab_w - 12, 18), Qt.AlignmentFlag.AlignVCenter, row['label'])
+            p.drawText(QRectF(0, cy - 9, self.LABEL_W - 12, 18), Qt.AlignmentFlag.AlignVCenter, row['label'])
             col = t.q(row['color'])
             p.setPen(QPen(t.q('border'), 1))
             p.drawLine(QPointF(x0, cy), QPointF(x0 + w, cy))
+            if row.get('note'):
+                p.setFont(font('small'))
+                p.setPen(t.q('text-tertiary'))
+                p.drawText(QRectF(x0, cy - 9, w, 18), Qt.AlignmentFlag.AlignVCenter, row['note'])
             for a, b in row['segments']:
                 pen = QPen(col, 4)
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
                 p.setPen(pen)
                 p.drawLine(QPointF(self._x(a, x0, w), cy), QPointF(self._x(b, x0, w), cy))
-            p.setPen(QPen(t.q('bg-surface'), 2))
-            p.setBrush(col)
-            p.drawEllipse(QPointF(self._x(row['est'], x0, w), cy), 5, 5)
+            if row.get('est') is not None:
+                p.setPen(QPen(t.q('bg-surface'), 2))
+                p.setBrush(col)
+                p.drawEllipse(QPointF(self._x(row['est'], x0, w), cy), 5, 5)
             p.setPen(t.q('text-primary'))
             p.setFont(font('number'))
             txt = row['text']
@@ -1826,12 +1926,13 @@ class IntervalChart(QWidget):
 class LegendRow(QWidget):
     """A plot legend as non-wrapping chips whose swatches are drawn with the plot's own marks.
 
-    *items* are ``(kind, text)``: ``dots`` (replicates, at *dot_alpha*), ``cross`` (a
-    replicate switched off), ``rings`` (an overlaid file, with an × that removes it),
-    ``mean`` (mean ± SD) and ``line`` (the fitted or model curve).
+    *items* are ``(kind, text)``: ``dots`` (replicates, at *dot_alpha*, by default the
+    opacity the titration plot draws them at), ``cross`` (a replicate switched off),
+    ``rings`` (an overlaid file, with an × that removes it), ``mean`` (mean ± SD), ``line``
+    (the fitted or model curve) and ``line-other`` (a fit shown beside the reported one).
     """
 
-    def __init__(self, theme: Theme, items: list[tuple[str, str]], dot_alpha: float = 0.6):
+    def __init__(self, theme: Theme, items: list[tuple[str, str]], dot_alpha: float | None = None):
         super().__init__()
         self.t, self.dot_alpha = theme, dot_alpha
         self.setFixedHeight(20)
@@ -1845,6 +1946,10 @@ class LegendRow(QWidget):
         self.update()
         if any(kind == 'rings' for kind, _ in items):
             self.setToolTip('The × removes the overlay')
+
+    def dots_alpha(self) -> float:
+        """The opacity the replicates' dots are drawn at, in the theme as it is now."""
+        return replicate_alpha(self.t) if self.dot_alpha is None else self.dot_alpha
 
     @staticmethod
     def _width(kind: str, txt: str, fm: QFontMetrics) -> int:
@@ -1860,7 +1965,7 @@ class LegendRow(QWidget):
         for kind, txt in self.items:
             if kind == 'dots':
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(t.q('replicate', self.dot_alpha))
+                p.setBrush(t.q('replicate', self.dots_alpha()))
                 for dx, dy in ((3, 2), (8, -2.5), (12, 1.5)):
                     p.drawEllipse(QPointF(x + dx, cy + dy), 2.5, 2.5)
             elif kind == 'rings':
@@ -1885,6 +1990,11 @@ class LegendRow(QWidget):
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
                 p.setPen(pen)
                 p.drawLine(QPointF(x + 1, cy), QPointF(x + 15, cy))
+            elif kind == 'line-other':
+                pen = QPen(t.q('text-tertiary'), 1.5, Qt.PenStyle.DashLine)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                p.drawLine(QPointF(x + 1, cy), QPointF(x + 15, cy))
             p.setPen(t.q('text-secondary'))
             p.drawText(QRectF(x + 20, 0, 400, self.height()), Qt.AlignmentFlag.AlignVCenter, txt)
             if kind == 'rings':
@@ -1894,10 +2004,110 @@ class LegendRow(QWidget):
         p.end()
 
 
-class ShiftBar(QWidget):
-    """A diverging bar of a fitted input shift *z* in σ: the ±1 σ band shaded, axis ±4 σ."""
+class Table(QWidget):
+    """Rows of results under a header (DESIGN.md §6): the header in ``label`` ``text-tertiary``,
+    hairlines between rows, numbers right-aligned in tabular figures.
 
-    def __init__(self, theme: Theme, z: float):
+    *columns* are ``(header, role, tone)``: a column in a ``number`` role is right-aligned.
+    The first column, the names, wraps between words, and so does any other cell of words
+    alone; a cell holding a number, and one of a single token such as a unit, stays on its
+    line, so a number or a unit is never broken (where words precede a number the caller
+    puts them on a line of their own with ``<br>``). A bound — a sign, a space and a number,
+    ``< 0.001`` — reads on one line where its column has room and breaks after its sign
+    where it has not, so the column needs no more width than the number. Cells are rich text — data in them is
+    escaped by the caller — and selectable, so a value can be copied. :meth:`cell` reaches
+    one cell, for its tooltip. *gap* is the step of the spacing scale between columns, narrower
+    for a table of many columns in the side panel.
+    """
+
+    def __init__(self, t: Theme, columns: list[tuple[str, str, str | None]], gap: int = 3):
+        super().__init__()
+        self.t, self.columns = t, columns
+        self.grid = QGridLayout()
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(space(gap))
+        self.grid.setVerticalSpacing(0)
+        self.setLayout(self.grid)
+        self._cells: list[list[QLabel]] = []
+        self.set_rows([])
+
+    @staticmethod
+    def _right(role: str) -> bool:
+        return role.startswith('number') or role == 'small-number'
+
+    @staticmethod
+    def _wraps(html: str) -> bool:
+        """Whether a cell may break between its words: words alone, with no figure a break could split, or a bound."""
+        plain = QTextDocumentFragment.fromHtml(html).toPlainText().strip()
+        words = ' ' in plain and not any(ch.isdigit() for ch in plain)
+        sign, _space, number = plain.partition(' ')
+        return words or (sign in ('<', '>', '≤', '≥') and bool(number) and ' ' not in number)
+
+    def set_rows(self, rows: list[list[str]]) -> None:
+        """Show *rows*, one list of cell texts per row, under the header."""
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item.widget() is not None:
+                drop(item.widget())
+        middle = Qt.AlignmentFlag.AlignVCenter
+        for c, (head, role, _tone) in enumerate(self.columns):
+            lbl = label(head, 'label', 'tertiary')
+            lbl.setMinimumHeight(SIZE['control'])
+            lbl.setAlignment(
+                (Qt.AlignmentFlag.AlignRight if self._right(role) else Qt.AlignmentFlag.AlignLeft) | middle
+            )
+            self.grid.addWidget(lbl, 0, c)
+        self.grid.addWidget(hairline(), 1, 0, 1, len(self.columns))
+        self._cells = []
+        for i, texts in enumerate(rows):
+            r = 2 + 2 * i
+            cells = []
+            for c, ((_head, role, tone), text) in enumerate(zip(self.columns, texts, strict=True)):
+                lbl = copyable(label(text, role, tone, rich=True))
+                lbl.setMinimumHeight(SIZE['control'])
+                lbl.setWordWrap(c == 0 or self._wraps(text))
+                lbl.setAlignment(
+                    (Qt.AlignmentFlag.AlignRight if self._right(role) else Qt.AlignmentFlag.AlignLeft) | middle
+                )
+                self.grid.addWidget(lbl, r, c)
+                cells.append(lbl)
+            self._cells.append(cells)
+            if i < len(rows) - 1:
+                self.grid.addWidget(hairline(), r + 1, 0, 1, len(self.columns))
+        self.grid.setColumnStretch(0, 1)
+
+    def cell(self, row: int, col: int) -> QLabel:
+        """The label of one cell."""
+        return self._cells[row][col]
+
+    def texts(self) -> list[list[str]]:
+        """Every cell's text, row by row, as the table shows it."""
+        return [[cell.text() for cell in row] for row in self._cells]
+
+
+def test_line(t: Theme, icon: str, tone: str, text: str, p: str, tooltip: str = '') -> QWidget:
+    """One test of a fit in a list of tests (DESIGN.md §8): its mark in *tone*, what it found, its p-value at the
+    right; *tooltip* is the test's full sentence. The text wraps where the panel is narrow; the p-value keeps its line.
+    """
+    row = QWidget()
+    row.setMinimumHeight(SIZE['control'])
+    found = wrapped(text, 'body', None)
+    value = copyable(label(p, 'small-number', 'secondary'))
+    lay = hbox(Icon(t, icon, tone), found, value, spacing=3)
+    lay.setStretchFactor(found, 1)
+    row.setLayout(lay)
+    row.setToolTip(tooltip)
+    row.setAccessibleName(f'{text}, {p}')
+    return row
+
+
+class ShiftBar(QWidget):
+    """A diverging bar of a fitted input shift *z* in σ: the ±1 σ band shaded, axis ±4 σ.
+
+    *z* ``None`` (an input stated as a range, which has no σ) draws the band and the axis alone.
+    """
+
+    def __init__(self, theme: Theme, z: float | None):
         super().__init__()
         self.t, self.z = theme, z
         self.setFixedSize(84, 16)
@@ -1911,9 +2121,10 @@ class ShiftBar(QWidget):
         p.fillRect(QRectF(cx - s, 3, 2 * s, h - 6), t.q('bg-subtle'))
         p.setPen(QPen(t.q('border-strong'), 1))
         p.drawLine(QPointF(cx, 1), QPointF(cx, h - 1))
-        z = max(-4, min(4, self.z))
-        x1, x2 = sorted((cx, cx + z * s))
-        p.fillPath(_rounded(QRectF(x1, 5, max(x2 - x1, 1.5), h - 10), 1.5), t.q('text-secondary'))
+        if self.z is not None:
+            z = max(-4, min(4, self.z))
+            x1, x2 = sorted((cx, cx + z * s))
+            p.fillPath(_rounded(QRectF(x1, 5, max(x2 - x1, 1.5), h - 10), 1.5), t.q('text-secondary'))
         p.end()
 
 
@@ -1995,28 +2206,59 @@ class CompactIntervals(QWidget):
     """The interval chart stacked for the side panel: each row's label and numbers on one line,
     its bar on a shared log axis below, the tick labels once at the bottom.
 
-    *rows* are as :class:`IntervalChart` takes them; ticks are labelled divided by *tick_scale*.
-    A row may carry a ``note`` in place of its bars, for a reading whose bars cannot be drawn.
+    *rows* are as :class:`IntervalChart` takes them, *ticks* ``(value, label)`` pairs. A row
+    may carry a ``note`` in place of its bars, for a reading whose bars cannot be drawn. Where
+    a row's label and numbers do not fit on one line, every row puts its numbers on a line
+    of their own under the label.
     """
 
     ROW = 46
+    LINE = 18
 
-    def __init__(self, t: Theme, rows: list[dict], lo: float, hi: float, ticks: list[float], tick_scale: float = 1.0):
+    def __init__(self, t: Theme, rows: list[dict], lo: float, hi: float, ticks: list[tuple[float, str]]):
         super().__init__()
         self.t = t
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.set_rows(rows, lo, hi, ticks, tick_scale)
+        self.set_rows(rows, lo, hi, ticks)
 
-    def set_rows(self, rows: list[dict], lo: float, hi: float, ticks: list[float], tick_scale: float = 1.0) -> None:
+    def set_rows(self, rows: list[dict], lo: float, hi: float, ticks: list[tuple[float, str]]) -> None:
         """Show *rows* on the axis *lo* to *hi* with *ticks*."""
-        self.rows, self.lo, self.hi, self.ticks, self.tick_scale = rows, lo, hi, ticks, tick_scale
-        self.setFixedHeight(len(rows) * self.ROW + 20)
+        self.rows, self.lo, self.hi, self.ticks = rows, lo, hi, ticks
+        self._fit_height()
         self.setAccessibleDescription(
             '; '.join(
                 f'{row["label"]}: {row["text"]}' + (f' ({row["note"]})' if row.get('note') else '') for row in rows
             )
         )
         self.update()
+
+    def _stacked(self) -> bool:
+        """Whether a row's label and numbers are too wide for one line at the width the chart has."""
+        labels, numbers = QFontMetrics(font('small')), QFontMetrics(font('number'))
+        return any(
+            labels.horizontalAdvance(row['label']) + space(3) + numbers.horizontalAdvance(row['text']) > self.width()
+            for row in self.rows
+        )
+
+    def _row_height(self) -> int:
+        return self.ROW + (self.LINE if self._stacked() else 0)
+
+    def _fit_height(self) -> None:
+        height = len(self.rows) * self._row_height() + 20
+        if height != self.height() or self.minimumHeight() != height:
+            self.setFixedHeight(height)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_height()
+
+    def tick_room(self) -> tuple[float, float]:
+        """The span the tick labels keep to: the chart's width, so an end tick's label stays whole."""
+        return 0.0, float(self.width())
+
+    def tick_rects(self) -> list[tuple[str, QRectF]]:
+        """The tick labels drawn at the chart's width, and their boxes (:func:`spaced_ticks`)."""
+        return spaced_ticks(self.ticks, self._x, QFontMetrics(font('small-number')), *self.tick_room())
 
     def _x(self, v: float) -> float:
         w = self.width() - 12
@@ -2027,23 +2269,30 @@ class CompactIntervals(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w = self.width()
-        bottom = len(self.rows) * self.ROW
-        for tk in self.ticks:
+        stacked, row_h = self._stacked(), self._row_height()
+        bottom = len(self.rows) * row_h
+        p.setFont(font('small-number'))
+        p.setPen(QPen(t.q('grid'), 1))
+        for tk, _text in self.ticks:
             x = self._x(tk)
-            p.setPen(QPen(t.q('grid'), 1))
-            p.drawLine(QPointF(x, 22), QPointF(x, bottom))
-            p.setFont(font('small-number'))
-            p.setPen(t.q('text-tertiary'))
-            p.drawText(QRectF(x - 20, bottom + 2, 40, 16), Qt.AlignmentFlag.AlignHCenter, f'{tk / self.tick_scale:g}')
+            p.drawLine(QPointF(x, 22 + (self.LINE if stacked else 0)), QPointF(x, bottom))
+        p.setPen(t.q('text-tertiary'))
+        for text, box in self.tick_rects():
+            p.drawText(box.translated(0, bottom + 2), Qt.AlignmentFlag.AlignHCenter, text)
         for i, row in enumerate(self.rows):
-            y = i * self.ROW
+            y = i * row_h
             p.setFont(font('small'))
             p.setPen(t.q('text-secondary'))
-            p.drawText(QRectF(0, y, w, 18), Qt.AlignmentFlag.AlignVCenter, row['label'])
+            p.drawText(QRectF(0, y, w, self.LINE), Qt.AlignmentFlag.AlignVCenter, row['label'])
             p.setFont(font('number'))
             p.setPen(t.q('text-primary'))
-            p.drawText(QRectF(0, y, w, 18), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, row['text'])
-            cy = y + 31
+            if stacked:
+                p.drawText(QRectF(0, y + self.LINE, w, self.LINE), Qt.AlignmentFlag.AlignVCenter, row['text'])
+            else:
+                p.drawText(
+                    QRectF(0, y, w, self.LINE), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, row['text']
+                )
+            cy = y + 31 + (self.LINE if stacked else 0)
             p.setPen(QPen(t.q('border'), 1))
             p.drawLine(QPointF(6, cy), QPointF(w - 6, cy))
             col = t.q(row['color'])
@@ -2156,6 +2405,102 @@ def wrapped(text: str, role: str = 'body', tone: str | None = 'secondary', rich:
     lbl.setWordWrap(True)
     lbl.setMinimumWidth(1)
     return lbl
+
+
+_ZERO_WIDTH_SPACE = '​'
+
+
+def _graphemes(word: str) -> list[str]:
+    """*word* as the characters a reader sees: a letter with its accents, an emoji with its joined parts, each one.
+
+    Qt counts the boundaries in UTF-16 code units, which a character past U+FFFF takes two of.
+    """
+    finder = QTextBoundaryFinder(QTextBoundaryFinder.BoundaryType.Grapheme, word)
+    index, units = {0: 0}, 0
+    for i, char in enumerate(word):
+        units += 2 if ord(char) > 0xFFFF else 1
+        index[units] = i + 1
+    cuts = [0]
+    while (unit := finder.toNextBoundary()) != -1:
+        cuts.append(index[unit])
+    return [word[a:b] for a, b in zip(cuts, cuts[1:])]
+
+
+class BreakingLabel(QLabel):
+    """Plain text that wraps between words and, inside a word wider than the label, between its characters.
+
+    For a name the user typed — one long word, or words joined by underscores — that must be
+    read whole at any width the panel gives it; :attr:`full_text` keeps it as typed, and is
+    the label's accessible name.
+    """
+
+    def __init__(self, text: str = '', role: str = 'body', tone: str | None = None):
+        super().__init__()
+        self.setFont(font(role))
+        if tone:
+            self.setProperty('tone', tone)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setWordWrap(True)
+        self.setMinimumWidth(1)
+        self.full_text = ''
+        self.set_full_text(text)
+
+    def set_full_text(self, text: str) -> None:
+        """Show *text*, broken to the width the label has."""
+        self.full_text = text
+        self.setAccessibleName(text)
+        self._break()
+
+    def _broken(self, width: int) -> str:
+        """The text with a break allowed between the characters of every word wider than *width*."""
+        fm = self.fontMetrics()
+        words = self.full_text.split(' ')
+        return ' '.join(_ZERO_WIDTH_SPACE.join(_graphemes(w)) if fm.horizontalAdvance(w) > width else w for w in words)
+
+    def _break(self) -> None:
+        text = self._broken(self.contentsRect().width())
+        if text != self.text():
+            self.setText(text)
+
+    def heightForWidth(self, width: int) -> int:
+        margins = self.contentsMargins()
+        inner = width - margins.left() - margins.right()
+        rect = self.fontMetrics().boundingRect(0, 0, inner, 1 << 20, Qt.TextFlag.TextWordWrap, self._broken(inner))
+        return rect.height() + margins.top() + margins.bottom()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._break()
+
+
+class ElidedLabel(QLabel):
+    """One line of plain text that gives way to its neighbours: cut short with an ellipsis where it does not fit.
+
+    Its width is whatever the layout leaves it, so a row it sits in never grows past its
+    other contents for it; :attr:`full_text` keeps the whole line.
+    """
+
+    def __init__(self, text: str = '', role: str = 'body', tone: str | None = None):
+        super().__init__()
+        self.setFont(font(role))
+        if tone:
+            self.setProperty('tone', tone)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.full_text = ''
+        self.set_full_text(text)
+
+    def set_full_text(self, text: str) -> None:
+        """Show *text*, cut to the width the label has."""
+        self.full_text = text
+        self._elide()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        self.setText(self.fontMetrics().elidedText(self.full_text, Qt.TextElideMode.ElideRight, self.width()))
 
 
 def drop(widget: QWidget) -> None:

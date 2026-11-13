@@ -14,6 +14,9 @@ from gui.design.tokens import Theme, space
 
 from .common import DEMO, THIN, sci, split_stretches, sub
 
+#: The opacity of the replicates' dots in this reference, in the plot and in its legend alike.
+DOT_ALPHA = 0.45
+
 
 def hero(t: Theme) -> QWidget:
     h = DEMO['headline']
@@ -55,7 +58,9 @@ def hero(t: Theme) -> QWidget:
             'badge': 'Split',
         },
     ]
-    chart = C.IntervalChart(t, rows, 0.95e8, 5.3e8, [1e8, 1.5e8, 2e8, 3e8, 4e8, 5e8], f'×{THIN}10⁸ M⁻¹', tick_scale=1e8)
+    chart = C.IntervalChart(
+        t, rows, 0.95e8, 5.3e8, [(v * 1e8, f'{v:g}') for v in (1, 1.5, 2, 3, 4, 5)], f'×{THIN}10⁸ M⁻¹'
+    )
     chart.setToolTip(
         'Split: the conditional interval holds rejected values; the accepted ones come in separate '
         'stretches. See Ka confidence.'
@@ -76,7 +81,7 @@ def titration_plot(t: Theme) -> pg.PlotWidget:
     for rep in DEMO['replicates']:
         y = np.array(rep['signal']) * s
         if rep['used_by_fit']:
-            pi.addItem(scatter(t, x, y, 'replicate', 0.45, 6))
+            pi.addItem(scatter(t, x, y, 'replicate', DOT_ALPHA, 6))
         else:
             pi.addItem(scatter(t, x, y, 'replicate-off', 0.75, 7, symbol='x'))
     fc = DEMO['fit_curve']
@@ -106,6 +111,7 @@ def canvas(t: Theme) -> QWidget:
     legend = C.LegendRow(
         t,
         [('dots', f'Replicates ({used})'), ('cross', 'A switched off'), ('mean', 'Mean ± SD'), ('line', 'Fit')],
+        dot_alpha=DOT_ALPHA,
     )
     plot_head = C.hbox(
         C.label('Titration', 'body-strong'),

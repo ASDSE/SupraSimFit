@@ -28,7 +28,7 @@ Pins the wiring the compute-layer tests can't reach:
 - The summary under the plot tabs follows the tab: the samples view on Ka
   Sensitivity, the fit on every other tab, and a new run, a failed run, a
   heatmap and new or cleared data never leave it stale. What that view shows is
-  pinned by ``test_fit_summary_widget.py``.
+  pinned by ``test_samples_summary.py``.
 - :class:`SensitivityWorker` sends at most about ten progress updates a second
   and always delivers the latest count at a cancel and at the end, so the bar
   still ends full; the status bar drops the time estimate at the last count and
@@ -594,7 +594,7 @@ def test_interval_texts_name_what_the_interval_covers_and_the_block_count(qapp):
         ),
         (
             {'Ka_dye': 0, 'Ka_guest': 1},
-            'The Sobol indices for Ka(G) leave out 1 of the 20 sample groups set by the '
+            'The Sobol indices for Kₐ(G) leave out 1 of the 20 sample groups set by the '
             'sample size: at least one fit in that group could not be made.',
         ),
     ],
@@ -1509,20 +1509,18 @@ def test_failed_run_takes_the_tab_off_the_progress_page(qapp, monkeypatch):
 # The summary under the plot tabs
 # ---------------------------------------------------------------------------
 #
-# What the samples view shows — the statistics over the samples, the caption and
-# Fit Quality — is pinned by tests/unit/gui/test_fit_summary_widget.py. Here only
-# the wiring is checked: which view the session shows, and that no run reaches a
-# tab it does not belong to.
+# What the summary shows — the statistics over the samples, the caption and
+# Fit Quality — is pinned by tests/unit/gui/test_samples_summary.py. Here only
+# the wiring is checked: that the summary shows the run on view and no other.
 
 
 def _in_samples_view(widget) -> bool:
-    from gui.plotting.fit_summary_widget import _REPORT_TITLE
-
-    return widget._params_group.title() == _REPORT_TITLE
+    """Whether the summary is showing a run's samples rather than a note saying why there are none."""
+    return widget._table.rowCount() > 0
 
 
 def test_sensitivity_run_uses_the_bounds_set_in_binding_model(qapp, monkeypatch):
-    """The analysis fits within the same parameter bounds as the fit on the Fit Curve tab."""
+    """The analysis fits within the same parameter bounds as the fit in Fit results."""
     from gui import workers
 
     seen = {}
@@ -1543,23 +1541,20 @@ def test_sensitivity_run_uses_the_bounds_set_in_binding_model(qapp, monkeypatch)
     assert seen['bounds'] == bounds
 
 
-def test_summary_follows_the_view(qapp, monkeypatch):
-    """In Sensitivity the summary shows the run's samples; Fit results brings the fit back."""
+def test_summary_shows_the_samples_of_the_run(qapp, monkeypatch):
+    """Under the plots of Sensitivity the summary shows the finished run's samples."""
     from gui import workers
 
     monkeypatch.setattr(workers, 'run_sensitivity', _fake_run(3))
     session, warnings = _demo_session(monkeypatch)
     summary = session._summary_widget
     session.show_view('Sensitivity')
+    assert not _in_samples_view(summary)
 
     session.run_sensitivity()
     _wait_for_worker(session, qapp)
 
     assert warnings == []
-    assert _in_samples_view(summary)
-    session.show_view('Fit results')
-    assert not _in_samples_view(summary)
-    session.show_view('Sensitivity')
     assert _in_samples_view(summary)
 
 
@@ -1773,7 +1768,7 @@ def test_one_run_is_quoted_the_same_number_of_fits_wherever_it_is_counted(qapp, 
 
 def _budget_tables(widget) -> list:
     """The budget table of each binding constant, in the order the constants are drawn."""
-    from gui.plotting.fit_summary_widget import ParameterTable
+    from gui.plotting.samples_summary import ParameterTable
 
     return widget._results_host.widget().findChildren(ParameterTable)
 
@@ -2141,7 +2136,7 @@ def test_the_page_says_it_propagates_the_stated_uncertainties_and_how_that_diffe
     (caption,) = [text for text in _labels(w) if 'GUM Supplement 1' in text]
 
     assert 'propagate the uncertainties stated under Input uncertainty' in caption
-    assert 'input-aware interval on the Fit Curve tab also weighs what the data say about the inputs' in caption
+    assert 'input-aware interval in Fit results also weighs what the data say about the inputs' in caption
     assert 'can differ' in caption and 'splits' not in caption
 
 
@@ -2311,14 +2306,14 @@ def test_the_exported_budget_carries_the_numbers_the_table_rounds(qapp):
         by_kind.setdefault(row['Kind'], []).append(row)
     assert set(by_kind) == {'total', 'source', 'interactions', 'input'}
     assert all(row['Seed'] == result.seed_used for row in rows)
-    assert all(row['Ka'] == 'Ka(G)' for row in rows)
+    assert all(row['Ka'] == 'Kₐ(G)' for row in rows)
 
     (total,) = by_kind['total']
     assert total['Variance (decades^2)'] == result.budget['Ka_guest'].variance
     assert (total['Variance (decades^2) low'], total['Variance (decades^2) high']) == (0.006561, 0.007569)
     assert total['S1'] == ''  # a total is not a share of itself
 
-    dye = next(row for row in by_kind['source'] if row['Item'] == 'Ka,dye')
+    dye = next(row for row in by_kind['source'] if row['Item'] == 'Kₐ,dye')
     assert dye['Elasticity'] == 0.31
     assert dye['Variance (decades^2)'] == 0.05 * result.budget['Ka_guest'].variance
     assert dye['Spread if exact (decades)'] == 0.081873
@@ -2326,7 +2321,7 @@ def test_the_exported_budget_carries_the_numbers_the_table_rounds(qapp):
     # Every perturbable input is there, [Dye]₀ included, although no source of
     # its own moves it: a source's elasticity is the sum over the inputs it moves.
     assert {row['Item']: row['Elasticity'] for row in by_kind['input']} == {
-        'Ka,dye': 0.31,
+        'Kₐ,dye': 0.31,
         '[Host]₀': -1.2,
         '[Dye]₀': 0.62,
         'Guest': 0.95,

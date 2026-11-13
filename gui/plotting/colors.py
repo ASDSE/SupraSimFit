@@ -79,8 +79,6 @@ PALETTES: dict[str, list[tuple[int, int, int]]] = {
     ],
 }
 
-PALETTE_NAMES: list[str] = list(PALETTES.keys())
-
 # Fit curve colors (distinct from replica palette)
 FIT_PALETTE: list[tuple[int, int, int]] = [
     (23, 190, 207),  # cyan

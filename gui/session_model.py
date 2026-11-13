@@ -313,8 +313,8 @@ def _stated_as(result: FitResult) -> str:
 def _verdict_note(result: FitResult) -> str:
     """What the fit's diagnostics say in a few words, for the status bar; ``''`` for a fit that has none.
 
-    The headline the summary and the plot show (:func:`verdict_headline`),
-    continuing the sentence the status bar opens. A fit of an assay with no
+    The verdict's headline (:func:`verdict_headline`), continuing the sentence the
+    status bar opens. A fit of an assay with no
     association constant, and a result read from a file written before the
     diagnostics existed, carry no verdict.
     """
@@ -1476,7 +1476,8 @@ class SessionModel(QObject):
         left_out = _left_out_text(result, worker.ms.replica_ids)
         used = fit_replica_ids(result) or []
         given = input_replica_ids(result) or used
-        counted = f', {len(used)} of {len(given)} replicates used' if given else ''
+        # Counted against every loaded replicate, as Fit details and the badge count them.
+        counted = f', {len(used)} of {len(worker.ms.replica_ids)} replicates used' if given else ''
         if (
             result.fit_config.get('per_replicate')
             and 'replicate_test' not in result.metadata

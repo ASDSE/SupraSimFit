@@ -2,8 +2,8 @@
 
 :func:`summarize_parameters` is the single source of every reported row: the
 estimate, its interval and, in per-replicate mode, the spread of the
-replicates' own fits. The fit summary table, the plot annotation and the
-TXT/CSV exports all render from it. Beside it are the questions a view asks of
+replicates' own fits. The Fit results view, the caption of its saved figure
+and the TXT/CSV exports all render from it. Beside it are the questions a view asks of
 a result: whether its headline is the fit at the entered inputs
 (:func:`reports_conditional`), which signal parameters ended on a bound
 (:func:`parameters_on_bound`, :func:`offsets_held_at_zero`) and which
@@ -15,7 +15,7 @@ for a result imported from a file as for one fitted now.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -221,8 +221,8 @@ def offsets_held_at_zero(result: FitResult) -> List[str]:
 def summarize_parameters(result: FitResult) -> List[ParameterSummary]:
     """Reported rows for *result* — the single source for every display.
 
-    The fit summary table, the plot annotation and the TXT/CSV exports all
-    render from this, so they cannot drift apart. A log₁₀ twin row follows each
+    The Fit results view, the caption of its saved figure and the TXT/CSV
+    exports all render from this, so they cannot drift apart. A log₁₀ twin row follows each
     binding constant; its interval is the parameter's interval transformed, and
     its replicate statistics come from
     :func:`~core.optimizer.ensemble.describe_log10`, which transforms the
@@ -408,3 +408,20 @@ def input_replica_ids(result: FitResult) -> Optional[List[str]]:
     if used is None:
         return None
     return list(used) + [rid for rid in result.metadata.get('replica_failures') or {} if rid not in used]
+
+
+def replica_order(result: FitResult, loaded: Optional[Sequence[str]] = None) -> Optional[List[str]]:
+    """The replicates in the order the app names them A, B, …: *loaded*, the data's, else the order *result* records.
+
+    A fit made from data records ``loaded_replica_ids``, so its replicates keep their
+    letters where the data are not loaded.
+
+    Returns
+    -------
+    list[str] | None
+        The replicate ids in order, or None when neither is known.
+    """
+    if loaded is not None:
+        return list(loaded)
+    order = result.metadata.get('loaded_replica_ids')
+    return None if order is None else list(order)

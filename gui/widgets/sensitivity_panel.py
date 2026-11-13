@@ -57,7 +57,7 @@ of K<sub>a</sub> and which error source it comes from. Set at least one input th
 something other than <i>fixed</i>.</p>
 <p>It is a propagation of the uncertainties you stated (GUM Supplement 1): every
 draw counts the same, however well or badly the fit at it follows your data. The
-interval on the Fit Curve tab uses the same uncertainties but also weighs what the
+interval in Fit results uses the same uncertainties but also weighs what the
 data say about the inputs, so the two can differ — the spread here is the wider
 where your titration itself pins an input down.</p>
 <p>Every sample is one complete, deterministic fit of the averaged signal of the replicates your fit

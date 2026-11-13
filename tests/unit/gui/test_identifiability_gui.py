@@ -356,7 +356,7 @@ def test_confidence_interval_is_stated(qapp):
 
     w = _widget(_fit(), _profile_set())
     text = w._summary.text()
-    # The same bracket the summary table and the report write it in.
+    # The same bracket the report writes it in.
     assert f'95% CI {fmt_interval_html(fmt_value(1e8), fmt_value(1e9), False, False)} M<sup>−1</sup>' in text
     assert '(−68% / +216%)' in text
     assert 'open' not in text

@@ -1,6 +1,6 @@
 """HTML display labels for parameter names.
 
-Used by FitSummaryWidget and plot annotations to render math-style names
+Used by the views, the reports and the plots to render math-style names
 in Qt widgets that support HTML (QLabel, QFormLayout, pg.TextItem).
 :func:`plain_label` flattens such a label for widgets that paint plain text,
 :func:`fmt_r2` renders a coefficient of determination for either,
@@ -36,13 +36,14 @@ from html import escape, unescape
 from typing import Iterable, Sequence
 
 from core.units import ureg
-from gui.plotting.colors import INK_2, NOTE_SURFACE
 
 _SUPERSCRIPT_DIGITS = str.maketrans('0123456789-−', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁻')
 _SUBSCRIPT_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
 _SUB_TAG_RE = re.compile(r'<sub>(.*?)</sub>')
 _SUP_TAG_RE = re.compile(r'<sup>(.*?)</sup>')
 _ANY_TAG_RE = re.compile(r'<[^>]+>')
+# The *a* that opens the subscript of an association constant: K<sub>a</sub>, K<sub>a,dye</sub>, K<sub>a(G)</sub>.
+_KA_SUBSCRIPT_RE = re.compile(r'^a(?=$|[,(])')
 
 #: What a sensitivity run says while it stops: the status bar and the Ka Sensitivity tab both show it.
 STOPPING_TEXT = 'Stopping — finishing the fits already running…'
@@ -68,11 +69,21 @@ def and_join(items) -> str:
     return f'{", ".join(items[:-1])} and {items[-1]}'
 
 
+def _subscript(text: str) -> str:
+    """The text of a ``<sub>`` in plain text: its digits subscripted, and the *a* of an association constant too.
+
+    ``K<sub>a,dye</sub>`` reads ``Kₐ,dye`` and ``K<sub>a(G)</sub>`` reads ``Kₐ(G)``, as the
+    glossary writes Kₐ (DESIGN.md §9); a word such as ``max`` keeps its letters.
+    """
+    return _KA_SUBSCRIPT_RE.sub('ₐ', text).translate(_SUBSCRIPT_DIGITS)
+
+
 def plain_label(html: str) -> str:
     """Flatten an HTML display label into plain text.
 
     Digits inside ``<sub>`` and ``<sup>`` become their Unicode sub- and
-    superscripts, every remaining tag is dropped and the entities left behind
+    superscripts, as does the *a* of an association constant's subscript
+    (``K<sub>a,dye</sub>`` → ``Kₐ,dye``); every remaining tag is dropped and the entities left behind
     become the characters they stand for, so the label reads in widgets that
     paint plain text — pyqtgraph axis ticks, combo box entries, check box
     labels. A name the user typed reaches a label escaped, and an ampersand in
@@ -88,7 +99,7 @@ def plain_label(html: str) -> str:
     str
         The same label as plain text: ``'[Host]₀'``, ``'M⁻¹'``.
     """
-    text = _SUB_TAG_RE.sub(lambda m: m.group(1).translate(_SUBSCRIPT_DIGITS), html)
+    text = _SUB_TAG_RE.sub(lambda m: _subscript(m.group(1)), html)
     text = _SUP_TAG_RE.sub(lambda m: m.group(1).translate(_SUPERSCRIPT_DIGITS), text)
     return unescape(_ANY_TAG_RE.sub('', text))
 
@@ -125,9 +136,9 @@ def fmt_r2(value: float) -> str:
 #: whole interval reads where they close neither end. A side is open when the
 #: profile stays inside the F-test threshold as far as it goes, so no number
 #: would be the limit; words say that, where a number would claim a bound.
-_NO_UPPER = 'no upper limit'
-_NO_LOWER = 'no lower limit'
-_UNLIMITED = 'not limited by the data'
+NO_UPPER = 'no upper limit'
+NO_LOWER = 'no lower limit'
+UNLIMITED = 'not limited by the data'
 
 #: Marks a reported interval whose accepted values come in separate stretches,
 #: wherever the bracket alone would read as one connected range.
@@ -136,7 +147,7 @@ SPLIT_MARK = '†'
 #: What that mark means, in one sentence, wherever a split interval is reported.
 SPLIT_NOTE = (
     'not every value inside this interval explains the data well enough: the ones that do come in separate '
-    'stretches and the interval spans all of them. The Identifiability tab shows where they are.'
+    'stretches and the interval spans all of them. Ka confidence shows where they are.'
 )
 
 #: Said of an open side the binding model cannot be solved past: the edge is
@@ -180,9 +191,9 @@ def fmt_interval_plain(low: str, high: str, open_low: bool, open_high: bool) -> 
 def _interval_text(low: str, high: str, open_low: bool, open_high: bool, words: str) -> str:
     """The shared interval wording, with the prose phrases wrapped in *words*."""
     if open_low and open_high:
-        return f'[{words.format(_UNLIMITED)}]'
-    lo = words.format(_NO_LOWER) if open_low else low
-    hi = words.format(_NO_UPPER) if open_high else high
+        return f'[{words.format(UNLIMITED)}]'
+    lo = words.format(NO_LOWER) if open_low else low
+    hi = words.format(NO_UPPER) if open_high else high
     return f'[{lo}, {hi}]'
 
 
@@ -219,9 +230,9 @@ def log10_decimals(stats: dict | None) -> int:
 def fmt_log10(value: float, stats: dict | None) -> str:
     """*value* as a log₁₀ reading, to the decimals :func:`log10_decimals` gives *stats*.
 
-    The summary table and the text report write a log₁₀ value, its interval and
-    its spread through this, so the same fit reads the same on screen and in the
-    file. A
+    The text report and the summary of a sensitivity run's samples write a log₁₀
+    value, its interval and its spread through this, so the same fit reads the same
+    on screen and in the file. A
     spread too tight for those decimals is written to four significant figures
     instead, so a number that is not zero never reads as zero.
     """
@@ -251,10 +262,9 @@ def fmt_value(value: float) -> str:
     """A fitted value or an interval edge as every view writes it: ``8.00×10⁴``, ``2.41×10³``, ``150``, ``0.0120``.
 
     Three significant figures with the trailing zeros kept, so the digits
-    shown are the digits meant. The summary table, the plot annotation, the
-    Identifiability header and the text report all write a number of a fit
-    through this, and one edge of one interval reads the same wherever it
-    stands.
+    shown are the digits meant. Fit results, the Identifiability header and the
+    text report all write a number of a fit through this, and one edge of one
+    interval reads the same wherever it stands.
     """
     return fmt_sci(value, _VALUE_DIGITS)
 
@@ -289,7 +299,7 @@ def fmt_bound_estimate(
         return words.format(f'at the {"lower" if below else "upper"} end of its search range')
     closed = (high, open_high) if below else (low, open_low)
     if closed[1]:
-        return words.format(_UNLIMITED)
+        return words.format(UNLIMITED)
     return f'{words.format("not limited below" if below else "not limited above")} {closed[0]}'
 
 
@@ -320,12 +330,13 @@ def fmt_estimate(value: float, at_bound: str, interval, open_ends, fmt=fmt_value
     return fmt_bound_estimate(at_bound, *ends, *open_ends, html=html)
 
 
-def own_estimates(result, keys, *, html: bool) -> list[str]:
+def own_estimates(result, keys, *, html: bool, fmt=fmt_value) -> list[str]:
     """One replicate's own fit of each of *keys*, as the replicate tables write it; ``—`` for a key it lacks.
 
     Read through :func:`~core.pipeline.reporting.summarize_parameters`, so a
     replicate whose own binding constant ran to a bound of its search box reads
-    in words, as every other estimate does.
+    in words, as every other estimate does. *fmt* writes a number, as
+    :func:`fmt_estimate` takes it.
     """
     from core.pipeline.reporting import summarize_parameters
 
@@ -334,7 +345,12 @@ def own_estimates(result, keys, *, html: bool) -> list[str]:
         '—'
         if key not in rows
         else fmt_estimate(
-            rows[key].estimate, rows[key].estimate_at_bound, rows[key].interval, rows[key].interval_open, html=html
+            rows[key].estimate,
+            rows[key].estimate_at_bound,
+            rows[key].interval,
+            rows[key].interval_open,
+            fmt,
+            html=html,
         )
         for key in keys
     ]
@@ -342,7 +358,7 @@ def own_estimates(result, keys, *, html: bool) -> list[str]:
 
 #: How the single-replicate fits relate to the interval beside them. Both are
 #: honest and they answer different questions, so the reader is told which.
-_REPLICATES_RELATION = (
+REPLICATES_RELATION = (
     "These show how far the replicates' own fits disagree. The interval says how precisely the fit of their "
     "average pins Ka down, which is a different question, so a single replicate's value can fall outside it."
 )
@@ -385,7 +401,7 @@ def replicate_summary(rows, n: int, name, unit) -> str:
     if not figures and not bounds:
         return ''
     head = f'Single-replicate fits (inputs as entered): {"; ".join(figures)}.' if figures else ''
-    return ' '.join(part for part in (head, *bounds, _REPLICATES_RELATION if figures else '') if part)
+    return ' '.join(part for part in (head, *bounds, REPLICATES_RELATION if figures else '') if part)
 
 
 def fmt_spread(sd_decades: float, *, html: bool) -> str:
@@ -817,8 +833,9 @@ def fmt_p(p: float) -> str:
     """A p-value as every report writes it: ``p = 0.55``, ``p = 0.0012``, ``p < 0.001``, ``p > 0.99``.
 
     Two significant figures and a bound past :data:`_P_FLOOR` and
-    :data:`_P_CEILING`. A simulated lack-of-fit p-value takes the values
-    ``k / (LOF_BOOTSTRAP_DRAWS + 1)``, which two figures write exactly.
+    :data:`_P_CEILING`. A simulated lack-of-fit p-value is a multiple of
+    ``1 / (LOF_BOOTSTRAP_DRAWS + 1)``; two figures write it to within that step
+    (``21/200`` reads ``0.1``), and :func:`fmt_test_p` writes its floor as a bound.
     """
     if p < _P_FLOOR:
         return f'p < {_P_FLOOR:g}'
@@ -886,12 +903,24 @@ def fmt_misfit(test, *, named: bool = True) -> str:
         dof = '' if test.dof is None else f'({test.dof[0]}, {test.dof[1]})'
         head = f'{"lack-of-fit " if named else ""}F{dof} = {fmt_stat(test.statistic)}'
         if test.reference == 'bootstrap':
-            from core.pipeline.diagnostics import LOF_BOOTSTRAP_DRAWS
+            return f'{head}, {fmt_test_p(test)}, {SIMULATED_P}'
+    return f'{head}, {fmt_test_p(test)}'
 
-            smallest = 1.0 / (LOF_BOOTSTRAP_DRAWS + 1)
-            p = f'p ≤ {smallest:g}' if test.p_value <= smallest else fmt_p(test.p_value)
-            return f'{head}, {p}, {SIMULATED_P}'
-    return f'{head}, {fmt_p(test.p_value)}'
+
+def fmt_test_p(test) -> str:
+    """The p-value of one misfit test as every report writes it.
+
+    :func:`fmt_p`, except where no simulated ratio reached the observed one: the
+    p-value is then the smallest the simulation can show, ``1 / (LOF_BOOTSTRAP_DRAWS +
+    1)``, and is written as the bound it is, ``p ≤ 0.005``.
+    """
+    if test.kind != 'runs' and test.reference == 'bootstrap':
+        from core.pipeline.diagnostics import LOF_BOOTSTRAP_DRAWS
+
+        smallest = 1.0 / (LOF_BOOTSTRAP_DRAWS + 1)
+        if test.p_value <= smallest:
+            return f'p ≤ {smallest:g}'
+    return fmt_p(test.p_value)
 
 
 def fmt_percent(fraction: float) -> str:
@@ -1235,24 +1264,16 @@ def _conflict_text(diagnostics, shifts, labels) -> tuple[str, str, str, str]:
     )
 
 
-#: The colour of the text and of the strip behind it, per tone of a verdict's
-#: headline: nothing to act on, something to check, and a result that rests on
-#: an assumption the data reject.
-VERDICT_TONES = {
-    'neutral': (INK_2, NOTE_SURFACE),
-    'amber': ('#7a4a00', '#fcf1dc'),
-    'red': ('#a3221b', '#fce8e6'),
-}
-
-#: Said on the plot where the curve is drawn at the inputs the fit moved, not at the entered ones.
-SHIFTED_CURVE_NOTE = 'Curve drawn at the fitted input shifts'
+#: The tones a verdict's headline is given: nothing to act on, something to check, and a
+#: result that rests on an assumption the data reject.
+VERDICT_TONES = ('neutral', 'amber', 'red')
 
 
 def verdict_headline(diagnostics) -> tuple[str, str]:
     """What the diagnostics of one fit say in a few words, and the tone of :data:`VERDICT_TONES` to show it in.
 
-    The line a reader sees first — above the table, on the plot and on the
-    exported figure; :func:`verdict_sentence` says the rest. It never names an
+    The line a reader sees first — in Input uncertainty's side panel and the
+    exported report; :func:`verdict_sentence` says the rest. It never names an
     input: a conflict is a statement about the inputs together. A rejected
     model is named by what the test measured — the curve misses the data by
     more than their scatter allows — rather than by the conclusion: replicates
@@ -1298,11 +1319,11 @@ def fmt_shifts(shifts, labels, *, html: bool) -> str:
     """
     from core.pipeline.inputs import input_name
 
-    ordered = sorted(shifts.values(), key=_shift_order)
+    ordered = sorted(shifts.values(), key=shift_order)
     return ', '.join(fmt_shift(shift, input_name(shift.key, dict(labels)), html=html) for shift in ordered)
 
 
-def _shift_order(shift) -> tuple:
+def shift_order(shift) -> tuple:
     """Sort key: the inputs stated with a σ by how far they moved in σ, then the ranges, then by key."""
     if shift.z is None:
         return (1, -abs(shift.fraction), shift.key)

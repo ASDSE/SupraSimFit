@@ -63,7 +63,7 @@ def test_a_typed_amount_reaches_the_model_before_the_field_loses_focus(view):
 
     assert view.model.settings.errors.specs == {'Ka_dye': InputSpec.sigma_pct(12.0)}
     QTest.keyClicks(editor, 'x')
-    assert view.model.settings.input_problems == ('Ka,dye: “12x” is not a number. Enter a number, or choose “Fixed”.',)
+    assert view.model.settings.input_problems == ('Kₐ,dye: “12x” is not a number. Enter a number, or choose “Fixed”.',)
     assert _shown(row.problem, view)
 
 
@@ -259,7 +259,7 @@ def test_the_side_panel_sets_the_input_aware_interval_beside_the_one_at_the_inpu
         ('Input-aware', 'accent', '1.30  [0.500, 3.00]'),
         ('Inputs as entered', 'text-secondary', '1.24  [0.700, 2.20]'),
     ]
-    assert view.unit_lines[0].text() == 'K<sub>a</sub> guest, 95 % interval, × 10⁶ M⁻¹'
+    assert view.unit_lines[0].text() == 'K<sub>a</sub> guest, 95\u2009% interval, ×\u200910⁶ M⁻¹'
     assert view.interval_caption.text() == (
         'Letting the inputs move within what you stated widens the interval beyond the one with the inputs as entered.'
     )
@@ -295,7 +295,7 @@ def _show(view, fit, rows=None, monkeypatch=None) -> None:
             replace(row, **rows) if row.key == 'Ka_guest' and not row.is_log else row
             for row in summarize_parameters(fit)
         ]
-        monkeypatch.setattr('gui.views.uncertainty.summarize_parameters', lambda _fit: edited)
+        monkeypatch.setattr('gui.results.summarize_parameters', lambda _fit: edited)
     view.model._held_fit_results = [fit]
     view.model.results_changed.emit('all')
 
@@ -398,7 +398,7 @@ def test_an_open_end_is_said_in_the_words_every_view_uses_and_sets_no_power_of_t
 
     (chart,) = view.charts
     assert [row['text'] for row in chart.rows] == ['1.60  [1.10, no upper limit]', '1.65  [1.30, 2.10]']
-    assert view.unit_lines[0].text().endswith('× 10⁸ M⁻¹')
+    assert view.unit_lines[0].text().endswith('×\u200910⁸ M⁻¹')
 
 
 def test_a_closed_end_far_below_the_others_never_reads_zero(view, monkeypatch):
@@ -409,7 +409,8 @@ def test_a_closed_end_far_below_the_others_never_reads_zero(view, monkeypatch):
         monkeypatch,
     )
 
-    assert view.charts[0].rows[0]['text'] == '1.60  [1.10×10⁻³, 2.00]'
+    # Three decades apart, the ends are written each with its own power of ten.
+    assert view.charts[0].rows[0]['text'] == '1.60 × 10⁸  [1.10 × 10⁵, 2.00 × 10⁸]'.replace(' × ', '\u2009×\u2009')
 
 
 def test_an_estimate_on_a_bound_reads_as_every_view_writes_it(view, monkeypatch):
@@ -429,7 +430,7 @@ def test_an_estimate_on_a_bound_reads_as_every_view_writes_it(view, monkeypatch)
 
     rows = view.charts[0].rows
     assert rows[0]['text'] == 'not limited below 2.08' and rows[0]['est'] is None
-    assert view.unit_lines[0].text().endswith('× 10⁸ M⁻¹')
+    assert view.unit_lines[0].text().endswith('×\u200910⁸ M⁻¹')
 
 
 def _profile(fit, grid, r2, cut):

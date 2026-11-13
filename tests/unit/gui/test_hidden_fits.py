@@ -192,18 +192,23 @@ def _toggle(session, rid: str, on: bool) -> None:
     session.model.set_replicate(rid, on)
 
 
-def _cell_texts(table) -> list[list[str]]:
-    """Every cell of a summary table, as the user reads it."""
-    return [
-        [table.cellWidget(row, col).text() for col in range(table.columnCount())] for row in range(table.rowCount())
-    ]
-
-
 def _numbers(session) -> tuple:
-    """Every fit number the summary shows."""
-    summary = session._summary_widget
-    labels = (summary._rmse_label, summary._r2_label, summary._replicates_label)
-    return _cell_texts(summary._table), [label.text() for label in labels]
+    """Every fit number Fit results shows: the parameters and the fit quality."""
+    view = session._results
+    labels = (view.rmse, view.r2, view.used)
+    return view.parameters.texts(), [label.text() for label in labels]
+
+
+def _curves(session) -> int:
+    """How many fitted curves the titration plot of Fit results draws."""
+    data = session._results.plot.data
+    return 0 if data is None else len(data.curves)
+
+
+def _shown(session) -> bool:
+    """Whether Fit results shows a fit's numbers: its headline and Fit details."""
+    view = session._results
+    return not view.headline.isHidden() and not view.sections.isHidden()
 
 
 def _type_into(session, key: str, text: str, *, finish: bool = True) -> None:
@@ -230,13 +235,12 @@ def _assert_hidden(session, note: str, *, profiled: bool = True) -> None:
 
     *profiled* says whether Identifiability holds the fit: an imported fit has no Ka profile to hide.
     """
-    summary = session._summary_widget
+    view = session._results
     assert session.model.fit_results == []
     assert session.model.hidden_results_note() == note
-    assert summary._table.rowCount() == 0
-    assert summary._r2_label.text() == '—'
-    assert summary._caption.text() == note
-    assert session._plot_widget._fit_results == [] and session._plot_widget._mismatch_note == note
+    assert not _shown(session)
+    assert [(c.tone, c.body) for c in view.callouts] == [('neutral', note)]
+    assert _curves(session) == 0
     identifiability = session._identifiability_widget
     assert identifiability._stack.currentWidget() is identifiability._message
     assert (identifiability._message.text() == note) is profiled
@@ -284,7 +288,8 @@ def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_bac
 
     assert session.model.fit_results == [fit] and session.model.hidden_results_note() is None
     assert _numbers(session) == before
-    assert session._plot_widget._fit_results == [fit] and session._plot_widget._mismatch_note is None
+    assert _curves(session) == 1 and _shown(session)
+    assert all(c.tone != 'neutral' for c in session._results.callouts)
     assert session._identifiability_widget._stack.currentWidget() is session._identifiability_widget._content
     assert sensitivity._stack.currentWidget() is sensitivity._results_host
 
@@ -705,14 +710,17 @@ def test_a_plot_saved_straight_after_typing_a_condition_shows_the_note_and_not_t
     )
     saved_with: list = []
     monkeypatch.setattr(
-        session._plot_widget, 'export_image', lambda path: saved_with.append(session._plot_widget._mismatch_note)
+        session._results,
+        'export_image',
+        lambda path: saved_with.append((_curves(session), [c.body for c in session._results.callouts])),
     )
 
     _type_into(session, 'h0', '12', finish=False)
     session.export_plot('Fit results')
 
-    (note,) = saved_with
-    assert note is not None and note.startswith('This fit was made on replicates A and B with [Host]₀ = 10 µM.')
+    ((curves, (note,)),) = saved_with
+    assert curves == 0
+    assert note.startswith('This fit was made on replicates A and B with [Host]₀ = 10 µM.')
 
 
 # ---------------------------------------------------------------------------
@@ -742,7 +750,7 @@ def test_import_of_a_fit_made_on_the_loaded_data_is_shown_unchanged(
     assert shown.intervals['Ka_guest'].low == fit.intervals['Ka_guest'].low
     assert shown.degenerate_keys == fit.degenerate_keys
     assert [rf.metadata['replica_id'] for rf in shown.replica_fits] == ['a', 'b', 'c']
-    assert session._summary_widget._r2_label.text() != '—'
+    assert _shown(session)
 
 
 def test_import_keeps_the_replicate_selection_and_hides_a_fit_it_does_not_match(
@@ -948,17 +956,16 @@ def test_import_of_results_that_cannot_be_checked_on_the_loaded_data_says_so(
 def test_import_without_data_shows_the_stored_numbers_unchecked(
     qapp, make_session, fit, dialogs, monkeypatch, tmp_path
 ):
-    from gui.fitting_session import _UNCHECKED_NOTE
+    from gui.results import UNCHECKED_NOTE
 
     session = make_session()
 
     _import(session, monkeypatch, tmp_path, [fit])
 
     (shown,) = session.model.fit_results
-    summary = session._summary_widget
     assert shown.r_squared == fit.r_squared
-    assert summary._r2_label.text() != '—'
-    assert _UNCHECKED_NOTE in summary._caption.text()
+    assert _shown(session)
+    assert UNCHECKED_NOTE in [c.body for c in session._results.callouts]
 
 
 def test_import_without_data_hides_a_fit_of_another_assay_type_and_labels_the_axes_for_the_fit(
@@ -969,8 +976,7 @@ def test_import_without_data_hides_a_fit_of_another_assay_type_and_labels_the_ax
 
     _import(session, monkeypatch, tmp_path, [fit])
 
-    plot = session._plot_widget
-    assert session.model.fit_results == [] and plot._fit_items == []
+    assert session.model.fit_results == [] and _curves(session) == 0
     assert session.model.hidden_results_note().startswith('This fit was made for IDA.')
 
     # the form and the bounds come back as the defaults
@@ -979,8 +985,8 @@ def test_import_without_data_hides_a_fit_of_another_assay_type_and_labels_the_ax
         _type_into(session, key, text)
 
     assert len(session.model.fit_results) == 1
-    assert len(plot._fit_items) == 1
-    assert plot._pg_widget.getPlotItem().getAxis('bottom').labelText.startswith('Guest')
+    assert _curves(session) == 1
+    assert session._results.plot.pw.getPlotItem().getAxis('bottom').labelText.startswith('Guest')
 
 
 # ---------------------------------------------------------------------------
@@ -1003,9 +1009,9 @@ def test_one_hidden_result_leaves_the_shown_one_drawn_and_exportable(
     (shown,) = session.model.fit_results
     assert shown.id == fit.id
     assert session.model.hidden_results_note() is None
-    plot = session._plot_widget
-    assert plot._mismatch_note is None and len(plot._fit_items) == 1 and plot._fit_results == [shown]
-    assert plot._note.text() == (
+    notes = {c.title: c.body for c in session._results.callouts if c.tone == 'neutral'}
+    assert _curves(session) == 1 and _shown(session) and 'Results hidden' not in notes
+    assert notes['Fits hidden'] == (
         '1 of the 2 fits is hidden and not drawn. This hidden fit was made on replicates A–C. Fitting each '
         'replicate separately is now switched on. Switch it back off, or run the fit again.'
     )
@@ -1015,8 +1021,9 @@ def test_one_hidden_result_leaves_the_shown_one_drawn_and_exportable(
     state_binding(session, per_replica=False)
 
     (shown,) = session.model.fit_results
-    assert shown.id == average_fit.id and len(plot._fit_items) == 1
-    assert 'Fitting each replicate separately is now switched off. Switch it back on' in plot._note.text()
+    assert shown.id == average_fit.id and _curves(session) == 1
+    notes = {c.title: c.body for c in session._results.callouts}
+    assert 'Fitting each replicate separately is now switched off. Switch it back on' in notes['Fits hidden']
 
 
 # ---------------------------------------------------------------------------
@@ -1056,7 +1063,7 @@ def test_loading_other_data_mid_fit_never_shows_that_fit(qapp, make_session, dia
 
     assert not session.model.fit_running()
     assert session.model.held_fit_results == []
-    assert session._summary_widget._r2_label.text() == '—'
+    assert not _shown(session)
     assert dialogs['warning'] == []
 
 
@@ -1100,7 +1107,11 @@ def test_the_status_bar_keeps_saying_that_too_few_replicates_were_tested(qapp, m
     _deliver(session, two)
 
     assert messages[-1].startswith('Fit complete — ')
-    assert '2 of 2 replicates used, too few to test against each other' in messages[-1]
+    assert '2 of 3 replicates used, too few to test against each other' in messages[-1]
+    # One label, one number: Fit details counts the same replicates against the same loaded ones.
+    from gui.results import quality
+
+    assert f'{quality(two, session.model.measurement_set).used} replicates used' in messages[-1]
 
 
 def test_a_fit_finishing_after_a_used_replicate_was_switched_off_is_held_hidden_and_profiled_on_its_record(

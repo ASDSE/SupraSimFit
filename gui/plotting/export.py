@@ -55,10 +55,9 @@ def _screen_space_items_to_scene_space(scene: 'QGraphicsScene'):
     ``scene.render``; on exit it is restored, so interactive behaviour
     survives the export.
 
-    ``pg.TextItem`` needs no handling here: the fit-summary annotation is
-    parented to the ViewBox itself rather than to its ``childGroup``, so
-    it already lives in pixel space and its auto-inverting transform is
-    the identity.
+    ``pg.TextItem`` needs no handling here: one parented to the ViewBox
+    itself rather than to its ``childGroup`` already lives in pixel space,
+    and its auto-inverting transform is the identity.
     """
     flagged: list[QGraphicsItem] = []
     for item in scene.items():

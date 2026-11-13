@@ -196,7 +196,7 @@ def test_the_examples_still_describe_the_demo_data():
     readme = re.sub(r'\s+', ' ', (_IDA_DATA.parents[1] / 'Readme.md').read_text(encoding='utf-8'))
     assert f'`{result.noise.describe()}`' in readme
 
-    # The headline the Fit Curve and the summary panel quote is the same fit, to the three
+    # The headline Fit results and Fit details quote is the same fit, to the three
     # significant figures every view writes a fitted value with.
     headline = (
         f'{best / 1e8:.2f}&times;10<sup>8</sup> M<sup>&minus;1</sup> [{lo / 1e8:.2f}&times;10<sup>8</sup>, '
@@ -204,7 +204,7 @@ def test_the_examples_still_describe_the_demo_data():
     )
     used = len(result.metadata['active_replica_ids'])
     signals = ms.signals[[ms.replica_ids.index(r) for r in ms.active_replica_ids]]
-    # How many concentrations the Fit Curve example calls a systematic miss:
+    # How many concentrations the Fit results example calls a systematic miss:
     # every replicate on one side of the curve the fit drew.
     fitted = assay.y_data.magnitude - projection.residual({'Ka_guest': best}) / np.sqrt(projection.point_weights)
     one_sided = int(np.sum(np.all(signals > fitted, axis=0) | np.all(signals < fitted, axis=0)))
@@ -216,7 +216,8 @@ def test_the_examples_still_describe_the_demo_data():
                 f'At {one_sided} of the {fitted.size} concentrations all {used} replicates',
             ),
         ),
-        (SUMMARY, (f'R&sup2; {result.r_squared:.4f}, {used} of {used} replicates used',)),
+        # Counted as Fit quality counts them, against every replicate loaded.
+        (SUMMARY, (f'R&sup2; {result.r_squared:.4f}, {used} of {ms.n_replicas} replicates used',)),
     ):
         text = re.sub(r'\s+', ' ', PLOT_GUIDE[key][1])
         assert headline in text
@@ -329,3 +330,29 @@ def test_the_guide_quotes_the_level_the_one_step_test_is_run_at():
 
     text = re.sub(r'\s+', ' ', PLOT_GUIDE[IDENTIFIABILITY][1])
     assert f'the <i>one-step test</i>, at p&nbsp;&le;&nbsp;{SECOND_STEP_LEVEL:g}' in text
+
+
+def test_the_guide_names_the_views_and_fit_details_sections_the_window_has(qapp):
+    """A guide pointing at a view or section that is not there sends the reader looking for nothing."""
+    from gui import plot_guide
+    from gui.design.components import SectionHeader
+    from gui.fitting_session import VIEWS, FittingSession
+
+    text = ' '.join(html for _title, html in plot_guide.PLOT_GUIDE.values()).replace('\n', ' ')
+    session = FittingSession()
+    sections = [header._title for header in session._results.side.findChildren(SectionHeader)]
+    session.close()
+    named = re.findall(r'<b>(.*?)</b>', plot_guide._SUMMARY_HTML)
+
+    assert all(view in VIEWS for view in re.findall(r'\(see ([^)]*)\)', text))
+    assert [name for name in named if name in sections] == sections
+    assert re.findall(r'Fit [A-Z]\w+', text) == []  # every view and section title is in sentence case
+
+
+def test_the_fit_results_entry_names_each_mark_by_what_the_theme_does_not_change():
+    """The guide is one text in both themes: the mean ± SD is the darkest mark in light and the lightest in dark."""
+    from gui.plot_guide import _FIT_CURVE_HTML
+
+    text = _FIT_CURVE_HTML.lower()
+    assert not [word for word in ('dark', 'grey', 'gray', 'black', 'white', 'light') if re.search(rf'\b{word}\b', text)]
+    assert 'mean &plusmn; sd' in text and 'replicates the fit used' in text

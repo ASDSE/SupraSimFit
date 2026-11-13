@@ -108,7 +108,7 @@ class TestPrepPlotDataFits:
 
 
 class TestMeanFollowsTheFittedReplicates:
-    """G7: the Fit Curve's mean is the average the shown fit's RMSE and R² are measured against."""
+    """G7: the titration plot's mean is the average the shown fit's RMSE and R² are measured against."""
 
     def test_mean_is_over_the_replicates_the_fit_used_and_left_out_ones_are_listed(self):
         """Catches a mean over every active replicate, which includes a replicate the fit left out."""

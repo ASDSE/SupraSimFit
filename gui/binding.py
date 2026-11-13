@@ -168,9 +168,9 @@ looks like.</p>
 <p><b>Each replicate separately</b> (how a session opens)</p>
 <p>Each replicate is also fitted on its own, and those fits are reported beside
 the main one: the <i>Replicates</i> table lists each replicate&rsquo;s own
-K<sub>a</sub> and R<sup>2</sup>, and a line under the summary table gives the
-median and range of their own K<sub>a</sub>, each fitted with the inputs as
-entered. That is real replicate-to-replicate spread, measured on your
+K<sub>a</sub> and R<sup>2</sup>, and a line under the headline of Fit results
+gives the median and range of their own K<sub>a</sub>, each fitted with the
+inputs as entered. That is real replicate-to-replicate spread, measured on your
 experiment.</p>
 
 <p>Their own fits are also used to test the two assumptions the average rests
@@ -182,8 +182,8 @@ and named, with the reason, in the Replicates table and in the report.</p>
 
 <p><b>What the replicates also give the report</b></p>
 <p>With two or more replicates in the fit, their scatter about their mean
-measures the noise without using the model at all, and <i>Model and inputs</i>
-under the summary table uses it to say whether the fitted curve misses the data
+measures the noise without using the model at all, and <i>Diagnostics</i> in
+Fit details uses it to say whether the fitted curve misses the data
 by more than that scatter allows. With a single replicate that question is
 answered instead from runs of points on one side of the curve.</p>
 

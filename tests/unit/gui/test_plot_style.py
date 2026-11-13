@@ -1,9 +1,7 @@
-"""Tests for PlotStyleWidget x-axis unit handling.
+"""Plot appearance offers only what a plot reads (:mod:`gui.plotting.plot_style`).
 
-The x-axis unit was removed from the ParameterTree (Axes group) in favour
-of the display unit chosen in Measurements. The style dict still exposes it
-under ``axes.x_unit`` so saved style JSONs round-trip, but the value is
-pushed in via :meth:`PlotStyleWidget.set_x_unit`.
+App behaviour must reflect the user's configuration exactly, so a control no plot
+reads would be ignored with no word; every one must change the look of a plot.
 """
 
 from __future__ import annotations
@@ -14,51 +12,53 @@ pytest.importorskip('PyQt6')
 pytest.importorskip('pyqtgraph')
 
 
-def test_axes_group_does_not_expose_x_axis_unit(qapp):
+class _Recording(dict):
+    """A style dict that records every key a plot reads from it, nested sections included."""
+
+    def __init__(self, data: dict, read: set, path: tuple = ()):
+        super().__init__({k: _Recording(v, read, (*path, k)) if isinstance(v, dict) else v for k, v in data.items()})
+        self.read, self.path = read, path
+
+    def __getitem__(self, key):
+        self.read.add((*self.path, key))
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self.read.add((*self.path, key))
+        return super().get(key, default)
+
+
+def _leaves(style: dict, path: tuple = ()) -> set:
+    return {
+        leaf
+        for key, value in style.items()
+        for leaf in (_leaves(value, (*path, key)) if isinstance(value, dict) else {(*path, key)})
+    }
+
+
+def test_every_control_of_plot_appearance_is_read_by_a_plot(qapp):
+    """Each setting the panel emits is read when the Sensitivity plots draw a result."""
     from gui.plotting.plot_style import PlotStyleWidget
+    from gui.plotting.sensitivity_widget import SensitivityWidget
+    from tests.unit.gui.test_sensitivity_gui import _sobol_result
 
-    sw = PlotStyleWidget()
-    axes_children = [child.name() for child in sw._params.child('Axes').children()]
-    assert 'x-axis unit' not in axes_children
+    style = PlotStyleWidget().current_style()
+    read: set = set()
+    widget = SensitivityWidget()
+    widget.update_result(_sobol_result())
+    widget.apply_style(_Recording(style, read))
 
-
-def test_set_x_unit_updates_style_dict(qapp):
-    from gui.plotting.plot_style import PlotStyleWidget
-
-    sw = PlotStyleWidget()
-    assert sw.current_style()['axes']['x_unit'] == 'µM'
-
-    sw.set_x_unit('nM')
-    assert sw.current_style()['axes']['x_unit'] == 'nM'
+    assert _leaves(style) <= read
+    widget.close()
 
 
-def test_set_x_unit_emits_once(qapp):
-    from gui.plotting.plot_style import PlotStyleWidget
+def test_plot_appearance_reaches_the_plots_of_the_session(qapp):
+    """A change in the panel restyles Ka confidence and Sensitivity, the plots that read a style."""
+    from gui.fitting_session import FittingSession
 
-    sw = PlotStyleWidget()
-    received: list[dict] = []
-    sw.style_changed.connect(received.append)
+    session = FittingSession()
+    session._style_widget._params['Analysis plots', 'Tick font size'] = 19
 
-    sw.set_x_unit('mM')
-    sw.set_x_unit('mM')  # no-op when unchanged
-
-    assert len(received) == 1
-    assert received[0]['axes']['x_unit'] == 'mM'
-
-
-def test_load_style_restores_x_unit(qapp):
-    from gui.plotting.plot_style import PlotStyleWidget
-
-    sw = PlotStyleWidget()
-    sw.load_style({'axes': {'x_unit': 'nM'}})
-    assert sw.current_style()['axes']['x_unit'] == 'nM'
-
-
-def test_axis_name_overrides_round_trip_via_load_style(qapp):
-    from gui.plotting.plot_style import PlotStyleWidget
-
-    sw = PlotStyleWidget()
-    sw.load_style({'axes': {'x_name_override': 'Tryptamine', 'y_name_override': 'Fluorescence'}})
-    axes = sw.current_style()['axes']
-    assert axes['x_name_override'] == 'Tryptamine'
-    assert axes['y_name_override'] == 'Fluorescence'
+    for plot in (session._identifiability_widget, session._sensitivity_widget):
+        assert plot._style['distribution']['tick_font_size'] == 19
+    session.close()

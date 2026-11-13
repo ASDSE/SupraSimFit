@@ -102,8 +102,16 @@ def scatter(t: Theme, x, y, color: str, alpha: float, size: float, symbol: str =
     return pg.ScatterPlotItem(x, y, symbol=symbol, size=size, pen=pg.mkPen(None), brush=pg.mkBrush(c))
 
 
-def fit_line(t: Theme, x, y):
-    """The fitted curve: 2 px, accent, round caps."""
-    pen = pg.mkPen(t['accent'], width=px(2))
+def replicate_alpha(t: Theme) -> float:
+    """The opacity of a replicate's points, in the plot and in its legend: denser on the dark surface."""
+    return 0.8 if t.dark else 0.55
+
+
+def fit_line(t: Theme, x, y, other: bool = False):
+    """The fitted curve: 2 px, accent, round caps; *other*, a fit shown beside the reported one, dashed in ``text-tertiary``."""
+    if other:
+        pen = pg.mkPen(t['text-tertiary'], width=px(1.5), style=Qt.PenStyle.DashLine)
+    else:
+        pen = pg.mkPen(t['accent'], width=px(2))
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     return pg.PlotDataItem(x, y, pen=pen, antialias=True)

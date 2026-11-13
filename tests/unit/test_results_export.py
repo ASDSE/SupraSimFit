@@ -229,7 +229,7 @@ def test_txt_report_puts_the_interval_beside_the_estimate(tmp_path: Path) -> Non
     for header in ('Parameter', 'Estimate', '95% interval', 'Units'):
         assert header in text
     line = next(ln for ln in text.splitlines() if ln.strip().startswith('Ka_guest'))
-    # The numbers read as the summary table on screen writes them.
+    # The numbers are written in ×10ⁿ notation, as every report writes them.
     assert '1.24×10⁶' in line
     assert '[1.10×10⁶, 1.40×10⁶]' in line
     assert 'e+' not in text
@@ -339,6 +339,18 @@ def test_txt_report_lists_every_replicate_with_its_own_fit_and_its_verdict(tmp_p
     assert '0.0012' in rows['C']
     assert _EXCLUDED in _prose(text)
     assert 'Replicates used:      A, B' in text
+
+
+def test_the_replicate_table_writes_a_p_value_at_either_end_as_its_bound(tmp_path: Path) -> None:
+    """A p of 0.997 written '1' would read as a certain test; every report writes it 'p > 0.99', and Fit details
+    '> 0.99' in the same table."""
+    fit = _per_replicate_result()
+    fit.metadata['replicate_test'] = {'level': 0.01, 'p_values': {'a': 0.997, 'b': 0.44, 'c': 0.0004}}
+    rows = _table_rows(_txt(tmp_path, [fit], replica_ids=('a', 'b', 'c')), '  Replicate ')
+
+    assert '> 0.99' in rows['A'] and ' 1 ' not in rows['A']
+    assert '0.44' in rows['B']
+    assert '< 0.001' in rows['C']
 
 
 def test_the_report_wraps_to_one_width_and_gives_each_reason_once(tmp_path: Path) -> None:
@@ -533,6 +545,45 @@ def test_csv_names_the_replicates_by_id_without_the_loaded_order(tmp_path: Path)
         ('0', 'a;b', 'c'),
         ('1', '', ''),  # the second result does not record its replicates
     }
+
+
+def test_reports_of_an_imported_fit_name_its_replicates_as_fit_details_does(tmp_path: Path) -> None:
+    """Without the data, a fit that records the order its replicates were loaded in is read by their letters on
+    screen; the saved report of the same fit names them alike, and '0 left out' would read as none left out."""
+    from gui import results as R
+
+    fit = _per_replicate_result()
+    for rid, new in (('a', '0'), ('b', '1'), ('c', '2')):
+        fit = _renamed(fit, rid, new)
+    fit.metadata['loaded_replica_ids'] = ['0', '1', '2']
+    fit = FitResult.from_dict(fit.to_dict())
+
+    text = _txt(tmp_path, [fit])
+    path = tmp_path / 'r.csv'
+    export_results_csv([fit], path)
+    row = _csv_rows(path)[0]
+
+    assert R.quality(fit, None).used_note == 'C left out by the fit'
+    assert 'Replicates used:      A, B' in text and 'Left out of the fit:  C' in text
+    assert set(_table_rows(text, '  Replicate ')) == {'A', 'B', 'C'}
+    assert f'C left out: {_EXCLUDED}' in _prose(text)
+    assert (row['replicates_used'], row['replicates_left_out']) == ('A;B', 'C')
+
+
+def _renamed(fit: FitResult, old: str, new: str) -> FitResult:
+    """*fit* with replicate *old* recorded as *new* wherever the fit names it."""
+    meta = dict(fit.metadata)
+    for key in ('active_replica_ids', 'replica_ids_fit'):
+        meta[key] = [new if rid == old else rid for rid in meta[key]]
+    meta['replica_failures'] = {new if k == old else k: v for k, v in meta['replica_failures'].items()}
+    test = dict(meta['replicate_test'])
+    test['p_values'] = {new if k == old else k: v for k, v in test['p_values'].items()}
+    meta['replicate_test'] = test
+    fits = [
+        replace(rf, metadata={**rf.metadata, 'replica_id': new}) if rf.metadata.get('replica_id') == old else rf
+        for rf in fit.replica_fits
+    ]
+    return replace(fit, metadata=meta, replica_fits=fits)
 
 
 def test_exports_handle_an_empty_result_list(tmp_path: Path) -> None:
@@ -947,7 +998,7 @@ def test_txt_report_names_the_conditions_as_the_panel_does_in_the_units_it_reads
     text = _txt(tmp_path, [result])
     block = text.split('CONDITIONS', 1)[1].split('\n\n', 1)[0]
 
-    assert '  Ka,dye: 1.680×10⁷ M⁻¹' in block
+    assert '  Kₐ,dye: 1.680×10⁷ M⁻¹' in block
     assert '  [Host]₀: 4.3 µM' in block
     assert '  [Dye]₀: 6 µM' in block
     for raw in ('h0', 'd0', 'Ka_dye', '1/M'):

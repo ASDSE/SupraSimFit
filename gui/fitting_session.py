@@ -16,8 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.data_processing.plotting import prepare_plot_data
+from core.assays.registry import AssayType
 from core.pipeline.inputs import TITRANT, InputSpec
 from core.units import Quantity
 from gui import plot_guide
@@ -25,14 +24,14 @@ from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE
 from gui.plotting.export import ExportRefused
-from gui.plotting.fit_summary_widget import FitSummaryWidget
 from gui.plotting.identifiability_widget import IdentifiabilityWidget
 from gui.plotting.labels import and_join, stated_uncertainty
 from gui.plotting.plot_style import PlotStyleWidget
-from gui.plotting.plot_widget import PlotWidget
+from gui.plotting.samples_summary import SamplesSummary
 from gui.plotting.sensitivity_widget import SensitivityWidget
 from gui.session_model import CONCENTRATIONS_REQUIRED, SessionModel
 from gui.views.binding import BindingView
+from gui.views.fit_results import FitResultsView
 from gui.views.measurements import MeasurementsView
 from gui.views.uncertainty import UncertaintyView
 from gui.widgets.sensitivity_panel import SensitivityPanel
@@ -64,11 +63,6 @@ _DEMO_UNCERTAINTIES = {
     TITRANT: InputSpec.sigma_pct(3.0),
 }
 
-_UNCHECKED_NOTE = (
-    'No data are loaded, so these numbers are shown as stored in the file and could not be checked against '
-    'the data. To check them, load the data first and import the results again.'
-)
-
 
 def _unreadable(value) -> bool:
     """Whether a condition's value is one the form could not read (NaN)."""
@@ -96,11 +90,13 @@ class _SidePanel(QWidget):
         body = QWidget()
         body.setObjectName('InspectorBody')
         body.setLayout(C.vbox(content, None, spacing=0, margins=(5, 0, 5, 5)))
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(body)
-        self.setLayout(C.vbox(header, scroll, spacing=0))
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        # The panel never scrolls sideways: every section fits its least width beside the
+        # vertical scroll bar.
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setWidget(body)
+        self.setLayout(C.vbox(header, self.scroll, spacing=0))
 
 
 def _canvas(*widgets: QWidget, scroll: bool = False) -> QWidget:
@@ -154,6 +150,9 @@ class FittingSession(QWidget):
         hidden, data or settings changed, or the session was renamed.
     side_panel_closed()
         Emitted when the side panel's close button is pressed.
+    side_panel_requested()
+        Emitted when the session needs the side panel shown, such as Fit details for
+        *All results and diagnostics →*.
     view_requested(str)
         Emitted when the session needs one of its views on screen, such as
         Measurements for concentrations a fit needs.
@@ -163,13 +162,13 @@ class FittingSession(QWidget):
 
     changed = pyqtSignal()
     side_panel_closed = pyqtSignal()
+    side_panel_requested = pyqtSignal()
     view_requested = pyqtSignal(str)
     new_session_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model = SessionModel(self)
-        self._plot_note: str | None = None  # the note hiding a fit on the Fit Curve
         self._assay_shown = None  # the model the views that follow it were last given
         self._setup_ui()
         self._connect_signals()
@@ -180,18 +179,7 @@ class FittingSession(QWidget):
     # ------------------------------------------------------------------
 
     def show_view(self, view: str) -> None:
-        """Put *view* (one of :data:`VIEWS`) on screen.
-
-        Fit results and Sensitivity share the summary under their plot: it shows the fit
-        in the one and the samples of the sensitivity run in the other.
-        """
-        for split in self._summary_splits:
-            if split.isAncestorOf(self._views[view]) or self._views[view].isAncestorOf(split):
-                if split.indexOf(self._summary_widget) < 0:
-                    split.addWidget(self._summary_widget)
-                    split.setStretchFactor(0, 3)
-                    split.setStretchFactor(1, 2)
-                self._summary_widget.show_samples(view == 'Sensitivity')
+        """Put *view* (one of :data:`VIEWS`) on screen."""
         self._stack.setCurrentWidget(self._views[view])
 
     def current_view(self) -> str:
@@ -229,12 +217,14 @@ class FittingSession(QWidget):
             return self._binding.badge()
         if view == 'Input uncertainty':
             return self._uncertainty.badge()
+        if view == 'Fit results':
+            return self._results.badge()
         return None
 
     def _plot_widget_of(self, view: str):
         return {
             'Measurements': self._measurements.plot,
-            'Fit results': self._plot_widget,
+            'Fit results': self._results,
             'Ka confidence': self._identifiability_widget,
             'Sensitivity': self._sensitivity_widget,
         }.get(view)
@@ -247,7 +237,7 @@ class FittingSession(QWidget):
             return 'This view has no plot to save. Open Measurements, Fit results, Ka confidence or Sensitivity.'
         if widget is self._measurements.plot:
             return None if model.measurement_set is not None else 'There is no titration yet. Load data, then save it.'
-        if widget is self._plot_widget:
+        if widget is self._results:
             if model.measurement_set is None and not model.fit_results:
                 return 'There is no titration plot yet. Load a measurement file, then save it.'
             return None
@@ -508,7 +498,7 @@ class FittingSession(QWidget):
         # gui.plotting.export.export_widget.
         tag, formats = {
             self._measurements.plot: ('titration', 'PNG image (*.png);;SVG vector (*.svg)'),
-            self._plot_widget: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
+            self._results: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._identifiability_widget: ('identifiability', 'PNG image (*.png)'),
             self._sensitivity_widget: ('sensitivity', 'PNG image (*.png)'),
         }[widget]
@@ -557,12 +547,11 @@ class FittingSession(QWidget):
         self._binding = BindingView(self.model, self)
         self._uncertainty = UncertaintyView(self.model, self)
         self._sensitivity_panel = SensitivityPanel()
+        self._results = FitResultsView(self.model, self)
         self._style_widget = PlotStyleWidget()
-        self._plot_widget = PlotWidget()
         self._identifiability_widget = IdentifiabilityWidget()
         self._sensitivity_widget = SensitivityWidget()
-        self._summary_widget = FitSummaryWidget()
-        self._summary_splits: list[QSplitter] = []
+        self._summary_widget = SamplesSummary()
 
         def side(title: str, *widgets: QWidget) -> _SidePanel:
             content = QWidget()
@@ -575,11 +564,9 @@ class FittingSession(QWidget):
             'Measurements': _View(self._measurements.canvas, side('Measurement settings', self._measurements.side)),
             'Binding model': _View(self._binding.canvas),
             'Input uncertainty': _View(self._uncertainty.canvas, side('Effect on the fit', self._uncertainty.side)),
-            'Fit results': _View(_canvas(self._fit_split(self._plot_widget))),
+            'Fit results': _View(self._results.canvas, side('Fit details', self._results.side)),
             'Ka confidence': _View(_canvas(self._identifiability_widget)),
-            'Sensitivity': _View(
-                _canvas(self._fit_split(self._sensitivity_widget)), side('Analysis settings', self._sensitivity_panel)
-            ),
+            'Sensitivity': _View(_canvas(self._samples_split()), side('Analysis settings', self._sensitivity_panel)),
             'Plot appearance': _View(_canvas(self._style_widget, scroll=True)),
         }
         self._stack = QStackedWidget()
@@ -589,15 +576,14 @@ class FittingSession(QWidget):
         self.setLayout(C.vbox(self._progress_line, self._stack, spacing=0))
         self.show_view('Fit results')
 
-        # The style's x unit is the session's display unit from the first emission.
-        self._style_widget.set_x_unit(self.model.settings.display_unit)
-
-    def _fit_split(self, plot: QWidget) -> QSplitter:
-        """*plot* above the summary, the split between them dragged by the user."""
+    def _samples_split(self) -> QSplitter:
+        """The sensitivity plots above the summary of the run's samples, the split between them dragged by the user."""
         split = QSplitter(Qt.Orientation.Vertical)
         split.setChildrenCollapsible(False)
-        split.addWidget(plot)
-        self._summary_splits.append(split)
+        split.addWidget(self._sensitivity_widget)
+        split.addWidget(self._summary_widget)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
         return split
 
     # ------------------------------------------------------------------
@@ -606,10 +592,14 @@ class FittingSession(QWidget):
 
     def _connect_signals(self) -> None:
         self.model.data_changed.connect(self._on_data_changed)
-        self._measurements.display_unit_changed.connect(self._style_widget.set_x_unit)
         self._measurements.new_session_link.clicked.connect(self.new_session_requested)
 
         self._uncertainty.review_requested.connect(lambda: self.view_requested.emit('Ka confidence'))
+        self._results.review_requested.connect(lambda: self.view_requested.emit('Ka confidence'))
+        self._results.details_requested.connect(self._show_fit_details)
+        self._results.save_plot.clicked.connect(lambda: self.export_plot('Fit results'))
+        self._measurements.save_plot.clicked.connect(lambda: self.export_plot('Measurements'))
+        self._measurements.display_unit_changed.connect(lambda _unit: self._results.refresh())
         self.model.uncertainty_changed.connect(self.changed)
         self.model.binding_changed.connect(self._on_binding_changed)
 
@@ -618,8 +608,7 @@ class FittingSession(QWidget):
         self._sensitivity_panel.cancel_requested.connect(self.model.cancel_sensitivity)
         self._sensitivity_widget.cancel_requested.connect(self.model.cancel_sensitivity)
 
-        # Direct widget-to-widget: style → every plot
-        self._style_widget.style_changed.connect(self._plot_widget.apply_style)
+        # Plot appearance styles Ka confidence and Sensitivity, the plots that read a style.
         self._style_widget.style_changed.connect(self._identifiability_widget.apply_style)
         self._style_widget.style_changed.connect(self._sensitivity_widget.apply_style)
 
@@ -660,8 +649,6 @@ class FittingSession(QWidget):
             self._assay_shown = assay_type
             self._sensitivity_panel.set_assay_type(assay_type)
             self._sensitivity_panel.set_inputs(self.model.uncertainty.input_labels())
-            meta = ASSAY_REGISTRY[assay_type]
-            self._plot_widget.set_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
             self._measurements.refresh()
         conditions = self.model.settings.conditions
         readable = {key: value for key, value in conditions.items() if not _unreadable(value)}
@@ -671,7 +658,6 @@ class FittingSession(QWidget):
     def copy_from(self, other: FittingSession) -> None:
         """Take a copy of what *other* states — data, binding model, input uncertainties — and none of its results."""
         self.model.copy_from(other.model)
-        self._style_widget.set_x_unit(self.model.settings.display_unit)
 
     # ------------------------------------------------------------------
     # Ka sensitivity analysis
@@ -750,69 +736,21 @@ class FittingSession(QWidget):
             self._identifiability_widget.update_sensitivity(result)
         self._sensitivity_panel.set_running(self.model.sensitivity_running())
 
-    def _on_results_changed(self, scope: str) -> None:
-        """Give every tab the notes hiding its results, and redraw as much as *scope* says changed."""
-        self._sync_notes()
-        if scope == 'all':
-            self._render_results()
-        elif scope == 'points':
-            self._refresh_plot()
-
-    def _sync_notes(self) -> None:
-        """Give the summary, Identifiability and Ka Sensitivity the notes that hide their results."""
+    def _on_results_changed(self, _scope: str) -> None:
+        """Give the summary of the samples, Ka confidence and Sensitivity the notes hiding their results."""
         model = self.model
-        _, fit_note = model.fit_view()
+        fit, fit_note = model.fit_view()
         held = model.held_fit_results
         profiled_note = model.hidden_fit_notes.get(held[-1].id) if held else None
+        # The samples are compared with the fit Fit results reports.
+        self._summary_widget.update_result(fit)
         self._summary_widget.show_mismatch(fit_note, model.sensitivity_note)
         self._identifiability_widget.show_mismatch(profiled_note, model.sensitivity_note)
         self._sensitivity_widget.show_mismatch(model.sensitivity_note)
 
-    def _render_results(self) -> None:
-        """Put the held fit results on the Fit Curve and the summary, shown or hidden."""
-        fit, _note = self.model.fit_view()
-        self._refresh_plot()
-        if fit is None:
-            self._summary_widget.clear()
-        else:
-            unchecked = _UNCHECKED_NOTE if self.model.measurement_set is None else None
-            self._summary_widget.update_result(fit, unchecked=unchecked)
-        self.changed.emit()
-
-    def _refresh_plot(self) -> None:
-        """Draw the loaded points with the curves of the shown fits, and say which held fits are hidden.
-
-        When every held fit is hidden, the note of the latest one replaces the
-        fits; when only some are, the shown curves stay and a note names the
-        hidden ones. With no data loaded only the shown curves are drawn.
-        The axes are labelled for the assay type of the fit the summary
-        reports, or of the selected assay when none is shown.
-        """
-        model = self.model
-        ms = model.measurement_set
-        shown = model.fit_results
-        held = model.held_fit_results
-        if ms is None and not held:
-            return
-        assay_type = AssayType[shown[-1].assay_type] if shown else model.settings.assay_type
-        meta = ASSAY_REGISTRY[assay_type]
-        if ms is not None:
-            plot_data = prepare_plot_data(ms, shown, show_dropped=True)
-        else:
-            plot_data = {
-                'concentrations': held[-1].x_fit.magnitude,
-                'active_replicas': [],
-                'dropped_replicas': [],
-                'average': None,
-                'fits': [{'x': r.x_fit.magnitude, 'y': r.y_fit.magnitude, 'label': 'Fit', 'id': r.id} for r in shown],
-            }
-        self._plot_widget.update_plot(plot_data, x_label=meta.x_label, y_label=meta.y_label, y_unit=meta.y_unit)
-        self._plot_widget.set_fit_results(shown)
-        self._set_plot_note(model.hidden_results_note())
-        self._plot_widget.show_hidden_results(model.other_hidden_note())
-
-    def _set_plot_note(self, note: str | None) -> None:
-        """Hide the Fit Curve's fit behind *note*, or show it with ``None``; the plot redraws only on a change."""
-        if note != self._plot_note:
-            self._plot_note = note
-            self._plot_widget.show_mismatch(note)
+    def _show_fit_details(self) -> None:
+        """Show the side panel of Fit results with Diagnostics in view."""
+        self.side_panel_requested.emit()
+        side = self._views['Fit results'].side
+        side.show()
+        self._results.show_diagnostics(side.scroll)

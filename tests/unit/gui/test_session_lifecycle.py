@@ -185,13 +185,13 @@ def test_closing_a_session_mid_run_takes_its_work_off_the_status_bar(qapp, monke
     _wait_until(qapp, session.model._sensitivity_worker.isRunning)
     session.model._on_sensitivity_progress(12207, 16393)
     name = session.model.name()
-    assert f'{name} Sensitivity 74' in window._status._full_text
+    assert f'{name} Sensitivity 74' in window._status.text.full_text
 
     window._close_session(session)
     _settle(qapp)
 
-    assert name not in window._status._full_text
-    assert window._status._full_text.startswith('Ready')
+    assert name not in window._status.text.full_text
+    assert window._status.text.full_text.startswith('Ready')
 
 
 def test_closing_the_last_session_leaves_an_empty_new_session(qapp, monkeypatch, dialogs):
@@ -371,7 +371,7 @@ def test_the_primary_action_stops_the_running_fit_and_follows_the_session_on_scr
     window._new_session()  # an idle session: the fit of another one is not offered here
 
     assert window._act_run.text() == 'Run fit'
-    assert window._status._full_text == f'{running.model.name()} fitting'
+    assert window._status.text.full_text == f'{running.model.name()} fitting'
 
     window._switch_to(running)
 
@@ -851,7 +851,7 @@ def test_save_plot_saves_the_plot_of_the_view(qapp, monkeypatch, dialogs, tmp_pa
         'gui.fitting_session.QFileDialog.getSaveFileName',
         lambda *args, **kwargs: (str(tmp_path / 'out.png'), ''),
     )
-    monkeypatch.setattr(type(session._plot_widget), 'export_image', lambda self, path: saved.append(('fit', path)))
+    monkeypatch.setattr(type(session._results), 'export_image', lambda self, path: saved.append(('fit', path)))
     monkeypatch.setattr(
         type(session._sensitivity_widget), 'export_image', lambda self, path: saved.append(('sensitivity', path))
     )

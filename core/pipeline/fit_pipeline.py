@@ -184,6 +184,8 @@ class FitResult:
     metadata : dict[str, Any]
         Additional metadata about the fit. A fit made from a
         :class:`MeasurementSet` records what it was made on:
+        ``loaded_replica_ids`` (every replicate of the data, switched off or
+        not, in the order the app names them A, B, …),
         ``active_replica_ids`` (the replicates it was given),
         ``replica_ids_fit`` and ``replica_failures`` for a per-replicate fit
         (the replicates it used and those it left out, with the reason),
@@ -1247,7 +1249,10 @@ def _record_data(result: FitResult, ms: MeasurementSet) -> None:
     was given, which :func:`~core.pipeline.results_io.verify_imported_result`
     checks. ``model_arithmetic`` names the equilibrium arithmetic every score
     was computed with, which tells that function how precisely they reproduce.
+    ``loaded_replica_ids`` is every replicate of *ms* in its order, which names
+    each replicate by its letter where the data are not loaded.
     """
+    result.metadata['loaded_replica_ids'] = list(ms.replica_ids)
     result.metadata['data_fingerprint'] = ms.fingerprint()
     result.metadata['quality_scored_on'] = 'fitted_replicates'
     result.metadata['model_arithmetic'] = MODEL_ARITHMETIC

@@ -20,6 +20,7 @@ from core.pipeline.reporting import (
     fit_replica_ids,
     input_replica_ids,
     parameters_on_bound,
+    replica_order,
     summarize_parameters,
 )
 from core.pipeline.sensitivity import SensitivityMode
@@ -104,7 +105,7 @@ _NO_INTERVAL_NOTE = (
     'without a confidence interval. Fit the data again to get the interval.'
 )
 
-#: What a starred row means, in the words the summary table on screen uses.
+#: What a starred row means, in the words Fit details uses on screen.
 _DEGENERATE_NOTE = (
     'The data fix only a combination of the starred values, not each one on its own: many different sets of '
     'them draw the same curve. Each starred value is one member of that family. It reconstructs the fitted '
@@ -143,29 +144,28 @@ def _replicate_record(
 ) -> tuple[list[str], list[tuple[str, str]]] | None:
     """The replicates *result* used and those it left out, with the reason, as the user names them.
 
-    A replicate is named by its display label (A, B, …) when *replica_ids*, the
-    loaded data's replicate order, holds every replicate the result names, and
-    by its id otherwise. ``None`` when the result does not record its replicates.
+    ``None`` when the result does not record its replicates.
     """
     used = fit_replica_ids(result)
     if used is None:
         return None
     given = input_replica_ids(result) or used
     reasons = result.metadata.get('replica_failures') or {}
-    left_out = [rid for rid in given if rid not in used]
-    named = list(dict.fromkeys([*used, *given]))
-    order = list(replica_ids or ())
-    if all(rid in order for rid in named):
-        name = {rid: _display_label(order.index(rid)) for rid in named}
-    else:
-        name = {rid: rid for rid in named}
-    return [name[rid] for rid in used], [(name[rid], reasons.get(rid, '')) for rid in left_out]
+    name = _replicate_names(result, replica_ids)
+    return [name.get(rid, rid) for rid in used], [
+        (name.get(rid, rid), reasons.get(rid, '')) for rid in given if rid not in used
+    ]
 
 
 def _replicate_names(result: FitResult, replica_ids: Sequence[str] | None) -> dict[str, str]:
-    """Every replicate *result* names, mapped to the name the user reads for it."""
+    """Every replicate *result* names, mapped to the name the user reads for it.
+
+    Its display label (A, B, …) where the replicate order — *replica_ids*, the loaded
+    data's, else the order *result* records — holds every replicate the result names,
+    as Fit details names them; its id otherwise.
+    """
     given = input_replica_ids(result) or fit_replica_ids(result) or []
-    order = list(replica_ids or ())
+    order = replica_order(result, replica_ids) or []
     if given and all(rid in order for rid in given):
         return {rid: _display_label(order.index(rid)) for rid in given}
     return {rid: rid for rid in given}
@@ -190,7 +190,7 @@ def _row_unit(spec: ParameterSummary) -> str:
 
 
 def _fmt_report(spec: ParameterSummary, value: float) -> str:
-    """One number of *spec*'s row as the text report writes it, the way the summary table on screen writes it.
+    """One number of *spec*'s row as the text report writes it, the way Fit results writes it on screen.
 
     A log₁₀ row goes through :func:`~gui.plotting.labels.fmt_log10`, so a
     value is never written coarser than the spread of the replicates' own
@@ -519,7 +519,8 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         Output file path (should have ``.csv`` extension).
     replica_ids : sequence of str, optional
         Replicate ids of the loaded data in their order, so replicates are named
-        by their display labels; without it they are named by id.
+        by their display labels; without it, by the order each result records,
+        and by id where it records none.
     """
     path = Path(path)
     columns = (
@@ -743,7 +744,7 @@ def _replicates_block(result: FitResult, replica_ids: Sequence[str] | None) -> l
                 names.get(rid, rid),
                 *values,
                 fmt_r2(own.r_squared),
-                '—' if p is None else f'{p:.2g}',
+                '—' if p is None else fmt_p(p).removeprefix('p = ').removeprefix('p '),
                 'used' if rid in used else 'left out',
             )
         )
@@ -795,7 +796,8 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
         Output file path (should have ``.txt`` extension).
     replica_ids : sequence of str, optional
         Replicate ids of the loaded data in their order, so the report names
-        replicates by their display labels; without it they are named by id.
+        replicates by their display labels; without it, by the order each result
+        records, and by id where it records none.
     """
     path = Path(path)
     lines: list[str] = []
@@ -1058,7 +1060,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         export_results_csv(model.fit_results, path, replica_ids=replica_ids)
 
     def _write_fit_plot(path: Path) -> None:
-        session._plot_widget.export_image(str(path))
+        session._results.export_image(str(path))
 
     def _write_identifiability(path: Path) -> None:
         session._identifiability_widget.export_image(str(path))

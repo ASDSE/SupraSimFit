@@ -203,7 +203,17 @@ class TestPlainLabel:
     def test_real_labels(self):
         assert plain_label('[Host]<sub>0</sub>') == '[Host]₀'
         assert plain_label('[Dye]<sub>0</sub>') == '[Dye]₀'
-        assert plain_label('K<sub>a,dye</sub>') == 'Ka,dye'
+        assert plain_label('K<sub>a,dye</sub>') == 'Kₐ,dye'
+
+    def test_every_binding_constant_reads_with_the_subscript_a_of_the_glossary(self):
+        """DESIGN.md §9 writes Kₐ with its subscript; a word in a subscript keeps its letters."""
+        from gui.plotting.labels import CONSTANT_NAMES, PARAM_LABELS, fmt_param_plain
+
+        for key, html in CONSTANT_NAMES.items():
+            assert plain_label(html) == fmt_param_plain(key)
+        ka_labels = [plain_label(html) for key, html in PARAM_LABELS.items() if key.startswith('Ka')]
+        assert ka_labels and all(text.startswith('Kₐ') for text in ka_labels)
+        assert plain_label('I<sub>max</sub>') == 'Imax'
 
     def test_superscript_units(self):
         assert plain_label('M<sup>−1</sup>') == 'M⁻¹'
@@ -861,3 +871,41 @@ class TestReplicateSummary:
         from gui.plotting.labels import replicate_summary
 
         assert replicate_summary([self._row(None)], 1, lambda spec: 'Ka(G)', lambda spec: 'M⁻¹') == ''
+
+
+@pytest.mark.parametrize('spread', [0.2, 0.02, 0.002, 0.0004])
+def test_a_log10_reading_is_never_written_coarser_than_the_spread_beside_it(spread):
+    """8.99743 with replicates a few ten-thousandths apart must not read 8.997, let alone 9.
+
+    The rounding of the written value stays a tenth of the tightest spread the row
+    reports, so the value and its spread are read on the same scale.
+    """
+    import numpy as np
+
+    from core.optimizer.ensemble import describe
+    from gui.plotting.labels import fmt_log10
+
+    value = 8.99743
+    stats = describe(value + spread * np.array([-1.0, -0.4, 0.3, 1.0]))
+    written = fmt_log10(value, stats)
+
+    tightest = min(s for s in (stats['mad'], stats['std'], stats['p84'] - stats['p16'], stats['max'] - stats['min']))
+    assert abs(float(written) - value) <= tightest / 10, written
+
+
+def test_the_text_report_writes_a_log10_reading_to_the_spread_of_the_replicates(tmp_path):
+    """The report row of log₁₀ Ka keeps the digits the replicates' own fits resolve."""
+    from core.pipeline.varpro import KaInterval
+    from core.units import Q_
+    from gui.session import export_results_txt
+    from tests.unit.gui.test_results import per_replica_result
+
+    ka = {rid: float(10**v) for rid, v in zip('0123', (8.9940, 8.9974, 9.0008, 8.9960), strict=True)}
+    fit = per_replica_result(ka_by_replicate=ka)
+    fit.parameters['Ka_guest'] = Q_(10**8.9974, '1/M')
+    fit.intervals['Ka_guest'] = KaInterval(10**8.9900, 10**9.0050, False, False, 0.95, 16)  # around the estimate
+    path = tmp_path / 'report.txt'
+    export_results_txt([fit], path)
+    (line,) = [ln for ln in path.read_text(encoding='utf-8').splitlines() if ln.strip().startswith('log10(Ka_guest)')]
+
+    assert '8.9974' in line and '[8.9900, 9.0050]' in line

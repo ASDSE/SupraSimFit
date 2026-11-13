@@ -17,29 +17,21 @@ import numpy as np
 from PyQt6.QtCore import QMargins, QObject, Qt, pyqtSignal
 from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QScrollArea, QWidget
 
-from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
-from core.pipeline.diagnostics import Verdict, rejections
-from core.pipeline.inputs import TITRANT, ErrorModel, SpecKind
-from core.pipeline.reporting import reports_conditional, summarize_parameters
+from core.assays.registry import ASSAY_REGISTRY
+from core.pipeline.diagnostics import Verdict
+from core.pipeline.inputs import TITRANT, SpecKind
 from core.units import Q_
 from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE, space
-from gui.plotting.labels import (
-    fmt_constant,
-    fmt_estimate,
-    fmt_interval_plain,
-    fmt_p,
-    fmt_value,
-    not_run_reason,
-    verdict_headline,
-)
+from gui.plotting.labels import verdict_headline
+from gui.results import interval_caption, ka_blocks, test_rows
 from gui.session_model import SessionModel
 from gui.uncertainty import ADDITION_MODES, HELP_HTML, HELP_TITLE, REPLICATE_KINDS, InputEntry, spread_pct
 from gui.widgets.assay_conditions import format_condition
 from gui.widgets.info_button import show_help
 
-_THIN = ' '
+_THIN = ' '
 _SUPERSCRIPT = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻')
 _KINDS = (None, SpecKind.SIGMA, SpecKind.INTERVAL)
 
@@ -82,45 +74,6 @@ def span_text(entry: InputEntry, span: tuple[float, float] | None, nominal: floa
         e = math.floor(math.log10(abs(b)))
         return f'{a / 10**e:.2f} – {b / 10**e:.2f}{_power(e)} {unit}'.replace('-', '−')
     return f'{_num(a)} – {_num(b)} {unit}'
-
-
-def accepted_stretches(grid, r2, r2_cut, low: float, high: float) -> list[tuple[float, float]]:
-    """The stretches of Ka from *low* to *high* whose profile stays above its cut-off, ends at *low* and *high*.
-
-    *grid*, *r2* and *r2_cut* are a profile's Ka values, best R² and cut-off at each
-    (:class:`~core.pipeline.profile.ProfileResult`,
-    :class:`~core.pipeline.input_aware.AwareProfile`). A split interval spans every
-    stretch and the rejected values between them; one bar per stretch shows which is which.
-    """
-    grid, r2, r2_cut = (np.asarray(a, dtype=float) for a in (grid, r2, r2_cut))
-    inside = (grid >= low * (1 - 1e-9)) & (grid <= high * (1 + 1e-9))
-    ok = inside & np.isfinite(r2) & (r2 >= r2_cut)
-    stretches: list[tuple[float, float]] = []
-    start = None
-    for i, flag in enumerate(ok):
-        if flag and start is None:
-            start = i
-        if not flag and start is not None:
-            stretches.append((float(grid[start]), float(grid[i - 1])))
-            start = None
-    if start is not None:
-        stretches.append((float(grid[start]), float(grid[-1])))
-    if not stretches:
-        return [(low, high)]
-    stretches[0] = (low, stretches[0][1])
-    stretches[-1] = (stretches[-1][0], high)
-    return stretches
-
-
-def _nice_ticks(lo: float, hi: float) -> list[float]:
-    """Round values for a log axis from *lo* to *hi*."""
-    ticks = []
-    for e in range(math.floor(math.log10(lo)), math.ceil(math.log10(hi)) + 1):
-        ticks += [m * 10**e for m in (1, 1.5, 2, 3, 4, 5, 7)]
-    inside = [t for t in ticks if lo <= t <= hi]
-    if len(inside) > 6:
-        inside = [t for t in inside if str(t / 10 ** math.floor(math.log10(t)))[0] in '125']
-    return inside
 
 
 class _InputRow:
@@ -505,9 +458,8 @@ class UncertaintyView(QObject):
                 else:
                     row.entered.setText('Whole series')
             elif nominal is not None:
-                row.entered.setText(
-                    f'Entered{_THIN} {format_condition(entry.field, Q_(nominal, entry.field.unit), unit)}'
-                )
+                value = format_condition(entry.field, Q_(nominal, entry.field.unit), unit)
+                row.entered.setText(f'Entered {value}'.replace('×', f'{_THIN}×{_THIN}'))
             else:
                 row.entered.setText('')
             fixed = entry.kind is None
@@ -589,200 +541,40 @@ class UncertaintyView(QObject):
         A constant the fit records no interval for — one held fixed, or one read from a
         results file that carries none — is named in the caption rather than drawn.
         """
-        kinds = ASSAY_REGISTRY[AssayType[fit.assay_type]].param_kinds
-        constants = [
-            s for s in summarize_parameters(fit) if not s.is_log and kinds.get(s.key) is ParamKind.BINDING_CONSTANT
-        ]
-        if not constants:
+        profile = self.model.profile if self.model.profiled_fit is fit else None
+        blocks = ka_blocks(fit, profile, self.model.profile_running())
+        if not blocks:
             self._caption('This fit has no association constant, so it has no interval.')
             return
-        rows = [s for s in constants if s.interval is not None]
-        missing = [fmt_constant(s.key) for s in constants if s.interval is None]
+        drawn = [b for b in blocks if b.rows]
+        missing = [b.name for b in blocks if not b.rows]
         no_interval = f'This fit records no interval for {" and ".join(missing)}.' if missing else ''
-        if not rows:
-            self._caption(no_interval)
-            return
-        conditional_only = reports_conditional(fit)
-        profile = self.model.profile if self.model.profiled_fit is fit else None
-        narrower = wider = False
-        for s in rows:
-            curve = None if profile is None else profile.profiles.get(s.key)
-            readings = [
-                (
-                    'Inputs as entered',
-                    'text-secondary',
-                    s.estimate,
-                    s.estimate_at_bound,
-                    s.interval,
-                    s.interval_open,
-                    s.interval_split,
-                    curve,
-                )
+        for block in drawn:
+            # The compact chart has no badge: a split reading says so in its label.
+            rows = [
+                {**row, 'label': f'{row["label"]} · {row["badge"]}' if row.get('badge') else row['label']}
+                for row in block.rows
             ]
-            if not conditional_only and s.conditional_interval is not None:
-                readings = [
-                    (
-                        'Input-aware',
-                        'accent',
-                        s.estimate,
-                        s.estimate_at_bound,
-                        s.interval,
-                        s.interval_open,
-                        s.interval_split,
-                        None if curve is None else curve.aware or curve,
-                    ),
-                    (
-                        'Inputs as entered',
-                        'text-secondary',
-                        s.conditional_estimate,
-                        s.conditional_at_bound,
-                        s.conditional_interval,
-                        s.conditional_open,
-                        s.conditional_split,
-                        curve,
-                    ),
-                ]
-                aware, entered = s.interval, s.conditional_interval
-                ratio = math.log(aware[1] / aware[0]) / math.log(entered[1] / entered[0])
-                narrower |= ratio < 0.95
-                wider |= ratio > 1.05
-            lo_axis = min(r[4][0] for r in readings) / 1.25
-            hi_axis = max(r[4][1] for r in readings) * 1.25
-            # One power of ten for the numbers written: an open end or an estimate on a
-            # bound sits at the search box, is written in words and sets none.
-            written = [
-                value
-                for _l, _c, est, at_bound, (lo, hi), open_, _s, _p in readings
-                for value, shown in ((est, not at_bound), (lo, not open_[0]), (hi, not open_[1]))
-                if shown
-            ]
-            e = math.floor(math.log10(max(written) if written else math.sqrt(lo_axis * hi_axis)))
-            scale = 10.0**e
-
-            def fmt(v: float, scale: float = scale) -> str:
-                return fmt_value(v / scale)
-
-            chart_rows = []
-            for label, color, est, at_bound, (lo, hi), open_, split, reading_curve in readings:
-                estimate = fmt_estimate(est, at_bound, (lo, hi), open_, fmt, html=False)
-                row = {
-                    'label': f'{label} · Split' if split else label,
-                    'color': color,
-                    'segments': [(lo, hi)],
-                    'est': None if at_bound else est,
-                    'text': estimate if at_bound else f'{estimate}  {fmt_interval_plain(fmt(lo), fmt(hi), *open_)}',
-                }
-                if split:
-                    if reading_curve is not None:
-                        row['segments'] = accepted_stretches(
-                            reading_curve.grid, reading_curve.r2, reading_curve.r2_cut, lo, hi
-                        )
-                    else:
-                        # Words in place of the bars, and no estimate mark on a line with no bars.
-                        row['segments'], row['est'] = [], None
-                        row['note'] = (
-                            'Stretches appear once the Kₐ profile is ready'
-                            if self.model.profile_running()
-                            else 'No Kₐ profile, so the stretches are not drawn'
-                        )
-                chart_rows.append(row)
-            level = f'{s.level * 100:g}{_THIN}% ' if s.level else ''
-            unit_line = C.label(
-                f'{fmt_constant(s.key)}, {level}interval, ×{_THIN}10{str(e).translate(_SUPERSCRIPT)} M⁻¹',
-                'small',
-                'tertiary',
-                rich=True,
-            )
-            chart = C.CompactIntervals(self.t, chart_rows, lo_axis, hi_axis, _nice_ticks(lo_axis, hi_axis), scale)
+            unit_line = C.label(f'{block.name}, {block.level}, {block.axis_unit}', 'small', 'tertiary', rich=True)
+            chart = C.CompactIntervals(self.t, rows, block.lo, block.hi, block.ticks)
             for widget in (unit_line, chart):
                 self.interval_box.addWidget(widget)
             self.unit_lines.append(unit_line)
             self.charts.append(chart)
-        self._caption(
-            ' '.join(filter(None, (self._interval_caption(fit, conditional_only, narrower, wider), no_interval)))
-        )
+        caption = interval_caption(fit, drawn) if drawn else ''
+        self._caption(' '.join(filter(None, (caption, no_interval))))
 
     def _caption(self, text: str) -> None:
         self.interval_caption.setText(text)
         self.interval_caption.setVisible(bool(text))
-
-    @staticmethod
-    def _interval_caption(fit, conditional_only: bool, narrower: bool, wider: bool) -> str:
-        """What made the Input-aware interval differ from the one at the inputs as entered, from the fit's record.
-
-        The inputs moved where the fit records shifts of them, and a stated random error
-        of each addition widens the cut-off where the fit records one; a noise law reads
-        alike in both intervals, so it explains a difference only beside the additions,
-        which take over part of the scatter it would otherwise carry.
-        """
-        if conditional_only:
-            return 'Every input was taken as entered and no error of the additions was stated, so this fit has one interval.'
-        moved = bool(fit.input_shifts)
-        additions = ErrorModel.from_dict(fit.fit_config).additions is not None
-        if wider and not narrower:
-            cause = {
-                (True, False): 'Letting the inputs move within what you stated widens',
-                (False, True): 'The random error of each addition you stated widens',
-                (
-                    True,
-                    True,
-                ): 'Letting the inputs move within what you stated and the random error of each addition widen',
-            }[moved, additions]
-            return f'{cause} the interval beyond the one with the inputs as entered.'
-        if narrower and not wider:
-            return {
-                (True, False): 'Letting the inputs move within what you stated explains a misfit the entered values '
-                'could not, so the interval is narrower than with the inputs as entered.',
-                (False, True): 'The random error of each addition you stated takes over part of the scatter the noise '
-                'law of the replicates would carry, so the interval is narrower than with the inputs as entered.',
-                (True, True): 'With the inputs free to move within what you stated and the random error of each '
-                'addition, the interval is narrower than with the inputs as entered.',
-            }[moved, additions]
-        return ''
 
     def _show_tests(self, fit) -> None:
         diag = fit.diagnostics
         self.tests_section.setVisible(diag is not None)
         if diag is None:
             return
-        rejected = rejections(diag.conditional_misfit, diag.misfit, diag.conflict)
-        moved = bool(fit.input_shifts)
-        rows = []
-        if moved:
-            rows.append(('misfit', diag.misfit, 'Curve fits with inputs moved', 'Curve misses with inputs moved'))
-        rows.append(
-            (
-                'conditional_misfit',
-                diag.conditional_misfit,
-                'Curve fits at inputs as entered',
-                'Misfit at inputs as entered',
-            )
-        )
-        if moved:
-            rows.append(('conflict', diag.conflict, 'Inputs agree with what you stated', 'Inputs conflict'))
-        for name, test, passed, failed in rows:
-            if test is None:
-                reason = not_run_reason(diag, 'conflict' if name == 'conflict' else 'misfit')
-                icon, tone, p = 'info', 'text-tertiary', '—'
-                text = 'Inputs not tested' if name == 'conflict' else 'Curve not tested'
-            else:
-                bad = name in rejected
-                icon, tone, text, p = (
-                    ('alert-circle', 'warning', failed, fmt_p(test.p_value))
-                    if bad
-                    else ('check-circle', 'success', passed, fmt_p(test.p_value))
-                )
-                reason = ''
-            row = QWidget()
-            row.setFixedHeight(SIZE['control'])
-            row.setLayout(
-                C.hbox(
-                    C.Icon(self.t, icon, tone), C.label(text), None, C.label(p, 'small-number', 'secondary'), spacing=3
-                )
-            )
-            if reason:
-                row.setToolTip(f'Not tested: {reason}.')
-            self.test_rows.addWidget(row)
+        for test in test_rows(fit):
+            self.test_rows.addWidget(C.test_line(self.t, test.icon, test.tone, test.text, test.p, test.tooltip))
         caption = verdict_headline(diag)[0] + '.'
         if diag.verdict in (Verdict.INPUTS_CONFLICT, Verdict.MODEL_AND_INPUTS):
             caption += ' The test weighs the inputs together, so it does not say which of them is off.'
