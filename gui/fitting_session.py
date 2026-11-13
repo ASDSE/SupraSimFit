@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.data_processing.measurement_set import MeasurementSet
 from core.data_processing.plotting import prepare_plot_data
 from core.pipeline.fit_pipeline import FitConfig
 from core.pipeline.inputs import TITRANT, InputSpec
@@ -32,13 +31,11 @@ from gui.plotting.plot_style import PlotStyleWidget
 from gui.plotting.plot_widget import PlotWidget
 from gui.plotting.sensitivity_widget import SensitivityWidget
 from gui.session_model import CONCENTRATIONS_REQUIRED, SessionModel
+from gui.views.measurements import MeasurementsView
 from gui.widgets.assay_config_panel import AssayConfigPanel
 from gui.widgets.bounds_panel import BoundsPanel
-from gui.widgets.data_panel import DataPanel
 from gui.widgets.fit_config_panel import FitConfigPanel
 from gui.widgets.input_uncertainty_panel import InputUncertaintyPanel
-from gui.widgets.preprocessing_panel import PreprocessingPanel
-from gui.widgets.replica_panel import ReplicaPanel
 from gui.widgets.sensitivity_panel import SensitivityPanel
 
 #: A session's views as the sidebar groups them: (group, ((view, icon), …)).
@@ -154,10 +151,17 @@ class FittingSession(QWidget):
         hidden, data or settings changed, or the session was renamed.
     side_panel_closed()
         Emitted when the side panel's close button is pressed.
+    view_requested(str)
+        Emitted when the session needs one of its views on screen, such as
+        Measurements for concentrations a fit needs.
+    new_session_requested()
+        Emitted by *Load data into a new session…* inside a view.
     """
 
     changed = pyqtSignal()
     side_panel_closed = pyqtSignal()
+    view_requested = pyqtSignal(str)
+    new_session_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -213,8 +217,15 @@ class FittingSession(QWidget):
         else:
             self.run_fit()
 
+    def view_badge(self, view: str) -> str | None:
+        """The summary beside the title of *view*, or ``None`` for a view that states none yet."""
+        if view == 'Measurements':
+            return self._measurements.badge()
+        return None
+
     def _plot_widget_of(self, view: str):
         return {
+            'Measurements': self._measurements.plot,
             'Fit results': self._plot_widget,
             'Ka confidence': self._identifiability_widget,
             'Sensitivity': self._sensitivity_widget,
@@ -225,7 +236,9 @@ class FittingSession(QWidget):
         widget = self._plot_widget_of(view)
         model = self.model
         if widget is None:
-            return 'This view has no plot to save. Open Fit results, Ka confidence or Sensitivity, then save it.'
+            return 'This view has no plot to save. Open Measurements, Fit results, Ka confidence or Sensitivity.'
+        if widget is self._measurements.plot:
+            return None if model.measurement_set is not None else 'There is no titration yet. Load data, then save it.'
         if widget is self._plot_widget:
             if model.measurement_set is None and not model.fit_results:
                 return 'There is no titration plot yet. Load a measurement file, then save it.'
@@ -242,9 +255,13 @@ class FittingSession(QWidget):
     # Commands
     # ------------------------------------------------------------------
 
-    def load_data(self) -> None:
-        """Ask for a measurement file and load it into this session."""
-        self._data_panel.load_file()
+    def add_files(self) -> None:
+        """Ask for files and add them to this session as further replicates."""
+        self._measurements.add_files()
+
+    def replace_data(self) -> bool:
+        """Ask for files and load them in place of this session's data; whether anything was loaded."""
+        return self._measurements.replace_data()
 
     def run_fit(self) -> None:
         """Start a background fit of the loaded data with the settings shown; say why when it cannot start."""
@@ -254,7 +271,8 @@ class FittingSession(QWidget):
             return
         QMessageBox.warning(self, refusal.title, refusal.message)
         if refusal == CONCENTRATIONS_REQUIRED:
-            self._data_panel.focus_concentration_table()
+            self.view_requested.emit('Measurements')
+            self._measurements.focus_concentrations()
 
     def load_demo_ida(self) -> None:
         """Load the bundled IDA demo dataset and fit it with the demo's own settings.
@@ -286,8 +304,10 @@ class FittingSession(QWidget):
         self._fit_panel.set_config(FitConfig(per_replica=False))
 
         # Loading resets the replicates and clears the results.
-        self._data_panel.load_file(str(_DEMO_IDA_PATH))
-        self._preprocess_panel.apply()
+        refusal = self.model.load_files([str(_DEMO_IDA_PATH)]) or self.model.remove_outliers(3.5, 3)
+        if refusal is not None:
+            QMessageBox.warning(self, refusal.title, refusal.message)
+            return
         self.run_fit()
         if self.model.fit_running():
             labels = self.model.settings.input_labels
@@ -447,7 +467,7 @@ class FittingSession(QWidget):
         if self.model.measurement_set is None and results:
             source_file = results[-1].source_file
             if source_file and Path(source_file).exists():
-                self._data_panel.load_file(source_file)
+                self.model.load_files([source_file])
 
         self._push_settings()
         check = self.model.check_imported(results, Path(path).name)
@@ -480,6 +500,7 @@ class FittingSession(QWidget):
         # A whole tab is saved as one picture, which rules out SVG; see
         # gui.plotting.export.export_widget.
         tag, formats = {
+            self._measurements.plot: ('titration', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._plot_widget: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._identifiability_widget: ('identifiability', 'PNG image (*.png)'),
             self._sensitivity_widget: ('sensitivity', 'PNG image (*.png)'),
@@ -525,9 +546,7 @@ class FittingSession(QWidget):
     # ------------------------------------------------------------------
 
     def _setup_ui(self) -> None:
-        self._data_panel = DataPanel(initial_display_unit=self.model.settings.display_unit)
-        self._preprocess_panel = PreprocessingPanel()
-        self._replica_panel = ReplicaPanel()
+        self._measurements = MeasurementsView(self.model, self)
         self._assay_panel = AssayConfigPanel()
         self._input_panel = InputUncertaintyPanel()
         self._fit_panel = FitConfigPanel()
@@ -548,10 +567,7 @@ class FittingSession(QWidget):
             return panel
 
         self._views: dict[str, _View] = {
-            'Measurements': _View(
-                _canvas(self._data_panel, scroll=True),
-                side('Measurement settings', self._replica_panel, self._preprocess_panel),
-            ),
+            'Measurements': _View(self._measurements.canvas, side('Measurement settings', self._measurements.side)),
             'Binding model': _View(_canvas(self._assay_panel, self._bounds_panel, self._fit_panel, scroll=True)),
             'Input uncertainty': _View(_canvas(self._input_panel, scroll=True)),
             'Fit results': _View(_canvas(self._fit_split(self._plot_widget))),
@@ -577,8 +593,7 @@ class FittingSession(QWidget):
         self._name_inputs()
         self._on_conditions_changed()
 
-        # Push the initial display unit into PlotStyleWidget so the style
-        # dict reflects the DataPanel's combo from the first emission.
+        # The style's x unit is the session's display unit from the first emission.
         self._style_widget.set_x_unit(self.model.settings.display_unit)
 
     def _fit_split(self, plot: QWidget) -> QSplitter:
@@ -594,14 +609,9 @@ class FittingSession(QWidget):
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
-        self._data_panel.data_loaded.connect(self._on_data_loaded)
-        self._data_panel.data_cleared.connect(self._on_data_cleared)
-        self._data_panel.display_unit_changed.connect(self._on_display_unit_changed)
-
-        self._preprocess_panel.preprocessing_applied.connect(self._on_preprocessing_applied)
-        self._preprocess_panel.preprocessing_reset.connect(self._on_preprocessing_reset)
-
-        self._replica_panel.replicas_changed.connect(self._on_replicas_changed)
+        self.model.data_changed.connect(self._on_data_changed)
+        self._measurements.display_unit_changed.connect(self._style_widget.set_x_unit)
+        self._measurements.new_session_link.clicked.connect(self.new_session_requested)
 
         self._assay_panel.assay_type_changed.connect(self._on_assay_type_changed)
         self._assay_panel.assay_type_changed.connect(self._sensitivity_panel.set_assay_type)
@@ -655,43 +665,19 @@ class FittingSession(QWidget):
             errors=inputs.current_errors(),
             input_labels=inputs.input_labels(),
             input_problems=tuple(inputs.problems()),
-            display_unit=self._data_panel.display_unit(),
         )
 
     # ------------------------------------------------------------------
     # Panel slots
     # ------------------------------------------------------------------
 
-    def _on_data_loaded(self, ms: MeasurementSet) -> None:
-        self._preprocess_panel.set_measurement_set(ms)
-        self._replica_panel.set_measurement_set(ms)
-        self._summary_widget.set_replica_ids(ms.replica_ids)
-        self._identifiability_widget.set_replica_ids(ms.replica_ids)
-        self._push_settings()
-        self.model.load(ms, self._data_panel.current_path())
-
-    def _on_data_cleared(self) -> None:
-        self._replica_panel.clear()
-        self._summary_widget.set_replica_ids(None)
-        self._identifiability_widget.set_replica_ids(None)
-        self._push_settings()
-        self.model.clear()
-
-    def _on_replicas_changed(self) -> None:
-        self._push_settings()
-        self.model.replicates_changed()
-
-    def _on_preprocessing_applied(self) -> None:
-        self._replica_panel.refresh()
-        self._on_replicas_changed()
+    def _on_data_changed(self) -> None:
+        """Give the views that name replicates the replicates of the data now loaded."""
         ms = self.model.measurement_set
-        if ms:
-            self.model.show_status(f'Outlier removal applied — {ms.n_active}/{ms.n_replicas} replicates active')
-
-    def _on_preprocessing_reset(self) -> None:
-        self._replica_panel.refresh()
-        self._on_replicas_changed()
-        self.model.show_status('Replicates reset — all active')
+        ids = None if ms is None else ms.replica_ids
+        self._summary_widget.set_replica_ids(ids)
+        self._identifiability_widget.set_replica_ids(ids)
+        self.changed.emit()
 
     def _on_assay_type_changed(self, assay_type: AssayType) -> None:
         self._bounds_panel.set_assay_type(assay_type)
@@ -722,11 +708,6 @@ class FittingSession(QWidget):
     def _on_conditions_edited(self) -> None:
         self._push_settings()
         self.model.edit_finished()
-
-    def _on_display_unit_changed(self, unit: str) -> None:
-        """DataPanel announces a new plot-display unit — propagate to plot."""
-        self.model.update_settings(display_unit=unit)
-        self._style_widget.set_x_unit(unit)
 
     # ------------------------------------------------------------------
     # Ka sensitivity analysis

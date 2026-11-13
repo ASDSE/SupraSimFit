@@ -284,7 +284,7 @@ class PlotStyleWidget(QWidget):
         self._tree.setParameters(self._params, showTop=False)
         self._params.sigTreeStateChanged.connect(self._on_change)
 
-        # X-axis display unit is owned by the Data panel (no ParameterTree
+        # X-axis display unit is owned by Measurements (no ParameterTree
         # node here), but still round-trips through saved style JSONs via
         # ``axes.x_unit``. Externally settable via ``set_x_unit``.
         self._x_unit: str = DEFAULT_STYLE['axes']['x_unit']
@@ -300,7 +300,7 @@ class PlotStyleWidget(QWidget):
         """Set the x-axis display unit and emit ``style_changed``.
 
         The x-axis unit no longer lives in the ParameterTree — it is
-        owned by the Data panel and pushed in here so that saved style
+        owned by Measurements and pushed in here so that saved style
         dicts still carry it via ``axes.x_unit``.
         """
         if unit == self._x_unit:

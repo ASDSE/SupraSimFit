@@ -34,6 +34,9 @@ from gui.design.tokens import RADIUS, SIZE, Theme, font, space
 WINDOW_BUTTON_COLOURS = ('#FF5F57', '#FEBC2E', '#28C840')
 
 #: Corner radius of a popover card and of a window of its own.
+#: Superscript digits and minus back to plain text, so a value shown as ``2.9×10⁻⁵`` is typed as ``2.9e-5``.
+_FROM_SUPER = str.maketrans('⁰¹²³⁴⁵⁶⁷⁸⁹⁻', '0123456789-')
+
 #: Room a popover leaves around its card for the soft shadow, in px.
 SHADOW = 12
 
@@ -245,12 +248,14 @@ def link_button(text: str) -> QPushButton:
     return b
 
 
-class OutlineButton(QWidget):
+class OutlineButton(QAbstractButton):
     """A secondary command: control height, 1-px ``border-strong`` outline, label in body-strong."""
 
     def __init__(self, t: Theme, text: str, icon_name: str = ''):
         super().__init__()
-        self.t, self.text, self.icon = t, text, icon_name
+        self.t, self.label, self.icon = t, text, icon_name
+        self.setAccessibleName(text)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         fm = QFontMetrics(font('body-strong'))
         width = fm.horizontalAdvance(text) + 2 * space(4) + (16 + space(2) if icon_name else 0)
         self.setFixedSize(width, SIZE['control'])
@@ -263,15 +268,20 @@ class OutlineButton(QWidget):
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = _rounded(r, RADIUS['control'])
         p.fillPath(path, t.q('bg-raised' if t.dark else 'bg-surface'))
+        if self.underMouse() and self.isEnabled():
+            p.fillPath(path, t.q('bg-hover'))
         p.setPen(QPen(t.q('border-strong'), 1))
         p.drawPath(path)
         x = space(4)
+        tone = 'text-primary' if self.isEnabled() else 'text-tertiary'
         if self.icon:
-            icons.paint(p, self.icon, t.q('text-secondary'), x, (h - 16) / 2, 16)
+            icons.paint(p, self.icon, t.q('text-secondary' if self.isEnabled() else 'text-tertiary'), x, (h - 16) / 2)
             x += 16 + space(2)
         p.setFont(font('body-strong'))
-        p.setPen(t.q('text-primary'))
-        p.drawText(QRectF(x, 0, r.width() - x, h), Qt.AlignmentFlag.AlignVCenter, self.text)
+        p.setPen(t.q(tone))
+        p.drawText(QRectF(x, 0, r.width() - x, h), Qt.AlignmentFlag.AlignVCenter, self.label)
+        if self.hasFocus():
+            _focus_ring(p, t, QRectF(self.rect()))
         p.end()
 
 
@@ -303,6 +313,21 @@ class TrafficLights(QWidget):
             else:
                 p.setBrush(self.t.q('traffic'))
                 p.drawEllipse(QRectF(i * 20 + 0.5, 0.5, 13, 13))
+        p.end()
+
+
+class Icon(QWidget):
+    """An icon in a text token, painted each time so it follows the theme: 16 px unless *size* says."""
+
+    def __init__(self, t: Theme, name: str, tone: str = 'text-secondary', size: int = 16):
+        super().__init__()
+        self.t, self.name, self.tone, self.size = t, name, tone, size
+        self.setFixedSize(size, size)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        icons.paint(p, self.name, self.t.q(self.tone), 0, 0, self.size)
         p.end()
 
 
@@ -981,6 +1006,8 @@ class Field(QWidget):
     its column. *focused* draws the accent outline and the focus halo.
     """
 
+    edited = pyqtSignal(str)
+
     def __init__(
         self,
         t: Theme,
@@ -990,6 +1017,7 @@ class Field(QWidget):
         prefix: str = '',
         suffix: str = '',
         focused: bool = False,
+        editable: bool = False,
     ):
         super().__init__()
         self.t, self.text, self.kind, self.prefix, self.suffix, self.focused = t, text, kind, prefix, suffix, focused
@@ -999,6 +1027,47 @@ class Field(QWidget):
         else:
             self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self.setMinimumWidth(48)
+        # An editable number is typed into a frameless line edit laid over the painted box;
+        # :attr:`edited` carries the text once the edit is finished.
+        self.editor: QLineEdit | None = None
+        if editable:
+            editor = QLineEdit(text, self)
+            editor.setProperty('role', 'field')
+            editor.setFont(font('number'))
+            editor.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            editor.editingFinished.connect(lambda: self.edited.emit(editor.text().strip()))
+            editor.installEventFilter(self)
+            self.setFocusProxy(editor)
+            self.editor = editor
+
+    def set_text(self, text: str) -> None:
+        """Show *text*, in the editor too when the field is editable."""
+        self.text = text
+        if self.editor is not None and self.editor.text() != text:
+            self.editor.setText(text)
+        self.update()
+
+    def setAccessibleName(self, name: str) -> None:  # type: ignore[override]
+        super().setAccessibleName(name)
+        if self.editor is not None:
+            self.editor.setAccessibleName(name)
+
+    def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
+        if obj is self.editor and event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+            self.focused = event.type() == QEvent.Type.FocusIn
+            self.update()
+        return False
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.editor is not None:
+            right = space(3)
+            if self.suffix:
+                right += QFontMetrics(font('small')).horizontalAdvance(self.suffix) + space(2)
+            left = space(3) + (
+                QFontMetrics(font('body')).horizontalAdvance(self.prefix) + space(2) if self.prefix else 0
+            )
+            self.editor.setGeometry(left, 1, self.width() - left - right, self.height() - 2)
 
     def paintEvent(self, _):
         t = self.t
@@ -1030,9 +1099,10 @@ class Field(QWidget):
             p.setPen(t.q('text-tertiary'))
             p.drawText(r.adjusted(0, 0, -right, 0), middle | Qt.AlignmentFlag.AlignRight, self.suffix)
             right += QFontMetrics(p.font()).horizontalAdvance(self.suffix) + space(2)
-        p.setFont(font('number'))
-        p.setPen(t.q('text-primary'))
-        p.drawText(r.adjusted(0, 0, -right, 0), middle | Qt.AlignmentFlag.AlignRight, self.text)
+        if self.editor is None:
+            p.setFont(font('number'))
+            p.setPen(t.q('text-primary'))
+            p.drawText(r.adjusted(0, 0, -right, 0), middle | Qt.AlignmentFlag.AlignRight, self.text)
         p.end()
 
 
@@ -1043,6 +1113,8 @@ class Dropdown(QWidget):
     *chevron* False and *align_right* show a value that is read rather than chosen.
     """
 
+    chosen = pyqtSignal(int)
+
     def __init__(
         self,
         t: Theme,
@@ -1051,10 +1123,46 @@ class Dropdown(QWidget):
         disabled: bool = False,
         chevron: bool = True,
         align_right: bool = False,
+        options: list[str] | None = None,
     ):
         super().__init__()
         self.t, self.text, self.disabled, self.chevron, self.align_right = t, text, disabled, chevron, align_right
+        self.options = options or []
         self.setFixedSize(width, SIZE['control'])
+        if self.options:
+            self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_choice(self, text: str, options: list[str] | None = None) -> None:
+        """Show *text* as the choice, and offer *options* from now on when given."""
+        self.text = text
+        if options is not None:
+            self.options = options
+        self.update()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.open_menu()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Down):
+            self.open_menu()
+        else:
+            super().keyPressEvent(event)
+
+    def open_menu(self) -> None:
+        """Offer the options in a menu under the dropdown; choosing one emits :attr:`chosen`."""
+        if not self.options or self.disabled:
+            return
+        actions = []
+        for i, text in enumerate(self.options):
+            action = QAction(text, self)
+            action.triggered.connect(lambda _on=False, i=i: self.chosen.emit(i))
+            actions.append(action)
+        fm = QFontMetrics(font('body'))
+        width = max(self.width(), max(fm.horizontalAdvance(o) for o in self.options) + 2 * space(6))
+        menu = PopoverMenu(self.t, self.window(), actions, width=width)
+        menu.popup(self)
 
     def paintEvent(self, _):
         t = self.t
@@ -1071,6 +1179,8 @@ class Dropdown(QWidget):
         paint_rich(p, QRectF(inset, 0, self.width() - inset - right, h), self.text, 'number', tone, self.align_right)
         if self.chevron:
             icons.paint(p, 'chevron-down', t.q('text-tertiary'), self.width() - 22, (h - 12) / 2, 12, 2)
+        if self.hasFocus():
+            _focus_ring(p, t, QRectF(self.rect()))
         p.end()
 
 
@@ -1095,8 +1205,36 @@ class Segmented(QWidget):
         self.t, self.options, self.current = theme, options, current
         self.disabled, self.dividers = set(disabled), dividers
         self.setFixedHeight(SIZE['control'])
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         if width:
             self.setFixedWidth(width)
+
+    changed = pyqtSignal(int)
+
+    def set_current(self, index: int) -> None:
+        """Choose option *index* without emitting :attr:`changed`."""
+        self.current = index
+        self.update()
+
+    def _choose(self, index: int) -> None:
+        if 0 <= index < len(self.options) and index not in self.disabled and index != self.current:
+            self.current = index
+            self.update()
+            self.changed.emit(index)
+
+    def mousePressEvent(self, event) -> None:
+        sw = (self.width() - 4) / len(self.options)
+        self._choose(int((event.position().x() - 2) // sw))
+
+    def keyPressEvent(self, event) -> None:
+        step = {Qt.Key.Key_Left: -1, Qt.Key.Key_Right: 1}.get(event.key())
+        if step is None:
+            super().keyPressEvent(event)
+            return
+        i = self.current + step
+        while 0 <= i < len(self.options) and i in self.disabled:
+            i += step
+        self._choose(i)
 
     def paintEvent(self, _):
         t = self.t
@@ -1129,6 +1267,8 @@ class Segmented(QWidget):
             else:
                 p.setPen(t.q('text-tertiary' if t.dark else 'text-secondary'))
             p.drawText(seg, Qt.AlignmentFlag.AlignCenter, opt)
+        if self.hasFocus():
+            _focus_ring(p, t, r)
         p.end()
 
 
@@ -1280,10 +1420,31 @@ class ReplicateChip(QWidget):
     ``z`` tag, for a replicate outlier removal switched off.
     """
 
+    toggled_on = pyqtSignal(bool)
+
     def __init__(self, t: Theme, letter: str, on: bool, by_filter: bool = False):
         super().__init__()
-        self.t, self.letter, self.on, self.by_filter = t, letter, on, by_filter
+        self.t, self.letter = t, letter
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.set_state(on, by_filter)
+
+    def set_state(self, on: bool, by_filter: bool = False) -> None:
+        """Show the replicate used (*on*) or switched off, by the outlier filter where *by_filter*."""
+        self.on, self.by_filter = on, by_filter
         self.setFixedSize(60 if by_filter else 52, SIZE['control'])
+        self.setAccessibleName(f'Replicate {self.letter}, {"used" if on else "switched off"}')
+        self.update()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.toggled_on.emit(not self.on)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return):
+            self.toggled_on.emit(not self.on)
+        else:
+            super().keyPressEvent(event)
 
     def paintEvent(self, _):
         t = self.t
@@ -1315,6 +1476,8 @@ class ReplicateChip(QWidget):
             p.setFont(font('small'))
             p.setPen(t.q('text-secondary'))
             p.drawText(tag.adjusted(0, -1, 0, -1), Qt.AlignmentFlag.AlignCenter, 'z')
+        if self.hasFocus():
+            _focus_ring(p, t, QRectF(self.rect()))
         p.end()
 
 
@@ -1325,12 +1488,66 @@ class ConcentrationGrid(QWidget):
 
     HEAD, ROW = 26, 20
 
-    def __init__(self, t: Theme, values: list[str], header: str):
+    edited = pyqtSignal(int, str)
+
+    def __init__(self, t: Theme, values: list[str], header: str, editable: bool = False):
         super().__init__()
-        self.t, self.values, self.header = t, values, header
+        self.t, self.editable = t, editable
+        self._editor: QLineEdit | None = None
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.set_values(values, header)
+        if editable:
+            self.setToolTip('Double-click a value to change it.')
+
+    def set_values(self, values: list[str], header: str) -> None:
+        """Show *values* (formatted) under *header*."""
+        self.values, self.header = values, header
         self.rows = math.ceil(len(values) / 2)
         self.setFixedHeight(self.HEAD + self.rows * self.ROW + 4)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.update()
+
+    def _cell(self, index: int) -> QRectF:
+        half = self.width() / 2
+        col, k = divmod(index, self.rows)
+        x0 = 0 if col == 0 else half + space(4)
+        x1 = half - space(4) if col == 0 else self.width()
+        return QRectF(x0 + 24, self.HEAD + 2 + k * self.ROW, x1 - x0 - 24, self.ROW)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if not self.editable:
+            return
+        for i in range(len(self.values)):
+            if self._cell(i).contains(event.position()):
+                self.edit(i)
+                return
+
+    def edit(self, index: int) -> None:
+        """Open value *index* for typing; Return or leaving the field emits :attr:`edited`."""
+        if not self.values:
+            return
+        if self._editor is not None:
+            self._editor.deleteLater()
+        editor = QLineEdit(self.values[index].replace('\u2009', '').replace('×10', 'e').translate(_FROM_SUPER), self)
+        editor.setFont(font('number'))
+        editor.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        editor.setAccessibleName(f'Concentration of point {index + 1}')
+        editor.setGeometry(self._cell(index).toRect().adjusted(0, -2, 0, 2))
+        editor.selectAll()
+        editor.show()
+        editor.setFocus()
+        self._editor = editor
+        done = {'once': False}
+
+        def commit() -> None:
+            if done['once']:
+                return
+            done['once'] = True
+            text = editor.text().strip()
+            self._editor = None
+            editor.deleteLater()
+            self.edited.emit(index, text)
+
+        editor.editingFinished.connect(commit)
 
     def paintEvent(self, _):
         t = self.t
@@ -1549,10 +1766,16 @@ class LegendRow(QWidget):
 
     def __init__(self, theme: Theme, items: list[tuple[str, str]], dot_alpha: float = 0.6):
         super().__init__()
-        self.t, self.items, self.dot_alpha = theme, items, dot_alpha
+        self.t, self.dot_alpha = theme, dot_alpha
         self.setFixedHeight(20)
+        self.set_items(items)
+
+    def set_items(self, items: list[tuple[str, str]]) -> None:
+        """Show *items* as the legend."""
+        self.items = items
         fm = QFontMetrics(font('small'))
-        self.setFixedWidth(sum(self._width(kind, txt, fm) for kind, txt in items) - space(5))
+        self.setFixedWidth(max(0, sum(self._width(kind, txt, fm) for kind, txt in items) - space(5)))
+        self.update()
         if any(kind == 'rings' for kind, _ in items):
             self.setToolTip('The × removes the overlay')
 
@@ -1641,6 +1864,21 @@ class SectionHeader(QAbstractButton):
         self.t, self._title, self._open, self._trailing = theme, title, open_, trailing
         self.setFixedHeight(self.HEIGHT)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName(title)
+        self.clicked.connect(lambda: self.set_open(not self._open))
+
+    def set_open(self, open_: bool) -> None:
+        """Open or close the section; :attr:`toggled_open` says which."""
+        if open_ != self._open:
+            self._open = open_
+            self.update()
+            self.toggled_open.emit(open_)
+
+    def set_trailing(self, trailing: str) -> None:
+        """Show *trailing* as the section's quiet summary."""
+        self._trailing = trailing
+        self.update()
 
     def paintEvent(self, _):
         t = self.t
@@ -1657,24 +1895,40 @@ class SectionHeader(QAbstractButton):
             p.setPen(t.q('text-tertiary'))
             right = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
             p.drawText(QRectF(0, 0, self.width(), h), right, self._trailing)
+        if self.hasFocus():
+            _focus_ring(p, t, QRectF(self.rect()))
         p.end()
 
 
 def section(
     theme: Theme, title: str, content: QWidget | None, open_: bool = True, first: bool = False, trailing: str = ''
 ) -> QWidget:
-    """An inspector section: a hairline above (unless *first*), the header, and *content* while open."""
+    """An inspector section: a hairline above (unless *first*), the header, and *content* while open.
+
+    The header opens and closes it; the returned widget's ``header`` is that
+    :class:`SectionHeader`, for its trailing summary.
+    """
     w = QWidget()
     lay = vbox(spacing=0)
     if not first:
         lay.addWidget(hairline())
         lay.addSpacing(space(3))
-    lay.addWidget(SectionHeader(theme, title, open_, trailing))
-    if content is not None and open_:
-        lay.addSpacing(space(2))
-        lay.addWidget(content)
-        lay.addSpacing(space(5))
-    else:
-        lay.addSpacing(space(3))
+    header = SectionHeader(theme, title, open_ and content is not None, trailing)
+    lay.addWidget(header)
+    closed = QWidget()
+    closed.setFixedHeight(space(3))
+    lay.addWidget(closed)
+    if content is not None:
+        body = QWidget()
+        body.setLayout(vbox(2, content, 5, spacing=0))
+        lay.addWidget(body)
+
+        def show(on: bool) -> None:
+            body.setVisible(on)
+            closed.setVisible(not on)
+
+        header.toggled_open.connect(show)
+        show(open_)
+    w.header = header
     w.setLayout(lay)
     return w

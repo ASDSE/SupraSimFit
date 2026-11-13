@@ -192,7 +192,7 @@ def analysed_session(qapp, monkeypatch):
         session = FittingSession()
         sessions.append(session)
         session._assay_panel.set_assay_type(AssayType.IDA)
-        session._data_panel.load_file(str(_IDA_DATA))
+        session.model.load_files([str(_IDA_DATA)])
         if result is None:
             return session
         run = _made_on(result, session.model.measurement_set, session._assay_panel.current_conditions())

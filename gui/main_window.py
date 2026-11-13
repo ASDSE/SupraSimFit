@@ -73,12 +73,6 @@ class _TitleBarArea(QWidget):
         super().mouseDoubleClickEvent(event)
 
 
-_ADD_TO_LOADED = (
-    'This session already holds data, and adding files to it as further replicates is not available yet. '
-    'Use Replace data… to load other files in their place, or Load data into a new session… for another experiment.'
-)
-
-
 class _SpinBoxWheelRedirect(QObject):
     """Block non-focused spinboxes from swallowing wheel events.
 
@@ -435,7 +429,9 @@ class FittingMainWindow(QMainWindow):
 
         bar = self._toolbar
         bar.title.setText(self._view)
-        bar.badge.setVisible(False)  # each view states its summary once it is rebuilt
+        badge = session.view_badge(self._view)
+        bar.badge.setText(badge or '')
+        bar.badge.setVisible(bool(badge))
         has_side = session.has_side_panel(self._view)
         bar.side.setEnabled(has_side)
         bar.side.setChecked(has_side and self._side_visible)
@@ -470,6 +466,8 @@ class FittingMainWindow(QMainWindow):
         session = FittingSession()
         session.changed.connect(self._refresh)
         session.side_panel_closed.connect(lambda: self._set_side_visible(False))
+        session.view_requested.connect(self.show_view)
+        session.new_session_requested.connect(self._on_load_new)
         session.set_side_panels_visible(self._side_visible)
         session.show_view(self._view)
         self._sessions.append(session)
@@ -633,23 +631,18 @@ class FittingMainWindow(QMainWindow):
 
     def _on_add_files(self) -> None:
         session = self.active_session()
-        if session is None:
-            return
-        if session.model.measurement_set is not None:
-            QMessageBox.information(self, 'Add files', _ADD_TO_LOADED)
-            return
-        session.load_data()
+        if session is not None:
+            session.add_files()
 
     def _on_replace(self) -> None:
         session = self.active_session()
         if session is not None:
-            session.load_data()
+            session.replace_data()
 
     def _on_load_new(self) -> None:
         previous = self.active_session()
         session = self._new_session()
-        session.load_data()
-        if session.model.measurement_set is None and previous is not None:
+        if not session.replace_data() and previous is not None:
             # Nothing was loaded: the new session goes and the one before comes back.
             self._close_session(session)
             self._switch_to(previous)

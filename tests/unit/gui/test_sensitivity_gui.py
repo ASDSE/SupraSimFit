@@ -1336,7 +1336,7 @@ def _demo_session(monkeypatch):
     monkeypatch.setattr('gui.fitting_session.QMessageBox.question', lambda *args: QMessageBox.StandardButton.Yes)
     session = FittingSession()
     session._assay_panel.set_assay_type(AssayType.IDA)
-    session._data_panel.load_file('data/IDA_system.txt')
+    session.model.load_files(['data/IDA_system.txt'])
     # Every uncertainty row opens fixed, so the analysis has nothing to vary
     # until one is stated: σ 5 % on each of the assay's four inputs.
     for row in session._input_panel._rows.values():
@@ -1602,7 +1602,7 @@ def test_summary_never_shows_a_run_that_is_not_the_views(qapp, monkeypatch):
     assert not _in_samples_view(summary)
     assert summary._caption.text().startswith('The last analysis is a heatmap.')
 
-    session._data_panel.load_file('data/IDA_system.txt')
+    session.model.load_files(['data/IDA_system.txt'])
     assert session.model.sensitivity_result is None
     assert session._sensitivity_widget._stack.currentWidget() is session._sensitivity_widget._placeholder
     assert summary._sensitivity is None
@@ -1612,7 +1612,7 @@ def test_summary_never_shows_a_run_that_is_not_the_views(qapp, monkeypatch):
     session.run_sensitivity()
     _wait_for_worker(session, qapp)
     assert _in_samples_view(summary)
-    session._data_panel.data_cleared.emit()
+    session.model.clear()
     assert session.model.sensitivity_result is None
     assert summary._sensitivity is None and not _in_samples_view(summary)
 
@@ -1631,7 +1631,7 @@ def test_new_data_discards_a_run_still_going(qapp, monkeypatch):
     session.run_sensitivity()
     worker = session.model._sensitivity_worker
 
-    session._data_panel.load_file('data/IDA_system.txt')
+    session.model.load_files(['data/IDA_system.txt'])
     worker.wait()
     qapp.processEvents()
 

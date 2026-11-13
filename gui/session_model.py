@@ -21,7 +21,7 @@ import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType, ParamKind
-from core.data_processing.measurement_set import MeasurementSet
+from core.data_processing.measurement_set import InvalidData, MeasurementSet
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.pipeline.diagnostics import Verdict
 from core.pipeline.fit_pipeline import FitConfig, FitResult
@@ -41,6 +41,7 @@ from core.pipeline.sensitivity import (
 from core.pipeline.varpro import REPLICATE_TEST_MIN, projectable
 from core.units import Q_, Quantity
 from gui import preferences
+from gui.dataset import Dataset
 from gui.plotting.labels import (
     STOPPING_TEXT,
     and_join,
@@ -169,7 +170,7 @@ class Refusal:
 CONCENTRATIONS_REQUIRED = Refusal(
     'Concentrations Required',
     'This dataset has placeholder concentrations. Enter the real '
-    'concentration vector in the Data panel before running the fit.',
+    'concentration list in Measurements before running the fit.',
 )
 
 
@@ -411,6 +412,7 @@ class SessionModel(QObject):
     """
 
     status_changed = pyqtSignal(str)
+    data_changed = pyqtSignal()
     name_changed = pyqtSignal(str)
     run_changed = pyqtSignal(str, bool)
     progress = pyqtSignal(int, int)
@@ -422,8 +424,7 @@ class SessionModel(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._settings = SessionSettings()
-        self._measurement_set: MeasurementSet | None = None
-        self._source_file: str | None = None
+        self._dataset: Dataset | None = None
         self._custom_name: str | None = None
         self._progress: tuple[int, int] | None = None  # the running analysis's count, done of total
         self._status = ''
@@ -447,42 +448,177 @@ class SessionModel(QObject):
     # ------------------------------------------------------------------
 
     @property
+    def dataset(self) -> Dataset | None:
+        """The session's files and the concentrations they share."""
+        return self._dataset
+
+    @property
     def measurement_set(self) -> MeasurementSet | None:
         """The loaded data, whose active replicates the views switch on and off in place."""
-        return self._measurement_set
+        return None if self._dataset is None else self._dataset.ms
+
+    @property
+    def _source_file(self) -> str | None:
+        files = () if self._dataset is None else self._dataset.files
+        return files[0].path if files else None
 
     @property
     def source_file(self) -> str | None:
-        """The file the loaded data were read from."""
+        """The first file the loaded data were read from."""
         return self._source_file
 
     def load(self, ms: MeasurementSet, source_file: str | None) -> None:
         """Take *ms* as the session's data, clearing every result and stopping the work running on the old data."""
+        self._take(Dataset.from_set(ms, source_file))
+
+    def load_files(self, paths: list[str]) -> Refusal | None:
+        """Load *paths* as the session's data in place of what it holds; say why when they cannot be loaded."""
+        try:
+            dataset = Dataset.open(list(paths))
+        except InvalidData as exc:
+            return Refusal('Load Error', str(exc))
+        self._take(dataset)
+        return None
+
+    def add_files(self, paths: list[str]) -> Refusal | None:
+        """Add *paths* to the session's data as further replicates, keeping every result; say why when they cannot be.
+
+        A result made without the new replicates is then hidden like one made
+        before a replicate was switched on, and comes back if they are removed.
+        """
+        if self._dataset is None or self._dataset.ms is None:
+            return self.load_files(paths)
+        try:
+            dataset = self._dataset.added(list(paths))
+        except InvalidData as exc:
+            return Refusal('Files Not Added', str(exc))
+        added = len(dataset.files) - len(self._dataset.files)
+        self._dataset = dataset
+        self._data_changed()
+        self.show_status(f'Added {added} file{"s" if added != 1 else ""} — {self._loaded_text()}')
+        return None
+
+    def remove_file(self, path: str) -> Refusal | None:
+        """Remove the file *path* and its replicates; the session's last file clears the data."""
+        if self._dataset is None:
+            return None
+        try:
+            dataset = self._dataset.without(path)
+        except InvalidData as exc:
+            return Refusal('File Not Removed', str(exc))
+        if dataset is None:
+            self.clear()
+            return None
+        self._dataset = dataset
+        self._data_changed()
+        self.show_status(f'Removed {Path(path).name} — {self._loaded_text()}')
+        return None
+
+    def select_channel(self, channel: str) -> Refusal | None:
+        """Show *channel* of a multi-channel file: other data, so every result is cleared."""
+        try:
+            self._dataset.select_channel(channel)
+        except InvalidData as exc:
+            return Refusal('Channel Error', str(exc))
+        self._take(self._dataset)
+        return None
+
+    def set_imported_unit(self, unit: str) -> None:
+        """State the concentrations in *unit*: other concentrations, so every result is cleared."""
+        self._dataset.set_imported_unit(unit)
+        self._take(self._dataset)
+
+    def set_concentration(self, index: int, text: str) -> Refusal | None:
+        """Set point *index* to *text* in the imported unit; other concentrations, so every result is cleared."""
+        try:
+            self._dataset.set_concentration(index, text)
+        except InvalidData as exc:
+            return Refusal('Invalid Concentration', f'{exc} The point keeps its value.')
+        self._take(self._dataset)
+        return None
+
+    def load_concentrations(self, path: str) -> tuple[Refusal | None, str | None]:
+        """Take the concentrations from *path*: the refusal, or a notice when their unit was converted."""
+        try:
+            notice = self._dataset.load_concentrations(path)
+        except InvalidData as exc:
+            return Refusal('Concentrations Not Loaded', str(exc)), None
+        self._take(self._dataset)
+        self.show_status(f'Concentrations loaded from {Path(path).name}')
+        return None, notice
+
+    def save_concentrations(self, path: str) -> Refusal | None:
+        """Write the concentrations as stated to *path*."""
+        try:
+            self._dataset.save_concentrations(path)
+        except OSError:
+            return Refusal(
+                'Concentrations Not Saved',
+                'Could not save the concentrations. Check that the folder exists and that you can write there.',
+            )
+        self.show_status(f'Concentrations saved to {Path(path).name}')
+        return None
+
+    def set_replicate(self, replica_id: str, on: bool) -> None:
+        """Use replicate *replica_id* in the fit (*on*) or switch it off."""
+        self.measurement_set.set_active(replica_id, on)
+        self.replicates_changed()
+
+    def reset_replicates(self) -> None:
+        """Use every replicate again."""
+        self.measurement_set.reset_active()
+        self.replicates_changed()
+        self.show_status('Replicates reset — all in use')
+
+    def remove_outliers(self, threshold: float, min_replicates: int) -> Refusal | None:
+        """Switch off the replicates the outlier filter finds at *threshold*; say why when it cannot run."""
+        try:
+            self._dataset.remove_outliers(threshold, min_replicates)
+        except InvalidData as exc:
+            return Refusal('Outlier Removal', str(exc))
+        self.replicates_changed()
+        ms = self.measurement_set
+        self.show_status(f'Outlier removal applied — {ms.n_active} of {ms.n_replicas} replicates in use')
+        return None
+
+    def _loaded_text(self) -> str:
+        ms = self.measurement_set
+        return f'{ms.n_points} points × {ms.n_replicas} replicates, {ms.n_active} in use'
+
+    def _take(self, dataset: Dataset | None) -> None:
+        """Hold *dataset* as the session's data, clearing every result and stopping the work on the old data."""
         # Both describe the data being replaced, so neither can be left running.
         stopped = self.running_work()
-        self._replace_data(ms, source_file)
-        loaded = f'Loaded: {ms.n_points} pts × {ms.n_replicas} replicates — {ms.n_active}/{ms.n_replicas} active'
-        self.show_status(f'{loaded} — the running {stopped} was stopped' if stopped else loaded)
+        self._replace_data(dataset)
+        if dataset is not None:
+            loaded = f'Loaded: {self._loaded_text()}'
+            self.show_status(f'{loaded} — the running {stopped} was stopped' if stopped else loaded)
 
     def clear(self) -> None:
         """Drop the data and every result, stopping the work still running."""
         stopped = self.running_work()
-        self._replace_data(None, None)
+        self._replace_data(None)
         if stopped:
             self.show_status(f'Data cleared — the running {stopped} was stopped')
 
-    def _replace_data(self, ms: MeasurementSet | None, source_file: str | None) -> None:
+    def _replace_data(self, dataset: Dataset | None) -> None:
         self._stop_fit()
-        self._measurement_set = ms
-        self._source_file = source_file
+        self._dataset = dataset
         self.name_changed.emit(self.name())
         self._held_fit_results = []
         self._clear_profile()
         self._clear_sensitivity()
+        self.data_changed.emit()
         self.check_results(force=True)
+
+    def _data_changed(self) -> None:
+        """The files changed and the replicates with them; the results are checked against them again."""
+        self.data_changed.emit()
+        self.check_results(redraw=True, force=True)
 
     def replicates_changed(self) -> None:
         """Check the results again once replicates were switched on or off in the loaded data."""
+        self.data_changed.emit()
         self.check_results(redraw=True)
 
     def dataset_file(self) -> str | None:
@@ -657,7 +793,7 @@ class SessionModel(QObject):
         analysis' own record of them is compared by
         :meth:`_sensitivity_inputs_note`.
         """
-        ms = self._measurement_set
+        ms = self.measurement_set
         settings = self._settings
         opening = f'This {what} was made'
         made = opening
@@ -866,7 +1002,7 @@ class SessionModel(QObject):
         with the reason (:func:`_refusal_reason`). With data loaded the notice
         names the results the check could not judge or had to recompute.
         """
-        ms = self._measurement_set
+        ms = self.measurement_set
         accepted: list[FitResult] = []
         refused: dict[str, int] = {}  # reason -> how many results it refuses
         rescored = unverified = False
@@ -982,10 +1118,13 @@ class SessionModel(QObject):
 
     def file_card(self) -> tuple[str, str]:
         """The file behind the session and its shape: (``IDA_system.txt``, ``IDA · 8 replicates × 12 points``)."""
-        ms, path = self.measurement_set, self.dataset_file()
+        ms = self.measurement_set
         if ms is None:
             return 'No data loaded', 'Load data to start'
-        name = Path(path).name if path else 'Data'
+        files = self._dataset.files
+        name = files[0].name if files else 'Data'
+        if len(files) > 1:
+            name += f' + {len(files) - 1} more'
         short = ASSAY_NAMES[self.settings.assay_type][0]
         return name, f'{short} · {_count(ms.n_replicas, "replicate")} × {ms.n_points} points'
 
@@ -1117,7 +1256,7 @@ class SessionModel(QObject):
 
     def run_fit(self) -> Refusal | None:
         """Start a background fit on a copy of the loaded data, so later changes never reach it; or say why not."""
-        ms = self._measurement_set
+        ms = self.measurement_set
         if ms is None:
             return Refusal('No Data', 'Load a measurement file first.')
         busy = self.busy_note()
@@ -1289,7 +1428,7 @@ class SessionModel(QObject):
         *problems* are the analysis' own settings' problems with the stated
         uncertainties, one sentence each, judged after every other check.
         """
-        ms = self._measurement_set
+        ms = self.measurement_set
         if ms is None:
             return Refusal('No Data', 'Load a measurement file first.')
         if self.fit_running():
@@ -1340,7 +1479,7 @@ class SessionModel(QObject):
         refusal = self.sensitivity_refusal()
         if refusal is not None:
             return refusal
-        ms = self._measurement_set
+        ms = self.measurement_set
         settings = self._settings
         self._sensitivity_worker = SensitivityWorker(
             ms.with_active(ms.active_replica_ids),

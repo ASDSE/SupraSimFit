@@ -1,7 +1,7 @@
 """Tests for PlotStyleWidget x-axis unit handling.
 
 The x-axis unit was removed from the ParameterTree (Axes group) in favour
-of the Data panel's Display Unit combo. The style dict still exposes it
+of the display unit chosen in Measurements. The style dict still exposes it
 under ``axes.x_unit`` so saved style JSONs round-trip, but the value is
 pushed in via :meth:`PlotStyleWidget.set_x_unit`.
 """

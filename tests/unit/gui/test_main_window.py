@@ -32,13 +32,6 @@ def window(qapp, monkeypatch):
     win.close()
 
 
-@pytest.fixture
-def messages(monkeypatch):
-    shown: list[tuple] = []
-    monkeypatch.setattr('gui.main_window.QMessageBox.information', lambda *args: shown.append(args))
-    return shown
-
-
 def test_the_switcher_lists_every_session_and_choosing_one_puts_it_on_screen(qapp, window):
     from gui.design.components import SessionPopover
 
@@ -82,24 +75,28 @@ def test_the_view_on_screen_is_kept_across_sessions_and_its_selection_holds(qapp
     assert window._toolbar.title.text() == 'Ka confidence'
 
 
-def test_adding_files_to_a_session_with_data_says_what_to_do_instead(qapp, window, messages, monkeypatch):
+def test_add_files_adds_replicates_to_the_session_on_screen(qapp, window, monkeypatch, tmp_path):
+    grid = 'concentration,signal\n0,10\n1e-6,12\n2e-6,14\n3e-6,15\n4e-6,16\n'
+    first, second = tmp_path / 'run1.csv', tmp_path / 'run2.csv'
+    first.write_text(grid)
+    second.write_text(grid)
     session = window.active_session()
-    session._data_panel.load_file(str(_IDA_DATA))
-    asked: list = []
-    monkeypatch.setattr(type(session), 'load_data', lambda self: asked.append(self))
+    session.model.load_files([str(first)])
+    monkeypatch.setattr('gui.views.measurements.QFileDialog.getOpenFileNames', lambda *a: ([str(second)], ''))
 
     window._act_add.trigger()
 
-    assert asked == []
-    ((_, title, text),) = messages
-    assert title == 'Add files' and 'Replace data…' in text and 'Load data into a new session…' in text
+    assert [f.name for f in session.model.dataset.files] == ['run1.csv', 'run2.csv']
+    assert window._sidebar.file_card._name == 'run1.csv + 1 more'
+    window.show_view('Measurements')
+    assert window._toolbar.badge.text() == '2 files'
 
 
 def test_loading_into_a_new_session_and_choosing_no_file_leaves_the_sessions_as_they_were(qapp, window, monkeypatch):
     from gui.fitting_session import FittingSession
 
     before = window.active_session()
-    monkeypatch.setattr(FittingSession, 'load_data', lambda self: None)  # the file dialog was cancelled
+    monkeypatch.setattr(FittingSession, 'replace_data', lambda self: False)  # the file dialog was cancelled
 
     window._act_load_new.trigger()
 

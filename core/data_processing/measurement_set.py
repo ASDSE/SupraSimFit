@@ -42,7 +42,7 @@ MIN_POINTS = 1 + min(len(meta.parameter_keys) for meta in ASSAY_REGISTRY.values(
 #: Relative tolerance within which two replicates' concentrations are the same point.
 _GRID_RTOL = 1e-9
 
-#: The concentration units the Data panel offers, largest first.
+#: The concentration units Measurements offers, largest first.
 _UNIT_SCALES = (('M', 1.0), ('mM', 1e-3), ('µM', 1e-6), ('nM', 1e-9))
 
 

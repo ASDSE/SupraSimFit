@@ -24,7 +24,7 @@ the existing BMG plate-reader path: placeholder concentrations
 and the user's editing flow stay reused.
 
 Multi-channel files return a long-format DataFrame with an extra
-``channel`` column; ``data_panel.load_file`` filters down to one channel
+``channel`` column; ``gui.dataset.Dataset`` shows one channel at a time
 via a picker after the reader returns.
 """
 

@@ -77,7 +77,7 @@ def make_session(qapp):
         for key, value in (conditions or {}).items():
             session._assay_panel._field_widgets[key].setValue(value)
         session._fit_panel.set_config(FitConfig(per_replica=per_replica))
-        session._data_panel.data_loaded.emit(ms)
+        session.model.load(ms, None)
         sessions.append(session)
         return session
 
@@ -216,7 +216,7 @@ def test_loading_data_clears_tab_and_discards_pending_profile(qapp, make_session
     pending = session.model._profile_worker
     assert fits == []  # the profiles of the finished fit are still being computed
 
-    session._data_panel.data_loaded.emit(_ida_set(noise_seed=1))
+    session.model.load(_ida_set(noise_seed=1), None)
     pending.wait()
     for _ in range(5):
         qapp.processEvents()

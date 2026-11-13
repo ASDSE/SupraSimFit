@@ -129,7 +129,7 @@ def make_session(qapp):
             session._assay_panel._field_widgets[key].setValue(value.magnitude)
         _set_bounds(session, GDA_IDA_RECOVERY_BOUNDS)
         if ms is not None:
-            session._data_panel.data_loaded.emit(ms)
+            session.model.load(ms, None)
         sessions.append(session)
         return session
 
@@ -196,7 +196,7 @@ def _deliver_sensitivity(session, fit):
 
 
 def _toggle(session, rid: str, on: bool) -> None:
-    session._replica_panel._checkboxes[rid].setChecked(on)
+    session.model.set_replicate(rid, on)
 
 
 def _cell_texts(table) -> list[list[str]]:
@@ -647,7 +647,7 @@ def test_window_result_exports_say_why_while_the_fit_is_hidden(qapp, make_sessio
     for key, value in _CONDITIONS.items():
         session._assay_panel._field_widgets[key].setValue(value.magnitude)
     _set_bounds(session, GDA_IDA_RECOVERY_BOUNDS)
-    session._data_panel.data_loaded.emit(_data())
+    session.model.load(_data(), None)
     _deliver(session, fit)
 
     _toggle(session, 'b', False)
@@ -876,9 +876,7 @@ def test_import_of_a_file_written_before_the_arithmetic_marker_is_shown_as_store
     session._fit_panel.set_config(FitConfig(per_replica=False))
     for key, value in conditions.items():
         session._assay_panel._field_widgets[key].setValue(value)
-    session._data_panel.data_loaded.emit(
-        MeasurementSet.from_dataframe(load_measurements(fixtures / 'unmarked_gda_data.txt'))
-    )
+    session.model.load(MeasurementSet.from_dataframe(load_measurements(fixtures / 'unmarked_gda_data.txt')), None)
     monkeypatch.setattr(
         'gui.fitting_session.QFileDialog.getOpenFileName', lambda *args: (str(fixtures / 'unmarked_gda.json'), '')
     )
@@ -901,9 +899,7 @@ def test_import_of_a_released_per_replicate_file_says_why_its_numbers_changed(qa
     session._assay_panel.set_assay_type(AssayType.IDA)  # with the IDA default bounds the file was made under
     for key, value in (('Ka_dye', 16.8e6), ('h0', 4.3e-6), ('d0', 6e-6)):
         session._assay_panel._field_widgets[key].setValue(value)
-    session._data_panel.data_loaded.emit(
-        MeasurementSet.from_dataframe(load_measurements(root / 'data' / 'IDA_system.txt'))
-    )
+    session.model.load(MeasurementSet.from_dataframe(load_measurements(root / 'data' / 'IDA_system.txt')), None)
     monkeypatch.setattr(
         'gui.fitting_session.QFileDialog.getOpenFileName', lambda *args: (str(fixtures / 'v150_pr_drop.json'), '')
     )
@@ -1040,7 +1036,7 @@ def test_loading_other_data_mid_fit_never_shows_that_fit(qapp, make_session, dia
     session.run_fit()
     worker = session.model._fit_worker
 
-    session._data_panel.data_loaded.emit(_data())
+    session.model.load(_data(), None)
     worker.wait()
     for _ in range(5):
         qapp.processEvents()
@@ -1200,7 +1196,7 @@ def test_the_primary_action_offers_stop_while_a_fit_runs(qapp, dialogs, slow_fit
     window = FittingMainWindow()
     session = window.active_session()
     session._assay_panel.set_assay_type(AssayType.IDA)
-    session._data_panel.data_loaded.emit(_data())
+    session.model.load(_data(), None)
 
     session.run_fit()
     worker = session.model._fit_worker

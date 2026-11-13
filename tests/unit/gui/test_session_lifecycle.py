@@ -129,7 +129,7 @@ def _session(dialogs):
     session = FittingSession()
     session._assay_panel.set_assay_type(AssayType.IDA)
     session._fit_panel.set_config(FitConfig(per_replica=False))
-    session._data_panel.load_file(str(_IDA_DATA))
+    session.model.load_files([str(_IDA_DATA)])
     _state_an_uncertainty(session)
     return session
 
@@ -144,7 +144,7 @@ def _window(monkeypatch):
 
 def _load(session) -> None:
     session._assay_panel.set_assay_type(AssayType.IDA)
-    session._data_panel.load_file(str(_IDA_DATA))
+    session.model.load_files([str(_IDA_DATA)])
     _state_an_uncertainty(session)
 
 
@@ -316,7 +316,7 @@ def test_loading_other_data_stops_the_running_fit_instead_of_abandoning_it(qapp,
     worker = session.model._fit_worker
     _wait_until(qapp, worker.isRunning)
 
-    session._data_panel.load_file(str(_IDA_DATA))
+    session.model.load_files([str(_IDA_DATA)])
 
     assert worker.cancelled and not worker.isRunning()
     assert not session.model.fit_running()
@@ -631,7 +631,7 @@ def test_a_session_that_states_nothing_fits_exactly_as_the_core_does(qapp, dialo
     """With no titrant stock and no shared source, the session must ask the engine exactly what it asked before.
 
     The run goes through the session: its panels, its worker and the data as
-    the Data panel loaded them. What comes back is compared with a direct call
+    the session loaded them. What comes back is compared with a direct call
     to the pipeline on the same data, number for number.
     """
     from copy import deepcopy
@@ -643,7 +643,7 @@ def test_a_session_that_states_nothing_fits_exactly_as_the_core_does(qapp, dialo
     session = FittingSession()
     session._assay_panel.set_assay_type(AssayType.IDA)
     session._fit_panel.set_config(FitConfig(per_replica=False))
-    session._data_panel.load_file(str(_IDA_DATA))
+    session.model.load_files([str(_IDA_DATA)])
     ms = session.model.measurement_set
     conditions = session._assay_panel.current_conditions()
     assert 'titrant_stock' not in conditions and 'stock_contains' not in conditions

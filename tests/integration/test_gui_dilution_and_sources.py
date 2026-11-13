@@ -101,7 +101,7 @@ def make_session(qapp, monkeypatch):
         session._input_panel._add_shared_row(_SHARED)
         session._input_panel.specs_changed.emit()
         session._fit_panel.set_config(FitConfig(per_replica=False))
-        session._data_panel.data_loaded.emit(_diluted_data())
+        session.model.load(_diluted_data(), None)
         return session, dialogs
 
     yield build

@@ -240,7 +240,7 @@ session, reached through the session switcher.
   <session>* ⌘W.
 - **Load data ▾** has three commands: *Add files to this session…* ⌘O, *Replace data…*,
   *Load data into a new session…* ⇧⌘O. Adding keeps every fit; replacing is always an
-  explicit choice. Every load command goes through `DataPanel.load_file()`.
+  explicit choice. Every load command goes through the session model (`load_files()`, `add_files()`).
 
 ![Load data menu](screens/measurements_load_light.jpg)
 

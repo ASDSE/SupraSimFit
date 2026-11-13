@@ -207,11 +207,15 @@ class ZScoreReplicaFilter:
         max_z = z_scores.max(axis=1)  # shape (n_active,)
 
         dropped: list[str] = []
+        evidence: dict[str, dict[str, float | int]] = {}
         for local_idx, global_idx in enumerate(active_indices):
             if max_z[local_idx] > self.threshold:
                 rid = ms.replica_ids[global_idx]
                 ms.set_active(rid, False)
                 dropped.append(rid)
+                # The point that put it out, and how far out it lay.
+                point = int(np.argmax(z_scores[local_idx]))
+                evidence[rid] = {'z': float(max_z[local_idx]), 'point': point}
 
         kept = ms.active_replica_ids
         logger.info(
@@ -227,6 +231,7 @@ class ZScoreReplicaFilter:
                 'status': 'applied',
                 'threshold': self.threshold,
                 'dropped': dropped,
+                'evidence': evidence,
                 'kept': kept,
             }
         )

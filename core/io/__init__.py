@@ -126,7 +126,7 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
         except ValueError as exc:
             raise InvalidData(
                 f'Could not read the measurements in {path.name}, so the files could not be loaded as replicates. '
-                "Check that it is a measurement file in one of the formats the Data panel's help lists, then load "
+                "Check that it is a measurement file in one of the formats SupraSimFit reads, then load "
                 'the files again.'
             ) from exc
         if ENSIGHT_CHANNEL_COLUMN in df.columns:
