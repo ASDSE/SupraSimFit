@@ -1,1 +1,1 @@
-"""Plot widgets, their style and the labels they draw with."""
+"""Plot labels and formatters, image export, and the plot guide's colours."""

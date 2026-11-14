@@ -50,6 +50,10 @@ SIZE = {
     'settings-window': 640,
     # The one column of controls on the right of the Settings window: its segmented controls and menu.
     'settings-control': 216,
+    # The knob grid of the Simulation window: a value field, its unit, and a slider end's text column.
+    'knob-value': 112,
+    'knob-unit': 76,
+    'slider-end': 36,
     # The point sizes and stroke widths Plot appearance offers for the titration plot.
     'marker-small': 4,
     'marker-medium': 6,
@@ -94,6 +98,12 @@ LIGHT = {
     # The two series of the Sobol' chart: S₁ and S_T.
     'series-1': '#2C6FB0',
     'series-2': '#B04F8E',
+    # The species of the Simulation window, one hue per partner: the dye and its complex with the
+    # host, the guest and its first complex, the free host, and the second-step complex (HG₂, H₂G).
+    'species-dye': '#7048C8',
+    'species-guest': '#B8580F',
+    'species-host': '#6B7480',
+    'species-step2': '#6E7A12',
     # The heat scale of the sensitivity heatmap, low to high: perceptual and multi-hue (viridis).
     'heat-0': '#440154',
     'heat-1': '#472D7B',
@@ -136,6 +146,10 @@ DARK = {
     'traffic': '#3A3E44',
     'series-1': '#6FA8E8',
     'series-2': '#DB86BE',
+    'species-dye': '#A893F0',
+    'species-guest': '#EE9550',
+    'species-host': '#9AA3AD',
+    'species-step2': '#BAC35A',
     'heat-0': '#440154',
     'heat-1': '#472D7B',
     'heat-2': '#3B528B',

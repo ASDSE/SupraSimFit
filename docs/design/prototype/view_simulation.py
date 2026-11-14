@@ -32,7 +32,7 @@ from gui.design.plot_theme import apply_plot_theme, fit_line, px, scatter
 from gui.design.tokens import SIZE, Theme, font, space
 
 from . import shell
-from .common import THIN, keys, load, molar, sci, sub
+from .common import THIN, command, load, molar, sci, sub
 
 DATA = load('simulation.json')
 
@@ -53,16 +53,14 @@ HOVER_UM = 3.0  # where the pointer rests in this render
 HOVER_I = int(np.argmin(np.abs(X_DENSE - HOVER_UM)))
 Y_SCALE = 1e-5  # signal axis in 10⁵ a.u.
 
-# The species lines by role: the dye states carry the signal (the registry's
-# signal_species for IDA are D and HD), so they take the accent the model curve has;
-# the guest states are the secondary ink, the free host the tertiary. Solid = in a
-# complex, dashed = free; the readout groups them under those two words.
+# The species lines by partner, each in its species token: the dye states, the guest states, the
+# free host. Solid = in a complex, dashed = free; the readout groups them under those two words.
 SPECIES_STYLE = {
-    'HD': ('accent', 2.0, False),
-    'HG': ('text-secondary', 1.75, False),
-    'D': ('accent', 1.75, True),
-    'G': ('text-secondary', 1.75, True),
-    'H': ('text-tertiary', 1.5, True),
+    'HD': ('species-dye', 2.0, False),
+    'HG': ('species-guest', 2.0, False),
+    'D': ('species-dye', 1.75, True),
+    'G': ('species-guest', 1.75, True),
+    'H': ('species-host', 1.75, True),
 }
 COMPLEXES, FREE = ('HD', 'HG'), ('D', 'G', 'H')
 
@@ -154,10 +152,10 @@ class Readout(QWidget):
 
 
 SETTINGS_MENU = [
-    ('save', 'Save settings…', keys('Ctrl+S')),
-    ('open', 'Load settings…', ''),
+    command('save', 'Save settings…', 'Ctrl+S'),
+    command('open', 'Load settings…'),
     None,
-    ('rotate', 'Reset to defaults', ''),
+    command('rotate', 'Reset to defaults'),
 ]
 SETTINGS_NOTE = 'Saves every value, slider end and noise setting of this window to a file.'
 
@@ -399,31 +397,29 @@ def titrant_section(t: Theme, overlay: bool) -> QWidget:
 
 
 def noise_section(t: Theme, overlay: bool) -> QWidget:
-    """Gaussian noise of one σ in signal units, held fixed while the curve changes, with
-    the replicates and the seed of the draw."""
-    level = column(t, 'Level', C.Field(t, grouped(NOISE['sd_au']), prefix='σ', suffix='a.u.'))
+    """The two-part noise law ``var(y) = floor² + (proportional·y)²`` — a floor σ in signal units and a
+    part proportional to the signal — with the replicates and the seed of the draw, a new draw, and
+    the law read from an overlaid file's replicates."""
+    floor = column(t, 'Floor', C.Field(t, grouped(NOISE['sd_au']), prefix='σ', suffix='a.u.'))
+    proportional = column(t, 'Proportional', C.Field(t, '0', suffix='%'))
     reps = column(t, 'Replicates', C.Field(t, str(REPLICAS)))
+    seed = column(t, 'Seed', C.Field(t, str(NOISE['seed'])))
     new_draw = C.OutlineButton(t, 'New draw')
     new_draw.setToolTip('Draw new noise: moves the seed on by one')
-    seed_row = C.hbox(C.Field(t, str(NOISE['seed'])), 4, C.hbox(new_draw, None, spacing=0), spacing=0)
-    seed_row.setStretch(0, 1)
-    seed_row.setStretch(2, 1)
-    seed = QWidget()
-    seed.setLayout(C.vbox(C.label('Seed', 'small', 'secondary'), seed_row, spacing=2))
-    pct = (OVERLAY if overlay else NOISE)['pct_of_span']
+    read = C.OutlineButton(t, 'Read from overlaid data')
+    read.setEnabled(overlay)
     w = QWidget()
     w.setLayout(
         C.vbox(
             C.Checkbox(t, 'Add measurement noise', checked=True),
             2,
-            C.hbox(level, 4, reps, spacing=0),
+            C.hbox(floor, 4, proportional, spacing=0),
             3,
-            seed,
+            C.hbox(reps, 4, seed, spacing=0),
             3,
-            caption(
-                f'σ stays fixed when the curve changes; here it is {pct:.1f} % of the curve’s range. '
-                'The same seed gives the same draws.'
-            ),
+            C.hbox(new_draw, 3, read, None, spacing=0),
+            3,
+            caption('σ² = floor² + (proportional × signal)². The same seed gives the same draws.'),
             spacing=0,
         )
     )
@@ -591,7 +587,7 @@ def window(t: Theme, *, overlay: bool = False, signal_open: bool = False, hover_
     status = shell.status_bar(
         t,
         ('Ready', 'text-tertiary'),
-        ['Indicator displacement', '2 binding constants', f'Noise σ {grouped(NOISE["sd_au"])} a.u.'],
+        ['Indicator displacement', '2 binding constants', f'Noise {grouped(NOISE["sd_au"])} a.u.'],
     )
     root.setLayout(C.vbox(toolbar(t, overlay), C.hairline(), split, C.hairline(), status, spacing=0))
     return root

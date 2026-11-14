@@ -98,6 +98,21 @@ def test_the_series_colours_stand_out_from_the_plot_surface(name):
     assert theme['series-1'] != theme['series-2']
 
 
+SPECIES = ('species-dye', 'species-guest', 'species-host', 'species-step2')
+
+
+@pytest.mark.parametrize('name', THEMES)
+def test_the_species_colours_read_on_the_plot_and_borrow_no_other_meaning(name):
+    """Each species line stands out from the plot by 3 : 1, and none takes the colour of the reported
+    result (``accent``), of the Sobol' series, or of another species."""
+    theme = THEMES[name]
+    for species in SPECIES:
+        ratio = contrast(theme[species], theme['bg-surface'])
+        assert ratio >= NON_TEXT, f'{name}: {species} on bg-surface is {ratio:.2f} : 1, below {NON_TEXT}'
+    taken = [theme[k] for k in ('accent', 'series-1', 'series-2', *SPECIES)]
+    assert len(set(taken)) == len(taken)
+
+
 @pytest.mark.parametrize('name', THEMES)
 def test_the_heat_scale_rises_in_lightness_from_low_to_high(name):
     """A perceptual scale reads as an order without its colour bar: each stop is lighter than the one below it."""

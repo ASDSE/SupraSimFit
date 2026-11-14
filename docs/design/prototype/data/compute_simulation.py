@@ -11,10 +11,8 @@ the three figures the window shows, as a user would type them. Writes
 and on IDA_system.txt's own grid (``simulate_dataset``, Gaussian noise, fixed seed), and
 the IDA_system.txt replicates read through the app's loader for the overlay.
 
-The noise is stated as one σ in signal units, held fixed while the curve changes. Here
-it is passed to ``simulate_dataset`` as ``noise_frac = σ / span``, with the span of the
-clean signal at the same points, which is the σ it then draws with. The window needs an
-absolute-σ option in ``simulate_dataset`` to do this without the division.
+The noise is the two-part law ``var(y) = floor² + (proportional·y)²`` with a floor σ in
+signal units and no proportional part, held fixed while the curve changes.
 """
 
 from __future__ import annotations
@@ -61,7 +59,7 @@ def noisy(x: np.ndarray) -> tuple[list, float]:
         CONDITIONS,
         PARAMETERS,
         x,
-        noise_frac=NOISE_SD / span,
+        noise={'floor': NOISE_SD, 'proportional': 0.0},
         n_replicas=REPLICAS,
         rng=np.random.default_rng(SEED),
     )

@@ -1,8 +1,8 @@
 # SupraSimFit design system
 
 The design reference for the desktop app's interface: the approved design, final as
-documented here. The choices still open are listed in §10; each is put to the owner when
-the view it concerns is built.
+documented here. A choice still open is listed in §10 and put to the owner when the view
+it concerns is built.
 
 - **Code.** `gui/design/` is the design system as code: `tokens.py` (colour, space,
   radius, sizes, type), `stylesheet.py` (the QSS template), `components.py` (the shared
@@ -73,6 +73,7 @@ stylesheet template.
 | `replicate` | Replicate data points |
 | `replicate-off` | A replicate switched off (drawn as ×) |
 | `series-1`, `series-2` | The two series of the Sobol' chart: S₁ (solid) and S_T (outlined); in the titration plot, the replicate points when Plot appearance (§8) chooses *Blue* or *Magenta* |
+| `species-dye`, `species-guest`, `species-host`, `species-step2` | The species of the Simulation window, one hue per partner: the dye and its complex with the host, the guest and its first complex, the free host, the second-step complex (HG₂, H₂G); solid in a complex, dashed when free |
 | `heat-0` … `heat-8` | The heat scale of the sensitivity heatmap, low to high: perceptual and multi-hue (viridis), each stop lighter than the one below |
 | `traffic` | Window controls of an inactive window |
 
@@ -86,9 +87,9 @@ inside the middle 90 % and 22 % outside; S₁ bars solid `series-1`, S_T bars `s
 16 % (light) and 24 % (dark) inside a 90 % edge; interval bands `accent` at 8 %. The
 reported result and fitted curve take `accent` (Plot appearance may give the curve another colour); the reading at the inputs as entered takes
 `text-secondary` (its marker line in the sensitivity histogram is dashed `text-primary`,
-its interval a `text-secondary` bracket). Each series colour stands out from `bg-surface`
-by 3 : 1 and the heat scale rises in lightness, which `test_design_system.py` checks; the
-species colours of Simulation are open (§10).
+its interval a `text-secondary` bracket). Each series and species colour stands out from `bg-surface`
+by 3 : 1, no species takes `accent` or a series colour, and the heat scale rises in
+lightness, which `test_design_system.py` checks.
 
 ### Type
 
@@ -353,8 +354,8 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
 
 - `bg-surface` background; left and bottom axes only, in `border-strong`; tick labels in
   `text-secondary`, `small-number`; axis titles in the `label` role with the unit in
-  parentheses (`Guest (µM)`, `Signal (10⁵ a.u.)`; the exponent follows the axis's
-  `on_exponent_changed` callback).
+  parentheses (`Guest (µM)`, `Signal (10⁵ a.u.)`, the power of ten that of the largest
+  value drawn).
 - No y tick marks: horizontal grid lines in `grid` follow the y axis's ticks; 4-px
   outward x ticks.
 - **Titration series:** replicate dots in `replicate` at 45 %, 6 px; switched-off
@@ -558,13 +559,33 @@ main window's toolbar, side panel and status bar, without the sidebar. Toolbar:
 *Simulation* and its summary badge, *Overlay data…*, *Export ▾* (Curve image…, Data
 file…), Help, the side-panel toggle, and the primary *Fit in new session*. Canvas:
 **Titration** (simulated replicates at the measurement points, the model drawn
-continuously) above **Species** on the same x axis, with the readout at the pointer.
+continuously) above **Species** on the same x axis, with the readout at the pointer. Each
+species takes the colour of its partner — `species-dye`, `species-guest`, `species-host`,
+`species-step2` (§2) — solid in a complex and dashed when free; the reported-result accent
+and the Sobol' series colours are not used for species.
 Side panel *Simulation settings*, its ⋯ menu holding *Save settings…* ⌘S, *Load
 settings…* and *Reset to defaults*: Binding model (category and model menus), Binding
 constants (log sliders, M⁻¹), Fixed totals (sliders, unit menus), Concentrations (*Even
-steps* or *Custom list*), Noise (add noise, σ in a.u., replicates, seed, new draw),
-Signal (coefficient sliders). Each slider's end values are edited in place. *Overlay
-data…* draws a measurement file over the model and takes its concentrations as the grid.
+steps* or *Custom list*), Noise, Signal (coefficient sliders). Each slider's end values
+are edited in place. *Overlay data…* draws a measurement file over the model and takes
+its concentrations as the grid.
+
+**Noise** is the two-part law the fit reads off replicates, `var(y) = floor² +
+(proportional · y)²`: *Add measurement noise*, the floor σ in a.u. and the proportional
+part in %, either of which may be 0, the replicates, the seed and *New draw*. *Read from
+overlaid data* fills the floor and the proportional part from the noise law the fitter
+reads off the overlaid replicates; without an overlay of two or more replicates it is
+disabled and its tooltip says why, and where the replicates show no law a message says
+why in plain words. Choosing a model opens it with a floor of 0.5 % of its default
+curve's range. Without noise one noise-free replicate is simulated.
+
+**Fit in new session** opens a new session holding the simulated data exactly as shown —
+noisy or noise-free — and the binding model with its conditions: the fixed totals and the
+binding constants the model takes as entered (Kₐ,dye of an IDA or GDA), each in the unit
+shown, with the totals constant. The values of what the fit searches for — the binding
+constants it fits and the signal coefficients — do not travel, as starting values or as
+bounds: the fit searches as it does on measured data. The session shows Fit results and
+the fit runs.
 
 ### Settings window — `preferences_*.jpg`
 Opened with ⌘, (*Settings…* in the app menu on macOS; *File ▸ Settings…* on Windows and
@@ -606,10 +627,4 @@ for new sessions*, with a way back to the built-in one), **Analysis**
 ## 10. Decided when the view is built
 
 Put to the owner when the view is built; the answer then becomes part of this document
-and the tokens.
-
-1. **Species colours** of the stepwise models in Simulation; new series colours become
-   tokens in both themes.
-2. **Fit in new session** (Simulation) — it sends the noisy replicates as shown; the
-   simulated values do not travel as starting values.
-3. **Simulation noise** — an absolute σ in a.u., which the engine does not yet offer.
+and the tokens. No choice is open now.

@@ -10,6 +10,7 @@ drawn in.
 from __future__ import annotations
 
 import math
+import sys
 
 from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTextBoundaryFinder, QVariantAnimation, pyqtSignal
 from PyQt6.QtGui import (
@@ -52,6 +53,52 @@ _FROM_SUPER = str.maketrans('⁰¹²³⁴⁵⁶⁷⁸⁹⁻', '0123456789-')
 
 #: Room a popover leaves around its card for the soft shadow, in px.
 SHADOW = 12
+
+
+# ── Window chrome ──────────────────────────────────────────────────────────────────
+
+#: macOS: a window reaches up under a transparent title bar, which keeps the window controls.
+MAC = sys.platform == 'darwin'
+
+
+def hide_title_text(window: QWidget) -> None:
+    """macOS: hide the title text the transparent title bar would draw over the toolbar.
+
+    Qt has no call for it, so it is set on the native window (``NSWindow.titleVisibility``)
+    through the Objective-C runtime. The title stays the window's name in the Window menu
+    and Mission Control.
+    """
+    import ctypes
+    import ctypes.util
+
+    objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library('objc'))
+    objc.sel_registerName.restype = ctypes.c_void_p
+    objc.sel_registerName.argtypes = [ctypes.c_char_p]
+    get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(('objc_msgSend', objc))
+    set_long = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long)(('objc_msgSend', objc))
+    ns_window = get(int(window.winId()), objc.sel_registerName(b'window'))
+    set_long(ns_window, objc.sel_registerName(b'setTitleVisibility:'), 1)  # NSWindowTitleHidden
+
+
+class TitleBarArea(QWidget):
+    """A stretch of window chrome that moves the window when dragged and zooms it on a double-click.
+
+    On macOS a window's toolbar (and the main window's sidebar top row) sits where the title bar would be, so
+    their empty parts behave as the title bar does; elsewhere the system's title bar does.
+    """
+
+    def mousePressEvent(self, event) -> None:
+        if MAC and event.button() == Qt.MouseButton.LeftButton:
+            self.window().windowHandle().startSystemMove()
+            return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if MAC and event.button() == Qt.MouseButton.LeftButton:
+            window = self.window()
+            window.showNormal() if window.isMaximized() else window.showMaximized()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 # ── Text and layout ────────────────────────────────────────────────────────────────
@@ -1438,20 +1485,60 @@ class Toggle(QWidget):
 class Slider(QWidget):
     """A 16-px slider: track, accent fill up to the handle at *pos* (0–1), and the handle.
 
-    *decades* > 0 marks each decade under the track, so a log scale reads as one.
+    *decades* > 0 marks each decade under the track, so a log scale reads as one. Pressing
+    or dragging on it moves the handle there, the arrow keys by a hundredth, and
+    :attr:`moved` carries each new position.
     """
+
+    moved = pyqtSignal(float)
+    RADIUS = 7.0
 
     def __init__(self, t: Theme, pos: float, decades: int = 0):
         super().__init__()
         self.t, self.pos, self.decades = t, pos, decades
         self.setFixedHeight(16)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_pos(self, pos: float, decades: int | None = None) -> None:
+        """Show the handle at *pos* (and *decades* ticks when given) without emitting :attr:`moved`."""
+        self.pos = min(max(pos, 0.0), 1.0)
+        if decades is not None:
+            self.decades = decades
+        self.update()
+
+    def _move_to(self, pos: float) -> None:
+        pos = min(max(pos, 0.0), 1.0)
+        if pos != self.pos:
+            self.pos = pos
+            self.update()
+            self.moved.emit(pos)
+
+    def _pos_at(self, x: float) -> float:
+        r = self.RADIUS
+        return (x - r) / max(self.width() - 2 * r, 1.0)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._move_to(self._pos_at(event.position().x()))
+
+    def mouseMoveEvent(self, event) -> None:
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._move_to(self._pos_at(event.position().x()))
+
+    def keyPressEvent(self, event) -> None:
+        step = {Qt.Key.Key_Left: -0.01, Qt.Key.Key_Right: 0.01, Qt.Key.Key_Down: -0.01, Qt.Key.Key_Up: 0.01}
+        if event.key() in step:
+            self._move_to(self.pos + step[event.key()])
+        else:
+            super().keyPressEvent(event)
 
     def paintEvent(self, _):
         t = self.t
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = 7.0
+        r = self.RADIUS
         x0, x1, cy = r, self.width() - r, 7.0
         p.fillPath(_rounded(QRectF(x0, cy - 2, x1 - x0, 4), 2), t.q('border-strong' if t.dark else 'bg-hover'))
         hx = x0 + self.pos * (x1 - x0)
@@ -1468,30 +1555,90 @@ class Slider(QWidget):
             p.setPen(QPen(t.q('border-strong'), 1))
             p.setBrush(t.q('bg-surface'))
         p.drawEllipse(QPointF(hx, cy), r - 0.5, r - 0.5)
+        if self.hasFocus():
+            p.setPen(QPen(t.q('accent'), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QPointF(hx, cy), r - 1, r - 1)
         p.end()
 
 
 class SliderEnd(QWidget):
     """One end of a :class:`Slider`, edited where it stands: quiet text, flush left (low
     end) or right (*right*, high end) in a column *width* px wide. Under the pointer it
-    gains the outline of :class:`SliderEndOutline`; *hover* names it ``HoverEnd`` so a
-    render can find it."""
+    gains the outline of :class:`SliderEndOutline`; a click opens it for typing, and
+    :attr:`edited` carries the text once the edit is finished. *hover* names it
+    ``HoverEnd`` so a render can find it."""
 
     HEIGHT = 20
+    edited = pyqtSignal(str)
 
     def __init__(self, t: Theme, text: str, width: int, right: bool = False, hover: bool = False):
         super().__init__()
         self.t, self.text, self.right = t, text, right
+        self._outline: SliderEndOutline | None = None
+        self._editor: QLineEdit | None = None
         self.setFixedSize(width, self.HEIGHT)
         self.setCursor(Qt.CursorShape.IBeamCursor)
         self.setToolTip('Click to change this end of the slider')
         if hover:
             self.setObjectName('HoverEnd')
 
+    def set_text(self, text: str) -> None:
+        self.text = text
+        self.update()
+
     def text_rect(self) -> QRectF:
         """Where the end's text is drawn, in the widget's own coordinates."""
         tw = QFontMetrics(font('small-number')).horizontalAdvance(self.text)
         return QRectF(self.width() - tw if self.right else 0, 0, tw, self.HEIGHT)
+
+    def enterEvent(self, _event) -> None:
+        if self._outline is None and self._editor is None:
+            self._outline = SliderEndOutline(self.t, self.window(), self)
+            self._outline.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self._outline.show()
+            self._outline.raise_()
+
+    def leaveEvent(self, _event) -> None:
+        if self._outline is not None:
+            drop(self._outline)
+            self._outline = None
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.edit()
+
+    def edit(self) -> None:
+        """Open the end for typing over its outline; Return or leaving the field emits :attr:`edited`."""
+        self.leaveEvent(None)
+        window = self.window()
+        r = self.text_rect().adjusted(-space(2), 0, space(2), 0)
+        width = max(int(r.width()), QFontMetrics(font('small-number')).horizontalAdvance('0.000e-00') + space(3))
+        left = (
+            self.mapTo(window, r.topRight().toPoint()).x() - width
+            if self.right
+            else self.mapTo(window, r.topLeft().toPoint()).x()
+        )
+        editor = QLineEdit(self.text.replace('\u202f', '').replace('×10', 'e').translate(_FROM_SUPER), window)
+        editor.setFont(font('small-number'))
+        editor.setProperty('role', 'field')
+        editor.setAccessibleName(self.accessibleName() or 'Slider end')
+        editor.setGeometry(left, self.mapTo(window, self.rect().topLeft()).y(), width, self.HEIGHT)
+        editor.selectAll()
+        editor.show()
+        editor.raise_()
+        editor.setFocus()
+        self._editor = editor
+
+        def commit() -> None:
+            if self._editor is not editor:
+                return
+            self._editor = None
+            text = editor.text().strip()
+            drop(editor)
+            self.edited.emit(text)
+
+        editor.editingFinished.connect(commit)
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -1962,8 +2109,11 @@ class LegendRow(QWidget):
     as entered) and ``diamond`` (a best fit). A kind ending in ``+band`` draws its mark over
     the accent tint of a shaded interval, for the reading whose interval the plot shades.
 
-    :meth:`set_marks` draws ``dots`` and ``line`` as a plot of the titration styles them.
+    :meth:`set_marks` draws ``dots`` and ``line`` as a plot of the titration styles them. A click
+    on the × of ``rings`` emits :attr:`removed`.
     """
+
+    removed = pyqtSignal()
 
     def __init__(self, theme: Theme, items: list[tuple[str, str]], dot_alpha: float | None = None):
         super().__init__()
@@ -1996,6 +2146,24 @@ class LegendRow(QWidget):
     @staticmethod
     def _width(kind: str, txt: str, fm: QFontMetrics) -> int:
         return 20 + fm.horizontalAdvance(txt) + (space(2) + 12 if kind == 'rings' else 0) + space(5)
+
+    def _close_rect(self) -> QRectF | None:
+        """Where the × of the ``rings`` entry is drawn, if there is one."""
+        fm = QFontMetrics(font('small'))
+        x = 0.0
+        for kind, txt in self.items:
+            if kind == 'rings':
+                close_x = x + 20 + fm.horizontalAdvance(txt) + space(2)
+                return QRectF(close_x - 2, 0, 16, self.height())
+            x += self._width(kind, txt, fm)
+        return None
+
+    def mousePressEvent(self, event) -> None:
+        close = self._close_rect()
+        if event.button() == Qt.MouseButton.LeftButton and close is not None and close.contains(event.position()):
+            self.removed.emit()
+        else:
+            super().mousePressEvent(event)
 
     def paintEvent(self, _):
         t = self.t

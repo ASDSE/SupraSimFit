@@ -2,8 +2,7 @@
 
 A single session-scoped ``qapp`` fixture lives here because ``QApplication``
 is a process singleton — every GUI test in this package reuses the same
-instance. The ``minimal_plot_data`` fixture is provided by the root
-``tests/conftest.py`` and is used unchanged by the GUI tests.
+instance.
 """
 
 from __future__ import annotations

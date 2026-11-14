@@ -1,11 +1,7 @@
-"""Tests for the export pipeline: the plot images and the uncertainty budget table.
+"""Tests for the export of the uncertainty budget table.
 
-Verifies:
-  * single-plot PNG export honours the requested width
-  * single-plot SVG export writes a parseable vector file
-  * unsupported export formats raise ``ValueError``
-  * the Ka uncertainty budget is offered only where there is one, and the file
-    holds the rows the Ka Sensitivity tab reports
+The Ka uncertainty budget is offered only where there is one, and the file holds the
+rows the Ka Sensitivity tab reports.
 """
 
 import csv
@@ -20,56 +16,6 @@ pytest.importorskip('pyqtgraph')
 from tests.unit.gui.session_setup import state_binding  # noqa: E402
 
 _IDA_DATA = Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt'
-
-
-@pytest.fixture
-def simple_plot_widget(qapp):
-    from gui.plotting.plot_widget import PlotWidget
-
-    x = np.linspace(0, 1e-4, 20)
-    pw = PlotWidget()
-    pw.update_plot(
-        {
-            'concentrations': x,
-            'active_replicas': [('r1', x + 0.01), ('r2', x * 0.95 + 0.015)],
-            'dropped_replicas': [],
-            'average': x + 0.0125,
-            'fits': [{'x': x, 'y': x + 0.02, 'label': 'fit', 'id': 'abc'}],
-        }
-    )
-    return pw
-
-
-# ----------------------------------------------------------------------
-# Single-plot export
-# ----------------------------------------------------------------------
-
-
-def test_plot_widget_png_honours_requested_width(simple_plot_widget, tmp_path):
-    from PyQt6.QtGui import QImage
-
-    path = tmp_path / 'plot.png'
-    simple_plot_widget.export_image(str(path), width_px=1200)
-
-    assert path.exists()
-    img = QImage(str(path))
-    assert img.width() == 1200
-    assert img.height() > 0
-
-
-def test_plot_widget_svg_writes_vector_file(simple_plot_widget, tmp_path):
-    path = tmp_path / 'plot.svg'
-    simple_plot_widget.export_image(str(path))
-
-    assert path.exists()
-    assert path.stat().st_size > 0
-    content = path.read_text(encoding='utf-8')
-    assert '<svg' in content
-
-
-def test_plot_widget_rejects_unknown_extension(simple_plot_widget, tmp_path):
-    with pytest.raises(ValueError, match='cannot be written'):
-        simple_plot_widget.export_image(str(tmp_path / 'x.bmp'))
 
 
 # ----------------------------------------------------------------------

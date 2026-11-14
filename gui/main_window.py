@@ -5,10 +5,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QCoreApplication, QEvent, QLocale, QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QCoreApplication, QLocale, QObject, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from PyQt6.QtWidgets import (
-    QAbstractSpinBox,
     QApplication,
     QButtonGroup,
     QMainWindow,
@@ -29,68 +28,6 @@ from gui.results import RUN_FIT_KEY
 from gui.update_check import UpdateCheckWorker, is_newer
 from gui.update_dialog import UpdateAvailableDialog
 from gui.workers import retire
-
-#: macOS: the sidebar reaches up under a transparent title bar, which keeps the window controls.
-_MAC = sys.platform == 'darwin'
-
-
-def _hide_title_text(window: QWidget) -> None:
-    """macOS: hide the title text the transparent title bar would draw over the toolbar.
-
-    Qt has no call for it, so it is set on the native window (``NSWindow.titleVisibility``)
-    through the Objective-C runtime. The title stays the window's name in the Window menu
-    and Mission Control.
-    """
-    import ctypes
-    import ctypes.util
-
-    objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library('objc'))
-    objc.sel_registerName.restype = ctypes.c_void_p
-    objc.sel_registerName.argtypes = [ctypes.c_char_p]
-    get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(('objc_msgSend', objc))
-    set_long = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long)(('objc_msgSend', objc))
-    ns_window = get(int(window.winId()), objc.sel_registerName(b'window'))
-    set_long(ns_window, objc.sel_registerName(b'setTitleVisibility:'), 1)  # NSWindowTitleHidden
-
-
-class _TitleBarArea(QWidget):
-    """A stretch of window chrome that moves the window when dragged and zooms it on a double-click.
-
-    On macOS the sidebar's top row and the toolbar sit where the title bar would be, so
-    their empty parts behave as the title bar does; elsewhere the system's title bar does.
-    """
-
-    def mousePressEvent(self, event) -> None:
-        if _MAC and event.button() == Qt.MouseButton.LeftButton:
-            self.window().windowHandle().startSystemMove()
-            return
-        super().mousePressEvent(event)
-
-    def mouseDoubleClickEvent(self, event) -> None:
-        if _MAC and event.button() == Qt.MouseButton.LeftButton:
-            window = self.window()
-            window.showNormal() if window.isMaximized() else window.showMaximized()
-            return
-        super().mouseDoubleClickEvent(event)
-
-
-class _SpinBoxWheelRedirect(QObject):
-    """Block non-focused spinboxes from swallowing wheel events.
-
-    Qt's event-filter mechanism cannot propagate a consumed wheel event to the
-    target's parent, so the event is eaten when a spinbox lacks focus: scrolling
-    a panel over a pyqtgraph ParameterTree spinbox pauses rather than changing
-    its value. The project's own spinboxes go through
-    :class:`gui.widgets.numeric_inputs.NoScrollSpinBox` /
-    :class:`NoScrollDoubleSpinBox` instead, which ``event.ignore()`` and so let
-    Qt forward the wheel up to the scroll area.
-    """
-
-    def eventFilter(self, obj, event):  # type: ignore[override]
-        if event.type() == QEvent.Type.Wheel and isinstance(obj, QAbstractSpinBox):
-            if not obj.hasFocus():
-                return True
-        return False
 
 
 def _action(parent: QObject, text: str, icon: str = '', shortcut=None, slot=None) -> QAction:
@@ -120,7 +57,7 @@ class _Sidebar(QWidget):
         self.toggle = C.tool_button(t, None, 'panel-left')
         self.toggle.setToolTip('Hide the sidebar')
         self.toggle.setAccessibleName('Hide the sidebar')
-        chrome = _TitleBarArea()
+        chrome = C.TitleBarArea()
         chrome.setFixedHeight(SIZE['toolbar'])
         chrome.setLayout(C.hbox(None, self.toggle, margins=(1, 0, 0, 0)))
         self.switcher = C.SessionSwitcher(t, '', '')
@@ -148,7 +85,7 @@ class _Sidebar(QWidget):
         self.setLayout(lay)
 
 
-class _Toolbar(_TitleBarArea):
+class _Toolbar(C.TitleBarArea):
     """The toolbar: the view's title and badge, Load data ▾, Export ▾, Help, the side-panel toggle and Run."""
 
     def __init__(self, t: Theme):
@@ -252,7 +189,7 @@ class FittingMainWindow(QMainWindow):
         self._side_visible = True
         self._window_message: str | None = None
         self._popover: QWidget | None = None
-        if _MAC:
+        if C.MAC:
             self.setWindowFlag(Qt.WindowType.ExpandedClientAreaHint, True)
             self.setWindowFlag(Qt.WindowType.NoTitleBarBackgroundHint, True)
             self.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
@@ -306,11 +243,11 @@ class FittingMainWindow(QMainWindow):
         root.setLayout(C.vbox(top, C.hairline(), self._status, spacing=0))
         # The window opens with the focus on no control, so no focus ring shows until the keyboard moves it.
         root.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        if _MAC:
+        if C.MAC:
             # The window reaches up under the transparent title bar.
             root.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
             if QApplication.platformName() == 'cocoa':  # a native window to set it on
-                _hide_title_text(self)
+                C.hide_title_text(self)
         self.setCentralWidget(root)
         root.setFocus()
 
@@ -540,7 +477,7 @@ class FittingMainWindow(QMainWindow):
         self._sidebar.setVisible(visible)
         self._sidebar_rule.setVisible(visible)
         self._toolbar.sidebar_toggle.setVisible(not visible)
-        self._toolbar.inset.setVisible(_MAC and not visible)
+        self._toolbar.inset.setVisible(C.MAC and not visible)
         self._act_sidebar.setChecked(visible)
 
     def _set_side_visible(self, visible: bool) -> None:
@@ -672,14 +609,27 @@ class FittingMainWindow(QMainWindow):
         show_plot_guide(self, session.guide_section(self._view) if session is not None else None)
 
     def _on_simulate(self) -> None:
-        """Open (or re-raise) the non-modal forward-simulation applet."""
+        """Open (or raise) the Simulation window."""
         if self._sim_window is None:
-            from gui.simulation.simulation_window import SimulationWindow
+            from gui.views.simulation import SimulationWindow
 
             self._sim_window = SimulationWindow(self)
+            self._sim_window.fit_requested.connect(self._fit_simulation)
         self._sim_window.show()
         self._sim_window.raise_()
         self._sim_window.activateWindow()
+
+    def _fit_simulation(self, form, simulation) -> None:
+        """Give the simulated data and the binding model of *form* to a session of their own, and fit them.
+
+        The session on screen takes them where it holds nothing and runs nothing; else a new one opens.
+        """
+        session = self._fresh_session()
+        form.carry_to(session.model, simulation)
+        self.show_view('Fit results')
+        self.raise_()
+        self.activateWindow()
+        session.run_fit()
 
     def _open_settings(self) -> None:
         """Open (or raise) the Settings window."""
@@ -824,11 +774,6 @@ def launch() -> None:
     icon_path = _app_icon_path()
     if icon_path:
         app.setWindowIcon(QIcon(icon_path))
-
-    # Block non-focused spinboxes from stealing wheel events while the
-    # user scrolls a panel. Kept alive on the app so Qt doesn't GC it.
-    app._spinbox_wheel_filter = _SpinBoxWheelRedirect(app)  # type: ignore[attr-defined]
-    app.installEventFilter(app._spinbox_wheel_filter)  # type: ignore[attr-defined]
 
     window = FittingMainWindow()
     window.show()
