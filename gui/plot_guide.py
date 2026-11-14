@@ -48,6 +48,10 @@ at moved inputs.</li>
 <li>Dashed curves: other fits shown with the reported one, such as the fits of an imported results
 file; a note above the plot gives each one&rsquo;s numbers.</li>
 </ul>
+<p><i>Plot appearance</i> sets the size of the replicate and mean points, the mark and colour of the
+replicate points, the colour and width of the curve, the width of the error bars, and the size of the axis text of this
+plot, in Measurements and in a saved figure too. The means and their error bars keep the colour of the
+text.</p>
 
 <p><b>The interval and the inputs</b></p>
 <p>The interval is the range of K<sub>a</sub> your data do not reject. What it covers depends on

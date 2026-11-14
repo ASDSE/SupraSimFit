@@ -29,6 +29,7 @@ from gui.views.binding import BindingView
 from gui.views.confidence import ConfidenceView
 from gui.views.fit_results import FitResultsView
 from gui.views.measurements import MeasurementsView
+from gui.views.plot_appearance import PlotAppearanceView
 from gui.views.sensitivity import SensitivityView
 from gui.views.uncertainty import UncertaintyView
 
@@ -45,13 +46,8 @@ _GUIDE_SECTIONS = {
     'Fit results': plot_guide.FIT_CURVE,
     'Ka confidence': plot_guide.CONFIDENCE,
     'Sensitivity': plot_guide.SENSITIVITY,
+    'Plot appearance': plot_guide.FIT_CURVE,
 }
-
-#: What Plot appearance says while no plot reads an appearance setting of its own (DESIGN.md §10).
-PLOT_APPEARANCE = (
-    'The plots follow the app’s design, and saved figures use the light theme on white. Plot appearance has no '
-    'settings of its own.'
-)
 
 _DEMO_IDA_PATH = Path(__file__).parent.parent / 'data' / 'IDA_system.txt'
 
@@ -95,22 +91,6 @@ class _SidePanel(QWidget):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setWidget(body)
         self.setLayout(C.vbox(header, self.scroll, spacing=0))
-
-
-def _canvas(*widgets: QWidget, scroll: bool = False) -> QWidget:
-    """A view's canvas holding *widgets*, scrolled when it holds a form taller than the window."""
-    content = QWidget()
-    content.setObjectName('Canvas')
-    content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-    items = [*widgets, None] if scroll else list(widgets)
-    content.setLayout(C.vbox(*items, spacing=5, margins=(6, 5, 6, 5)))
-    if not scroll:
-        return content
-    area = QScrollArea()
-    area.setWidgetResizable(True)
-    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    area.setWidget(content)
-    return area
 
 
 class _View(QSplitter):
@@ -178,6 +158,9 @@ class FittingSession(QWidget):
 
     def show_view(self, view: str) -> None:
         """Put *view* (one of :data:`VIEWS`) on screen."""
+        if view == 'Plot appearance':
+            # Another session may have stored the appearance for new sessions since.
+            self._appearance.refresh_buttons()
         self._stack.setCurrentWidget(self._views[view])
 
     def current_view(self) -> str:
@@ -221,6 +204,8 @@ class FittingSession(QWidget):
             return self._confidence.badge()
         if view == 'Sensitivity':
             return self._sensitivity.badge()
+        if view == 'Plot appearance':
+            return self._appearance.badge()
         return None
 
     def _plot_widget_of(self, view: str):
@@ -229,6 +214,7 @@ class FittingSession(QWidget):
             'Fit results': self._results,
             'Ka confidence': self._confidence,
             'Sensitivity': self._sensitivity,
+            'Plot appearance': self._appearance,
         }.get(view)
 
     def plot_export_note(self, view: str) -> str | None:
@@ -236,10 +222,13 @@ class FittingSession(QWidget):
         widget = self._plot_widget_of(view)
         model = self.model
         if widget is None:
-            return 'This view has no plot to save. Open Measurements, Fit results, Ka confidence or Sensitivity.'
+            return (
+                'This view has no plot to save. Open Measurements, Fit results, Ka confidence, Sensitivity or '
+                'Plot appearance.'
+            )
         if widget is self._measurements.plot:
             return None if model.measurement_set is not None else 'There is no titration yet. Load data, then save it.'
-        if widget is self._results:
+        if widget is self._results or widget is self._appearance:
             if model.measurement_set is None and not model.fit_results:
                 return 'There is no titration plot yet. Load a measurement file, then save it.'
             return None
@@ -361,7 +350,7 @@ class FittingSession(QWidget):
             return
         from gui.session import export_results
 
-        export_results(self.model.fit_results, path)
+        export_results(self.model.fit_results, path, self.model.plot_appearance)
         self.model.show_status(f'Results exported to {path}')
 
     def export_results_txt(self) -> None:
@@ -453,7 +442,7 @@ class FittingSession(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, 'Import Fit Results', '', 'JSON (*.json);;All files (*)')
         if not path:
             return
-        from gui.session import import_results
+        from gui.session import import_appearance, import_results
 
         try:
             results = import_results(path)
@@ -474,7 +463,12 @@ class FittingSession(QWidget):
             QMessageBox.warning(self, 'Results Not Imported', check.refusal)
             if not check.accepted:
                 return
-        self.model.show_imported(check.accepted, path)
+        try:
+            appearance = import_appearance(path)
+        except ValueError as exc:
+            appearance = None
+            QMessageBox.information(self, 'Imported Results', f'{exc} The plot keeps this session’s own appearance.')
+        self.model.show_imported(check.accepted, path, appearance)
         if self.model.measurement_set is None:
             # A results file opens under the name of the data it was made from.
             source = check.accepted[-1].source_file if check.accepted else None
@@ -501,6 +495,7 @@ class FittingSession(QWidget):
         tag, formats = {
             self._measurements.plot: ('titration', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._results: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
+            self._appearance: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._confidence: ('confidence', 'PNG image (*.png)'),
             self._sensitivity: ('sensitivity', 'PNG image (*.png)'),
         }[widget]
@@ -551,6 +546,7 @@ class FittingSession(QWidget):
         self._results = FitResultsView(self.model, self)
         self._confidence = ConfidenceView(self.model, self)
         self._sensitivity = SensitivityView(self.model, self)
+        self._appearance = PlotAppearanceView(self.model, self)
 
         def side(title: str, *widgets: QWidget, link: QWidget | None = None) -> _SidePanel:
             content = QWidget()
@@ -568,7 +564,9 @@ class FittingSession(QWidget):
                 self._confidence.canvas, side('Notes', self._confidence.side, link=self._confidence.guide_link)
             ),
             'Sensitivity': _View(self._sensitivity.canvas, side('Analysis settings', self._sensitivity.side)),
-            'Plot appearance': _View(_canvas(C.wrapped(PLOT_APPEARANCE, 'body', 'secondary'), scroll=True)),
+            'Plot appearance': _View(
+                self._appearance.canvas, side('Titration plot', self._appearance.side, link=self._appearance.reset)
+            ),
         }
         self._stack = QStackedWidget()
         for view in VIEWS:
@@ -594,8 +592,8 @@ class FittingSession(QWidget):
             lambda: show_plot_guide(self.window(), self.guide_section('Ka confidence'))
         )
         self._results.save_plot.clicked.connect(lambda: self.export_plot('Fit results'))
+        self._appearance.save_plot.clicked.connect(lambda: self.export_plot('Plot appearance'))
         self._measurements.save_plot.clicked.connect(lambda: self.export_plot('Measurements'))
-        self._measurements.display_unit_changed.connect(lambda _unit: self._results.refresh())
         self.model.uncertainty_changed.connect(self.changed)
         self.model.binding_changed.connect(self._on_binding_changed)
 
@@ -607,6 +605,7 @@ class FittingSession(QWidget):
         model.progress.connect(lambda _done, _total: self._on_progress())
         model.profile_changed.connect(self._show_running)
         model.sensitivity_changed.connect(lambda _replaced: self.changed.emit())
+        model.plot_appearance_changed.connect(self.changed)
         model.warning.connect(lambda title, message: QMessageBox.warning(self, title, message))
         for signal in (model.results_changed, model.name_changed, model.status_changed):
             signal.connect(self.changed)

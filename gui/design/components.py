@@ -20,6 +20,7 @@ from PyQt6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPolygonF,
     QTextDocument,
     QTextDocumentFragment,
 )
@@ -1934,13 +1935,24 @@ class LegendRow(QWidget):
     (the accepted stretches of both readings), ``bar`` (those of the one reading at the inputs
     as entered) and ``diamond`` (a best fit). A kind ending in ``+band`` draws its mark over
     the accent tint of a shaded interval, for the reading whose interval the plot shades.
+
+    :meth:`set_marks` draws ``dots`` and ``line`` as a plot of the titration styles them.
     """
 
     def __init__(self, theme: Theme, items: list[tuple[str, str]], dot_alpha: float | None = None):
         super().__init__()
         self.t, self.dot_alpha = theme, dot_alpha
+        self.dot_color, self.dot_symbol, self.line_width, self.line_color = 'replicate', 'o', 2.0, 'accent'
         self.setFixedHeight(20)
         self.set_items(items)
+
+    def set_marks(self, dot_color: str, dot_symbol: str, line_width: float, line_color: str = 'accent') -> None:
+        """Draw ``dots`` in colour token *dot_color* with pyqtgraph's *dot_symbol* (``o``, ``s``, ``t1``)
+        and the ``line`` *line_width* px wide in colour token *line_color*, as the plot draws its
+        replicates and curve."""
+        self.dot_color, self.dot_symbol, self.line_width = dot_color, dot_symbol, line_width
+        self.line_color = line_color
+        self.update()
 
     def set_items(self, items: list[tuple[str, str]]) -> None:
         """Show *items* as the legend."""
@@ -1975,9 +1987,9 @@ class LegendRow(QWidget):
                 )
             if kind == 'dots':
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(t.q('replicate', self.dots_alpha()))
+                p.setBrush(t.q(self.dot_color, self.dots_alpha()))
                 for dx, dy in ((3, 2), (8, -2.5), (12, 1.5)):
-                    p.drawEllipse(QPointF(x + dx, cy + dy), 2.5, 2.5)
+                    paint_symbol(p, self.dot_symbol, QPointF(x + dx, cy + dy), 2.5)
             elif kind == 'rings':
                 p.setPen(QPen(t.q('text-secondary'), 1.3))
                 p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1996,7 +2008,7 @@ class LegendRow(QWidget):
                 p.setBrush(t.q('text-primary'))
                 p.drawEllipse(QPointF(x + 7.5, cy), 3, 3)
             elif kind == 'line':
-                pen = QPen(t.q('accent'), 2)
+                pen = QPen(t.q(self.line_color), self.line_width)
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
                 p.setPen(pen)
                 p.drawLine(QPointF(x + 1, cy), QPointF(x + 15, cy))
@@ -2028,6 +2040,18 @@ class LegendRow(QWidget):
                 icons.paint(p, 'x', t.q('text-tertiary'), close_x, cy - 6, 12, 2)
             x += self._width(kind, txt, fm)
         p.end()
+
+
+def paint_symbol(p: QPainter, symbol: str, centre: QPointF, r: float) -> None:
+    """Paint pyqtgraph's mark *symbol* — ``o`` circle, ``s`` square, ``t1`` triangle up — of half-size *r*
+    at *centre*, in the painter's pen and brush."""
+    x, y = centre.x(), centre.y()
+    if symbol == 's':
+        p.drawRect(QRectF(x - r, y - r, 2 * r, 2 * r))
+    elif symbol == 't1':
+        p.drawPolygon(QPolygonF([QPointF(x, y - r), QPointF(x + r, y + r), QPointF(x - r, y + r)]))
+    else:
+        p.drawEllipse(centre, r, r)
 
 
 def diamond(centre: QPointF, size: float) -> QPainterPath:

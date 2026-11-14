@@ -27,7 +27,7 @@ from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE, font, space
 from gui.session_model import SessionModel
-from gui.views.titration import TitrationPlot
+from gui.views.titration import TitrationPlot, legend_marks
 
 
 def _clear(layout: QLayout) -> None:
@@ -63,6 +63,9 @@ class FitResultsView(QObject):
         model.results_changed.connect(lambda _scope: self.refresh())
         model.profile_changed.connect(self.refresh)
         model.binding_changed.connect(self.refresh)
+        model.plot_appearance_changed.connect(self._show_plot_appearance)
+        model.display_unit_changed.connect(lambda _unit: self.refresh())
+        self._show_plot_appearance()
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -237,6 +240,11 @@ class FitResultsView(QObject):
     # ------------------------------------------------------------------
     # Drawing from the model
     # ------------------------------------------------------------------
+
+    def _show_plot_appearance(self) -> None:
+        look = self.model.plot_appearance
+        self.plot.set_plot_appearance(look)
+        legend_marks(self.legend, look)
 
     def fit(self):
         """The fit this view reports, or ``None`` when none is shown."""

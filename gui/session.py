@@ -25,6 +25,7 @@ from core.pipeline.reporting import (
 from core.pipeline.sensitivity import SensitivityMode
 from core.pipeline.varpro import SECOND_STEP_LEVEL
 from core.units import Quantity
+from gui.plot_appearance import PlotAppearance
 from gui.plotting.export import ExportRefused
 from gui.plotting.labels import (
     NO_UNCERTAINTY,
@@ -64,39 +65,47 @@ if TYPE_CHECKING:
     from gui.fitting_session import FittingSession
 
 
-def export_results(results: list[FitResult], path: str | Path) -> None:
-    """Export a list of FitResult objects to a JSON file.
+def export_results(results: list[FitResult], path: str | Path, appearance: PlotAppearance | None = None) -> None:
+    """Write *results* to the results file *path* (JSON), with the session's plot *appearance* when given.
 
-    Parameters
-    ----------
-    results : list[FitResult]
-        Fit results to export.
-    path : str or Path
-        Output file path (should have ``.json`` extension).
+    The file is an object: ``results``, the list of :meth:`FitResult.to_dict` records, and
+    ``plot_appearance``, the :meth:`PlotAppearance.to_dict` record of the session's
+    titration plot.
     """
-    path = Path(path)
-    data = [r.to_dict() for r in results]
-    path.write_text(json.dumps(data, indent=2))
+    record: dict = {'results': [r.to_dict() for r in results]}
+    if appearance is not None:
+        record['plot_appearance'] = appearance.to_dict()
+    Path(path).write_text(json.dumps(record, indent=2))
+
+
+def _read_results_file(path: str | Path) -> dict:
+    """The results file *path* as an object of ``results`` and an optional ``plot_appearance``.
+
+    A file holding a list of results, or one result's record, records no plot appearance.
+    """
+    raw = json.loads(Path(path).read_text())
+    if isinstance(raw, list):
+        return {'results': raw}
+    return raw if 'results' in raw else {'results': [raw]}
 
 
 def import_results(path: str | Path) -> list[FitResult]:
-    """Import fit results from a JSON file created by :func:`export_results`.
+    """The fit results of the results file *path*, written by :func:`export_results`."""
+    return [FitResult.from_dict(d) for d in _read_results_file(path)['results']]
 
-    Parameters
-    ----------
-    path : str or Path
-        Path to the JSON file.
 
-    Returns
-    -------
-    list[FitResult]
-        Reconstructed FitResult objects.
+def import_appearance(path: str | Path) -> PlotAppearance | None:
+    """The plot appearance the results file *path* records, or ``None`` where it records none.
+
+    Raises ``ValueError``, in words for the user, on a record this version cannot read.
     """
-    path = Path(path)
-    raw = json.loads(path.read_text())
-    if isinstance(raw, dict):
-        raw = [raw]
-    return [FitResult.from_dict(d) for d in raw]
+    record = _read_results_file(path).get('plot_appearance')
+    if record is None:
+        return None
+    try:
+        return PlotAppearance.from_dict(record)
+    except ValueError as exc:
+        raise ValueError(f'{Path(path).name} records a plot appearance this version cannot read. {exc}') from None
 
 
 #: Said of a result that carries no interval for a binding constant it reports.
@@ -1047,7 +1056,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         write_measurements_csv(model.measurement_set, str(path))
 
     def _write_results_json(path: Path) -> None:
-        export_results(model.fit_results, path)
+        export_results(model.fit_results, path, model.plot_appearance)
 
     replica_ids = model.measurement_set.replica_ids if ms_loaded else None
 

@@ -326,7 +326,7 @@ class FittingMainWindow(QMainWindow):
     def _setup_actions(self) -> None:
         keys = QKeySequence.StandardKey
         self._act_run = _action(self, 'Run fit', 'play', RUN_FIT_KEY, self._on_primary)
-        self._act_new = _action(self, 'New session', 'plus', keys.AddTab, self._new_session)
+        self._act_new = _action(self, 'New session', 'plus', keys.AddTab, lambda: self._new_session())
         self._act_add = _action(self, 'Add files to this session…', 'plus', keys.Open, self._on_add_files)
         self._act_replace = _action(self, 'Replace data…', 'open', None, self._on_replace)
         self._act_load_new = _action(self, 'Load data into a new session…', 'file-plus', 'Ctrl+Shift+O')
@@ -450,7 +450,9 @@ class FittingMainWindow(QMainWindow):
     # Sessions
     # ------------------------------------------------------------------
 
-    def _new_session(self) -> FittingSession:
+    def _new_session(self, *, warn: bool = True) -> FittingSession:
+        """Open a new session and put it on screen; with *warn*, say when it could not take the
+        plot appearance stored for new sessions."""
         session = FittingSession()
         session.changed.connect(self._refresh)
         session.side_panel_closed.connect(lambda: self._set_side_visible(False))
@@ -462,6 +464,9 @@ class FittingMainWindow(QMainWindow):
         self._sessions.append(session)
         self._stack.addWidget(session)
         self._switch_to(session)
+        refusal = session.model.appearance_refusal
+        if warn and refusal is not None:
+            QMessageBox.warning(self, refusal.title, refusal.message)
         return session
 
     def _switch_to(self, session: FittingSession) -> None:
@@ -485,7 +490,8 @@ class FittingMainWindow(QMainWindow):
         """Open a copy of the session on screen: its data, binding model and input uncertainties, and no results."""
         source = self.active_session()
         if source is not None:
-            self._new_session().copy_from(source)
+            # The copy takes the appearance of the session it copies, so a stored one is not read.
+            self._new_session(warn=False).copy_from(source)
 
     def _close_current(self) -> None:
         session = self.active_session()

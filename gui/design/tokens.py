@@ -46,6 +46,13 @@ SIZE = {
     'plot-min': 320,
     # The longest line of help or warning text under a control, for a comfortable reading measure.
     'measure': 640,
+    # The point sizes and stroke widths Plot appearance offers for the titration plot.
+    'marker-small': 4,
+    'marker-medium': 6,
+    'marker-large': 9,
+    'stroke-thin': 1,
+    'stroke-medium': 2,
+    'stroke-thick': 3,
 }
 
 #: Stops of the heat scale (``heat-0`` … ``heat-8``), evenly spaced from low to high.
@@ -141,6 +148,7 @@ TYPE = {
     #  role:          (px, weight, tabular figures)
     'metric': (28, QFont.Weight.DemiBold, True),
     'title': (20, QFont.Weight.DemiBold, False),
+    'number-large': (20, QFont.Weight.Normal, True),
     'body': (13, QFont.Weight.Normal, False),
     'body-strong': (13, QFont.Weight.DemiBold, False),
     'number': (13, QFont.Weight.Normal, True),

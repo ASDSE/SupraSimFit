@@ -1,8 +1,9 @@
 """The titration plot: replicates against the titrant, with the mean ± SD and the fitted curves when given.
 
-One plot draws the raw data in Measurements and the fit in Fit results. It is drawn
+One plot draws the raw data in Measurements and the fit in Fit results and Plot
+appearance, with the session's :class:`~gui.plot_appearance.PlotAppearance`. It is drawn
 from the theme on screen and redrawn when the theme changes; a saved image is drawn
-again in the light theme on white (DESIGN.md §7).
+again in the light theme on white, with the same appearance (DESIGN.md §7).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import apply_plot_theme, fit_line, px, replicate_alpha, scatter
 from gui.design.tokens import TYPE, Theme, font, space
+from gui.plot_appearance import BUILT_IN, PlotAppearance
 from gui.plotting.export import export_plot_item
 from gui.plotting.labels import superscript
 
@@ -55,6 +57,12 @@ class TitrationData:
     caption: list[str] = field(default_factory=list)
 
 
+def legend_marks(legend: C.LegendRow, plot_appearance: PlotAppearance) -> None:
+    """Draw the replicates and the fitted curve in *legend* as *plot_appearance* draws them in the plot."""
+    look = plot_appearance
+    legend.set_marks(look.replicate_token, look.symbol, look.fit_px, look.fit_token)
+
+
 def wrap_caption(line: str, fm: QFontMetrics, width: int) -> list[str]:
     """*line* broken into lines no wider than *width* in *fm*: between its clauses (``; ``), and
     between the words of a clause too long for a line of its own."""
@@ -82,11 +90,12 @@ def power_of_ten(values: np.ndarray) -> int:
 
 
 class TitrationPlot(QWidget):
-    """The titration of :class:`TitrationData` in the display unit; empty until data are shown."""
+    """The titration of :class:`TitrationData` in the display unit, drawn with *plot_appearance*; empty until data are shown."""
 
-    def __init__(self, t: Theme | None = None):
+    def __init__(self, t: Theme | None = None, plot_appearance: PlotAppearance = BUILT_IN):
         super().__init__()
         self.t = t or theme()
+        self.plot_appearance = plot_appearance
         self.unit = 'µM'
         self.data: TitrationData | None = None
         self.pw: pg.PlotWidget | None = None
@@ -103,14 +112,15 @@ class TitrationPlot(QWidget):
             self.pw.deleteLater()
         self.pw = pg.PlotWidget()
         self.pw.setFrameShape(QFrame.Shape.NoFrame)
-        pi = apply_plot_theme(self.pw, self.t, '', '')
+        look = self.plot_appearance
+        pi = apply_plot_theme(self.pw, self.t, '', '', tick_role=look.tick_role, title_role=look.title_role)
         # A tick on an edge of the range, such as the 0 and 1 of the empty plot's 0–1, has its
         # label centred on that edge. Half a label of room above the axes and right of them
         # keeps such labels whole, and the x axis draws its end labels into that half label —
         # on the left into the y axis's room — where it would otherwise leave them out. The
         # widest a concentration tick reads is four characters (1000, 12.5); a wider one at
         # the right edge is left out, never cut.
-        fm = QFontMetrics(font('small-number'))
+        fm = QFontMetrics(font(look.tick_role))
         half_label = math.ceil(fm.horizontalAdvance('0000') / 2)
         left, _top, right, bottom = pi.layout.getContentsMargins()
         pi.layout.setContentsMargins(left, math.ceil(fm.height() / 2), max(right, half_label), bottom)
@@ -118,6 +128,15 @@ class TitrationPlot(QWidget):
         self._items = []
         self.layout().addWidget(self.pw)
         self.redraw()
+
+    def set_plot_appearance(self, plot_appearance: PlotAppearance) -> None:
+        """Draw the plot with *plot_appearance* from now on; another text size styles the axes afresh."""
+        old, new = self.plot_appearance, plot_appearance
+        self.plot_appearance = new
+        if (old.tick_role, old.title_role) != (new.tick_role, new.title_role):
+            self._restyle()
+        else:
+            self.redraw()
 
     def show_data(self, data: TitrationData | None, unit: str) -> None:
         """Show *data* with the concentrations in *unit*."""
@@ -129,7 +148,7 @@ class TitrationPlot(QWidget):
         self._items.append(item)
 
     def redraw(self) -> None:
-        t, data = self.t, self.data
+        t, data, look = self.t, self.data, self.plot_appearance
         pi = self.pw.getPlotItem()
         for item in self._items:
             pi.removeItem(item)
@@ -151,30 +170,32 @@ class TitrationPlot(QWidget):
                 break
             y = row * y_scale
             if on:
-                self._add(scatter(t, x, y, 'replicate', replicate_alpha(t), 6))
+                self._add(scatter(t, x, y, look.replicate_token, replicate_alpha(t), look.replicate_px, look.symbol))
             else:
-                self._add(scatter(t, x, y, 'text-secondary' if dark else 'replicate-off', 0.8, 7, symbol='x'))
+                off = 'text-secondary' if dark else 'replicate-off'
+                self._add(scatter(t, x, y, off, 0.8, look.cross_px, symbol='x'))
         used = data.signals[np.asarray(data.active, dtype=bool)] * y_scale
         if data.mean_sd and len(used):
             mean, sd = used.mean(axis=0), used.std(axis=0, ddof=1) if len(used) > 1 else np.zeros(len(x))
-            pen = pg.mkPen(t['text-primary'], width=px(1))
+            pen = pg.mkPen(t['text-primary'], width=px(look.error_bar_px))
             # Caps a hundredth of the x span wide, so they read the same at any range of the data.
             beam = ERROR_CAP * float(np.ptp(x)) if x.size else 0.0
             self._add(pg.ErrorBarItem(x=x, y=mean, height=2 * sd, beam=beam, pen=pen))
-            self._add(scatter(t, x, mean, 'text-primary', 1.0, 6))
+            self._add(scatter(t, x, mean, 'text-primary', 1.0, look.mean_px))
         for cx, cy in data.other_curves:
             self._add(fit_line(t, cx * scale, cy * y_scale, other=True))
         for cx, cy in data.curves:
-            self._add(fit_line(t, cx * scale, cy * y_scale))
+            self._add(fit_line(t, cx * scale, cy * y_scale, width=look.fit_px, color=look.fit_token))
 
     def figure(self) -> TitrationPlot:
-        """The plot as a saved image draws it, off screen: the light theme on white, at
-        :data:`EXPORT_SIZE`, its caption above the axes in a row as tall as its lines.
+        """The plot as a saved image draws it, off screen: the light theme on white with the
+        plot's appearance, at :data:`EXPORT_SIZE`, its caption above the axes in a row as
+        tall as its lines.
 
         The caller closes it.
         """
         light = Theme(dark=False)
-        copy = TitrationPlot(light)
+        copy = TitrationPlot(light, self.plot_appearance)
         copy.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         copy.resize(*EXPORT_SIZE)
         copy.show_data(self.data, self.unit)

@@ -9,6 +9,7 @@ instance. The ``minimal_plot_data`` fixture is provided by the root
 from __future__ import annotations
 
 import gc
+import os
 import sys
 
 import pytest
@@ -16,9 +17,17 @@ import pytest
 
 @pytest.fixture(scope='session')
 def qapp():
+    from PyQt6.QtCore import QCoreApplication, QSettings
     from PyQt6.QtWidgets import QApplication
 
-    return QApplication.instance() or QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)
+    # The preferences a test writes go to a store of this test process's own: never the user's,
+    # and never that of a run going on at the same time in another worktree.
+    QCoreApplication.setOrganizationName('SupraSimFit-Test')
+    QCoreApplication.setApplicationName(f'gui-tests-{os.getpid()}')
+    QSettings().clear()
+    yield app
+    QSettings().clear()
 
 
 @pytest.fixture(autouse=True)

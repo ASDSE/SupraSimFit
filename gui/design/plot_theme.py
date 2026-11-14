@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import QApplication
 
 from gui.design.tokens import SIZE, TYPE, Theme, family, font
@@ -15,12 +16,20 @@ def px(n: float) -> float:
 
 
 def apply_plot_theme(
-    pw: pg.PlotWidget, t: Theme, x_title: str, y_title: str, y_grid: list[float] | None = None
+    pw: pg.PlotWidget,
+    t: Theme,
+    x_title: str,
+    y_title: str,
+    y_grid: list[float] | None = None,
+    tick_role: str = 'small-number',
+    title_role: str = 'label',
 ) -> pg.PlotItem:
     """Style *pw* for theme *t*: surface background, left and bottom axes only, no y tick
-    marks — horizontal grid lines carry the scale — 4-px outward x ticks, and axis titles
-    in the ``label`` type role.
+    marks — horizontal grid lines carry the scale — 4-px outward x ticks, tick labels in
+    *tick_role* and axis titles in *title_role*.
 
+    The axes are :data:`SIZE` ``axis-left`` wide and ``axis-bottom`` tall in the standard
+    roles, and grow by what larger roles add to a four-figure tick label and a title line.
     The grid follows the y axis's own ticks as the range changes. *y_grid* pins the ticks
     and their grid lines instead, for a plot whose range is fixed.
     """
@@ -29,7 +38,7 @@ def apply_plot_theme(
     pi.hideButtons()
     pi.setMenuEnabled(False)
     pi.layout.setContentsMargins(0, 0, 8, 0)
-    tick_font = font('small-number')
+    tick_font = font(tick_role)
     for side in ('top', 'right'):
         pi.showAxis(side, False)
     for side in ('left', 'bottom'):
@@ -41,7 +50,7 @@ def apply_plot_theme(
     left, bottom = pi.getAxis('left'), pi.getAxis('bottom')
     left.setStyle(tickLength=0, tickTextOffset=8, autoExpandTextSpace=True)
     bottom.setStyle(tickLength=4, tickTextOffset=6)
-    size, weight, _ = TYPE['label']
+    size, weight, _ = TYPE[title_role]
     label_style = {
         'color': t['text-secondary'],
         'font-size': f'{size}px',
@@ -50,8 +59,12 @@ def apply_plot_theme(
     }
     left.setLabel(y_title, **label_style)
     bottom.setLabel(x_title, **label_style)
-    left.setWidth(SIZE['axis-left'])
-    bottom.setHeight(SIZE['axis-bottom'])
+    ticks, standard_ticks = QFontMetrics(tick_font), QFontMetrics(font('small-number'))
+    title_grows = QFontMetrics(font(title_role)).height() - QFontMetrics(font('label')).height()
+    left.setWidth(
+        SIZE['axis-left'] + ticks.horizontalAdvance('0000') - standard_ticks.horizontalAdvance('0000') + title_grows
+    )
+    bottom.setHeight(SIZE['axis-bottom'] + ticks.height() - standard_ticks.height() + title_grows)
     grid_pen = pg.mkPen(t['grid'], width=1)
     if y_grid is None:
         _follow_ticks_with_grid(pi, grid_pen)
@@ -95,7 +108,10 @@ def _follow_ticks_with_grid(pi: pg.PlotItem, pen) -> None:
 
 
 def scatter(t: Theme, x, y, color: str, alpha: float, size: float, symbol: str = 'o', hollow: bool = False):
-    """Data points in token *color*: filled, or hollow (and every 'x') drawn as a 1.3-px outline."""
+    """Data points in token *color*: filled, or hollow (and every 'x') drawn as a 1.3-px outline.
+
+    *symbol* is pyqtgraph's: ``o`` circle, ``s`` square, ``t1`` triangle pointing up, ``x`` cross.
+    """
     c = t.q(color, alpha)
     if hollow or symbol == 'x':
         return pg.ScatterPlotItem(x, y, symbol=symbol, size=size, pen=pg.mkPen(c, width=px(1.3)), brush=None)
@@ -107,11 +123,12 @@ def replicate_alpha(t: Theme) -> float:
     return 0.8 if t.dark else 0.55
 
 
-def fit_line(t: Theme, x, y, other: bool = False):
-    """The fitted curve: 2 px, accent, round caps; *other*, a fit shown beside the reported one, dashed in ``text-tertiary``."""
+def fit_line(t: Theme, x, y, other: bool = False, width: float = SIZE['stroke-medium'], color: str = 'accent'):
+    """The fitted curve: *width* px in colour token *color* (2 px in ``accent`` unless a plot appearance
+    says otherwise), round caps; *other*, a fit shown beside the reported one, 1.5 px dashed in ``text-tertiary``."""
     if other:
         pen = pg.mkPen(t['text-tertiary'], width=px(1.5), style=Qt.PenStyle.DashLine)
     else:
-        pen = pg.mkPen(t['accent'], width=px(2))
+        pen = pg.mkPen(t[color], width=px(width))
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     return pg.PlotDataItem(x, y, pen=pen, antialias=True)

@@ -10,7 +10,11 @@ one-liner.
 
 from __future__ import annotations
 
+import json
+
 from PyQt6.QtCore import QCoreApplication, QSettings
+
+from gui.plot_appearance import BUILT_IN, PlotAppearance
 
 ORG_NAME = 'SupraSimFit'
 APP_NAME = 'SupraSimFit'
@@ -78,3 +82,34 @@ def worker_count() -> int:
 
     stored = get_int(WORKER_COUNT_KEY, 0)
     return stored if stored >= 1 else default_worker_count()
+
+
+#: The plot appearance new sessions start from, as a JSON record of :class:`~gui.plot_appearance.PlotAppearance`.
+PLOT_APPEARANCE_KEY = 'new_sessions/plot_appearance'
+
+
+def plot_appearance_default() -> PlotAppearance:
+    """The plot appearance new sessions start from: the one stored, else the built-in one.
+
+    Raises ``ValueError``, in words for the user, when the stored record cannot be read.
+    """
+    stored = _settings().value(PLOT_APPEARANCE_KEY, None)
+    if stored is None:
+        return BUILT_IN
+    unreadable = 'The plot appearance stored for new sessions cannot be read.'
+    try:
+        return PlotAppearance.from_dict(json.loads(str(stored)))
+    except json.JSONDecodeError:
+        raise ValueError(unreadable) from None
+    except ValueError as exc:
+        raise ValueError(f'{unreadable} {exc}') from None
+
+
+def set_plot_appearance_default(appearance: PlotAppearance) -> None:
+    """Store *appearance* as the one new sessions start from."""
+    _settings().setValue(PLOT_APPEARANCE_KEY, json.dumps(appearance.to_dict()))
+
+
+def reset_plot_appearance_default() -> None:
+    """Let new sessions start from the built-in plot appearance again."""
+    _settings().remove(PLOT_APPEARANCE_KEY)

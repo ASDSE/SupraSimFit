@@ -26,7 +26,7 @@ from gui.design.appearance import theme
 from gui.design.tokens import Theme, font, space
 from gui.plotting.labels import _display_label, and_join, times_ten
 from gui.session_model import SessionModel
-from gui.views.titration import TitrationData, TitrationPlot
+from gui.views.titration import TitrationData, TitrationPlot, legend_marks
 
 NEW_SESSION = 'Load data into a new session…'
 
@@ -139,10 +139,8 @@ class MeasurementsView(QObject):
     """The canvas and side panel of Measurements over *model*; *parent* is where its dialogs open.
 
     :attr:`new_session_link` is the note's *Load data into a new session…*, which the window
-    answers; :attr:`display_unit_changed` says the plots' unit was chosen.
+    answers.
     """
-
-    display_unit_changed = pyqtSignal(str)
 
     def __init__(self, model: SessionModel, parent: QWidget):
         super().__init__(parent)
@@ -151,6 +149,9 @@ class MeasurementsView(QObject):
         self.side = self._build_side()
         model.data_changed.connect(self.refresh)
         model.results_changed.connect(lambda _scope: self.refresh())
+        model.plot_appearance_changed.connect(self._show_plot_appearance)
+        model.display_unit_changed.connect(lambda _unit: self.refresh())
+        self._show_plot_appearance()
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -184,9 +185,7 @@ class MeasurementsView(QObject):
         self._say(self.model.remove_file(path))
 
     def _set_display_unit(self, index: int) -> None:
-        self.model.update_settings(display_unit=UNITS[index])
-        self.display_unit_changed.emit(UNITS[index])
-        self.refresh()
+        self.model.set_display_unit(UNITS[index])
 
     def _set_imported_unit(self, index: int) -> None:
         if self.model.dataset is not None:
@@ -406,6 +405,11 @@ class MeasurementsView(QObject):
     # ------------------------------------------------------------------
     # Drawing from the model
     # ------------------------------------------------------------------
+
+    def _show_plot_appearance(self) -> None:
+        look = self.model.plot_appearance
+        self.plot.set_plot_appearance(look)
+        legend_marks(self.legend, look)
 
     def badge(self) -> str | None:
         """The summary beside the title: how many files the session holds."""

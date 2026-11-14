@@ -2,7 +2,8 @@
 
 The user's settings live in two widget-free forms the model owns — the binding
 model (:class:`~gui.binding.BindingForm`) and the input uncertainties
-(:class:`~gui.uncertainty.UncertaintyForm`). A view edits a form, tells the model
+(:class:`~gui.uncertainty.UncertaintyForm`) — beside the appearance of its titration
+plot (:class:`~gui.plot_appearance.PlotAppearance`). A view edits a form, tells the model
 (:meth:`SessionModel.binding_edited`, :meth:`SessionModel.uncertainty_edited`),
 and draws what the model's signals say changed. Every rule a session follows reads the model: whether a held result
 still describes the loaded data and settings (and the note that says why not),
@@ -46,6 +47,7 @@ from core.units import Q_, Quantity
 from gui import preferences
 from gui.binding import BindingForm, binding_constants
 from gui.dataset import Dataset
+from gui.plot_appearance import BUILT_IN, PlotAppearance
 from gui.plotting.labels import (
     STOPPING_TEXT,
     and_join,
@@ -421,6 +423,10 @@ class SessionModel(QObject):
         The binding model as stated (:attr:`binding`) changed.
     analysis_changed()
         The settings of the next sensitivity run (:attr:`analysis`) changed.
+    plot_appearance_changed()
+        The appearance of the titration plot (:attr:`plot_appearance`) changed.
+    display_unit_changed(str)
+        The concentration unit the titration plots are drawn in changed (:meth:`set_display_unit`).
     """
 
     status_changed = pyqtSignal(str)
@@ -435,6 +441,8 @@ class SessionModel(QObject):
     uncertainty_changed = pyqtSignal()
     binding_changed = pyqtSignal()
     analysis_changed = pyqtSignal()
+    plot_appearance_changed = pyqtSignal()
+    display_unit_changed = pyqtSignal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -447,6 +455,19 @@ class SessionModel(QObject):
         #: The settings of the next sensitivity run; :meth:`analysis_edited` after every change.
         self.analysis = AnalysisForm()
         self.analysis.set_inputs(list(self._settings.input_labels))
+        #: Why the session starts from the built-in plot appearance in place of the one stored
+        #: for new sessions — which cannot be read — or ``None``; the window shows it.
+        self.appearance_refusal: Refusal | None = None
+        try:
+            appearance = preferences.plot_appearance_default()
+        except ValueError as exc:
+            appearance = BUILT_IN
+            self.appearance_refusal = Refusal(
+                'Plot Appearance Not Read',
+                f'{exc} This session starts from the built-in plot appearance. To store another for new '
+                'sessions, choose it in Plot appearance and click Use for new sessions.',
+            )
+        self._plot_appearance = appearance
         self._dataset: Dataset | None = None
         self._custom_name: str | None = None
         self._progress: tuple[int, int] | None = None  # the running analysis's count, done of total
@@ -663,6 +684,12 @@ class SessionModel(QObject):
     def settings(self) -> SessionSettings:
         return self._settings
 
+    def set_display_unit(self, unit: str) -> None:
+        """Draw the titration plots with the concentrations in *unit* from now on, and say so when it changed."""
+        if unit != self._settings.display_unit:
+            self.update_settings(display_unit=unit)
+            self.display_unit_changed.emit(unit)
+
     def update_settings(self, **changes: Any) -> None:
         """Take *changes* to the settings, and check the held results when one they are checked by changed.
 
@@ -741,6 +768,21 @@ class SessionModel(QObject):
         """The configuration of a run of the analysis as set; raises ``ValueError`` while :meth:`analysis_problems` finds one."""
         return self.analysis.config(*self._analysis_inputs())
 
+    @property
+    def plot_appearance(self) -> PlotAppearance:
+        """How the session's titration plot is drawn, on screen and in a saved figure.
+
+        A new session starts from the appearance stored for new sessions
+        (:func:`gui.preferences.plot_appearance_default`), else from the built-in one.
+        """
+        return self._plot_appearance
+
+    def set_plot_appearance(self, appearance: PlotAppearance) -> None:
+        """Draw the titration plot with *appearance* from now on."""
+        if appearance != self._plot_appearance:
+            self._plot_appearance = appearance
+            self.plot_appearance_changed.emit()
+
     def edit_finished(self) -> None:
         """Once an edit of the conditions is finished, make the conversions waiting for them and check the results."""
         if self.uncertainty.convert_pending():
@@ -797,8 +839,9 @@ class SessionModel(QObject):
         """Take a copy of everything *other* states, and none of its results.
 
         Its data — the files, the concentrations as stated, which replicates are
-        used — its binding model, input uncertainties and display unit. The copy is
-        named after *other*, so the two read apart in the switcher.
+        used — its binding model, input uncertainties, display unit and plot
+        appearance. The copy is named after *other*, so the two read apart in the
+        switcher.
         """
         self.shutdown()
         self._dataset = copy.deepcopy(other._dataset)
@@ -806,6 +849,7 @@ class SessionModel(QObject):
         self.uncertainty = copy.deepcopy(other.uncertainty)
         self.analysis = copy.deepcopy(other.analysis)
         self._settings = other.settings
+        self._plot_appearance = other.plot_appearance
         self._custom_name = f'{other.name()} copy'
         self._held_fit_results = []
         self._clear_profile()
@@ -815,6 +859,7 @@ class SessionModel(QObject):
         self.binding_changed.emit()
         self.uncertainty_changed.emit()
         self.analysis_changed.emit()
+        self.plot_appearance_changed.emit()
         self.check_results(force=True)
 
     def set_custom_name(self, name: str) -> None:
@@ -1220,8 +1265,14 @@ class SessionModel(QObject):
             )
         return ImportCheck(accepted, refusal, '\n\n'.join(notices) or None)
 
-    def show_imported(self, results: list[FitResult], path: str) -> None:
-        """Hold *results*, checked by :meth:`check_imported`, in place of the fits held now."""
+    def show_imported(self, results: list[FitResult], path: str, appearance: PlotAppearance | None = None) -> None:
+        """Hold *results*, checked by :meth:`check_imported`, in place of the fits held now.
+
+        *appearance* is the plot appearance the results file records, which the session
+        takes; a file that records none (``None``) leaves the session's own.
+        """
+        if appearance is not None:
+            self.set_plot_appearance(appearance)
         # Imported fits carry no Ka profile; the profile waits for the next fit.
         self._clear_profile()
         self._held_fit_results = results

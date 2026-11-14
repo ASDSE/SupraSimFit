@@ -27,7 +27,7 @@ Views set no stylesheet of their own.
 2. **One meaning per colour.** Accent marks the reported result, selection and keyboard
    focus, links, the primary action, and work in progress. Amber, green and red mark a
    result's warnings, passes and errors. Neutral greys carry everything else, data
-   included.
+   included; Plot appearance (§8) may give the replicate points a series colour instead.
 3. **Run state lives in three places.** Whether a session or analysis is running, done,
    out of date or carrying warnings shows as navigation marks, session-switcher lines and
    the status bar. A result's own warnings and test outcomes show inside its view, as
@@ -72,7 +72,7 @@ stylesheet template.
 | `success`, `warning`, `danger` with `-bg` (and `warning-border`) | A result's passed test, warning or error: diagnostic marks, callouts, messages |
 | `replicate` | Replicate data points |
 | `replicate-off` | A replicate switched off (drawn as ×) |
-| `series-1`, `series-2` | The two series of the Sobol' chart: S₁ (solid) and S_T (outlined) |
+| `series-1`, `series-2` | The two series of the Sobol' chart: S₁ (solid) and S_T (outlined); in the titration plot, the replicate points when Plot appearance (§8) chooses *Blue* or *Magenta* |
 | `heat-0` … `heat-8` | The heat scale of the sensitivity heatmap, low to high: perceptual and multi-hue (viridis), each stop lighter than the one below |
 | `traffic` | Window controls of an inactive window |
 
@@ -84,7 +84,7 @@ on, hover and selection fills included, and each status colour on its own `-bg`.
 use: replicate dots `replicate` at 45 %; the sample histogram `text-secondary` at 62 %
 inside the middle 90 % and 22 % outside; S₁ bars solid `series-1`, S_T bars `series-2` at
 16 % (light) and 24 % (dark) inside a 90 % edge; interval bands `accent` at 8 %. The
-reported result and fitted curve take `accent`; the reading at the inputs as entered takes
+reported result and fitted curve take `accent` (Plot appearance may give the curve another colour); the reading at the inputs as entered takes
 `text-secondary` (its marker line in the sensitivity histogram is dashed `text-primary`,
 its interval a `text-secondary` bracket). Each series colour stands out from `bg-surface`
 by 3 : 1 and the heat scale rises in lightness, which `test_design_system.py` checks; the
@@ -97,7 +97,8 @@ The platform UI font (SF Pro on macOS, Segoe UI on Windows), four sizes on any s
 | Role | Size / weight | Use |
 |---|---|---|
 | `metric` | 28 px DemiBold, tabular | The headline value of a view (the reported Ka) |
-| `title` | 20 px DemiBold | Toolbar title |
+| `title` | 20 px DemiBold | Toolbar title; axis titles at *Larger* axis text (§8) |
+| `number-large` | 20 px, tabular | Tick labels at *Larger* axis text (§8) |
 | `body`, `body-strong` | 13 px Normal / DemiBold | Text, controls, section titles, selected segments |
 | `number`, `number-strong` | 13 px, tabular | Values in rows and tables |
 | `label`, `small`, `small-number` | 12 px Medium / Normal / tabular | Captions, axis titles, ticks, hints |
@@ -359,7 +360,7 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
 - **Titration series:** replicate dots in `replicate` at 45 %, 6 px; switched-off
   replicates as × in `replicate-off`; mean ± SD as 6-px `text-primary` dots with 1-px
   `text-primary` error bars, capped a hundredth of the x span wide; the fitted curve 2 px
-  accent, round caps.
+  accent, round caps. Plot appearance (§8) restyles these marks per session.
 - **Sobol' bars:** S₁ solid in `series-1`, S_T outlined in `series-2`, each with a
   1.25-px `text-primary` whisker with 6-px caps; an index or whisker past the axis ends in
   a small arrow at its edge.
@@ -519,8 +520,37 @@ spread, the samples and the shares, with its own callouts and the chart's notes 
 for a heatmap, each map with its colour bar.
 
 ### Plot appearance
-A form in the side panel beside the live plot: markers, lines, colours and text sizes,
-and *Use for new sessions*. Built from the Settings-window components.
+The appearance of the session's **titration plot**: the plot in Measurements and in Fit
+results, and the figure saved from it (also in a batch export). Ka confidence,
+Sensitivity and the Simulation window take no appearance setting; they are drawn from the
+tokens alone. Canvas: a sentence saying what the settings style, then the **Titration**
+plot as Fit results draws it — the fit where there is one, else the data — with its
+legend and the image export; with nothing loaded, a sentence saying what to load. Every
+choice redraws the plot at once, here and in the other views. Side panel *Titration
+plot*, headed by *Reset to defaults* (a link; it gives this session the built-in
+appearance): **Markers** — replicate points and mean points *Small* / *Medium* / *Large*
+(`marker-small` / `marker-medium` / `marker-large`), replicate mark *Circle* / *Square* /
+*Triangle*; **Lines** — fitted curve and error bars *Thin* / *Medium* / *Thick*
+(`stroke-thin` / `stroke-medium` / `stroke-thick`); **Colour** — replicate points, a
+menu of the theme's colours *Grey* (`replicate`), *Blue* (`series-1`) and *Magenta*
+(`series-2`), and fitted curve, *Teal* (`accent`, built in), *Blue*, *Magenta* or *Text
+colour* (`text-primary`) — never a free colour picker; the means and their error bars stay
+`text-primary`, so no choice draws the replicates in the colour of the means; **Text** — axis text *Standard* / *Large* /
+*Larger*, the tick labels and axis titles in the type roles `small-number` and `label`,
+`number` and `body-strong`, or `number-large` and `title` (tick labels always in tabular
+figures); **New sessions** — *Use for new sessions* (outline button; one click stores the
+whole appearance, and it is enabled while the stored one differs). The built-in appearance is the titration of §7. The form
+feeds no fit or analysis, so it stays open while one runs. The badge reads *Built-in
+appearance* or *Custom appearance*.
+
+Each session holds its own appearance. *Duplicate <session>* copies it, and the session's
+results file records it (`plot_appearance` beside `results`); a session that imports a
+results file takes the appearance it records, and one that records none leaves the
+session's own. *Use for new sessions* stores the appearance in the preferences as the start of every
+session opened later; sessions already open keep their own; with none stored, a new
+session starts from the built-in appearance. A stored appearance this version cannot read
+is never passed over in silence: each new session opens with a warning saying so, starts
+from the built-in appearance.
 
 ### Simulation window — `simulation_*.jpg`, `simulation_scrolled_*.jpg`, `simulation_overlay_*.jpg`
 A separate window (1280 × 800), part of no session, opened with *Tools ▸ Simulate…*. The
@@ -540,7 +570,8 @@ data…* draws a measurement file over the model and takes its concentrations as
 Opened with ⌘, (*Settings…* in the app menu on macOS; *File ▸ Settings…* on Windows and
 Linux). One short page in three settings groups: **General** (Appearance System / Light
 / Dark; check for updates when the app starts; the version and *Check now*), **New
-sessions** (concentration unit; plot appearance for new sessions), **Analysis**
+sessions** (concentration unit; plot appearance for new sessions — the one stored by *Use
+for new sessions*, with a way back to the built-in one), **Analysis**
 (processor cores). Changes apply at once; the window has no OK or Cancel.
 
 ---
@@ -582,4 +613,3 @@ and the tokens.
 2. **Fit in new session** (Simulation) — it sends the noisy replicates as shown; the
    simulated values do not travel as starting values.
 3. **Simulation noise** — an absolute σ in a.u., which the engine does not yet offer.
-4. **Plot appearance for new sessions** — what is stored and where.

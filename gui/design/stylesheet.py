@@ -28,6 +28,7 @@ QPushButton[role="link"] {
     border: none; background: transparent; color: {{accent}}; padding: 0px; min-height: 20px;
 }
 QPushButton[role="link"]:hover { color: {{accent-hover}}; }
+QPushButton[role="link"]:disabled { color: {{text-tertiary}}; }
 QScrollArea { border: none; background: transparent; }
 QLineEdit[role="field"] { background: transparent; border: none; padding: 0px; color: {{text-primary}}; }
 QScrollBar:vertical { width: 8px; background: transparent; margin: 0px; }
