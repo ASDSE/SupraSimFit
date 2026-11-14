@@ -24,7 +24,7 @@ from core.pipeline.varpro import KaInterval  # noqa: E402
 from core.units import Q_  # noqa: E402
 from gui import results as R  # noqa: E402
 
-THIN = ' '
+THIN = ' '
 
 
 def result(**overrides) -> FitResult:

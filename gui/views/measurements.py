@@ -24,12 +24,9 @@ from gui.design import components as C
 from gui.design import icons
 from gui.design.appearance import theme
 from gui.design.tokens import Theme, font, space
-from gui.plotting.labels import _display_label, and_join
+from gui.plotting.labels import _display_label, and_join, times_ten
 from gui.session_model import SessionModel
 from gui.views.titration import TitrationData, TitrationPlot
-
-_SUPERSCRIPT = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻')
-_THIN = ' '
 
 NEW_SESSION = 'Load data into a new session…'
 
@@ -42,7 +39,7 @@ def molar(value: float) -> str:
     mantissa = f'{value / 10**e:.5f}'.rstrip('0').rstrip('.')
     if e == 0:
         return mantissa
-    return f'{mantissa}{_THIN}×{_THIN}10{str(e).translate(_SUPERSCRIPT)}'
+    return f'{mantissa}{times_ten(e)}'
 
 
 class FilesTable(QWidget):

@@ -226,7 +226,6 @@ def main():
     session.model._sensitivity_result = result
     try:
         session._summary_widget.set_sensitivity(result)
-        session._summary_widget.show_samples(True)
         from PyQt6.QtWidgets import QLabel
 
         out['summary_texts'] = [

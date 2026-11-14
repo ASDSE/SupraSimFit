@@ -107,7 +107,6 @@ def test_two_ka_profile_nodes_equal_a_brute_force_minimum_over_the_other_ka():
     assert profiles.region is not None
     for key, other in (('Ka_HG', 'Ka_HG2'), ('Ka_HG2', 'Ka_HG')):
         profile = profiles.profiles[key]
-        assert profile.replica_r2 is None
         nodes = varpro._ka_grid(1e4, 1e8, varpro._SEARCH_PER_DECADE)
         assert np.isin(nodes, profile.grid).all()
         for ka in nodes[[3, 8, 13]]:

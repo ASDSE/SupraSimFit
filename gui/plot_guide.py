@@ -12,7 +12,7 @@ states.
 from __future__ import annotations
 
 FIT_CURVE = 'fit_curve'
-IDENTIFIABILITY = 'identifiability'
+CONFIDENCE = 'confidence'
 SENSITIVITY = 'sensitivity'
 SUMMARY = 'summary'
 
@@ -22,8 +22,8 @@ DEMO_NOTE = (
     '[Dye]<sub>0</sub> 6 &micro;M, with the input uncertainties Demo IDA states: &sigma; 10&thinsp;% on '
     'K<sub>a,dye</sub> and &sigma; 3&thinsp;% on [Host]<sub>0</sub>, [Dye]<sub>0</sub> and the titrant. '
     'Unless an example says otherwise, its numbers are the fit at the inputs as entered: the '
-    '<i>Inputs as entered</i> row of the interval chart in Fit results and the black curve on the '
-    'Identifiability tab, and every view once each row of Input uncertainty is set to <i>fixed</i>.'
+    '<i>Inputs as entered</i> row of the interval chart in Fit results and the <i>Inputs as entered</i> '
+    'reading of Ka confidence, and every view once each row of Input uncertainty is set to <i>fixed</i>.'
 )
 
 _FIT_CURVE_HTML = """
@@ -94,97 +94,85 @@ inputs removes the miss, but only by moving them further than those uncertaintie
 stocks and the stated uncertainties before trusting either number.</p>
 """
 
-_IDENTIFIABILITY_HTML = """
-<p>This tab answers: <b>how far can K<sub>a</sub> move before the fit gets measurably worse?</b>
-One panel per association constant the model has, and for a model with two of them a third panel
-for the pair.</p>
+_CONFIDENCE_HTML = """
+<p>This view answers: <b>how far can K<sub>a</sub> move before the data reject the fit?</b> One
+profile plot per association constant the model has, and for a model with two of them the joint
+region of the pair below them.</p>
 
 <p><b>What you see</b></p>
 <ul>
-<li>Lines above the plot: the best fit, its R&sup2;, and the 95&thinsp;% confidence interval (CI)
-with how far it reaches from the best fit; where you stated an uncertainty for an input, the same
-reading conditional on the entered inputs follows it. A grey line gives the number of data points
-and fitted parameters the test is worked out from, and the last lines give the verdict.</li>
-<li>Black line: the best R&sup2; reachable with that K<sub>a</sub> held at each value, every other
-parameter refitted. It breaks where the binding model has no solution. With replicates the axis,
-and every number read off it, is the <i>weighted</i> R&sup2;, and the tab says so: weighted R&sup2;
-counts each titration point by how precise the replicates show it to be, while the R&sup2; under
-Fit quality counts every point equally. Both describe the same fit and they differ.</li>
-<li>Dotted line: the CI cut-off. Where the black line stays above it, the fit is not significantly
-worse than the best (F test); the grey band spans that K<sub>a</sub> range. The line steps down
-where a signal parameter reaches its bound: a fit that has to hold one there gives up that
-parameter as well as K<sub>a</sub>, so the test allows it a larger drop. The right-hand axis names
-the cut-off where every signal parameter is free; where the line steps down, the legend says so, and
-hovering over that axis explains the step.</li>
-<li>Diamond: the best fit.</li>
-<li>A per-replicate fit of a model with one K<sub>a</sub> adds a thin grey line per replicate: that
-replicate on its own. The black line and the CI use their average.</li>
-<li>Second curve, <i>with input uncertainties</i>: shown when you state an uncertainty for an input
-under <i>Input uncertainty</i>. At each K<sub>a</sub> the fit may also move those inputs inside what
-you stated, so this curve runs at or above the black one and its band &mdash; the interval the app
-reports &mdash; is usually the wider of the two. The black curve and the faint band under it are the
-same profile with every input held exactly as entered. Where you state only the random error of each
-addition, no input moves and there is no second curve: the cut-off of the one curve allows for
-the error, and the coloured band &mdash; the interval the app reports &mdash; is drawn over the faint
-band without it.</li>
-<li>Pair panel (two association constants): log<sub>10</sub> of one against log<sub>10</sub> of the
-other, with the 95&thinsp;% region for the pair filled, the best fit marked, and the two single
-intervals as faint bands. The region is wider than the two bands crossed whenever the two constants
-trade off against each other. This panel holds the inputs as entered, whatever uncertainty you state
-for them; the two single intervals in the panels beside it are the ones that account for that. The
-random error of each addition, where you state one, and a noise law the replicates leave uncertain
-do widen the region and its two bands, and a note on the tab says by how much.</li>
+<li>Above the plots: each association constant in its two readings side by side &mdash;
+<i>Input-aware</i>, the interval the app reports, with the inputs free to move inside the
+uncertainties you stated, and <i>Inputs as entered</i>, every input taken as exact &mdash; each with
+its estimate, its 95&thinsp;% interval and how far each end lies from the estimate. Where every input
+is entered as exact there is one reading, <i>Inputs as entered</i>. <i>Split</i> marks an interval
+whose accepted K<sub>a</sub> come in separate stretches.</li>
+<li>Curves: the profile of each reading &mdash; at each K<sub>a</sub>, the best fit any setting of the
+other parameters reaches with K<sub>a</sub> held there &mdash; Input-aware in the accent colour,
+Inputs as entered in grey. A curve breaks where the binding model has no solution.</li>
+<li>Up the plot, the <b>scaled drop</b>: how far the fit at that K<sub>a</sub> falls from its best,
+as a share of the drop its own 95&thinsp;% test allows there. 0 is the best fit (the diamond) and 1
+is the cut-off, the one dotted line. Where a curve is at or below 1, its reading accepts that
+K<sub>a</sub>. Each curve is read against its own test &mdash; the residual for Inputs as entered, the
+residual with a penalty for each input&rsquo;s move for Input-aware &mdash; so both cross the line at 1
+exactly where their intervals end.</li>
+<li>A dotted riser: where the fit at a K<sub>a</sub> has to hold a signal parameter at its bound, it
+gives up that parameter as well as K<sub>a</sub>, the test allows it a larger drop, and the curve
+steps down.</li>
+<li>Strip under the plot: the K<sub>a</sub> each reading accepts, one bar per stretch. The shaded
+band behind the curves is the reported interval.</li>
+<li>Card at the top right: point at the plot to read each curve&rsquo;s scaled drop at that
+K<sub>a</sub>, and whether each reading accepts it. Without the pointer it reads the reported
+estimate. The enlarge tool gives the plots the whole canvas.</li>
+<li>Joint region (two association constants): log<sub>10</sub> of one against log<sub>10</sub> of the
+other, the 95&thinsp;% region for the pair filled, the best fit marked, and the interval of each
+constant on its own as a faint band. The region is wider than the two bands crossed whenever the two
+constants trade off against each other. It holds the inputs as entered, whatever uncertainty you
+state for them; a stated random error of each addition and a noise law the replicates leave uncertain
+widen it, and <i>Notes</i> says by how much.</li>
 </ul>
-<p>The R&sup2; axis is linear and opens on the peak and the cut-off. Scroll to zoom, drag to pan,
-right-click for View All.</p>
+<p><i>Notes</i>, the side panel, holds the input shifts of a conflict, a split interval, the sides the
+data leave open, the test of a second binding step, what the intervals rest on and what widened
+them.</p>
 
 <p><b>How to read it</b></p>
-<p>Good: a clear peak and a narrow band. Worrying: a flat line over a wide K<sub>a</sub> range, or an
-open end of the CI, written in words &mdash; <i>no upper limit</i>, <i>no lower limit</i>, or <i>not
-limited by the data</i> for both: the data cannot rule out K<sub>a</sub> up to the bound you set, so
-report a limit rather than a value. With two association constants an end is also open where the
-fit is rejected only because the other constant has reached its bound. A line starting
-<i>Open:</i> says which end is open and what would close it.</p>
-<p>The second constant of a two-step model (K<sub>a(HG₂)</sub>, K<sub>a(H₂G)</sub>) claims with a
-closed lower end that the second binding step happens at all. That end is closed only where the data
-reject the model without the step &mdash; the <i>one-step test</i>, at p&nbsp;&le;&nbsp;0.005 &mdash; and
-the line under that constant&rsquo;s reading gives the test either way: <i>second binding step
-supported</i>, with the p it was rejected at, or <i>not limited below</i>, because a model without the
-second step fits nearly as well. Where the inputs were free to move, it is given at the entered inputs too,
-the interval the panel of the pair is drawn at. Where the second constant is a hundred times or more
-below the first, a closed interval of it misses the true value more often than 1 in 20 even after
-the test: read it together with the joint region of the pair.</p>
-<p>The CI holds if the model is right, the true K<sub>a</sub> lies inside the bounds it is searched
-in, and the scatter is independent from point to point and as large at each point as the noise law
-under Fit quality says (the same at every point for a single titration). It uses
-the replicates&rsquo; average, because replicates that miss the model in the same way are not
+<p>Good: a curve that climbs steeply on both sides of its diamond and a short bar. Worrying: a curve
+that stays under 1 to the edge of the plot, or an open end written in words &mdash; <i>no upper
+limit</i>, <i>no lower limit</i>, or <i>not limited by the data</i> for both: the data cannot rule out
+K<sub>a</sub> up to the bound you set, so report a limit rather than a value. With two association
+constants an end is also open where the fit is rejected only because the other constant has reached
+its bound. <i>Open sides</i> in Notes says which end is open and what would close it.</p>
+<p>The second constant of a two-step model (K<sub>a</sub> HG₂, K<sub>a</sub> H₂G) claims with a closed
+lower end that the second binding step happens at all. That end is closed only where the data reject
+the model without the step &mdash; the <i>one-step test</i>, at p&nbsp;&le;&nbsp;0.005 &mdash; and
+<i>Second binding step</i> in Notes gives the test either way: <i>second binding step supported</i>,
+with the p it was rejected at, or <i>not limited below</i>, because a model without the second step
+fits nearly as well. Where the inputs were free to move, it is given at the entered inputs too, the
+footing of the joint region. Where the second constant is a hundred times or more below the first, a
+closed interval of it misses the true value more often than 1 in 20 even after the test: read it
+together with the joint region.</p>
+<p>The interval holds if the model is right, the true K<sub>a</sub> lies inside the bounds it is
+searched in, and the scatter is independent from point to point and as large at each point as the
+noise law under Fit quality says (the same at every point for a single titration). It uses the
+replicates&rsquo; average, because replicates that miss the model in the same way are not
 independent evidence. It also holds the conditions you entered to be right &mdash; exactly, unless
 you state an uncertainty for them, in which case the reported interval covers that uncertainty
 instead. Where the points run to one side of the curve, as in the example below, the model is
-missing something the data contain &mdash; the scatter is not independent noise &mdash; and the
-interval is narrower than the data warrant.</p>
-<p>The verdict the callouts above the plot and the exported report state is one of: no test found evidence against the
-model or your inputs; a shift inside your stated uncertainties explains a miss; the inputs had to go
-further than you allowed; no allowed shift rescues the model; or both of the last two, the inputs
-named first. A conflict is about the inputs <i>together</i>; the shift listed against each one is
-where the fit put the correction, not the stock that is off.</p>
-<p>After a sensitivity run, a translucent blue cloud shows each sample&rsquo;s best fit. A sample
-can sit above the black line, as it fits with its own changed inputs; that does not make them right,
-since changed inputs can absorb a systematic miss. <i>Show sensitivity samples</i> hides the cloud;
-<i>Colour by</i> shades it by one input&rsquo;s change (blue lower, red higher).</p>
+missing something the data contain and the interval is narrower than the data warrant.</p>
+<p>A conflict is about the inputs <i>together</i>; the shift listed against each one in Notes is where
+the fit put the correction, not the stock that is off.</p>
 
 <p><b>Example</b></p>
-<p>Best fit 2.81&times;10<sup>8</sup> M<sup>&minus;1</sup> (weighted R&sup2; 0.9957); CI
-[1.52&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>] M<sup>&minus;1</sup> (&minus;46&thinsp;% / +60&thinsp;%), cut-off
-0.9918 from 12 data points and 3 fitted parameters. The cut-off sits lower than those alone would
-put it: the 7 replicates leave the share of proportional noise anywhere between 0.63 and 1, and the
-interval is widened (variance &times;1.57) to hold for every share they allow. The best weighted
-R&sup2; is 0.9873 at twice the best K<sub>a</sub> and 0.9859 at half: small R&sup2; differences set a
-3-fold interval. Below 1.6&times;10<sup>8</sup> M<sup>&minus;1</sup> the fit holds the signal offset
-on zero, so the cut-off steps down to 0.9892 there. Above the step the curve crosses the cut-off that
-holds while every signal parameter is free at 1.74&times;10<sup>8</sup> M<sup>&minus;1</sup>; below the
-step it clears the lower cut-off again, from the step down to 1.52&times;10<sup>8</sup> M<sup>&minus;1</sup>.
-The interval spans both stretches, and the K<sub>a</sub> between them are rejected.</p>
+<p>Inputs as entered: best fit 2.81&times;10<sup>8</sup> M<sup>&minus;1</sup>, interval
+[1.52&times;10<sup>8</sup>, 4.50&times;10<sup>8</sup>] M<sup>&minus;1</sup> (&minus;46&thinsp;% / +60&thinsp;%),
+worked out from 12 data points and 3 fitted parameters. It is wider than those alone would make it:
+the 7 replicates leave the share of proportional noise anywhere between 0.63 and 1, and the interval
+is widened (variance &times;1.57) to hold for every share they allow. At twice the best K<sub>a</sub> the curve stands at 2.15, at half
+at 1.52: both rejected. Below 1.6&times;10<sup>8</sup> M<sup>&minus;1</sup> the fit holds the signal
+offset on zero, so the test allows a larger drop and the curve steps down. Above the step it meets the
+line at 1 at 1.74&times;10<sup>8</sup> M<sup>&minus;1</sup>; below the step it is under 1 again, from
+the step down to 1.52&times;10<sup>8</sup> M<sup>&minus;1</sup>. The interval spans both stretches, and
+the K<sub>a</sub> between them are rejected: <i>Split</i>.</p>
 <p>The curve misses the replicates&rsquo; mean by 7.2&times;10<sup>3</sup> a.u. (RMSE) while they
 scatter by about 1.0&times;10<sup>3</sup> a.u.: they depart from the model in the same way (see Fit
 results), so the true uncertainty is wider than this interval.</p>
@@ -287,7 +275,7 @@ the budget below them is then about that edge rather than about your inputs. A c
 reason in place of its indices, budget, what-if and elasticities when its fit at the entered inputs
 ran to an edge of its bounds, when its interval at the entered inputs is open, or when its refits
 do not follow the inputs smoothly (they break a scaling law every binding model obeys) &mdash; the
-<i>Identifiability</i> tab is where such a fit is read. If instead a share of the samples ran there, the tab keeps the numbers
+<i>Ka confidence</i> view is where such a fit is read. If instead a share of the samples ran there, the tab keeps the numbers
 and says how many did: each of those fits sits decades from the rest and pushes the spread and the
 budget up, which means the uncertainties you stated reach into a region where the data stop pinning
 K<sub>a</sub> down.</p>
@@ -350,9 +338,8 @@ with the signal.</p>
 <p>The noise law behind that stat is read from your replicates: how far each of them falls from the
 curve it traces itself, written as a constant part in signal units plus a part proportional to the
 signal. The fit weights the titration points by it, read at the fitted curve &mdash; a point the
-replicates show to be twice as precise counts four times &mdash; which is why the Identifiability tab calls its axis
-<i>weighted R&sup2;</i>: weighted R&sup2; counts each point by that precision, while the R&sup2;
-here counts every point equally. One titration cannot show how the noise varies with the signal, so
+replicates show to be twice as precise counts four times &mdash; and every interval is cut on that
+weighted residual, while the R&sup2; here counts every point equally. One titration cannot show how the noise varies with the signal, so
 it is fitted with the noise taken as constant, and the stat reads <i>Not estimated</i>. Where the noise really is
 proportional to the signal, that costs precision at the low end of the curve and gives an interval
 somewhat wider than replicates would have earned.</p>
@@ -419,7 +406,7 @@ interval above.</p>
 
 PLOT_GUIDE: dict[str, tuple[str, str]] = {
     FIT_CURVE: ('Fit results', _FIT_CURVE_HTML),
-    IDENTIFIABILITY: ('Identifiability', _IDENTIFIABILITY_HTML),
+    CONFIDENCE: ('Ka confidence', _CONFIDENCE_HTML),
     SENSITIVITY: ('Ka Sensitivity', _SENSITIVITY_HTML),
     SUMMARY: ('Fit details', _SUMMARY_HTML),
 }

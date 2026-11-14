@@ -1,4 +1,4 @@
-"""Ka profiles and the joint region drawn on the Identifiability tab.
+"""Ka profiles and the joint region drawn in Ka confidence.
 
 The engine in :mod:`core.pipeline.varpro` gives, at any value of one binding
 constant, the best residual the model can reach with every other parameter
@@ -9,7 +9,7 @@ fitted model, adding points wherever straight lines between them would miss the
 exact curve, and for a model with two free binding constants also maps the
 joint confidence region of the pair. The best fit, the intervals and the cut-offs are
 the engine's own numbers for the averaged signal, computed by the same calls
-the fit makes, so the tab shows the fit it belongs to and nothing else.
+the fit makes, so the view shows the fit it belongs to and nothing else.
 
 Where the inputs were stated with an uncertainty, the fit's penalised profile
 comes with it (:class:`~core.pipeline.input_aware.AwareProfile`): the second
@@ -118,7 +118,7 @@ class ProfileResult:
 
     Where the fit weighted its titration points
     (:attr:`ProfileSet.weighted`), every R² here — ``r2``, ``best_r2``,
-    ``r2_cut``, ``r2_threshold`` and each curve in ``replica_r2`` — is
+    ``r2_cut`` and ``r2_threshold`` — is
     ``1 - S_w / SS_tot,w``, measured with each titration point counted by its
     weight. It is the scale the profile falls on and the cut-off is a level on,
     and a different number from the unweighted R² the fit reports as its
@@ -137,10 +137,6 @@ class ProfileResult:
         Best R² of the averaged signal at each grid Ka, minimised over every
         other parameter; ``nan`` at a Ka the equilibrium model cannot solve,
         which has no fit to draw.
-    replica_r2 : dict[str, np.ndarray] | None
-        Each active replicate's own best-R² curve on ``grid``; ``None`` unless
-        the fit ran per replicate and this is the model's only free binding
-        constant.
     best_ka : float
         Ka (1/M) of the best fit of the averaged signal.
     best_r2 : float
@@ -182,12 +178,16 @@ class ProfileResult:
         a bound that the best fit leaves free, by one numerator degree of
         freedom of the F test per such parameter. ``r2_threshold`` at every
         point when left out.
+    r2_top : float
+        R² of the residual every cut-off is a rise above: the best fit's,
+        floored at the resolution of R² as the F test floors it
+        (:meth:`~core.pipeline.varpro.Projection.threshold`). ``best_r2``
+        when left out.
     """
 
     ka_key: str
     grid: np.ndarray
     r2: np.ndarray
-    replica_r2: dict[str, np.ndarray] | None
     best_ka: float
     best_r2: float
     interval: KaInterval | None
@@ -197,10 +197,25 @@ class ProfileResult:
     per_replica: bool
     aware: AwareProfile | None = None
     r2_cut: np.ndarray | None = None
+    r2_top: float | None = None
 
     def __post_init__(self) -> None:
         if self.r2_cut is None:
             self.r2_cut = np.full(self.grid.shape, self.r2_threshold)
+        if self.r2_top is None:
+            self.r2_top = self.best_r2
+
+    def scaled_drop(self) -> np.ndarray:
+        """The profile on *grid* as a share of the rise its own F test allows there.
+
+        ``(S - S_min) / (cut - S_min)``, read on the R² axis, which is affine
+        in the residual: 0 at the best fit and 1 where a point meets its own
+        cut-off, so the closed edges of the interval, roots of the profile
+        minus that cut-off, are where it is 1; not a number where the model
+        has no solution.
+        """
+        with np.errstate(invalid='ignore', divide='ignore'):
+            return (self.r2_top - self.r2) / (self.r2_top - self.r2_cut)
 
 
 @dataclass
@@ -278,9 +293,8 @@ class ProfileSet:
         S_w / SS_tot,w``, the scale the profile falls on and the cut-off is a
         level on, which counts each point by the precision the replicates show
         it to have. That is a different number from the unweighted R² a fit
-        reports as its quality, and the tab that draws these curves names it
-        accordingly. ``False`` where the weights are one, and the two numbers
-        are the same.
+        reports as its quality. ``False`` where the weights are one, and the
+        two numbers are the same.
     """
 
     profiles: dict[str, ProfileResult]
@@ -311,8 +325,7 @@ def fit_profile(
     intervals come from the same engine calls a fit of the same replicates
     makes, so they equal the fit's exactly when the fit's own point weights
     and design effects are handed in. ``fit_config.custom_bounds`` applies
-    throughout; with ``fit_config.per_replica`` a model with one free binding
-    constant also carries each replicate's own curve in ``replica_r2``.
+    throughout.
 
     Parameters
     ----------
@@ -333,7 +346,7 @@ def fit_profile(
         The penalised profiles of the fit being profiled
         (:attr:`~core.pipeline.fit_pipeline.FitResult.aware`), made at this
         *level* on these data with this configuration. They are carried
-        through as they are, which is what makes the tab show the fit's own
+        through as they are, which is what makes Ka confidence show the fit's own
         interval; left out, they are computed here with *reported_inflation*
         whenever ``fit_config.errors`` lets an input move or that widens a
         cut-off beyond *inflation*.
@@ -431,26 +444,25 @@ def fit_profile(
             offsets=np.empty((grid.size, 0)),
             threshold=n * float(np.log(threshold)),
             r2_threshold=1.0 - threshold / ss_tot,
+            minimum=n * float(np.log(projection._floored(fit))),
             interval=headline,
             cut=n * np.log(cuts),
             r2_cut=1.0 - cuts / ss_tot,
         )
 
-    def result(
-        key: str, grid: np.ndarray, r2: np.ndarray, fitted: dict[float, FittedParameters], replica_r2=None
-    ) -> ProfileResult:
+    def result(key: str, grid: np.ndarray, r2: np.ndarray, fitted: dict[float, FittedParameters]) -> ProfileResult:
         cut = projection.cut_off(fit, level, inflation=kappa[key])
         at = [fitted[ka] for ka in grid.tolist()]
         return ProfileResult(
             ka_key=key,
             grid=grid,
             r2=r2,
-            replica_r2=replica_r2,
             best_ka=fit.ka[key],
             interval=intervals[key],
             r2_threshold=float(1.0 - thresholds[key] / ss_tot),
             aware=reported(key, grid, r2, at),
             r2_cut=1.0 - np.array([cut(point) for point in at]) / ss_tot,
+            r2_top=1.0 - projection._floored(fit) / ss_tot,
             **common,
         )
 
@@ -531,11 +543,13 @@ def fit_profile(
             },
         )
     else:
-        # Every drawn curve: the average first, then each active replicate's own.
-        replica_ids = list(ms.active_replica_ids) if fit_config.per_replica else []
-        rows = np.vstack([assay.y_data.magnitude, *(ms.get_replica_signal(rid) for rid in replica_ids)])
+        # The drawn curve is the averaged signal's.
         curves = Projection(
-            assay, bounds, signals=rows, should_cancel=should_cancel, point_weights=projection.point_weights
+            assay,
+            bounds,
+            signals=assay.y_data.magnitude[None, :],
+            should_cancel=should_cancel,
+            point_weights=projection.point_weights,
         )
         for key in projection.ka_keys:
             if key not in projection.free_ka:
@@ -552,17 +566,14 @@ def fit_profile(
             fitted = {}
 
             def rows(ka: float, key: str = key, fitted: dict[float, FittedParameters] = fitted) -> np.ndarray:
-                # The first row is the averaged signal, whose solve also gives what its cut-off is read at.
+                # The averaged signal's solve also gives what its cut-off is read at.
                 ssr, fitted[ka] = curves.solved({key: ka})
                 return ssr
 
             nodes = _ka_grid(*projection.ka_bounds[key], _PROFILE_PER_DECADE)
             node_ssr = np.array([rows(ka) for ka in nodes.tolist()])
             grid, r2 = _draw(rows, curves.ss_tot, nodes, node_ssr, _CURVE_MAX_EXTRA, marks(key))
-            replica_r2 = (
-                {rid: r2[:, i] for i, rid in enumerate(replica_ids, start=1)} if fit_config.per_replica else None
-            )
-            profiles[key] = result(key, grid, r2[:, 0], fitted, replica_r2)
+            profiles[key] = result(key, grid, r2[:, 0], fitted)
     return ProfileSet(profiles=profiles, region=region, weighted=bool(np.any(projection.point_weights != 1.0)))
 
 

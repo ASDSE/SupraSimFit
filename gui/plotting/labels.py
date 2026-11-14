@@ -13,8 +13,8 @@ input uncertainty in one notation (:func:`stated_uncertainty`).
 :func:`verdict_headline`, :func:`verdict_sentence`, :func:`fmt_shift`,
 :func:`fmt_misfit` and :func:`fmt_p` write what the diagnostics of a fit say —
 whether the model and the entered inputs describe the data, and where the fit
-put the inputs it was free to move — so the summary block, the plot, the
-Identifiability tab and the exported report say it in the same words.
+put the inputs it was free to move — so Fit results, Ka confidence and the
+exported report say it in the same words.
 :func:`one_step_sentence` says what the test of a second binding step found,
 :func:`widening_sentences` why an interval is wider than the plain F test's,
 :func:`region_sentence` why the joint region of a pair is, and :func:`offset_note` when a signal offset held at zero may be why the curve
@@ -39,6 +39,27 @@ from core.units import ureg
 
 _SUPERSCRIPT_DIGITS = str.maketrans('0123456789-−', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁻')
 _SUBSCRIPT_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
+
+#: The narrow no-break space the design sets around × and before %, σ and a unit's power:
+#: it keeps a number whole where a line of text wraps.
+THIN = '\u202f'
+
+
+def superscript(n: int) -> str:
+    """``-3`` as ``⁻³``."""
+    return str(n).translate(_SUPERSCRIPT_DIGITS)
+
+
+def spaced(text: str) -> str:
+    """``1.59×10⁸`` as the design writes it in prose and headlines: ``1.59 × 10⁸``, unbreakable."""
+    return text.replace('×', f'{THIN}×{THIN}')
+
+
+def times_ten(e: int) -> str:
+    """The `` × 10ⁿ`` a mantissa is followed by; nothing for ``n = 0``."""
+    return '' if e == 0 else f'{THIN}×{THIN}10{superscript(e)}'
+
+
 _SUB_TAG_RE = re.compile(r'<sub>(.*?)</sub>')
 _SUP_TAG_RE = re.compile(r'<sup>(.*?)</sup>')
 _ANY_TAG_RE = re.compile(r'<[^>]+>')
@@ -262,7 +283,7 @@ def fmt_value(value: float) -> str:
     """A fitted value or an interval edge as every view writes it: ``8.00×10⁴``, ``2.41×10³``, ``150``, ``0.0120``.
 
     Three significant figures with the trailing zeros kept, so the digits
-    shown are the digits meant. Fit results, the Identifiability header and the
+    shown are the digits meant. Fit results, Ka confidence and the
     text report all write a number of a fit through this, and one edge of one
     interval reads the same wherever it stands.
     """
@@ -747,7 +768,7 @@ def widening_sentences(rows, result, name) -> list[str]:
             continue
         by_law = spec.inflation if additions is None else (spec.conditional_inflation or 1.0)
         label = name(spec.key)
-        how_much = f'about {math.sqrt(spec.inflation):.2g}-fold'
+        how_much = _widened_by(math.sqrt(spec.inflation))
         meaning = f'it takes the variance of the estimate as {_variance_ratio(spec.inflation)}'
         uncertain = None
         if by_law > 1.0 and noise is not None:
@@ -804,6 +825,11 @@ def region_sentence(result) -> str | None:
         f'The joint region of the pair, at the entered inputs, is widened{why}: it takes the variance of the pair '
         f'as {_variance_ratio(factor)}.'
     )
+
+
+def _widened_by(factor: float) -> str:
+    """How much wider an interval is, roughly, for a cut-off whose rise grew by ``factor²``: ``by about 12 %``."""
+    return f'by about {(factor - 1) * 100:.2g} %' if factor < 2 else f'about {factor:.2g}-fold'
 
 
 def _variance_ratio(factor: float) -> str:
@@ -1262,6 +1288,32 @@ def _conflict_text(diagnostics, shifts, labels) -> tuple[str, str, str, str]:
         'it' if one else 'them',
         f'the {"value" if one else "values"} you entered for {"it" if one else "them"}',
     )
+
+
+def conflict_note(diagnostics, shifts, labels) -> str:
+    """What a conflict says after its list of shifts, for a view that draws the shifts as rows.
+
+    Why the shifts do not name the input that is off, where the inputs stated as a range
+    moved, which entered values to check and what the interval assumes: the sentences of
+    :func:`verdict_sentence` that follow ``The fit put the correction here:``, so a view
+    showing the shifts beside them says what the report says, without naming one input as
+    the cause.
+    """
+    from core.pipeline.diagnostics import Verdict
+
+    judged = sum(shift.z is not None for shift in shifts.values())
+    ranged = any(shift.z is None for shift in shifts.values())
+    _lead, where, _moved, checked = _conflict_text(diagnostics, shifts, labels)
+    alike = _alike(diagnostics.conflict, judged, ranged)
+    after = where.split(f'{alike}.', 1)[1].strip()
+    if diagnostics.verdict is Verdict.INPUTS_CONFLICT:
+        tail = f'Check {checked}. The interval assumes the {"shifts are" if len(shifts) > 1 else "shift is"} real.'
+    else:
+        tail = (
+            f'Check first {checked}: an input that is off can by itself make the curve miss the data. The interval '
+            'assumes both the shifts and the model.'
+        )
+    return ' '.join(part for part in (f'{alike[0].upper()}{alike[1:]}.', after, tail) if part)
 
 
 #: The tones a verdict's headline is given: nothing to act on, something to check, and a

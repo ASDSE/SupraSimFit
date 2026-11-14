@@ -1,7 +1,7 @@
 """Help ▸ Reading the plots: each entry point opens the window's one non-modal guide at the right section.
 
 Also guards the examples and the Ka Sensitivity entry against the code they
-describe: the Identifiability numbers are recomputed from the demo data, the
+describe: the Ka confidence numbers are recomputed from the demo data, the
 budget table's columns and the name of the per-addition item are read off the
 widget that draws them, and the fit count the example quotes is computed by the
 analysis itself. A guide that drifts away from what the app produces fails here.
@@ -87,7 +87,7 @@ def test_toolbar_help_opens_the_section_of_the_view_on_screen(qapp, monkeypatch,
     window = _show(qapp, FittingMainWindow())
     expected = {
         'Fit results': plot_guide.FIT_CURVE,
-        'Ka confidence': plot_guide.IDENTIFIABILITY,
+        'Ka confidence': plot_guide.CONFIDENCE,
         'Sensitivity': plot_guide.SENSITIVITY,
     }
     for view, key in expected.items():
@@ -104,8 +104,8 @@ def test_the_examples_still_describe_the_demo_data():
     """Recomputes the guide's quoted numbers from the demo data it names.
 
     The examples invite the user to reproduce them, so every figure in them — the
-    fit and its interval, R², RMSE, the cut-off and the parameter count behind it,
-    and the R² a doubled and a halved Ka still reach — is recomputed here and
+    fit and its interval, R², RMSE, the parameter count behind the interval, and
+    the scaled drop a doubled and a halved Ka reach — is recomputed here and
     looked for in the text. A change in the fit that the guide does not follow
     fails this.
     """
@@ -120,7 +120,7 @@ def test_the_examples_still_describe_the_demo_data():
     from core.pipeline.profile import fit_profile
     from core.pipeline.varpro import Projection
     from core.units import Q_
-    from gui.plot_guide import FIT_CURVE, IDENTIFIABILITY, PLOT_GUIDE, SUMMARY
+    from gui.plot_guide import CONFIDENCE, FIT_CURVE, PLOT_GUIDE, SUMMARY
 
     # Demo IDA as the guide's note describes it: the bundled data through Outlier
     # Removal at its defaults, the conditions the Demo IDA button sets, averaged.
@@ -133,10 +133,10 @@ def test_the_examples_still_describe_the_demo_data():
     profile = profiles.profiles['Ka_guest']
 
     # The demo data carry replicates, so they show a noise law and the fit is
-    # weighted by it: the tab's axis is the weighted R², and this projection has
-    # to carry the same weights or its ss_tot and row_ssr describe another fit.
+    # weighted by it: this projection has to carry the same weights or its
+    # ss_tot and row_ssr describe another fit.
     assay = ms.to_assay(IDAAssay, conditions=conditions, use_average=True)
-    assert profiles.weighted, "the guide names the tab's axis after this"
+    assert profiles.weighted
     projection = Projection(assay, _resolve_bounds(assay, None), point_weights=result.point_weights)
     ss_tot = float(projection.ss_tot[0])
 
@@ -147,7 +147,7 @@ def test_the_examples_still_describe_the_demo_data():
     interval = result.intervals['Ka_guest']
     lo, hi = interval.low, interval.high
     best = float(result.parameters['Ka_guest'].magnitude)
-    assert (profile.best_ka, profile.interval.low) == (best, lo), 'the tab and the fit report the same numbers'
+    assert (profile.best_ka, profile.interval.low) == (best, lo), 'the view and the fit report the same numbers'
 
     # Where the cut-off steps down because the fit holds the signal offset on
     # its bound: the profile falls under the upper level above the step and
@@ -165,23 +165,30 @@ def test_the_examples_still_describe_the_demo_data():
     rejected = above[[at(k / best) < cut[step + 1] for k in above]]
     start = brentq(lambda k: at(k / best) - cut[step + 1], rejected.max(), best)
 
-    identifiability = re.sub(r'\s+', ' ', PLOT_GUIDE[IDENTIFIABILITY][1])
+    def drop(factor: float) -> float:
+        """The scaled drop at *factor* times the best Ka: the rise over the best fit, over the rise the test allows there.
+
+        Read off the residual of an independent solve and the cut-off of the nearest drawn point, which
+        holds over the whole stretch either side of a step.
+        """
+        level = cut[int(np.argmin(np.abs(np.log10(grid) - np.log10(best * factor))))]
+        return (profile.r2_top - at(factor)) / (profile.r2_top - level)
+
+    confidence = re.sub(r'\s+', ' ', PLOT_GUIDE[CONFIDENCE][1])
     for phrase in (
-        f'Best fit {best / 1e8:.2f}&times;10<sup>8</sup>',
-        f'(weighted R&sup2; {profile.best_r2:.4f})',
-        f'CI [{lo / 1e8:.2f}&times;10<sup>8</sup>, {hi / 1e8:.2f}&times;10<sup>8</sup>]',
+        f'best fit {best / 1e8:.2f}&times;10<sup>8</sup>',
+        f'interval [{lo / 1e8:.2f}&times;10<sup>8</sup>, {hi / 1e8:.2f}&times;10<sup>8</sup>]',
         f'(&minus;{round(100 * (1 - lo / best))}&thinsp;% / +{round(100 * (hi / best - 1))}',
-        f'cut-off {profile.r2_threshold:.4f} from {profile.n_points} data points '
-        f'and {profile.n_params} fitted parameters.',
-        f'is {at(2.0):.4f} at twice the best K<sub>a</sub> and {at(0.5):.4f} at half',
-        f'set a {hi / lo:.0f}-fold interval',
+        f'worked out from {profile.n_points} data points and {profile.n_params} fitted parameters.',
+        f'At twice the best K<sub>a</sub> the curve stands at {drop(2.0):.2f}, at half at {drop(0.5):.2f}',
         f'Below {edge / 1e8:.1f}&times;10<sup>8</sup>',
-        f'steps down to {cut[step]:.4f}',
-        f'is free at {start / 1e8:.2f}&times;10<sup>8</sup>',
+        f'line at 1 at {start / 1e8:.2f}&times;10<sup>8</sup>',
         f'from the step down to {lo / 1e8:.2f}&times;10<sup>8</sup>',
         f'by {result.rmse / 1e3:.1f}&times;10<sup>3</sup> a.u. (RMSE)',
     ):
-        assert phrase in identifiability
+        assert phrase in confidence, phrase
+    assert drop(2.0) > 1 and drop(0.5) > 1, 'the guide calls both rejected'
+    assert profile.scaled_drop()[grid == lo] == pytest.approx(1.0, abs=1e-6), 'the curve meets the line at the edge'
 
     # Why the cut-off sits below the plain F test's: the shares the replicates
     # allow and the design effect the interval was widened by over them.
@@ -191,7 +198,7 @@ def test_the_examples_still_describe_the_demo_data():
         f'anywhere between {low_share:.2g} and {high_share:.2g}',
         f'(variance &times;{interval.inflation:.2f})',
     ):
-        assert phrase in identifiability
+        assert phrase in confidence
     # The Readme quotes the noise sentence this fit carries.
     readme = re.sub(r'\s+', ' ', (_IDA_DATA.parents[1] / 'Readme.md').read_text(encoding='utf-8'))
     assert f'`{result.noise.describe()}`' in readme
@@ -326,9 +333,9 @@ def test_the_sensitivity_example_quotes_the_fit_count_its_own_run_would_cost():
 def test_the_guide_quotes_the_level_the_one_step_test_is_run_at():
     """The level a closed lower end of a second constant has to pass is the engine's, not a number copied once."""
     from core.pipeline.varpro import SECOND_STEP_LEVEL
-    from gui.plot_guide import IDENTIFIABILITY, PLOT_GUIDE
+    from gui.plot_guide import CONFIDENCE, PLOT_GUIDE
 
-    text = re.sub(r'\s+', ' ', PLOT_GUIDE[IDENTIFIABILITY][1])
+    text = re.sub(r'\s+', ' ', PLOT_GUIDE[CONFIDENCE][1])
     assert f'the <i>one-step test</i>, at p&nbsp;&le;&nbsp;{SECOND_STEP_LEVEL:g}' in text
 
 

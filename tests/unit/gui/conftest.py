@@ -34,3 +34,30 @@ def _free_dropped_widgets(qapp):
     gc.collect()
     qapp.processEvents()
     qapp.sendPostedEvents(None, 0)
+
+
+@pytest.fixture(scope='session')
+def demo():
+    """The IDA demo fitted as the app fits it with every input exact, and the Ka profile of that fit.
+
+    Shared by the tests of Ka confidence's rules and of its view.
+    """
+    import pathlib
+
+    from core.assays import IDAAssay
+    from core.data_processing.measurement_set import MeasurementSet
+    from core.data_processing.preprocessing import get_step
+    from core.io import load_measurements
+    from core.pipeline.fit_pipeline import FitConfig, fit_measurement_set
+    from core.pipeline.profile import fit_profile
+    from core.units import Q_
+
+    ms = MeasurementSet.from_dataframe(
+        load_measurements(str(pathlib.Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt'))
+    )
+    get_step('zscore_replica_filter', {'threshold': 3.5, 'min_replicas': 3})(ms)
+    conditions = {'h0': Q_(4.3e-6, 'M'), 'd0': Q_(6e-6, 'M'), 'Ka_dye': Q_(16.8e6, '1/M')}
+    config = FitConfig(per_replica=False)
+    fit = fit_measurement_set(ms, IDAAssay, conditions, config)
+    profile = fit_profile(ms, IDAAssay, conditions, config, **fit.profile_arguments())
+    return fit, profile

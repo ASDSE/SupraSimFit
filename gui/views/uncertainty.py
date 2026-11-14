@@ -24,15 +24,13 @@ from core.units import Q_
 from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE, space
-from gui.plotting.labels import verdict_headline
+from gui.plotting.labels import THIN, times_ten, verdict_headline
 from gui.results import interval_caption, ka_blocks, test_rows
 from gui.session_model import SessionModel
 from gui.uncertainty import ADDITION_MODES, HELP_HTML, HELP_TITLE, REPLICATE_KINDS, InputEntry, spread_pct
 from gui.widgets.assay_conditions import format_condition
 from gui.widgets.info_button import show_help
 
-_THIN = ' '
-_SUPERSCRIPT = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻')
 _KINDS = (None, SpecKind.SIGMA, SpecKind.INTERVAL)
 
 #: Column grid of the inputs table; the span column takes the rest.
@@ -42,10 +40,6 @@ GUTTER = 4  # a step of the spacing scale
 _WIDEST_AMOUNT = '−1.2345e7'
 #: What each amount field of an input holds, as its accessible name says.
 _AMOUNTS = ('σ', 'Lower end', 'Upper end')
-
-
-def _power(e: int) -> str:
-    return f'{_THIN}×{_THIN}10{str(e).translate(_SUPERSCRIPT)}'
 
 
 def _num(v: float) -> str:
@@ -72,7 +66,7 @@ def span_text(entry: InputEntry, span: tuple[float, float] | None, nominal: floa
     a, b = nominal * (1 + lo / 100) / scale, nominal * (1 + hi / 100) / scale
     if abs(b) >= 1e4:  # one shared power of ten: 1.34 – 2.02 × 10⁷ M⁻¹
         e = math.floor(math.log10(abs(b)))
-        return f'{a / 10**e:.2f} – {b / 10**e:.2f}{_power(e)} {unit}'.replace('-', '−')
+        return f'{a / 10**e:.2f} – {b / 10**e:.2f}{times_ten(e)} {unit}'.replace('-', '−')
     return f'{_num(a)} – {_num(b)} {unit}'
 
 
@@ -459,7 +453,7 @@ class UncertaintyView(QObject):
                     row.entered.setText('Whole series')
             elif nominal is not None:
                 value = format_condition(entry.field, Q_(nominal, entry.field.unit), unit)
-                row.entered.setText(f'Entered {value}'.replace('×', f'{_THIN}×{_THIN}'))
+                row.entered.setText(f'Entered {value}'.replace('×', f'{THIN}×{THIN}'))
             else:
                 row.entered.setText('')
             fixed = entry.kind is None

@@ -40,6 +40,8 @@ SIZE = {
     'input-row': 60,
     # The headline column of Fit results: a binding constant's name, value and interval.
     'headline': 264,
+    # The least height of an analysis plot on screen (a Ka profile, the joint region), below which its canvas scrolls.
+    'plot-min': 320,
     # The longest line of help or warning text under a control, for a comfortable reading measure.
     'measure': 640,
 }

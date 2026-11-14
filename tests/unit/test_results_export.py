@@ -1228,7 +1228,7 @@ def test_csv_carries_the_design_effect_of_each_interval_and_one_where_nothing_wi
             True,
             1.0,
             'Random error of each addition (1 %, sequential; σ/√3 for 3 replicates as separate titrations) widens '
-            'the interval of Ka_guest about 1.4-fold: it takes the variance of the estimate as 2.1 times what the '
+            'the interval of Ka_guest by about 45 %: it takes the variance of the estimate as 2.1 times what the '
             'scatter of the data alone implies.',
         ),
         (
@@ -1236,7 +1236,7 @@ def test_csv_carries_the_design_effect_of_each_interval_and_one_where_nothing_wi
             1.2,
             'Random error of each addition (1 %, sequential; σ itself for 3 repeated reads of one titration) and '
             'the noise law the replicates leave uncertain (share between 0.2 and 0.9) widen the interval of '
-            'Ka_guest about 1.4-fold: it takes the variance of the estimate as 2.1 times what the scatter of the '
+            'Ka_guest by about 45 %: it takes the variance of the estimate as 2.1 times what the scatter of the '
             'data alone implies.',
         ),
     ],
@@ -1259,7 +1259,7 @@ def test_txt_report_says_an_uncertain_noise_law_widened_the_interval_and_says_no
     law_only = _prose(_txt(tmp_path, [_widened(law_factor=1.25, reported_factor=1.25)]))
     assert (
         'The replicates leave the noise law uncertain (share between 0.2 and 0.9); the interval of Ka_guest is '
-        'widened about 1.1-fold to hold for every share they allow: it takes the variance of the estimate as 1.25 '
+        'widened by about 12 % to hold for every share they allow: it takes the variance of the estimate as 1.25 '
         'times what the scatter of the data alone implies.'
     ) in law_only
     assert 'Random error of each addition' not in law_only

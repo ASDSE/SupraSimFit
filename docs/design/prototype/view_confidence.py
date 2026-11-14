@@ -20,8 +20,9 @@ Before this axis ships, the app must refine the input-aware grid against the nor
 with a tolerance in units of the allowed drop rather than in R².
 
 Every number comes from demo.json (the real IDA demo fit and its ProfileWorker output) or from
-data/*.json, which the app's own code wrote (dump_confidence.py drives the real
-IdentifiabilityWidget; derive_confidence.py and derive_readout.py run its formatters).
+data/*.json, which the app's own code wrote (dump_confidence.py drives the real session through the
+demo and writes what gui.confidence says of its fit; derive_confidence.py and derive_readout.py run the
+app's formatters).
 """
 
 from __future__ import annotations
@@ -89,7 +90,6 @@ def reading(
     hi: float,
     pct: list[str],
     trailing_badge: tuple[str, str] | None = None,
-    r2: str | None = None,
 ) -> list[QWidget]:
     """One reading of Ka guest as the rows of a header column: name + reading badge, value, 95 % interval
     (a property badge such as Split after it), its reach, and the best weighted R² where the reading has one."""
@@ -107,15 +107,13 @@ def reading(
     )
     if trailing_badge:
         iv = row(iv, C.badge(*trailing_badge))
-    reach = f'{pct[0]} / {pct[1]}'.replace('%', f'{THIN}%')
+    reach = f'{pct[0]} / {pct[1]}'
     rows = [
         head,
         val,
         iv,
         C.label(f'<span style="color:{ter}">{reach} of the best fit</span>', 'small-number', rich=True),
     ]
-    if r2:
-        rows.append(C.label(f'<span style="color:{sec}">Best weighted R²</span>&nbsp;&nbsp;{r2}', 'number', rich=True))
     return rows
 
 
@@ -141,7 +139,6 @@ def header(t: Theme) -> QWidget:
             iv['high'],
             c['pct'],
             trailing_badge=('Split', 'neutral'),
-            r2=c['best_r2'],
         ),
     )
     g = QGridLayout()
@@ -398,7 +395,7 @@ class Readout(QWidget):
         g.setContentsMargins(space(4), space(3), space(4), space(3))
         g.setHorizontalSpacing(space(3))
         g.setVerticalSpacing(space(1))
-        head = C.label(f'Share of allowed drop at {e8(READOUT["ka_per_M"])}{THIN}×{THIN}10⁸ M⁻¹', 'label', 'secondary')
+        head = C.label(f'Scaled drop at {e8(READOUT["ka_per_M"])}{THIN}×{THIN}10⁸ M⁻¹', 'label', 'secondary')
         g.addWidget(head, 0, 0, 1, 4)
         digits = QFontMetrics(font('small-number')).horizontalAdvance('0.00')
         for r, (key, name, color) in enumerate(
@@ -466,7 +463,7 @@ class Swatch(QWidget):
 def normalised_plot(t: Theme) -> tuple[QWidget, callable]:
     """One plot, both profiles, each over its own cut-off; returns the plot and its overlay hook."""
     ticks = [(v, f'{v:g}') for v in REL_TICKS]
-    main = profile_axes(t, 'Share of allowed drop', REL_Y, ticks, left_width=48)
+    main = profile_axes(t, 'Scaled drop', REL_Y, ticks, left_width=48)
     pi = main.getPlotItem()
     add_band(pi, t, HEAD['low_per_M'], HEAD['high_per_M'])
     cut = pg.InfiniteLine(pos=1, angle=0, pen=dotted(t, 'text-secondary'), movable=False)
@@ -666,14 +663,7 @@ def split_text(steps: str) -> str:
     )
 
 
-WEIGHTED_NOTE = TEXTS['weighted_r2_note'].replace('Fit Quality', 'Fit quality')
-READING_NORMALISED = (
-    f'Each curve shows how far the fit falls from its best, as a share of the drop the 95 % test allows at '
-    f'that {KA}: 0 is the best fit, 1 is the cut-off. Where a curve is at or below 1, that {KA} is accepted.',
-    'The fit is scored by weighted R²; with the inputs free, less a penalty for each input’s move, measured '
-    'against its stated uncertainty.',
-    f'Point at the plot to read both curves at any {KA}. {WEIGHTED_NOTE}',
-)
+READING_NORMALISED = tuple(TEXTS['notes']['Reading the curves'])
 SPLIT_NORMALISED = split_text('the curve')
 
 
@@ -684,10 +674,8 @@ def inspector(t: Theme, reading: tuple[str, ...], split: str) -> QWidget:
     rest = TEXTS['verdict_sentence_plain'].split(' The fit put the correction here: ')[1]
     tail = rest.split(' — ', 1)[1]
     tail = tail[0].upper() + tail[1:]
-    basis = TEXTS['notes_list_html'][1]
-    basis = basis[basis.index('>') + 1 : basis.rindex('<')]
-    rest_on, widened = basis.split(' The replicates leave', 1)
-    widened = ('The replicates leave' + widened).replace('<b>K<sub>a(G)</sub></b>', f'{KA} guest')
+    rest_on = TEXTS['notes']['What the intervals rest on'][0]
+    (widened,) = TEXTS['notes']['What widened the intervals']
 
     conflict = column(
         C.label('The fit put the correction here:', 'small', 'secondary'),

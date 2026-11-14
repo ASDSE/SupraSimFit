@@ -112,8 +112,8 @@ _DEGENERATE_NOTE = (
     'curve correctly and is not a measurement of that one coefficient.'
 )
 
-#: What to do about an interval the data leave open, per side, in the words the
-#: Identifiability tab uses.
+#: What to do about an interval the data leave open, per side, in the words Ka
+#: confidence uses.
 _OPEN_ADVICE = {
     'low': ('the data cannot rule out a lower Ka. Points at a higher titrant concentration would pin it down.'),
     'high': (
@@ -1007,7 +1007,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
 
     Preconditions:
     - Raw data / fit curve plot: a measurement set is loaded.
-    - Identifiability plot: the tab holds a chart.
+    - Ka confidence plot: the view holds a profile plot.
     - Fit results (JSON/TXT/CSV): a result is shown; exported are the shown results.
     - Ka sensitivity plot: a sensitivity analysis is shown.
     - Ka uncertainty budget: the shown analysis reports sensitivity indices,
@@ -1022,13 +1022,13 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     has_results = bool(model.fit_results)
     has_sensitivity = model.sensitivity_result is not None and model.sensitivity_note is None
     has_budget = has_sensitivity and model.sensitivity_result.mode is SensitivityMode.SOBOL
-    # The Identifiability tab is cleared by an import of results fitted elsewhere,
-    # so what it has to save is a question for the tab, not for the held results.
-    has_identifiability = session._identifiability_widget.has_chart()
+    # An import of results fitted elsewhere carries no Ka profile, so what Ka
+    # confidence has to save is a question for the view, not for the held results.
+    has_confidence = session._confidence.has_plot()
 
     no_data_msg = 'Load a measurement file first.'
     no_fit_msg = model.hidden_results_note() or 'Run a fit first.'
-    no_identifiability_msg = model.hidden_results_note() or 'Run a fit in this session first.'
+    no_confidence_msg = model.hidden_results_note() or 'Run a fit in this session and wait for its Kₐ profile.'
     no_sensitivity_msg = model.sensitivity_note or 'Run a sensitivity analysis first.'
     no_budget_msg = (
         no_sensitivity_msg
@@ -1062,8 +1062,8 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     def _write_fit_plot(path: Path) -> None:
         session._results.export_image(str(path))
 
-    def _write_identifiability(path: Path) -> None:
-        session._identifiability_widget.export_image(str(path))
+    def _write_confidence(path: Path) -> None:
+        session._confidence.export_image(str(path))
 
     def _write_sensitivity(path: Path) -> None:
         session._sensitivity_widget.export_image(str(path))
@@ -1153,12 +1153,12 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
             writer=_write_fit_plot,
         ),
         ExportableArtefact(
-            key='identifiability_png',
-            label='Identifiability plot (PNG)',
-            suffix='_identifiability.png',
-            available=has_identifiability,
-            unavailable_reason=no_identifiability_msg,
-            writer=_write_identifiability,
+            key='confidence_png',
+            label='Ka confidence plot (PNG)',
+            suffix='_confidence.png',
+            available=has_confidence,
+            unavailable_reason=no_confidence_msg,
+            writer=_write_confidence,
         ),
         ExportableArtefact(
             key='sensitivity_png',

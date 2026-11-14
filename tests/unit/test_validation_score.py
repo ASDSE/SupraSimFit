@@ -2,7 +2,7 @@
 
 A coverage rate is a count of these two answers. Scoring a split interval on
 its outer edges would count a Ka the fit rejects as covered, and reading a
-joint region anywhere but off the surface the Identifiability tab draws would
+joint region anywhere but off the surface Ka confidence draws would
 let the tab go wrong while the check stayed green.
 """
 

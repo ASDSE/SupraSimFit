@@ -235,8 +235,8 @@ class FitResult:
         What the misfit tests and the conflict statistic say about the model
         and the entered inputs (:mod:`core.pipeline.diagnostics`).
     aware : AwareResult | None
-        The penalised profiles the headline interval was cut from, for the
-        Identifiability tab. It is the fit's own working, not part of what a
+        The penalised profiles the headline interval was cut from, for Ka
+        confidence. It is the fit's own working, not part of what a
         results file holds, so it is ``None`` after an import.
     noise : NoiseLaw | None
         The noise law the replicates behind the fitted signal showed

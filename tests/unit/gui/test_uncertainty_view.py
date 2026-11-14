@@ -259,7 +259,7 @@ def test_the_side_panel_sets_the_input_aware_interval_beside_the_one_at_the_inpu
         ('Input-aware', 'accent', '1.30  [0.500, 3.00]'),
         ('Inputs as entered', 'text-secondary', '1.24  [0.700, 2.20]'),
     ]
-    assert view.unit_lines[0].text() == 'K<sub>a</sub> guest, 95\u2009% interval, ×\u200910⁶ M⁻¹'
+    assert view.unit_lines[0].text() == 'K<sub>a</sub> guest, 95\u202f% interval, ×\u202f10⁶ M⁻¹'
     assert view.interval_caption.text() == (
         'Letting the inputs move within what you stated widens the interval beyond the one with the inputs as entered.'
     )
@@ -398,7 +398,7 @@ def test_an_open_end_is_said_in_the_words_every_view_uses_and_sets_no_power_of_t
 
     (chart,) = view.charts
     assert [row['text'] for row in chart.rows] == ['1.60  [1.10, no upper limit]', '1.65  [1.30, 2.10]']
-    assert view.unit_lines[0].text().endswith('×\u200910⁸ M⁻¹')
+    assert view.unit_lines[0].text().endswith('×\u202f10⁸ M⁻¹')
 
 
 def test_a_closed_end_far_below_the_others_never_reads_zero(view, monkeypatch):
@@ -410,7 +410,7 @@ def test_a_closed_end_far_below_the_others_never_reads_zero(view, monkeypatch):
     )
 
     # Three decades apart, the ends are written each with its own power of ten.
-    assert view.charts[0].rows[0]['text'] == '1.60 × 10⁸  [1.10 × 10⁵, 2.00 × 10⁸]'.replace(' × ', '\u2009×\u2009')
+    assert view.charts[0].rows[0]['text'] == '1.60 × 10⁸  [1.10 × 10⁵, 2.00 × 10⁸]'.replace(' × ', '\u202f×\u202f')
 
 
 def test_an_estimate_on_a_bound_reads_as_every_view_writes_it(view, monkeypatch):
@@ -430,7 +430,7 @@ def test_an_estimate_on_a_bound_reads_as_every_view_writes_it(view, monkeypatch)
 
     rows = view.charts[0].rows
     assert rows[0]['text'] == 'not limited below 2.08' and rows[0]['est'] is None
-    assert view.unit_lines[0].text().endswith('×\u200910⁸ M⁻¹')
+    assert view.unit_lines[0].text().endswith('×\u202f10⁸ M⁻¹')
 
 
 def _profile(fit, grid, r2, cut):
@@ -443,7 +443,6 @@ def _profile(fit, grid, r2, cut):
         ka_key='Ka_guest',
         grid=np.asarray(grid, dtype=float),
         r2=np.asarray(r2, dtype=float),
-        replica_r2=None,
         best_ka=1.24e6,
         best_r2=max(r2),
         interval=interval,

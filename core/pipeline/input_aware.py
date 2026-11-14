@@ -189,6 +189,16 @@ _EDGE_TOL = 1e-6
 # 1e-9, so a point lower than the optimum by less than that is the same optimum.
 _P_RESOLUTION = 1e-9
 
+# Distances, in decades of Ka, of the points the drawn curve adds on either side
+# of each closed edge. The fill through an edge's search cell is 0.05 decade
+# apart, about 70 px at the width Ka confidence draws a 0.8-decade view in, and
+# the scaled-drop axis there magnifies a straight run between two points into a
+# kink the profile does not have. With these the curve is read within 0.004
+# decade (about 6 px) of the edge on both sides, where it crosses the cut-off
+# line. Six solves per edge, from the edge's own solution: on the demo IDA
+# titration (four inputs) they take the fit and its Ka profile from 6.2 to 6.5 s.
+_EDGE_DRAWN = (0.004, 0.01, 0.02)
+
 # Passes over the edges and the drawn curve. A pass that finds a point below
 # the optimum moves the estimate there and lowers the threshold, so the edges
 # are closed again; every value is a pure function of its Ka and the node
@@ -276,6 +286,9 @@ class AwareProfile:
         the interval's design effect (``KaInterval.inflation``).
     r2_threshold : float
         *threshold* on the R² axis.
+    minimum : float
+        ``P_min``, the objective of the optimum: the level every cut-off is
+        an acceptance excess above.
     interval : KaInterval
     other_ka : np.ndarray or None
         The other free binding constant per grid point, where the model has two.
@@ -295,6 +308,7 @@ class AwareProfile:
     offsets: np.ndarray
     threshold: float
     r2_threshold: float
+    minimum: float
     interval: KaInterval
     other_ka: np.ndarray | None = None
     cut: np.ndarray | None = None
@@ -305,6 +319,18 @@ class AwareProfile:
             object.__setattr__(self, 'cut', np.full(self.grid.shape, self.threshold))
         if self.r2_cut is None:
             object.__setattr__(self, 'r2_cut', np.full(self.grid.shape, self.r2_threshold))
+
+    def scaled_drop(self) -> np.ndarray:
+        """The profile on *grid* as a share of the rise its own test allows there: ``(P - P_min) / (cut - P_min)``.
+
+        0 at the optimum and 1 where a point meets its own cut-off, so the
+        closed edges of the interval, roots of the profile minus that
+        cut-off, are where it is 1; not a number where the model has no
+        solution.
+        """
+        with np.errstate(invalid='ignore'):
+            drop = (self.objective - self.minimum) / (self.cut - self.minimum)
+        return np.where(np.isfinite(drop), drop, np.nan)
 
 
 @dataclass(frozen=True)
@@ -695,8 +721,11 @@ class _Trace:
         estimate *hat*, the closed edges, and at ``_PROFILE_PER_DECADE``
         through the search-grid cell of the estimate and of each closed edge,
         where the curve turns; each of those last points is solved from the
-        nearest of the others. Between those cells the minimum over the inputs
-        leaves a smooth curve, which the nodes carry.
+        nearest of the others. Beside each closed edge it runs through the
+        points ``_EDGE_DRAWN`` away on either side, solved from the edge, so a
+        plot of it crosses the cut-off where the edge is. Between those cells
+        the minimum over the inputs leaves a smooth curve, which the nodes
+        carry.
         """
         for d in (-1, 1):
             self._close(hat, cut, d)
@@ -713,6 +742,11 @@ class _Trace:
             for ka in _ka_grid(min(cell), max(cell), _PROFILE_PER_DECADE * (len(cell) > 1)).tolist():
                 if ka not in drawn:
                     drawn[ka] = self.at(ka, [anchors[int(np.argmin(np.abs(anchor_logs - np.log10(ka))))]])
+        low, high = self.problem.projection.ka_bounds[key]
+        for edge, point in edges.items():
+            for ka in (edge * 10.0 ** (sign * step) for step in _EDGE_DRAWN for sign in (-1, 1)):
+                if low <= ka <= high and ka not in drawn:
+                    drawn[ka] = self.at(ka, [point])
         return interval, [drawn[ka] for ka in sorted(drawn)]
 
     def _cut(
@@ -1042,6 +1076,7 @@ def input_aware(
                 offsets=np.array([point.coords * problem.unit for point in drawn]).reshape(len(drawn), -1),
                 threshold=threshold,
                 r2_threshold=1.0 - float(np.exp(threshold / n)) / ss_tot,
+                minimum=optimum.value,
                 interval=interval,
                 other_ka=np.array([point.ka[other[0]] for point in drawn]) if other else None,
                 cut=cuts,
@@ -1142,6 +1177,7 @@ def _fixed_inputs(
             offsets=np.empty((grid.size, 0)),
             threshold=n * float(np.log(threshold)),
             r2_threshold=1.0 - threshold / ss_tot,
+            minimum=n * float(np.log(projection._floored(fixed))),
             interval=interval,
             cut=n * np.log(cuts),
             r2_cut=1.0 - cuts / ss_tot,

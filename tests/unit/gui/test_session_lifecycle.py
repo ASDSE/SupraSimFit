@@ -321,9 +321,9 @@ def test_stopping_a_fit_leaves_the_session_as_it_was_and_lets_the_next_fit_start
     session.model.uncertainty_edited()
     session.run_fit()
     _wait_until(qapp, lambda: session.model.fit_results)
-    _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
+    _wait_until(qapp, lambda: session.model.profile is not None)
     shown = [result.id for result in session.model.fit_results]
-    profile = session._identifiability_widget._profile
+    profile = session.model.profile
 
     def watchful(ms, assay_cls, conditions, config, should_cancel=None, **kwargs):
         while should_cancel is None or not should_cancel():
@@ -344,7 +344,7 @@ def test_stopping_a_fit_leaves_the_session_as_it_was_and_lets_the_next_fit_start
     assert said[-1].startswith('Fit stopped')
     assert dialogs == []  # a cancel the user asked for is not a failure to warn about
     assert [result.id for result in session.model.fit_results] == shown
-    assert session._identifiability_widget._profile is profile
+    assert session.model.profile is profile and session._confidence.has_plot()
 
     session.run_fit()  # the next fit starts at once, with nothing left to wait for
 
@@ -474,7 +474,7 @@ def test_a_finished_fit_leaves_neither_its_worker_nor_its_profile_worker_behind(
     fit_worker = session.model._fit_worker
     _wait_until(qapp, lambda: session.model._profile_worker is not None)
     profile_worker = session.model._profile_worker
-    _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
+    _wait_until(qapp, lambda: session.model.profile is not None)
     _settle(qapp)
 
     assert dialogs == []
@@ -513,6 +513,32 @@ def test_a_second_fit_does_not_leave_the_first_fits_profile_running(qapp, dialog
     assert dialogs == []
     with pytest.raises(RuntimeError):
         first.isRunning()  # its object is gone, so closing the tab cannot destroy a running thread
+
+
+def test_loading_other_data_discards_the_ka_profile_still_computed_for_the_old_fit(qapp, dialogs, monkeypatch):
+    """A profile of the replaced data never becomes the session's profile, and Ka confidence draws nothing of it."""
+    from gui import workers
+
+    started: list[workers.ProfileWorker] = []
+
+    def watch(self):
+        started.append(self)
+        while not self._cancelled:
+            time.sleep(0.005)
+
+    monkeypatch.setattr(workers.ProfileWorker, 'run', watch)
+    session = _session(dialogs)
+
+    session.run_fit()
+    _wait_until(qapp, lambda: len(started) == 1)
+    pending = started[0]
+    session.model.load_files([str(_IDA_DATA)])
+    _settle(qapp)
+
+    assert dialogs == []
+    assert pending.cancelled and not session.model.profile_running()
+    assert session.model.profiled_fit is None and session.model.profile is None
+    assert not session._confidence.has_plot()
 
 
 def test_a_fit_that_fails_leaves_no_worker_behind(qapp, dialogs, monkeypatch):
@@ -872,7 +898,7 @@ def test_the_save_plot_dialog_offers_only_what_the_view_can_write(qapp, monkeypa
     asked: list[tuple[str, str]] = []
     session = _session(dialogs)
     _deliver_sensitivity(session)
-    monkeypatch.setattr(type(session._identifiability_widget), 'has_chart', lambda self: True)
+    monkeypatch.setattr(type(session._confidence), 'has_plot', lambda self: True)
     monkeypatch.setattr(
         'gui.fitting_session.QFileDialog.getSaveFileName',
         lambda _parent, _title, name, filters: asked.append((name, filters)) or ('', ''),
@@ -896,7 +922,7 @@ def test_save_plot_says_what_the_view_has_to_save(qapp, dialogs):
     session = FittingSession()
 
     assert session.plot_export_note('Ka confidence') == (
-        'There is no Ka confidence chart to save yet. Run a fit, then save it.'
+        'There is no Ka confidence plot to save yet. Run a fit and wait for its profile, then save it.'
     )
     assert session.plot_export_note('Sensitivity') == (
         'There is no sensitivity analysis to save yet. Run one, then save it.'
@@ -908,19 +934,19 @@ def test_save_plot_says_what_the_view_has_to_save(qapp, dialogs):
     assert dialogs[-1][1] == 'Save Plot'
 
 
-def test_save_plot_follows_the_ka_confidence_chart_not_the_held_fit(qapp, dialogs):
-    """Importing results holds a fit but clears Ka confidence, and Save Plot must not offer an empty page."""
+def test_save_plot_follows_the_ka_confidence_plot_not_the_held_fit(qapp, dialogs):
+    """An imported fit carries no Ka profile, and Save Plot must not offer a page without its curves."""
     from gui.fitting_session import FittingSession
     from gui.session import build_artefacts
 
     session = FittingSession()
     session.model.show_imported([_sobol_result().baseline_fit], 'results.json')
 
-    assert not session._identifiability_widget.has_chart()
+    assert not session._confidence.has_plot()
     assert session.plot_export_note('Ka confidence') == (
-        'There is no Ka confidence chart to save yet. Run a fit, then save it.'
+        'There is no Ka confidence plot to save yet. Run a fit and wait for its profile, then save it.'
     )
-    (artefact,) = [a for a in build_artefacts(session) if a.key == 'identifiability_png']
+    (artefact,) = [a for a in build_artefacts(session) if a.key == 'confidence_png']
     assert not artefact.available
 
 

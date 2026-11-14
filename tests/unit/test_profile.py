@@ -5,13 +5,13 @@ parameter free: exact for the signal parameters, a search over the other Ka in
 a two-constant model. These tests pin what makes it trustworthy:
 
 - its best fit, interval and cut-off are the engine's own numbers for the
-  averaged signal, so the Identifiability tab shows the fit it belongs to;
+  averaged signal, so Ka confidence shows the fit it belongs to;
 - its F-test interval reproduces the IDA demo anchor and is cut at exactly one
   and n − p degrees of freedom (coverage over many noise draws is checked in
   ``tests/integration/test_profile_fits.py``);
 - straight lines between the drawn points follow the exact curve, peak at the
   best fit and cross the cut-off at the interval's edges;
-- per-replicate mode adds each replicate's own curve for a one-Ka model;
+- a per-replicate fit's profile is the profile of the average of its replicates;
 - custom bounds (a pinned coefficient, narrowed Ka bounds) are honoured;
 - an interval the data cannot close is reported open on that side, one that
   spans a gap of rejected Ka is reported split, and a pinned Ka has none;
@@ -187,7 +187,7 @@ def _independent_fit(assay, bounds: dict, ka: dict[str, float]) -> tuple[float, 
 
 @pytest.mark.parametrize('model', ['one_ka', 'two_ka'])
 def test_the_profile_carries_the_fit_it_belongs_to_exactly(model):
-    # The Identifiability tab shows the best fit and interval next to the fit
+    # Ka confidence shows the best fit and interval next to the fit
     # they belong to, so both have to be the same numbers, not a re-estimate
     # that could land a rounding step away.
     if model == 'one_ka':
@@ -552,7 +552,6 @@ def test_pinned_ka_is_not_fitted_and_has_no_interval():
     assert pinned.interval is None and free.interval is not None
     assert pinned.grid.size == 1
     assert pinned.best_ka == ka
-    assert pinned.replica_r2 is None  # one point is no curve, for the replicates either
     # Ka is fixed, so the F test judges the coefficients alone: p is the design
     # rank without Ka's extra parameter.
     assert pinned.n_params == 2
@@ -567,13 +566,12 @@ def test_pinned_ka_is_not_fitted_and_has_no_interval():
 # ---------------------------------------------------------------------------
 
 
-def test_per_replicate_profile_describes_the_average_and_adds_each_replicates_curve():
-    """The curve and interval are the averaged signal's; each active replicate contributes its own curve."""
+def test_per_replicate_profile_is_the_profile_of_the_average():
+    """A fit run per replicate reports the average of the replicates it keeps, so its profile is the average's."""
     x, y = _make_ida_data(IDA_TRUE, n_points=15)
     signals = np.vstack([_homoscedastic(y, 0.02, seed) for seed in range(4)])
     ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=('a', 'b', 'c', 'd'))
     ms.set_active('c', False)
-    active = ['a', 'b', 'd']
 
     # Weights the fit might have run with: every curve is drawn on the weighted R² axis they define.
     weights = np.linspace(0.5, 2.0, 15)
@@ -582,11 +580,8 @@ def test_per_replicate_profile_describes_the_average_and_adds_each_replicates_cu
     ]
     averaged = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE, point_weights=weights).profiles['Ka_guest']
 
-    # The replicates' curves add drawing points of their own; every Ka both grids share
-    # (at least the regular grid) carries the same averaged R².
-    shared, in_profile, in_averaged = np.intersect1d(profile.grid, averaged.grid, return_indices=True)
-    assert shared.size >= _regular_grid_size(averaged)
-    np.testing.assert_allclose(profile.r2[in_profile], averaged.r2[in_averaged], rtol=0, atol=1e-12)
+    np.testing.assert_array_equal(profile.grid, averaged.grid)
+    np.testing.assert_array_equal(profile.r2, averaged.r2)
     assert (profile.best_ka, profile.interval, profile.r2_threshold) == (
         averaged.best_ka,
         averaged.interval,
@@ -594,18 +589,6 @@ def test_per_replicate_profile_describes_the_average_and_adds_each_replicates_cu
     )
     assert (profile.n_points, profile.n_params) == (15, averaged.n_params)
     assert profile.per_replica and not averaged.per_replica
-    assert averaged.replica_r2 is None
-
-    # A replicate's curve is that replicate's signal projected under the fit's weights — here through a
-    # projection of its own row alone.
-    assert list(profile.replica_r2) == active
-    for rid in active:
-        row = _single(x, ms.get_replica_signal(rid))
-        assay = row.to_assay(IDAAssay, conditions=_IDA_CONDITIONS, use_average=True)
-        own = Projection(assay, _resolve_bounds(assay, None), point_weights=weights)
-        drawn = profile.replica_r2[rid]
-        expected = np.array([1.0 - own.row_ssr({'Ka_guest': ka})[0] / own.ss_tot[0] for ka in profile.grid.tolist()])
-        np.testing.assert_allclose(drawn, expected, rtol=0, atol=1e-12)
 
 
 def _proportional_replicates() -> MeasurementSet:
@@ -891,12 +874,11 @@ def test_pinning_one_of_two_ka_profiles_the_other_alone_and_leaves_no_region():
     assert profiles.region is None
     fixed, free = profiles.profiles['Ka_HG2'], profiles.profiles['Ka_HG']
     assert fixed.interval is None and fixed.grid.size == 1 and fixed.best_ka == 2e5
-    # With one Ka left the profile is a one-Ka profile: 20 points per decade
-    # and each replicate's own curve, cut at one constrained parameter.
+    # With one Ka left the profile is a one-Ka profile: 20 points per decade,
+    # cut at one constrained parameter.
     assert free.interval is not None
     assert free.interval.low < free.best_ka < free.interval.high
     assert free.grid.size >= _regular_grid_size(free)
-    assert list(free.replica_r2) == ['a', 'b']
     assert free.n_params == fixed.n_params == 1 + 4  # one free Ka plus the four unpinned coefficients
 
 
@@ -989,3 +971,53 @@ def test_the_penalised_curve_lies_above_the_fixed_input_one(uncertain_ida):
         assert r2 >= fixed_input_r2 - 1e-9, f'at Ka = {ka:g}'
     # Its cut-off is its own: the F test at the degrees of freedom the moving inputs leave.
     assert penalised.r2_threshold < 1.0 - float(np.exp(penalised.objective.min() / projection.n_points)) / ss_tot
+
+
+# ---------------------------------------------------------------------------
+# The scaled drop Ka confidence draws
+# ---------------------------------------------------------------------------
+
+
+def test_the_scaled_drop_is_one_exactly_where_the_reported_interval_ends():
+    """The rise over the best fit over the rise the F test allows: 0 at the best fit, 1 at each closed edge.
+
+    The allowed rise is checked against the F test written out independently,
+    ``S_min kappa m F(m, n - p) / (n - p)``, at every drawn point; the edges are
+    roots of the profile minus that cut-off, so the curve meets 1 there to the
+    root finder's tolerance. On the demo the cut-off steps (m = 2 where the fit
+    holds the offset on zero), and the ratio follows the step.
+    """
+    profile = fit_profile(_demo_ms(), IDAAssay, _DEMO_CONDITIONS, _AVERAGE).profiles['Ka_guest']
+    drop = profile.scaled_drop()
+    dof = profile.n_points - profile.n_params
+    allowed = (profile.r2_top - profile.r2_cut) / (1.0 - profile.r2_top)
+    plain = f_dist.ppf(varpro.LEVEL, 1, dof) / dof
+    stepped = 2 * f_dist.ppf(varpro.LEVEL, 2, dof) / dof
+    assert np.all(np.isclose(allowed, plain, rtol=1e-9) | np.isclose(allowed, stepped, rtol=1e-9))
+    assert {bool(np.isclose(a, stepped, rtol=1e-9)) for a in allowed} == {True, False}
+    assert drop[profile.grid == profile.best_ka] == pytest.approx(0.0, abs=1e-12)
+    for edge in (profile.interval.low, profile.interval.high):
+        assert drop[profile.grid == edge] == pytest.approx(1.0, abs=1e-6)
+    inside = (profile.grid > profile.interval.low) & (profile.grid < profile.interval.high)
+    outside = (profile.grid < profile.interval.low) | (profile.grid > profile.interval.high)
+    assert np.all(drop[outside] > 1.0) and np.nanmin(drop[inside]) >= 0.0
+
+
+def test_a_reported_interval_at_a_larger_design_effect_reads_one_at_its_own_edges_on_the_same_curve():
+    """No input moves and a stated error of the additions widens the reported cut-off: one curve, two scales."""
+    x, y = _make_ida_data(IDA_TRUE, n_points=12)
+    ms = _single(x, _homoscedastic(y, 0.005, 4))
+    projection = _projection(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
+    headline = input_aware(projection, projection.fit(), (), inflation={'Ka_guest': 2.5})
+    profile = fit_profile(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE, aware=headline).profiles['Ka_guest']
+    reported = profile.aware
+
+    n, dof = profile.n_points, profile.n_points - profile.n_params
+    assert reported.threshold - reported.minimum == pytest.approx(
+        n * np.log1p(2.5 * f_dist.ppf(varpro.LEVEL, 1, dof) / dof), rel=1e-12
+    )
+    drop, conditional = reported.scaled_drop(), profile.scaled_drop()
+    for edge in (reported.interval.low, reported.interval.high):
+        assert drop[reported.grid == edge] == pytest.approx(1.0, abs=1e-6)
+    # The same Ka the conditional curve rejects can be accepted by the wider test, never the reverse.
+    assert np.all(drop[conditional <= 1.0] <= 1.0)

@@ -53,12 +53,11 @@ def test_every_control_of_plot_appearance_is_read_by_a_plot(qapp):
 
 
 def test_plot_appearance_reaches_the_plots_of_the_session(qapp):
-    """A change in the panel restyles Ka confidence and Sensitivity, the plots that read a style."""
+    """A change in the panel restyles Sensitivity, the plot that reads a style."""
     from gui.fitting_session import FittingSession
 
     session = FittingSession()
     session._style_widget._params['Analysis plots', 'Tick font size'] = 19
 
-    for plot in (session._identifiability_widget, session._sensitivity_widget):
-        assert plot._style['distribution']['tick_font_size'] == 19
+    assert session._sensitivity_widget._style['distribution']['tick_font_size'] == 19
     session.close()

@@ -44,6 +44,7 @@ from gui.plotting.labels import (
     NOT_RUN,
     REPLICATES_RELATION,
     SPLIT_NOTE,
+    THIN,
     UNLIMITED,
     UNSOLVABLE_NOTE,
     _display_label,
@@ -72,13 +73,14 @@ from gui.plotting.labels import (
     one_step_sentence,
     own_estimates,
     shift_order,
+    spaced,
+    superscript,
+    times_ten,
     widening_sentences,
 )
 from gui.views.titration import TitrationData
 from gui.widgets.assay_conditions import result_input_labels
 
-THIN = ' '
-_SUPERSCRIPT = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻')
 _NO_VALUE = '—'
 
 #: The shortcut of *Run fit*, which the toolbar's primary button and the empty view name.
@@ -121,15 +123,6 @@ _FIT_DEGENERATE_TAIL = (
 
 def _sentence(note: str) -> str:
     return f'{note[0].upper()}{note[1:]}'
-
-
-def _thin(text: str) -> str:
-    """``1.59×10⁸`` written as the design writes it in prose and headlines: ``1.59 × 10⁸``."""
-    return text.replace('×', f'{THIN}×{THIN}')
-
-
-def _power(e: int) -> str:
-    return '' if e == 0 else f'{THIN}×{THIN}10{str(e).translate(_SUPERSCRIPT)}'
 
 
 def degenerate_note(names: Sequence[str], tail: str) -> str:
@@ -196,7 +189,7 @@ def tick_label(value: float, e: int | None) -> str:
         return f'{value:g}'
     mantissa = float(f'{value / 10.0**power:.6g}')
     head = '' if mantissa == 1 else f'{mantissa:g}×'
-    return f'{head}10{str(power).translate(_SUPERSCRIPT)}'
+    return f'{head}10{superscript(power)}'
 
 
 def accepted_stretches(grid, r2, r2_cut, low: float, high: float) -> list[tuple[float, float]]:
@@ -241,14 +234,31 @@ def headline_interval(low: float, high: float, open_low: bool, open_high: bool, 
     e = shared_power(closed)
 
     def number(v: float) -> str:
-        return _thin(fmt_value(v)) if e is None else fmt_value(v / 10.0**e)
+        return spaced(fmt_value(v)) if e is None else fmt_value(v / 10.0**e)
 
-    tail = f'{_power(e or 0)} {unit}'.rstrip()
+    tail = f'{times_ten(e or 0)} {unit}'.rstrip()
     if open_low:
         return f'{NO_LOWER} – {number(high)}{tail}'
     if open_high:
         return f'{number(low)}{tail} – {NO_UPPER}'
     return f'{number(low)} – {number(high)}{tail}'
+
+
+def headline_value(estimate: float, at_bound: str, interval, open_) -> tuple[str, str]:
+    """An estimate as a headline writes it, and the words before it: ``('1.59 × 10⁸', '')``.
+
+    An estimate on an end of its Ka search box is no number: it reads ``Not limited
+    below`` or ``Not limited above``, and the value is the closed end of its interval that
+    bounds it (``2.41 × 10³``), or ``''`` where the data close neither.
+    """
+    if not at_bound:
+        return spaced(fmt_value(estimate)), ''
+    words = spaced(fmt_estimate(estimate, at_bound, interval, open_, html=False))
+    # 'not limited below 2.41 × 10³': the words, then the bound the data do set, if any.
+    for phrase in ('not limited below', 'not limited above'):
+        if words.startswith(phrase):
+            return words[len(phrase) :].strip(), _sentence(phrase)
+    return '', _sentence(words)
 
 
 @dataclass(frozen=True)
@@ -314,7 +324,7 @@ class KaBlock:
     @property
     def axis_unit(self) -> str:
         """What follows the last tick of the chart: ``× 10⁸ M⁻¹``, or the unit alone where the numbers are written in full."""
-        return f'{_power(self.exponent or 0).strip()} {self.unit}'.strip()
+        return f'{times_ten(self.exponent or 0).strip()} {self.unit}'.strip()
 
     @property
     def plain_name(self) -> str:
@@ -340,16 +350,7 @@ def ka_blocks(fit: FitResult, profile=None, profile_running: bool = False) -> li
         s = specs[key]
         unit = fmt_unit_pretty(s.unit)
         level = f'{s.level * 100:g}{THIN}% interval' if s.level else 'Interval'
-        value, qualifier = _thin(fmt_value(s.estimate)), ''
-        if s.estimate_at_bound:
-            words = _thin(fmt_estimate(s.estimate, s.estimate_at_bound, s.interval, s.interval_open, html=False))
-            # 'not limited below 2.41 × 10³': the words, then the bound the data do set, if any.
-            for phrase in ('not limited below', 'not limited above'):
-                if words.startswith(phrase):
-                    qualifier, value = _sentence(phrase), words[len(phrase) :].strip()
-                    break
-            else:
-                qualifier, value = _sentence(words), ''
+        value, qualifier = headline_value(s.estimate, s.estimate_at_bound, s.interval, s.interval_open)
         if s.interval is None:
             legacy = fit.intervals is None
             why = 'not recorded in this result' if legacy else 'fixed, not fitted'
@@ -422,7 +423,7 @@ def ka_blocks(fit: FitResult, profile=None, profile_running: bool = False) -> li
             return [(max(a, lo_axis), min(b, hi_axis)) for a, b in segments if b >= lo_axis and a <= hi_axis]
 
         def fmt(v: float) -> str:
-            return _thin(fmt_value(v)) if e is None else fmt_value(v / 10.0**e)
+            return spaced(fmt_value(v)) if e is None else fmt_value(v / 10.0**e)
 
         chart_rows = []
         for label, color, est, at_bound, (lo, hi), open_, split, reading_curve in readings:
@@ -552,7 +553,7 @@ def replicate_line(fit: FitResult) -> tuple[str, str]:
                 'is shown.',
             }[summarised, unsummarised]
         )
-    return _thin(line), ' '.join(tip)
+    return spaced(line), ' '.join(tip)
 
 
 # ---------------------------------------------------------------------------
@@ -846,7 +847,7 @@ def noise_stat(law) -> tuple[str, str, str]:
     if not law.estimated:
         why = 'one titration' if law.basis is NoiseBasis.SINGLE_TITRATION else 'too few scattered points'
         return 'Not estimated', why, tooltip
-    floor = f'{_thin(fmt_sci(law.floor, 2))} {fmt_unit_pretty("au")}'
+    floor = f'{spaced(fmt_sci(law.floor, 2))} {fmt_unit_pretty("au")}'
     percent = f'{100.0 * law.proportional:.1f} %'
     value = {0.0: floor, 1.0: percent}.get(law.share, f'{percent} + {floor}')
     return value, 'from replicate scatter', tooltip
@@ -884,7 +885,7 @@ def quality(fit: FitResult, ms) -> Quality:
         failures = fit.metadata.get('replica_failures') or {}
         left = ' '.join(f'{_replica_name(rid, order)} — {failures.get(rid, "left out of the fit.")}' for rid in out)
     noise = (None, '', '') if fit.assay_type == AssayType.DYE_ALONE.name else noise_stat(fit.noise)
-    rmse = f'{_thin(fmt_value(fit.rmse))} {fmt_unit_pretty("au")}'
+    rmse = f'{spaced(fmt_value(fit.rmse))} {fmt_unit_pretty("au")}'
     return Quality(fmt_r2(fit.r_squared), rmse, counted, note, left, *noise)
 
 
@@ -939,7 +940,7 @@ def replicate_rows(fit: FitResult, ms) -> tuple[list[str], list[list[str]], list
     # the shared power and the unit on a line of their own to keep the column narrow.
     headers = ['Replicate']
     for key in keys:
-        power = '' if not powers[key] else f'10{str(powers[key]).translate(_SUPERSCRIPT)} '
+        power = '' if not powers[key] else f'10{superscript(powers[key])} '
         headers.append(f'{fmt_param_plain(key)}\n({power}{fmt_unit_pretty(_unit(fit, key))})')
     headers.append('p')
     rows, tips = [], []
@@ -950,7 +951,7 @@ def replicate_rows(fit: FitResult, ms) -> tuple[list[str], list[list[str]], list
         for key in keys:
             e = powers[key]
             fmt = fmt_value if e is None else (lambda v, e=e: fmt_value(v / 10.0**e))
-            cells += [_thin(text) for text in own_estimates(rf, [key], html=True, fmt=fmt)]
+            cells += [spaced(text) for text in own_estimates(rf, [key], html=True, fmt=fmt)]
         rows.append([name if rid in used else f'{name}<br>left out', *cells, _p_cell(p_values.get(rid))])
         tip = f'R² of its own fit {fmt_r2(rf.r_squared)}.'
         tips.append(tip if rid in used else f'{failures.get(rid, "Left out of the fit.")} {tip}')
@@ -1054,7 +1055,7 @@ def test_rows(fit: FitResult) -> list[TestRow]:
             p = fmt_test_p(test)
             tooltip = f'{which}: {fmt_misfit(test)}.'
         tone = ('alert-circle', 'warning', failed) if name in rejected else ('check-circle', 'success', passed)
-        out.append(TestRow(name, *tone, p, _thin(tooltip)))
+        out.append(TestRow(name, *tone, p, spaced(tooltip)))
     return out
 
 
@@ -1131,7 +1132,7 @@ def parameter_rows(fit: FitResult) -> tuple[list[list[str]], list[str], str]:
     note = degenerate_note([_name(s, ka_keys) for s in starred], _FIT_DEGENERATE_TAIL) if starred else ''
     cells, tips = [], []
     for s in specs:
-        estimate = _thin(fmt_estimate(s.estimate, s.estimate_at_bound, s.interval, s.interval_open, html=True))
+        estimate = spaced(fmt_estimate(s.estimate, s.estimate_at_bound, s.interval, s.interval_open, html=True))
         # The words of an estimate on its search bound stand on a line above the number, which keeps its line.
         estimate = estimate.replace('</i> ', '</i><br>')
         name = _name(s, ka_keys) + (' *' if s.degenerate else '')

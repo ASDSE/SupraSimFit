@@ -23,8 +23,7 @@ from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import apply_plot_theme, fit_line, px, replicate_alpha, scatter
 from gui.design.tokens import TYPE, Theme, font, space
 from gui.plotting.export import export_plot_item
-
-_SUPERSCRIPT = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻')
+from gui.plotting.labels import superscript
 
 #: Size of a saved titration image, in logical px.
 EXPORT_SIZE = (900, 600)
@@ -143,7 +142,7 @@ class TitrationPlot(QWidget):
         curves = [*data.curves, *data.other_curves]
         e = power_of_ten(np.concatenate([data.signals.ravel(), *(cy for _cx, cy in curves)]))
         y_scale = 10.0**-e
-        pi.getAxis('left').setLabel(f'Signal ({"" if e == 0 else f"10{str(e).translate(_SUPERSCRIPT)} "}{data.y_unit})')
+        pi.getAxis('left').setLabel(f'Signal ({"" if e == 0 else f"10{superscript(e)} "}{data.y_unit})')
         pi.getAxis('bottom').setLabel(f'{data.x_name} ({self.unit})')
         x = data.x_molar * scale
         dark = t.dark

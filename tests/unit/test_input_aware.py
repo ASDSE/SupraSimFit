@@ -1144,3 +1144,36 @@ def test_a_multi_row_projection_is_refused():
     projection = Projection(assay, GDA_IDA_RECOVERY_BOUNDS, signals=np.vstack([y, y * 1.01]))
     with pytest.raises(ValueError, match='describes one signal'):
         input_aware(projection, projection.fit(), _sigma_constraints(assay, {'h0': 0.03}))
+
+
+def test_the_scaled_drop_of_the_penalised_profile_is_one_at_its_edges_and_its_test_is_the_f_test(ida_case):
+    """``(P - P_min) / (cut - P_min)`` is the curve Ka confidence draws: 0 at the optimum, 1 at each closed edge.
+
+    The allowed rise of a point that pins nothing the optimum fits is
+    ``n log(1 + F(1, nu) / nu)``, written out here independently.
+    """
+    assay, _projection, _fit, result = ida_case
+    profile = result.profiles['Ka_guest']
+    n, dof = assay.n_points, profile.interval.dof
+    assert profile.minimum == result.fit.objective
+    assert profile.threshold - profile.minimum == pytest.approx(n * np.log1p(f_dist.ppf(LEVEL, 1, dof) / dof))
+    drop = profile.scaled_drop()
+    assert drop[profile.grid == result.fit.ka['Ka_guest']] == pytest.approx(0.0, abs=1e-12)
+    for edge in (profile.interval.low, profile.interval.high):
+        assert drop[profile.grid == edge] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_the_drawn_penalised_profile_is_read_close_beside_each_closed_edge(ida_case):
+    """A plot crosses the cut-off where the edge is only if the curve is read next to it on both sides.
+
+    Points 0.004, 0.01 and 0.02 decade from each closed edge, each a solve of
+    its own that lies on the side of the cut-off its side of the edge does.
+    """
+    _assay, _projection, _fit, result = ida_case
+    profile = result.profiles['Ka_guest']
+    logs, drop = np.log10(profile.grid), profile.scaled_drop()
+    for edge, outward in ((profile.interval.low, -1), (profile.interval.high, 1)):
+        for step in (0.004, 0.01, 0.02):
+            for side in (-1, 1):
+                (at,) = np.flatnonzero(np.isclose(logs, np.log10(edge) + side * step, rtol=0, atol=1e-12))
+                assert (drop[at] > 1.0) == (side == outward)

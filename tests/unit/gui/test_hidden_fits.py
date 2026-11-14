@@ -163,7 +163,7 @@ def _shown_session(qapp, make_session, fit):
     """A session showing *fit* on the data it was made on, with its Ka profile computed."""
     session = make_session(_data())
     _deliver(session, fit)
-    _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
+    _wait_until(qapp, lambda: session.model.profile is not None)
     return session
 
 
@@ -230,20 +230,17 @@ def _type_bound(session, key: str, index: int, text: str) -> None:
         QTest.keyClick(editor, Qt.Key.Key_Delete)
 
 
-def _assert_hidden(session, note: str, *, profiled: bool = True) -> None:
-    """The fit's numbers are gone from every tab, with *note* in their place, and the exports are off.
-
-    *profiled* says whether Identifiability holds the fit: an imported fit has no Ka profile to hide.
-    """
+def _assert_hidden(session, note: str) -> None:
+    """The fit's numbers are gone from every view, with *note* in their place, and the exports are off."""
     view = session._results
     assert session.model.fit_results == []
     assert session.model.hidden_results_note() == note
     assert not _shown(session)
     assert [(c.tone, c.body) for c in view.callouts] == [('neutral', note)]
     assert _curves(session) == 0
-    identifiability = session._identifiability_widget
-    assert identifiability._stack.currentWidget() is identifiability._message
-    assert (identifiability._message.text() == note) is profiled
+    confidence = session._confidence
+    assert [(c.tone, c.body) for c in confidence.callouts] == [('neutral', note)]
+    assert not confidence.has_plot() and confidence.header_host.isHidden()
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +287,7 @@ def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_bac
     assert _numbers(session) == before
     assert _curves(session) == 1 and _shown(session)
     assert all(c.tone != 'neutral' for c in session._results.callouts)
-    assert session._identifiability_widget._stack.currentWidget() is session._identifiability_widget._content
+    assert session._confidence.has_plot()
     assert sensitivity._stack.currentWidget() is sensitivity._results_host
 
 
@@ -316,12 +313,9 @@ def test_a_sensitivity_run_is_hidden_and_shown_on_its_own_record(qapp, make_sess
     assert session.model.fit_results == [fit]
     assert session.model.sensitivity_note.startswith('This sensitivity analysis was made on replicates A–C.')
     assert session._summary_widget._sensitivity_note == session.model.sensitivity_note
-    identifiability = session._identifiability_widget
-    assert 'The sensitivity samples are not shown.' in identifiability._notes.text()
-    assert identifiability._controls.isHidden(), 'no colour control for dots that are not drawn'
+    assert session._confidence.has_plot(), 'the fit is still shown in Ka confidence'
     _toggle(session, 'c', True)
     assert session.model.sensitivity_note is None
-    assert not identifiability._controls.isHidden()
 
 
 def test_changing_an_uncertainty_hides_the_sensitivity_run_it_was_drawn_from(qapp, make_session, fit, dialogs):
@@ -397,7 +391,7 @@ def _diluted_session(qapp, make_session, diluted_fit):
     session = make_session(_data())
     state_dilution(session, _STOCK.magnitude)
     _deliver(session, diluted_fit)
-    _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
+    _wait_until(qapp, lambda: session.model.profile is not None)
     assert session.model.hidden_results_note() is None
     return session
 
@@ -497,7 +491,7 @@ def test_the_ka_profile_is_given_the_fit_s_own_penalised_profiles(qapp, make_ses
 
     assert len(seen) == 1
     assert seen[0] is fit.aware, "the profile got the fit's own result, not one of its own"
-    assert session._identifiability_widget._profile is not None
+    assert session.model.profile is not None
 
 
 def test_stating_an_uncertainty_hides_the_fit_until_it_is_run_again(qapp, make_session, fit, dialogs):
@@ -766,7 +760,6 @@ def test_import_keeps_the_replicate_selection_and_hides_a_fit_it_does_not_match(
     _assert_hidden(
         session,
         'This fit was made on replicates A and B. Replicate B is now off. Switch it back on, or run the fit again.',
-        profiled=False,
     )
 
 
@@ -1123,7 +1116,7 @@ def test_a_fit_finishing_after_a_used_replicate_was_switched_off_is_held_hidden_
     session.model.status_changed.connect(lambda text: messages.append(text) if text.startswith('Fit') else None)
 
     _toggle(session, 'b', False)
-    _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
+    _wait_until(qapp, lambda: session.model.profile is not None)
 
     assert slow_fit[0].active_replica_ids == ['a', 'b', 'c']
     (held,) = session.model.held_fit_results
@@ -1131,8 +1124,9 @@ def test_a_fit_finishing_after_a_used_replicate_was_switched_off_is_held_hidden_
     assert session.model.hidden_results_note().startswith(
         'This fit was made on replicates A and B. Replicate B is now off.'
     )
-    profile = session._identifiability_widget._profile.profiles['Ka_guest']
-    assert set(profile.replica_r2) == set(held.metadata['replica_ids_fit'])
+    profile = session.model.profile.profiles['Ka_guest']
+    # Profiled on the replicates the fit used, with its weights: the profile's best fit is the fit's.
+    assert profile.best_ka == pytest.approx(held.parameters['Ka_guest'].magnitude, rel=1e-9)
     assert messages == [f'Fit complete but hidden — {session.model.hidden_results_note()}']
 
 
@@ -1145,7 +1139,7 @@ def test_a_finished_fit_names_the_replicates_it_left_out_and_why(qapp, make_sess
     )
 
     session.run_fit()
-    _wait_until(qapp, lambda: session._identifiability_widget._profile is not None)
+    _wait_until(qapp, lambda: session.model.profile is not None)
 
     (message,) = messages
     assert '2 of 3 replicates used' in message
@@ -1191,25 +1185,25 @@ def test_the_status_bar_names_the_test_a_rejected_model_failed_and_not_the_verdi
     assert 'try another binding model or check the data' in full
 
 
-def test_a_new_fit_replaces_the_previous_one_on_identifiability_before_its_profile_arrives(
+def test_a_new_fit_replaces_the_previous_one_in_ka_confidence_before_its_profile_arrives(
     qapp, make_session, fit, dialogs
 ):
-    from gui.plotting.identifiability_widget import _PROFILE_PENDING
+    """The readings of the new fit show at once, the curves of the old one never stand beside them."""
+    from gui import confidence as CF
 
     session = _shown_session(qapp, make_session, fit)
-    identifiability = session._identifiability_widget
-    assert identifiability._stack.currentWidget() is identifiability._content
+    confidence = session._confidence
+    assert confidence.has_plot()
     second = copy.deepcopy(fit)
     second.id = 'second-fit'
 
     _deliver(session, second)
 
-    assert identifiability._fit is second
-    assert identifiability._stack.currentWidget() is identifiability._message
-    assert identifiability._message.text() == _PROFILE_PENDING
-    _wait_until(qapp, lambda: identifiability._profile is not None)
-    assert identifiability._fit is second
-    assert identifiability._stack.currentWidget() is identifiability._content
+    assert not confidence.has_plot() and not confidence.header_host.isHidden()
+    assert any(c.body == CF.PENDING for c in confidence.callouts)
+    _wait_until(qapp, lambda: session.model.profile is not None)
+    assert session.model.profiled_fit is second and confidence.has_plot()
+    assert all(c.body != CF.PENDING for c in confidence.callouts)
 
 
 def test_the_primary_action_offers_stop_while_a_fit_runs(qapp, dialogs, slow_fit, monkeypatch):

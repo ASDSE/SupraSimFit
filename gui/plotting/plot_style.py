@@ -36,7 +36,7 @@ DEFAULT_STYLE: dict = {
         'style': 'dash',
         'color': (23, 190, 207, 255),
     },
-    # Type set and Ka scale of the Identifiability and Ka Sensitivity panels.
+    # Type set and Ka scale of the Ka Sensitivity panels.
     # ``distribution`` is the group's name in saved style templates and so part
     # of that file format; the panel calls it "Analysis plots".
     'distribution': {

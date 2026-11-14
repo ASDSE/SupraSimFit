@@ -528,7 +528,7 @@ def _withheld_note(result: SensitivityResult, ka_key: str) -> Optional[str]:
     """
     reason = (result.withheld or {}).get(ka_key, '')
     label = fmt_param(ka_key)
-    withheld = f'so no share, spread or elasticity is given for {label}. See the Identifiability tab.'
+    withheld = f'so no share, spread or elasticity is given for {label}. See Ka confidence.'
     if reason == 'baseline_on_bound':
         return (
             f'The data do not limit {label} at the inputs as entered — the fit ran to the edge of its bounds — '
@@ -1012,7 +1012,7 @@ class SensitivityWidget(QWidget):
         results_inner.setPalette(palette)
         results_inner.setAutoFillBackground(True)
         self._results_layout = QVBoxLayout(results_inner)
-        # The same inset the Identifiability page uses. Without it the rightmost
+        # An inset around the plots. Without it the rightmost
         # plot's frame — and the bar standing against it — ends on the last pixel
         # of the tab and of the picture saved from it.
         self._results_layout.setContentsMargins(10, 6, 10, 6)

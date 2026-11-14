@@ -1613,7 +1613,7 @@ class ConcentrationGrid(QWidget):
             return
         if self._editor is not None:
             self._editor.deleteLater()
-        editor = QLineEdit(self.values[index].replace('\u2009', '').replace('×10', 'e').translate(_FROM_SUPER), self)
+        editor = QLineEdit(self.values[index].replace('\u202f', '').replace('×10', 'e').translate(_FROM_SUPER), self)
         editor.setFont(font('number'))
         editor.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         editor.setAccessibleName(f'Concentration of point {index + 1}')
@@ -1929,7 +1929,11 @@ class LegendRow(QWidget):
     *items* are ``(kind, text)``: ``dots`` (replicates, at *dot_alpha*, by default the
     opacity the titration plot draws them at), ``cross`` (a replicate switched off),
     ``rings`` (an overlaid file, with an × that removes it), ``mean`` (mean ± SD), ``line``
-    (the fitted or model curve) and ``line-other`` (a fit shown beside the reported one).
+    (the fitted or model curve, or the reported reading), ``line-other`` (a fit shown beside
+    the reported one), ``line-secondary`` (the reading at the inputs as entered), ``bars``
+    (the accepted stretches of both readings), ``bar`` (those of the one reading at the inputs
+    as entered) and ``diamond`` (a best fit). A kind ending in ``+band`` draws its mark over
+    the accent tint of a shaded interval, for the reading whose interval the plot shades.
     """
 
     def __init__(self, theme: Theme, items: list[tuple[str, str]], dot_alpha: float | None = None):
@@ -1963,6 +1967,12 @@ class LegendRow(QWidget):
         fm = p.fontMetrics()
         x, cy = 0.0, self.height() / 2
         for kind, txt in self.items:
+            if kind.endswith('+band'):
+                kind = kind.removesuffix('+band')
+                p.fillPath(
+                    _rounded(QRectF(x + 1, cy - 7, 14, 14), RADIUS['control'] / 2),
+                    t.q('accent', 0.16 if t.dark else 0.14),
+                )
             if kind == 'dots':
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(t.q('replicate', self.dots_alpha()))
@@ -1995,12 +2005,141 @@ class LegendRow(QWidget):
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
                 p.setPen(pen)
                 p.drawLine(QPointF(x + 1, cy), QPointF(x + 15, cy))
+            elif kind == 'line-secondary':
+                pen = QPen(t.q('text-secondary'), 1.75)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                p.drawLine(QPointF(x + 1, cy), QPointF(x + 15, cy))
+            elif kind in ('bars', 'bar'):
+                pairs = (('accent', -2.5), ('text-secondary', 2.5)) if kind == 'bars' else (('text-secondary', 0),)
+                for color, dy in pairs:
+                    pen = QPen(t.q(color), 3)
+                    pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+                    p.setPen(pen)
+                    p.drawLine(QPointF(x + 1, cy + dy), QPointF(x + 15, cy + dy))
+            elif kind == 'diamond':
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(t.q('text-secondary'))
+                p.drawPath(diamond(QPointF(x + 8, cy), 11))
             p.setPen(t.q('text-secondary'))
             p.drawText(QRectF(x + 20, 0, 400, self.height()), Qt.AlignmentFlag.AlignVCenter, txt)
             if kind == 'rings':
                 close_x = x + 20 + fm.horizontalAdvance(txt) + space(2)
                 icons.paint(p, 'x', t.q('text-tertiary'), close_x, cy - 6, 12, 2)
             x += self._width(kind, txt, fm)
+        p.end()
+
+
+def diamond(centre: QPointF, size: float) -> QPainterPath:
+    """A square diamond *size* px from tip to tip: the mark of a best fit, in a plot and in its legend."""
+    half = size / 2
+    path = QPainterPath()
+    path.moveTo(centre.x(), centre.y() - half)
+    path.lineTo(centre.x() + half, centre.y())
+    path.lineTo(centre.x(), centre.y() + half)
+    path.lineTo(centre.x() - half, centre.y())
+    path.closeSubpath()
+    return path
+
+
+def paint_raised(p: QPainter, t: Theme, rect: QRectF, radius: float) -> None:
+    """The raised surface a readout sits on: ``bg-raised`` inside a 1-px outline."""
+    path = _rounded(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius)
+    p.fillPath(path, t.q('bg-raised'))
+    p.setPen(QPen(t.q('border-strong' if t.dark else 'border'), 1))
+    p.drawPath(path)
+
+
+class _Swatch(QWidget):
+    """A 12-px stroke in a series' colour, as the readout card marks its rows."""
+
+    def __init__(self, t: Theme, color: str):
+        super().__init__()
+        self.t, self.color = t, color
+        self.setFixedSize(space(4), space(5))
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(self.t.q(self.color), 2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        cy = self.height() / 2
+        p.drawLine(QPointF(1, cy), QPointF(self.width() - 1, cy))
+        p.end()
+
+
+class ReadoutCard(QWidget):
+    """The values under the pointer as a card at a plot's top-right corner (DESIGN.md §6, Readout).
+
+    A title, then one row per series: its swatch, name, value — right-aligned in tabular
+    figures, so the decimal points line up — and a verdict, quieter where it is the negative
+    one. :meth:`set_values` fills it; it is selectable, so a reading can be copied.
+    """
+
+    def __init__(self, t: Theme, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.t = t
+        self.grid = QGridLayout()
+        self.grid.setContentsMargins(space(4), space(3), space(4), space(3))
+        self.grid.setHorizontalSpacing(space(3))
+        self.grid.setVerticalSpacing(space(1))
+        self.title = copyable(label('', 'label', 'secondary'))
+        self.grid.addWidget(self.title, 0, 0, 1, 4)
+        self.grid.setColumnStretch(1, 1)
+        self.setLayout(self.grid)
+        self.rows: list[tuple[QLabel, QLabel, QLabel]] = []
+
+    def set_values(self, title: str, rows: list[tuple[str, str, str, str, bool]]) -> None:
+        """Show *title* over *rows*, each ``(colour token, name, value, verdict, quiet)``."""
+        self.title.setText(title)
+        for i in reversed(range(self.grid.count())):
+            widget = self.grid.itemAt(i).widget()
+            if widget is not self.title:
+                drop(widget)
+        digits = QFontMetrics(font('small-number')).horizontalAdvance('00.00')
+        self.rows = []
+        for r, (color, name, value, verdict, quiet) in enumerate(rows, start=1):
+            value_label = copyable(label(value, 'small-number'))
+            value_label.setMinimumWidth(digits)
+            value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            name_label = label(name, 'small')
+            verdict_label = label(verdict, 'small', 'secondary' if quiet else None)
+            self.grid.addWidget(_Swatch(self.t, color), r, 0)
+            self.grid.addWidget(name_label, r, 1)
+            self.grid.addWidget(value_label, r, 2)
+            self.grid.addWidget(verdict_label, r, 3)
+            self.rows.append((name_label, value_label, verdict_label))
+        self.setAccessibleName(f'{title}: ' + '; '.join(f'{n} {v}, {d}' for _c, n, v, d, _q in rows))
+        self.adjustSize()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        paint_raised(p, self.t, QRectF(self.rect()), RADIUS['surface'])
+        p.end()
+
+
+class ValueTag(QWidget):
+    """The pointer's value at the top end of its hairline, on the readout card's raised surface."""
+
+    def __init__(self, t: Theme, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.t, self.text = t, ''
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+        self.setFixedSize(QFontMetrics(font('small-number')).horizontalAdvance(text) + 2 * space(3), SIZE['badge'])
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        paint_raised(p, self.t, QRectF(self.rect()), self.height() / 2)
+        p.setFont(font('small-number'))
+        p.setPen(self.t.q('text-primary'))
+        p.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, self.text)
         p.end()
 
 
@@ -2316,14 +2455,15 @@ class CompactIntervals(QWidget):
 
 
 class SectionHeader(QAbstractButton):
-    """A collapsible inspector section's header: chevron, title and a quiet *trailing* summary."""
+    """A collapsible inspector section's header: chevron, title, a quiet *trailing* summary, and the
+    warning mark in tone *flag* after the title where the section carries a result's warning."""
 
     toggled_open = pyqtSignal(bool)
     HEIGHT = 32
 
-    def __init__(self, theme: Theme, title: str, open_: bool = True, trailing: str = ''):
+    def __init__(self, theme: Theme, title: str, open_: bool = True, trailing: str = '', flag: str = ''):
         super().__init__()
-        self.t, self._title, self._open, self._trailing = theme, title, open_, trailing
+        self.t, self._title, self._open, self._trailing, self._flag = theme, title, open_, trailing, flag
         self.setFixedHeight(self.HEIGHT)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2352,6 +2492,10 @@ class SectionHeader(QAbstractButton):
         p.setFont(font('body-strong'))
         p.setPen(t.q('text-primary'))
         p.drawText(QRectF(18, 0, self.width(), h), Qt.AlignmentFlag.AlignVCenter, self._title)
+        if self._flag:
+            # The mark Diagnostics gives the same finding, after the title.
+            x = 18 + QFontMetrics(font('body-strong')).horizontalAdvance(self._title) + space(3)
+            icons.paint(p, 'alert-circle', t.q(self._flag), x, (h - 16) / 2, 16)
         if self._trailing:
             p.setFont(font('small'))
             p.setPen(t.q('text-tertiary'))
@@ -2363,9 +2507,17 @@ class SectionHeader(QAbstractButton):
 
 
 def section(
-    theme: Theme, title: str, content: QWidget | None, open_: bool = True, first: bool = False, trailing: str = ''
+    theme: Theme,
+    title: str,
+    content: QWidget | None,
+    open_: bool = True,
+    first: bool = False,
+    trailing: str = '',
+    flag: str = '',
 ) -> QWidget:
     """An inspector section: a hairline above (unless *first*), the header, and *content* while open.
+
+    *flag* is the tone of the warning mark after the title (:class:`SectionHeader`).
 
     The header opens and closes it; the returned widget's ``header`` is that
     :class:`SectionHeader`, for its trailing summary.
@@ -2375,7 +2527,7 @@ def section(
     if not first:
         lay.addWidget(hairline())
         lay.addSpacing(space(3))
-    header = SectionHeader(theme, title, open_ and content is not None, trailing)
+    header = SectionHeader(theme, title, open_ and content is not None, trailing, flag)
     lay.addWidget(header)
     closed = QWidget()
     closed.setFixedHeight(space(3))

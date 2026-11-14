@@ -220,14 +220,6 @@ class SensitivityResult:
         SOBOL only — R² of each sample's best fit, aligned the same way:
         the unweighted R² against the averaged signal that a fit reports as its
         quality.
-    sample_profile_r2 : np.ndarray or None
-        SOBOL only — each sample's place on the Identifiability tab's axis,
-        ``1 - S_w / SS_tot,w`` of its best fit: the objective that fit
-        minimised, with every titration point counted by the weight of the
-        baseline's noise law, which is the scale the Ka profiles are drawn on.
-        A sample above the profile there has moved the inputs to something
-        that fits better at that Ka than the entered ones do. ``None`` for a
-        heatmap run, like ``sample_r2``.
     r2_grid : np.ndarray or None
         HEATMAP only — R² of each cell's best fit, aligned with ``ka_grid``.
     baseline_fit : FitResult or None
@@ -341,7 +333,6 @@ class SensitivityResult:
     sample_ka: Optional[dict[str, np.ndarray]] = None
     sample_usable: Optional[dict[str, np.ndarray]] = None
     sample_r2: Optional[np.ndarray] = None
-    sample_profile_r2: Optional[np.ndarray] = None
     r2_grid: Optional[np.ndarray] = None
     baseline_fit: FitResult | None = None
     sample_params: dict[str, np.ndarray] | None = None
@@ -1066,7 +1057,7 @@ def _stock_magnitude(base_conditions: Mapping) -> Optional[float]:
 def _fit_perturbed(
     ms, assay_cls, x_base, base_conditions, offsets, fit_config, deltas=None, sequential=False, point_weights=None
 ):
-    """Fit of one perturbation → ``({parameter key: value}, R², profile R²)``.
+    """Fit of one perturbation → ``({parameter key: value}, R²)``.
 
     *offsets* is the relative offset per input key. Every entered condition
     takes its own; the ``TITRANT`` offset is the error of the stock's
@@ -1088,10 +1079,7 @@ def _fit_perturbed(
     The noise law they come from is read off the measured replicates, which
     moving the inputs leaves untouched, and every fit of a run carries the same
     weights: each sample minimises the objective the baseline minimised, and a
-    sample with no offset is the baseline fit. Beside the R² above, which counts every point equally, the
-    fit's place on the Identifiability tab's axis comes back as
-    ``1 - S_w / SS_tot,w``: the weighted objective this fit minimised, on the
-    scale the Ka profiles are drawn on.
+    sample with no offset is the baseline fit.
 
     ``None`` when the perturbed inputs leave the model with no solution
     anywhere in the Ka box: that is one sample without a fit, which the caller
@@ -1112,8 +1100,7 @@ def _fit_perturbed(
         return None
     params = projection.params(fit)
     _, r_squared = calculate_fit_metrics(assay.y_data.magnitude, assay.forward_model(params).magnitude)
-    profile_r2 = 1.0 - fit.objective / float(projection.ss_tot[0])
-    return dict(zip(assay.parameter_keys, params.tolist())), float(r_squared), float(profile_r2)
+    return dict(zip(assay.parameter_keys, params.tolist())), float(r_squared)
 
 
 def _free_ka_bounds(assay, fit_config: FitConfig, ka_keys: tuple[str, ...]) -> dict[str, tuple[float, float]]:
@@ -1406,8 +1393,7 @@ def run_sensitivity(
             key: np.array([np.nan if v is None else v[0][key] for v in values]) for key in probe_assay.parameter_keys
         }
         r2 = np.array([np.nan if v is None else v[1] for v in values])
-        profile_r2 = np.array([np.nan if v is None else v[2] for v in values])
-        return params, r2, profile_r2, counters, finished
+        return params, r2, counters, finished
 
     kinds = dict(perturbable_inputs(base_conditions))
     applies = identity_applies(probe_assay, fit_config, ka_box, baseline_result)
@@ -1432,7 +1418,7 @@ def run_sensitivity(
         elastic = elasticity_perturbations(base_conditions)
         order = _block_order(n_base, len(sources) + 2, _SOBOL_BLOCKS)
         perturbations = elastic + [design.jobs[i] for i in order]
-        queued, queued_r2, queued_profile_r2, counters, queued_finished = _evaluate(perturbations)
+        queued, queued_r2, counters, queued_finished = _evaluate(perturbations)
         elasticity = elasticities(base_conditions, {key: queued[key][: len(elastic)] for key in ka_keys})
 
         def in_design_order(values: np.ndarray) -> np.ndarray:
@@ -1441,14 +1427,14 @@ def run_sensitivity(
             return out
 
         params = {key: in_design_order(values) for key, values in queued.items()}
-        r2, profile_r2, finished = map(in_design_order, (queued_r2, queued_profile_r2, queued_finished))
+        r2, finished = map(in_design_order, (queued_r2, queued_finished))
         # A block some fit of which never ran is dropped whole: its rows would
         # otherwise enter the estimators as a part-block the jackknife would
         # take for an independent replicate of the design.
         block = (np.arange(n_design) % n_base) // (n_base // _SOBOL_BLOCKS)
         blocks_finished = np.array([finished[block == j].all() for j in range(_SOBOL_BLOCKS)])
         dropped = ~blocks_finished[block]
-        for values in (*params.values(), r2, profile_r2):
+        for values in (*params.values(), r2):
             values[dropped] = np.nan
         n_samples = 2 * n_base  # the A and B rows
 
@@ -1505,7 +1491,6 @@ def run_sensitivity(
             sample_ka={key: params[key][:n_samples] for key in ka_keys},
             sample_usable=usable,
             sample_r2=r2[:n_samples],
-            sample_profile_r2=profile_r2[:n_samples],
             baseline_fit=baseline_result,
             sample_params={key: values[:n_samples] for key, values in params.items()},
             degenerate_keys=degenerate_keys,
@@ -1539,7 +1524,7 @@ def run_sensitivity(
     perturbations = [
         ({sens_config.x_key: float(x_offsets[ix]), sens_config.y_key: float(y_offsets[iy])}, None) for iy, ix in cells
     ]
-    params, r2, _, counters, _ = _evaluate(perturbations)
+    params, r2, counters, _ = _evaluate(perturbations)
     shape = (len(y_offsets), len(x_offsets))
     r2_grid = r2.reshape(shape)
 

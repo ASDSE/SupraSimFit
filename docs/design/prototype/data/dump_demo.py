@@ -65,15 +65,16 @@ def main():
     import gui.fitting_session as fs
     from core.pipeline.inputs import TITRANT
     from core.pipeline.reporting import fit_replica_ids, input_replica_ids, reports_conditional, summarize_parameters
+    from gui.session_model import SessionModel
 
     captured = {}
-    orig = fs.FittingSession._on_profile_complete
+    orig = SessionModel._on_profile_complete
 
     def patched(self, profile):
         captured['profile'] = profile
         return orig(self, profile)
 
-    fs.FittingSession._on_profile_complete = patched
+    SessionModel._on_profile_complete = patched
 
     session = fs.FittingSession()
     session.resize(1440, 900)
@@ -166,8 +167,8 @@ def main():
                 out.append(t)
         return out
 
-    summary_texts = texts(session._summary_widget)
-    ident_texts = texts(session._identifiability_widget)
+    summary_texts = texts(session._results.canvas) + texts(session._results.side)
+    ident_texts = texts(session._confidence.canvas) + texts(session._confidence.side)
 
     # ---- inputs
     labels = session.model.uncertainty.input_labels()

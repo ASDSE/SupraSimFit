@@ -453,6 +453,7 @@ class SessionModel(QObject):
         self._sensitivity_note: str | None = None
         self._profiled_fit: FitResult | None = None
         self._profile: ProfileSet | None = None
+        self._profile_error: str | None = None
         # Runs
         self._fit_worker: FitWorker | None = None
         self._profile_worker: ProfileWorker | None = None
@@ -834,6 +835,11 @@ class SessionModel(QObject):
     def profile(self) -> ProfileSet | None:
         """The Ka profile of :attr:`profiled_fit`; ``None`` while it runs, failed, or for an assay without a Ka."""
         return self._profile
+
+    @property
+    def profile_error(self) -> str | None:
+        """Why the Ka profile of :attr:`profiled_fit` could not be worked out, in plain words; ``None`` otherwise."""
+        return self._profile_error
 
     def fit_view(self) -> tuple[FitResult | None, str | None]:
         """The fit a summary describes, and the note hiding it (``None`` while it is shown).
@@ -1225,7 +1231,7 @@ class SessionModel(QObject):
             return 'fitting'
         if self.sensitivity_running():
             fraction = self.progress_fraction()
-            return 'Sensitivity' if fraction is None else f'Sensitivity {fraction:.0%}'.replace('%', '\u2009%')
+            return 'Sensitivity' if fraction is None else f'Sensitivity {fraction:.0%}'.replace('%', '\u202f%')
         if self.profile_running():
             return 'Ka profile'
         return ''
@@ -1277,7 +1283,7 @@ class SessionModel(QObject):
             fraction = self.progress_fraction()
             words = label[:1].upper() + label[1:]
             if fraction is not None:
-                words = f'Sensitivity · {fraction:.0%}'.replace('%', '\u2009%')
+                words = f'Sensitivity · {fraction:.0%}'.replace('%', '\u202f%')
             return 'running', words, fraction or 0.0
         fit, note = self.fit_view()
         if note is not None:
@@ -1288,7 +1294,7 @@ class SessionModel(QObject):
         if len(rows) == 1:
             row = rows[0]
             side = {'low': 'below', 'high': 'above'}.get(row.estimate_at_bound)
-            value = fmt_value(row.estimate).replace('×', '\u2009×\u2009')
+            value = fmt_value(row.estimate).replace('×', '\u202f×\u202f')
             words = f'Ka not limited {side}' if side else f'Ka {value} {fmt_unit_pretty(row.unit)}'
         else:
             words = f'{len(rows)} binding constants'
@@ -1338,7 +1344,7 @@ class SessionModel(QObject):
         assay_type = AssayType[fit.assay_type] if fit is not None else self.settings.assay_type
         parts = [ASSAY_NAMES[assay_type][1], binding_constants(assay_type)]
         if projectable(assay_type):
-            parts.append('Profile likelihood, 95\u2009%')
+            parts.append('Profile likelihood, 95\u202f%')
         noise = None if fit is None else fit.noise
         if noise is not None and noise.share > 0:
             parts.append('Weighted by noise law')
@@ -1455,6 +1461,7 @@ class SessionModel(QObject):
         self._stop_profile()
         self._profiled_fit = result
         self._profile = None
+        self._profile_error = None
         if projectable(AssayType[result.assay_type]):
             # Profile the replicates the fit used, so the profile describes the
             # same data. The fit already worked out the penalised profiles
@@ -1528,8 +1535,9 @@ class SessionModel(QObject):
             return
         self._profile_worker = None
         retire(worker)
+        self._profile_error = msg
+        self.show_status('The Kₐ profile could not be worked out — the fit itself is unaffected. See Ka confidence.')
         self.profile_changed.emit()
-        self.warning.emit('Identifiability', f'{msg}\n\nThe fit itself is unaffected and is still shown.')
 
     def _stop_profile(self) -> None:
         """Stop the Ka profile still being computed and see its thread out."""
@@ -1545,6 +1553,7 @@ class SessionModel(QObject):
         self._stop_profile()
         self._profiled_fit = None
         self._profile = None
+        self._profile_error = None
         self.profile_changed.emit()
 
     def sensitivity_refusal(self, problems: Sequence[str] = ()) -> Refusal | None:

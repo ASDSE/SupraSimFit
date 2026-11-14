@@ -336,7 +336,7 @@ one-step-null          16 cases                                 <= 0.0075
 
 joint-region           48 cases                                 95 % region
   The joint confidence region of a two-constant model holds the true pair as often as its level
-  says — the reading the Identifiability tab offers where the two constants trade off against each
+  says — the reading Ka confidence offers where the two constants trade off against each
   other and neither interval alone settles the pair.
 
 replicate-pooling      36 cases                                 reported
@@ -495,7 +495,7 @@ runtime                reads every case of input-aware-coverage reported
   How long one fit takes, per assay family: the median, the 99th percentile and the worst seen.
 ```
 
-`joint-region` goes through `fit_profile`, the call the Identifiability tab makes, and asks the
+`joint-region` goes through `fit_profile`, the call Ka confidence makes, and asks the
 region it returns whether the true pair lies in it — the same surface, the same threshold and the
 same bounding box the tab draws. That surface is 64 x 64 exact solves, which puts a row of this
 check at some ten seconds; `python -m validation run joint-region --max-n 200` is the half of it

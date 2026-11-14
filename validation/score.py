@@ -440,7 +440,7 @@ def joint_region_row(scenario: Scenario, seed: int) -> dict[str, Any]:
     through :func:`~core.pipeline.profile.fit_profile` with the fit's own
     point weights and design effects
     (:meth:`~core.pipeline.fit_pipeline.FitResult.profile_arguments`), the
-    call the Identifiability tab makes, and asks the
+    call Ka confidence makes, and asks the
     :class:`~core.pipeline.profile.JointRegion` it returns whether the true
     pair lies in it — the same surface, the same cut-off per cell and the same
     bounding box the tab draws, so a region the tab would draw wrongly is a

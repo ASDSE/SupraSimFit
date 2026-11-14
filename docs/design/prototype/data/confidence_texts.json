@@ -1,23 +1,75 @@
 {
- "summary_html": "<b>K<sub>a(G)</sub></b>: best fit 1.59×10⁸ M<sup>−1</sup> · 95% CI [1.14×10⁸, 2.08×10⁸] M<sup>−1</sup> (−28% / +31%)<br>Conditional on the entered inputs: best fit 2.81×10⁸ M<sup>−1</sup> (weighted R² 0.9957) · 95% CI [1.52×10⁸, 4.50×10⁸] M<sup>−1</sup> (−46% / +60%)",
- "verdict_headline": "The inputs together are further from their entered values than you stated",
- "verdict_tone": "red",
- "notice_html": "",
- "notes_html": "The data fit only with the inputs, taken together, further from their entered values than their stated uncertainties allow (q = 23.9, p &lt; 0.001). The fit put the correction here: [Host]₀ −11.3 % (3.8 σ), Guest (titrant, whole series) +9.3 % (3.1 σ), Ka,dye +3.0 % (0.3 σ), [Dye]₀ +0.2 % (0.1 σ) — the data see only 2 combinations of these 4 inputs, so the correction landed where those combinations point. Check the values you entered for them. The interval assumes the shifts are real.<br><span style=\"color:#52514e\">Each input with a stated uncertainty was free to move within the uncertainty you stated for it, which usually widens the interval. Each interval at the entered inputs is worked out from 12 data points and 3 fitted parameters, and no interval reaches further than the parameter bounds this fit was given. The replicates leave the noise law uncertain (share between 0.63 and 1); the interval of <b>K<sub>a(G)</sub></b> is widened about 1.3-fold to hold for every share they allow: it takes the variance of the estimate as 1.57 times what the scatter of the data alone implies.</span><br><span style=\"color:#52514e\">Weighted R² counts each titration point by how precise the replicates show it to be; the R² under Fit Quality counts every point equally.</span><br>How to read this plot: the Reading this plot button above.",
- "notes_list_html": [
-  "The data fit only with the inputs, taken together, further from their entered values than their stated uncertainties allow (q = 23.9, p &lt; 0.001). The fit put the correction here: [Host]₀ −11.3 % (3.8 σ), Guest (titrant, whole series) +9.3 % (3.1 σ), Ka,dye +3.0 % (0.3 σ), [Dye]₀ +0.2 % (0.1 σ) — the data see only 2 combinations of these 4 inputs, so the correction landed where those combinations point. Check the values you entered for them. The interval assumes the shifts are real.",
-  "<span style=\"color:#52514e\">Each input with a stated uncertainty was free to move within the uncertainty you stated for it, which usually widens the interval. Each interval at the entered inputs is worked out from 12 data points and 3 fitted parameters, and no interval reaches further than the parameter bounds this fit was given. The replicates leave the noise law uncertain (share between 0.63 and 1); the interval of <b>K<sub>a(G)</sub></b> is widened about 1.3-fold to hold for every share they allow: it takes the variance of the estimate as 1.57 times what the scatter of the data alone implies.</span>",
-  "<span style=\"color:#52514e\">Weighted R² counts each titration point by how precise the replicates show it to be; the R² under Fit Quality counts every point equally.</span>"
+ "headers": [
+  {
+   "key": "Ka_guest",
+   "name_html": "K<sub>a</sub> guest",
+   "readings": [
+    {
+     "label": "Input-aware",
+     "tone": "accent",
+     "value": "1.59 × 10⁸",
+     "unit": "M⁻¹",
+     "qualifier": "",
+     "level": "95 % interval",
+     "interval": "1.14 – 2.08 × 10⁸ M⁻¹",
+     "split": false,
+     "reach": "−28 % / +31 % of the best fit",
+     "tooltip": "The replicates leave the noise law uncertain (share between 0.63 and 1); the interval of Kₐ guest is widened by about 25 % to hold for every share they allow: it takes the variance of the estimate as 1.57 times what the scatter of the data alone implies.",
+     "reported": true
+    },
+    {
+     "label": "Inputs as entered",
+     "tone": "neutral",
+     "value": "2.81 × 10⁸",
+     "unit": "M⁻¹",
+     "qualifier": "",
+     "level": "95 % interval",
+     "interval": "1.52 – 4.50 × 10⁸ M⁻¹",
+     "split": true,
+     "reach": "−46 % / +60 % of the best fit",
+     "tooltip": "",
+     "reported": false
+    }
+   ]
+  }
  ],
- "legend_html": "<span style=\"color:#b3b2b0\">&#9608;</span>&nbsp;95%&nbsp;CI&nbsp;at&nbsp;the&nbsp;entered&nbsp;inputs&emsp; <span style=\"color:#f5bca5\">&#9608;</span>&nbsp;95%&nbsp;confidence&nbsp;interval&emsp; <span style=\"color:#0b0b0b\">&#9473;</span>&nbsp;best&nbsp;weighted&nbsp;R²&nbsp;reachable&nbsp;at&nbsp;each&nbsp;K<sub>a</sub>&nbsp;with&nbsp;the&nbsp;inputs&nbsp;as&nbsp;entered&emsp; <span style=\"color:#eb6834\">&#9473;</span>&nbsp;the&nbsp;same&nbsp;with&nbsp;input&nbsp;uncertainties&emsp; <span style=\"color:#eb6834\">&#8943;</span>&nbsp;95%&nbsp;CI&nbsp;cut-off;&nbsp;lower&nbsp;where&nbsp;a&nbsp;signal&nbsp;parameter&nbsp;sits&nbsp;on&nbsp;its&nbsp;bound&emsp; <span style=\"color:#0b0b0b\">&#9670;</span>&nbsp;best&nbsp;fit&nbsp;at&nbsp;the&nbsp;entered&nbsp;inputs&emsp; <span style=\"color:#eb6834\">&#9670;</span>&nbsp;best&nbsp;fit&nbsp;reported",
- "verdict_sentence_plain": "The data fit only with the inputs, taken together, further from their entered values than their stated uncertainties allow (q = 23.9, p < 0.001). The fit put the correction here: [Host]₀ −11.3 % (3.8 σ), Guest (titrant, whole series) +9.3 % (3.1 σ), Ka,dye +3.0 % (0.3 σ), [Dye]₀ +0.2 % (0.1 σ) — the data see only 2 combinations of these 4 inputs, so the correction landed where those combinations point. Check the values you entered for them. The interval assumes the shifts are real.",
- "split_note": "the interval holds rejected values; accepted ones come in separate stretches. See Ka confidence.",
- "cut_note": "The dotted line is the cut-off: every Ka whose curve lies above it is inside the interval.",
- "cut_step_note": "The dotted line is the cut-off: every Ka whose curve lies above it is inside the interval. Where the fit at a Ka has to hold a signal parameter at its bound, it gives up that parameter as well as Ka, so the test allows it a larger drop and the line steps down. The level named here is the one where every signal parameter is free.",
- "weighted_r2_note": "Weighted R² counts each titration point by how precise the replicates show it to be; the R² under Fit Quality counts every point equally.",
- "tooltip": "<qt>The line is the best weighted R² any fit can reach at each K<sub>a</sub>; the shaded band is the range of K<sub>a</sub> the data support.<br>Where you stated an uncertainty for an input, a second line and band show what the data support once the inputs may move within it.<br>With two binding constants the last panel shows which pairs of them the data support together, at the inputs as entered.<br>Scroll to zoom, drag to pan, right-click for the full view.</qt>",
- "r2_name": "weighted R²",
+ "callouts": [
+  {
+   "tone": "warning",
+   "title": "Inputs conflict",
+   "body": "Together, the inputs moved further from their entered values than you stated.",
+   "action": "Show the input shifts"
+  }
+ ],
+ "notes": {
+  "Inputs conflict": [
+   "The fit put the correction here:",
+   "The data see only 2 combinations of these 4 inputs, so the correction landed where those combinations point. Check the values you entered for them. The interval assumes the shifts are real.",
+   "Bars in σ, band ±1 σ."
+  ],
+  "Reading the curves": [
+   "Each curve shows how far the fit falls from its best at each Kₐ, as a share of the drop its own 95 % test allows there: 0 is the best fit, 1 is the cut-off. Where a curve is at or below 1, that Kₐ is accepted.",
+   "Input-aware scores each fit by its residual plus a penalty for every input’s move, measured against the uncertainty you stated; Inputs as entered by the residual alone. Each curve is read against its own test, so both meet the one line at 1 where their intervals end.",
+   "Where the fit at a Kₐ has to hold a signal parameter at its bound, it gives up that parameter as well as Kₐ, so the test allows it a larger drop and the curve steps down there (dotted).",
+   "Point at the plot to read every curve at any Kₐ."
+  ],
+  "Split interval": [
+   "Inputs as entered: the range 1.52 – 4.50 × 10⁸ M⁻¹ of Kₐ guest has a gap; Kₐ guest from 1.56 × 10⁸ to 1.74 × 10⁸ M⁻¹ is rejected.",
+   "Not every Kₐ inside a split interval explains the data well enough: the ones that do come in separate stretches, and the interval spans all of them. The strip under the plot shows each stretch."
+  ],
+  "What the intervals rest on": [
+   "Each input with a stated uncertainty was free to move within it, which usually widens the interval. Each interval at the entered inputs is worked out from 12 data points and 3 fitted parameters. No interval reaches further than the parameter bounds this fit was given."
+  ],
+  "What widened the intervals": [
+   "The replicates leave the noise law uncertain (share between 0.63 and 1); the interval of Kₐ guest is widened by about 25 % to hold for every share they allow: it takes the variance of the estimate as 1.57 times what the scatter of the data alone implies."
+  ]
+ },
+ "notes_trailing": {
+  "Inputs conflict": "p < 0.001"
+ },
+ "verdict_sentence_plain": "The data fit only with the inputs, taken together, further from their entered values than their stated uncertainties allow (q = 23.9, p < 0.001). The fit put the correction here: [Host]₀ −11.3 % (3.8 σ), Guest (titrant, whole series) +9.3 % (3.1 σ), Kₐ,dye +3.0 % (0.3 σ), [Dye]₀ +0.2 % (0.1 σ) — the data see only 2 combinations of these 4 inputs, so the correction landed where those combinations point. Check the values you entered for them. The interval assumes the shifts are real.",
+ "split_note": "not every value inside this interval explains the data well enough: the ones that do come in separate stretches and the interval spans all of them. Ka confidence shows where they are.",
  "widening": [
-  "The replicates leave the noise law uncertain (share between 0.63 and 1); the interval of Ka(G) is widened about 1.3-fold to hold for every share they allow: it takes the variance of the estimate as 1.57 times what the scatter of the data alone implies."
+  "The replicates leave the noise law uncertain (share between 0.63 and 1); the interval of Kₐ guest is widened by about 25 % to hold for every share they allow: it takes the variance of the estimate as 1.57 times what the scatter of the data alone implies."
  ]
 }

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from docs.design.prototype.common import DEMO, split_stretches
-from gui.plotting.identifiability_widget import _pct
+from gui.confidence import _pct
 from gui.plotting.labels import fmt_r2
 
 HERE = Path(__file__).resolve().parent

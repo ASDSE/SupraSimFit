@@ -1,4 +1,4 @@
-"""Drive the real FittingSession through load_demo_ida() and dump the Ka confidence page's own text."""
+"""Drive the real FittingSession through load_demo_ida() and dump what Ka confidence says of the demo fit."""
 
 import json
 import os
@@ -17,8 +17,10 @@ def main():
     QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
     app = QApplication(sys.argv)
     import gui.fitting_session as fs
-    from gui.plotting import identifiability_widget as IW
+    from core.pipeline.reporting import summarize_parameters
+    from gui import confidence as CF
     from gui.plotting import labels as L
+    from gui.widgets.assay_conditions import result_input_labels
 
     session = fs.FittingSession()
     session.resize(1440, 900)
@@ -30,28 +32,20 @@ def main():
         time.sleep(0.02)
     for _ in range(50):
         app.processEvents()
-    w = session._identifiability_widget
     result = session.model.fit_results[-1]
-    from core.pipeline.reporting import summarize_parameters
-    from gui.widgets.assay_conditions import result_input_labels
-
-    diag = result.diagnostics
+    profile = session.model.profile
     labels = result_input_labels(result.assay_type, result.fit_config)
+    notes = CF.notes(result, profile, list(session.model.measurement_set.replica_ids))
     out = {
-        'summary_html': w._summary.text(),
-        'verdict_headline': w._verdict.text(),
-        'verdict_tone': w._verdict.property('tone'),
-        'notice_html': w._notice.text() if w._notice.isVisibleTo(w) else '',
-        'notes_html': w._notes.text(),
-        'notes_list_html': list(w._note_lists[0]),
-        'legend_html': w._legend.text(),
-        'verdict_sentence_plain': L.verdict_sentence(diag, result.input_shifts, labels, html=False),
+        'headers': [
+            {'key': h.key, 'name_html': h.name, 'readings': [r.__dict__ for r in h.readings]}
+            for h in CF.headers(result)
+        ],
+        'callouts': [c.__dict__ for c in CF.callouts(result, None)],
+        'notes': {s.title: s.paragraphs for s in notes},
+        'notes_trailing': {s.title: s.trailing for s in notes if s.trailing},
+        'verdict_sentence_plain': L.verdict_sentence(result.diagnostics, result.input_shifts, labels, html=False),
         'split_note': L.SPLIT_NOTE,
-        'cut_note': IW._CUT_NOTE,
-        'cut_step_note': IW._CUT_STEP_NOTE,
-        'weighted_r2_note': IW._WEIGHTED_R2_NOTE,
-        'tooltip': w.toolTip(),
-        'r2_name': w._r2_name(),
         'widening': L.widening_sentences(summarize_parameters(result), result, L.fmt_param_plain),
     }
     OUT.write_text(json.dumps(out, indent=1, ensure_ascii=False))

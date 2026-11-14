@@ -112,7 +112,7 @@ the TXT/CSV reports use `estimate [low, high]`.
   status bar 28, nav item 28, session switcher 44, controls 28, badges 18, plot axes 56
   (left) and 44 (bottom) px; the inputs grid of Input uncertainty: name 168, kind 156,
   stated in 88 and spread bar 96 px wide, rows 60 px high; the headline column of Fit
-  results, 264.
+  results, 264; the least height of an analysis plot on screen, 320.
 - **Radius** (`RADIUS`): 6 px controls, 8 px cards, 10 px popovers, menus and the
   Settings window, pill for badges and toggles.
 - **Hairlines** are 1 px `border`. Panels are separated by hairlines, not gaps or shadows.
@@ -430,17 +430,32 @@ bound); Input shifts; Display — the replicates on the plot as *Replicates and 
 *Mean ± SD only* or *Replicates only*.
 
 ### Ka confidence — `confidence_*.jpg`
-Canvas: the two readings side by side (Input-aware; Inputs as entered, with *Split* where
-the interval has a gap), any callout, and **one profile plot per binding constant**
-holding both profiles, an enlarge tool, the pointer readout card, and the accepted
-stretches of each interval in a strip under the plot. Side panel *Notes* with *Reading
-this plot →*: the input conflict with the shifts, how to read the curves, the split
-interval, what the intervals rest on. The y axis is each profile's **scaled drop**: its
-rise above its own minimum divided by the rise its own 95 % test allows, so every curve
-crosses one cut-off line at 1 and a Ka below the line is one the data accept. Each curve
-is an exact rescaling of its own test, so the interval edges are unchanged; exported
-figures use the same axis. With two binding constants the profile plots stack, one per
-Ka, with the joint region below them.
+Canvas: the two readings side by side (Input-aware in `metric`; Inputs as entered in
+`title`, with *Split* where the interval has a gap; each with its 95 % interval and how far
+each end lies from the estimate) — the one reading, Inputs as entered, where every input is
+exact — any callout (*Inputs conflict*, whose *Show the input shifts* opens Notes at the
+shifts; a neutral notice while the Ka profile is still being worked out, the readings shown
+at once), and **one profile plot per binding constant** holding both profiles: Input-aware
+in `accent`, Inputs as entered in `text-secondary`, each estimate a diamond on its curve,
+the reported interval as an `accent` band at 8 %. The header row of each plot carries the
+legend, the enlarge tool (the plots take the whole canvas, the readings and callouts set
+aside) and the image export; the readout card sits at the plot's top-right corner and reads
+the reported estimate until the pointer reads another Ka, its value on a tag at the top of
+the pointer's hairline; the accepted stretches of each reading run in a strip under the plot,
+on its Ka axis. The y axis is each profile's **scaled drop**: its rise above its own minimum
+divided by the rise its own 95 % test allows, so every curve crosses one cut-off line at 1
+and a Ka below the line is one the data accept. Each curve is an exact rescaling of its own
+test, so the interval edges are unchanged; where the test allows a larger drop because the
+fit at that Ka holds a signal parameter on its bound, the curve breaks and a dotted riser
+carries it down. With two binding constants the canvas scrolls: the profile plots stack, one
+per Ka named by the glossary, with the joint region below them (the accepted pairs in
+`text-secondary`, the best fit marked, each constant's own interval a faint band). A profile
+that could not be worked out is said in a sentence in place of the plots. Side panel *Notes*
+with *Reading this plot →*: Inputs conflict (the shifts in % and σ, with the warning mark
+and p-value in the header) or the input shifts, Reading the curves, Split interval, Open
+sides, Second binding step, What the intervals rest on, What widened the intervals, Joint
+region. Exported figures use the same axis: each plot under its legend and its readings in
+one line, the joint region last, without the readout card.
 
 ### Sensitivity — `sensitivity_*.jpg`
 Canvas: the spread of Ka from the stated inputs (×/÷ factor, 1 SD in decades, the centre

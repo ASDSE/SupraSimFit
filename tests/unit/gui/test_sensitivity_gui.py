@@ -171,9 +171,6 @@ def _sobol_result():
         values[5] = np.nan
     r2 = np.where(np.arange(n) % 3 == 0, 0.95, 0.995)
     r2[5] = np.nan
-    # Each sample's place on the Identifiability tab's axis: the objective its
-    # fit minimised, a different number from the unweighted R² beside it.
-    profile_r2 = r2 + 0.002
     s1 = {'Ka_dye': 0.05, 'h0': 0.2, TITRANT: 0.6}
     st = {'Ka_dye': 0.08, 'h0': 0.25, TITRANT: np.nan}
     return SensitivityResult(
@@ -200,7 +197,6 @@ def _sobol_result():
         # or dropped together, so sample 5 takes its partner 25 with it.
         sample_usable={'Ka_guest': np.tile(np.isfinite(ka[: n // 2]) & np.isfinite(ka[n // 2 :]), 2)},
         sample_r2=r2,
-        sample_profile_r2=profile_r2,
         baseline_fit=_baseline_fit(),
         sample_params={'Ka_guest': ka, **signal},
         degenerate_keys=('I0', 'I_dye_free', 'I_dye_bound'),
@@ -681,7 +677,6 @@ def _stopped_result(kept: int) -> SensitivityResult:
         config=replace(result.config, n_samples=n_base),
         sample_ka={'Ka_guest': ka},
         sample_r2=np.where(fitted, 0.99, np.nan),
-        sample_profile_r2=np.where(fitted, 0.991, np.nan),
         sample_usable={'Ka_guest': np.tile(fitted[:n_base] & fitted[n_base:], 2)},
         sample_offsets_pct={key: values[: 2 * n_base] for key, values in result.sample_offsets_pct.items()},
         sample_params=None,
@@ -2171,7 +2166,7 @@ def test_a_withheld_constant_gets_its_reason_and_no_number(qapp, reason, words):
     w.update_result(result)
 
     (note,) = [text for text in _labels(w) if words in text]
-    assert 'no share, spread or elasticity is given' in note and 'Identifiability' in note
+    assert 'no share, spread or elasticity is given' in note and 'Ka confidence' in note
     assert w._budget_header(result, 'Ka_guest').endswith('not given.')
     assert _budget_tables(w) == [] and w._what_if == {}
     (index_plot,) = [plot for plot in _plots(w) if 'Sobol indices' in plot.titleLabel.text]
