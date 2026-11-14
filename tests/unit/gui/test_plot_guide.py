@@ -91,3 +91,15 @@ def test_the_sensitivity_section_names_every_column_and_closing_row_of_the_budge
     text = re.sub(r'\s+', ' ', PLOT_GUIDE['Sensitivity'])
     for name in [*BUDGET_COLUMNS[1:], INTERACTIONS, ALL_SOURCES]:
         assert f'<i>{name.split(" (")[0]}</i>' in text, name
+
+
+def test_every_section_with_a_demo_plot_ends_on_its_demo_ida_example():
+    """The examples are filled from DEMO, whose numbers tests/integration/test_plot_guide_demo.py works out again."""
+    from gui.plot_guide import DEMO, EXAMPLES, PLOT_GUIDE
+
+    filled = ' '.join(PLOT_GUIDE.values())
+    assert '{' not in filled and '}' not in filled
+    for section, text in PLOT_GUIDE.items():
+        assert ('<b>Example: Demo IDA' in text) is (section in EXAMPLES), section
+    for key, value in DEMO.items():
+        assert value in filled, key

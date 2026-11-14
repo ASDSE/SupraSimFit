@@ -125,16 +125,20 @@ def export_plot_item(
         )
 
 
-def export_stacked(plot_items: list[pg.PlotItem], path: str | Path, *, width_px: int) -> None:
-    """Export *plot_items* one above the other, in order, as one PNG or SVG on white.
+def export_stacked(parts: list[pg.PlotItem | QWidget], path: str | Path, *, width_px: int) -> None:
+    """Export *parts* one above the other, in order, as one PNG or SVG on white.
 
-    Each plot goes through pyqtgraph's own exporter, which keeps its curves inside its
-    axes in both formats and paints the plot's own background, and the pictures are set
-    one under the next at the width of
-    the widest. Plots of one width with axes of one width keep their x axes aligned.
+    A part is a plot or a widget — a plot's title and legend. Each plot goes through
+    pyqtgraph's own exporter, which keeps its curves inside its axes in both formats and
+    paints the plot's own background; a widget paints itself, at the size it has, scaled
+    to the plots. The pictures are set one under the next at the width of the widest.
+    Plots of one width with axes of one width keep their x axes aligned, and a widget as
+    wide as the plots spans them.
 
     Parameters
     ----------
+    parts
+        The plots and widgets, top first. A widget is laid out and as wide as the plots.
     path
         Output path, ``.png`` or ``.svg``.
     width_px
@@ -148,10 +152,21 @@ def export_stacked(plot_items: list[pg.PlotItem], path: str | Path, *, width_px:
     ext = _ext(path)
     if ext == '.png':
         images = []
-        for item in plot_items:
-            exporter = pg.exporters.ImageExporter(item)
+        for part in parts:
+            if isinstance(part, QWidget):
+                scale = width_px / part.width()
+                image = QImage(int(width_px), round(part.height() * scale), QImage.Format.Format_ARGB32)
+                image.fill(Qt.GlobalColor.white)
+                painter = QPainter(image)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                painter.scale(scale, scale)
+                part.render(painter, flags=QWidget.RenderFlag.DrawChildren)
+                painter.end()
+                images.append(image)
+                continue
+            exporter = pg.exporters.ImageExporter(part)
             exporter.parameters()['width'] = int(width_px)
-            with _screen_space_items_to_scene_space(item.scene()):
+            with _screen_space_items_to_scene_space(part.scene()):
                 images.append(exporter.export(toBytes=True))
         image = QImage(max(i.width() for i in images), sum(i.height() for i in images), QImage.Format.Format_ARGB32)
         image.fill(Qt.GlobalColor.white)
@@ -167,23 +182,46 @@ def export_stacked(plot_items: list[pg.PlotItem], path: str | Path, *, width_px:
                 'write there, then save it again.'
             )
     elif ext == '.svg':
-        parts, y, width = [], 0.0, 0.0
-        for item in plot_items:
-            svg = pg.exporters.SVGExporter(item).export(toBytes=True).decode('utf-8')
+        drawings, y, width = [], 0.0, 0.0
+        for part in parts:
+            svg = (
+                _widget_svg(part) if isinstance(part, QWidget) else pg.exporters.SVGExporter(part).export(toBytes=True)
+            )
+            svg = svg.decode('utf-8')
             w, h = (float(v) for v in re.search(r'viewBox\s*=\s*"0 0 ([\d.]+) ([\d.]+)"', svg).groups())
             body = svg[svg.index('<svg') :]
-            parts.append(body.replace('<svg', f'<svg x="0" y="{y:g}" width="{w:g}" height="{h:g}"', 1))
+            # The drawing's own size gives way to its place in the figure.
+            end = body.index('>')
+            tag = re.sub(r'\s(?:x|y|width|height)\s*=\s*"[^"]*"', '', body[:end])
+            drawings.append(tag.replace('<svg', f'<svg x="0" y="{y:g}" width="{w:g}" height="{h:g}"', 1) + body[end:])
             y, width = y + h, max(width, w)
         Path(path).write_text(
             '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
             '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.2" '
-            f'width="{width:g}" height="{y:g}" viewBox="0 0 {width:g} {y:g}">\n' + '\n'.join(parts) + '\n</svg>\n',
+            f'width="{width:g}" height="{y:g}" viewBox="0 0 {width:g} {y:g}">\n' + '\n'.join(drawings) + '\n</svg>\n',
             encoding='utf-8',
         )
     else:
         raise ExportRefused(
             f"A plot is saved as a picture or a drawing, so '{ext}' cannot be written. Use .png or .svg."
         )
+
+
+def _widget_svg(widget: QWidget) -> bytes:
+    """*widget* painted as an SVG drawing at the size it has, its text kept as text."""
+    from PyQt6.QtCore import QBuffer, QRect
+    from PyQt6.QtSvg import QSvgGenerator
+
+    buffer = QBuffer()
+    buffer.open(QBuffer.OpenModeFlag.WriteOnly)
+    generator = QSvgGenerator()
+    generator.setOutputDevice(buffer)
+    generator.setSize(widget.size())
+    generator.setViewBox(QRect(0, 0, widget.width(), widget.height()))
+    painter = QPainter(generator)
+    widget.render(painter, flags=QWidget.RenderFlag.DrawChildren)
+    painter.end()
+    return bytes(buffer.data())
 
 
 def export_widget(

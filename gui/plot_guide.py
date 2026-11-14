@@ -3,9 +3,46 @@
 ``PLOT_GUIDE`` maps the name of each view with a plot — the session's views and the
 Simulation window — to its section as HTML, in the order the guide lists them.
 :class:`gui.dialogs.plot_guide_dialog.PlotGuideDialog` shows one section at a time.
+
+Every section with a plot Demo IDA fills (:meth:`gui.fitting_session.FittingSession.load_demo_ida`)
+ends on an example that reads the demo's numbers, held in :data:`DEMO` as the app writes
+them; ``tests/integration/test_plot_guide_demo.py`` works them out again from a demo fit.
 """
 
 from __future__ import annotations
+
+#: Demo IDA's numbers as the views write them: its fit, Ka profile, a Sensitivity indices run
+#: at Fixed seed 0 and N = 1024, and the Simulation window as it opens.
+DEMO: dict[str, str] = {
+    'loaded': '8',
+    'off': 'A',
+    'used': '7 of 8',
+    'aware': '1.59\u202f×\u202f10⁸',
+    'aware_interval': '1.14 – 2.08\u202f×\u202f10⁸ M⁻¹',
+    'entered': '2.81\u202f×\u202f10⁸',
+    'entered_interval': '1.52 – 4.50\u202f×\u202f10⁸ M⁻¹',
+    'conflict': 'Inputs conflict',
+    'p_moved': 'p = 0.32',
+    'p_entered': 'p ≤ 0.005',
+    'gap': '1.56 – 1.74\u202f×\u202f10⁸ M⁻¹',
+    'card_aware': '0.00',
+    'card_entered': '1.39',
+    'seed': '0',
+    'n': '1024',
+    'spread': '×/÷\u00a01.19',
+    'decades': '1 SD · 0.077 decades',
+    'centre': '2.81\u202f×\u202f10⁸ M⁻¹',
+    'shares': 'Guest (titrant) 0.45, K<sub>a,dye</sub> 0.30, [Host]<sub>0</sub> 0.22, [Dye]<sub>0</sub> 0.036',
+    'top': 'Guest (titrant)',
+    'exact': '0.0573',
+    'sim_x': 'Guest 3.00 µM',
+    'sim_hg': '2.60',
+    'sim_hd': '1.68',
+    'sim_g': '0.400',
+}
+
+#: The sections that end on a Demo IDA example; Plot appearance has no number of the demo to read.
+EXAMPLES = ('Measurements', 'Fit results', 'Ka confidence', 'Sensitivity', 'Simulation')
 
 _MEASUREMENTS = """
 <p>The <b>Titration</b> plot shows the raw signal of every replicate against the titrant
@@ -19,6 +56,9 @@ are read in the unit set under <i>Concentrations</i>.</li>
 </ul>
 <p>Replicates that agree lie on top of each other. One that runs apart from the rest is the one to
 check, or to switch off.</p>
+<p><b>Example: Demo IDA</b> (Tools &#9656; Demo IDA) loads {loaded} replicates. <i>Outlier removal</i>
+switches {off} off, so {off} is drawn as crosses and the others as dots; Fit details then counts
+{used} replicates used.</p>
 """
 
 _FIT_RESULTS = """
@@ -59,6 +99,12 @@ together with the others starred.</li>
 the entered value. A shift says where the fit put the correction, not which input is wrong:
 several inputs move the curve almost alike.</li>
 </ul>
+
+<p><b>Example: Demo IDA.</b> The headline reads K<sub>a</sub> guest {aware} M⁻¹, 95&thinsp;%
+interval {aware_interval}, <i>Input-aware</i>; <i>Inputs as entered</i> gives {entered}
+M⁻¹, {entered_interval}, marked <i>Split</i>. The callout <i>{conflict}</i> says the inputs
+together moved further than you stated. Under Diagnostics the curve fits the data with the inputs
+moved ({p_moved}) and misses them at the inputs as entered ({p_entered}).</p>
 """
 
 _KA_CONFIDENCE = """
@@ -85,6 +131,12 @@ two constants trade off against each other.</li>
 under 1 to the edge of the plot &mdash; the data do not limit K<sub>a</sub> on that side, and the
 reading says <i>not limited below</i> or <i>above</i>. <i>Notes</i>, the side panel, says what
 the intervals rest on and what would close an open side.</p>
+
+<p><b>Example: Demo IDA.</b> The <i>Input-aware</i> curve has its diamond at {aware} M⁻¹ and crosses 1 at
+the ends of its interval, {aware_interval}. The <i>Inputs as entered</i> curve, diamond at
+{entered} M⁻¹, rises above 1 again over {gap}: the gap that makes its interval <i>Split</i>. Without
+the pointer the card reads {card_aware} for Input-aware and {card_entered} for Inputs as entered: at
+the reported estimate one reading accepts K<sub>a</sub> and the other rejects it.</p>
 """
 
 _SENSITIVITY = """
@@ -119,6 +171,11 @@ source&rsquo;s draw. A trend marks a source that matters.</li>
 dark violet (low) to yellow (high) with its colour bar. The diamond marks the inputs as entered;
 the card reads the cell under the pointer. An empty cell is one the binding model has no solution
 for. Worrying: a sharp edge, where K<sub>a</sub> jumps between neighbouring cells.</p>
+
+<p><b>Example: Demo IDA</b>, <i>Sensitivity indices</i> with <i>Fixed seed</i> on at {seed} and
+N = {n}. The spread of K<sub>a</sub> guest from the stated inputs is {spread} ({decades}) around
+{centre}, the fit at the inputs as entered. S<sub>1</sub> ranks the sources {shares}. Were the
+first, {top}, known exactly, <i>Spread if exact</i> says {exact} decades would be left.</p>
 """
 
 _PLOT_APPEARANCE = """
@@ -149,13 +206,17 @@ dilutes every total the titrant stock does not hold by the titrant concentration
 stock, as the fit does with the same stock.</p>
 <p><i>Fit in new session</i> opens the data as shown in a new session and fits it. The values you
 simulated with are not passed to the fit, so it searches as it does on measured data.</p>
+
+<p><b>Example: Demo IDA.</b> The window opens on IDA at Demo IDA&rsquo;s <i>Inputs as entered</i> fit,
+K<sub>a</sub> guest {entered} M⁻¹. The species row opens at {sim_x}: HG {sim_hg}, HD
+{sim_hd} and G {sim_g} µM, so most of the guest added is bound.</p>
 """
 
 PLOT_GUIDE: dict[str, str] = {
-    'Measurements': _MEASUREMENTS,
-    'Fit results': _FIT_RESULTS,
-    'Ka confidence': _KA_CONFIDENCE,
-    'Sensitivity': _SENSITIVITY,
+    'Measurements': _MEASUREMENTS.format(**DEMO),
+    'Fit results': _FIT_RESULTS.format(**DEMO),
+    'Ka confidence': _KA_CONFIDENCE.format(**DEMO),
+    'Sensitivity': _SENSITIVITY.format(**DEMO),
     'Plot appearance': _PLOT_APPEARANCE,
-    'Simulation': _SIMULATION,
+    'Simulation': _SIMULATION.format(**DEMO),
 }

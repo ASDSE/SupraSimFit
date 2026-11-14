@@ -106,12 +106,43 @@ def species_pen(t: Theme, key: str, width: float | None = None) -> QPen:
     return pen
 
 
+def _legend_items(form) -> list[tuple[str, str]]:
+    """The titration's legend (:class:`~gui.design.components.LegendRow` items): the simulated replicates,
+    an overlaid file, the model."""
+    r = form.replicates()
+    if form.overlay is None:
+        return [('dots', f'Simulated replicates ({r})'), ('line', 'Model')]
+    return [
+        ('dots', f'Simulated ({r})'),
+        ('rings', f'{form.overlay.name} ({len(form.overlay.signals)})'),
+        ('line', 'Model'),
+    ]
+
+
+#: Each plot's title and caption, as the canvas heads it.
+TITRATION_HEAD = ('Titration', 'simulated signal')
+SPECIES_HEAD = ('Species', 'in the cuvette')
+
+
+def _figure_head(t: Theme, head: tuple[str, str], legend: QWidget) -> QWidget:
+    """A saved plot's head in theme *t*: its title and caption on the left, its *legend* on the right."""
+    title, caption = (C.PaintedText(t, text, role) for text, role in zip(head, ('body-strong', 'small'), strict=True))
+    for text in (title, caption):
+        text.setFixedWidth(text.minimumWidth())
+    w = C.Figure(t)
+    w.setLayout(C.hbox(title, 3, caption, None, legend, spacing=0, margins=(0, 3, 0, 2)))
+    return w
+
+
 # ── Canvas ─────────────────────────────────────────────────────────────────────────
 
 
 class _Readout(QWidget):
     """The species readout, which is also the species legend: the titrant at the pointer, then the complexes
-    (solid) and the free species (dashed), each under its word, with its swatch and concentration."""
+    (solid) and the free species (dashed), each under its word, with its swatch and concentration.
+
+    Without a titrant or concentrations it is the legend alone, as a saved figure carries it.
+    """
 
     HEIGHT = 20
 
@@ -141,11 +172,12 @@ class _Readout(QWidget):
             x += QFontMetrics(font(role)).horizontalAdvance(s)
 
         text(self.x_text, 'small-number', 'text-primary')
-        for word, items in self.groups:
-            x += space(4)
-            if p is not None:
-                p.fillRect(QRectF(x, h / 2 - 6, 1, 12), t.q('border'))
-            x += 1 + space(4)
+        for i, (word, items) in enumerate(self.groups):
+            if i or self.x_text:
+                x += space(4)
+                if p is not None:
+                    p.fillRect(QRectF(x, h / 2 - 6, 1, 12), t.q('border'))
+                x += 1 + space(4)
             text(word, 'small', 'text-tertiary')
             for key, value in items:
                 x += space(3)
@@ -477,9 +509,9 @@ class SimulationWindow(QMainWindow):
         self.plots = SimulationPlots(t)
         self.plots.pointed.connect(self._show_readout)
         titration_head = C.hbox(
-            C.label('Titration', 'body-strong'),
+            C.label(TITRATION_HEAD[0], 'body-strong'),
             3,
-            C.label('simulated signal', 'small', 'tertiary'),
+            C.label(TITRATION_HEAD[1], 'small', 'tertiary'),
             None,
             self.legend,
             5,
@@ -487,9 +519,9 @@ class SimulationWindow(QMainWindow):
             spacing=0,
         )
         species_head = C.hbox(
-            C.label('Species', 'body-strong'),
+            C.label(SPECIES_HEAD[0], 'body-strong'),
             3,
-            C.label('in the cuvette', 'small', 'tertiary'),
+            C.label(SPECIES_HEAD[1], 'small', 'tertiary'),
             None,
             self.readout,
             spacing=0,
@@ -866,18 +898,8 @@ class SimulationWindow(QMainWindow):
         except SimulationProblem as problem:
             self.sim = None
             self._say(str(problem))
-        r = form.replicates()
-        overlay = form.overlay
-        if overlay is None:
-            items = [('dots', f'Simulated replicates ({r})'), ('line', 'Model')]
-        else:
-            items = [
-                ('dots', f'Simulated ({r})'),
-                ('rings', f'{overlay.name} ({len(overlay.signals)})'),
-                ('line', 'Model'),
-            ]
-        self.legend.set_items(items)
-        self.plots.show(self.sim, overlay, form.grid.unit, form.x_name)
+        self.legend.set_items(_legend_items(form))
+        self.plots.show(self.sim, form.overlay, form.grid.unit, form.x_name)
         self.badge.setText(form.badge())
         self.model_line.setText('  ·  '.join(form.model_line()))
 
@@ -934,7 +956,11 @@ class SimulationWindow(QMainWindow):
         self.edit(lambda f: f.set_overlay(overlay))
 
     def export_image(self) -> None:
-        """Save the titration above the species on their shared titrant axis, as one PNG or SVG in the light theme."""
+        """Save the titration above the species on their shared titrant axis, as one PNG or SVG.
+
+        Drawn again in the light theme on white, each plot under its title and caption with
+        its legend: the titration's entries, and the species' names and line styles.
+        """
         if self.sim is None:
             QMessageBox.warning(self, 'Nothing to Save', self._problem or 'There is no simulation to save.')
             return
@@ -942,17 +968,30 @@ class SimulationWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, 'Save curve image', name, 'PNG image (*.png);;SVG drawing (*.svg)')
         if not path:
             return
-        figure = SimulationPlots(Theme(dark=False))
+        light = Theme(dark=False)
+        figure = SimulationPlots(light)
         for pw, height in zip((figure.signal_pw, figure.species_pw), EXPORT_HEIGHTS, strict=True):
             pw.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
             pw.resize(EXPORT_SIZE[0], height)
             pw.show()
         figure.show(self.sim, self.form.overlay, self.form.grid.unit, self.form.x_name)
         figure.set_pointer_visible(False)
+        species = _Readout(light)
+        species.set_values('', '', [(word, [(k, '') for k in keys]) for word, keys in species_groups(self.sim.species)])
+        heads = [
+            _figure_head(light, TITRATION_HEAD, C.LegendRow(light, _legend_items(self.form), removable=False)),
+            _figure_head(light, SPECIES_HEAD, species),
+        ]
+        for head in heads:
+            head.setFixedWidth(EXPORT_SIZE[0])
+            head.adjustSize()
+            head.show()
         QApplication.processEvents()
         try:
             export_stacked(
-                [figure.signal_pw.getPlotItem(), figure.species_pw.getPlotItem()], path, width_px=2 * EXPORT_SIZE[0]
+                [heads[0], figure.signal_pw.getPlotItem(), heads[1], figure.species_pw.getPlotItem()],
+                path,
+                width_px=2 * EXPORT_SIZE[0],
             )
         except ExportRefused as exc:
             QMessageBox.warning(self, 'Image Not Saved', str(exc))
@@ -963,9 +1002,9 @@ class SimulationWindow(QMainWindow):
             self._say(None)
             self.status.set_full_text(f'Ready  ·  Curve image saved to {Path(path).name}')
         finally:
-            for pw in (figure.signal_pw, figure.species_pw):
-                pw.close()
-                pw.deleteLater()
+            for w in (figure.signal_pw, figure.species_pw, *heads):
+                w.close()
+                w.deleteLater()
 
     def export_data(self) -> None:
         from core.io.formats.measurement_writer import write_measurements_csv, write_measurements_txt

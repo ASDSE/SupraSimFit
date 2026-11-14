@@ -48,10 +48,9 @@ DENSE_POINTS = 361
 #: The noise model the window states: the two-part law the fitter reads off replicates.
 NOISE_MODEL = 'two-part'
 
-#: The titrant stock a model offers when dilution is chosen, as a multiple of the highest titrant
-#: concentration of its even grid; shown in :data:`STOCK_UNIT`.
-STOCK_FACTOR = 100
-STOCK_UNIT = 'mM'
+#: The titrant stock offered when dilution is chosen, as a multiple of the highest titrant
+#: concentration of the grid as it is then.
+STOCK_FACTOR = 10
 
 #: The noise floor a model opens with, as a share of its default curve's range.
 NOISE_FLOOR_SHARE = 0.005
@@ -355,7 +354,7 @@ class SimulationForm:
         stop = TITRANT_STOP[assay_type]
         self.grid = Grid(stop=stop, unit='mM' if stop >= 1e-4 else 'µM')
         self.diluted = False
-        self.stock, self.stock_unit = STOCK_FACTOR * stop, STOCK_UNIT
+        self.stock, self.stock_unit = STOCK_FACTOR * stop, self.grid.unit
         self.contains: set[str] = set()
         clean = simulate_signal(assay_class(assay_type), self.conditions(), self.parameters(), self.points())
         self.noise = Noise(floor=float(f'{NOISE_FLOOR_SHARE * float(np.ptp(clean)):.2g}'))
@@ -446,8 +445,19 @@ class SimulationForm:
         return len(self.section('concentration')) > 1
 
     def set_diluted(self, diluted: bool) -> None:
-        """State that the additions dilute the sample (*diluted*), or that the totals stay constant."""
-        self.diluted = diluted and self.offers_dilution
+        """State that the additions dilute the sample (*diluted*), or that the totals stay constant.
+
+        Choosing dilution offers a stock :data:`STOCK_FACTOR` times the highest titrant
+        concentration of the grid, in the largest unit that keeps it at 1 or more.
+        """
+        diluted = diluted and self.offers_dilution
+        if diluted and not self.diluted:
+            self.stock = STOCK_FACTOR * float(np.max(self.points()))
+            self.stock_unit = next(
+                (u for u in reversed(CONCENTRATION_UNITS) if self.stock >= Q_(1.0, u).to('M').magnitude),
+                CONCENTRATION_UNITS[0],
+            )
+        self.diluted = diluted
 
     @property
     def stock_scale(self) -> float:

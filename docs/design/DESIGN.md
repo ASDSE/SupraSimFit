@@ -558,7 +558,8 @@ A separate window (1280 × 800), part of no session, opened with *Tools ▸ Simu
 main window's toolbar, side panel and status bar, without the sidebar. Toolbar:
 *Simulation* and its summary badge, *Overlay data…*, *Export ▾* (Curve image…, which
 saves the titration above the species on their shared axis as one PNG or SVG in the light
-theme on white; Data file…), Help, the side-panel toggle, and the primary *Fit in new session*. Canvas:
+theme on white, each plot under its title with its legend — the titration's entries and the
+species' names and line styles as the window shows them; Data file…), Help, the side-panel toggle, and the primary *Fit in new session*. Canvas:
 **Titration** (simulated replicates at the measurement points, the model drawn
 continuously) above **Species** on the same x axis, with the readout at the pointer. Each
 species takes the colour of its partner — `species-dye`, `species-guest`, `species-host`,
@@ -572,8 +573,9 @@ steps* or *Custom list*), Noise, Signal (coefficient sliders). Each slider's end
 are edited in place.
 
 **Titrant stock.** The totals stay constant until the user chooses *Are diluted*; that
-choice shows the stock concentration with its unit menu (the model opens on 100 × the
-highest titrant concentration of its even grid, in mM), and, where the model has two or
+choice shows the stock concentration with its unit menu (it starts at 10 × the highest
+titrant concentration of the grid as it is then, in the largest unit that keeps it at 1 or
+more), and, where the model has two or
 more fixed totals, *Stock also contains* with one box per total the stock holds at the
 sample's own concentration. The simulation then dilutes through the assay's own
 `fixed_total()`, the forward model the fit uses. A stock no more concentrated than the

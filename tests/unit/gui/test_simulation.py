@@ -6,6 +6,8 @@ test lays the window out off screen.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
@@ -71,7 +73,7 @@ def test_a_stated_stock_dilutes_the_totals_the_stock_lacks_through_the_fitters_f
     np.testing.assert_array_equal(form.simulate().signals[0], simulate_signal(cls, constant, params, x))
 
     form.set_diluted(True)
-    form.set_stock('0.05')  # mM: the last addition leaves 82 % of the host
+    form.set_stock('50')  # µM: the last addition leaves 82 % of the host
     form.set_contains('d0', True)
     stock, h0 = 0.05e-3, constant['h0'].magnitude
     by_hand = [
@@ -80,6 +82,19 @@ def test_a_stated_stock_dilutes_the_totals_the_stock_lacks_through_the_fitters_f
     diluted = form.simulate().signals[0]
     np.testing.assert_allclose(diluted, by_hand, rtol=1e-9)
     assert not np.allclose(diluted, simulate_signal(cls, constant, params, x), rtol=1e-3)
+
+
+def test_choosing_dilution_offers_a_stock_ten_times_the_highest_titrant_concentration_of_the_grid():
+    """The offer follows the grid as it is when dilution is chosen, in the largest unit that keeps it at 1 or more."""
+    form = SimulationForm(AssayType.IDA)  # its even grid ends at 9 µM
+    form.set_diluted(True)
+    assert form.stock == pytest.approx(90e-6, rel=1e-12)
+    assert (form.stock_text(), form.stock_unit) == ('90', 'µM')
+    form.set_diluted(False)
+    form.set_grid_unit('mM')
+    form.set_even('0', '0.2', '24')  # mM
+    form.set_diluted(True)
+    assert (form.stock_text(), form.stock_unit) == ('2', 'mM')
 
 
 def test_the_stock_travels_to_the_new_session_and_is_refused_where_it_cannot_hold(session_model):
@@ -189,8 +204,26 @@ def test_the_window_draws_reads_noise_and_asks_for_a_new_session(qapp, tmp_path,
         window.export_image()
     from gui.views.simulation import EXPORT_HEIGHTS
 
-    assert QImage(str(tmp_path / 'curves.png')).height() == 2 * sum(EXPORT_HEIGHTS)
-    assert (tmp_path / 'curves.svg').read_text().count('<svg') == 3  # the figure and its two plots
+    assert QImage(str(tmp_path / 'curves.png')).height() > 2 * sum(EXPORT_HEIGHTS)  # the plots and their heads
+    drawing = (tmp_path / 'curves.svg').read_text()
+    assert drawing.count('<svg') == 5  # the figure, its two plots and their two heads
+    # Each plot's title and legend, as the window heads it: the titration's entries, then the species.
+    words = [
+        'Titration',
+        'Simulated (3)',
+        'data.txt (4)',
+        'Model',
+        'Species',
+        'Complexes',
+        'HD',
+        'HG',
+        'Free',
+        'D',
+        'G',
+        'H',
+    ]
+    texts = re.findall(r'<text[^>]*>([^<]*)</text>', drawing)
+    assert all(word in texts for word in words), texts
     window.edit(lambda f: f.choose_model(AssayType.DBA_H2G), rebuild=True)
     assert set(window.rows) == set(window.form.knobs)
     asked = []

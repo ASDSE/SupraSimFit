@@ -2119,14 +2119,17 @@ class LegendRow(QWidget):
     the accent tint of a shaded interval, for the reading whose interval the plot shades.
 
     :meth:`set_marks` draws ``dots`` and ``line`` as a plot of the titration styles them. A click
-    on the × of ``rings`` emits :attr:`removed`.
+    on the × of ``rings`` emits :attr:`removed`; with *removable* off, as in a saved figure,
+    ``rings`` has no ×.
     """
 
     removed = pyqtSignal()
 
-    def __init__(self, theme: Theme, items: list[tuple[str, str]], dot_alpha: float | None = None):
+    def __init__(
+        self, theme: Theme, items: list[tuple[str, str]], dot_alpha: float | None = None, removable: bool = True
+    ):
         super().__init__()
-        self.t, self.dot_alpha = theme, dot_alpha
+        self.t, self.dot_alpha, self.removable = theme, dot_alpha, removable
         self.dot_color, self.dot_symbol, self.line_width, self.line_color = 'replicate', 'o', 2.0, 'accent'
         self.setFixedHeight(20)
         self.set_items(items)
@@ -2145,23 +2148,22 @@ class LegendRow(QWidget):
         fm = QFontMetrics(font('small'))
         self.setFixedWidth(max(0, sum(self._width(kind, txt, fm) for kind, txt in items) - space(5)))
         self.update()
-        if any(kind == 'rings' for kind, _ in items):
+        if self.removable and any(kind == 'rings' for kind, _ in items):
             self.setToolTip('The × removes the overlay')
 
     def dots_alpha(self) -> float:
         """The opacity the replicates' dots are drawn at, in the theme as it is now."""
         return replicate_alpha(self.t) if self.dot_alpha is None else self.dot_alpha
 
-    @staticmethod
-    def _width(kind: str, txt: str, fm: QFontMetrics) -> int:
-        return 20 + fm.horizontalAdvance(txt) + (space(2) + 12 if kind == 'rings' else 0) + space(5)
+    def _width(self, kind: str, txt: str, fm: QFontMetrics) -> int:
+        return 20 + fm.horizontalAdvance(txt) + (space(2) + 12 if kind == 'rings' and self.removable else 0) + space(5)
 
     def _close_rect(self) -> QRectF | None:
         """Where the × of the ``rings`` entry is drawn, if there is one."""
         fm = QFontMetrics(font('small'))
         x = 0.0
         for kind, txt in self.items:
-            if kind == 'rings':
+            if kind == 'rings' and self.removable:
                 close_x = x + 20 + fm.horizontalAdvance(txt) + space(2)
                 return QRectF(close_x - 2, 0, 16, self.height())
             x += self._width(kind, txt, fm)
@@ -2238,7 +2240,7 @@ class LegendRow(QWidget):
                 p.drawPath(diamond(QPointF(x + 8, cy), 11))
             p.setPen(t.q('text-secondary'))
             p.drawText(QRectF(x + 20, 0, 400, self.height()), Qt.AlignmentFlag.AlignVCenter, txt)
-            if kind == 'rings':
+            if kind == 'rings' and self.removable:
                 close_x = x + 20 + fm.horizontalAdvance(txt) + space(2)
                 icons.paint(p, 'x', t.q('text-tertiary'), close_x, cy - 6, 12, 2)
             x += self._width(kind, txt, fm)
