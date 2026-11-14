@@ -329,14 +329,15 @@ def test_a_fit_with_no_profile_and_no_data_asks_for_the_data_before_the_fit(sess
 
 
 def test_each_saved_plot_title_sits_closer_to_its_own_plot_than_to_the_one_above(qapp, session):
-    from gui.views.confidence import ProfileFigure, _PaintedText
+    from gui.design.components import PaintedText
+    from gui.views.confidence import ProfileFigure
 
     fit = _stepwise(KaInterval(1.1e3, 8.0e3, False, False, 0.95, 16))
     _show(session, fit, _two_ka_profiles())
     figure = session._confidence.export_figure()
     try:
         first, second = figure.findChildren(ProfileFigure)
-        title = next(w for w in figure.findChildren(_PaintedText) if w.text == 'Kₐ HG₂')
+        title = next(w for w in figure.findChildren(PaintedText) if w.text == 'Kₐ HG₂')
 
         above = title.geometry().top() - first.geometry().bottom()
         below = second.geometry().top() - title.geometry().bottom()

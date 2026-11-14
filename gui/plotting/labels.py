@@ -66,7 +66,7 @@ _ANY_TAG_RE = re.compile(r'<[^>]+>')
 # The *a* that opens the subscript of an association constant: K<sub>a</sub>, K<sub>a,dye</sub>, K<sub>a(G)</sub>.
 _KA_SUBSCRIPT_RE = re.compile(r'^a(?=$|[,(])')
 
-#: What a sensitivity run says while it stops: the status bar and the Ka Sensitivity tab both show it.
+#: What the status bar says while a sensitivity run stops, in place of the counts of the fits still finishing.
 STOPPING_TEXT = 'Stopping — finishing the fits already running…'
 
 # Decimals that separate every R² a double can hold from 1: the largest double

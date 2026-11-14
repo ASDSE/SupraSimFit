@@ -94,24 +94,18 @@ ERROR_BAR_COLOR: tuple[int, int, int] = (80, 80, 80)
 BACKGROUND_COLOR = 'w'
 FOREGROUND_COLOR = 'k'
 
-# Ink palette — the warm off-white surface and the tones that sit on it, shared
-# by the analysis charts and the help dialogs so they read as one sheet.
-#: The chart and dialog background.
+# Ink palette — the warm off-white surface and the tones that sit on it, which the
+# plot guide dialog is drawn in.
+#: The dialog background.
 SURFACE = '#fcfcfb'
-#: Body text, axis labels, chart titles.
+#: Body text.
 INK = '#0b0b0b'
-#: Secondary text: captions, tick labels, legend entries.
+#: Secondary text.
 INK_2 = '#52514e'
-#: Muted text and chart furniture: axis lines, hints, disabled entries.
-INK_3 = '#898781'
 #: Hairline separators between panes.
 HAIRLINE = '#e4e3de'
-#: The primary data series: histogram bars, sample dots, first-order indices.
+#: The selected section's marker in the plot guide dialog.
 SERIES = '#2a78d6'
-#: The second series alongside :data:`SERIES`, e.g. the total-order index.
-SERIES_TOTAL = '#eb6834'
-#: The tinted strip a short note sits on, above a plot.
-NOTE_SURFACE = '#f3f1ea'
 
 
 def rgba(rgb: tuple[int, int, int], alpha: int = 255) -> tuple[int, int, int, int]:

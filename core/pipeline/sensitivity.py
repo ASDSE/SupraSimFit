@@ -144,6 +144,11 @@ class SensitivityConfig:
         HEATMAP only — input key swept along the Y axis.
     n_steps : int
         HEATMAP only — grid resolution per axis (odd includes the 0 offset).
+    x_span, y_span : float
+        HEATMAP only — how many standard deviations either side of the
+        entered value the X and the Y axis sweep, where that input's
+        uncertainty is a σ. An axis stated as a range sweeps its range and
+        ignores its span.
     """
 
     mode: SensitivityMode
@@ -153,6 +158,8 @@ class SensitivityConfig:
     x_key: Optional[str] = None
     y_key: Optional[str] = None
     n_steps: int = 11
+    x_span: float = 2.0
+    y_span: float = 2.0
 
 
 @dataclass
@@ -425,12 +432,13 @@ def estimated_model_solves(
 _QUANTILE_EPS = 1e-9
 
 
-def _axis_bounds(sens_config: 'SensitivityConfig', key: str, base_conditions: dict, name: str) -> tuple[float, float]:
-    """Offset range a heatmap axis sweeps, as fractions of nominal."""
-    spec = sens_config.errors.specs.get(key)
+def _axis_bounds(
+    spec: InputSpec | None, key: str, base_conditions: dict, name: str, span: float
+) -> tuple[float, float]:
+    """Offset range a heatmap axis of input *key* sweeps at *span* σ, as fractions of nominal."""
     if spec is None:
         return 0.0, 0.0
-    return spec_bounds(spec, nominal_value(key, base_conditions), name)
+    return spec_bounds(spec, nominal_value(key, base_conditions), name, span)
 
 
 #: Largest seed a run draws for itself. A reported seed is meant to be typed
@@ -1295,13 +1303,16 @@ def run_sensitivity(
                 )
         if sens_config.x_key == sens_config.y_key:
             raise FitRefused('Heatmap X and Y axes must be two different inputs.')
-        for axis_key in (sens_config.x_key, sens_config.y_key):
+        for axis_key, span in ((sens_config.x_key, sens_config.x_span), (sens_config.y_key, sens_config.y_span)):
             spec = errors.specs.get(axis_key)
             name = input_name(axis_key, input_labels)
-            if spec is not None and axis_reaches_zero(spec, nominal_value(axis_key, base_conditions), name):
+            if not span > 0:
+                raise FitRefused(f'The heatmap axis for {name} must span more than 0 σ either side of its set value.')
+            if spec is not None and axis_reaches_zero(spec, nominal_value(axis_key, base_conditions), name, span):
                 raise FitRefused(
-                    f'The heatmap axis for {name} reaches zero or below, and a concentration or binding constant '
-                    'must stay positive. Use a σ below 50 % of the set value, or a range whose lower end is above zero.'
+                    f'The heatmap axis for {name} reaches zero or below at ±{span:g}σ, and a concentration or binding '
+                    f'constant must stay positive. Use a σ below {100 / span:.3g} % of the set value, a narrower '
+                    'span, or a range whose lower end is above zero.'
                 )
         if sens_config.n_steps < 1:
             raise FitRefused('Heatmap grid resolution must be at least 1.')
@@ -1512,11 +1523,10 @@ def run_sensitivity(
         )
 
     # --- HEATMAP ---------------------------------------------------------
-    x_lo, x_hi = _axis_bounds(
-        sens_config, sens_config.x_key, base_conditions, input_name(sens_config.x_key, input_labels)
-    )
-    y_lo, y_hi = _axis_bounds(
-        sens_config, sens_config.y_key, base_conditions, input_name(sens_config.y_key, input_labels)
+    x_lo, x_hi, y_lo, y_hi = (
+        end
+        for key, span in ((sens_config.x_key, sens_config.x_span), (sens_config.y_key, sens_config.y_span))
+        for end in _axis_bounds(errors.specs.get(key), key, base_conditions, input_name(key, input_labels), span)
     )
     x_offsets = np.linspace(x_lo, x_hi, sens_config.n_steps)
     y_offsets = np.linspace(y_lo, y_hi, sens_config.n_steps)

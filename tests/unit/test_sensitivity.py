@@ -81,6 +81,7 @@ from core.pipeline.inputs import (
     ErrorModel,
     InputSpec,
     SharedSource,
+    axis_reaches_zero,
     input_name,
     nominal_value,
     perturbable_inputs,
@@ -618,6 +619,60 @@ def test_heatmap_axes_perturb_the_inputs_they_name(ida_setup, monkeypatch):
     np.testing.assert_allclose(result.y_offsets_pct, [-20.0, 0.0, 20.0])  # ±2σ of the Y input, d0
     along_x = 1e8 * (1 + 3 * result.x_offsets_pct / 100)
     np.testing.assert_allclose(result.ka_grid['Ka_guest'], np.tile(along_x, (3, 1)), rtol=1e-12)
+
+
+def _flat_fit(*_args, **_kwargs):
+    """A perturbed fit that reports the same parameters at every offset: the grid's offsets are what is tested."""
+    return {'Ka_guest': 1e8, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
+
+
+@pytest.mark.parametrize('span', [1.0, 3.0])
+def test_a_sigma_axis_sweeps_the_span_chosen_and_a_range_axis_its_own_ends(ida_setup, monkeypatch, span):
+    """The X axis, a σ of 4 %, runs to ±span·σ; the Y axis, a range, runs from its *from* to its *to* whatever the span."""
+    monkeypatch.setattr(sens, '_fit_perturbed', _flat_fit)
+    cfg = SensitivityConfig(
+        mode=SensitivityMode.HEATMAP,
+        n_samples=1,
+        errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(4.0), 'd0': InputSpec.interval_pct(-6.0, 10.0)}),
+        x_key='h0',
+        y_key='d0',
+        n_steps=3,
+        x_span=span,
+        y_span=span,
+    )
+
+    result = _run(ida_setup, cfg)
+
+    np.testing.assert_allclose(result.x_offsets_pct, [-4.0 * span, 0.0, 4.0 * span])
+    np.testing.assert_allclose(result.y_offsets_pct, [-6.0, 2.0, 10.0])
+
+
+@pytest.mark.parametrize(('span', 'reaches'), [(2.0, False), (3.0, True)])
+def test_whether_a_sigma_axis_reaches_zero_depends_on_its_span(ida_setup, monkeypatch, span, reaches):
+    """σ 40 % stays above zero at ±2σ (−80 %) and reaches below it at ±3σ (−120 %), where the run is refused."""
+    assert axis_reaches_zero(InputSpec.sigma_pct(40.0), 1.0, 'h0', span) is reaches
+    monkeypatch.setattr(sens, '_fit_perturbed', _flat_fit)
+    cfg = SensitivityConfig(
+        SensitivityMode.HEATMAP,
+        1,
+        ErrorModel(specs={'h0': InputSpec.sigma_pct(40.0), 'd0': InputSpec.sigma_pct(5.0)}),
+        x_key='h0',
+        y_key='d0',
+        n_steps=3,
+        x_span=span,
+    )
+    if reaches:
+        with pytest.raises(ValueError, match=r'reaches zero or below at ±3σ.*σ below 33\.3 %'):
+            _run(ida_setup, cfg)
+    else:
+        assert _run(ida_setup, cfg).x_offsets_pct[0] == pytest.approx(-80.0)
+
+
+def test_a_range_axis_reaches_zero_whatever_its_span():
+    """A range states its own ends, so the span chosen for a σ never moves them."""
+    spec = InputSpec.interval_pct(-100.0, 10.0)
+    assert all(axis_reaches_zero(spec, 1.0, 'h0', span) for span in (1.0, 2.0, 3.0))
+    assert not any(axis_reaches_zero(InputSpec.interval_pct(-99.0, 10.0), 1.0, 'h0', span) for span in (1.0, 3.0))
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,9 @@
 """Help ▸ Reading the plots: each entry point opens the window's one non-modal guide at the right section.
 
-Also guards the examples and the Ka Sensitivity entry against the code they
+Also guards the examples and the Sensitivity entry against the code they
 describe: the Ka confidence numbers are recomputed from the demo data, the
-budget table's columns and the name of the per-addition item are read off the
-widget that draws them, and the fit count the example quotes is computed by the
+budget's columns and the name of the per-addition item are read off the
+rules the view draws them from, and the fit count the example quotes is computed by the
 analysis itself. A guide that drifts away from what the app produces fails here.
 """
 
@@ -263,22 +263,20 @@ def test_the_demo_note_states_what_demo_ida_sets():
         assert f'&sigma; {sigma:g}&thinsp;% on {on}' in note
 
 
-#: What the Ka Sensitivity entry says about each column of the budget table,
-#: keyed by the header the widget draws. Written out here rather than matched
-#: loosely, so a column renamed or added in the widget fails until the guide
-#: explains it.
+#: What the Sensitivity entry says about each column of the budget, keyed by the column the view draws.
+#: Written out here rather than matched loosely, so a column renamed or added in the view fails until
+#: the guide explains it.
 _BUDGET_COLUMN_IN_THE_GUIDE = {
     'Source': 'What is ranked: sources, not inputs',
-    'Stated uncertainty': '<i>Stated uncertainty</i> &mdash; what you entered',
+    'Stated': '<i>Stated</i> &mdash; what you entered',
     'Elasticity': '<i>Elasticity</i> &mdash; how many percent K<sub>a</sub> moves per percent',
-    'Share of variance S₁ [95 %]': '<i>Share of variance S<sub>1</sub></i> &mdash; the first-order index',
-    'Variance (decades²) [95 %]': '<i>Variance</i> &mdash; that share as an absolute number, in decades&sup2;',
-    'Spread if exact (decades) [95 %]': '<i>Spread if exact</i> &mdash; what would be left',
+    'Variance': '<i>Variance</i> &mdash; the variance this source explains on its own, in decades&sup2;',
+    'Spread if exact (decades)': '<i>Spread if exact</i> &mdash; what would be left',
 }
 
 
 def _sensitivity_text() -> str:
-    """The Ka Sensitivity entry as one line, so a phrase broken over two lines still matches."""
+    """The Sensitivity entry as one line, so a phrase broken over two lines still matches."""
     from gui.plot_guide import PLOT_GUIDE, SENSITIVITY
 
     return re.sub(r'\s+', ' ', PLOT_GUIDE[SENSITIVITY][1])
@@ -286,25 +284,25 @@ def _sensitivity_text() -> str:
 
 def test_the_sensitivity_entry_explains_every_column_of_the_budget_table():
     """A column on screen with no explanation is a number the reader cannot act on."""
-    from gui.plotting.sensitivity_widget import _BUDGET_HEADERS, _INTERACTIONS_ROW
+    from gui.sensitivity import ALL_SOURCES, BUDGET_COLUMNS, INTERACTIONS
 
-    assert tuple(_BUDGET_COLUMN_IN_THE_GUIDE) == _BUDGET_HEADERS
+    assert tuple(_BUDGET_COLUMN_IN_THE_GUIDE) == BUDGET_COLUMNS
     text = _sensitivity_text()
     missing = [header for header, phrase in _BUDGET_COLUMN_IN_THE_GUIDE.items() if ' '.join(phrase.split()) not in text]
     assert not missing, f'the guide no longer explains these budget columns: {missing}'
-    assert f'<i>{_INTERACTIONS_ROW}</i>' in text, 'the last row of the table is unexplained'
+    assert f'<i>{INTERACTIONS}</i>' in text and f'<i>{ALL_SOURCES}</i>' in text, 'the last rows are unexplained'
 
 
-def test_the_sensitivity_entry_calls_the_per_addition_item_what_the_widget_labels_it():
-    """The reader looks the item up by the name on screen, and reads what the widget says under the table."""
-    from gui.plotting.sensitivity_widget import _ADDITIONS_LABEL, _ADDITIONS_NOTE
+def test_the_sensitivity_entry_calls_the_per_addition_item_what_the_view_labels_it():
+    """The reader looks the item up by the name on screen, and reads what the view says under the budget."""
+    from gui.sensitivity import ADDITIONS_LABEL, ADDITIONS_NOTE
 
     text = _sensitivity_text()
 
-    assert f'<b>{_ADDITIONS_LABEL}</b>' in text
+    assert f'<b>{ADDITIONS_LABEL}</b>' in text
     # A stated error of each addition is part of the fit's interval, and both texts say so.
     statement = 'The random error of each addition is part of the reported interval when stated under Input uncertainty'
-    assert _ADDITIONS_NOTE.startswith(statement)
+    assert ADDITIONS_NOTE.startswith(statement)
     assert statement in text
     assert 'does not include the random error of each addition' not in text
 

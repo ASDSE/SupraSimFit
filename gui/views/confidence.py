@@ -23,8 +23,8 @@ import math
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QMargins, QObject, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QFontMetrics, QKeySequence, QPainter
+from PyQt6.QtCore import QMargins, QObject, QPointF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QFont, QFontMetrics, QKeySequence
 from PyQt6.QtWidgets import QApplication, QFrame, QGridLayout, QLayout, QScrollArea, QSizePolicy, QWidget
 
 from gui import confidence as CF
@@ -372,20 +372,6 @@ class RegionFigure(QWidget):
         return QSize(super().sizeHint().width(), self.minimumHeight())
 
 
-class _Figure(QWidget):
-    """A saved Ka confidence figure: its plots on a white surface, in the light theme (DESIGN.md §7)."""
-
-    def __init__(self, t: Theme):
-        super().__init__()
-        self.t = t
-        self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.fillRect(self.rect(), self.t.q('bg-surface'))
-        p.end()
-
-
 class ConfidenceView(QObject):
     """The canvas and side panel of Ka confidence over *model*; *parent* is the session.
 
@@ -490,7 +476,7 @@ class ConfidenceView(QObject):
         fit = self._fit()
         profile = self.model.profile
         light = Theme(dark=False)
-        figure = _Figure(light)
+        figure = C.Figure(light)
         lay = C.vbox(spacing=0, margins=(6, 5, 6, 5))
         plots = [CF.profile_plot(fit, p) for p in profile.profiles.values()]
         headers = {h.key: h for h in CF.headers(fit)}
@@ -506,9 +492,9 @@ class ConfidenceView(QObject):
             )
             gap()
             lay.addLayout(
-                C.hbox(_PaintedText(light, plot.name, 'body-strong'), None, C.LegendRow(light, _legend(plot)))
+                C.hbox(C.PaintedText(light, plot.name, 'body-strong'), None, C.LegendRow(light, _legend(plot)))
             )
-            lay.addWidget(_PaintedText(light, line, 'small'))
+            lay.addWidget(C.PaintedText(light, line, 'small'))
             lay.addSpacing(space(2))
             fig = ProfileFigure(light, plot, interactive=False)
             fig.setFixedHeight(EXPORT_PLOT_HEIGHT)
@@ -517,7 +503,7 @@ class ConfidenceView(QObject):
         if region is not None:
             title = 'Joint region' + (f' · {region.description}' if region.description else '')
             gap()
-            lay.addWidget(_PaintedText(light, title, 'body-strong'))
+            lay.addWidget(C.PaintedText(light, title, 'body-strong'))
             lay.addSpacing(space(2))
             reg = RegionFigure(light, region)
             reg.setFixedHeight(EXPORT_PLOT_HEIGHT)
@@ -802,22 +788,3 @@ def _legend(plot: CF.ProfilePlot) -> list[tuple[str, str]]:
         kind, text = items[0]
         items[0] = (f'{kind}+band', text)
     return items
-
-
-class _PaintedText(QWidget):
-    """One line of text painted in a given theme, for a saved figure whatever the window's palette."""
-
-    def __init__(self, t: Theme, text: str, role: str):
-        super().__init__()
-        self.t, self.text, self.role = t, text, role
-        metrics = QFontMetrics(font(role))
-        self.setFixedHeight(metrics.height() + space(2))
-        self.setMinimumWidth(metrics.horizontalAdvance(text))
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setFont(font(self.role))
-        p.setPen(self.t.q('text-primary' if self.role == 'body-strong' else 'text-secondary'))
-        p.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text)
-        p.end()

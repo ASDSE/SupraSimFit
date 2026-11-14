@@ -179,15 +179,17 @@ results), so the true uncertainty is wider than this interval.</p>
 """
 
 _SENSITIVITY_HTML = """
-<p>This tab answers: <b>how much does K<sub>a</sub> change if the inputs you entered are slightly
+<p>This view answers: <b>how much does K<sub>a</sub> change if the inputs you entered are slightly
 wrong, which error is responsible for most of it, and what would a better one buy?</b> Each sample
-refits your data &mdash; one complete, deterministic fit of the average of the replicates the
-baseline used &mdash; with the inputs moved by the error sources you stated: a &sigma; draws from a
-normal distribution, a range evenly between its ends.</p>
+refits your data &mdash; one complete, deterministic fit of the average of the replicates the fit at
+the inputs as entered used &mdash; with the inputs moved by the error sources you stated: a &sigma;
+draws from a normal distribution, a range evenly between its ends. The sample with no offset at all
+is the fit at the inputs you entered.</p>
 
 <p><b>What is ranked: sources, not inputs</b></p>
 <p>The sources come from <i>Input uncertainty</i> in the sidebar, the same statement the fit&rsquo;s
-own interval rests on; this panel sets only how the analysis is run. There are three kinds:</p>
+own interval rests on; <i>Analysis settings</i> sets only how the analysis is run, and lists the
+sources it varies. There are three kinds:</p>
 <ul>
 <li>an input&rsquo;s <b>own</b> uncertainty &mdash; the error that input alone has;</li>
 <li>a <b>shared</b> source &mdash; one stock, one balance, one pipette behind two or more inputs,
@@ -198,22 +200,31 @@ every titration point on its own, and all of those movements are reported as thi
 </ul>
 <p>The sources are independent and multiply, so an input carrying both an entry of its own and a
 shared source carries both errors. At least one source has to be stated, or there is no spread to
-split. The dashed <i>baseline</i> is the fit with every input exactly as entered.</p>
+split.</p>
 
-<p>The analysis propagates the uncertainties you stated (GUM Supplement 1): every sample counts the
-same, however well it fits the data. The input-aware interval in Fit results also weighs what
-the data say about the inputs, so the two can differ.</p>
+<p><b>The spread and the samples</b></p>
+<p>Each binding constant opens with its <i>spread from the stated inputs</i>: one standard deviation
+of log<sub>10</sub> K<sub>a</sub>, as the factor K<sub>a</sub> spreads by (&times;/&divide;) and in
+decades, centred on the fit at the inputs as entered. Hover over it for the 95&thinsp;% interval of
+the analysis&rsquo; own sampling error. Beside it, the histogram of every sample&rsquo;s K<sub>a</sub>,
+the middle 90&thinsp;% solid. Two readings of the fit are marked on it: <i>Inputs as entered</i>, a
+dashed line with its interval as a bracket, where the samples centre; and <i>Input-aware</i>, the
+interval the app reports, as the accent line and band. The analysis propagates the uncertainties you
+stated (GUM Supplement 1): every sample counts the same, however well it fits the data. The
+input-aware interval also weighs what the data say about the inputs, so the two can differ &mdash;
+the spread here is not a confidence interval. Where the fit reports an input conflict, a callout says
+so: the samples centre on the inputs as entered, so they show how far the stated inputs move
+K<sub>a</sub>, not where it lies.</p>
+<p><i>Plot against each source &rarr;</i> opens a window of small plots, one per source: each
+sample&rsquo;s K<sub>a</sub> against that source&rsquo;s draw, in percent of the entered value. A clear
+trend means K<sub>a</sub> follows that source. The additions are one draw per titration point, so
+they have no plot of their own.</p>
 
-<p><b>K<sub>a</sub> histogram</b>: every sample&rsquo;s best K<sub>a</sub>, each fitted with its
-own drawn inputs and its own K<sub>a</sub> alone. The title gives the median and how many-fold the
-middle 90&thinsp;% spans. This spread is not a confidence interval: it says how far the inputs move
-K<sub>a</sub>, while the interval in Fit results weighs that against how well the data pin
-K<sub>a</sub> down at all.</p>
-
-<p><b>Sobol indices</b> split the variation of log<sub>10</sub> K<sub>a</sub> among the sources.</p>
+<p><b>Share of the variance, by source</b> splits the variation of log<sub>10</sub> K<sub>a</sub>
+among the sources, largest first.</p>
 <ul>
-<li>S<sub>1</sub> (first order, blue): that source alone.</li>
-<li>S<sub>T</sub> (total, orange): alone plus together with other sources.</li>
+<li>S<sub>1</sub> (first order, the solid bar): that source alone.</li>
+<li>S<sub>T</sub> (total, the outlined bar): alone plus together with other sources.</li>
 <li>Whiskers: 95&thinsp;% confidence intervals; more samples narrow them. An arrow marks a value off
 the chart; <i>n/a</i>, too few fits.</li>
 </ul>
@@ -232,21 +243,15 @@ refits per input for the elasticities below. The eight independent sample sets b
 cost accuracy: index by index, an index at 1024 carries up to about five times the error of one
 undivided set of the same size. What narrows a whisker is a larger sample size: at 4096 most indices
 are already at or below the error one undivided set of 1024 reaches. Prefer 2048 or 4096 when a
-whisker is too wide to act on. A run you stop keeps the sample sets that finished, and the tab says
-how many of the eight its numbers rest on.</p>
+whisker is too wide to act on. A run you stop keeps the sample sets that finished, and the view says
+how many of the eight its numbers rest on. <i>Fixed seed</i> repeats a run exactly; <i>This run</i>
+gives the seed every run used.</p>
 
-<p><b>The uncertainty budget</b></p>
-<p>Under the bars, for each association constant, the same run read as absolute numbers rather than
-shares. The line above the table &mdash; <i>Spread of log<sub>10</sub>(K<sub>a</sub>) from the stated
-input uncertainties, 1 SD</i> &mdash; is how far the stated uncertainties move the constant: in
-decades, and as the factor K<sub>a</sub> spreads by, with the 95&thinsp;% interval of the
-analysis&rsquo; own sampling error. The input-aware interval in Fit results uses the same
-uncertainties but also weighs what the data say about the inputs, so the two can differ; this tab
-propagates them with every draw counted the same (GUM Supplement 1).</p>
-<p>The table splits that spread by source:</p>
+<p><b>The variance budget</b></p>
+<p>Under the bars, the same run read as absolute numbers rather than shares, one row per source:</p>
 <ul>
-<li><i>Stated uncertainty</i> &mdash; what you entered, in percent of the entered value however it
-was stated, so the column compares.</li>
+<li><i>Stated</i> &mdash; what you entered, in percent of the entered value however it was stated, so
+the column compares.</li>
 <li><i>Elasticity</i> &mdash; how many percent K<sub>a</sub> moves per percent the source moves,
 measured by refitting a small step either side. A negative value means K<sub>a</sub> moves the other
 way. A shared source&rsquo;s elasticity is the sum of the elasticities of the inputs it moves, which
@@ -255,55 +260,57 @@ in direct binding; in a displacement assay it is s(K<sub>a,dye</sub>) &minus; 1,
 as far as the elasticity to K<sub>a,dye</sub> is close to 1 (strong dye binding), and if
 K<sub>a,dye</sub> was itself measured with the same stock it is &minus;1 there too. The Elasticity
 column shows the value for your data.</li>
-<li><i>Share of variance S<sub>1</sub></i> &mdash; the first-order index: the share of the spread
-this source explains on its own.</li>
-<li><i>Variance</i> &mdash; that share as an absolute number, in decades&sup2;. The column and the
-interactions row together make the square of the spread above. A share is relative to that one
-run&rsquo;s own total, so it is the variance, not the share, that compares between two analyses.</li>
+<li><i>Variance</i> &mdash; the variance this source explains on its own, in decades&sup2; (the
+column&rsquo;s header gives the power of ten its numbers share): its share S<sub>1</sub> as an absolute
+number. A share is relative to that one run&rsquo;s own total, so it is the variance, not the share,
+that compares between two analyses.</li>
 <li><i>Spread if exact</i> &mdash; what would be left if this source were known exactly. It follows
 from the first-order index, which is the one that answers that question.</li>
 </ul>
-<p>A share and a variance are estimates, so a source too small for this run to measure can come out
-slightly negative, and its interval can reach below zero. Read that as <i>not distinguishable from
-none</i>: the source explains no part of the spread the analysis can separate from its own sampling
-error. A larger sample size shrinks both.</p>
-<p><i>Interactions</i> is what no single source explains on its own: one minus the sum of the
-first-order shares. It is an estimate like the rest, so it can come out slightly negative when every
-source acts on its own.</p>
-<p><b>Fits that run to the edge of the K<sub>a</sub> bounds</b> are reported above the table, because
-the budget below them is then about that edge rather than about your inputs. A constant gets a
-reason in place of its indices, budget, what-if and elasticities when its fit at the entered inputs
-ran to an edge of its bounds, when its interval at the entered inputs is open, or when its refits
-do not follow the inputs smoothly (they break a scaling law every binding model obeys) &mdash; the
-<i>Ka confidence</i> view is where such a fit is read. If instead a share of the samples ran there, the tab keeps the numbers
-and says how many did: each of those fits sits decades from the rest and pushes the spread and the
-budget up, which means the uncertainties you stated reach into a region where the data stop pinning
-K<sub>a</sub> down.</p>
-<p><b>What if</b> &mdash; the row under the table asks what reducing one source would buy: pick the
-source, set the uncertainty you could reach (a reduction only), and the sentence gives the spread
-before and after, which source would then be the largest item, and a cross-check. The spread after
-is read from the samples you already have, re-weighted towards the narrower distribution, so it
-rests on no assumption about how K<sub>a</sub> depends on the source; it is given with the number of
-samples that effectively carry the weight, and a first-order formula follows it as the cross-check.
-Where too few samples carry the weight, or you take the source as exact and leave none to re-weight,
-the formula gives the spread instead and the sentence says so. No fit is run for a what-if.</p>
+<p>The bracket after each number is its 95&thinsp;% sampling interval. A share and a variance are
+estimates, so a source too small for this run to measure can come out slightly negative, and its
+interval can reach below zero. Read that as <i>not distinguishable from none</i>. A larger sample
+size shrinks both. <i>Interactions</i> is what no single source explains on its own, as a variance;
+it is an estimate like the rest, so it can come out slightly negative when every source acts on its
+own. <i>All sources</i> is the whole variance: the rows above it and <i>Interactions</i> add up to
+it, the square of the spread at the top.</p>
+<p><b>Fits that run to the edge of the K<sub>a</sub> bounds</b> are counted in a callout above the
+shares, because the numbers below are then about that edge rather than about your inputs. A constant
+gets a callout in place of its indices, budget, what-if and elasticities when its fit at the entered
+inputs ran to an edge of its bounds, when its interval at the entered inputs is open, or when its
+refits do not follow the inputs smoothly (they break a scaling law every binding model obeys)
+&mdash; the <i>Ka confidence</i> view is where such a fit is read. If instead a share of the samples
+ran there, the view keeps the numbers and says how many did: each of those fits sits decades from the
+rest and pushes the spread and the budget up, which means the uncertainties you stated reach into a
+region where the data stop pinning K<sub>a</sub> down.</p>
+<p><b>What if one source were known better</b> &mdash; choose a source and the uncertainty you could
+reach (a reduction only), and the sentence gives the spread before and after, which source would then
+be the largest item, and a cross-check. The spread after is read from the samples you already have,
+re-weighted towards the narrower distribution, so it rests on no assumption about how K<sub>a</sub>
+depends on the source; it is given with the number of samples that effectively carry the weight, and
+a first-order formula follows it as the cross-check. Where too few samples carry the weight, or you
+take the source as exact and leave none to re-weight, the formula gives the spread instead and the
+line says so. No fit is run for a what-if.</p>
 <p>The random error of each addition is part of the reported interval when stated under Input
 uncertainty; here it is sampled and ranked against the other sources. With <i>m</i> replicates
 made as separate titrations it is drawn at &sigma;/&radic;<i>m</i>, the error of their average;
 replicates stated as repeated reads of one titration share their additions, and it is drawn at
 &sigma;.</p>
-<p><i>Export</i> &#9656; <i>Export All&hellip;</i> writes the whole table, the spread, the
-elasticity of every input and the run&rsquo;s seed as <i>Ka uncertainty budget (CSV)</i>.</p>
+<p><i>Export</i> &#9656; <i>Export several&hellip;</i> writes the whole budget, the elasticity of
+every input and the run&rsquo;s seed as <i>Ka uncertainty budget (CSV)</i>.</p>
 
-<p><b>K<sub>a</sub> vs each source</b>: each sample&rsquo;s K<sub>a</sub> against one source&rsquo;s
-change in percent. A clear slope means K<sub>a</sub> follows that source. A panel opens on the range
-you set, with its ends labelled, or on &plusmn; the farthest draw for a &sigma;. The additions have
-no single offset, so they have no panel.</p>
+<p><b>Heatmap</b>: two inputs stepped on a grid (11 &times; 11, 21 &times; 21 or 31 &times; 31 cells,
+one fit each), K<sub>a</sub> coloured on a perceptual scale from dark violet (low) to yellow (high),
+with its colour bar. Each axis is in its input&rsquo;s unit &mdash; the titrant, a series, in percent
+of the concentrations entered &mdash; and spans its range, or &plusmn;1, &plusmn;2 or &plusmn;3
+&sigma; for an input stated as a &sigma;, chosen beside the axis; an axis that would reach zero
+is refused before any fit. The diamond marks the inputs as entered. Point at a cell to read its
+inputs, K<sub>a</sub>, its change from the entered point and R&sup2; in the card; an empty cell is one
+the binding model has no solution for. Worrying: a sharp edge, where K<sub>a</sub> jumps between
+neighbouring cells.</p>
 
-<p><b>Heatmap</b>: two inputs stepped on a grid, one fit per cell, coloured by K<sub>a</sub> change
-(blue lower, red higher), K<sub>a</sub> or R&sup2;. Hover to read a cell. An empty cell is one the
-binding model has no solution for. Worrying: a sharp edge, where K<sub>a</sub> jumps between
-neighbouring cells. The axes are inputs, each swept over its own stated range.</p>
+<p><i>Display</i>, in the side panel, draws every K<sub>a</sub> axis on a log<sub>10</sub> or a linear
+scale.</p>
 
 <p><b>Example</b></p>
 <p>The uncertainties Demo IDA states, nothing shared, sample size 1024, which costs 6152 fits: median
@@ -328,7 +335,7 @@ way as well and carry exactly &minus;1, as the same source does in a direct-bind
 
 _SUMMARY_HTML = """
 <p><i>Fit details</i>, the side panel of Fit results, holds everything the headline above the plot
-does not; on the Ka Sensitivity tab, the panel under the plots summarises the samples.</p>
+does not.</p>
 
 <p><b>Fit quality</b>: <i>R&sup2;</i> is the fraction of the data&rsquo;s variance the fit explains;
 <i>RMSE</i> the typical distance between curve and data, in signal units; <i>Replicates used</i> how
@@ -388,12 +395,9 @@ mean &plusmn; SD, the mean alone, or the replicates alone.</p>
 
 <p><b>How to read it</b></p>
 <p>The interval says how precisely these data fix K<sub>a</sub>, given what you said you know about
-the inputs; the single-replicate line says how reproducible your replicates are; the Ka Sensitivity tab
+the inputs; the single-replicate line says how reproducible your replicates are; Sensitivity
 splits the movement of K<sub>a</sub> among the error sources you stated. They answer three different questions, and a
 narrow one does not make the others narrow.</p>
-<p>On Ka Sensitivity the Estimate is the fit with the inputs as entered, and the other columns cover
-every sample&rsquo;s best fit. Rows marked * are values the data fix only in combination: their
-spread, even 0 &plusmn; 0, says nothing about precision.</p>
 
 <p><b>Example</b></p>
 <p>With every input as entered: RMSE 7.24&times;10<sup>3</sup> a.u. on signals up to
@@ -407,6 +411,6 @@ interval above.</p>
 PLOT_GUIDE: dict[str, tuple[str, str]] = {
     FIT_CURVE: ('Fit results', _FIT_CURVE_HTML),
     CONFIDENCE: ('Ka confidence', _CONFIDENCE_HTML),
-    SENSITIVITY: ('Ka Sensitivity', _SENSITIVITY_HTML),
+    SENSITIVITY: ('Sensitivity', _SENSITIVITY_HTML),
     SUMMARY: ('Fit details', _SUMMARY_HTML),
 }

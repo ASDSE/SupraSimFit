@@ -1,7 +1,7 @@
 """Consolidated multi-artefact export dialog.
 
 Lets the user pick which artefacts to export (raw data, fit results,
-plots, style template), choose a target folder + filename base, and
+plots, the uncertainty budget), choose a target folder + filename base, and
 write them all in a single click. Persists the last selection under
 ``QSettings`` group ``export_multiple/*``.
 """

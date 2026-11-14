@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 
 import pyqtgraph as pg
 import pyqtgraph.exporters  # noqa: F401 — registers exporters
@@ -121,35 +121,11 @@ def export_plot_item(
         )
 
 
-@contextmanager
-def _left_out(parent: 'QWidget', widgets: 'Sequence[QWidget]'):
-    """Hide *widgets* and lay *parent* out without them, putting both back on exit.
-
-    Only the ones currently on screen are touched, and the layout is applied at
-    once so what is painted matches what is left: the space a hidden row held
-    goes to whatever stretches beside it rather than staying blank.
-    """
-    hidden = [widget for widget in widgets if not widget.isHidden()]
-    layout = parent.layout()
-    for widget in hidden:
-        widget.setVisible(False)
-    if hidden and layout is not None:
-        layout.activate()
-    try:
-        yield
-    finally:
-        for widget in hidden:
-            widget.setVisible(True)
-        if hidden and layout is not None:
-            layout.activate()
-
-
 def export_widget(
     widget: 'QWidget',
     path: str | Path,
     *,
     width_px: int = 2100,
-    without: 'Sequence[QWidget]' = (),
 ) -> None:
     """Export a whole widget tree — text, plots and all — to a PNG.
 
@@ -173,11 +149,6 @@ def export_widget(
         :func:`export_plot_item`, which draws through pyqtgraph's own exporter.
     width_px
         Output width in pixels; the height follows the widget's aspect ratio.
-    without
-        Children to leave out of the picture. A saved figure is read on its own,
-        so the controls that change what a tab shows have nothing to offer it;
-        on macOS a check box or a drop-down painted outside the window draws as
-        its label with no frame at all.
 
     Raises
     ------
@@ -193,7 +164,6 @@ def export_widget(
         raise ExportRefused(f"A whole tab is saved as one picture, so '{ext}' cannot be written. Use .png.")
     scenes = [child.scene() for child in widget.findChildren(pg.GraphicsView) if child.scene() is not None]
     with ExitStack() as stack:
-        stack.enter_context(_left_out(widget, without))
         for scene in scenes:
             stack.enter_context(_screen_space_items_to_scene_space(scene))
         size = widget.size()

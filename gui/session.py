@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -58,6 +57,7 @@ from gui.plotting.labels import (
     verdict_sentence,
     widening_sentences,
 )
+from gui.sensitivity import budget_csv_rows, budget_refusal
 from gui.widgets.assay_conditions import result_input_labels
 
 if TYPE_CHECKING:
@@ -1012,7 +1012,6 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     - Ka sensitivity plot: a sensitivity analysis is shown.
     - Ka uncertainty budget: the shown analysis reports sensitivity indices,
       which is what a budget is split from; a heatmap has none.
-    - Style template: always available (style widget is always present).
 
     While every held result is hidden, the result artefacts give the note
     hiding them as the reason, as the window's own export actions do.
@@ -1040,7 +1039,6 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         write_measurements_csv,
         write_measurements_txt,
     )
-    from gui.plotting.plot_style import save_style_json
 
     def _write_raw_txt(path: Path) -> None:
         write_measurements_txt(model.measurement_set, str(path))
@@ -1066,34 +1064,22 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         session._confidence.export_image(str(path))
 
     def _write_sensitivity(path: Path) -> None:
-        session._sensitivity_widget.export_image(str(path))
+        session._sensitivity.export_image(str(path))
 
     def _write_budget_csv(path: Path) -> None:
-        """The budget table as the Ka Sensitivity tab reports it, one row per source and Ka."""
+        """The variance budget as Sensitivity reports it, one row per source and Ka (:func:`gui.sensitivity.budget_csv_rows`)."""
         result = model.sensitivity_result
-        budgets = (result.budget or {}).values()
         # A Sobol run always has a budget per binding constant; whether it holds
         # a number is the question, and a file of empty cells answers nothing.
-        if result.budget and all((result.withheld or {}).get(key) for key in result.budget):
-            raise ExportRefused(
-                'This analysis gives no uncertainty budget: for every binding constant the Ka Sensitivity tab '
-                'says why its numbers are withheld. See that tab.'
-            )
-        if not any(math.isfinite(budget.variance) for budget in budgets):
-            raise ExportRefused(
-                'This analysis reports no uncertainty budget: too few of its samples have a fit to split the '
-                'spread of Ka between the sources. Run the analysis again.'
-            )
-        rows = session._sensitivity_widget.budget_rows()
+        refusal = budget_refusal(result)
+        if refusal is not None:
+            raise ExportRefused(refusal)
+        rows = budget_csv_rows(result)
         columns = list(dict.fromkeys(key for row in rows for key in row))
         with path.open('w', encoding='utf-8', newline='') as handle:
             writer = csv.DictWriter(handle, columns, restval='')
             writer.writeheader()
             writer.writerows(rows)
-
-    def _write_style(path: Path) -> None:
-        style = session._style_widget.current_style()
-        save_style_json(style, path)
 
     return [
         ExportableArtefact(
@@ -1175,13 +1161,6 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
             available=has_budget,
             unavailable_reason=no_budget_msg,
             writer=_write_budget_csv,
-        ),
-        ExportableArtefact(
-            key='style_json',
-            label='Style template (JSON)',
-            suffix='_style.json',
-            available=True,
-            writer=_write_style,
         ),
     ]
 

@@ -29,8 +29,10 @@ from core.pipeline.inputs import ErrorModel, InputSpec, SharedSource  # noqa: E4
 from core.pipeline.varpro import FitCancelled  # noqa: E402
 from core.units import Q_  # noqa: E402
 from gui.widgets.assay_conditions import assay_class  # noqa: E402
+from tests.unit.gui.sensitivity_results import fake_run as _fake_run  # noqa: E402
+from tests.unit.gui.sensitivity_results import made_on as _made_on  # noqa: E402
+from tests.unit.gui.sensitivity_results import sobol_result as _sobol_result  # noqa: E402
 from tests.unit.gui.session_setup import state_binding, state_dilution  # noqa: E402
-from tests.unit.gui.test_sensitivity_gui import _fake_run, _made_on, _sobol_result  # noqa: E402
 
 _IDA_DATA = Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt'
 
@@ -879,7 +881,7 @@ def test_save_plot_saves_the_plot_of_the_view(qapp, monkeypatch, dialogs, tmp_pa
     )
     monkeypatch.setattr(type(session._results), 'export_image', lambda self, path: saved.append(('fit', path)))
     monkeypatch.setattr(
-        type(session._sensitivity_widget), 'export_image', lambda self, path: saved.append(('sensitivity', path))
+        type(session._sensitivity), 'export_image', lambda self, path: saved.append(('sensitivity', path))
     )
 
     session.export_plot('Sensitivity')
@@ -890,7 +892,7 @@ def test_save_plot_saves_the_plot_of_the_view(qapp, monkeypatch, dialogs, tmp_pa
 
 
 def test_the_save_plot_dialog_offers_only_what_the_view_can_write(qapp, monkeypatch, dialogs):
-    """A view saved whole as one picture offers PNG alone; the titration plot still offers a drawing.
+    """A view whose figure is painted as one picture offers PNG alone; the titration plot still offers a drawing.
 
     Offering SVG where the view cannot write it sends the user to a message box
     instead of a file.

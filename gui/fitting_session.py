@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -18,7 +17,6 @@ from PyQt6.QtWidgets import (
 
 from core.assays.registry import AssayType
 from core.pipeline.inputs import TITRANT, InputSpec
-from core.units import Quantity
 from gui import plot_guide
 from gui.design import components as C
 from gui.design.appearance import theme
@@ -26,16 +24,13 @@ from gui.design.tokens import SIZE
 from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.plotting.export import ExportRefused
 from gui.plotting.labels import and_join, stated_uncertainty
-from gui.plotting.plot_style import PlotStyleWidget
-from gui.plotting.samples_summary import SamplesSummary
-from gui.plotting.sensitivity_widget import SensitivityWidget
 from gui.session_model import CONCENTRATIONS_REQUIRED, SessionModel
 from gui.views.binding import BindingView
 from gui.views.confidence import ConfidenceView
 from gui.views.fit_results import FitResultsView
 from gui.views.measurements import MeasurementsView
+from gui.views.sensitivity import SensitivityView
 from gui.views.uncertainty import UncertaintyView
-from gui.widgets.sensitivity_panel import SensitivityPanel
 
 #: A session's views as the sidebar groups them: (group, ((view, icon), …)).
 NAVIGATION = (
@@ -52,6 +47,12 @@ _GUIDE_SECTIONS = {
     'Sensitivity': plot_guide.SENSITIVITY,
 }
 
+#: What Plot appearance says while no plot reads an appearance setting of its own (DESIGN.md §10).
+PLOT_APPEARANCE = (
+    'The plots follow the app’s design, and saved figures use the light theme on white. Plot appearance has no '
+    'settings of its own.'
+)
+
 _DEMO_IDA_PATH = Path(__file__).parent.parent / 'data' / 'IDA_system.txt'
 
 #: The input uncertainties Demo IDA states: a literature Ka,dye known to about 10 %, and
@@ -63,11 +64,6 @@ _DEMO_UNCERTAINTIES = {
     'd0': InputSpec.sigma_pct(3.0),
     TITRANT: InputSpec.sigma_pct(3.0),
 }
-
-
-def _unreadable(value) -> bool:
-    """Whether a condition's value is one the form could not read (NaN)."""
-    return isinstance(value, Quantity) and math.isnan(value.magnitude)
 
 
 class _SidePanel(QWidget):
@@ -223,6 +219,8 @@ class FittingSession(QWidget):
             return self._results.badge()
         if view == 'Ka confidence':
             return self._confidence.badge()
+        if view == 'Sensitivity':
+            return self._sensitivity.badge()
         return None
 
     def _plot_widget_of(self, view: str):
@@ -230,7 +228,7 @@ class FittingSession(QWidget):
             'Measurements': self._measurements.plot,
             'Fit results': self._results,
             'Ka confidence': self._confidence,
-            'Sensitivity': self._sensitivity_widget,
+            'Sensitivity': self._sensitivity,
         }.get(view)
 
     def plot_export_note(self, view: str) -> str | None:
@@ -504,7 +502,7 @@ class FittingSession(QWidget):
             self._measurements.plot: ('titration', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._results: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._confidence: ('confidence', 'PNG image (*.png)'),
-            self._sensitivity_widget: ('sensitivity', 'PNG image (*.png)'),
+            self._sensitivity: ('sensitivity', 'PNG image (*.png)'),
         }[widget]
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -550,12 +548,9 @@ class FittingSession(QWidget):
         self._measurements = MeasurementsView(self.model, self)
         self._binding = BindingView(self.model, self)
         self._uncertainty = UncertaintyView(self.model, self)
-        self._sensitivity_panel = SensitivityPanel()
         self._results = FitResultsView(self.model, self)
         self._confidence = ConfidenceView(self.model, self)
-        self._style_widget = PlotStyleWidget()
-        self._sensitivity_widget = SensitivityWidget()
-        self._summary_widget = SamplesSummary()
+        self._sensitivity = SensitivityView(self.model, self)
 
         def side(title: str, *widgets: QWidget, link: QWidget | None = None) -> _SidePanel:
             content = QWidget()
@@ -572,8 +567,8 @@ class FittingSession(QWidget):
             'Ka confidence': _View(
                 self._confidence.canvas, side('Notes', self._confidence.side, link=self._confidence.guide_link)
             ),
-            'Sensitivity': _View(_canvas(self._samples_split()), side('Analysis settings', self._sensitivity_panel)),
-            'Plot appearance': _View(_canvas(self._style_widget, scroll=True)),
+            'Sensitivity': _View(self._sensitivity.canvas, side('Analysis settings', self._sensitivity.side)),
+            'Plot appearance': _View(_canvas(C.wrapped(PLOT_APPEARANCE, 'body', 'secondary'), scroll=True)),
         }
         self._stack = QStackedWidget()
         for view in VIEWS:
@@ -581,16 +576,6 @@ class FittingSession(QWidget):
         self._progress_line = C.ProgressLine(theme())
         self.setLayout(C.vbox(self._progress_line, self._stack, spacing=0))
         self.show_view('Fit results')
-
-    def _samples_split(self) -> QSplitter:
-        """The sensitivity plots above the summary of the run's samples, the split between them dragged by the user."""
-        split = QSplitter(Qt.Orientation.Vertical)
-        split.setChildrenCollapsible(False)
-        split.addWidget(self._sensitivity_widget)
-        split.addWidget(self._summary_widget)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
-        return split
 
     # ------------------------------------------------------------------
     # Signal wiring
@@ -614,21 +599,14 @@ class FittingSession(QWidget):
         self.model.uncertainty_changed.connect(self.changed)
         self.model.binding_changed.connect(self._on_binding_changed)
 
-        self._sensitivity_panel.run_requested.connect(self.run_sensitivity)
-        # Cancel is offered in two places: the side panel and the running view.
-        self._sensitivity_panel.cancel_requested.connect(self.model.cancel_sensitivity)
-        self._sensitivity_widget.cancel_requested.connect(self.model.cancel_sensitivity)
-
-        # Plot appearance styles Sensitivity, the plot that reads a style.
-        self._style_widget.style_changed.connect(self._sensitivity_widget.apply_style)
+        self._sensitivity.view_requested.connect(self.view_requested)
+        self.model.analysis_changed.connect(self.changed)
 
         model = self.model
-        model.run_changed.connect(self._on_run_changed)
-        model.progress.connect(self._sensitivity_widget.set_progress)
+        model.run_changed.connect(lambda _kind, _running: self._show_running())
         model.progress.connect(lambda _done, _total: self._on_progress())
-        model.results_changed.connect(self._on_results_changed)
         model.profile_changed.connect(self._show_running)
-        model.sensitivity_changed.connect(self._on_sensitivity_changed)
+        model.sensitivity_changed.connect(lambda _replaced: self.changed.emit())
         model.warning.connect(lambda title, message: QMessageBox.warning(self, title, message))
         for signal in (model.results_changed, model.name_changed, model.status_changed):
             signal.connect(self.changed)
@@ -638,30 +616,14 @@ class FittingSession(QWidget):
     # ------------------------------------------------------------------
 
     def _on_data_changed(self) -> None:
-        """Give the views that name replicates the replicates of the data now loaded."""
-        ms = self.model.measurement_set
-        ids = None if ms is None else ms.replica_ids
-        self._summary_widget.set_replica_ids(ids)
         self.changed.emit()
 
     def _on_binding_changed(self) -> None:
-        """Give the views that follow the binding model the model chosen and the conditions as entered.
-
-        The heatmap axes are the inputs of Input uncertainty, named as it names them,
-        and an axis stated in an input's own unit is read against its entered value.
-        A finished fit names its own inputs from the assay it was made for
-        (:func:`~gui.widgets.assay_conditions.result_input_labels`), so what is
-        reported about a fit does not follow the model chosen now.
-        """
+        """Give Measurements the model chosen, which names its titrant, once it changes."""
         assay_type = self.model.binding.assay_type
         if assay_type is not self._assay_shown:
             self._assay_shown = assay_type
-            self._sensitivity_panel.set_assay_type(assay_type)
-            self._sensitivity_panel.set_inputs(self.model.uncertainty.input_labels())
             self._measurements.refresh()
-        conditions = self.model.settings.conditions
-        readable = {key: value for key, value in conditions.items() if not _unreadable(value)}
-        self._sensitivity_panel.set_nominal_values(readable)
         self.changed.emit()
 
     def copy_from(self, other: FittingSession) -> None:
@@ -675,12 +637,11 @@ class FittingSession(QWidget):
     def run_sensitivity(self) -> None:
         """Start a background Ka input-sensitivity run, once the user has accepted what a long one costs."""
         self._finish_edits()
-        errors = self.model.settings.errors
-        refusal = self.model.sensitivity_refusal(self._sensitivity_panel.run_problems(errors))
+        refusal = self.model.sensitivity_refusal(self.model.analysis_problems())
         if refusal is not None:
             QMessageBox.warning(self, refusal.title, refusal.message)
             return
-        config = self._sensitivity_panel.current_config(errors)
+        config = self.model.analysis_config()
         cost = self.model.sensitivity_cost_note(config)
         if cost is not None and QMessageBox.question(self, 'This Will Take a While', cost) != (
             QMessageBox.StandardButton.Yes
@@ -689,18 +650,10 @@ class FittingSession(QWidget):
         refusal = self.model.run_sensitivity(config)
         if refusal is not None:
             QMessageBox.warning(self, refusal.title, refusal.message)
-            return
-        self._summary_widget.show_running(config.mode)
-        self._sensitivity_widget.show_running()
 
     # ------------------------------------------------------------------
     # Model slots
     # ------------------------------------------------------------------
-
-    def _on_run_changed(self, kind: str, running: bool) -> None:
-        if kind == 'sensitivity':
-            self._sensitivity_panel.set_running(running)
-        self._show_running()
 
     def _on_progress(self) -> None:
         self._progress_line.set_progress(self.model.progress_fraction())
@@ -719,26 +672,8 @@ class FittingSession(QWidget):
         work = model.fit_running() or model.sensitivity_running()
         self._binding.set_locked(work)
         self._uncertainty.set_locked(work)
+        self._sensitivity.set_locked(work)
         self.changed.emit()
-
-    def _on_sensitivity_changed(self, replaced: bool) -> None:
-        """Draw the held sensitivity result on Ka Sensitivity and the summary, which a run that left none restores."""
-        result = self.model.sensitivity_result
-        if result is None:
-            self._sensitivity_widget.clear()
-        else:
-            self._sensitivity_widget.update_result(result)
-        self._summary_widget.set_sensitivity(result)
-        self._sensitivity_panel.set_running(self.model.sensitivity_running())
-
-    def _on_results_changed(self, _scope: str) -> None:
-        """Give the summary of the samples and Sensitivity the notes hiding their results."""
-        model = self.model
-        fit, fit_note = model.fit_view()
-        # The samples are compared with the fit Fit results reports.
-        self._summary_widget.update_result(fit)
-        self._summary_widget.show_mismatch(fit_note, model.sensitivity_note)
-        self._sensitivity_widget.show_mismatch(model.sensitivity_note)
 
     def _show_input_shifts(self) -> None:
         """Show the Notes side panel of Ka confidence with the input shifts in view."""

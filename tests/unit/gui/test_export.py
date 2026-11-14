@@ -83,7 +83,7 @@ def analysed_session(qapp, monkeypatch):
     """Build a session on the IDA data showing a given sensitivity run."""
     from core.assays.registry import AssayType
     from gui.fitting_session import FittingSession
-    from tests.unit.gui.test_sensitivity_gui import _made_on
+    from tests.unit.gui.sensitivity_results import made_on as _made_on
 
     monkeypatch.setattr('gui.fitting_session.QMessageBox.warning', lambda *args: None)
     sessions = []
@@ -116,8 +116,9 @@ def _artefact(session, key):
 
 
 def test_the_budget_is_written_as_the_sensitivity_tab_reports_it(analysed_session, tmp_path):
-    """The file is the table on screen: every row of it, with the analysis's own numbers."""
-    from tests.unit.gui.test_sensitivity_gui import _sobol_result
+    """The file is the budget Sensitivity reports: every row of it, with the analysis's own numbers."""
+    from gui.sensitivity import budget_csv_rows
+    from tests.unit.gui.sensitivity_results import sobol_result as _sobol_result
 
     session = analysed_session(_sobol_result())
     artefact = _artefact(session, 'budget_csv')
@@ -127,7 +128,7 @@ def test_the_budget_is_written_as_the_sensitivity_tab_reports_it(analysed_sessio
     assert artefact.suffix == '_budget.csv'
     artefact.writer(path)
 
-    rows = session._sensitivity_widget.budget_rows()
+    rows = budget_csv_rows(session.model.sensitivity_result)
     assert rows, 'the run reports a budget'
     with path.open(encoding='utf-8', newline='') as handle:
         written = list(csv.DictReader(handle))
@@ -138,7 +139,7 @@ def test_the_budget_is_written_as_the_sensitivity_tab_reports_it(analysed_sessio
 def test_a_budget_with_no_number_in_it_is_refused_rather_than_written_empty(analysed_session, tmp_path):
     """A run whose samples gave too few fits has a budget of NaN; a file of empty cells would answer nothing."""
     from core.pipeline.budget import Budget
-    from tests.unit.gui.test_sensitivity_gui import _sobol_result
+    from tests.unit.gui.sensitivity_results import sobol_result as _sobol_result
 
     result = _sobol_result()
     result.budget = {'Ka_guest': Budget(np.nan, (np.nan, np.nan), result.budget['Ka_guest'].rows)}
@@ -153,7 +154,7 @@ def test_a_budget_with_no_number_in_it_is_refused_rather_than_written_empty(anal
 
 def test_a_budget_withheld_for_every_constant_is_refused_rather_than_written_as_notes(analysed_session, tmp_path):
     """Every constant's numbers withheld leaves a file of reasons the tab already shows; the refusal points there."""
-    from tests.unit.gui.test_sensitivity_gui import _sobol_result
+    from tests.unit.gui.sensitivity_results import sobol_result as _sobol_result
 
     result = _sobol_result()
     result.withheld = {key: 'open_interval' for key in result.budget}
@@ -169,7 +170,8 @@ def test_a_heatmap_has_no_budget_to_export_and_says_why(analysed_session):
     """A heatmap sweeps two inputs on a grid; it splits no variance between the sources."""
     from dataclasses import replace
 
-    from tests.unit.gui.test_sensitivity_gui import _heatmap_result, _sobol_result
+    from tests.unit.gui.sensitivity_results import heatmap_result as _heatmap_result
+    from tests.unit.gui.sensitivity_results import sobol_result as _sobol_result
 
     # The fit at the entered inputs is what the session checks a run against,
     # and a heatmap makes one like any other run.

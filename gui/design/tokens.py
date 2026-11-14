@@ -40,11 +40,16 @@ SIZE = {
     'input-row': 60,
     # The headline column of Fit results: a binding constant's name, value and interval.
     'headline': 264,
+    # The height of the sample histogram of Sensitivity, its labels and axis included.
+    'histogram': 104,
     # The least height of an analysis plot on screen (a Ka profile, the joint region), below which its canvas scrolls.
     'plot-min': 320,
     # The longest line of help or warning text under a control, for a comfortable reading measure.
     'measure': 640,
 }
+
+#: Stops of the heat scale (``heat-0`` … ``heat-8``), evenly spaced from low to high.
+HEAT_STOPS = 9
 
 # ── Colour: one map per theme, the same keys in both.
 LIGHT = {
@@ -75,6 +80,19 @@ LIGHT = {
     'replicate': '#8A919A',
     'replicate-off': '#8A919A',
     'traffic': '#D9DCE0',
+    # The two series of the Sobol' chart: S₁ and S_T.
+    'series-1': '#2C6FB0',
+    'series-2': '#B04F8E',
+    # The heat scale of the sensitivity heatmap, low to high: perceptual and multi-hue (viridis).
+    'heat-0': '#440154',
+    'heat-1': '#472D7B',
+    'heat-2': '#3B528B',
+    'heat-3': '#2C728E',
+    'heat-4': '#21918C',
+    'heat-5': '#28AE80',
+    'heat-6': '#5EC962',
+    'heat-7': '#ADDC30',
+    'heat-8': '#FDE725',
 }
 
 DARK = {
@@ -105,6 +123,17 @@ DARK = {
     'replicate': '#7C848E',
     'replicate-off': '#6F7781',
     'traffic': '#3A3E44',
+    'series-1': '#6FA8E8',
+    'series-2': '#DB86BE',
+    'heat-0': '#440154',
+    'heat-1': '#472D7B',
+    'heat-2': '#3B528B',
+    'heat-3': '#2C728E',
+    'heat-4': '#21918C',
+    'heat-5': '#28AE80',
+    'heat-6': '#5EC962',
+    'heat-7': '#ADDC30',
+    'heat-8': '#FDE725',
 }
 
 # ── Type: four sizes on any screen — 28 metric, 20 title, 13 body, 12 small.

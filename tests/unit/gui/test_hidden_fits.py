@@ -41,8 +41,9 @@ from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set
 from core.pipeline.varpro import FitCancelled, FitRefused  # noqa: E402
 from core.units import Q_  # noqa: E402
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data  # noqa: E402
+from tests.unit.gui.sensitivity_results import made_on as _made_on  # noqa: E402
+from tests.unit.gui.sensitivity_results import sobol_result as _sobol_result  # noqa: E402
 from tests.unit.gui.session_setup import state_binding, state_dilution  # noqa: E402
-from tests.unit.gui.test_sensitivity_gui import _made_on, _sobol_result  # noqa: E402
 from tests.unit.gui.test_session_lifecycle import _state_shared_source  # noqa: E402
 
 _CONDITIONS = {
@@ -264,8 +265,8 @@ def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_bac
     session = _shown_session(qapp, make_session, fit)
     _deliver_sensitivity(session, fit)
     before = _numbers(session)
-    sensitivity = session._sensitivity_widget
-    assert sensitivity._stack.currentWidget() is sensitivity._results_host
+    sensitivity = session._sensitivity
+    assert sensitivity.has_plot()
 
     _toggle(session, 'a', False)
 
@@ -277,8 +278,8 @@ def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_bac
         'This sensitivity analysis was made on replicates A–C. Replicate A is now off. Switch it back on, or run '
         'the analysis again.'
     )
-    assert sensitivity._stack.currentWidget() is sensitivity._mismatch_label
-    assert sensitivity._mismatch_label.text() == run_note
+    assert not sensitivity.has_plot()
+    assert [(c.title, c.body) for c in sensitivity.callouts] == [('Results hidden', run_note)]
     assert session.model.sensitivity_result is not None and session.model.held_fit_results == [fit]
 
     _toggle(session, 'a', True)
@@ -288,7 +289,7 @@ def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_bac
     assert _curves(session) == 1 and _shown(session)
     assert all(c.tone != 'neutral' for c in session._results.callouts)
     assert session._confidence.has_plot()
-    assert sensitivity._stack.currentWidget() is sensitivity._results_host
+    assert sensitivity.has_plot()
 
 
 def test_the_status_bar_stops_describing_results_that_have_been_hidden(qapp, make_session, fit, dialogs):
@@ -312,7 +313,7 @@ def test_a_sensitivity_run_is_hidden_and_shown_on_its_own_record(qapp, make_sess
 
     assert session.model.fit_results == [fit]
     assert session.model.sensitivity_note.startswith('This sensitivity analysis was made on replicates A–C.')
-    assert session._summary_widget._sensitivity_note == session.model.sensitivity_note
+    assert session._sensitivity.callouts[0].body == session.model.sensitivity_note
     assert session._confidence.has_plot(), 'the fit is still shown in Ka confidence'
     _toggle(session, 'c', True)
     assert session.model.sensitivity_note is None
@@ -333,8 +334,7 @@ def test_changing_an_uncertainty_hides_the_sensitivity_run_it_was_drawn_from(qap
         'The input uncertainties have changed since this analysis; set them back under Input uncertainty, or '
         'run the analysis again.'
     )
-    assert session._summary_widget._sensitivity_note == session.model.sensitivity_note
-    assert session._sensitivity_widget._mismatch_label.text() == session.model.sensitivity_note
+    assert session._sensitivity.callouts[0].body == session.model.sensitivity_note
 
     session.model.uncertainty.set_spec('h0', InputSpec.sigma_pct(5.0))
 
@@ -645,7 +645,7 @@ def test_a_sensitivity_run_is_hidden_by_a_bound_or_the_replicate_mode_its_baseli
         'This sensitivity analysis was made on replicates A–C. The Kₐ guest bounds are now 1×10⁻⁸ to 1×10⁶ M⁻¹. Set '
         'them back to 1×10⁻⁸ to 1×10¹² M⁻¹, or run the analysis again.'
     )
-    assert session._sensitivity_widget._mismatch_label.text() == session.model.sensitivity_note
+    assert session._sensitivity.callouts[0].body == session.model.sensitivity_note
 
     _type_bound(session, 'Ka_guest', 1, '1e12')
     assert session.model.sensitivity_note is None

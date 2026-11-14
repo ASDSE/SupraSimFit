@@ -31,8 +31,9 @@ RUN = load('sensitivity.json')
 KA = 'Ka_guest'
 MINUS = '−'
 # The fit reports an input conflict: the app's sensitivity summary leads with it.
-CONFLICT = any('further from their entered values' in s for s in RUN['summary_texts'])
+CONFLICT = RUN['conflict']
 AWARE = DEMO['headline']  # the reported input-aware Ka guest and its interval
+ENTERED = DEMO['conditional']  # Ka guest and its interval with the inputs as entered, in M⁻¹ × 10⁶
 
 # Source names as rich text, in the label style of view_fit (K with the subscript a,dye).
 _NAMES = {'h0': '[Host]₀', 'd0': '[Dye]₀', '__titrant__': 'Guest (titrant)'}
@@ -83,8 +84,10 @@ class SampleHistogram(QWidget):
     """Every sample's best Ka on a log axis in the neutral data colour: the middle 90 % of
     samples solid, the tails faded. Two markers, each labelled at its top end in the band
     above the bars, as Ka confidence labels its lines: the fit at the inputs as entered
-    (dashed, where the samples centre) and the reported input-aware Ka (accent), its
-    95 % interval as the accent tint Ka confidence draws it with."""
+    (dashed, where the samples centre), its 95 % interval as a bracket across the top of
+    the bars, and the reported input-aware Ka (accent), its 95 % interval as the accent
+    tint Ka confidence draws it with. A label that would run into the one placed first
+    moves beside it."""
 
     LABEL_H = 16  # the marker labels
     TOP = 22  # the bars' top; the markers start just under their labels
@@ -141,8 +144,14 @@ class SampleHistogram(QWidget):
             p.setPen(t.q('text-tertiary'))
             p.drawText(QRectF(x - 30, base + 6, 60, 16), Qt.AlignmentFlag.AlignHCenter, f'{tk / 1e8:g}')
         p.drawText(QRectF(w - 120, base + 6, 120, 16), Qt.AlignmentFlag.AlignRight, f'×{THIN}10⁸ M⁻¹')
-        # markers: a halo so each line reads over the bars, then the line
+        # markers: the bracket of the interval at the inputs as entered, a halo so each line
+        # reads over the bars, then the line
         y0 = self.LABEL_H + 4.0
+        e_lo, e_hi = X(ENTERED['low_MM'] * 1e6), X(ENTERED['high_MM'] * 1e6)
+        p.setPen(QPen(t.q('text-secondary'), 1.25))
+        p.drawLine(QPointF(e_lo, y0), QPointF(e_hi, y0))
+        for x in (e_lo, e_hi):
+            p.drawLine(QPointF(x, y0), QPointF(x, y0 + 4))
         bx, ax = X(self.baseline), X(AWARE['estimate_per_M'])
         for x in (bx, ax):
             p.setPen(QPen(t.q('bg-surface'), 4.5))
@@ -153,21 +162,31 @@ class SampleHistogram(QWidget):
         p.drawLine(QPointF(bx, y0), QPointF(bx, base))
         p.setPen(QPen(t.q('accent'), 2))
         p.drawLine(QPointF(ax, y0), QPointF(ax, base))
-        # their labels, centred on the line and kept inside the plot
+        # their labels, centred on the line and kept inside the plot, the second beside the first
         fm = QFontMetrics(font('small'))
         p.setFont(font('small'))
+        placed: list[QRectF] = []
         for x, text, tone in (
             (
                 ax,
                 f'Input-aware {e8(AWARE["estimate_per_M"])}  [{e8(AWARE["low_per_M"])}, {e8(AWARE["high_per_M"])}]',
                 'accent',
             ),
-            (bx, f'Inputs as entered {e8(self.baseline)}', 'text-secondary'),
+            (
+                bx,
+                f'Inputs as entered {e8(self.baseline)}  '
+                f'[{e8(ENTERED["low_MM"] * 1e6)}, {e8(ENTERED["high_MM"] * 1e6)}]',
+                'text-secondary',
+            ),
         ):
             tw = fm.horizontalAdvance(text)
-            left = min(max(x - tw / 2, 0.0), w - tw)
+            box = QRectF(min(max(x - tw / 2, 0.0), w - tw), 0, tw + 1, self.LABEL_H)
+            for other in placed:
+                if box.adjusted(-space(4), 0, space(4), 0).intersects(other):
+                    box.moveLeft(other.right() + space(4))
+            placed.append(box)
             p.setPen(t.q(tone))
-            p.drawText(QRectF(left, 0, tw + 1, self.LABEL_H), Qt.AlignmentFlag.AlignVCenter, text)
+            p.drawText(box, Qt.AlignmentFlag.AlignVCenter, text)
         p.end()
 
 
@@ -192,17 +211,16 @@ BAR_H = 8  # each index bar; a pair is two bars and a 4-px gap
 
 
 def paint_bar(p: QPainter, t: Theme, rect: QRectF, total: bool) -> None:
-    """One index bar in the neutral data colour (accent stays for selection and the
-    input-aware result): S₁ solid, S_T a pale fill inside an edge of the same colour, so
-    the pair reads as two values of one source without a second hue."""
+    """One index bar in the two series colours of their own: S₁ solid in ``series-1``, S_T
+    a tint of ``series-2`` inside an edge of it."""
     path = QPainterPath()
     if total:
         path.addRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 2, 2)
-        p.fillPath(path, t.q('text-secondary', 0.24 if t.dark else 0.16))  # same weight on both surfaces
-        p.strokePath(path, QPen(t.q('text-secondary', 0.72), 1))
+        p.fillPath(path, t.q('series-2', 0.24 if t.dark else 0.16))  # same weight on both surfaces
+        p.strokePath(path, QPen(t.q('series-2', 0.9), 1))
     else:
         path.addRoundedRect(rect, 2, 2)
-        p.fillPath(path, t.q('text-secondary', 0.62))
+        p.fillPath(path, t.q('series-1'))
 
 
 def paint_whisker(p: QPainter, t: Theme, a: float, b: float, y: float) -> None:
@@ -371,7 +389,7 @@ def hero(t: Theme) -> QWidget:
     value.setFixedHeight(32)
     value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
     centre = C.label(
-        f'<span style="color:{sec}">Centred on</span> <b>{sci(RUN["sample_param_stats"][KA]["linear"]["median"])} M⁻¹</b>'
+        f'<span style="color:{sec}">Centred on</span> <b>{sci(RUN["baseline_ka"][KA])} M⁻¹</b>'
         f'<span style="color:{sec}">, the fit at the inputs as entered</span>',
         'number',
         rich=True,
@@ -640,7 +658,7 @@ def inspector(t: Theme) -> QWidget:
     mode = C.Segmented(t, ['Sensitivity indices', 'Heatmap'], 0)
     size = C.Segmented(t, ['1024', '2048', '4096'], 0)
     size_cap = wrapped(
-        f'2 × N = {2 * RUN["n_samples"]:,} samples, {RUN["n_planned"]:,} fits in all. Each step up doubles the time.',
+        f'2 × N = {2 * RUN["n_samples"]:,} samples, {RUN["planned_fits"]:,} fits in all. Each step up doubles the time.',
         'small',
         'tertiary',
     )
@@ -668,8 +686,20 @@ def inspector(t: Theme) -> QWidget:
     )
 
     # Error sources: stated once, under Input uncertainty; the canvas table lists them.
+    rows = QGridLayout()
+    rows.setContentsMargins(0, 0, 0, 0)
+    rows.setHorizontalSpacing(space(3))
+    rows.setVerticalSpacing(space(1))
+    for i, source in enumerate(RUN['sources']):
+        rows.addWidget(C.label(RUN['source_labels'][source], 'body'), i, 0)
+        stated = C.label(RUN['stated'][source], 'small-number', 'secondary')
+        stated.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        rows.addWidget(stated, i, 1)
+    rows.setColumnStretch(0, 1)
+    listed = QWidget()
+    listed.setLayout(rows)
     src_w = QWidget()
-    src_w.setLayout(C.vbox(C.hbox(C.link_button('Edit in Input uncertainty  →'), None), spacing=0))
+    src_w.setLayout(C.vbox(listed, 2, C.hbox(C.link_button('Edit in Input uncertainty  →'), None), spacing=0))
 
     # This run
     q = QWidget()
@@ -677,14 +707,12 @@ def inspector(t: Theme) -> QWidget:
     g.setContentsMargins(0, 0, 0, 0)
     g.setHorizontalSpacing(space(5))
     g.setVerticalSpacing(space(4))
-    texts = RUN['summary_texts']
-    med_r2 = texts[texts.index('Median R²:') + 1]
-    r2_range = texts[texts.index('R² range:') + 1].strip('[]').replace(', ', ' – ')
+    med_r2, r2_range = RUN['median_r2'], RUN['r2_range']
     top = Qt.AlignmentFlag.AlignTop
     g.addWidget(
         stat('Samples fitted', f'{RUN["n_fitted_samples"]:,} of {RUN["n_samples_total"]:,}', '2 × N'), 0, 0, top
     )
-    g.addWidget(stat('Fits', f'{RUN["n_success"]:,}', f'{RUN["n_blocks_finished"]} of 8 sample blocks'), 0, 1, top)
+    g.addWidget(stat('Fits', f'{RUN["n_success"] + 1:,}', f'{RUN["n_blocks_finished"]} of 8 sample blocks'), 0, 1, top)
     g.addWidget(stat('Median R² of samples', med_r2, f'range {r2_range}'), 1, 0, top)
     g.addWidget(stat('Duration', f'{RUN["seconds"]:.0f} s', f'{RUN["workers"]} worker processes'), 1, 1, top)
     g.setColumnStretch(0, 1)

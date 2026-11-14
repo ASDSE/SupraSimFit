@@ -74,8 +74,20 @@ def dialog(monkeypatch, tmp_path):
     monkeypatch.setattr(module, '_settings', lambda: QSettings(settings, QSettings.Format.IniFormat))
     shown: list[tuple] = []
     monkeypatch.setattr(module.QMessageBox, 'warning', lambda *args: shown.append(args))
+    # A box waiting for a click would hang the suite: any information box fails the test instead.
+    monkeypatch.setattr(module.QMessageBox, 'information', lambda *args: pytest.fail(f'unexpected box: {args}'))
     session = FittingSession()
     built = module.ExportMultipleDialog(session, select_all_default=True)
+    # An empty session has nothing to export; one artefact that writes a line stands in for a selection.
+    note = module.ExportableArtefact(
+        key='note',
+        label='Note',
+        suffix='_note.txt',
+        available=True,
+        unavailable_reason='',
+        writer=lambda path: path.write_text('note'),
+    )
+    monkeypatch.setattr(built, '_selected_artefacts', lambda: [note])
     built._folder_edit.setText(str(tmp_path / 'out'))
     built.warnings = shown
     yield built
@@ -96,7 +108,7 @@ def test_the_failures_of_a_batch_are_said_in_plain_words(dialog, monkeypatch):
             ('Ka uncertainty budget', folder / 'a.csv', ExportRefused(budget)),
             # numpy and json raise ValueError too, with their own wording.
             ('Fit results (CSV)', folder / 'a.csv', ValueError('operands could not be broadcast together')),
-            ('Plot style', folder / 'a_style.json', None),
+            ('Note', folder / 'a_note.txt', None),
         ],
     )
 

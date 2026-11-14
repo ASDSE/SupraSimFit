@@ -3,11 +3,12 @@
 Drives a FittingSession offscreen through load_demo_ida() (the same data, conditions,
 bounds, uncertainties and Outlier Removal the app's demo uses), waits for the fit,
 then calls core.pipeline.sensitivity.run_sensitivity with exactly the arguments
-FittingSession.run_sensitivity() hands the SensitivityWorker, with the panel's
-default settings (Sensitivity indices, sample size 1024, no fixed seed).
+FittingSession.run_sensitivity() hands the SensitivityWorker, with the analysis
+settings a session opens on (Sensitivity indices, sample size 1024, no fixed seed).
 
-The texts the real SensitivityWidget and FitSummaryWidget would print are read
-back from those widgets, so the view shows the app's own wording and numbers.
+What the app says of the run — the names and stated uncertainties of the sources, the
+callouts, the facts of the run — is read from gui.sensitivity, the rules the app's
+Sensitivity view draws from, so the view shows the app's own wording and numbers.
 
 Run from the repo:
     uv run python -m docs.design.prototype.data.compute_sensitivity
@@ -60,8 +61,8 @@ def main():
     from core.pipeline.budget import what_if
     from core.pipeline.sensitivity import estimated_fit_count, run_sensitivity
     from gui import preferences
+    from gui import sensitivity as S
     from gui.plotting.labels import plain_label
-    from gui.plotting.sensitivity_widget import SensitivityWidget, _stated_pct, _stated_text
     from gui.widgets.assay_conditions import assay_class
 
     session = fs.FittingSession()
@@ -78,9 +79,7 @@ def main():
 
     # Exactly what SessionModel.run_sensitivity() hands the worker.
     ms = session.model.measurement_set
-    errors = session.model.uncertainty.errors()
-    panel = session._sensitivity_panel
-    sens_config = panel.current_config(errors)
+    sens_config = session.model.analysis_config()
     settings = session.model.settings
     assay_cls = assay_class(settings.assay_type)
     conditions = settings.conditions
@@ -112,13 +111,14 @@ def main():
     seconds = time.monotonic() - t1
     print('sensitivity done in', round(seconds, 1), 's', flush=True)
 
-    # Read the real widgets' wording back.
-    widget = SensitivityWidget()
-    widget.update_result(result)
-    assay_type = widget._assay_type(result)
+    from core.assays.registry import AssayType
+
+    assay_type = AssayType[result.assay_type]
+    fit, _note = session.model.fit_view()
+    stats = {stat.name: stat for stat in S.this_run(result, seconds, workers)}
     out = {
         'how': 'FittingSession.load_demo_ida() offscreen, then core run_sensitivity() with the arguments '
-        'FittingSession.run_sensitivity() passes (panel defaults)',
+        'FittingSession.run_sensitivity() passes (the analysis settings a session opens on)',
         'seconds': seconds,
         'planned_fits': planned,
         'workers': workers,
@@ -140,9 +140,12 @@ def main():
         'sources': list(result.sources),
         'source_inputs': result.source_inputs,
         'input_labels': labels,
-        'source_labels': {s: plain_label(widget._input_label(assay_type, s)) for s in result.sources},
-        'stated': {s: _stated_text(result, s) for s in result.sources},
-        'stated_pct': {s: _stated_pct(result, s) for s in result.sources},
+        'source_labels': {s: plain_label(S.source_label(assay_type, s)) for s in result.sources},
+        'stated': {s: S.stated_text(result, s) for s in result.sources},
+        'stated_pct': {s: S.stated_pct(result, s) for s in result.sources},
+        'conflict': any(c.title == 'Inputs conflict' for c in S.callouts(result, fit, None)),
+        'median_r2': stats['Median R² of samples'].value,
+        'r2_range': stats['Median R² of samples'].note.removeprefix('range '),
         'sobol_s1': result.sobol_s1,
         'sobol_st': result.sobol_st,
         'sobol_s1_ci': result.sobol_s1_ci,
@@ -151,7 +154,6 @@ def main():
         'elasticity': result.elasticity,
         'budget': {},
         'what_if': {},
-        'widget_text': {},
         'sample_ka': {k: np.asarray(v, dtype=float) for k, v in (result.sample_ka or {}).items()},
         'sample_param_stats': {},
     }
@@ -187,20 +189,6 @@ def main():
                 except Exception as exc:  # noqa: BLE001
                     wi[f'{r.source}@{frac}'] = {'error': str(exc)}
         out['what_if'][ka_key] = wi
-        texts = {
-            'budget_header': widget._budget_header(result, ka_key),
-            'budget_table': widget._budget_table(result, ka_key, assay_type),
-        }
-        if ka_key in widget._what_if:
-            texts['what_if_sentence'] = widget._what_if_sentence(
-                ka_key, b.rows[0].source, 0.5 * _stated_pct(result, b.rows[0].source)
-            )
-            texts['what_if_sentences'] = {
-                r.source: widget._what_if_sentence(ka_key, r.source, 0.5 * _stated_pct(result, r.source))
-                for r in b.rows
-            }
-        out['widget_text'][ka_key] = texts
-    out['quality_note'] = widget._note.text()
     for key, vals in (result.sample_params or {}).items():
         v = np.asarray(vals, dtype=float)
         v = v[np.isfinite(v)]
@@ -221,18 +209,6 @@ def main():
         stacked = np.vstack([np.asarray(v, dtype=float) for v in sp.values()])
         out['n_fitted_samples'] = int(np.all(np.isfinite(stacked), axis=0).sum())
         out['n_samples_total'] = int(stacked.shape[1])
-
-    # The fit summary the session floats over a Sobol' run.
-    session.model._sensitivity_result = result
-    try:
-        session._summary_widget.set_sensitivity(result)
-        from PyQt6.QtWidgets import QLabel
-
-        out['summary_texts'] = [
-            lbl.text() for lbl in session._summary_widget.findChildren(QLabel) if lbl.text().strip()
-        ]
-    except Exception as exc:  # noqa: BLE001
-        out['summary_texts_error'] = str(exc)
 
     OUT.write_text(json.dumps(clean(out), indent=1, ensure_ascii=False))
     print('wrote', OUT, flush=True)

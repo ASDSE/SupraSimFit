@@ -60,6 +60,7 @@ from gui.plotting.labels import (
     stated_uncertainty,
     verdict_headline,
 )
+from gui.sensitivity import NOTHING_VARIES, AnalysisForm
 from gui.uncertainty import UncertaintyForm
 from gui.widgets.assay_conditions import (
     ASSAY_NAMES,
@@ -418,6 +419,8 @@ class SessionModel(QObject):
         The statement of the input uncertainties (:attr:`uncertainty`) changed.
     binding_changed()
         The binding model as stated (:attr:`binding`) changed.
+    analysis_changed()
+        The settings of the next sensitivity run (:attr:`analysis`) changed.
     """
 
     status_changed = pyqtSignal(str)
@@ -431,6 +434,7 @@ class SessionModel(QObject):
     warning = pyqtSignal(str, str)
     uncertainty_changed = pyqtSignal()
     binding_changed = pyqtSignal()
+    analysis_changed = pyqtSignal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -440,6 +444,9 @@ class SessionModel(QObject):
         self.uncertainty = UncertaintyForm(self.binding.assay_type)
         self.uncertainty.set_conditions(self.binding.conditions(), self.binding.condition_units())
         self._settings = SessionSettings(**self.binding_settings(), **self.uncertainty_settings())
+        #: The settings of the next sensitivity run; :meth:`analysis_edited` after every change.
+        self.analysis = AnalysisForm()
+        self.analysis.set_inputs(list(self._settings.input_labels))
         self._dataset: Dataset | None = None
         self._custom_name: str | None = None
         self._progress: tuple[int, int] | None = None  # the running analysis's count, done of total
@@ -459,6 +466,10 @@ class SessionModel(QObject):
         self._profile_worker: ProfileWorker | None = None
         self._sensitivity_worker: SensitivityWorker | None = None
         self._sensitivity_started = 0.0
+        self._sensitivity_error: str | None = None  # why the last run could not be completed
+        self._sensitivity_seconds: float | None = None  # how long the run held took
+        self._sensitivity_workers: int | None = None  # the worker processes it ran on
+        self._run_workers: int | None = None
 
     # ------------------------------------------------------------------
     # Data
@@ -694,6 +705,7 @@ class SessionModel(QObject):
             self.uncertainty.set_assay(form.assay_type)
         self.uncertainty.set_conditions(form.conditions(), form.condition_units(), finished)
         self._take_settings({**self.binding_settings(), **self.uncertainty_settings()}, check=finished)
+        self.analysis.set_inputs(list(self._settings.input_labels))
         self.binding_changed.emit()
         self.uncertainty_changed.emit()
 
@@ -710,6 +722,24 @@ class SessionModel(QObject):
         """Take the statement of :attr:`uncertainty` as it reads now, and say it changed."""
         self.update_settings(**self.uncertainty_settings())
         self.uncertainty_changed.emit()
+
+    def analysis_edited(self) -> None:
+        """Take the settings of the next sensitivity run as :attr:`analysis` states them now, and say they changed."""
+        self.analysis_changed.emit()
+
+    def _analysis_inputs(self) -> tuple[ErrorModel, Mapping[str, str], dict[str, float]]:
+        """What the analysis settings are read against: the stated sources, the inputs' names, their entered values."""
+        settings = self._settings
+        nominals = {k: float(v.magnitude) for k, v in settings.conditions.items() if isinstance(v, Quantity)}
+        return settings.errors, settings.input_labels, nominals
+
+    def analysis_problems(self) -> list[str]:
+        """Why the analysis as set cannot run on the uncertainties stated, one sentence each (:meth:`AnalysisForm.problems`)."""
+        return self.analysis.problems(*self._analysis_inputs())
+
+    def analysis_config(self) -> SensitivityConfig:
+        """The configuration of a run of the analysis as set; raises ``ValueError`` while :meth:`analysis_problems` finds one."""
+        return self.analysis.config(*self._analysis_inputs())
 
     def edit_finished(self) -> None:
         """Once an edit of the conditions is finished, make the conversions waiting for them and check the results."""
@@ -774,6 +804,7 @@ class SessionModel(QObject):
         self._dataset = copy.deepcopy(other._dataset)
         self.binding = copy.deepcopy(other.binding)
         self.uncertainty = copy.deepcopy(other.uncertainty)
+        self.analysis = copy.deepcopy(other.analysis)
         self._settings = other.settings
         self._custom_name = f'{other.name()} copy'
         self._held_fit_results = []
@@ -783,6 +814,7 @@ class SessionModel(QObject):
         self.data_changed.emit()
         self.binding_changed.emit()
         self.uncertainty_changed.emit()
+        self.analysis_changed.emit()
         self.check_results(force=True)
 
     def set_custom_name(self, name: str) -> None:
@@ -820,6 +852,21 @@ class SessionModel(QObject):
     @property
     def sensitivity_result(self) -> SensitivityResult | None:
         return self._sensitivity_result
+
+    @property
+    def sensitivity_error(self) -> str | None:
+        """Why the last sensitivity run could not be completed, in plain words; ``None`` after one that was."""
+        return self._sensitivity_error
+
+    @property
+    def sensitivity_seconds(self) -> float | None:
+        """How long the sensitivity run held took, in seconds; ``None`` where none is held."""
+        return self._sensitivity_seconds
+
+    @property
+    def sensitivity_workers(self) -> int | None:
+        """The worker processes the sensitivity run held was made on; ``None`` where none is held."""
+        return self._sensitivity_workers
 
     @property
     def sensitivity_note(self) -> str | None:
@@ -1581,11 +1628,7 @@ class SessionModel(QObject):
         # The analysis draws the inputs from the error sources stated, the same
         # ones the fit's interval accounts for.
         if not self._settings.errors.varies:
-            return Refusal(
-                'Sensitivity Analysis',
-                'Every input is set to fixed under Input uncertainty, so the analysis has nothing to vary. '
-                'Choose a σ or a range for at least one input.',
-            )
+            return Refusal('Sensitivity Analysis', NOTHING_VARIES)
         if problems:
             return Refusal('Sensitivity Analysis', _problem_list('analysis', problems))
         return None
@@ -1615,13 +1658,14 @@ class SessionModel(QObject):
             return refusal
         ms = self.measurement_set
         settings = self._settings
+        self._run_workers = preferences.worker_count()
         self._sensitivity_worker = SensitivityWorker(
             ms.with_active(ms.active_replica_ids),
             assay_class(settings.assay_type),
             dict(settings.conditions),
             settings.fit_config(),
             config,
-            max_workers=preferences.worker_count(),
+            max_workers=self._run_workers,
             input_labels=dict(settings.input_labels),
             parent=self,
         )
@@ -1632,6 +1676,7 @@ class SessionModel(QObject):
 
         self._sensitivity_started = time.monotonic()
         self._progress = None
+        self._sensitivity_error = None
         self._sensitivity_worker.start()
         self.run_changed.emit('sensitivity', True)
         self.show_status('Running sensitivity analysis…')
@@ -1671,6 +1716,8 @@ class SessionModel(QObject):
         cancelled = worker is not None and worker.cancelled
         retire(worker)
         self._sensitivity_result = result
+        self._sensitivity_seconds = time.monotonic() - self._sensitivity_started
+        self._sensitivity_workers = self._run_workers
         # Shown or hidden by the selection as it is now, before any view draws it.
         self.check_results()
         self.sensitivity_changed.emit(True)
@@ -1713,6 +1760,7 @@ class SessionModel(QObject):
             return  # a run whose data were replaced while it went
         self._sensitivity_worker = None
         retire(worker)
+        self._sensitivity_error = msg
         self.run_changed.emit('sensitivity', False)
         self.sensitivity_changed.emit(False)
         self.warning.emit('Sensitivity Analysis', msg)
@@ -1737,6 +1785,8 @@ class SessionModel(QObject):
         self._stop_sensitivity()
         self._sensitivity_result = None
         self._sensitivity_note = None
+        self._sensitivity_error = None
+        self._sensitivity_seconds = self._sensitivity_workers = None
         self.sensitivity_changed.emit(True)
 
     def stop(self) -> None:

@@ -72,6 +72,8 @@ stylesheet template.
 | `success`, `warning`, `danger` with `-bg` (and `warning-border`) | A result's passed test, warning or error: diagnostic marks, callouts, messages |
 | `replicate` | Replicate data points |
 | `replicate-off` | A replicate switched off (drawn as ×) |
+| `series-1`, `series-2` | The two series of the Sobol' chart: S₁ (solid) and S_T (outlined) |
+| `heat-0` … `heat-8` | The heat scale of the sensitivity heatmap, low to high: perceptual and multi-hue (viridis), each stop lighter than the one below |
 | `traffic` | Window controls of an inactive window |
 
 **Contrast.** Every text token meets WCAG AA (4.5 : 1) on every background text is drawn
@@ -80,11 +82,13 @@ on, hover and selection fills included, and each status colour on its own `-bg`.
 
 **Data marks** may use a token at reduced opacity; text never does. The approved plots
 use: replicate dots `replicate` at 45 %; the sample histogram `text-secondary` at 62 %
-inside the middle 90 % and 22 % outside; the S_T bar fill `text-secondary` at 16 % (light)
-and 24 % (dark) inside a 72 % edge; interval bands `accent` at 8 %. The reported result
-and fitted curve take `accent`; the reading at the inputs as entered takes
-`text-secondary` (its marker line in the sensitivity histogram is dashed `text-primary`).
-S₁ and S_T take `series-1` and `series-2` (§8); the species colours of Simulation are open (§10).
+inside the middle 90 % and 22 % outside; S₁ bars solid `series-1`, S_T bars `series-2` at
+16 % (light) and 24 % (dark) inside a 90 % edge; interval bands `accent` at 8 %. The
+reported result and fitted curve take `accent`; the reading at the inputs as entered takes
+`text-secondary` (its marker line in the sensitivity histogram is dashed `text-primary`,
+its interval a `text-secondary` bracket). Each series colour stands out from `bg-surface`
+by 3 : 1 and the heat scale rises in lightness, which `test_design_system.py` checks; the
+species colours of Simulation are open (§10).
 
 ### Type
 
@@ -112,7 +116,8 @@ the TXT/CSV reports use `estimate [low, high]`.
   status bar 28, nav item 28, session switcher 44, controls 28, badges 18, plot axes 56
   (left) and 44 (bottom) px; the inputs grid of Input uncertainty: name 168, kind 156,
   stated in 88 and spread bar 96 px wide, rows 60 px high; the headline column of Fit
-  results, 264; the least height of an analysis plot on screen, 320.
+  results, 264; the sample histogram of Sensitivity, 104; the least height of an analysis
+plot on screen, 320.
 - **Radius** (`RADIUS`): 6 px controls, 8 px cards, 10 px popovers, menus and the
   Settings window, pill for badges and toggles.
 - **Hairlines** are 1 px `border`. Panels are separated by hairlines, not gaps or shadows.
@@ -355,8 +360,11 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
   replicates as × in `replicate-off`; mean ± SD as 6-px `text-primary` dots with 1-px
   `text-primary` error bars, capped a hundredth of the x span wide; the fitted curve 2 px
   accent, round caps.
-- **Sobol' bars:** S₁ solid, S_T outlined, each with a 1.25-px `text-primary` whisker
-  with 6-px caps.
+- **Sobol' bars:** S₁ solid in `series-1`, S_T outlined in `series-2`, each with a
+  1.25-px `text-primary` whisker with 6-px caps; an index or whisker past the axis ends in
+  a small arrow at its edge.
+- **Heatmap:** cells on the heat scale (`heat-0` … `heat-8`), empty where no fit was made,
+  a colour bar beside it with its ticks and title, the entered point as a diamond.
 - **Log-Ka strips** (interval chart, histogram) carry no axis title; the shared power of
   ten and the unit follow the last tick (`× 10⁸ M⁻¹`).
 - **Plot header row:** title in `body-strong`; a short description in `text-tertiary`
@@ -458,21 +466,57 @@ region. Exported figures use the same axis: each plot under its legend and its r
 one line, the joint region last, without the readout card.
 
 ### Sensitivity — `sensitivity_*.jpg`
-Canvas: the spread of Ka from the stated inputs (×/÷ factor, 1 SD in decades, the centre
-it is read around) beside the sample histogram with both intervals marked and *Plot
-against each source →*; any callout — the samples are drawn around the inputs as
-entered, so an input conflict is stated here; **Share of the variance, by source** — S₁
-and S_T as two bars per source with their 95 % whiskers and values; the **Variance
-budget** table; **What if one source were known better**. S₁ and S_T take two series
-colours of their own (`series-1`, `series-2`). *Plot against each source →* opens a
-window of small plots, one per error source: each sample's Ka against that source's
-draw, so a source that matters shows as a trend. The **heatmap** colours Ka on a
-perceptual multi-hue scale (viridis-like), defined in both themes, with the value under
-the pointer as a readout. With two binding constants the canvas holds one block per Ka;
-a Ka whose indices are withheld shows a callout saying why in place of its bars. Side panel *Analysis
-settings*: Run (mode Sensitivity indices / Heatmap, sample size N of 1024, 2048 or 4096,
-fixed seed), Error sources (*Edit in Input uncertainty →*), This run, Display (log₁₀ or
-linear Ka axis).
+Canvas, for sensitivity indices: one block per binding constant, named by the glossary
+where there are two (Kₐ HG, Kₐ HG₂). Its headline is the spread of Kₐ from the stated
+inputs (×/÷ factor in `title`, 1 SD in decades, the value it is centred on — the fit at the
+inputs as entered — with the spread's sampling interval on hover) beside the sample
+histogram, both readings of the fit marked on it (Input-aware: accent line and band;
+Inputs as entered: dashed line and bracket), and *Plot against each source →*. Then any
+callout: an input conflict of the fit, stated about the inputs together, with *Review in Ka
+confidence* — the samples centre on the inputs as entered — or, without one, the neutral
+*Not a confidence interval* with *Compare in Fit results*; a run that was stopped; a run
+hidden because the data or settings changed since (its note alone, *Results hidden*); a
+run that failed, its reason in plain words above the last result; before any run, the
+refusal to vary nothing, with *Edit in Input uncertainty*. A constant's own callouts
+follow: fits that ran to the Kₐ bounds, or — in place of its bars, budget and what-if — why
+its indices are withheld. With two binding constants the run's callouts stand above both
+blocks, each constant's own callouts inside its block. **Share of the variance, by source**: S₁ and S_T as two bars per
+source, largest first, with their 95 % whiskers and values, and the notes under the chart
+(an S_T below its S₁, sample groups left out). The **Variance budget** table — Source,
+Stated, Elasticity, Variance (under the power of ten its numbers share), Spread if exact,
+each number with its sampling interval, then *Interactions* and *All sources* — its Source
+column as wide as the chart's names, so the bars start where Stated does. **What if one
+source were known better**: *Reduce* (source menu) *to* (¾, ½ or ¼ of the stated
+uncertainty, or exact) and the spread before and after, with the line that says what the
+answer is read from. *Plot against each source →* opens a window of small plots, one per
+source with a draw of its own: each sample's Kₐ against that source's draw in percent of
+the entered value, so a source that matters shows as a trend; the random error of each
+addition is one draw per titration point, and the window says it has no plot.
+
+For a **heatmap**: one map per binding constant, Kₐ coloured on the heat scale (§2, §7)
+with its colour bar, both axes in the inputs' units (the titrant, a series, in percent of
+the concentrations entered), the entered point as a diamond, and the readout card at the
+plot's top-right corner reading the cell under the pointer — its two inputs, Kₐ, its change
+from the entered point and R² — or the entered cell without a pointer.
+
+Before a run the canvas says what to do, with the platform shortcut of *Run analysis*;
+while one runs and none is held, that it is running. Progress shows only where run state
+does (§1).
+
+Side panel *Analysis settings*: **Run** — mode (Sensitivity indices / Heatmap); for
+indices, sample size N of 1024, 2048 or 4096 with what it costs, and *Fixed seed* with its
+value; for a heatmap, the X axis and the Y axis (input menus), each stated as a σ with its
+span (±1σ, ±2σ or ±3σ, ±2σ to start; an axis stated as a range spans its range and shows
+no span), and the grid (11 × 11, 21 × 21 or 31 × 31, each with its fit count); what stops
+the run stands beside the settings. **Error sources** — the sources the run varies,
+read-only, with *Edit in Input uncertainty →*. **This run** — samples fitted and fits made,
+the sample blocks or the grid, the median R² of the samples, the duration and worker
+processes, the seed used, and whether it was stopped. **Display** — a log₁₀ or a linear Kₐ
+axis. The settings that feed a run lock while one runs. The badge reads what the run shown
+was made with, else the next run: `Sobol' · N = 1024`, `Heatmap · 21 × 21`. A saved figure
+is drawn again in the light theme on white: the run's callouts as notes; per constant its
+spread, the samples and the shares, with its own callouts and the chart's notes under them;
+for a heatmap, each map with its colour bar.
 
 ### Plot appearance
 A form in the side panel beside the live plot: markers, lines, colours and text sizes,
@@ -535,8 +579,7 @@ and the tokens.
 
 1. **Species colours** of the stepwise models in Simulation; new series colours become
    tokens in both themes.
-2. **Sensitivity heatmap** — its Run settings.
-3. **Fit in new session** (Simulation) — it sends the noisy replicates as shown; the
+2. **Fit in new session** (Simulation) — it sends the noisy replicates as shown; the
    simulated values do not travel as starting values.
-4. **Simulation noise** — an absolute σ in a.u., which the engine does not yet offer.
-5. **Plot appearance for new sessions** — what is stored and where.
+3. **Simulation noise** — an absolute σ in a.u., which the engine does not yet offer.
+4. **Plot appearance for new sessions** — what is stored and where.

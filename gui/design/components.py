@@ -2524,6 +2524,8 @@ def section(
     """
     w = QWidget()
     lay = vbox(spacing=0)
+    # The layout is the section's before anything is shown or hidden in it, so no part is ever a window of its own.
+    w.setLayout(lay)
     if not first:
         lay.addWidget(hairline())
         lay.addSpacing(space(3))
@@ -2544,7 +2546,6 @@ def section(
         header.toggled_open.connect(show)
         show(open_)
     w.header = header
-    w.setLayout(lay)
     return w
 
 
@@ -2696,3 +2697,65 @@ class Problem(QWidget):
         """Show *problems*, one per line; hide the mark when there are none."""
         self.text.setText('\n'.join(problems))
         self.setVisible(bool(problems))
+
+
+# ── Saved figures ──────────────────────────────────────────────────────────────────
+
+
+class Figure(QWidget):
+    """A saved figure's surface: its plots drawn off screen on ``bg-surface`` of *t*, the light theme on white
+    (DESIGN.md §7)."""
+
+    def __init__(self, t: Theme):
+        super().__init__()
+        self.t = t
+        self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.fillRect(self.rect(), self.t.q('bg-surface'))
+        p.end()
+
+
+class PaintedNote(QWidget):
+    """A paragraph of rich text painted in a given theme and wrapped to *width*, for a saved figure.
+
+    Reads in ``text-secondary`` whatever the window's palette, as :class:`PaintedText` does.
+    """
+
+    def __init__(self, t: Theme, text: str, role: str, width: int):
+        super().__init__()
+        self.t, self.text, self.role = t, text, role
+        self.doc = QTextDocument()
+        self.doc.setDocumentMargin(0)
+        self.doc.setDefaultFont(font(role))
+        self.doc.setHtml(f'<span style="color:{t["text-secondary"]}">{text}</span>')
+        self.doc.setTextWidth(width)
+        self.setFixedSize(width, math.ceil(self.doc.size().height()))
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        self.doc.drawContents(p)
+        p.end()
+
+
+class PaintedText(QWidget):
+    """One line of text painted in a given theme, for a saved figure whatever the window's palette.
+
+    ``body-strong`` is a title in ``text-primary``; every other role reads in ``text-secondary``.
+    """
+
+    def __init__(self, t: Theme, text: str, role: str):
+        super().__init__()
+        self.t, self.text, self.role = t, text, role
+        metrics = QFontMetrics(font(role))
+        self.setFixedHeight(metrics.height() + space(2))
+        self.setMinimumWidth(metrics.horizontalAdvance(text))
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setFont(font(self.role))
+        p.setPen(self.t.q('text-primary' if self.role == 'body-strong' else 'text-secondary'))
+        p.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text)
+        p.end()

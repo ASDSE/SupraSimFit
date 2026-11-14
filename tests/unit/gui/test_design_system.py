@@ -84,6 +84,31 @@ def test_coloured_text_meets_aa_on_its_tint(name, fg, bg):
     assert ratio >= AA, f'{name}: {fg} on {bg} is {ratio:.2f} : 1, below {AA}'
 
 
+#: WCAG 2 non-text contrast: a mark that carries a value stands out from what it is drawn on by 3 : 1.
+NON_TEXT = 3.0
+
+
+@pytest.mark.parametrize('name', THEMES)
+def test_the_series_colours_stand_out_from_the_plot_surface(name):
+    """S₁ and S_T are told apart by hue and by mark (solid, outlined); each must first read on the plot."""
+    theme = THEMES[name]
+    for series in ('series-1', 'series-2'):
+        ratio = contrast(theme[series], theme['bg-surface'])
+        assert ratio >= NON_TEXT, f'{name}: {series} on bg-surface is {ratio:.2f} : 1, below {NON_TEXT}'
+    assert theme['series-1'] != theme['series-2']
+
+
+@pytest.mark.parametrize('name', THEMES)
+def test_the_heat_scale_rises_in_lightness_from_low_to_high(name):
+    """A perceptual scale reads as an order without its colour bar: each stop is lighter than the one below it."""
+    from gui.design.tokens import HEAT_STOPS
+
+    theme = THEMES[name]
+    stops = [_luminance(theme[f'heat-{i}']) for i in range(HEAT_STOPS)]
+    assert all(b > a for a, b in zip(stops, stops[1:])), f'{name}: the heat scale is not ordered by lightness'
+    assert f'heat-{HEAT_STOPS}' not in theme
+
+
 def test_scales_are_ordered_and_on_the_grid():
     steps = [SPACE[k] for k in sorted(SPACE)]
     assert steps == sorted(steps)

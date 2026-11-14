@@ -318,7 +318,7 @@ class ErrorModel:
 
 
 #: Half-width of the deterministic heatmap sweep for a SIGMA spec, in standard
-#: deviations. Two covers ~95% of the distribution.
+#: deviations, when none is chosen. Two covers ~95% of the distribution.
 _SIGMA_GRID_SPAN = 2.0
 
 
@@ -340,16 +340,19 @@ def _to_fraction(value: float, relative: bool, nominal: Optional[float], name: s
     return value / nominal
 
 
-def spec_bounds(spec: InputSpec, nominal: Optional[float], name: str) -> tuple[float, float]:
+def spec_bounds(
+    spec: InputSpec, nominal: Optional[float], name: str, span: float = _SIGMA_GRID_SPAN
+) -> tuple[float, float]:
     """Relative-offset range a spec spans, as fractions of nominal.
 
-    A SIGMA spec has no hard edges, so its sweep is taken at
-    ``±_SIGMA_GRID_SPAN`` standard deviations. *name* names the input in the
-    messages a user reads, so it is a display label, never a dict key.
+    A SIGMA spec has no hard edges, so its sweep is taken at ``±span``
+    standard deviations; a range spans its own ends whatever *span* is.
+    *name* names the input in the messages a user reads, so it is a display
+    label, never a dict key.
     """
     if spec.kind is SpecKind.SIGMA:
         s = _to_fraction(spec.sigma, spec.relative, nominal, name)
-        return -_SIGMA_GRID_SPAN * s, _SIGMA_GRID_SPAN * s
+        return -span * s, span * s
     if spec.relative:
         return spec.lo / 100.0, spec.hi / 100.0
     # An absolute interval states the input's own low and high values, the form a
@@ -364,13 +367,13 @@ def spec_bounds(spec: InputSpec, nominal: Optional[float], name: str) -> tuple[f
     return (spec.lo - nominal) / nominal, (spec.hi - nominal) / nominal
 
 
-def axis_reaches_zero(spec: InputSpec, nominal: Optional[float], name: str) -> bool:
-    """Whether a heatmap axis swept over :func:`spec_bounds` would take the input to zero or below.
+def axis_reaches_zero(spec: InputSpec, nominal: Optional[float], name: str, span: float = _SIGMA_GRID_SPAN) -> bool:
+    """Whether a heatmap axis swept over :func:`spec_bounds` at *span* would take the input to zero or below.
 
     The sweep includes both ends, so a lower end at -100 % of the nominal value, to
     rounding, would fit the model with the input at zero.
     """
-    return spec_bounds(spec, nominal, name)[0] <= -1.0 + 1e-9
+    return spec_bounds(spec, nominal, name, span)[0] <= -1.0 + 1e-9
 
 
 def spec_fraction(spec: InputSpec, nominal: Optional[float], name: str, quantile):
