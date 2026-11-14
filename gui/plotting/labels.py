@@ -161,10 +161,6 @@ NO_UPPER = 'no upper limit'
 NO_LOWER = 'no lower limit'
 UNLIMITED = 'not limited by the data'
 
-#: Marks a reported interval whose accepted values come in separate stretches,
-#: wherever the bracket alone would read as one connected range.
-SPLIT_MARK = '†'
-
 #: What that mark means, in one sentence, wherever a split interval is reported.
 SPLIT_NOTE = (
     'not every value inside this interval explains the data well enough: the ones that do come in separate '
@@ -423,37 +419,6 @@ def replicate_summary(rows, n: int, name, unit) -> str:
         return ''
     head = f'Single-replicate fits (inputs as entered): {"; ".join(figures)}.' if figures else ''
     return ' '.join(part for part in (head, *bounds, REPLICATES_RELATION if figures else '') if part)
-
-
-def fmt_spread(sd_decades: float, *, html: bool) -> str:
-    """A spread of log₁₀(Ka) as decades and as the factor Ka spreads by: ``0.084 decades (×/÷ 1.21)``.
-
-    Decades are what the analysis works in; the factor is what they mean for Ka
-    itself — a standard deviation of 0.084 decades is a Ka known to within a
-    factor of 1.21 either way — so a spread is written as both wherever it is
-    reported. Two significant figures on the spread, the reading an uncertainty
-    carries, and three on the factor it maps to.
-
-    Parameters
-    ----------
-    sd_decades : float
-        The spread: one standard deviation of log₁₀(Ka), in decades.
-    html : bool
-        Whether the result goes into a rich-text widget. There the factor is
-        tied to its sign with a non-breaking space, so a wrapped line never
-        leaves ``×/÷`` standing at the end of one.
-
-    Raises
-    ------
-    ValueError
-        For anything that is not a standard deviation. A spread that could not
-        be worked out is said in words by the caller, where there is room to
-        say why.
-    """
-    if not (math.isfinite(sd_decades) and sd_decades >= 0.0):
-        raise ValueError(f'{sd_decades} is not a spread: a standard deviation is a finite number, zero or more.')
-    space = '&nbsp;' if html else ' '
-    return f'{fmt_sci(sd_decades, 2)} decades (×/÷{space}{fmt_sci(10.0**sd_decades, 3)})'
 
 
 def _canonical_unit(unit_str: str) -> str:

@@ -2,8 +2,8 @@
 
 Each test guards a rule of ``docs/design/DESIGN.md``: both themes define every token,
 text stays readable (WCAG AA) on every background it is drawn on, the stylesheet
-template resolves completely, every icon is a valid SVG, a view built on ``gui.design``
-carries no colour or font-size literal, and every reference screen the document names
+template resolves completely, every icon is a valid SVG, no module of ``gui/`` carries a
+colour, font-size or spacing literal, and every reference screen the document names
 exists in both themes.
 """
 
@@ -143,18 +143,28 @@ def test_every_icon_is_valid_svg(qapp):
         assert QSvgRenderer(QByteArray(icons.svg(name, '#000000'))).isValid(), name
 
 
-# Colour, font-size and spacing values written in place of a token.
+# Colour, font-size and spacing values written in place of a token. A zero margin or
+# spacing is no value of the scale, a transparent fill no colour, and an ``rgba(...)`` built
+# from a token's channels no literal, so none of them is caught.
 _LITERAL = re.compile(
     r'#[0-9A-Fa-f]{6}\b|#[0-9A-Fa-f]{3}\b'
-    r"|rgba?\(|QColor\(\s*['\"\d]|Qt\.GlobalColor"
+    r"|rgba?\(\s*\d|QColor\(\s*['\"\d]|Qt\.GlobalColor\.(?!transparent\b)"
     r'|font-size:\s*\d|setPointSize\(|setPixelSize\('
-    r'|setSpacing\(\s*\d|setContentsMargins\(\s*\d'
+    r'|setSpacing\(\s*[1-9]|setContentsMargins\((?:\s*0\s*,)*\s*[1-9]|setMargin\(\s*[1-9]'
 )
-_USES_DESIGN = re.compile(r'^\s*(from gui\.design\b|import gui\.design\b)', re.MULTILINE)
+
+#: The modules that hold literals by right, each with the literals it may hold.
+ALLOWED = {
+    # The tokens themselves: every colour, size and type value is defined here.
+    'gui/design/tokens.py': None,
+    # The macOS window-button colours (close, minimise, zoom), drawn where a frameless window
+    # paints its own title bar: the platform's colours, the same in both themes, not the design's.
+    'gui/design/components.py': {'#FF5F57', '#FEBC2E', '#28C840'},
+}
 
 
 def literals(source: str) -> list[str]:
-    """The literals in *source* that a module built on ``gui.design`` must not contain."""
+    """The literals in *source* that a module of ``gui/`` must not contain."""
     return [m.group(0) for m in _LITERAL.finditer(source)]
 
 
@@ -165,18 +175,27 @@ def test_the_literal_guard_catches_each_kind_of_offender():
         'lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(6)\n'
     )
     assert len(literals(offending)) == 6
-    assert literals("lay.setSpacing(space(3)); c = t.q('accent')") == []
+    assert literals('lay.setContentsMargins(0, 0, 8, 0); image.fill(Qt.GlobalColor.white)') == [
+        'setContentsMargins(0, 0, 8',
+        'Qt.GlobalColor.',
+    ]
+    clean = (
+        "lay.setSpacing(space(3)); c = t.q('accent'); lay.setContentsMargins(0, 0, 0, 0)\n"
+        "pm.fill(Qt.GlobalColor.transparent); f'rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})'\n"
+    )
+    assert literals(clean) == []
 
 
-def test_views_on_the_design_system_carry_no_literals():
-    """A module that imports ``gui.design`` takes every colour, size and spacing from its tokens."""
+def test_no_module_of_the_interface_carries_a_literal():
+    """Every module of ``gui/`` takes its colours, font sizes and spacings from the tokens."""
     offenders = []
     for path in sorted((ROOT / 'gui').rglob('*.py')):
-        if (ROOT / 'gui' / 'design') in path.parents:
+        name = path.relative_to(ROOT).as_posix()
+        allowed = ALLOWED.get(name, set())
+        if allowed is None:
             continue
-        text = path.read_text(encoding='utf-8')
-        if _USES_DESIGN.search(text):
-            offenders += [f'{path.relative_to(ROOT)}: {hit}' for hit in literals(text)]
+        hits = [hit for hit in literals(path.read_text(encoding='utf-8')) if hit not in allowed]
+        offenders += [f'{name}: {hit}' for hit in hits]
     assert not offenders, 'literals outside the tokens:\n' + '\n'.join(offenders)
 
 

@@ -1,8 +1,8 @@
 # SupraSimFit design system
 
 The design reference for the desktop app's interface: the approved design, final as
-documented here. A choice still open is listed in §10 and put to the owner when the view
-it concerns is built.
+documented here. A design choice it does not settle is put to the owner, never picked
+silently, and the answer becomes part of this document and the tokens.
 
 - **Code.** `gui/design/` is the design system as code: `tokens.py` (colour, space,
   radius, sizes, type), `stylesheet.py` (the QSS template), `components.py` (the shared
@@ -76,6 +76,7 @@ stylesheet template.
 | `species-dye`, `species-guest`, `species-host`, `species-step2` | The species of the Simulation window, one hue per partner: the dye and its complex with the host, the guest and its first complex, the free host, the second-step complex (HG₂, H₂G); solid in a complex, dashed when free |
 | `heat-0` … `heat-8` | The heat scale of the sensitivity heatmap, low to high: perceptual and multi-hue (viridis), each stop lighter than the one below |
 | `traffic` | Window controls of an inactive window |
+| `shadow` | Shadows under what floats (popovers, menus, the Settings window) and under a toggle's knob, always at low opacity |
 
 **Contrast.** Every text token meets WCAG AA (4.5 : 1) on every background text is drawn
 on, hover and selection fills included, and each status colour on its own `-bg`.
@@ -119,12 +120,18 @@ the TXT/CSV reports use `estimate [low, high]`.
   (left) and 44 (bottom) px; the inputs grid of Input uncertainty: name 168, kind 156,
   stated in 88 and spread bar 96 px wide, rows 60 px high; the headline column of Fit
   results, 264; the sample histogram of Sensitivity, 104; the least height of an analysis
-plot on screen, 320.
+  plot on screen, 320; the marks of the analysis plots — an estimate or entered point as
+  a 14-px diamond, a 9-px dot where the pointer meets a curve, a 1.25-px whisker with
+  6-px caps — and Simulation's pointer marks, 10 px on the signal and 8 px on each
+  species; a saved figure 900 px wide, each Ka profile or joint region in it 420 px high,
+  the titration plot 600, Simulation's signal and species plots 520 and 400; the help
+  dialog at least 560 × 420.
 - **Radius** (`RADIUS`): 6 px controls, 8 px cards, 10 px popovers, menus and the
-  Settings window, pill for badges and toggles.
+  Settings window, 2 px the Sobol' index bars; badges and toggles are fully rounded, at
+  half their height.
 - **Hairlines** are 1 px `border`. Panels are separated by hairlines, not gaps or shadows.
 - **Shadows** only under what floats above the window — popovers, menus, the Settings
-  window: black at low opacity, deeper in dark than in light.
+  window: `shadow` (black) at low opacity, deeper in dark than in light.
 
 ### Icons
 
@@ -636,10 +643,3 @@ for new sessions*, with a way back to the built-in one), **Analysis**
   M⁻¹, signals in a.u.
 - Labels, titles and commands use sentence case (*Load data*, *Outlier removal*).
   Commands that open a window or ask for more end in `…`.
-
----
-
-## 10. Decided when the view is built
-
-Put to the owner when the view is built; the answer then becomes part of this document
-and the tokens. No choice is open now.

@@ -95,11 +95,14 @@ def test_the_sensitivity_section_names_every_column_and_closing_row_of_the_budge
 
 def test_every_section_with_a_demo_plot_ends_on_its_demo_ida_example():
     """The examples are filled from DEMO, whose numbers tests/integration/test_plot_guide_demo.py works out again."""
-    from gui.plot_guide import DEMO, EXAMPLES, PLOT_GUIDE
+    from gui.plot_guide import DEMO, PLOT_GUIDE
+
+    # Every section but Plot appearance, which has no number of the demo to read.
+    examples = ('Measurements', 'Fit results', 'Ka confidence', 'Sensitivity', 'Simulation')
 
     filled = ' '.join(PLOT_GUIDE.values())
     assert '{' not in filled and '}' not in filled
     for section, text in PLOT_GUIDE.items():
-        assert ('<b>Example: Demo IDA' in text) is (section in EXAMPLES), section
+        assert ('<b>Example: Demo IDA' in text) is (section in examples), section
     for key, value in DEMO.items():
         assert value in filled, key

@@ -37,15 +37,6 @@ from gui.plotting.export import export_widget
 from gui.plotting.labels import THIN, fmt_param_plain
 from gui.session_model import SessionModel
 
-#: Width of the image a saved Ka confidence figure is drawn at, in logical px, and the
-#: height of each profile plot and of the joint region in it.
-EXPORT_WIDTH = 900
-EXPORT_PLOT_HEIGHT = 420
-
-#: Size of the best-fit diamond, and of the dots where the pointer meets a curve, in px.
-DIAMOND = 14
-POINTER_DOT = 9
-
 #: The legend row of a profile plot: both readings, their accepted Ka and the best fit.
 LEGEND = [
     ('line', R.INPUT_AWARE),
@@ -125,7 +116,7 @@ class ProfileFigure(QWidget):
         pi.addItem(self.hair, ignoreBounds=True)
         self.dots = [
             pg.ScatterPlotItem(
-                size=POINTER_DOT, brush=pg.mkBrush(t.q(c.color)), pen=pg.mkPen(t['bg-surface'], width=px(2))
+                size=SIZE['pointer-dot'], brush=pg.mkBrush(t.q(c.color)), pen=pg.mkPen(t['bg-surface'], width=px(2))
             )
             for c in plot.curves
         ]
@@ -191,7 +182,7 @@ class ProfileFigure(QWidget):
                     x=[curve.estimate[0]],
                     y=[curve.estimate[1]],
                     symbol=_diamond_symbol(),
-                    size=DIAMOND,
+                    size=SIZE['diamond'],
                     brush=pg.mkBrush(t.q(curve.color)),
                     pen=pg.mkPen(t['bg-surface'], width=px(2)),
                 )
@@ -356,7 +347,7 @@ class RegionFigure(QWidget):
             x=[region.best[0]],
             y=[region.best[1]],
             symbol=_diamond_symbol(),
-            size=DIAMOND,
+            size=SIZE['diamond'],
             brush=pg.mkBrush(t.q('text-secondary')),
             pen=pg.mkPen(t['bg-surface'], width=px(2)),
         )
@@ -497,7 +488,7 @@ class ConfidenceView(QObject):
             lay.addWidget(C.PaintedText(light, line, 'small'))
             lay.addSpacing(space(2))
             fig = ProfileFigure(light, plot, interactive=False)
-            fig.setFixedHeight(EXPORT_PLOT_HEIGHT)
+            fig.setFixedHeight(SIZE['export-plot'])
             lay.addWidget(fig)
         region = CF.joint_region(fit, profile)
         if region is not None:
@@ -506,10 +497,10 @@ class ConfidenceView(QObject):
             lay.addWidget(C.PaintedText(light, title, 'body-strong'))
             lay.addSpacing(space(2))
             reg = RegionFigure(light, region)
-            reg.setFixedHeight(EXPORT_PLOT_HEIGHT)
+            reg.setFixedHeight(SIZE['export-plot'])
             lay.addWidget(reg)
         figure.setLayout(lay)
-        figure.setFixedWidth(EXPORT_WIDTH)
+        figure.setFixedWidth(SIZE['export-width'])
         figure.adjustSize()
         figure.show()
         QApplication.processEvents()
@@ -519,7 +510,7 @@ class ConfidenceView(QObject):
         """Save the profile plots — and the joint region of two binding constants — to *path* (PNG)."""
         figure = self.export_figure()
         try:
-            export_widget(figure, path, width_px=2 * EXPORT_WIDTH)
+            export_widget(figure, path, width_px=2 * SIZE['export-width'])
         finally:
             figure.close()
             figure.deleteLater()

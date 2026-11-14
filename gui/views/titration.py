@@ -22,13 +22,13 @@ from core.units import Q_
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import apply_plot_theme, fit_line, px, replicate_alpha, scatter
-from gui.design.tokens import TYPE, Theme, font, space
+from gui.design.tokens import SIZE, TYPE, Theme, font, space
 from gui.plot_appearance import BUILT_IN, PlotAppearance
 from gui.plotting.export import export_plot_item
 from gui.plotting.labels import superscript
 
 #: Size of a saved titration image, in logical px.
-EXPORT_SIZE = (900, 600)
+EXPORT_SIZE = (SIZE['export-width'], SIZE['export-titration'])
 
 #: Width of the caps of the mean ± SD error bars, as a fraction of the x span drawn.
 ERROR_CAP = 0.01

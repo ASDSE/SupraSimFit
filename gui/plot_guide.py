@@ -41,9 +41,6 @@ DEMO: dict[str, str] = {
     'sim_g': '0.400',
 }
 
-#: The sections that end on a Demo IDA example; Plot appearance has no number of the demo to read.
-EXAMPLES = ('Measurements', 'Fit results', 'Ka confidence', 'Sensitivity', 'Simulation')
-
 _MEASUREMENTS = """
 <p>The <b>Titration</b> plot shows the raw signal of every replicate against the titrant
 concentration, as loaded.</p>

@@ -33,12 +33,17 @@ from typing import TYPE_CHECKING
 
 import pyqtgraph as pg
 import pyqtgraph.exporters  # noqa: F401 — registers exporters
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPainter
+from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import QGraphicsItem, QWidget
+
+from gui.design.tokens import LIGHT
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QGraphicsScene
+
+
+#: The page a saved figure is drawn on: the light theme's surface, white (DESIGN.md §7).
+PAPER = QColor(LIGHT['bg-surface'])
 
 
 class ExportRefused(ValueError):
@@ -156,7 +161,7 @@ def export_stacked(parts: list[pg.PlotItem | QWidget], path: str | Path, *, widt
             if isinstance(part, QWidget):
                 scale = width_px / part.width()
                 image = QImage(int(width_px), round(part.height() * scale), QImage.Format.Format_ARGB32)
-                image.fill(Qt.GlobalColor.white)
+                image.fill(PAPER)
                 painter = QPainter(image)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing)
                 painter.scale(scale, scale)
@@ -169,7 +174,7 @@ def export_stacked(parts: list[pg.PlotItem | QWidget], path: str | Path, *, widt
             with _screen_space_items_to_scene_space(part.scene()):
                 images.append(exporter.export(toBytes=True))
         image = QImage(max(i.width() for i in images), sum(i.height() for i in images), QImage.Format.Format_ARGB32)
-        image.fill(Qt.GlobalColor.white)
+        image.fill(PAPER)
         painter = QPainter(image)
         y = 0
         for part in images:
@@ -276,7 +281,7 @@ def export_widget(
             QSize(int(width_px), int(round(size.height() * scale))),
             QImage.Format.Format_ARGB32,
         )
-        image.fill(Qt.GlobalColor.white)
+        image.fill(PAPER)
         painter = QPainter(image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.scale(scale, scale)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from html import escape
 from pathlib import Path
 
@@ -75,7 +76,7 @@ SETTINGS_NOTE = 'Saves every value, slider end and noise setting of this window 
 #: What to check when a file cannot be written, after the sentence naming it.
 WRITE_HINT = 'Check that the folder exists and that you may write there.'
 #: Heights of the saved titration and species plots, in px at :data:`EXPORT_SIZE`'s width: the canvas's 13 : 10.
-EXPORT_HEIGHTS = (520, 400)
+EXPORT_HEIGHTS = (SIZE['export-signal'], SIZE['export-species'])
 #: The dash of a free species' line and its swatch, in px.
 DASH = [3, 2.5]
 
@@ -235,9 +236,14 @@ class SimulationPlots(QObject):
         ax.setStyle(showValues=False, tickLength=4)
         ax.showLabel(False)
         ax.setHeight(6)
+        # A y tick on the top edge of the range has its label centred on that edge: half a
+        # label of room above the axes keeps it whole.
+        half_label = math.ceil(QFontMetrics(font('small-number')).height() / 2)
         for pi in (sp, cp):
             pi.getViewBox().setMouseEnabled(x=False, y=False)
             pi.getAxis('left').setStyle(autoExpandTextSpace=False)
+            left, _top, right, bottom = pi.layout.getContentsMargins()
+            pi.layout.setContentsMargins(left, half_label, right, bottom)
 
     def _add(self, pi: pg.PlotItem, item, z: float = 0, bounds: bool = True) -> None:
         item.setZValue(z)
@@ -290,14 +296,16 @@ class SimulationPlots(QObject):
         self._add(sp, self.hairlines[0], 1, bounds=False)
         self._add(cp, self.hairlines[1], 1, bounds=False)
         ring = pg.mkPen(t['bg-surface'], width=px(2))
-        self.marker = pg.ScatterPlotItem(size=10, brush=pg.mkBrush(t.q('accent')), pen=ring)
+        self.marker = pg.ScatterPlotItem(size=SIZE['pointer-signal'], brush=pg.mkBrush(t.q('accent')), pen=ring)
         self._add(sp, self.marker, 6, bounds=False)
         self.tag = pg.TextItem('', color=t.q('text-primary'), anchor=(0, 1.15))
         self.tag.setFont(font('small-number'))
         self._add(sp, self.tag, 7, bounds=False)
         self.species_marks = {}
         for key in self.sim.species:
-            mark = pg.ScatterPlotItem(size=8, brush=pg.mkBrush(t.q(SPECIES_TOKENS[key])), pen=ring)
+            mark = pg.ScatterPlotItem(
+                size=SIZE['pointer-species'], brush=pg.mkBrush(t.q(SPECIES_TOKENS[key])), pen=ring
+            )
             self._add(cp, mark, 6, bounds=False)
             self.species_marks[key] = mark
 

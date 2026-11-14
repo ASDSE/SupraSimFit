@@ -15,8 +15,9 @@ from PyQt6.QtGui import QColor, QFont, QFontDatabase, QPalette
 # ── Space: a 4-pt scale with one 2-px step. The only values margins and spacings take.
 SPACE = {0: 0, 1: 2, 2: 4, 3: 8, 4: 12, 5: 16, 6: 24, 7: 32, 8: 48}
 
-# ── Radius: controls, surfaces (cards), popovers and floating windows, pills (badges, toggles).
-RADIUS = {'control': 6, 'surface': 8, 'popover': 10, 'pill': 999}
+# ── Radius: controls, surfaces (cards), popovers and floating windows, index bars. Badges and toggles are
+#    fully rounded, at half their height.
+RADIUS = {'control': 6, 'surface': 8, 'popover': 10, 'bar': 2}
 
 # ── Fixed sizes of the window and its components, in px.
 SIZE = {
@@ -61,6 +62,25 @@ SIZE = {
     'stroke-thin': 1,
     'stroke-medium': 2,
     'stroke-thick': 3,
+    # The marks of the analysis plots: an estimate or entered point as a diamond, the dot
+    # where the pointer meets a curve, and the 95 % whisker of a Sobol' bar with its caps.
+    'diamond': 14,
+    'pointer-dot': 9,
+    'whisker': 1.25,
+    'whisker-cap': 6,
+    # The Simulation window's marks where the pointer meets the signal and each species.
+    'pointer-signal': 10,
+    'pointer-species': 8,
+    # A saved figure: its width, and the height of each plot in it — a Ka profile or the
+    # joint region, the titration plot, Simulation's signal and species plots.
+    'export-width': 900,
+    'export-plot': 420,
+    'export-titration': 600,
+    'export-signal': 520,
+    'export-species': 400,
+    # The least size of the help dialog the views open from their help links.
+    'help-width': 560,
+    'help-height': 420,
 }
 
 #: Stops of the heat scale (``heat-0`` … ``heat-8``), evenly spaced from low to high.
@@ -95,6 +115,7 @@ LIGHT = {
     'replicate': '#8A919A',
     'replicate-off': '#8A919A',
     'traffic': '#D9DCE0',
+    'shadow': '#000000',
     # The two series of the Sobol' chart: S₁ and S_T.
     'series-1': '#2C6FB0',
     'series-2': '#B04F8E',
@@ -144,6 +165,7 @@ DARK = {
     'replicate': '#7C848E',
     'replicate-off': '#6F7781',
     'traffic': '#3A3E44',
+    'shadow': '#000000',
     'series-1': '#6FA8E8',
     'series-2': '#DB86BE',
     'species-dye': '#A893F0',

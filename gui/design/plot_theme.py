@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import QApplication
 
-from gui.design.tokens import SIZE, TYPE, Theme, family, font
+from gui.design.tokens import SIZE, TYPE, Theme, family, font, space
 
 
 def px(n: float) -> float:
@@ -37,7 +37,7 @@ def apply_plot_theme(
     pi = pw.getPlotItem()
     pi.hideButtons()
     pi.setMenuEnabled(False)
-    pi.layout.setContentsMargins(0, 0, 8, 0)
+    pi.layout.setContentsMargins(0, 0, space(3), 0)
     tick_font = font(tick_role)
     for side in ('top', 'right'):
         pi.showAxis(side, False)

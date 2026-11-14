@@ -34,16 +34,11 @@ from gui import sensitivity as S
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import apply_plot_theme, px, scatter
-from gui.design.tokens import HEAT_STOPS, SIZE, Theme, font, space
+from gui.design.tokens import HEAT_STOPS, RADIUS, SIZE, Theme, font, space
 from gui.plotting.export import export_widget
 from gui.plotting.labels import plain_label
 from gui.session_model import SessionModel
 from gui.widgets.assay_conditions import condition_field
-
-#: Width of a saved Sensitivity figure, in logical px.
-EXPORT_WIDTH = 900
-#: Size of the mark of the entered point on a heatmap, in px.
-DIAMOND = 14
 
 
 def _clear(layout: QLayout) -> None:
@@ -74,20 +69,21 @@ def paint_index_bar(p: QPainter, t: Theme, rect: QRectF, total: bool) -> None:
     """One index bar: S₁ solid in ``series-1``, S_T a tint of ``series-2`` inside an edge of it."""
     path = QPainterPath()
     if total:
-        path.addRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 2, 2)
+        path.addRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS['bar'], RADIUS['bar'])
         p.fillPath(path, t.q('series-2', 0.24 if t.dark else 0.16))
         p.strokePath(path, QPen(t.q('series-2', 0.9), 1))
     else:
-        path.addRoundedRect(rect, 2, 2)
+        path.addRoundedRect(rect, RADIUS['bar'], RADIUS['bar'])
         p.fillPath(path, t.q('series-1'))
 
 
 def paint_whisker(p: QPainter, t: Theme, a: float, b: float, y: float) -> None:
     """A 95 % whisker from *a* to *b* at height *y*, 1.25 px with 6-px caps (DESIGN.md §7)."""
-    p.setPen(QPen(t.q('text-primary'), 1.25))
+    p.setPen(QPen(t.q('text-primary'), SIZE['whisker']))
     p.drawLine(QPointF(a, y), QPointF(b, y))
+    cap = SIZE['whisker-cap'] / 2
     for x in (a, b):
-        p.drawLine(QPointF(x, y - 3), QPointF(x, y + 3))
+        p.drawLine(QPointF(x, y - cap), QPointF(x, y + cap))
 
 
 class SampleHistogram(QWidget):
@@ -448,7 +444,7 @@ class HeatmapFigure(QWidget):
             x=[hm.entered[0]],
             y=[hm.entered[1]],
             symbol=C.diamond(QPointF(0, 0), 1.0),
-            size=DIAMOND,
+            size=SIZE['diamond'],
             brush=pg.mkBrush(t.q('bg-surface')),
             pen=pg.mkPen(t.q('text-primary'), width=px(1.5)),
         )
@@ -891,7 +887,7 @@ class SensitivityView(QObject):
         lay = C.vbox(spacing=0, margins=(6, 5, 6, 5))
         fit = self._fit()
         log = model.analysis.log_axis
-        note_w = EXPORT_WIDTH - 2 * space(6)
+        note_w = SIZE['export-width'] - 2 * space(6)
 
         def notes(texts: list[str]) -> None:
             for text in texts:
@@ -908,7 +904,7 @@ class SensitivityView(QObject):
                 lay.addWidget(C.PaintedText(light, f'{hm.name} over {hm.x_label} and {hm.y_label}', 'body-strong'))
                 lay.addSpacing(space(2))
                 fig = HeatmapFigure(light, hm, interactive=False)
-                fig.setFixedHeight(EXPORT_WIDTH // 2)
+                fig.setFixedHeight(SIZE['export-width'] // 2)
                 lay.addWidget(fig)
         else:
             for block in S.ka_blocks(result, fit, log):
@@ -933,7 +929,7 @@ class SensitivityView(QObject):
                     lay.addWidget(IndexChartView(light, block.chart, self._name_width(block)))
                 notes(S.figure_notes(block))
         figure.setLayout(lay)
-        figure.setFixedWidth(EXPORT_WIDTH)
+        figure.setFixedWidth(SIZE['export-width'])
         figure.adjustSize()
         figure.show()
         QApplication.processEvents()
@@ -943,7 +939,7 @@ class SensitivityView(QObject):
         """Save the plots of the run on show to *path* (PNG), in the light theme on white."""
         figure = self.export_figure()
         try:
-            export_widget(figure, path, width_px=2 * EXPORT_WIDTH)
+            export_widget(figure, path, width_px=2 * SIZE['export-width'])
         finally:
             figure.close()
             figure.deleteLater()

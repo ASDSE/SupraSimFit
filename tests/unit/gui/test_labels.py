@@ -754,49 +754,6 @@ class TestOneStepSentence:
         assert one_step_sentence('K', SECOND_STEP_LEVEL).endswith(f'p ≤ {SECOND_STEP_LEVEL:g}).')
 
 
-class TestFmtSpread:
-    """A spread of log₁₀(Ka) reads as decades and as the factor Ka spreads by."""
-
-    def test_decades_and_the_factor_they_mean(self):
-        """10**0.084 = 1.2131…, so a standard deviation of 0.084 decades is a factor of 1.21 either way."""
-        from gui.plotting.labels import fmt_spread
-
-        assert fmt_spread(0.084, html=False) == '0.084 decades (×/÷ 1.21)'
-
-    def test_the_rich_text_form_keeps_the_factor_on_one_line(self):
-        """Only the space before the factor differs, so both forms read the same."""
-        from gui.plotting.labels import fmt_spread
-
-        html = fmt_spread(0.084, html=True)
-        assert html == '0.084 decades (×/÷&nbsp;1.21)'
-        assert html.replace('&nbsp;', ' ') == fmt_spread(0.084, html=False)
-
-    def test_a_wide_spread_reads_in_plain_digits(self):
-        """10**1.5 = 31.62…: the factor is written out, never as an exponent of e."""
-        from gui.plotting.labels import fmt_spread
-
-        text = fmt_spread(1.5, html=False)
-        assert text == '1.5 decades (×/÷ 31.6)'
-        assert 'e+' not in text and 'E+' not in text
-
-    def test_no_spread_at_all_is_a_factor_of_one(self):
-        from gui.plotting.labels import fmt_spread
-
-        assert fmt_spread(0.0, html=False) == '0 decades (×/÷ 1.00)'
-
-    def test_what_is_not_a_standard_deviation_is_refused(self):
-        """A spread is finite and not negative; anything else is said in words by the caller, not written out."""
-        import math
-
-        import pytest
-
-        from gui.plotting.labels import fmt_spread
-
-        for value in (math.nan, math.inf, -0.1):
-            with pytest.raises(ValueError):
-                fmt_spread(value, html=False)
-
-
 def test_plain_label_gives_back_the_characters_html_escaped():
     """A source named by the user reaches a label escaped; flattening it has to undo that, not print '&amp;'."""
     assert plain_label('Host &amp; dye stock') == 'Host & dye stock'

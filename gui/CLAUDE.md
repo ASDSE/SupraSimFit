@@ -10,7 +10,8 @@ Binding rules:
 - **Values come from tokens.** Colours through a `Theme` (`t.q('token')`, `{{token}}` in
   the stylesheet template), spacing from `space(n)`, fixed sizes from `SIZE`, radii from
   `RADIUS`, fonts from `font(role)`, icons from `gui/design/icons.py`. No module
-  in `gui/` holds a colour, font-size or spacing literal. A value the tokens lack becomes a
+  in `gui/` holds a colour, font-size or spacing literal (the tokens themselves and the
+  platform's own window-button colours excepted). A value the tokens lack becomes a
   token, in both themes, that passes `tests/unit/gui/test_design_system.py`.
 - **Components live in `gui/design/components.py`.** Reuse them; a new shared control is
   added there, never defined a second time in a view. Every component meets the rules
@@ -30,7 +31,7 @@ Binding rules:
   Split, Needs refit), plain language, sentence case, units on every value, binding
   constants in M⁻¹, no message naming one input as the cause of a conflict.
 - **Exported figures** use the light plot theme on white, whatever the window shows.
-- **Open choices** (DESIGN.md §10) are put to the owner when their view is built, never
+- **Open choices** — a design choice DESIGN.md does not settle — are put to the owner, never
   picked silently; the answer goes into DESIGN.md and the tokens.
 - **Done means seen.** Render the view in light and dark and compare it with its
   reference screen before calling it finished (offscreen Qt renders with Fusion; confirm

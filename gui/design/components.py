@@ -660,7 +660,7 @@ def paint_popover(p: QPainter, t: Theme, card: QRectF) -> None:
     for i in range(10, 0, -1):
         alpha = (0.07 if t.dark else 0.018) * (11 - i) / 10
         shadow = card.adjusted(-i, -i + 4, i, i + 4)
-        p.fillPath(_rounded(shadow, RADIUS['popover'] + i), QColor(0, 0, 0, int(255 * alpha)))
+        p.fillPath(_rounded(shadow, RADIUS['popover'] + i), t.q('shadow', int(255 * alpha) / 255))
     path = _rounded(card, RADIUS['popover'])
     p.fillPath(path, t.q('bg-raised'))
     p.setPen(QPen(t.q('border'), 1))
@@ -1445,11 +1445,6 @@ class Toggle(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    def set_on(self, on: bool) -> None:
-        """Switch it on or off without emitting :attr:`toggled`."""
-        self.on = on
-        self.update()
-
     def _flip(self) -> None:
         self.on = not self.on
         self.update()
@@ -1473,7 +1468,7 @@ class Toggle(QWidget):
         p.fillPath(_rounded(r, r.height() / 2), t.q('accent' if self.on else 'border-strong'))
         knob = QRectF(r.right() - 18 if self.on else 2, 2, 16, 16)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(0, 0, 0, 46))
+        p.setBrush(t.q('shadow', 46 / 255))
         p.drawEllipse(knob.translated(0, 0.75))
         p.setBrush(t.q('text-primary' if t.dark else 'bg-surface'))
         p.drawEllipse(knob)
