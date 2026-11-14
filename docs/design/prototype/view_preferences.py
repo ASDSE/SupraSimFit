@@ -11,16 +11,15 @@ something a user would actually change:
   plot axis, the Display unit of Measurements, and its condition and uncertainty
   fields; the Imported unit that reads a data file is set per session), and the plot
   appearance it starts from. Binding constants are entered in M⁻¹ only, so they have no
-  row. Sessions already open keep their own.
+  row.
 - Analysis: processor cores for the many refits of a sensitivity analysis.
 
-The plot appearance row is a read-out with one command. A style is saved for new
+The plot appearance row is a read-out with one command. An appearance is stored for new
 sessions from the session it belongs to, with Use for new sessions in that session's
-Plot appearance view, so the command sits next to the style it copies. What is saved is
-the look alone (markers, lines, colours, palette, text sizes, Ka scale); axis titles, the
-axis unit and what each plot shows stay with each session. Use built-in style is
-disabled while new sessions already start from the built-in style, and the note then
-reads "Built-in style.".
+Plot appearance view, so the command sits next to the appearance it copies. The note
+says whether one is stored: "Stored with Use for new sessions." or "Built-in
+appearance.", and Use built-in appearance is disabled while new sessions already start
+from the built-in appearance.
 
 A single page rather than tabs: seven rows fit on one screen, and a tab row would hide
 two thirds of them for no gain. Changes apply as they are made, as in any macOS settings
@@ -46,7 +45,6 @@ TITLE_H = 44
 CONTROL_W = 216  # one right-hand column: every segmented control and popup shares its two edges
 # Room around the window for its shadow, deeper below where the light falls.
 PAD_X, PAD_TOP, PAD_BOTTOM = 32, 24, 40
-SAVED_FROM = 'GDA_titrations'  # the session whose plot appearance new sessions start from
 
 
 # ── Rows and groups ────────────────────────────────────────────────────────────────
@@ -82,13 +80,9 @@ def row(label: str, control: QWidget | None, text: str = '', detail: str = '') -
     return w
 
 
-def group(title: str, card: C.SettingsCard, footnote: str = '') -> QWidget:
+def group(title: str, card: C.SettingsCard) -> QWidget:
     w = QWidget()
-    lay = C.vbox(C.hbox(C.label(title, 'body-strong'), margins=(4, 0, 4, 0)), 3, card, spacing=0)
-    if footnote:
-        lay.addSpacing(space(3))
-        lay.addLayout(C.hbox(C.label(footnote, 'small', 'tertiary'), margins=(4, 0, 4, 0)))
-    w.setLayout(lay)
+    w.setLayout(C.vbox(C.hbox(C.label(title, 'body-strong'), margins=(4, 0, 4, 0)), 3, card, spacing=0))
     return w
 
 
@@ -123,13 +117,7 @@ def body(t: Theme) -> QWidget:
                 detail='A new session’s plot axis (its Display unit) and its condition and uncertainty fields '
                 'start in this unit. It does not change how data files are read.',
             ),
-            row(
-                'Plot appearance',
-                C.OutlineButton(ct, 'Use built-in style'),
-                f'Saved from {SAVED_FROM}.',
-                detail='New sessions take its markers, lines, colours and text sizes; axis titles and what each '
-                'plot shows stay with each session. Save another from a session’s Plot appearance view.',
-            ),
+            row('Plot appearance', C.OutlineButton(ct, 'Use built-in appearance'), 'Stored with Use for new sessions.'),
         ],
     )
     cores = C.Field(ct, f'Automatic ({default_worker_count()})', CONTROL_W, kind='choice')
@@ -150,7 +138,7 @@ def body(t: Theme) -> QWidget:
         C.vbox(
             group('General', general),
             6,
-            group('New sessions', new_sessions, 'Sessions already open keep their own units and plot appearance.'),
+            group('New sessions', new_sessions),
             6,
             group('Analysis', analysis),
             spacing=0,

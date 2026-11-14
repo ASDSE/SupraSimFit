@@ -1387,12 +1387,36 @@ class Checkbox(QWidget):
 
 
 class Toggle(QWidget):
-    """An on/off switch, 36 × 20: an accent track with the knob at the right when *on*."""
+    """An on/off switch, 36 × 20: an accent track with the knob at the right when *on*; a click or Space flips it."""
+
+    toggled = pyqtSignal(bool)
 
     def __init__(self, t: Theme, on: bool = True):
         super().__init__()
         self.t, self.on = t, on
         self.setFixedSize(36, 20)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_on(self, on: bool) -> None:
+        """Switch it on or off without emitting :attr:`toggled`."""
+        self.on = on
+        self.update()
+
+    def _flip(self) -> None:
+        self.on = not self.on
+        self.update()
+        self.toggled.emit(self.on)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._flip()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Space:
+            self._flip()
+        else:
+            super().keyPressEvent(event)
 
     def paintEvent(self, _):
         t = self.t
@@ -1406,6 +1430,8 @@ class Toggle(QWidget):
         p.drawEllipse(knob.translated(0, 0.75))
         p.setBrush(t.q('text-primary' if t.dark else 'bg-surface'))
         p.drawEllipse(knob)
+        if self.hasFocus():
+            _focus_ring(p, t, r)
         p.end()
 
 

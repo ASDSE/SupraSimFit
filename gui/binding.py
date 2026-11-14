@@ -301,8 +301,11 @@ class ConditionEntry:
         return None if shown is None else shown * self.scale()
 
 
-def _entry(field: ConditionField, base_value: float | None) -> ConditionEntry:
-    unit = UNIT_CHOICES[field.unit_type][1] if field.unit_type in UNIT_CHOICES else field.unit
+def _entry(field: ConditionField, base_value: float | None, concentration_unit: str) -> ConditionEntry:
+    if field.unit_type == 'concentration':
+        unit = concentration_unit
+    else:
+        unit = UNIT_CHOICES[field.unit_type][1] if field.unit_type in UNIT_CHOICES else field.unit
     entry = ConditionEntry(field, unit, Amount(''))
     if base_value is not None:
         _write(entry, base_value)
@@ -378,12 +381,16 @@ class BindingForm:
 
     The edits are the methods a view calls when the user changes something;
     :meth:`conditions`, :meth:`problems`, :meth:`bounds`, :meth:`custom_bounds`,
-    :meth:`bound_problems` and :attr:`per_replica` are what a fit reads.
+    :meth:`bound_problems` and :attr:`per_replica` are what a fit reads. Every
+    concentration of a fresh form is shown in *concentration_unit*.
     """
 
-    def __init__(self, assay_type: AssayType = AssayType.GDA) -> None:
+    def __init__(
+        self, assay_type: AssayType = AssayType.GDA, concentration_unit: str = UNIT_CHOICES['concentration'][1]
+    ) -> None:
         self.per_replica: bool = FitConfig().per_replica
-        self.stock = _entry(TITRANT_STOCK_FIELD, None)
+        self.concentration_unit = concentration_unit
+        self.stock = _entry(TITRANT_STOCK_FIELD, None, concentration_unit)
         self.set_assay(assay_type)
 
     # ------------------------------------------------------------------
@@ -391,14 +398,15 @@ class BindingForm:
     # ------------------------------------------------------------------
 
     def set_assay(self, assay_type: AssayType) -> None:
-        """Choose *assay_type* with a fresh form: its default conditions and units, constant totals, default bounds.
+        """Choose *assay_type* with a fresh form: its default conditions, constant totals, default bounds.
 
-        The titrant stock keeps its value and unit. A stock carried over from another
-        model would reach a fit without being seen, so the totals go back to constant
-        with every choice of a model, and the stock is seen again when dilution is chosen.
+        The concentrations are shown in :attr:`concentration_unit`. The titrant stock
+        keeps its value and unit. A stock carried over from another model would reach a
+        fit without being seen, so the totals go back to constant with every choice of a
+        model, and the stock is seen again when dilution is chosen.
         """
         self.assay_type = assay_type
-        self.entries = {f.key: _entry(f, f.default) for f in condition_fields(assay_type)}
+        self.entries = {f.key: _entry(f, f.default, self.concentration_unit) for f in condition_fields(assay_type)}
         self.diluted = False
         self.contains: set[str] = set()
         meta = ASSAY_REGISTRY[assay_type]

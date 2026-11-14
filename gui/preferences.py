@@ -14,7 +14,12 @@ import json
 
 from PyQt6.QtCore import QCoreApplication, QSettings
 
+from gui.design.appearance import MODES
 from gui.plot_appearance import BUILT_IN, PlotAppearance
+from gui.widgets.assay_conditions import UNIT_CHOICES
+
+#: The concentration units a session can be shown in, and the one it starts in by default.
+UNITS, DEFAULT_UNIT = UNIT_CHOICES['concentration']
 
 ORG_NAME = 'SupraSimFit'
 APP_NAME = 'SupraSimFit'
@@ -53,8 +58,71 @@ def set_bool(key: str, value: bool) -> None:
     _settings().setValue(key, bool(value))
 
 
+#: The window's appearance, one of :data:`gui.design.appearance.MODES`.
+APPEARANCE_KEY = 'general/appearance'
+#: Whether the app looks for a newer release when it starts.
+CHECK_FOR_UPDATES_KEY = 'general/check_for_updates'
+#: The concentration unit a new session shows and takes entries in, one of :data:`UNITS`.
+CONCENTRATION_UNIT_KEY = 'new_sessions/concentration_unit'
 #: Worker processes for long analyses. ``0`` means choose automatically.
 WORKER_COUNT_KEY = 'analysis/worker_count'
+
+
+#: Each stored choice: its key, the choices this version reads, its default as shown, and its name for the user.
+_CHOICES = {
+    APPEARANCE_KEY: (MODES, 'system', 'System', 'appearance'),
+    CONCENTRATION_UNIT_KEY: (UNITS, DEFAULT_UNIT, DEFAULT_UNIT, 'concentration unit for new sessions'),
+}
+
+
+def _choice(key: str) -> str:
+    """The choice stored under *key*, else its default; ``ValueError`` for one this version cannot read."""
+    choices, default, _shown, name = _CHOICES[key]
+    value = str(_settings().value(key, default))
+    if value not in choices:
+        raise ValueError(f'The stored {name} cannot be read.')
+    return value
+
+
+def reset_unreadable() -> list[str]:
+    """Reset each stored choice this version cannot read to its default, and say so, one sentence each."""
+    said = []
+    for key, (_choices, _default, shown, name) in _CHOICES.items():
+        try:
+            _choice(key)
+        except ValueError:
+            _settings().remove(key)
+            said.append(f'The stored {name} could not be read and was reset to {shown}.')
+    return said
+
+
+def appearance_mode() -> str:
+    """The appearance the app opens in: ``'system'`` unless another was chosen."""
+    return _choice(APPEARANCE_KEY)
+
+
+def set_appearance_mode(mode: str) -> None:
+    """Open the app in *mode* from now on."""
+    if mode not in MODES:
+        raise ValueError(f'unknown appearance mode {mode!r}')
+    _settings().setValue(APPEARANCE_KEY, mode)
+
+
+def check_for_updates() -> bool:
+    """Whether the app looks for a newer release when it starts; on unless switched off."""
+    return get_bool(CHECK_FOR_UPDATES_KEY, True)
+
+
+def concentration_unit() -> str:
+    """The concentration unit a new session starts in: µM unless another was chosen."""
+    return _choice(CONCENTRATION_UNIT_KEY)
+
+
+def set_concentration_unit(unit: str) -> None:
+    """Start every new session in *unit*."""
+    if unit not in UNITS:
+        raise ValueError(f'unknown concentration unit {unit!r}')
+    _settings().setValue(CONCENTRATION_UNIT_KEY, unit)
 
 
 def get_int(key: str, default: int = 0) -> int:
@@ -82,6 +150,17 @@ def worker_count() -> int:
 
     stored = get_int(WORKER_COUNT_KEY, 0)
     return stored if stored >= 1 else default_worker_count()
+
+
+def worker_choices() -> list[int]:
+    """The processor-core counts offered: ``0`` (automatic), then one up to the machine's cores.
+
+    A count stored beyond the machine's cores stays among them, so it is shown as it is.
+    """
+    import os
+
+    top = max(os.cpu_count() or 1, get_int(WORKER_COUNT_KEY, 0))
+    return list(range(top + 1))
 
 
 #: The plot appearance new sessions start from, as a JSON record of :class:`~gui.plot_appearance.PlotAppearance`.

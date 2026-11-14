@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from _version import __version__
+from gui import preferences
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.tokens import SIZE, Theme, space
@@ -245,6 +246,7 @@ class FittingMainWindow(QMainWindow):
         self._t = theme()
         self._update_worker: UpdateCheckWorker | None = None
         self._sim_window: QMainWindow | None = None
+        self._settings_window: QWidget | None = None
         self._sessions: list[FittingSession] = []
         self._view = 'Measurements'
         self._side_visible = True
@@ -261,9 +263,10 @@ class FittingMainWindow(QMainWindow):
         self._setup_menus()
         self._new_session()
         appearance().changed.connect(self._refresh)
-        # Silent background check for newer releases on GitHub.
+        # Silent background check for newer releases on GitHub, unless switched off in Settings.
         # Failures (offline, rate-limited, etc.) are intentionally swallowed.
-        self._run_update_check(silent=True)
+        if preferences.check_for_updates():
+            self._run_update_check(silent=True)
 
     def _set_title(self, suffix: str = '') -> None:
         """Set the window title to ``SupraSimFit <version> [suffix]``."""
@@ -350,7 +353,7 @@ class FittingMainWindow(QMainWindow):
         self._act_check_updates = _action(
             self, 'Check for updates…', '', None, lambda: self._run_update_check(silent=False)
         )
-        self._act_settings = _action(self, 'Settings…', '', keys.Preferences, self._open_preferences)
+        self._act_settings = _action(self, 'Settings…', '', keys.Preferences, self._open_settings)
         self._act_settings.setMenuRole(QAction.MenuRole.PreferencesRole)
         self._act_quit = _action(self, 'Quit', '', keys.Quit, self.close)
         self._act_quit.setMenuRole(QAction.MenuRole.QuitRole)
@@ -678,10 +681,15 @@ class FittingMainWindow(QMainWindow):
         self._sim_window.raise_()
         self._sim_window.activateWindow()
 
-    def _open_preferences(self) -> None:
-        from gui.dialogs.preferences_dialog import PreferencesDialog
+    def _open_settings(self) -> None:
+        """Open (or raise) the Settings window."""
+        if self._settings_window is None:
+            from gui.dialogs.settings_window import SettingsWindow
 
-        PreferencesDialog(self).exec()
+            self._settings_window = SettingsWindow(self._act_check_updates, self)
+        self._settings_window.show()
+        self._settings_window.raise_()
+        self._settings_window.activateWindow()
 
     # ------------------------------------------------------------------
     # Update check
@@ -810,7 +818,8 @@ def launch() -> None:
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle('Fusion')
-    appearance()
+    reset = preferences.reset_unreadable()  # said once the window is on screen
+    appearance().set_mode(preferences.appearance_mode())
 
     icon_path = _app_icon_path()
     if icon_path:
@@ -823,6 +832,12 @@ def launch() -> None:
 
     window = FittingMainWindow()
     window.show()
+    if reset:
+        QMessageBox.warning(
+            window,
+            'Settings Reset',
+            ' '.join([*reset, f'You can change {"it" if len(reset) == 1 else "them"} in Settings.']),
+        )
     sys.exit(app.exec())
 
 

@@ -46,6 +46,10 @@ SIZE = {
     'plot-min': 320,
     # The longest line of help or warning text under a control, for a comfortable reading measure.
     'measure': 640,
+    # The width of the Settings window.
+    'settings-window': 640,
+    # The one column of controls on the right of the Settings window: its segmented controls and menu.
+    'settings-control': 216,
     # The point sizes and stroke widths Plot appearance offers for the titration plot.
     'marker-small': 4,
     'marker-medium': 6,

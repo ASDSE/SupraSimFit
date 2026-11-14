@@ -447,11 +447,12 @@ class SessionModel(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         #: The binding model as stated; :meth:`binding_edited` after every change.
-        self.binding = BindingForm()
+        unit = preferences.concentration_unit()
+        self.binding = BindingForm(concentration_unit=unit)
         #: What the user states about the inputs; :meth:`uncertainty_edited` after every change.
         self.uncertainty = UncertaintyForm(self.binding.assay_type)
         self.uncertainty.set_conditions(self.binding.conditions(), self.binding.condition_units())
-        self._settings = SessionSettings(**self.binding_settings(), **self.uncertainty_settings())
+        self._settings = SessionSettings(**self.binding_settings(), **self.uncertainty_settings(), display_unit=unit)
         #: The settings of the next sensitivity run; :meth:`analysis_edited` after every change.
         self.analysis = AnalysisForm()
         self.analysis.set_inputs(list(self._settings.input_labels))
