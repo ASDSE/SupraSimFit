@@ -144,6 +144,9 @@ species at the concentration under the pointer.</li>
 a.u. and a part that grows with the signal, the law the fit reads off measured replicates.
 <i>Read from overlaid data</i> takes both parts from an overlaid file with two or more
 replicates. Without noise, one noise-free replicate is simulated.</p>
+<p><b>Fixed totals</b> stay constant until you choose <i>Are diluted</i>: each addition then
+dilutes every total the titrant stock does not hold by the titrant concentration over the
+stock, as the fit does with the same stock.</p>
 <p><i>Fit in new session</i> opens the data as shown in a new session and fits it. The values you
 simulated with are not passed to the fit, so it searches as it does on measured data.</p>
 """

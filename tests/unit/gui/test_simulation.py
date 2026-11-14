@@ -13,7 +13,10 @@ pytest.importorskip('PyQt6')
 
 from core.assays.registry import AssayType  # noqa: E402
 from core.pipeline.noise import noise_law  # noqa: E402
+from core.simulation import simulate_signal  # noqa: E402
+from core.units import Q_  # noqa: E402
 from gui.simulation import SPECIES_TOKENS, Overlay, SimulationForm, SimulationProblem, value_text  # noqa: E402
+from gui.widgets.assay_conditions import assay_class  # noqa: E402
 
 
 @pytest.fixture
@@ -41,6 +44,7 @@ def test_fit_in_new_session_carries_the_data_as_shown_and_only_the_conditions(se
     np.testing.assert_array_equal(ms.signals, sim.signals)
     np.testing.assert_array_equal(ms.concentrations, sim.x)
     assert ms.n_replicas == (3 if noisy else 1)
+    assert session_model.name() == 'Simulated IDA' and not session_model.dataset.files
 
     settings = session_model.settings
     assert settings.assay_type is AssayType.IDA
@@ -49,6 +53,53 @@ def test_fit_in_new_session_carries_the_data_as_shown_and_only_the_conditions(se
     # The fit starts from its own defaults: no bound, start or value of a fitted parameter is passed.
     assert settings.custom_bounds is None
     assert not settings.input_problems and not settings.assay_problems
+    assert 'titrant_stock' not in settings.conditions  # the totals stay constant
+
+
+def test_a_stated_stock_dilutes_the_totals_the_stock_lacks_through_the_fitters_forward_model():
+    """With a stock, each point is the constant-totals model at the totals left after that addition.
+
+    The check is independent of ``fixed_total()``: every point is computed on its own with the
+    totals written out by hand, ``h0·(1 − x/c_T)`` for the host and ``d0`` for the dye the stock
+    holds. Without a stock the conditions carry no dilution key and the signal is the model's own.
+    """
+    form = SimulationForm(AssayType.IDA)
+    form.set_noise(on=False)
+    cls, params, x = assay_class(AssayType.IDA), form.parameters(), form.points()
+    constant = {k.key: Q_(k.value, k.base_unit) for k in form.knobs.values() if k.condition}
+    assert form.conditions() == constant
+    np.testing.assert_array_equal(form.simulate().signals[0], simulate_signal(cls, constant, params, x))
+
+    form.set_diluted(True)
+    form.set_stock('0.05')  # mM: the last addition leaves 82 % of the host
+    form.set_contains('d0', True)
+    stock, h0 = 0.05e-3, constant['h0'].magnitude
+    by_hand = [
+        simulate_signal(cls, {**constant, 'h0': Q_(h0 * (1 - xi / stock), 'M')}, params, np.array([xi]))[0] for xi in x
+    ]
+    diluted = form.simulate().signals[0]
+    np.testing.assert_allclose(diluted, by_hand, rtol=1e-9)
+    assert not np.allclose(diluted, simulate_signal(cls, constant, params, x), rtol=1e-3)
+
+
+def test_the_stock_travels_to_the_new_session_and_is_refused_where_it_cannot_hold(session_model):
+    form = SimulationForm(AssayType.IDA)
+    form.set_diluted(True)
+    form.set_stock_unit('µM')
+    form.set_stock('50')
+    form.set_contains('h0', True)
+    with pytest.raises(SimulationProblem, match='every fixed total'):
+        form.set_contains('d0', True)
+    form.set_stock('8')  # below the highest titrant concentration, 9 µM
+    with pytest.raises(SimulationProblem, match='more concentrated than the highest titrant'):
+        form.simulate()
+    form.set_stock('50')
+    form.carry_to(session_model, form.simulate())
+    settings = session_model.settings
+    assert settings.conditions['titrant_stock'].to('M').magnitude == pytest.approx(50e-6, rel=1e-12)
+    assert settings.conditions['stock_contains'] == ('h0',)
+    assert settings.condition_units['titrant_stock'] == 'µM'
+    assert not settings.assay_problems and session_model.stock_problem() is None
 
 
 def test_every_model_opens_on_a_curve_with_every_species_coloured():
@@ -94,15 +145,20 @@ def test_settings_survive_a_save_and_load():
     form.set_value('Ka_HG2', '4.4e4')
     form.set_end('Ka_HG2', True, '1e8')
     form.set_noise(floor=12.0, proportional=0.02, replicates=5, seed=9)
+    form.set_diluted(True)
+    form.set_stock('60')  # mM
     again = SimulationForm()
     again.load_dict(form.to_dict())
+    assert (again.diluted, again.stock) == (True, 60e-3)
     np.testing.assert_array_equal(again.simulate().signals, form.simulate().signals)
     with pytest.raises(SimulationProblem):
         again.load_dict({'version': 1})
 
 
-def test_the_window_draws_reads_noise_and_asks_for_a_new_session(qapp):
+def test_the_window_draws_reads_noise_and_asks_for_a_new_session(qapp, tmp_path, monkeypatch):
     from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QImage
+    from PyQt6.QtWidgets import QFileDialog
 
     from gui.views.simulation import SimulationWindow
 
@@ -122,6 +178,19 @@ def test_the_window_draws_reads_noise_and_asks_for_a_new_session(qapp):
         value_text(noise.floor),
         value_text(100 * noise.proportional),
     )
+    # The stock: its row shows once dilution is chosen, with one box per fixed total the stock may hold.
+    assert window.stock_row.isHidden()
+    window.dilution.changed.emit(1)
+    assert window.form.diluted and not window.stock_row.isHidden() and set(window._contains) == {'h0', 'd0'}
+    # The curve image: the titration above the species, one picture or one drawing.
+    for ext in ('png', 'svg'):
+        path = tmp_path / f'curves.{ext}'
+        monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, path=path: (str(path), ''))
+        window.export_image()
+    from gui.views.simulation import EXPORT_HEIGHTS
+
+    assert QImage(str(tmp_path / 'curves.png')).height() == 2 * sum(EXPORT_HEIGHTS)
+    assert (tmp_path / 'curves.svg').read_text().count('<svg') == 3  # the figure and its two plots
     window.edit(lambda f: f.choose_model(AssayType.DBA_H2G), rebuild=True)
     assert set(window.rows) == set(window.form.knobs)
     asked = []

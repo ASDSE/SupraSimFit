@@ -70,7 +70,7 @@ def test_the_budget_is_written_as_the_sensitivity_tab_reports_it(analysed_sessio
     artefact = _artefact(session, 'budget_csv')
     path = tmp_path / f'run{artefact.suffix}'
 
-    assert artefact.available and artefact.label == 'Ka uncertainty budget (CSV)'
+    assert artefact.available and artefact.label == 'Kₐ uncertainty budget (CSV)'
     assert artefact.suffix == '_budget.csv'
     artefact.writer(path)
 

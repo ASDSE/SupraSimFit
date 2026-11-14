@@ -6,9 +6,11 @@ Help, the side-panel toggle and the primary *Fit in new session*. Canvas: **Titr
 (the simulated replicates at the measurement points, the model drawn continuously, an
 overlaid file as rings) above **Species** on the same x axis, with the readout at the
 pointer. Side panel *Simulation settings*, its ⋯ menu holding *Save settings…*, *Load
-settings…* and *Reset to defaults*. Every setting is :class:`~gui.simulation.SimulationForm`'s;
-every change recomputes both plots. The plots are drawn from the tokens alone and saved in
-the light theme on white.
+settings…* and *Reset to defaults*; under Fixed totals, whether the additions dilute them and
+the titrant stock, as Binding model states it. Every setting is
+:class:`~gui.simulation.SimulationForm`'s; every change recomputes both plots. The plots are
+drawn from the tokens alone; *Curve image…* saves both, the titration above the species on
+their shared axis, as one PNG or SVG in the light theme on white.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import apply_plot_theme, fit_line, px, replicate_alpha, scatter
 from gui.design.tokens import SIZE, Theme, font, space
 from gui.dialogs.plot_guide_dialog import show_plot_guide
-from gui.plotting.export import ExportRefused, export_plot_item
+from gui.plotting.export import ExportRefused, export_stacked
 from gui.plotting.labels import fmt_species, superscript
 from gui.simulation import (
     COMPLEXES,
@@ -72,6 +74,8 @@ VALUE_W, UNIT_W, END_W = SIZE['knob-value'], SIZE['knob-unit'], SIZE['slider-end
 SETTINGS_NOTE = 'Saves every value, slider end and noise setting of this window to a file.'
 #: What to check when a file cannot be written, after the sentence naming it.
 WRITE_HINT = 'Check that the folder exists and that you may write there.'
+#: Heights of the saved titration and species plots, in px at :data:`EXPORT_SIZE`'s width: the canvas's 13 : 10.
+EXPORT_HEIGHTS = (520, 400)
 #: The dash of a free species' line and its swatch, in px.
 DASH = [3, 2.5]
 
@@ -466,8 +470,8 @@ class SimulationWindow(QMainWindow):
         self.legend = C.LegendRow(t, [])
         self.legend.removed.connect(lambda: self.edit(lambda f: f.set_overlay(None)))
         image = C.tool_button(t, None, 'image')
-        image.setToolTip('Save the titration plot as an image')
-        image.setAccessibleName('Save the titration plot as an image')
+        image.setToolTip('Save the titration and species plots as one image')
+        image.setAccessibleName('Save the titration and species plots as one image')
         image.clicked.connect(self.export_image)
         self.readout = _Readout(t)
         self.plots = SimulationPlots(t)
@@ -544,10 +548,11 @@ class SimulationWindow(QMainWindow):
         self.knob_boxes = {kind: _widget(C.vbox(spacing=4)) for kind in ('binding', 'concentration', 'signal')}
         self.formula = _caption('')
         signal = _widget(C.vbox(self.knob_boxes['signal'], 2, self.formula, spacing=0))
+        totals = _widget(C.vbox(self.knob_boxes['concentration'], 4, self._build_dilution(), spacing=0))
         self.sections = {
             'model': C.section(t, 'Binding model', model, first=True),
             'binding': C.section(t, 'Binding constants', self.knob_boxes['binding']),
-            'concentration': C.section(t, 'Fixed totals', self.knob_boxes['concentration'], trailing='in the cuvette'),
+            'concentration': C.section(t, 'Fixed totals', totals, trailing='in the cuvette'),
             'grid': C.section(t, 'Concentrations', self._build_grid()),
             'noise': C.section(t, 'Noise', self._build_noise()),
             'signal': C.section(t, 'Signal', signal, open_=False),
@@ -563,6 +568,58 @@ class SimulationWindow(QMainWindow):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         w.setLayout(C.vbox(head, self.scroll, spacing=0))
         return w
+
+    def _build_dilution(self) -> QWidget:
+        """Whether the additions dilute the fixed totals, the stock and the totals it holds, as Binding
+        model states them."""
+        t = self.t
+        self.dilution = C.Segmented(t, ['Stay constant', 'Are diluted'], dividers=True)
+        self.dilution.setAccessibleName('Whether the additions of titrant dilute the fixed totals')
+        self.dilution.setToolTip(
+            'Whether each addition of titrant dilutes the sample. It does not if the samples are made up to the '
+            'same volume, or if the titrant stock is prepared in the sample solution itself.'
+        )
+        self.dilution.changed.connect(lambda i: self.edit(lambda f: f.set_diluted(i == 1)))
+        self.stock = C.Field(t, '', editable=True)
+        self.stock.setToolTip(
+            'Concentration of the stock the titrant is added from. Each addition dilutes the fixed totals by the '
+            'share of the volume that came from it: the titrant concentration over the stock.'
+        )
+        self.stock.edited.connect(lambda text: self.edit(lambda f: f.set_stock(text)))
+        self.stock_unit = C.Dropdown(t, '', UNIT_W, options=list(CONCENTRATION_UNITS))
+        self.stock_unit.setAccessibleName('Unit of the titrant stock concentration')
+        self.stock_unit.chosen.connect(lambda i: self.edit(lambda f: f.set_stock_unit(CONCENTRATION_UNITS[i])))
+        unit = _widget(C.vbox(C.label('', 'small', 'secondary'), self.stock_unit, spacing=1))
+        self.stock_row = _widget(
+            C.vbox(
+                C.hbox(_column('Stock concentration', self.stock), 2, unit, spacing=0),
+                2,
+                _caption('The concentrations are the titrant in the cuvette after each addition.'),
+                spacing=0,
+            )
+        )
+        self.contains_box = C.hbox(spacing=5)
+        self.contains_row = _widget(
+            C.vbox(
+                C.wrapped('Stock also contains, at the sample’s own concentration', 'small', 'secondary'),
+                C.hbox(self.contains_box, None, spacing=0),
+                spacing=1,
+            )
+        )
+        self._contains: dict[str, C.Checkbox] = {}
+        self.dilution_box = _widget(
+            C.vbox(
+                C.label('Totals during the titration', 'small', 'secondary'),
+                1,
+                self.dilution,
+                3,
+                self.stock_row,
+                3,
+                self.contains_row,
+                spacing=0,
+            )
+        )
+        return self.dilution_box
 
     def _build_grid(self) -> QWidget:
         t = self.t
@@ -730,6 +787,16 @@ class SimulationWindow(QMainWindow):
                 row = _KnobRow(self, knob)
                 self.rows[knob.key] = row
                 lay.addWidget(row)
+        for box in self._contains.values():
+            self.contains_box.removeWidget(box)
+            C.drop(box)
+        self._contains = {}
+        for knob in self.form.section('concentration') if self.form.offers_contains else ():
+            box = C.Checkbox(self.t, knob.label, rich=True)
+            box.setAccessibleName(f'The titrant stock also contains {knob.name()} at the sample’s concentration')
+            box.toggled.connect(lambda on, key=knob.key: self.edit(lambda f: f.set_contains(key, on)))
+            self.contains_box.addWidget(box)
+            self._contains[knob.key] = box
         has = {kind: bool(self.form.section(kind)) for kind in self.knob_boxes}
         for kind, on in has.items():
             self.sections[kind].setVisible(on)
@@ -745,6 +812,15 @@ class SimulationWindow(QMainWindow):
         )
         for key, row in self.rows.items():
             row.sync(form.knobs[key])
+        self.dilution_box.setVisible(form.offers_dilution)
+        self.dilution.set_current(int(form.diluted))
+        self.stock_row.setVisible(form.diluted)
+        self.stock.set_text(form.stock_text())
+        self.stock.setAccessibleName(f'Titrant stock concentration ({form.stock_unit})')
+        self.stock_unit.set_choice(form.stock_unit)
+        self.contains_row.setVisible(form.diluted and form.offers_contains)
+        for key, box in self._contains.items():
+            box.set_checked(key in form.contains)
         n_signal = len(form.section('signal'))
         self.sections['signal'].header.set_trailing(f'{n_signal} coefficient{"s" if n_signal != 1 else ""}')
         self.formula.setText(form.signal_formula())
@@ -858,6 +934,7 @@ class SimulationWindow(QMainWindow):
         self.edit(lambda f: f.set_overlay(overlay))
 
     def export_image(self) -> None:
+        """Save the titration above the species on their shared titrant axis, as one PNG or SVG in the light theme."""
         if self.sim is None:
             QMessageBox.warning(self, 'Nothing to Save', self._problem or 'There is no simulation to save.')
             return
@@ -866,20 +943,17 @@ class SimulationWindow(QMainWindow):
         if not path:
             return
         figure = SimulationPlots(Theme(dark=False))
-        figure.signal_pw.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-        figure.signal_pw.resize(*EXPORT_SIZE)
+        for pw, height in zip((figure.signal_pw, figure.species_pw), EXPORT_HEIGHTS, strict=True):
+            pw.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+            pw.resize(EXPORT_SIZE[0], height)
+            pw.show()
         figure.show(self.sim, self.form.overlay, self.form.grid.unit, self.form.x_name)
         figure.set_pointer_visible(False)
-        # The saved titration carries its own titrant axis, as the shared one is under the species.
-        axis = figure.signal_pw.getPlotItem().getAxis('bottom')
-        axis.setStyle(showValues=True, tickLength=4)
-        axis.setHeight(SIZE['axis-bottom'])
-        axis.showLabel(True)
-        axis.setLabel(f'{self.form.x_name} ({self.form.grid.unit})')
-        figure.signal_pw.show()
         QApplication.processEvents()
         try:
-            export_plot_item(figure.signal_pw.getPlotItem(), path)
+            export_stacked(
+                [figure.signal_pw.getPlotItem(), figure.species_pw.getPlotItem()], path, width_px=2 * EXPORT_SIZE[0]
+            )
         except ExportRefused as exc:
             QMessageBox.warning(self, 'Image Not Saved', str(exc))
         except Exception:

@@ -479,12 +479,19 @@ def inspector(t: Theme, overlay: bool, signal_open: bool, hover_end: bool) -> QW
         )
     )
 
-    # Fixed totals in the cuvette; sliders from 0 to five times the default.
+    # Fixed totals in the cuvette; sliders from 0 to five times the default. Under them, whether
+    # the additions dilute the totals, as Binding model states it: constant until the user says so.
     totals = QWidget()
     totals.setLayout(
         C.vbox(
             knob(t, '[Host]₀', f'{COND["h0"] * UM:g}', 'µM', 0.2, '0', '21.5', unit_menu=True),
             knob(t, '[Dye]₀', f'{COND["d0"] * UM:g}', 'µM', 0.2, '0', '30', unit_menu=True),
+            C.vbox(
+                C.label('Totals during the titration', 'small', 'secondary'),
+                1,
+                C.Segmented(t, ['Stay constant', 'Are diluted'], 0, dividers=True),
+                spacing=0,
+            ),
             spacing=4,
         )
     )

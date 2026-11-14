@@ -102,10 +102,10 @@ def test_the_failures_of_a_batch_are_said_in_plain_words(dialog, monkeypatch):
         module,
         'export_batch',
         lambda arts, folder, base: [
-            ('Fit results (JSON)', folder / 'a.json', PermissionError(13, 'Permission denied', '/out/a.json')),
-            ('Ka uncertainty budget', folder / 'a.csv', ExportRefused(budget)),
+            ('Results file (JSON)', folder / 'a.json', PermissionError(13, 'Permission denied', '/out/a.json')),
+            ('Kₐ uncertainty budget', folder / 'a.csv', ExportRefused(budget)),
             # numpy and json raise ValueError too, with their own wording.
-            ('Fit results (CSV)', folder / 'a.csv', ValueError('operands could not be broadcast together')),
+            ('Table (CSV)', folder / 'a.csv', ValueError('operands could not be broadcast together')),
             ('Note', folder / 'a_note.txt', None),
         ],
     )
@@ -116,9 +116,9 @@ def test_the_failures_of_a_batch_are_said_in_plain_words(dialog, monkeypatch):
     assert title == 'Some files were not exported'
     assert '1 of 4 files were written' in text
     assert 'Errno' not in text and 'Permission denied' not in text
-    assert '• Fit results (JSON): could not be written.' in text
-    assert '• Fit results (CSV): could not be written.' in text and 'broadcast' not in text
-    assert f'• Ka uncertainty budget: {budget}' in text
+    assert '• Results file (JSON): could not be written.' in text
+    assert '• Table (CSV): could not be written.' in text and 'broadcast' not in text
+    assert f'• Kₐ uncertainty budget: {budget}' in text
     assert 'Check that the folder exists and that you may write there.' in text
 
 

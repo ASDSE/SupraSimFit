@@ -1015,11 +1015,13 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     """Build the list of artefacts exportable from a FittingSession.
 
     Preconditions:
-    - Raw data / fit curve plot: a measurement set is loaded.
-    - Ka confidence plot: the view holds a profile plot.
-    - Fit results (JSON/TXT/CSV): a result is shown; exported are the shown results.
-    - Ka sensitivity plot: a sensitivity analysis is shown.
-    - Ka uncertainty budget: the shown analysis reports sensitivity indices,
+    The labels name each file as the views and the Export menu do.
+
+    - Raw data / titration plot: a measurement set is loaded.
+    - Kₐ confidence plot: the view holds a profile plot.
+    - Results file, report, table: a result is shown; exported are the shown results.
+    - Sensitivity plot: a sensitivity analysis is shown.
+    - Kₐ uncertainty budget: the shown analysis reports sensitivity indices,
       which is what a budget is split from; a heatmap has none.
 
     While every held result is hidden, the result artefacts give the note
@@ -1109,7 +1111,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='results_json',
-            label='Fit results (JSON)',
+            label='Results file (JSON)',
             suffix='_results.json',
             available=has_results,
             unavailable_reason=no_fit_msg,
@@ -1117,7 +1119,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='results_txt',
-            label='Fit results (TXT report)',
+            label='Report (TXT)',
             suffix='_results.txt',
             available=has_results,
             unavailable_reason=no_fit_msg,
@@ -1125,7 +1127,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='results_csv',
-            label='Fit results (CSV table)',
+            label='Table (CSV)',
             suffix='_results.csv',
             available=has_results,
             unavailable_reason=no_fit_msg,
@@ -1133,7 +1135,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='fit_png',
-            label='Fit curve plot (PNG)',
+            label='Titration plot (PNG)',
             suffix='_fit.png',
             available=ms_loaded,
             unavailable_reason=no_data_msg,
@@ -1141,7 +1143,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='fit_svg',
-            label='Fit curve plot (SVG)',
+            label='Titration plot (SVG)',
             suffix='_fit.svg',
             available=ms_loaded,
             unavailable_reason=no_data_msg,
@@ -1149,7 +1151,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='confidence_png',
-            label='Ka confidence plot (PNG)',
+            label='Kₐ confidence plot (PNG)',
             suffix='_confidence.png',
             available=has_confidence,
             unavailable_reason=no_confidence_msg,
@@ -1157,7 +1159,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='sensitivity_png',
-            label='Ka sensitivity plot (PNG)',
+            label='Sensitivity plot (PNG)',
             suffix='_sensitivity.png',
             available=has_sensitivity,
             unavailable_reason=no_sensitivity_msg,
@@ -1165,7 +1167,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='budget_csv',
-            label='Ka uncertainty budget (CSV)',
+            label='Kₐ uncertainty budget (CSV)',
             suffix='_budget.csv',
             available=has_budget,
             unavailable_reason=no_budget_msg,

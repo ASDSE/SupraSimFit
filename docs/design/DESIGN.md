@@ -556,8 +556,9 @@ from the built-in appearance.
 ### Simulation window — `simulation_*.jpg`, `simulation_scrolled_*.jpg`, `simulation_overlay_*.jpg`
 A separate window (1280 × 800), part of no session, opened with *Tools ▸ Simulate…*. The
 main window's toolbar, side panel and status bar, without the sidebar. Toolbar:
-*Simulation* and its summary badge, *Overlay data…*, *Export ▾* (Curve image…, Data
-file…), Help, the side-panel toggle, and the primary *Fit in new session*. Canvas:
+*Simulation* and its summary badge, *Overlay data…*, *Export ▾* (Curve image…, which
+saves the titration above the species on their shared axis as one PNG or SVG in the light
+theme on white; Data file…), Help, the side-panel toggle, and the primary *Fit in new session*. Canvas:
 **Titration** (simulated replicates at the measurement points, the model drawn
 continuously) above **Species** on the same x axis, with the readout at the pointer. Each
 species takes the colour of its partner — `species-dye`, `species-guest`, `species-host`,
@@ -565,9 +566,19 @@ species takes the colour of its partner — `species-dye`, `species-guest`, `spe
 and the Sobol' series colours are not used for species.
 Side panel *Simulation settings*, its ⋯ menu holding *Save settings…* ⌘S, *Load
 settings…* and *Reset to defaults*: Binding model (category and model menus), Binding
-constants (log sliders, M⁻¹), Fixed totals (sliders, unit menus), Concentrations (*Even
+constants (log sliders, M⁻¹), Fixed totals (sliders, unit menus; then *Totals during the
+titration* — *Stay constant* / *Are diluted*, as in Binding model), Concentrations (*Even
 steps* or *Custom list*), Noise, Signal (coefficient sliders). Each slider's end values
-are edited in place. *Overlay data…* draws a measurement file over the model and takes
+are edited in place.
+
+**Titrant stock.** The totals stay constant until the user chooses *Are diluted*; that
+choice shows the stock concentration with its unit menu (the model opens on 100 × the
+highest titrant concentration of its even grid, in mM), and, where the model has two or
+more fixed totals, *Stock also contains* with one box per total the stock holds at the
+sample's own concentration. The simulation then dilutes through the assay's own
+`fixed_total()`, the forward model the fit uses. A stock no more concentrated than the
+highest titrant concentration, or one holding every total, is refused in plain words on
+the status bar. Choosing a model goes back to constant totals. *Overlay data…* draws a measurement file over the model and takes
 its concentrations as the grid.
 
 **Noise** is the two-part law the fit reads off replicates, `var(y) = floor² +
@@ -579,10 +590,12 @@ disabled and its tooltip says why, and where the replicates show no law a messag
 why in plain words. Choosing a model opens it with a floor of 0.5 % of its default
 curve's range. Without noise one noise-free replicate is simulated.
 
-**Fit in new session** opens a new session holding the simulated data exactly as shown —
+**Fit in new session** opens a new session named after the simulation (*Simulated IDA*,
+the model's short name), with no file row, holding the simulated data exactly as shown —
 noisy or noise-free — and the binding model with its conditions: the fixed totals and the
 binding constants the model takes as entered (Kₐ,dye of an IDA or GDA), each in the unit
-shown, with the totals constant. The values of what the fit searches for — the binding
+shown, and the totals constant or diluted by the titrant stock as stated here, the stock in
+its unit with the totals it holds. The values of what the fit searches for — the binding
 constants it fits and the signal coefficients — do not travel, as starting values or as
 bounds: the fit searches as it does on measured data. The session shows Fit results and
 the fit runs.

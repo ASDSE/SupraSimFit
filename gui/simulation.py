@@ -3,16 +3,18 @@
 :class:`SimulationForm` holds the settings of the window — the binding model chosen in two
 steps, one :class:`Knob` per input of that model (its binding constants, fixed totals and
 signal coefficients, each a value between two slider ends), the titrant concentrations
-(*Even steps* or a *Custom list*), the noise (the two-part law ``var(y) = floor² +
+(*Even steps* or a *Custom list*), whether the additions dilute the fixed totals (the
+titrant stock, as Binding model states it), the noise (the two-part law ``var(y) = floor² +
 (proportional·y)²`` of :data:`core.simulation.NOISE_MODELS`, the replicates and the seed)
 and a measurement file laid over the model — and :meth:`SimulationForm.simulate` turns them
 into a :class:`Simulation`: the model drawn continuously, its species, and the simulated
 replicates at the measurement points. Every number comes from the fitter's own forward model
-(:mod:`core.simulation`).
+(:mod:`core.simulation`), the dilution by a stated stock included (``BaseAssay.fixed_total``).
 
-:meth:`SimulationForm.carry_to` hands a session the simulated data exactly as shown and the
-conditions of the model; the values of what a fit searches for (the binding constants and
-signal coefficients it fits) stay here, so the fit searches as it does with measured data.
+:meth:`SimulationForm.carry_to` hands a session the simulated data exactly as shown, named
+after the simulation, and the conditions of the model with the titrant stock; the values of
+what a fit searches for (the binding constants and signal coefficients it fits) stay here, so
+the fit searches as it does with measured data.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from core.assays.base import TITRANT_STOCK
 from core.assays.registry import ASSAY_REGISTRY, KIND_UNIT, AssayType, ParamKind
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.noise import MIN_REPLICATES, noise_law
@@ -45,11 +48,16 @@ DENSE_POINTS = 361
 #: The noise model the window states: the two-part law the fitter reads off replicates.
 NOISE_MODEL = 'two-part'
 
+#: The titrant stock a model offers when dilution is chosen, as a multiple of the highest titrant
+#: concentration of its even grid; shown in :data:`STOCK_UNIT`.
+STOCK_FACTOR = 100
+STOCK_UNIT = 'mM'
+
 #: The noise floor a model opens with, as a share of its default curve's range.
 NOISE_FLOOR_SHARE = 0.005
 
 #: Version of a saved settings file.
-SETTINGS_VERSION = 1
+SETTINGS_VERSION = 2
 
 #: Each species' colour token, by partner (DESIGN.md §2): the dye and its complex, the guest and
 #: its first complex, the free host, the second-step complex of the stepwise models.
@@ -336,7 +344,8 @@ class SimulationForm:
 
     # The model ---------------------------------------------------------------------
     def set_assay(self, assay_type: AssayType) -> None:
-        """Choose *assay_type* with a fresh form: its default inputs, even grid and noise; an overlay stays.
+        """Choose *assay_type* with a fresh form: its default inputs, even grid and noise, the totals
+        constant; an overlay stays.
 
         The noise opens with a floor of :data:`NOISE_FLOOR_SHARE` of the default curve's range,
         to two figures, so every model opens with scatter that reads on its own signal scale.
@@ -345,6 +354,9 @@ class SimulationForm:
         self.knobs = _knobs(assay_type)
         stop = TITRANT_STOP[assay_type]
         self.grid = Grid(stop=stop, unit='mM' if stop >= 1e-4 else 'µM')
+        self.diluted = False
+        self.stock, self.stock_unit = STOCK_FACTOR * stop, STOCK_UNIT
+        self.contains: set[str] = set()
         clean = simulate_signal(assay_class(assay_type), self.conditions(), self.parameters(), self.points())
         self.noise = Noise(floor=float(f'{NOISE_FLOOR_SHARE * float(np.ptp(clean)):.2g}'))
         if self.overlay is not None:
@@ -421,6 +433,64 @@ class SimulationForm:
     def set_unit(self, key: str, unit: str) -> None:
         """Show fixed total *key* in *unit*: the same concentration."""
         self.knobs[key].unit = unit
+
+    # Dilution ------------------------------------------------------------------------
+    @property
+    def offers_dilution(self) -> bool:
+        """Whether there is a fixed total for the additions to dilute."""
+        return bool(self.section('concentration'))
+
+    @property
+    def offers_contains(self) -> bool:
+        """Whether the stock can hold some fixed totals and not others: with one, holding it is the constant case."""
+        return len(self.section('concentration')) > 1
+
+    def set_diluted(self, diluted: bool) -> None:
+        """State that the additions dilute the sample (*diluted*), or that the totals stay constant."""
+        self.diluted = diluted and self.offers_dilution
+
+    @property
+    def stock_scale(self) -> float:
+        """One unit of the stock as shown, in M."""
+        return float(Q_(1.0, self.stock_unit).to('M').magnitude)
+
+    def stock_text(self) -> str:
+        return value_text(self.stock / self.stock_scale)
+
+    def set_stock(self, text: str) -> None:
+        """Take *text* as the titrant stock concentration in the unit shown.
+
+        Raises
+        ------
+        SimulationProblem
+            When *text* is no number, or not above 0.
+        """
+        shown = parse_number(text)
+        if shown is None or shown <= 0:
+            raise SimulationProblem(
+                f'The titrant stock needs a concentration above 0. It keeps {self.stock_text()} {self.stock_unit}.'
+            )
+        self.stock = shown * self.stock_scale
+
+    def set_stock_unit(self, unit: str) -> None:
+        """Show the stock in *unit*: the same concentration."""
+        self.stock_unit = unit
+
+    def set_contains(self, key: str, on: bool) -> None:
+        """State that the stock holds fixed total *key* at the sample's own concentration, or not.
+
+        Raises
+        ------
+        SimulationProblem
+            When the stock would hold every fixed total, leaving nothing to dilute.
+        """
+        held = (self.contains | {key}) if on else (self.contains - {key})
+        if held >= {k.key for k in self.section('concentration')}:
+            raise SimulationProblem(
+                'The titrant stock cannot hold every fixed total: nothing would be left for the additions to '
+                'dilute. Choose “Stay constant” instead.'
+            )
+        self.contains = held
 
     # Titrant -------------------------------------------------------------------------
     @property
@@ -573,10 +643,18 @@ class SimulationForm:
 
     # Simulating ----------------------------------------------------------------------
     def conditions(self) -> dict[str, Any]:
-        """The model's conditions as the assay takes them, with a direct binding assay's mode."""
+        """The model's conditions as the assay takes them, with a direct binding assay's mode.
+
+        With dilution stated they also carry ``titrant_stock`` and ``stock_contains`` (the totals the
+        stock holds, in model order), as :meth:`gui.binding.BindingForm.conditions` states them; with
+        the totals constant neither key is there.
+        """
         out: dict[str, Any] = {k.key: Q_(k.value, k.base_unit) for k in self.knobs.values() if k.condition}
         if self.assay_type in DBA_MODES:
             out['mode'] = DBA_MODES[self.assay_type]
+        if self.diluted:
+            out[TITRANT_STOCK] = Q_(self.stock, 'M')
+            out['stock_contains'] = tuple(k.key for k in self.section('concentration') if k.key in self.contains)
         return out
 
     def parameters(self) -> dict[str, float]:
@@ -592,6 +670,13 @@ class SimulationForm:
         """
         cls, cond, par = assay_class(self.assay_type), self.conditions(), self.parameters()
         x = self.points()
+        if self.diluted and float(x.max()) >= self.stock:
+            highest = value_text(float(x.max()) / self.stock_scale)
+            raise SimulationProblem(
+                f'The titrant stock ({self.stock_text()} {self.stock_unit}) must be more concentrated than the '
+                f'highest titrant concentration ({highest} {self.stock_unit}): a sample cannot hold more titrant '
+                'than the stock it was made from.'
+            )
         x_dense = np.linspace(float(x.min()), float(x.max()), DENSE_POINTS)
         try:
             y = simulate_signal(cls, cond, par, x)
@@ -624,11 +709,13 @@ class SimulationForm:
         )
 
     def carry_to(self, model: SessionModel, sim: Simulation) -> None:
-        """Give *model* the data of *sim* exactly as drawn, and the binding model with its conditions.
+        """Give *model* the data of *sim* exactly as drawn, named after the simulation (``Simulated IDA``),
+        and the binding model with its conditions.
 
         Only the conditions travel — the fixed totals and the binding constants the model takes
-        as entered — each in the unit shown here. The values of what a fit searches for stay
-        here: the fit starts as it does on measured data.
+        as entered, and the titrant stock with the totals it holds where dilution is stated —
+        each in the unit shown here. The values of what a fit searches for stay here: the fit
+        starts as it does on measured data.
         """
         form = model.binding
         form.set_assay(self.assay_type)
@@ -637,8 +724,15 @@ class SimulationForm:
                 if knob.kind == 'concentration':
                     form.set_unit(knob.key, knob.unit)
                 form.set_value(knob.key, knob.value)
+        form.set_diluted(self.diluted)
+        if self.diluted:
+            form.set_unit(TITRANT_STOCK, self.stock_unit)
+            form.set_value(TITRANT_STOCK, self.stock)
+            for key in self.contains:
+                form.set_contains(key, True)
         model.binding_edited()
         model.load(self.measurement_set(sim), None)
+        model.set_custom_name(f'Simulated {ASSAY_NAMES[self.assay_type][0]}')
 
     # What the window says ----------------------------------------------------------
     def binding_constants(self) -> int:
@@ -678,7 +772,8 @@ class SimulationForm:
 
     # Settings files ----------------------------------------------------------------
     def to_dict(self) -> dict:
-        """Every value, slider end, unit, the concentrations and the noise, as a settings file holds them."""
+        """Every value, slider end and unit, the concentrations, the dilution and the noise, as a settings
+        file holds them."""
         g, n = self.grid, self.noise
         return {
             'version': SETTINGS_VERSION,
@@ -691,6 +786,12 @@ class SimulationForm:
                 'points': g.points,
                 'unit': g.unit,
                 'values': g.values,
+            },
+            'dilution': {
+                'diluted': self.diluted,
+                'stock': self.stock,
+                'unit': self.stock_unit,
+                'contains': sorted(self.contains),
             },
             'noise': {
                 'model': NOISE_MODEL,
@@ -737,9 +838,20 @@ class SimulationForm:
             noise = Noise(
                 bool(n['on']), float(n['floor']), float(n['proportional']), int(n['replicates']), int(n['seed'])
             )
+            dil = d['dilution']
+            diluted, stock, stock_unit, held = (
+                bool(dil['diluted']),
+                float(dil['stock']),
+                dil['unit'],
+                set(dil['contains']),
+            )
+            fixed = {k.key for k in knobs.values() if k.kind == 'concentration'}
+            if stock_unit not in CONCENTRATION_UNITS or not stock > 0 or not held <= fixed or (held and held == fixed):
+                raise ValueError
         except (KeyError, TypeError, ValueError) as exc:
             raise SimulationProblem('not settings saved by this window') from exc
         self.assay_type, self.knobs, self.grid, self.noise = assay_type, knobs, grid, noise
+        self.diluted, self.stock, self.stock_unit, self.contains = diluted and bool(fixed), stock, stock_unit, held
 
 
 def species_groups(species: dict[str, np.ndarray]) -> list[tuple[str, list[str]]]:
