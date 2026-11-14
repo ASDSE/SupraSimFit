@@ -123,21 +123,6 @@ _DECADE = re.compile(rf'^10([{_SUPER_DIGITS}]+)$')
 
 
 #: The help the toolbar's Help button opens.
-HELP_HTML = """
-<h3>Simulation</h3>
-<p>The window computes the titration a binding model predicts, with the same equations the fit uses: set the
-binding constants, the fixed totals and the signal coefficients, and the titration and the species in the
-cuvette follow at once. Use it to choose the concentrations to measure before you go to the bench.</p>
-<h3>Noise</h3>
-<p>Each simulated point gets random noise with the standard deviation σ = √(floor² + (proportional × signal)²):
-a constant part in a.u. and a part that grows with the signal. This is the law the fit reads off measured
-replicates, and <i>Read from overlaid data</i> takes both parts from an overlaid file's replicates.</p>
-<h3>Fit in new session</h3>
-<p>Opens a new session with the simulated data as shown, the binding model and its conditions, and fits it.
-The values you simulated with are not passed to the fit, so it searches as it does on measured data.</p>
-"""
-
-
 class SimulationProblem(ValueError):
     """A setting the window cannot take, with a sentence written for the user."""
 

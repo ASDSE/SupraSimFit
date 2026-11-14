@@ -22,11 +22,11 @@ def test_export_prefix_is_reused_only_for_the_same_dataset(qapp, monkeypatch, tm
     first = FittingSession()
     first.model.load(_data(), str(tmp_path / 'host_A.csv'))
     dialog = module.ExportMultipleDialog(first)
-    dialog._base_edit.setText('host_A_reviewed')
+    dialog.base.set_text('host_A_reviewed')
     dialog._save_settings()
-    assert module.ExportMultipleDialog(first)._base_edit.text() == 'host_A_reviewed'
+    assert module.ExportMultipleDialog(first).base.editor.text() == 'host_A_reviewed'
     second = FittingSession()
     second.model.load(_data(), str(tmp_path / 'host_B.csv'))
-    assert module.ExportMultipleDialog(second)._base_edit.text() == 'host_B'
+    assert module.ExportMultipleDialog(second).base.editor.text() == 'host_B'
     first.close()
     second.close()

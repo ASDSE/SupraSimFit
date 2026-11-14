@@ -45,12 +45,12 @@ from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import apply_plot_theme, fit_line, px, replicate_alpha, scatter
 from gui.design.tokens import SIZE, Theme, font, space
+from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.plotting.export import ExportRefused, export_plot_item
 from gui.plotting.labels import fmt_species, superscript
 from gui.simulation import (
     COMPLEXES,
     CONCENTRATION_UNITS,
-    HELP_HTML,
     SPECIES_TOKENS,
     Knob,
     Overlay,
@@ -63,7 +63,6 @@ from gui.simulation import (
     value_text,
 )
 from gui.views.titration import EXPORT_SIZE, power_of_ten
-from gui.widgets.info_button import show_help
 
 logger = logging.getLogger(__name__)
 
@@ -424,7 +423,7 @@ class SimulationWindow(QMainWindow):
         help_btn = C.tool_button(t, None, 'help')
         help_btn.setToolTip('How the simulation works')
         help_btn.setAccessibleName('How the simulation works')
-        help_btn.clicked.connect(lambda: show_help(self, 'Simulation', HELP_HTML))
+        help_btn.clicked.connect(lambda: show_plot_guide(self, 'Simulation'))
         self.side = C.tool_button(t, None, 'panel-right', checked=True)
         self.side.setToolTip('Show or hide the side panel')
         self.side.setAccessibleName('Side panel')

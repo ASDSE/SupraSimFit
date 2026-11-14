@@ -1909,6 +1909,15 @@ class SettingsCard(QWidget):
         p.end()
 
 
+def settings_group(title: str, card: QWidget, trailing: QWidget | None = None) -> QWidget:
+    """A settings group (DESIGN.md §6): its title in ``body-strong``, an optional *trailing* control at the
+    right of the title row, and its :class:`SettingsCard` below."""
+    head = hbox(label(title, 'body-strong'), None, *([trailing] if trailing is not None else []), margins=(4, 0, 4, 0))
+    w = QWidget()
+    w.setLayout(vbox(head, 3, card, spacing=0))
+    return w
+
+
 # ── Results ────────────────────────────────────────────────────────────────────────
 
 

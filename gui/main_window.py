@@ -602,11 +602,10 @@ class FittingMainWindow(QMainWindow):
     def _on_export_several(self) -> None:
         session = self.active_session()
         if session is not None:
-            session.open_export_multiple_dialog(select_all_default=True)
+            session.open_export_multiple_dialog()
 
     def _show_guide(self) -> None:
-        session = self.active_session()
-        show_plot_guide(self, session.guide_section(self._view) if session is not None else None)
+        show_plot_guide(self, self._view)
 
     def _on_simulate(self) -> None:
         """Open (or raise) the Simulation window."""

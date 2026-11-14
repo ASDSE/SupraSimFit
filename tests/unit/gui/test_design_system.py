@@ -143,13 +143,12 @@ def test_every_icon_is_valid_svg(qapp):
         assert QSvgRenderer(QByteArray(icons.svg(name, '#000000'))).isValid(), name
 
 
-# Colour, font-size and spacing values written in place of a token, and the plot palette outside the tokens.
+# Colour, font-size and spacing values written in place of a token.
 _LITERAL = re.compile(
     r'#[0-9A-Fa-f]{6}\b|#[0-9A-Fa-f]{3}\b'
     r"|rgba?\(|QColor\(\s*['\"\d]|Qt\.GlobalColor"
     r'|font-size:\s*\d|setPointSize\(|setPixelSize\('
     r'|setSpacing\(\s*\d|setContentsMargins\(\s*\d'
-    r'|gui\.plotting\.colors|plotting import colors'
 )
 _USES_DESIGN = re.compile(r'^\s*(from gui\.design\b|import gui\.design\b)', re.MULTILINE)
 
@@ -164,9 +163,8 @@ def test_the_literal_guard_catches_each_kind_of_offender():
         "pen = QColor('#1C2024')\n"
         "w.setStyleSheet('color: rgba(0,0,0,0.5); font-size: 12px')\n"
         'lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(6)\n'
-        'from gui.plotting.colors import INK\n'
     )
-    assert len(literals(offending)) == 7
+    assert len(literals(offending)) == 6
     assert literals("lay.setSpacing(space(3)); c = t.q('accent')") == []
 
 

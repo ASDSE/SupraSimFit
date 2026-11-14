@@ -1,4 +1,4 @@
-"""The batch export: the helper in gui.session, and what the Export All dialog tells the user when a write fails."""
+"""The batch export: the helper in gui.session, and what Export several tells the user when a write fails."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def test_export_batch_collects_exceptions_and_continues(tmp_path: Path) -> None:
 
 @pytest.fixture
 def dialog(monkeypatch, tmp_path):
-    """The Export All dialog of an empty session, its settings in *tmp_path* and its warnings recorded."""
+    """The Export several dialog of an empty session, its settings in *tmp_path* and its warnings recorded."""
     pytest.importorskip('PyQt6')
     from PyQt6.QtCore import QSettings
     from PyQt6.QtWidgets import QApplication
@@ -74,10 +74,8 @@ def dialog(monkeypatch, tmp_path):
     monkeypatch.setattr(module, '_settings', lambda: QSettings(settings, QSettings.Format.IniFormat))
     shown: list[tuple] = []
     monkeypatch.setattr(module.QMessageBox, 'warning', lambda *args: shown.append(args))
-    # A box waiting for a click would hang the suite: any information box fails the test instead.
-    monkeypatch.setattr(module.QMessageBox, 'information', lambda *args: pytest.fail(f'unexpected box: {args}'))
     session = FittingSession()
-    built = module.ExportMultipleDialog(session, select_all_default=True)
+    built = module.ExportMultipleDialog(session)
     # An empty session has nothing to export; one artefact that writes a line stands in for a selection.
     note = module.ExportableArtefact(
         key='note',
@@ -88,7 +86,7 @@ def dialog(monkeypatch, tmp_path):
         writer=lambda path: path.write_text('note'),
     )
     monkeypatch.setattr(built, '_selected_artefacts', lambda: [note])
-    built._folder_edit.setText(str(tmp_path / 'out'))
+    built.folder.set_text(str(tmp_path / 'out'))
     built.warnings = shown
     yield built
     del app
@@ -115,7 +113,8 @@ def test_the_failures_of_a_batch_are_said_in_plain_words(dialog, monkeypatch):
     dialog._on_export()
 
     ((_, title, text),) = dialog.warnings
-    assert title == 'Export — some artefacts failed'
+    assert title == 'Some files were not exported'
+    assert '1 of 4 files were written' in text
     assert 'Errno' not in text and 'Permission denied' not in text
     assert '• Fit results (JSON): could not be written.' in text
     assert '• Fit results (CSV): could not be written.' in text and 'broadcast' not in text
@@ -126,14 +125,14 @@ def test_the_failures_of_a_batch_are_said_in_plain_words(dialog, monkeypatch):
 def test_a_folder_that_cannot_be_made_is_said_in_plain_words(dialog, monkeypatch, tmp_path):
     blocker = tmp_path / 'file'
     blocker.write_text('')
-    dialog._folder_edit.setText(str(blocker / 'inside'))
+    dialog.folder.set_text(str(blocker / 'inside'))
 
     dialog._on_export()
 
     ((_, title, text),) = dialog.warnings
-    assert title == 'Export Error'
+    assert title == 'Folder not created'
     assert text == (
-        f'Could not create the folder {blocker / "inside"}. Check the folder name and that you may write there, '
-        'then export again.'
+        f'Could not create the folder {blocker / "inside"}. Check that the folder exists and that you may write '
+        'there. Then export again.'
     )
     assert dialog.result() != dialog.DialogCode.Accepted

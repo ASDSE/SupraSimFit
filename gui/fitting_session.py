@@ -17,7 +17,6 @@ from PyQt6.QtWidgets import (
 
 from core.assays.registry import AssayType
 from core.pipeline.inputs import TITRANT, InputSpec
-from gui import plot_guide
 from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE
@@ -40,14 +39,6 @@ NAVIGATION = (
     ('Presentation', (('Plot appearance', 'palette'),)),
 )
 VIEWS = tuple(view for _group, items in NAVIGATION for view, _icon in items)
-
-#: The section of *Reading the plots* each view with a plot opens at.
-_GUIDE_SECTIONS = {
-    'Fit results': plot_guide.FIT_CURVE,
-    'Ka confidence': plot_guide.CONFIDENCE,
-    'Sensitivity': plot_guide.SENSITIVITY,
-    'Plot appearance': plot_guide.FIT_CURVE,
-}
 
 _DEMO_IDA_PATH = Path(__file__).parent.parent / 'data' / 'IDA_system.txt'
 
@@ -176,10 +167,6 @@ class FittingSession(QWidget):
         for page in self._views.values():
             if page.side is not None:
                 page.side.setVisible(visible)
-
-    def guide_section(self, view: str) -> str | None:
-        """The section of *Reading the plots* for *view*, or ``None`` for a view without a plot."""
-        return _GUIDE_SECTIONS.get(view)
 
     def run_primary(self, view: str) -> None:
         """The toolbar's primary action in *view*: stop the work running here, else run the analysis or the fit."""
@@ -522,18 +509,17 @@ class FittingSession(QWidget):
             return
         self.model.show_status(f'Plot saved to {path}')
 
-    def open_export_multiple_dialog(self, *, select_all_default: bool) -> None:
-        """Show the consolidated multi-artefact export dialog, once an edit still being typed is finished."""
+    def open_export_multiple_dialog(self) -> None:
+        """Show Export several…, once an edit still being typed is finished, and say in the status bar what it wrote."""
         self._finish_edits()
         from gui.dialogs.export_multiple_dialog import ExportMultipleDialog
 
-        dlg = ExportMultipleDialog(self, select_all_default=select_all_default, parent=self)
+        dlg = ExportMultipleDialog(self, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            outcomes = dlg.outcomes
-            successes = sum(1 for _l, _p, e in outcomes if e is None)
-            if successes:
-                folder = outcomes[0][1].parent
-                self.model.show_status(f'Exported {successes}/{len(outcomes)} artefact(s) to {folder}')
+            written = [path for _label, path, error in dlg.outcomes if error is None]
+            if written:
+                files = f'{len(written)} file{"" if len(written) == 1 else "s"}'
+                self.model.show_status(f'Exported {files} to {written[0].parent}')
 
     # ------------------------------------------------------------------
     # UI construction
@@ -588,9 +574,7 @@ class FittingSession(QWidget):
         self._results.details_requested.connect(self._show_fit_details)
         self._confidence.shifts_requested.connect(self._show_input_shifts)
         self._confidence.save_requested.connect(lambda: self.export_plot('Ka confidence'))
-        self._confidence.guide_requested.connect(
-            lambda: show_plot_guide(self.window(), self.guide_section('Ka confidence'))
-        )
+        self._confidence.guide_requested.connect(lambda: show_plot_guide(self.window(), 'Ka confidence'))
         self._results.save_plot.clicked.connect(lambda: self.export_plot('Fit results'))
         self._appearance.save_plot.clicked.connect(lambda: self.export_plot('Plot appearance'))
         self._measurements.save_plot.clicked.connect(lambda: self.export_plot('Measurements'))

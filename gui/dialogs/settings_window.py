@@ -68,12 +68,6 @@ def _row(label: str, control: QWidget, text: QWidget | str = '', detail: str = '
     return w
 
 
-def _group(title: str, card: QWidget) -> QWidget:
-    w = QWidget()
-    w.setLayout(C.vbox(C.hbox(C.label(title, 'body-strong'), margins=(4, 0, 4, 0)), 3, card, spacing=0))
-    return w
-
-
 class SettingsWindow(QWidget):
     """The Settings window; *check_now* is the app's *Check for updates…* action, which *Check now* triggers."""
 
@@ -163,11 +157,11 @@ class SettingsWindow(QWidget):
         body = QWidget()
         body.setLayout(
             C.vbox(
-                _group('General', general),
+                C.settings_group('General', general),
                 6,
-                _group('New sessions', new_sessions),
+                C.settings_group('New sessions', new_sessions),
                 6,
-                _group('Analysis', analysis),
+                C.settings_group('Analysis', analysis),
                 spacing=0,
                 margins=(6, 5, 6, 6),
             )
