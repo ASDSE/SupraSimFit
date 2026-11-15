@@ -367,6 +367,12 @@ Every component meets these rules:
 - **Fields fit their content.** A numeric field is as wide as the widest value it must
   show — sign, mantissa and a three-digit exponent, or a ten-digit seed — measured from
   its font and re-measured when the font changes.
+- **Painted controls ask for their content's room.** Every painted component reports the
+  size its content needs as its size hint and minimum size hint — measured from its fonts
+  and the tokens (a segmented control as many equal segments as it has options, each
+  holding the widest in `body-strong`; a slider room for its handle to travel past its
+  decade ticks), or fixed by its content — so a layout never gives it less; text that may
+  give way, a file name or the session's name, asks for an ellipsis.
 - **Shortcuts in the platform's keys.** Every shortcut shown in a menu, tooltip or hint
   is rendered from its action's `QKeySequence` in native text (⌘ on macOS, Ctrl
   elsewhere), never written as a literal.
@@ -408,10 +414,14 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
   a colour bar beside it with its ticks and title, the entered point as a diamond.
 - **Log-Ka strips** (interval chart, histogram) carry no axis title; the shared power of
   ten and the unit follow the last tick (`× 10⁸ M⁻¹`).
-- **Plot header row:** title in `body-strong`; a short description in `text-tertiary`
-  where the title alone is ambiguous (*raw signal, as loaded*); then at the right the
-  legend row, the view's own tools (replicate display, display unit, enlarge), *Reset
-  view* on an interactive plot, and the image-export button last.
+- **Plot header row** (`PlotHeader`): title in `body-strong`; a short description in
+  `text-tertiary` where the title alone is ambiguous (*raw signal, as loaded*); then at
+  the right the legend row, the view's own tools (replicate display, display unit,
+  enlarge), *Reset view* on an interactive plot, and the image-export button last. Where
+  one line cannot hold them all whole, the legend takes a line of its own under the title
+  line, at the right, as a saved figure's head puts it on a line of its own; the
+  description is cut short, its whole text on hover, only where even the title line
+  cannot hold it.
 - **Interactive plots** — the titration plot of Measurements, Fit results and Plot
   appearance, and the plots of *Plot against each source* — zoom and pan
   (`PlotNavigation`); every other plot is static. A drag pans; ⌘-wheel (Ctrl on other

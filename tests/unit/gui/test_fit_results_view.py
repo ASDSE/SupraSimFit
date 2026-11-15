@@ -617,7 +617,7 @@ def test_a_saved_figure_keeps_its_width_whatever_its_summary_says(session, tmp_p
 
 @pytest.mark.parametrize('n', [2, 3])
 def test_the_titration_header_keeps_its_room_with_several_fits_shown(qapp, monkeypatch, n):
-    """The legend grows with the fits shown; the header line gives way rather than pushing Fit details aside."""
+    """The legend grows with the fits shown; the header takes a second line rather than pushing Fit details aside."""
     from dataclasses import replace
 
     from gui.design.tokens import SIZE
@@ -634,11 +634,12 @@ def test_the_titration_header_keeps_its_room_with_several_fits_shown(qapp, monke
         qapp.processEvents()
     view = session._results
     side = session._views['Fit results'].side
-    description, legend = view.description, view.legend
+    description, legend = view.header.description, view.legend
 
     assert side.width() >= SIZE['inspector']
     assert not side.scroll.horizontalScrollBar().isVisible()
-    assert description.geometry().right() < legend.geometry().left()
+    assert description.text() == description.full_text
+    assert not description.geometry().intersects(legend.geometry())
     assert view.canvas.width() >= view.canvas.minimumSizeHint().width()
     window.close()
 

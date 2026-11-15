@@ -105,8 +105,14 @@ class SampleHistogram(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setAccessibleName(f'Samples of Kₐ. {hist.fold}' if hist.fold else 'Samples of Kₐ')
 
+    def minimumSizeHint(self) -> QSize:
+        # Each reading's label whole, on a row of its own where two do not fit side by side, and the axis unit.
+        labels = [QFontMetrics(font('small')).horizontalAdvance(m.label) + 1 for m in self.hist.markers]
+        unit = QFontMetrics(font('small-number')).horizontalAdvance(self.hist.unit) + space(1)
+        return QSize(math.ceil(max([unit, *labels])) + 2, SIZE['histogram'])
+
     def sizeHint(self) -> QSize:
-        return QSize(super().sizeHint().width(), SIZE['histogram'])
+        return self.minimumSizeHint()
 
     def _x(self, v: float) -> float:
         lo, hi = self.hist.x_range
@@ -241,6 +247,7 @@ class IndexChartView(QWidget):
         self.num_w = QFontMetrics(font('number')).horizontalAdvance('−0.000') + space(2)
         self.setFixedHeight(self.head_h + len(chart.rows) * self.row_h + self.axis_h)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.bars_min = len(chart.ticks) * 2 * space(6)  # each tick label's box, side by side
         self.setToolTip(
             'Each whisker is a 95 % confidence interval: in about 95 of every 100 analyses it holds the index '
             'unlimited samples would give for the uncertainties you stated. It is worked out from 8 independent '
@@ -250,6 +257,13 @@ class IndexChartView(QWidget):
             'Share of the variance by source: '
             + '; '.join(f'{plain_label(r.name)} S₁ {S.share(r.s1)}, S_T {S.share(r.st)}' for r in chart.rows)
         )
+
+    def minimumSizeHint(self) -> QSize:
+        # The name column, the bars with room for every tick label, and the two columns of numbers.
+        return QSize(self.name_w + self.bars_min + space(6) + 2 * self.num_w + space(5), self.minimumHeight())
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
 
     def paintEvent(self, _):
         t, chart = self.t, self.chart

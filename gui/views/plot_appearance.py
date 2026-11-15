@@ -92,23 +92,8 @@ class PlotAppearanceView(QObject):
         self.save_plot = C.tool_button(t, None, 'image')
         self.save_plot.setToolTip('Save the plot as an image')
         self.save_plot.setAccessibleName('Save the titration plot as an image')
-        self.description = C.ElidedLabel('', 'small', 'tertiary')
         self.plot = TitrationPlot()
-        self.header = _widget(
-            C.hbox(
-                C.label('Titration', 'body-strong'),
-                3,
-                self.description,
-                4,
-                self.legend,
-                5,
-                self.plot.navigation.tool,
-                1,
-                self.save_plot,
-                spacing=0,
-            )
-        )
-        self.header.layout().setStretchFactor(self.description, 1)
+        self.header = C.PlotHeader(t, 'Titration', self.legend, [self.plot.navigation.tool, 1, self.save_plot])
         lay = C.vbox(
             C.wrapped(SCOPE, 'body', 'secondary'),
             5,
@@ -251,8 +236,7 @@ class PlotAppearanceView(QObject):
         has_plot = titration.data is not None
         self.plot.show_data(titration.data, model.settings.display_unit)
         self.legend.set_items(titration.legend)
-        self.description.set_full_text(titration.description)
-        self.description.setToolTip(titration.description)
+        self.header.set_description(titration.description)
         self.empty.setVisible(not has_plot)
         self.header.setVisible(has_plot)
         self.plot.setVisible(has_plot)

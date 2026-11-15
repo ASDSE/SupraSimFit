@@ -506,16 +506,7 @@ class SimulationWindow(QMainWindow):
         self.readout = _Readout(t)
         self.plots = SimulationPlots(t)
         self.plots.pointed.connect(self._show_readout)
-        titration_head = C.hbox(
-            C.label(TITRATION_HEAD[0], 'body-strong'),
-            3,
-            C.label(TITRATION_HEAD[1], 'small', 'tertiary'),
-            None,
-            self.legend,
-            5,
-            image,
-            spacing=0,
-        )
+        titration_head = C.PlotHeader(t, TITRATION_HEAD[0], self.legend, [image], TITRATION_HEAD[1])
         species_head = C.hbox(
             C.label(SPECIES_HEAD[0], 'body-strong'),
             3,

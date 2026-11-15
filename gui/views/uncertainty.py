@@ -465,7 +465,7 @@ class UncertaintyView(QObject):
                 row.entered.setText('')
             fixed = entry.kind is None
             row.kind.set_current(_KINDS.index(entry.kind))
-            row.unit.options = ['%', unit]
+            row.unit.set_options(['%', unit])
             row.unit.set_current(0 if entry.relative else 1)
             row.unit.setVisible(not fixed)
             sigma = entry.kind is SpecKind.SIGMA

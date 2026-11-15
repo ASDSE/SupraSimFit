@@ -13,6 +13,8 @@ Simulation windows, and :func:`problems` says what is wrong with the menu it ope
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PyQt6.QtCore import QEvent, QRectF, Qt
 from PyQt6.QtGui import QColor, QFontMetricsF
 from PyQt6.QtTest import QTest
@@ -124,10 +126,14 @@ def open_sections(window: QWidget) -> None:
             header.click()
 
 
-def sweep(app: QApplication, window, seen: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
+def sweep(
+    app: QApplication, window, seen: dict[str, list[str]] | None = None, check: Callable = check_window
+) -> dict[str, list[str]]:
     """Open every menu of every view of the main window *window*, and of its Settings and Simulation windows.
 
     Returns what is wrong with each menu, keyed by where it opened and by its opener's name.
+    *check* ``(app, window, where, seen)`` is what is looked at in each view and window, every
+    section open: by default its menus (:func:`check_window`).
     """
     from gui.fitting_session import VIEWS
 
@@ -138,7 +144,7 @@ def sweep(app: QApplication, window, seen: dict[str, list[str]] | None = None) -
         settle(app)
         open_sections(window)
         settle(app)
-        check_window(app, window, view, seen)
+        check(app, window, view, seen)
     from gui.dialogs.settings_window import SettingsWindow
     from gui.views.simulation import SimulationWindow
 
@@ -149,13 +155,13 @@ def sweep(app: QApplication, window, seen: dict[str, list[str]] | None = None) -
         other.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     window._open_settings()
     settle(app)
-    check_window(app, window._settings_window, 'Settings', seen)
+    check(app, window._settings_window, 'Settings', seen)
     window._settings_window.close()
     window._on_simulate()
     settle(app)
     simulation = window._sim_window
     open_sections(simulation)
     settle(app)
-    check_window(app, simulation, 'Simulation', seen)
+    check(app, simulation, 'Simulation', seen)
     simulation.close()
     return seen

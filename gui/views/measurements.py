@@ -17,8 +17,8 @@ from html import escape
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QMargins, QObject, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QPainter, QPainterPath
+from PyQt6.QtCore import QMargins, QObject, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QFontMetrics, QPainter, QPainterPath
 from PyQt6.QtWidgets import QFileDialog, QGridLayout, QMessageBox, QSizePolicy, QWidget
 
 from core.assays.registry import ASSAY_REGISTRY
@@ -55,6 +55,9 @@ class FilesTable(QWidget):
 
     HEAD, ROW = 28, 40
     COLS = (('File', 0.0), ('Format', 0.42), ('Replicate', 0.66), ('Points', 0.86))
+    #: The room the remove button keeps at the right of every row.
+    REMOVE_W = 32
+    EMPTY = 'No files yet. Add files to load the measurements of this experiment.'
 
     remove_requested = pyqtSignal(str)
 
@@ -71,7 +74,33 @@ class FilesTable(QWidget):
         self.rows = rows
         self.setFixedHeight(self.HEAD + max(len(rows), 1) * self.ROW)
         self.setAccessibleDescription('; '.join(f'{r["name"]}, replicate {r["letters"]}' for r in rows))
+        self.updateGeometry()
         self.update()
+
+    @staticmethod
+    def _tile_width(letters: str) -> int:
+        return max(20, QFontMetrics(font('body')).horizontalAdvance(letters) + space(3))
+
+    def minimumSizeHint(self) -> QSize:
+        # Each column holds its header and its widest entry at its share of the width; a file name gives way to
+        # an ellipsis after its icon.
+        heads, body, small, number = (QFontMetrics(font(r)) for r in ('label', 'body', 'small', 'number'))
+        need = {name: heads.horizontalAdvance(name) for name, _frac in self.COLS}
+        need['File'] = max(need['File'], 16 + space(3) + body.horizontalAdvance('…') + space(4))
+        for row in self.rows:
+            need['Format'] = max(need['Format'], body.horizontalAdvance(row['format']))
+            note = space(3) + small.horizontalAdvance(row['off_note']) if row.get('off_note') else 0
+            need['Replicate'] = max(need['Replicate'], self._tile_width(row['letters']) + note)
+            need['Points'] = max(need['Points'], number.horizontalAdvance(str(row['points'])))
+        ends = [frac for _name, frac in self.COLS[1:]] + [1.0]
+        share = max((need[name] + space(3)) / (end - frac) for (name, frac), end in zip(self.COLS, ends, strict=True))
+        width = math.ceil(share) + self.REMOVE_W
+        if not self.rows:
+            width = max(width, body.horizontalAdvance(self.EMPTY))
+        return QSize(width, self.minimumHeight())
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
 
     def _remove_rect(self, i: int) -> QRectF:
         return QRectF(self.width() - 24, self.HEAD + i * self.ROW + (self.ROW - 24) / 2, 24, 24)
@@ -91,7 +120,7 @@ class FilesTable(QWidget):
         t = self.t
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        width = self.width() - 32  # room for the remove button
+        width = self.width() - self.REMOVE_W
         xs = {name: frac * width for name, frac in self.COLS}
         p.setFont(font('label'))
         p.setPen(t.q('text-tertiary'))
@@ -101,8 +130,7 @@ class FilesTable(QWidget):
         if not self.rows:
             p.setFont(font('body'))
             p.setPen(t.q('text-tertiary'))
-            text = 'No files yet. Add files to load the measurements of this experiment.'
-            p.drawText(QRectF(0, self.HEAD, self.width(), self.ROW), Qt.AlignmentFlag.AlignVCenter, text)
+            p.drawText(QRectF(0, self.HEAD, self.width(), self.ROW), Qt.AlignmentFlag.AlignVCenter, self.EMPTY)
         for i, row in enumerate(self.rows):
             y = self.HEAD + i * self.ROW
             cy = y + self.ROW / 2
@@ -119,7 +147,7 @@ class FilesTable(QWidget):
                 row['format'],
             )
             on = row['on']
-            tile_w = max(20, p.fontMetrics().horizontalAdvance(row['letters']) + space(3))
+            tile_w = self._tile_width(row['letters'])
             tile = QRectF(xs['Replicate'], cy - 10, tile_w, 20)
             path = QPainterPath()
             path.addRoundedRect(tile, 5, 5)
@@ -305,21 +333,21 @@ class MeasurementsView(QObject):
             C.hairline(),
             5,
             self.cue_host,
-            C.hbox(
-                C.label('Titration', 'body-strong'),
-                3,
-                C.label(RAW_DESCRIPTION, 'small', 'tertiary'),
-                None,
+            C.PlotHeader(
+                t,
+                'Titration',
                 self.legend,
-                6,
-                C.label('Display unit', 'small', 'secondary'),
-                2,
-                self.display_unit,
-                3,
-                self.plot.navigation.tool,
-                1,
-                self.save_plot,
-                spacing=0,
+                [
+                    3,
+                    C.label('Display unit', 'small', 'secondary'),
+                    2,
+                    self.display_unit,
+                    3,
+                    self.plot.navigation.tool,
+                    1,
+                    self.save_plot,
+                ],
+                RAW_DESCRIPTION,
             ),
             2,
             spacing=0,

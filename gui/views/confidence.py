@@ -676,7 +676,7 @@ class ConfidenceView(QObject):
                 continue
             figure = ProfileFigure(self.t, plot)
             self.figures.append(figure)
-            box.addLayout(self._plot_header(plot.name if many else 'Profile', _legend(plot)))
+            box.addWidget(self._plot_header(plot.name if many else 'Profile', _legend(plot)))
             box.addSpacing(space(2))
             box.addWidget(figure, 1)
         region = CF.joint_region(fit, profile)
@@ -689,7 +689,7 @@ class ConfidenceView(QObject):
             box.addSpacing(space(2))
             box.addWidget(self.region_figure, 1)
 
-    def _plot_header(self, title: str, legend: list[tuple[str, str]]):
+    def _plot_header(self, title: str, legend: list[tuple[str, str]]) -> C.PlotHeader:
         enlarge = C.tool_button(self.t, None, 'maximize')
         enlarge.setCheckable(True)
         enlarge.setChecked(self.enlarged)
@@ -701,7 +701,7 @@ class ConfidenceView(QObject):
         save.setToolTip('Save the plot as an image')
         save.setAccessibleName('Save the Ka confidence plots as an image')
         save.clicked.connect(self.save_requested)
-        return C.hbox(C.label(title, 'body-strong'), None, C.LegendRow(self.t, legend), 5, enlarge, 1, save, spacing=0)
+        return C.PlotHeader(self.t, title, C.LegendRow(self.t, legend), [enlarge, 1, save])
 
     # ------------------------------------------------------------------
     # Notes

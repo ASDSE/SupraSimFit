@@ -78,8 +78,6 @@ class FitResultsView(QObject):
         self.callout_host = QWidget()
         self.callout_box = C.vbox(spacing=3, margins=(0, 5, 0, 0))
         self.callout_host.setLayout(self.callout_box)
-        # The plot's header line gives way to the legend, cut short where both do not fit.
-        self.description = C.ElidedLabel('', 'small', 'tertiary')
         self.legend = C.LegendRow(t, [])
         self.display_tool = C.tool_button(t, None, 'scatter', menu=True)
         self.display_tool.setToolTip('Replicate display')
@@ -89,27 +87,15 @@ class FitResultsView(QObject):
         self.save_plot.setToolTip('Save the plot as an image')
         self.save_plot.setAccessibleName('Save the titration plot as an image')
         self.plot = TitrationPlot()
-        header = C.hbox(
-            C.label('Titration', 'body-strong'),
-            3,
-            self.description,
-            4,
-            self.legend,
-            5,
-            self.display_tool,
-            1,
-            self.plot.navigation.tool,
-            1,
-            self.save_plot,
-            spacing=0,
+        self.header = C.PlotHeader(
+            t, 'Titration', self.legend, [self.display_tool, 1, self.plot.navigation.tool, 1, self.save_plot]
         )
-        header.setStretchFactor(self.description, 1)
         lay = C.vbox(
             self.empty,
             self.headline,
             self.callout_host,
             6,
-            header,
+            self.header,
             2,
             spacing=0,
             margins=(6, 5, 6, 4),
@@ -278,8 +264,7 @@ class FitResultsView(QObject):
         self.titration = titration
         self.plot.show_data(titration.data, model.settings.display_unit)
         self.legend.set_items(titration.legend)
-        self.description.set_full_text(titration.description)
-        self.description.setToolTip(titration.description)
+        self.header.set_description(titration.description)
         # Nothing to display differently or to save until there is something on the plot.
         for tool in (self.display_tool, self.save_plot):
             tool.setEnabled(titration.data is not None)

@@ -557,8 +557,15 @@ class NavItem(QAbstractButton):
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
+    #: Where the label starts, past the icon, and the room the status glyph keeps at the right.
+    TEXT_X, GLYPH_W = space(3) + 16 + space(3), 24
+
+    def minimumSizeHint(self) -> QSize:
+        label = QFontMetrics(font('body-strong')).horizontalAdvance(self._text)  # the selected weight
+        return QSize(self.TEXT_X + label + self.GLYPH_W, SIZE['nav-item'])
+
     def sizeHint(self) -> QSize:
-        return QSize(180, SIZE['nav-item'])
+        return self.minimumSizeHint()
 
     def set_status(self, status: str, progress: float = 0.0) -> None:
         """Draw the trailing glyph of *status* (see :func:`paint_status_glyph`)."""
@@ -580,7 +587,8 @@ class NavItem(QAbstractButton):
         icons.paint(p, self._icon, t.q('accent' if sel else 'text-secondary'), space(3), (r.height() - 16) / 2, 16)
         p.setFont(font('body-strong' if sel else 'body'))
         p.setPen(t.q('text-primary'))
-        p.drawText(QRectF(32, 0, r.width() - 56, r.height()), Qt.AlignmentFlag.AlignVCenter, self._text)
+        text_w = r.width() - self.TEXT_X - self.GLYPH_W
+        p.drawText(QRectF(self.TEXT_X, 0, text_w, r.height()), Qt.AlignmentFlag.AlignVCenter, self._text)
         paint_status_glyph(p, t, self._status, r.width() - 14, r.height() / 2, self._progress)
         if self.hasFocus():  # keyboard focus only (TabFocus policy)
             _focus_ring(p, t, r)
@@ -610,7 +618,31 @@ class SessionSwitcher(QAbstractButton):
         """Show the session on screen (*name*, *detail*), *count* open sessions and *busy* others running."""
         self._name, self._detail, self._count, self._busy = name, detail, count, busy
         self.setAccessibleDescription(f'{name}, {detail}; {count} open')
+        self.updateGeometry()
         self.update()
+
+    #: Where the name and detail start, past the session tile.
+    TEXT_X = 44
+
+    def _pill_width(self) -> int:
+        """The width of the pill counting the open sessions; 0 for one session, which has none."""
+        return QFontMetrics(font('small-number')).horizontalAdvance(str(self._count)) + 12 if self._count > 1 else 0
+
+    def _right(self) -> int:
+        """The room right of the text: the chevrons, and the pill where there is one."""
+        pill = self._pill_width()
+        return 28 + (pill + 6 if pill else 0)
+
+    def minimumSizeHint(self) -> QSize:
+        # The name gives way to an ellipsis; the detail is shown whole.
+        text = max(
+            QFontMetrics(font('small')).horizontalAdvance(self._detail),
+            QFontMetrics(font('body-strong')).horizontalAdvance('…'),
+        )
+        return QSize(self.TEXT_X + text + self._right(), SIZE['switcher'])
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
 
     def paintEvent(self, _):
         t = self.t
@@ -624,11 +656,11 @@ class SessionSwitcher(QAbstractButton):
         tile = SIZE['control']
         p.fillPath(_rounded(QRectF(space(3), space(3), tile, tile), RADIUS['control']), t.q('accent-subtle'))
         icons.paint(p, 'fit', t.q('accent'), 14, 14, 16)
-        right = 28
+        right = self._right()
         if self._count > 1:
             p.setFont(font('small-number'))
             txt = str(self._count)
-            pw = QFontMetrics(p.font()).horizontalAdvance(txt) + 12
+            pw = self._pill_width()
             pill = QRectF(r.width() - 28 - pw, 13, pw, SIZE['badge'])
             p.fillPath(_rounded(pill, SIZE['badge'] / 2), t.q('bg-subtle'))
             p.setPen(t.q('text-secondary'))
@@ -637,14 +669,14 @@ class SessionSwitcher(QAbstractButton):
                 p.setPen(QPen(t.q('bg-surface'), 2))
                 p.setBrush(t.q('accent'))
                 p.drawEllipse(QPointF(pill.right() - 1, pill.top() + 1), 4, 4)
-            right += pw + 6
         p.setPen(t.q('text-primary'))
         p.setFont(font('body-strong'))
-        name = p.fontMetrics().elidedText(self._name, Qt.TextElideMode.ElideRight, int(r.width() - 44 - right))
-        p.drawText(QRectF(44, 6, r.width() - 44 - right, 17), Qt.AlignmentFlag.AlignVCenter, name)
+        x, text_w = self.TEXT_X, r.width() - self.TEXT_X - right
+        name = p.fontMetrics().elidedText(self._name, Qt.TextElideMode.ElideRight, int(text_w))
+        p.drawText(QRectF(x, 6, text_w, 17), Qt.AlignmentFlag.AlignVCenter, name)
         p.setPen(t.q('text-secondary'))
         p.setFont(font('small'))
-        p.drawText(QRectF(44, 22, r.width() - 44 - right, 16), Qt.AlignmentFlag.AlignVCenter, self._detail)
+        p.drawText(QRectF(x, 22, text_w, 16), Qt.AlignmentFlag.AlignVCenter, self._detail)
         icons.paint(p, 'updown', t.q('text-tertiary'), r.width() - 24, 14, 16)
         p.end()
 
@@ -691,6 +723,12 @@ class ProgressLine(QWidget):
     def is_running(self) -> bool:
         return self._running
 
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, self.HEIGHT)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
+
     def paintEvent(self, _):
         if not self._running:
             return
@@ -723,6 +761,21 @@ class FileCard(QAbstractButton):
         self.setAccessibleDescription(detail)
         self.update()
 
+    #: Where the name and detail start, past the file icon.
+    TEXT_X = space(3) + 16 + space(3)
+
+    def minimumSizeHint(self) -> QSize:
+        # Both lines give way to an ellipsis where the sidebar is narrower than they are.
+        ellipsis = QFontMetrics(font('body-strong')).horizontalAdvance('…')
+        return QSize(self.TEXT_X + ellipsis + space(3), SIZE['switcher'])
+
+    def sizeHint(self) -> QSize:
+        width = max(
+            QFontMetrics(font('body-strong')).horizontalAdvance(self._name),
+            QFontMetrics(font('small')).horizontalAdvance(self._detail),
+        )
+        return QSize(self.TEXT_X + width + space(3), SIZE['switcher'])
+
     def paintEvent(self, _):
         t = self.t
         p = QPainter(self)
@@ -731,7 +784,7 @@ class FileCard(QAbstractButton):
         if self.underMouse():
             p.fillPath(_rounded(r, RADIUS['control']), t.q('bg-hover'))
         icons.paint(p, 'file', t.q('text-secondary'), space(3), space(3), 16)
-        x = space(3) + 16 + space(3)
+        x = self.TEXT_X
         width = int(r.width() - x - space(3))
         p.setFont(font('body-strong'))
         p.setPen(t.q('text-primary'))
@@ -1587,6 +1640,25 @@ class Segmented(QWidget):
 
     changed = pyqtSignal(int)
 
+    def _width(self, pad: int) -> int:
+        """The width at which every segment holds the widest option, set in ``body-strong`` as when chosen,
+        *pad* px either side of it: the segments share the width equally, inside a 2-px inset."""
+        metrics = QFontMetrics(font('body-strong'))
+        widest = max((metrics.horizontalAdvance(o) for o in self.options), default=0)
+        return len(self.options) * (widest + 2 * pad) + 4
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(self._width(space(2)), SIZE['control'])
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._width(space(3)), SIZE['control'])
+
+    def set_options(self, options: list[str]) -> None:
+        """Offer *options* from now on, and ask for the room they need."""
+        self.options = list(options)
+        self.updateGeometry()
+        self.update()
+
     def set_current(self, index: int) -> None:
         """Choose option *index* without emitting :attr:`changed`."""
         self.current = index
@@ -1787,9 +1859,17 @@ class Slider(QWidget):
     def set_pos(self, pos: float, decades: int | None = None) -> None:
         """Show the handle at *pos* (and *decades* ticks when given) without emitting :attr:`moved`."""
         self.pos = min(max(pos, 0.0), 1.0)
-        if decades is not None:
+        if decades is not None and decades != self.decades:
             self.decades = decades
+            self.updateGeometry()
         self.update()
+
+    def minimumSizeHint(self) -> QSize:
+        # The handle's travel: a step of the spacing scale between decade ticks, and four at least.
+        return QSize(math.ceil(2 * self.RADIUS) + max(self.decades, 4) * space(3), 16)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
 
     def _move_to(self, pos: float) -> None:
         pos = min(max(pos, 0.0), 1.0)
@@ -2047,14 +2127,29 @@ class ConcentrationGrid(QWidget):
         self.values, self.header = values, header
         self.rows = math.ceil(len(values) / 2)
         self.setFixedHeight(self.HEAD + self.rows * self.ROW + 4)
+        self.updateGeometry()
         self.update()
+
+    #: The column of point numbers, left of each run's values.
+    INDEX_W = 24
+
+    def minimumSizeHint(self) -> QSize:
+        # Two runs, each its point numbers and its widest value or header, a gap either side of the rule between them.
+        widest = max(
+            [QFontMetrics(font('label')).horizontalAdvance(self.header)]
+            + [QFontMetrics(font('number')).horizontalAdvance(v) for v in self.values]
+        )
+        return QSize(2 * (self.INDEX_W + space(2) + widest + space(4)), self.minimumHeight())
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
 
     def _cell(self, index: int) -> QRectF:
         half = self.width() / 2
         col, k = divmod(index, self.rows)
         x0 = 0 if col == 0 else half + space(4)
         x1 = half - space(4) if col == 0 else self.width()
-        return QRectF(x0 + 24, self.HEAD + 2 + k * self.ROW, x1 - x0 - 24, self.ROW)
+        return QRectF(x0 + self.INDEX_W, self.HEAD + 2 + k * self.ROW, x1 - x0 - self.INDEX_W, self.ROW)
 
     def mouseDoubleClickEvent(self, event) -> None:
         if not self.editable:
@@ -2100,7 +2195,7 @@ class ConcentrationGrid(QWidget):
         half = w / 2
         p.fillRect(QRectF(0, self.HEAD - 1, w, 1), t.q('border'))
         p.fillRect(QRectF(half, 0, 1, h), t.q('border'))
-        gap, idx_w = space(4), 24
+        gap, idx_w = space(4), self.INDEX_W
         right = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
         for col in range(2):
             x0 = 0 if col == 0 else half + gap
@@ -2572,6 +2667,81 @@ def paint_raised(p: QPainter, t: Theme, rect: QRectF, radius: float) -> None:
     p.drawPath(path)
 
 
+class PlotHeader(QWidget):
+    """A plot's header (DESIGN.md §7): the *title* in ``body-strong``, a quiet *description*, the *legend*
+    and the view's *tools*, read as :func:`hbox` reads its items.
+
+    One line where it holds them all whole. Where it does not, the legend takes a line of its own
+    under it, at the right, and the title line keeps its room for the description, which is
+    cut short only where even that line cannot hold it, its whole text on hover. The legend is
+    the view's :class:`LegendRow`; the header follows the width its entries take.
+    """
+
+    def __init__(self, t: Theme, title: str, legend: LegendRow, tools: tuple | list = (), description: str = ''):
+        super().__init__()
+        self.legend = legend
+        self.title = label(title, 'body-strong')
+        self.description = ElidedLabel('', 'small', 'tertiary')
+        self.tools = hbox(5, *tools, spacing=0)
+        self._inline = hbox(spacing=0)  # the legend on the title line, a step after the description
+        line = hbox(self.title, 3, self.description, self._inline, self.tools, spacing=0)
+        line.setStretchFactor(self.description, 1)
+        self._under = hbox(None, spacing=0)  # the legend on a line of its own
+        self.setLayout(vbox(line, self._under, spacing=1))
+        self._wrapped: bool | None = None
+        self.set_description(description)
+
+    def set_description(self, text: str) -> None:
+        """Show *text* as the description, with the whole of it on hover."""
+        self.description.set_full_text(text)
+        self.description.setToolTip(text)
+        self._place()
+
+    def legend_wrapped(self) -> bool:
+        """Whether the legend is on a line of its own, under the title line."""
+        return bool(self._wrapped)
+
+    def _description_width(self) -> int:
+        return self.description.fontMetrics().horizontalAdvance(self.description.full_text)
+
+    def _line_width(self) -> int:
+        """The width of the title line without the legend: the title, the whole description and the tools."""
+        description = self._description_width()
+        return (
+            self.title.sizeHint().width()
+            + (space(3) + description if description else 0)
+            + self.tools.sizeHint().width()
+        )
+
+    def _one_line_width(self) -> int:
+        """The width one line takes with the legend on it."""
+        return self._line_width() + space(4) + self.legend.minimumWidth()
+
+    def _place(self) -> None:
+        """Put the legend on the title line where one line holds it all, else under it."""
+        wrap = self.width() < self._one_line_width()
+        if wrap == self._wrapped:
+            return
+        self._wrapped = wrap
+        (self._inline if wrap else self._under).removeWidget(self.legend)
+        self._inline.setContentsMargins(0 if wrap else space(4), 0, 0, 0)
+        (self._under if wrap else self._inline).addWidget(self.legend)
+        self.updateGeometry()
+
+    def minimumSizeHint(self) -> QSize:
+        # The legend under the title line, the description cut to an ellipsis.
+        least = self.title.sizeHint().width() + self.tools.minimumSize().width()
+        return QSize(max(least, self.legend.minimumWidth()), super().minimumSizeHint().height())
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._one_line_width(), super().sizeHint().height())
+
+    def event(self, event: QEvent) -> bool:
+        if event.type() in (QEvent.Type.LayoutRequest, QEvent.Type.Resize):
+            self._place()  # a resize, or the legend's entries changed its width
+        return super().event(event)
+
+
 class _Swatch(QWidget):
     """A 12-px stroke in a series' colour, as the readout card marks its rows."""
 
@@ -2886,12 +3056,25 @@ class CompactIntervals(QWidget):
         """Show *rows* on the axis *lo* to *hi* with *ticks*."""
         self.rows, self.lo, self.hi, self.ticks = rows, lo, hi, ticks
         self._fit_height()
+        self.updateGeometry()
         self.setAccessibleDescription(
             '; '.join(
                 f'{row["label"]}: {row["text"]}' + (f' ({row["note"]})' if row.get('note') else '') for row in rows
             )
         )
         self.update()
+
+    def minimumSizeHint(self) -> QSize:
+        # Stacked, each row's label and numbers on lines of their own.
+        labels, numbers = QFontMetrics(font('small')), QFontMetrics(font('number'))
+        widest = max(
+            (max(labels.horizontalAdvance(row['label']), numbers.horizontalAdvance(row['text'])) for row in self.rows),
+            default=0,
+        )
+        return QSize(widest, self.minimumHeight())
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
 
     def _stacked(self) -> bool:
         """Whether a row's label and numbers are too wide for one line at the width the chart has."""
@@ -3002,7 +3185,22 @@ class SectionHeader(QAbstractButton):
     def set_trailing(self, trailing: str) -> None:
         """Show *trailing* as the section's quiet summary."""
         self._trailing = trailing
+        self.updateGeometry()
         self.update()
+
+    #: Where the title starts, past the chevron.
+    TITLE_X = 18
+
+    def minimumSizeHint(self) -> QSize:
+        width = self.TITLE_X + QFontMetrics(font('body-strong')).horizontalAdvance(self._title)
+        if self._flag:
+            width += space(3) + 16
+        if self._trailing:
+            width += space(3) + QFontMetrics(font('small')).horizontalAdvance(self._trailing)
+        return QSize(width, self.HEIGHT)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
 
     def paintEvent(self, _):
         t = self.t
@@ -3013,10 +3211,10 @@ class SectionHeader(QAbstractButton):
         icons.paint(p, chevron, t.q('text-tertiary'), -2, (h - 16) / 2, 16, 2)
         p.setFont(font('body-strong'))
         p.setPen(t.q('text-primary'))
-        p.drawText(QRectF(18, 0, self.width(), h), Qt.AlignmentFlag.AlignVCenter, self._title)
+        p.drawText(QRectF(self.TITLE_X, 0, self.width(), h), Qt.AlignmentFlag.AlignVCenter, self._title)
         if self._flag:
             # The mark Diagnostics gives the same finding, after the title.
-            x = 18 + QFontMetrics(font('body-strong')).horizontalAdvance(self._title) + space(3)
+            x = self.TITLE_X + QFontMetrics(font('body-strong')).horizontalAdvance(self._title) + space(3)
             icons.paint(p, 'alert-circle', t.q(self._flag), x, (h - 16) / 2, 16)
         if self._trailing:
             p.setFont(font('small'))
