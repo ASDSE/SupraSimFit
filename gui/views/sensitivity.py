@@ -19,6 +19,7 @@ says one changed; the text and numbers come from :mod:`gui.sensitivity`.
 from __future__ import annotations
 
 import math
+from functools import partial
 from html import escape
 
 import numpy as np
@@ -526,8 +527,9 @@ class SourcePlotsWindow(QWidget):
     A source that matters shows as a trend. The Kₐ axis follows Display (log₁₀ or linear);
     each draw axis opens on its source's range (:attr:`~gui.sensitivity.SourcePlot.x_range`)
     with :data:`MARGIN` of it at each end, and labels its ticks, a range's ends among them.
-    The plots zoom and pan; *Reset view* frames them as they opened. The window draws its
-    plots again when the theme changes.
+    The plots zoom and pan (:class:`~gui.design.components.PlotNavigation`); *Reset view*,
+    or a double-click, frames them as they opened. The window draws its plots again when
+    the theme changes, each where the user left it.
     """
 
     COLUMNS = 3
@@ -539,7 +541,7 @@ class SourcePlotsWindow(QWidget):
         self.t, self.source_plots, self.note, self.ka_name, self.log = t, plots, note, ka_name, log
         self.setWindowTitle(f'{ka_name} against each source')
         self.plots: list[pg.PlotWidget] = []
-        self.frames: list[tuple[tuple[float, float], tuple[float, float] | None]] = []
+        self.navigation = C.PlotNavigation(t, 'Reset the view of every plot')
         self.area = QScrollArea()
         self.area.setWidgetResizable(True)
         self.area.setFrameShape(QFrame.Shape.NoFrame)
@@ -568,7 +570,7 @@ class SourcePlotsWindow(QWidget):
         fm = QFontMetrics(font('small-number'))
         widest = max((fm.horizontalAdvance(text) for p in self.source_plots for _v, text in p.x_ticks), default=0)
         half_label = math.ceil(widest / 2)
-        self.plots, self.frames = [], []
+        self.plots, homes = [], []
         for i, plot in enumerate(self.source_plots):
             pw = pg.PlotWidget()
             pw.setFrameShape(QFrame.Shape.NoFrame)
@@ -589,12 +591,9 @@ class SourcePlotsWindow(QWidget):
             pw.setAccessibleName(f'{ka_name} against {plain_label(plot.name)}')
             grid.addWidget(pw, i // self.COLUMNS, i % self.COLUMNS)
             self.plots.append(pw)
-            self.frames.append((plot.x_range, axis[0] if axis is not None else None))
-        self.reset_view()
-        self.reset = C.tool_button(t, 'Reset view', 'rotate')
-        self.reset.setAccessibleName('Reset the view of every plot')
-        self.reset.clicked.connect(self.reset_view)
-        items = [C.hbox(None, self.reset, margins=(0, 3, 6, 0)), grid]
+            homes.append(partial(self._frame, pi, plot.x_range, axis[0] if axis is not None else None))
+        self.navigation.set_plots(list(zip(self.plots, homes, strict=True)))
+        items = [C.hbox(None, self.navigation.tool, margins=(0, 3, 6, 0)), grid]
         if self.note:
             items.append(C.wrapped(self.note, 'small', 'tertiary'))
         if not self.source_plots:
@@ -602,13 +601,11 @@ class SourcePlotsWindow(QWidget):
         body.setLayout(C.vbox(*items, None, spacing=4))
         self.area.setWidget(body)
 
-    def reset_view(self) -> None:
-        """Frame every plot as it opened: its draw axis on the source's range, its Kₐ axis on the samples."""
-        for pw, (x_range, y_range) in zip(self.plots, self.frames):
-            pi = pw.getPlotItem()
-            pi.setXRange(*x_range, padding=self.MARGIN)
-            if y_range is not None:
-                pi.setYRange(*y_range, padding=0)
+    def _frame(self, pi: pg.PlotItem, x_range: tuple[float, float], y_range: tuple[float, float] | None) -> None:
+        """Frame plot *pi* as it opened: its draw axis on the source's range, its Kₐ axis on the samples."""
+        pi.setXRange(*x_range, padding=self.MARGIN)
+        if y_range is not None:
+            pi.setYRange(*y_range, padding=0)
 
 
 # ── The view ───────────────────────────────────────────────────────────────────────

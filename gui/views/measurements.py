@@ -315,6 +315,8 @@ class MeasurementsView(QObject):
                 2,
                 self.display_unit,
                 3,
+                self.plot.navigation.tool,
+                1,
                 self.save_plot,
                 spacing=0,
             ),

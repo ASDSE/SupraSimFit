@@ -98,6 +98,8 @@ class FitResultsView(QObject):
             5,
             self.display_tool,
             1,
+            self.plot.navigation.tool,
+            1,
             self.save_plot,
             spacing=0,
         )

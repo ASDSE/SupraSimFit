@@ -12,8 +12,9 @@ from __future__ import annotations
 import math
 import sys
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTextBoundaryFinder, QVariantAnimation, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTextBoundaryFinder, QVariantAnimation, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
     QColor,
@@ -43,6 +44,9 @@ from PyQt6.QtWidgets import (
 from gui.design import icons
 from gui.design.plot_theme import REPLICATE_ALPHA
 from gui.design.tokens import RADIUS, SIZE, Theme, font, space
+
+if TYPE_CHECKING:
+    import pyqtgraph as pg
 
 #: The platform's window-button colours (close, minimise, zoom): drawn where a frameless
 #: window paints its own title bar, so they are the platform's and not design tokens.
@@ -228,7 +232,8 @@ class Button(QAbstractButton):
     """One painted button for the three variants the app needs.
 
     ``ghost`` is icon and label with no border until hover, ``icon`` a 28 × 28 icon
-    button, ``primary`` an accent fill. Painting keeps the icon-label gap, the menu
+    button, ``primary`` an accent fill; a disabled ``ghost`` or ``icon`` button draws its
+    icon and label in ``text-tertiary`` and takes no hover fill. Painting keeps the icon-label gap, the menu
     chevron (*menu*) and the focus ring on the token grid. *checked* makes it a toggle,
     shown pressed.
     """
@@ -273,12 +278,14 @@ class Button(QAbstractButton):
             bg = t.q('accent-hover' if self.underMouse() else 'accent')
         elif self.isChecked():
             bg = t.q('bg-subtle')
-        elif self.underMouse():
+        elif self.underMouse() and self.isEnabled():
             bg = t.q('bg-hover')
         if bg is not None:
             p.fillPath(_rounded(r, RADIUS['control']), bg)
         fg = t.q('on-accent') if self.variant == 'primary' else t.q('text-primary')
         ic = t.q('on-accent') if self.variant == 'primary' else t.q('text-secondary')
+        if not self.isEnabled() and self.variant != 'primary':
+            fg = ic = t.q('text-tertiary')
         if self.variant == 'icon':
             icons.paint(p, self._icon, ic, (h - 16) / 2, (h - 16) / 2, 16)
         else:
@@ -308,6 +315,80 @@ def tool_button(theme: Theme, text: str | None, icon_name: str, checked: bool = 
 def primary_button(theme: Theme, text: str, icon_name: str) -> Button:
     """The one primary action of a toolbar (Run fit, Run analysis)."""
     return Button(theme, 'primary', text, icon_name)
+
+
+#: The key that turns the wheel over a plot into zoom: ⌘ on macOS, Ctrl on other platforms (Qt names both Control).
+ZOOM_MODIFIER = Qt.KeyboardModifier.ControlModifier
+
+
+class PlotNavigation(QObject):
+    """Zoom and pan of interactive pyqtgraph plots, and the *Reset view* tool that frames them again (DESIGN.md §7).
+
+    A drag pans the plot under the pointer; the wheel with :data:`ZOOM_MODIFIER`, or a
+    pinch, zooms about the pointer. A wheel without the modifier passes on to what holds
+    the plot, so a scrolling page scrolls under it. A double-click on a plot, or
+    :attr:`tool`, resets: every plot goes back to its home view — auto-range, or the frame
+    its own *home* sets. The tool is enabled only while a plot is off its home view.
+    """
+
+    def __init__(self, t: Theme, name: str):
+        super().__init__()
+        self.tool = tool_button(t, None, 'rotate')
+        key = QKeySequence(ZOOM_MODIFIER.value).toString(QKeySequence.SequenceFormat.NativeText).rstrip('+')
+        self.tool.setToolTip(f'Reset view (or double-click the plot). Zoom with {key} and scroll, or pinch.')
+        self.tool.setAccessibleName(name)
+        self.tool.clicked.connect(self.reset)
+        self.plots: list[tuple[pg.PlotWidget, Callable[[], None] | None]] = []
+        self.moved = False
+        self.tool.setEnabled(False)
+
+    def set_plots(self, plots: list[tuple[pg.PlotWidget, Callable[[], None] | None]]) -> None:
+        """Navigate *plots*, each ``(plot widget, home)`` — *home* ``None`` for auto-range — from now on.
+
+        Plots drawn again in place of the last ones, as a theme change draws them, open where
+        the user left those; otherwise they open on their home views.
+        """
+        kept = [pw.getPlotItem().getViewBox().viewRange() for pw, _home in self.plots] if self.moved else None
+        self.plots = list(plots)
+        for pw, _home in self.plots:
+            pw.viewport().installEventFilter(self)
+            pw.getPlotItem().getViewBox().sigRangeChangedManually.connect(self._on_moved)
+        if kept is None:
+            self.reset()
+            return
+        for (pw, _home), (x_range, y_range) in zip(self.plots, kept, strict=True):
+            pw.getPlotItem().getViewBox().setRange(xRange=x_range, yRange=y_range, padding=0)
+
+    def reset(self) -> None:
+        """Put every plot on its home view, and disable the tool until one is moved off it."""
+        for pw, home in self.plots:
+            if home is None:
+                pw.getPlotItem().getViewBox().enableAutoRange()
+            else:
+                home()
+        self.moved = False
+        self.tool.setEnabled(False)
+
+    def _on_moved(self, *_) -> None:
+        self.moved = True
+        self.tool.setEnabled(True)
+
+    def eventFilter(self, viewport, event) -> bool:  # noqa: N802 — Qt's name
+        kind = event.type()
+        if kind == QEvent.Type.Wheel and not event.modifiers() & ZOOM_MODIFIER:
+            event.ignore()  # handled here, so the plot leaves it; ignored, so Qt hands it to the page
+            return True
+        if kind == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
+            self.reset()
+            return True
+        if kind == QEvent.Type.NativeGesture and event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+            (pw,) = (pw for pw, _home in self.plots if pw.viewport() is viewport)
+            vb = pw.getPlotItem().getViewBox()
+            factor = 1 / (1 + event.value())
+            vb.scaleBy((factor, factor), vb.mapSceneToView(pw.mapToScene(event.position().toPoint())))
+            self._on_moved()
+            return True
+        return False
 
 
 def link_button(text: str) -> QPushButton:

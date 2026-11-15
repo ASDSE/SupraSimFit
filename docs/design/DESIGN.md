@@ -322,7 +322,7 @@ the same tokens.
 | Component | What it is and its rules |
 |---|---|
 | **Primary button** | Filled accent, `on-accent` icon and label; one per window; fixed width in the toolbar |
-| **Tool button** | Icon and optional text, no border, `bg-hover` on hover; ▾ when it opens a menu; a checked state for toggles (side panel) |
+| **Tool button** | Icon and optional text, no border, `bg-hover` on hover; ▾ when it opens a menu; a checked state for toggles (side panel); disabled, its icon and text in `text-tertiary` with no hover fill |
 | **Outline button** | `border-strong` outline on `bg-surface`; secondary actions in forms (*Apply*, *Check now*) |
 | **Link** | Accent text with an optional trailing →; navigates or opens detail |
 | **Focus ring** | 2 px accent around the focused control, on every keyboard-reachable control |
@@ -394,8 +394,18 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
   ten and the unit follow the last tick (`× 10⁸ M⁻¹`).
 - **Plot header row:** title in `body-strong`; a short description in `text-tertiary`
   where the title alone is ambiguous (*raw signal, as loaded*); then at the right the
-  legend row, the view's own tools (replicate display, display unit, enlarge), and the
-  image-export button last.
+  legend row, the view's own tools (replicate display, display unit, enlarge), *Reset
+  view* on an interactive plot, and the image-export button last.
+- **Interactive plots** — the titration plot of Measurements, Fit results and Plot
+  appearance, and the plots of *Plot against each source* — zoom and pan
+  (`PlotNavigation`); every other plot is static. A drag pans; ⌘-wheel (Ctrl on other
+  platforms) or a pinch zooms about the pointer; a wheel or trackpad scroll without ⌘
+  passes over the plot to the page that holds it, so a scrolling canvas scrolls. A
+  double-click, or the *Reset view* tool (the `rotate` icon), puts the plot back on its
+  home view — auto-range, or for the source plots the frame they opened on; the tool is
+  enabled only while the view is off it. New data, another display unit or new fits put
+  a titration plot back on auto-range, so what is drawn is in view; a theme change or
+  another plot appearance draws the same data again and keeps the user's zoom.
 - Linked plots (signal above species) share the x axis and the left axis width, so their
   plot areas line up.
 - Exports render with the light theme on white.

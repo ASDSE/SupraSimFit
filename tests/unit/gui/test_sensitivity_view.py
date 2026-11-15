@@ -31,6 +31,7 @@ from gui.plotting.labels import STOPPING_TEXT  # noqa: E402
 from gui.session_model import Change  # noqa: E402
 from tests.unit.gui import sensitivity_results as F  # noqa: E402
 from tests.unit.gui.session_setup import state_binding, status_messages  # noqa: E402
+from tests.unit.gui.test_plot_navigation import NONE, ZOOM, _wheel  # noqa: E402
 
 #: The demo titration, found from this file so the tests run from any directory.
 IDA_DATA = str(Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt')
@@ -258,13 +259,49 @@ def test_plot_against_each_source_opens_on_the_range_entered(qapp, session, off_
             assert _drawn_labels(pw) == {text for _v, text in plot.x_ticks}, (width, plot.name)
 
     pw = window.plots[0]
-    vb = pw.getPlotItem().getViewBox()
-    assert vb.state['mouseEnabled'] == [True, True]
-    opened = [v for side in pw.getPlotItem().viewRange() for v in side]
-    vb.scaleBy((0.5, 0.5))
-    assert [v for side in pw.getPlotItem().viewRange() for v in side] != pytest.approx(opened)
-    window.reset.click()
-    assert [v for side in pw.getPlotItem().viewRange() for v in side] == pytest.approx(opened)
+    opened = _shown(pw)
+    assert not window.navigation.tool.isEnabled()
+    _wheel(pw, ZOOM, notches=-2)
+    assert _shown(pw) != pytest.approx(opened)
+    window.navigation.tool.click()
+    assert _shown(pw) == pytest.approx(opened)
+    assert not window.navigation.tool.isEnabled()
+    window.close()
+
+
+def _shown(pw) -> list[float]:
+    return [v for side in pw.getPlotItem().viewRange() for v in side]
+
+
+def test_source_plots_keep_their_zoom_through_a_theme_change_and_pass_a_plain_wheel_to_the_window(
+    qapp, session, off_screen_windows
+):
+    from gui.design.appearance import appearance
+
+    _hold(session, F.ranged_result())
+    view = session._sensitivity
+    view.open_source_plots('Ka_guest')
+    (window,) = view.windows
+    window.resize(window.width(), 300)
+    qapp.processEvents()
+    bar = window.area.verticalScrollBar()
+    assert bar.maximum() > 0
+    framed = [v for pw in window.plots for v in _shown(pw)]
+
+    event = _wheel(window.plots[0], NONE)
+    assert not event.isAccepted()
+    assert bar.value() > 0
+    assert [v for pw in window.plots for v in _shown(pw)] == pytest.approx(framed)
+
+    _wheel(window.plots[1], ZOOM, notches=-2)
+    zoomed = [v for pw in window.plots for v in _shown(pw)]
+    try:
+        appearance().set_mode('dark')
+        qapp.processEvents()
+        assert [v for pw in window.plots for v in _shown(pw)] == pytest.approx(zoomed)
+        assert window.navigation.tool.isEnabled()
+    finally:
+        appearance().set_mode('light')
     window.close()
 
 

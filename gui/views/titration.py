@@ -2,7 +2,9 @@
 
 One plot draws the raw data in Measurements and the fit in Fit results and Plot
 appearance, with the session's :class:`~gui.plot_appearance.PlotAppearance`. It is drawn
-from the theme on screen and redrawn when the theme changes; a saved figure draws it
+from the theme on screen and redrawn when the theme changes. It zooms and pans, and
+frames itself again on other data or another unit (:class:`~gui.design.components.PlotNavigation`,
+whose *Reset view* tool its view puts in the plot header); a saved figure draws it
 again in the light theme on white, with the same appearance, under the head the view
 states beside it: title, description and legend, and the summary of a fit (DESIGN.md §7).
 """
@@ -11,7 +13,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 import numpy as np
 import pyqtgraph as pg
@@ -35,7 +37,7 @@ EXPORT_SIZE = (SIZE['export-width'], SIZE['export-titration'])
 ERROR_CAP = 0.01
 
 
-@dataclass
+@dataclass(eq=False)
 class TitrationData:
     """What the plot shows: concentrations (M), one signal row per replicate, which are used, and curves.
 
@@ -45,7 +47,8 @@ class TitrationData:
     keeps them in every view and when others are switched off. A replicate not used is
     drawn as × in its colour; *mean_sd* adds the mean ± SD of the used ones, and
     *replicates* ``False`` leaves every replicate's own points out. *curves* are drawn
-    solid, *other_curves* — fits shown beside the reported one — dashed.
+    solid, *other_curves* — fits shown beside the reported one — dashed. Two are equal
+    where every field holds the same values, a missing point (NaN) at the same place.
     """
 
     x_molar: np.ndarray
@@ -62,6 +65,20 @@ class TitrationData:
     def __post_init__(self) -> None:
         if len(self.replicate_ids) != len(self.signals):
             raise ValueError(f'{len(self.signals)} signal rows are named by {len(self.replicate_ids)} replicate ids.')
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TitrationData):
+            return NotImplemented
+        return all(_equal(getattr(self, f.name), getattr(other, f.name)) for f in fields(self))
+
+
+def _equal(a, b) -> bool:
+    """Whether *a* and *b* hold the same values: arrays element by element, NaN equal to NaN; sequences item by item."""
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return bool(np.array_equal(a, b, equal_nan=True))
+    if isinstance(a, list | tuple) and isinstance(b, list | tuple):
+        return len(a) == len(b) and all(map(_equal, a, b))
+    return a == b
 
 
 def legend_marks(legend: C.LegendRow, plot_appearance: PlotAppearance) -> None:
@@ -90,13 +107,14 @@ class TitrationPlot(QWidget):
         self._items: list = []
         #: Each replicate's points (or its ×) as drawn, by replicate id.
         self.replicate_items: dict[str, pg.ScatterPlotItem] = {}
+        self.navigation = C.PlotNavigation(self.t, 'Reset the view of the titration plot')
         self.setLayout(C.vbox(spacing=0))
         if t is None:
             appearance().changed.connect(self._restyle)
         self._restyle()
 
     def _restyle(self) -> None:
-        """Build the plot in the theme as it is now: axes and grid are styled once per theme."""
+        """Build the plot in the theme as it is now: axes and grid are styled once per theme; the view stays where it was."""
         if self.pw is not None:
             self.layout().removeWidget(self.pw)
             self.pw.deleteLater()
@@ -117,6 +135,7 @@ class TitrationPlot(QWidget):
         pi.getAxis('bottom').setStyle(hideOverlappingLabels=half_label)
         self._items = []
         self.layout().addWidget(self.pw)
+        self.navigation.set_plots([(self.pw, None)])
         self.redraw()
 
     def set_plot_appearance(self, plot_appearance: PlotAppearance) -> None:
@@ -129,7 +148,10 @@ class TitrationPlot(QWidget):
             self.redraw()
 
     def show_data(self, data: TitrationData | None, unit: str) -> None:
-        """Show *data* with the concentrations in *unit*."""
+        """Show *data* with the concentrations in *unit*: other data or another unit put the plot back on
+        auto-range, so they are in view; the same ones keep the view the user chose."""
+        if (data, unit) != (self.data, self.unit):
+            self.navigation.reset()
         self.data, self.unit = data, unit
         self.redraw()
 

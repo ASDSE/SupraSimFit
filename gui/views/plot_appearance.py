@@ -104,6 +104,8 @@ class PlotAppearanceView(QObject):
                 4,
                 self.legend,
                 5,
+                self.plot.navigation.tool,
+                1,
                 self.save_plot,
                 spacing=0,
             )
