@@ -26,8 +26,9 @@ Views set no stylesheet of their own.
    hairline borders, no gradients, no decorative shadows.
 2. **One meaning per colour.** Accent marks the reported result, selection and keyboard
    focus, links, the primary action, and work in progress. Amber, green and red mark a
-   result's warnings, passes and errors. Neutral greys carry everything else, data
-   included; Plot appearance (§8) may give the replicate points a series colour instead.
+   result's warnings, passes and errors. Neutral greys carry everything else, with one
+   exception: in the titration plot each replicate has a colour of its own, which names it
+   (`replicate-1` … `replicate-12`); Plot appearance (§8) may draw them all in grey instead.
 3. **Run state lives in three places.** Whether a session or analysis is running, done,
    out of date or carrying warnings shows as navigation marks, session-switcher lines and
    the status bar. A result's own warnings and test outcomes show inside its view, as
@@ -70,9 +71,10 @@ stylesheet template.
 | `accent-subtle` | Tint behind accent text and marks: Input-aware badge, the switcher's icon tile |
 | `on-accent` | Text and icons on accent |
 | `success`, `warning`, `danger` with `-bg` (and `warning-border`) | A result's passed test, warning or error: diagnostic marks, callouts, messages |
-| `replicate` | Replicate data points |
-| `replicate-off` | A replicate switched off (drawn as ×) |
-| `series-1`, `series-2` | The two series of the Sobol' chart: S₁ (solid) and S_T (outlined); in the titration plot, the replicate points when Plot appearance (§8) chooses *Blue* or *Magenta* |
+| `replicate-1` … `replicate-12` | The replicates of the titration plot, one colour each: replicate *n* in the order the data name them A, B, … takes `replicate-n`, in every view and whether or not others are switched off; past twelve the colours repeat with the next mark. The same hue in both themes, lighter in dark |
+| `replicate` | Every replicate's points when Plot appearance (§8) chooses *Grey*; the simulated replicates of the Simulation window |
+| `replicate-off` | The × of a replicate chip switched off |
+| `series-1`, `series-2` | The two series of the Sobol' chart: S₁ (solid) and S_T (outlined) |
 | `species-dye`, `species-guest`, `species-host`, `species-step2` | The species of the Simulation window, one hue per partner: the dye and its complex with the host, the guest and its first complex, the free host, the second-step complex (HG₂, H₂G); solid in a complex, dashed when free |
 | `heat-0` … `heat-8` | The heat scale of the sensitivity heatmap, low to high: perceptual and multi-hue (viridis), each stop lighter than the one below |
 | `traffic` | Window controls of an inactive window |
@@ -83,14 +85,19 @@ on, hover and selection fills included, and each status colour on its own `-bg`.
 `tests/unit/gui/test_design_system.py` checks both themes.
 
 **Data marks** may use a token at reduced opacity; text never does. The approved plots
-use: replicate dots `replicate` at 45 %; the sample histogram `text-secondary` at 62 %
+use: replicate dots and the × of a replicate not used at 80 %, in both themes; the sample histogram `text-secondary` at 62 %
 inside the middle 90 % and 22 % outside; S₁ bars solid `series-1`, S_T bars `series-2` at
 16 % (light) and 24 % (dark) inside a 90 % edge; interval bands `accent` at 8 %. The
 reported result and fitted curve take `accent` (Plot appearance may give the curve another colour); the reading at the inputs as entered takes
 `text-secondary` (its marker line in the sensitivity histogram is dashed `text-primary`,
 its interval a `text-secondary` bracket). Each series and species colour stands out from `bg-surface`
 by 3 : 1, no species takes `accent` or a series colour, and the heat scale rises in
-lightness, which `test_design_system.py` checks.
+lightness. Each replicate colour, at the 80 % its points are drawn at, stands out from
+`bg-surface` by 3 : 1 and differs by a CIEDE2000 ΔE of 15 at least from every other
+replicate colour, from the means' `text-primary` and from every colour the fitted curve
+may take. At 80 % a point that overlaps another replicate's still shows its edge; much
+lighter, twelve colours cannot meet both bounds on white. `test_design_system.py`
+checks all of these.
 
 ### Type
 
@@ -371,10 +378,13 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
   value drawn).
 - No y tick marks: horizontal grid lines in `grid` follow the y axis's ticks; 4-px
   outward x ticks.
-- **Titration series:** replicate dots in `replicate` at 45 %, 6 px; switched-off
-  replicates as × in `replicate-off`; mean ± SD as 6-px `text-primary` dots with 1-px
+- **Titration series:** each replicate's dots in its own colour (`replicate-n`) at 80 %,
+  6 px; a replicate switched off or left out by the fit as × in its own colour; mean ± SD
+  as 6-px `text-primary` dots with 1-px
   `text-primary` error bars, capped a hundredth of the x span wide; the fitted curve 2 px
-  accent, round caps. Plot appearance (§8) restyles these marks per session.
+  accent, round caps. The legend names each replicate drawn by its letter, marked with
+  its point or × in its colour (`A`, `B switched off`, `C left out by the fit`), then
+  *Mean ± SD* and *Fit*. Plot appearance (§8) restyles these marks per session.
 - **Sobol' bars:** S₁ solid in `series-1`, S_T outlined in `series-2`, each with a
   1.25-px `text-primary` whisker with 6-px caps; an index or whisker past the axis ends in
   a small arrow at its edge.
@@ -554,11 +564,15 @@ plot*, headed by *Reset to defaults* (a link; it gives this session the built-in
 appearance): **Markers** — replicate points and mean points *Small* / *Medium* / *Large*
 (`marker-small` / `marker-medium` / `marker-large`), replicate mark *Circle* / *Square* /
 *Triangle*; **Lines** — fitted curve and error bars *Thin* / *Medium* / *Thick*
-(`stroke-thin` / `stroke-medium` / `stroke-thick`); **Colour** — replicate points, a
-menu of the theme's colours *Grey* (`replicate`), *Blue* (`series-1`) and *Magenta*
-(`series-2`), and fitted curve, *Teal* (`accent`, built in), *Blue*, *Magenta* or *Text
-colour* (`text-primary`) — never a free colour picker; the means and their error bars stay
-`text-primary`, so no choice draws the replicates in the colour of the means; **Text** — axis text *Standard* / *Large* /
+(`stroke-thin` / `stroke-medium` / `stroke-thick`); **Colour** — replicate points, *By
+replicate* (built in: each replicate its `replicate-n`, past twelve the colours again
+with the next mark — circle, square, triangle — after the one chosen) or *Grey* (every
+replicate in `replicate`, one mark), the menu showing the first three replicates' colours
+beside *By replicate*; and fitted curve, *Teal* (`accent`, built in), *Blue* (`series-1`),
+*Magenta* (`series-2`) or *Text colour* (`text-primary`) — never a free colour picker;
+the means and their error bars stay `text-primary`, so no choice draws the replicates in
+the colour of the means. A results file or stored preference that states one colour for
+every replicate, *Blue* or *Magenta*, is read as *Grey*; **Text** — axis text *Standard* / *Large* /
 *Larger*, the tick labels and axis titles in the type roles `small-number` and `label`,
 `number` and `body-strong`, or `number-large` and `title` (tick labels always in tabular
 figures); **New sessions** — *Use for new sessions* (outline button; one click stores the

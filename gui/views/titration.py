@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import QApplication, QFrame, QWidget
 from core.units import Q_
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
-from gui.design.plot_theme import apply_plot_theme, fit_line, px, replicate_alpha, scatter
+from gui.design.plot_theme import REPLICATE_ALPHA, apply_plot_theme, fit_line, px, scatter
 from gui.design.tokens import SIZE, TYPE, Theme, font, space
 from gui.plot_appearance import BUILT_IN, PlotAppearance
 from gui.plotting.export import export_plot_item
@@ -38,7 +38,11 @@ ERROR_CAP = 0.01
 class TitrationData:
     """What the plot shows: concentrations (M), one signal row per replicate, which are used, and curves.
 
-    A replicate not used is drawn as ×; *mean_sd* adds the mean ± SD of the used ones, and
+    *replicate_ids* name the rows, in the order the app names the replicates A, B, …
+    (:func:`~core.pipeline.reporting.replica_order`); a row's place there picks its colour
+    and mark (:meth:`~gui.plot_appearance.PlotAppearance.replicate_mark`), so a replicate
+    keeps them in every view and when others are switched off. A replicate not used is
+    drawn as × in its colour; *mean_sd* adds the mean ± SD of the used ones, and
     *replicates* ``False`` leaves every replicate's own points out. *curves* are drawn
     solid, *other_curves* — fits shown beside the reported one — dashed. *caption* is what
     a saved image states above the plot, one line each; the view on screen states it
@@ -55,12 +59,17 @@ class TitrationData:
     replicates: bool = True
     other_curves: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
     caption: list[str] = field(default_factory=list)
+    replicate_ids: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if len(self.replicate_ids) != len(self.signals):
+            raise ValueError(f'{len(self.signals)} signal rows are named by {len(self.replicate_ids)} replicate ids.')
 
 
 def legend_marks(legend: C.LegendRow, plot_appearance: PlotAppearance) -> None:
     """Draw the replicates and the fitted curve in *legend* as *plot_appearance* draws them in the plot."""
     look = plot_appearance
-    legend.set_marks(look.replicate_token, look.symbol, look.fit_px, look.fit_token)
+    legend.set_marks(look.replicate_mark, look.fit_px, look.fit_token)
 
 
 def wrap_caption(line: str, fm: QFontMetrics, width: int) -> list[str]:
@@ -100,6 +109,8 @@ class TitrationPlot(QWidget):
         self.data: TitrationData | None = None
         self.pw: pg.PlotWidget | None = None
         self._items: list = []
+        #: Each replicate's points (or its ×) as drawn, by replicate id.
+        self.replicate_items: dict[str, pg.ScatterPlotItem] = {}
         self.setLayout(C.vbox(spacing=0))
         if t is None:
             appearance().changed.connect(self._restyle)
@@ -153,6 +164,7 @@ class TitrationPlot(QWidget):
         for item in self._items:
             pi.removeItem(item)
         self._items = []
+        self.replicate_items = {}
         scale = Q_(1.0, 'M').to(self.unit).magnitude
         if data is None:
             pi.getAxis('bottom').setLabel(f'Concentration ({self.unit})')
@@ -164,16 +176,13 @@ class TitrationPlot(QWidget):
         pi.getAxis('left').setLabel(f'Signal ({"" if e == 0 else f"10{superscript(e)} "}{data.y_unit})')
         pi.getAxis('bottom').setLabel(f'{data.x_name} ({self.unit})')
         x = data.x_molar * scale
-        dark = t.dark
-        for row, on in zip(data.signals, data.active, strict=True):
-            if not data.replicates:
-                break
-            y = row * y_scale
-            if on:
-                self._add(scatter(t, x, y, look.replicate_token, replicate_alpha(t), look.replicate_px, look.symbol))
-            else:
-                off = 'text-secondary' if dark else 'replicate-off'
-                self._add(scatter(t, x, y, off, 0.8, look.cross_px, symbol='x'))
+        rows = zip(data.replicate_ids, data.signals, data.active, strict=True) if data.replicates else ()
+        for index, (rid, row, on) in enumerate(rows):
+            colour, symbol = look.replicate_mark(index)
+            size = look.replicate_px if on else look.cross_px
+            item = scatter(t, x, row * y_scale, colour, REPLICATE_ALPHA, size, symbol if on else 'x')
+            self.replicate_items[rid] = item
+            self._add(item)
         used = data.signals[np.asarray(data.active, dtype=bool)] * y_scale
         if data.mean_sd and len(used):
             mean, sd = used.mean(axis=0), used.std(axis=0, ddof=1) if len(used) > 1 else np.zeros(len(x))

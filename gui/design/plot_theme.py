@@ -9,6 +9,12 @@ from PyQt6.QtWidgets import QApplication
 
 from gui.design.tokens import SIZE, TYPE, Theme, family, font, space
 
+#: The opacity of a replicate's points and of the × of one not used, in the plot and in its legend, in
+#: both themes. Points of one replicate that overlap another's still show its edge, and each replicate's
+#: colour keeps the contrast and the distance from the others its tokens are checked for at this opacity;
+#: much lighter, twelve colours cannot both stand out from the plot by 3 : 1 and be told apart.
+REPLICATE_ALPHA = 0.8
+
 
 def px(n: float) -> float:
     """A pen width of *n* logical px; pyqtgraph's cosmetic pens count device pixels."""
@@ -116,11 +122,6 @@ def scatter(t: Theme, x, y, color: str, alpha: float, size: float, symbol: str =
     if hollow or symbol == 'x':
         return pg.ScatterPlotItem(x, y, symbol=symbol, size=size, pen=pg.mkPen(c, width=px(1.3)), brush=None)
     return pg.ScatterPlotItem(x, y, symbol=symbol, size=size, pen=pg.mkPen(None), brush=pg.mkBrush(c))
-
-
-def replicate_alpha(t: Theme) -> float:
-    """The opacity of a replicate's points, in the plot and in its legend: denser on the dark surface."""
-    return 0.8 if t.dark else 0.55
 
 
 def fit_line(t: Theme, x, y, other: bool = False, width: float = SIZE['stroke-medium'], color: str = 'accent'):

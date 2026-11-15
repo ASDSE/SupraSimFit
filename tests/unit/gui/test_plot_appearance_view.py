@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 
+import numpy as np
 import pyqtgraph as pg
 import pytest
 
@@ -64,8 +65,8 @@ def _marks(plot):
 
 
 def test_the_built_in_appearance_draws_the_titration_as_the_design_specifies(session):
-    """DESIGN.md §7: replicate dots in ``replicate``, 6 px; × 7 px; 6-px means; 1-px error bars; 2-px accent curve."""
-    from gui.design.plot_theme import px, replicate_alpha
+    """DESIGN.md §7: replicate dots 6 px, each replicate in its own colour; × 7 px; 6-px means; 1-px error bars; 2-px accent curve."""
+    from gui.design.plot_theme import REPLICATE_ALPHA, px
 
     _fitted(session)
     plot = session._results.plot
@@ -73,8 +74,8 @@ def test_the_built_in_appearance_draws_the_titration_as_the_design_specifies(ses
     dots, crosses, means, bar_pen, curve_pen = _marks(plot)
 
     assert {(d.opts['size'], d.opts['symbol']) for d in dots} == {(6, 'o')}
-    assert {d.opts['brush'].color().name() for d in dots} == {t['replicate'].lower()}
-    assert dots[0].opts['brush'].color().alphaF() == pytest.approx(replicate_alpha(t), abs=0.01)
+    assert [d.opts['brush'].color().name() for d in dots] == [t[f'replicate-{i}'].lower() for i in (2, 3, 4)]
+    assert all(d.opts['brush'].color().alphaF() == pytest.approx(REPLICATE_ALPHA, abs=0.01) for d in dots)
     assert {c.opts['size'] for c in crosses} == {7}
     assert {m.opts['size'] for m in means} == {6}
     assert bar_pen.widthF() == px(1)
@@ -90,7 +91,7 @@ def test_a_choice_in_the_form_redraws_every_titration_plot_at_once(session, qapp
     _fitted(session)
     view = session._appearance
     QTest.keyClick(view.choices['fit_width'], Qt.Key.Key_Right)  # Medium → Thick
-    view.choices['replicate_colour'].chosen.emit(2)  # Magenta
+    view.choices['replicate_colour'].chosen.emit(1)  # Grey
     QTest.keyClick(view.choices['replicate_shape'], Qt.Key.Key_Right)  # Circle → Square
     view.choices['fit_colour'].chosen.emit(1)  # Blue
 
@@ -100,7 +101,7 @@ def test_a_choice_in_the_form_redraws_every_titration_plot_at_once(session, qapp
         assert curve_pen.widthF() == px(SIZE['stroke-thick'])
         assert curve_pen.color().name() == t['series-1'].lower()
         assert {d.opts['symbol'] for d in dots} == {'s'}
-        assert {d.opts['brush'].color().name() for d in dots} == {t['series-2'].lower()}
+        assert {d.opts['brush'].color().name() for d in dots} == {t['replicate'].lower()}
     measured = [s for s in _items(session._measurements.plot, pg.ScatterPlotItem) if s.opts['symbol'] != 'x']
     assert {s.opts['symbol'] for s in measured} == {'s'}
     assert session.view_badge('Plot appearance') == 'Custom appearance'
@@ -123,7 +124,7 @@ def test_the_saved_figure_is_drawn_in_the_light_theme_on_white_with_the_chosen_s
         assert not figure.t.dark
         assert figure.pw.backgroundBrush().color().name() == LIGHT['bg-surface'].lower()
         assert {(d.opts['size'], d.opts['symbol']) for d in dots} == {(SIZE['marker-large'], 't1')}
-        assert {d.opts['brush'].color().name() for d in dots} == {LIGHT['series-1'].lower()}
+        assert {d.opts['brush'].color().name() for d in dots} == {LIGHT['replicate'].lower()}
         assert {m.opts['size'] for m in means} == {SIZE['marker-small']}
         # The × of the replicate switched off follows the replicate size, the error bars their width.
         assert [c.opts['size'] for c in crosses] == [pytest.approx(SIZE['marker-large'] * CROSS_SCALE)]
@@ -151,7 +152,10 @@ def test_larger_axis_text_grows_the_axes_so_it_stays_as_whole_as_the_standard_te
         plot = TitrationPlot(plot_appearance=look)
         plot.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         plot.resize(900, 600)
-        plot.show_data(TitrationData(ms.concentrations, ms.signals * 1e3, [True] * 4, 'Guest'), 'µM')
+        plot.show_data(
+            TitrationData(ms.concentrations, ms.signals * 1e3, [True] * 4, 'Guest', replicate_ids=list(ms.replica_ids)),
+            'µM',
+        )
         plot.show()
         qapp.processEvents()
         left, bottom = (plot.pw.getPlotItem().getAxis(side) for side in ('left', 'bottom'))
@@ -226,16 +230,22 @@ def test_a_new_text_size_restyles_the_axes_of_a_plot_already_on_screen(session):
         assert f'{TYPE[look.title_role][0]}px' in bottom.labelStyle['font-size']
 
 
-def _painted(legend, kind, columns=18) -> int:
-    """How many pixels *legend* paints for its one mark of *kind*, in the columns before its text."""
+def _swatch(legend, item, columns=18) -> tuple[list, object]:
+    """The colours *legend* paints for its one *item*, in the columns before its text, and the ground they are painted on."""
     from PyQt6.QtGui import QImage
 
-    legend.set_items([(kind, 'x')])
+    legend.set_items([item])
     image = QImage(legend.size(), QImage.Format.Format_ARGB32)
     image.fill(0)
     legend.render(image)
     ground = image.pixelColor(0, 0)
-    return sum(image.pixelColor(x, y) != ground for x in range(columns) for y in range(image.height()))
+    pixels = [image.pixelColor(x, y) for x in range(columns) for y in range(image.height())]
+    return [c for c in pixels if c != ground], ground
+
+
+def _painted(legend, kind, columns=18) -> int:
+    """How many pixels *legend* paints for its one mark of *kind*, in the columns before its text."""
+    return len(_swatch(legend, (kind, 'x', 0) if kind == 'dots' else (kind, 'x'), columns)[0])
 
 
 def test_the_legend_paints_the_mark_and_the_line_width_the_plot_draws(qapp):
@@ -246,13 +256,13 @@ def test_the_legend_paints_the_mark_and_the_line_width_the_plot_draws(qapp):
     legend = C.LegendRow(theme(), [])
     areas = {}
     for shape, symbol in (('square', 's'), ('circle', 'o'), ('triangle', 't1')):
-        legend.set_marks('replicate', symbol, 2.0)
+        legend.set_marks(lambda _index, symbol=symbol: ('replicate', symbol), 2.0)
         areas[shape] = _painted(legend, 'dots')
     assert areas['square'] > areas['circle'] > areas['triangle'] > 0
 
     widths = []
     for width in (1.0, 3.0):
-        legend.set_marks('replicate', 'o', width)
+        legend.set_marks(lambda _index: ('replicate', 'o'), width)
         widths.append(_painted(legend, 'line'))
     assert widths[1] > widths[0] > 0
 
@@ -263,7 +273,113 @@ def test_the_view_s_legend_follows_its_plot(session):
     legend = session._results.legend
     look = CHANGED
 
-    assert (legend.dot_color, legend.dot_symbol, legend.line_width) == (look.replicate_token, look.symbol, look.fit_px)
+    assert [legend.replicate_mark(i) for i in range(14)] == [look.replicate_mark(i) for i in range(14)]
+    assert legend.line_width == look.fit_px
+
+
+# ── Replicate identity ─────────────────────────────────────────────────────────────
+
+
+def _colours(plot) -> dict[str, tuple[str, str]]:
+    """Each replicate's colour in *plot* and how it is drawn (``dot`` or ``cross``), by replicate id."""
+    drawn = {}
+    for rid, item in plot.replicate_items.items():
+        cross = item.opts['symbol'] == 'x'
+        colour = (item.opts['pen'] if cross else item.opts['brush']).color()
+        drawn[rid] = (colour.name(), 'cross' if cross else 'dot')
+    return drawn
+
+
+def test_each_replicate_is_drawn_in_its_palette_colour_in_every_view(session):
+    """Replicate n of the data is ``replicate-n`` in Measurements, Fit results and Plot appearance alike;
+    the one switched off keeps its colour, drawn as ×."""
+    _fitted(session)
+    t = session._results.plot.t
+    expected = {
+        '0': (t['replicate-1'].lower(), 'cross'),
+        '1': (t['replicate-2'].lower(), 'dot'),
+        '2': (t['replicate-3'].lower(), 'dot'),
+        '3': (t['replicate-4'].lower(), 'dot'),
+    }
+    for plot in (session._results.plot, session._measurements.plot, session._appearance.plot):
+        assert _colours(plot) == expected
+    assert len({colour for colour, _ in expected.values()}) == 4
+
+
+def test_switching_a_replicate_off_changes_no_other_replicate_s_colour(session):
+    state_binding(session, assay_type=AssayType.GDA)
+    session.model.load(four_replicates(), None)
+    before = _colours(session._measurements.plot)
+
+    session.model.set_replicate('1', False)
+    after = _colours(session._measurements.plot)
+
+    assert {rid: colour for rid, (colour, _) in after.items()} == {rid: colour for rid, (colour, _) in before.items()}
+    assert after['1'][1] == 'cross' and {how for rid, (_, how) in after.items() if rid != '1'} == {'dot'}
+
+
+def _many(n: int):
+    from gui.views.titration import TitrationData
+
+    x = np.linspace(1e-6, 1e-5, 5)
+    return TitrationData(
+        x, np.stack([x * (k + 1) for k in range(n)]), [True] * n, 'Guest', replicate_ids=[str(k) for k in range(n)]
+    )
+
+
+def test_twelve_replicates_take_twelve_colours_and_the_next_ones_the_next_shape(qapp):
+    """Past the twelve colours, the colours repeat with the next mark, so every replicate stays one of its own."""
+    from gui.design.tokens import Theme
+    from gui.views.titration import TitrationPlot
+
+    plot = TitrationPlot(Theme(dark=False))
+    plot.show_data(_many(14), 'µM')
+    marks = [(item.opts['brush'].color().name(), item.opts['symbol']) for item in plot.replicate_items.values()]
+
+    assert len({colour for colour, _ in marks[:12]}) == 12
+    assert {symbol for _, symbol in marks[:12]} == {'o'}
+    assert marks[12:] == [(marks[0][0], 's'), (marks[1][0], 's')]
+    assert len(set(marks)) == 14
+
+
+def test_grey_draws_every_replicate_in_one_colour(qapp):
+    from gui.design.tokens import Theme
+    from gui.views.titration import TitrationPlot
+
+    t = Theme(dark=True)
+    plot = TitrationPlot(t, PlotAppearance(replicate_colour='grey'))
+    plot.show_data(_many(14), 'µM')
+
+    assert {(item.opts['brush'].color().name(), item.opts['symbol']) for item in plot.replicate_items.values()} == {
+        (t['replicate'].lower(), 'o')
+    }
+
+
+def test_the_legend_marks_each_replicate_in_the_colour_its_points_are_drawn_in(qapp):
+    """A replicate's entry, a point or the × of one not used, is painted in that replicate's colour."""
+    from PyQt6.QtGui import QColor
+
+    from gui.design import components as C
+    from gui.design.plot_theme import REPLICATE_ALPHA
+    from gui.design.tokens import Theme
+
+    t = Theme(dark=False)
+    legend = C.LegendRow(t, [])
+    legend.set_marks(BUILT_IN.replicate_mark, 2.0)
+
+    def far(c, d) -> int:
+        return max(abs(c.red() - d.red()), abs(c.green() - d.green()), abs(c.blue() - d.blue()))
+
+    def over(token, ground):
+        c, a = t.q(token), REPLICATE_ALPHA
+        return QColor(*(round(a * v + (1 - a) * g) for v, g in zip(c.getRgb()[:3], ground.getRgb()[:3], strict=True)))
+
+    for kind, index in (('dots', 0), ('dots', 5), ('cross', 2)):
+        painted, ground = _swatch(legend, (kind, 'A', index))
+        core = max(painted, key=lambda c: far(c, ground))  # the pixel the mark covers most
+        # Of the twelve replicate colours as the plot paints them on this ground, the core is the replicate's own.
+        nearest = min(range(12), key=lambda n: far(core, over(f'replicate-{n + 1}', ground)))
+        assert nearest == index, f'{kind} {index}'
 
 
 def test_opening_plot_appearance_reads_what_another_session_stored(session):

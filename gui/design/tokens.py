@@ -83,6 +83,9 @@ SIZE = {
     'help-height': 420,
 }
 
+#: Colours of the replicates (``replicate-1`` … ``replicate-12``); past them the colours repeat with the next mark.
+REPLICATE_COLOURS = 12
+
 #: Stops of the heat scale (``heat-0`` … ``heat-8``), evenly spaced from low to high.
 HEAT_STOPS = 9
 
@@ -114,6 +117,21 @@ LIGHT = {
     'danger-bg': '#FDECEE',
     'replicate': '#8A919A',
     'replicate-off': '#8A919A',
+    # The replicates of the titration plot, one colour each in the order the data name them A, B, …:
+    # at the opacity the points are drawn at, each stands out from the plot by 3 : 1 and from every
+    # other replicate, the means and the fitted curve's colours by ΔE₀₀ 15; the same hue in both themes.
+    'replicate-1': '#267AA0',
+    'replicate-2': '#D90D33',
+    'replicate-3': '#275005',
+    'replicate-4': '#6015B2',
+    'replicate-5': '#AD660A',
+    'replicate-6': '#168169',
+    'replicate-7': '#565A8C',
+    'replicate-8': '#A26482',
+    'replicate-9': '#5D420D',
+    'replicate-10': '#894736',
+    'replicate-11': '#7C7A3C',
+    'replicate-12': '#17900E',
     'traffic': '#D9DCE0',
     'shadow': '#000000',
     # The two series of the Sobol' chart: S₁ and S_T.
@@ -164,6 +182,18 @@ DARK = {
     'danger-bg': '#3D1A1C',
     'replicate': '#7C848E',
     'replicate-off': '#6F7781',
+    'replicate-1': '#4893BB',
+    'replicate-2': '#F93C4A',
+    'replicate-3': '#668F43',
+    'replicate-4': '#A95CF9',
+    'replicate-5': '#F9A750',
+    'replicate-6': '#57B69C',
+    'replicate-7': '#A5A7DD',
+    'replicate-8': '#BE7E9C',
+    'replicate-9': '#A07E48',
+    'replicate-10': '#DF927F',
+    'replicate-11': '#C0BB79',
+    'replicate-12': '#7BE364',
     'traffic': '#3A3E44',
     'shadow': '#000000',
     'series-1': '#6FA8E8',

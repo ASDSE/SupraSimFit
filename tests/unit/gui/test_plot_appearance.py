@@ -35,7 +35,7 @@ CHANGED = PlotAppearance(
     replicate_shape='triangle',
     fit_width='thick',
     error_bar_width='medium',
-    replicate_colour='blue',
+    replicate_colour='grey',
     fit_colour='magenta',
     text_size='larger',
 )
@@ -56,13 +56,17 @@ def store(qapp):
 
 
 def test_the_built_in_appearance_draws_the_titration_as_the_design_specifies():
-    """DESIGN.md §7: replicates in ``replicate``, 6-px dots and means, 1-px error bars, a 2-px accent curve, label-role text."""
+    """DESIGN.md §7: replicate n in ``replicate-n``, 6-px dots and means, 1-px error bars, a 2-px accent curve, label-role text."""
     look = BUILT_IN
 
     assert (look.replicate_px, look.mean_px, look.symbol) == (6, 6, 'o')
     assert look.cross_px == 7  # the × of a replicate switched off
     assert (look.fit_px, look.error_bar_px) == (2, 1)
-    assert look.replicate_token == 'replicate'
+    assert [look.replicate_mark(i) for i in (0, 1, 11)] == [
+        ('replicate-1', 'o'),
+        ('replicate-2', 'o'),
+        ('replicate-12', 'o'),
+    ]
     assert (look.tick_role, look.title_role) == ('small-number', 'label')
 
 
@@ -74,7 +78,17 @@ def test_every_field_survives_a_round_trip_through_json():
 
 
 def test_a_record_that_leaves_a_field_out_keeps_the_built_in_choice_for_it():
-    assert PlotAppearance.from_dict({'replicate_colour': 'blue'}) == PlotAppearance(replicate_colour='blue')
+    assert PlotAppearance.from_dict({'fit_colour': 'blue'}) == PlotAppearance(fit_colour='blue')
+
+
+@pytest.mark.parametrize('single', ['blue', 'magenta', 'grey'])
+def test_a_record_stating_one_colour_for_every_replicate_is_read_as_grey(single):
+    """A file or preference may state one colour for every replicate; it is read as Grey, the one choice
+    that draws every replicate in one colour, never as the colours by replicate."""
+    look = PlotAppearance.from_dict({'replicate_colour': single, 'replicate_shape': 'square'})
+
+    assert look == PlotAppearance(replicate_colour='grey', replicate_shape='square')
+    assert {look.replicate_mark(i) for i in range(20)} == {('replicate', 's')}
 
 
 @pytest.mark.parametrize(
@@ -119,7 +133,7 @@ def test_the_replicates_never_take_the_colour_of_the_means_and_the_curve_is_buil
     fitted curve is ``accent`` unless the user picks another of its menu."""
     from gui.plot_appearance import FIT_COLOURS
 
-    assert 'text-primary' not in {token for _label, token in COLOURS.values()}
+    assert 'text-primary' not in {token for _label, tokens in COLOURS.values() for token in tokens}
     assert BUILT_IN.fit_token == 'accent'
     assert PlotAppearance.from_dict({'fit_colour': 'blue'}).fit_token == 'series-1'
     assert all(token in LIGHT and token in DARK for _label, token in FIT_COLOURS.values())
@@ -137,7 +151,7 @@ def test_every_choice_maps_to_a_token_of_both_themes_and_a_type_role():
     from gui.design.tokens import DARK, LIGHT, SIZE, TYPE
 
     assert all(token in SIZE for _label, token in (*MARKER_SIZES.values(), *WIDTHS.values()))
-    assert all(token in LIGHT and token in DARK for _label, token in COLOURS.values())
+    assert all(token in LIGHT and token in DARK for _label, tokens in COLOURS.values() for token in tokens)
     assert all(tick in TYPE and title in TYPE for _label, tick, title in TEXT_SIZES.values())
     assert {symbol for _label, symbol in SHAPES.values()} == {'o', 's', 't1'}
 

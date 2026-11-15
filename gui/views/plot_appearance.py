@@ -148,9 +148,9 @@ class PlotAppearanceView(QObject):
                 self.choices[name] = control
                 fields.append(field(caption, control))
             sections.append(C.section(t, title, body(*fields), first=not sections))
-        # The colours, each a menu with the colour's swatch beside the choice. The means and the
-        # error bars keep their own colour (DESIGN.md §7).
-        swatch = QFontMetrics(font('number')).horizontalAdvance('● ')
+        # The colours, each a menu with the colour's swatch beside the choice — the first three
+        # replicates' for By replicate. The means and the error bars keep their own colour (DESIGN.md §7).
+        swatch = QFontMetrics(font('number')).horizontalAdvance('●●● ')
         colours = []
         for name, caption, accessible in (
             ('replicate_colour', 'Replicate points', 'Colour of the replicate points'),
@@ -226,8 +226,10 @@ class PlotAppearanceView(QObject):
             if isinstance(control, C.Segmented):
                 control.set_current(index)
             else:
-                token = menu(name)[getattr(look, name)][1]
-                control.set_choice(f'<span style="color:{self.t[token]}">●</span> {escape(look.label(name))}')
+                tokens = menu(name)[getattr(look, name)][1]
+                shown = (tokens,) if name == 'fit_colour' else tokens[:3]
+                dots = ''.join(f'<span style="color:{self.t[token]}">●</span>' for token in shown)
+                control.set_choice(f'{dots} {escape(look.label(name))}')
         self.refresh_buttons()
 
     def refresh_buttons(self) -> None:

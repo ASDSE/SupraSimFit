@@ -445,7 +445,7 @@ def test_the_saved_titration_is_the_plot_drawn_light_on_white_in_a_dark_window(q
     from PyQt6.QtGui import QColor, QImage
 
     from gui.design.appearance import appearance
-    from gui.design.plot_theme import replicate_alpha
+    from gui.design.plot_theme import REPLICATE_ALPHA
     from gui.design.tokens import Theme
 
     ms = four_replicates()
@@ -460,7 +460,7 @@ def test_the_saved_titration_is_the_plot_drawn_light_on_white_in_a_dark_window(q
         appearance().set_mode('light')
     image = QImage(str(path))
     light = Theme(dark=False)
-    replicate = _over_white(light['replicate'], replicate_alpha(light))
+    replicates = [_over_white(light[f'replicate-{n}'], REPLICATE_ALPHA) for n in (1, 2, 3, 4)]
     # The same figure without the replicates' own points, and without the mean ± SD: what each adds is its own.
     view = session._results
     counts = {}
@@ -473,8 +473,9 @@ def test_the_saved_titration_is_the_plot_drawn_light_on_white_in_a_dark_window(q
 
     assert QColor(image.pixel(2, 2)).name() == '#ffffff'
     assert _pixels_near(image, light['accent']) > 40  # the fitted curve
-    # The replicates' dots, at their own blend over white (a tight tolerance leaves out antialiased text).
-    assert _pixels_near(image, replicate, 3) > 4 * _pixels_near(counts['without replicates'], replicate, 3)
+    # Each replicate's dots, at its own colour's blend over white (a tight tolerance leaves out antialiased text).
+    for replicate in replicates:
+        assert _pixels_near(image, replicate, 3) > 4 * _pixels_near(counts['without replicates'], replicate, 3)
     # The mean ± SD, the only marks drawn in the text colour inside the plot.
     assert _pixels_near(image, light['text-primary'], 12) > 30 + 4 * _pixels_near(
         counts['without mean'], light['text-primary'], 12

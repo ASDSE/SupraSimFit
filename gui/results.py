@@ -747,12 +747,14 @@ def figure_caption(shown: Sequence[FitResult]) -> list[str]:
 class Titration:
     """What the titration plot of Fit results shows: its data, legend row and description.
 
+    The legend names each replicate drawn by its letter, ``(kind, text, index)`` with its
+    place in the data's order, so it is marked in the replicate's own colour.
     *replicates_note* says the fits drawn used different replicates; *others_note* gives
     the numbers of the fits drawn beside the reported one.
     """
 
     data: TitrationData | None
-    legend: list[tuple[str, str]]
+    legend: list[tuple]
     description: str = ''
     replicates_note: str | None = None
     others_note: str | None = None
@@ -773,7 +775,9 @@ def titration(ms, shown: Sequence[FitResult], assay_type: AssayType, display: in
 
     The replicates the reported fit (the last shown) used are drawn as replicates and
     averaged into the mean ± SD; a replicate switched off, and one the fit left out of
-    itself, are drawn as ×. The reported fit's curve is drawn solid, any other shown
+    itself, are drawn as ×. Each replicate is drawn and named in the legend by its place in
+    the order the app names them A, B, … (:func:`~core.pipeline.reporting.replica_order`),
+    which with the data loaded is the data's own. The reported fit's curve is drawn solid, any other shown
     fit's dashed, with its numbers in :attr:`Titration.others_note` and every fit's in
     the saved image's caption. With no fit shown every active replicate is drawn and
     averaged. Without data, the shown curves alone. *display* is the index of
@@ -797,8 +801,8 @@ def titration(ms, shown: Sequence[FitResult], assay_type: AssayType, display: in
     order = list(ms.replica_ids)
     used = {rid for rid, _ in plot['active_replicas']}
     letters = {rid: _display_label(i) for i, rid in enumerate(order)}
-    off = [letters[rid] for rid, _ in plot['dropped_replicas']]
-    left_out = [letters[rid] for rid, _ in plot['left_out_replicas']]
+    off = {rid for rid, _ in plot['dropped_replicas']}
+    left_out = {rid for rid, _ in plot['left_out_replicas']}
     curves = [(np.asarray(f['x'], float), np.asarray(f['y'], float)) for f in plot['fits']]
     data = TitrationData(
         x_molar=np.asarray(ms.concentrations, dtype=float),
@@ -810,14 +814,17 @@ def titration(ms, shown: Sequence[FitResult], assay_type: AssayType, display: in
         replicates=replicates,
         other_curves=curves[:-1],
         caption=caption,
+        replicate_ids=order,
     )
-    legend = []
+    legend: list[tuple] = []
     if replicates:
-        legend.append(('dots', f'Replicates ({len(used)})'))
-        if off:
-            legend.append(('cross', f'{and_join(off)} switched off'))
-        if left_out:
-            legend.append(('cross', f'{and_join(left_out)} left out by the fit'))
+        for index, rid in enumerate(order):
+            if rid in off:
+                legend.append(('cross', f'{letters[rid]} switched off', index))
+            elif rid in left_out:
+                legend.append(('cross', f'{letters[rid]} left out by the fit', index))
+            else:
+                legend.append(('dots', letters[rid], index))
     if mean and used:
         legend.append(('mean', 'Mean ± SD'))
     legend += _curve_legend(len(curves))

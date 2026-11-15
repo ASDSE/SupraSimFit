@@ -9,6 +9,8 @@ exists in both themes.
 
 from __future__ import annotations
 
+import itertools
+import math
 import re
 from pathlib import Path
 
@@ -111,6 +113,104 @@ def test_the_species_colours_read_on_the_plot_and_borrow_no_other_meaning(name):
         assert ratio >= NON_TEXT, f'{name}: {species} on bg-surface is {ratio:.2f} : 1, below {NON_TEXT}'
     taken = [theme[k] for k in ('accent', 'series-1', 'series-2', *SPECIES)]
     assert len(set(taken)) == len(taken)
+
+
+def _lab(hex_colour: str) -> tuple[float, float, float]:
+    """CIELAB (D65) of a ``#RRGGBB`` colour."""
+    channels = [int(hex_colour[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+    r, g, b = (c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels)
+    xyz = (
+        (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047,
+        0.2126729 * r + 0.7151522 * g + 0.0721750 * b,
+        (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883,
+    )
+    fx, fy, fz = (v ** (1 / 3) if v > (6 / 29) ** 3 else v / (3 * (6 / 29) ** 2) + 4 / 29 for v in xyz)
+    return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
+
+
+def delta_e2000(lab1: tuple[float, float, float], lab2: tuple[float, float, float]) -> float:
+    """CIEDE2000 colour difference of two CIELAB colours (Sharma, Wu and Dalal 2005)."""
+    (l1, a1, b1), (l2, a2, b2) = lab1, lab2
+    c_bar = (math.hypot(a1, b1) + math.hypot(a2, b2)) / 2
+    g = 0.5 * (1 - math.sqrt(c_bar**7 / (c_bar**7 + 25**7)))
+    a1p, a2p = (1 + g) * a1, (1 + g) * a2
+    c1p, c2p = math.hypot(a1p, b1), math.hypot(a2p, b2)
+    h1p = math.degrees(math.atan2(b1, a1p)) % 360 if c1p else 0.0
+    h2p = math.degrees(math.atan2(b2, a2p)) % 360 if c2p else 0.0
+    dh = 0.0 if not c1p * c2p else (h2p - h1p + 180) % 360 - 180
+    d_l, d_c = l2 - l1, c2p - c1p
+    d_h = 2 * math.sqrt(c1p * c2p) * math.sin(math.radians(dh / 2))
+    l_bar, cp_bar = (l1 + l2) / 2, (c1p + c2p) / 2
+    if not c1p * c2p:
+        h_bar = h1p + h2p
+    elif abs(h1p - h2p) <= 180:
+        h_bar = (h1p + h2p) / 2
+    else:
+        h_bar = (h1p + h2p + 360) / 2 if h1p + h2p < 360 else (h1p + h2p - 360) / 2
+    t = (
+        1
+        - 0.17 * math.cos(math.radians(h_bar - 30))
+        + 0.24 * math.cos(math.radians(2 * h_bar))
+        + 0.32 * math.cos(math.radians(3 * h_bar + 6))
+        - 0.20 * math.cos(math.radians(4 * h_bar - 63))
+    )
+    s_l = 1 + 0.015 * (l_bar - 50) ** 2 / math.sqrt(20 + (l_bar - 50) ** 2)
+    s_c, s_h = 1 + 0.045 * cp_bar, 1 + 0.015 * cp_bar * t
+    r_t = (
+        -2
+        * math.sqrt(cp_bar**7 / (cp_bar**7 + 25**7))
+        * math.sin(math.radians(60 * math.exp(-(((h_bar - 275) / 25) ** 2))))
+    )
+    return math.sqrt((d_l / s_l) ** 2 + (d_c / s_c) ** 2 + (d_h / s_h) ** 2 + r_t * (d_c / s_c) * (d_h / s_h))
+
+
+@pytest.mark.parametrize(
+    ('lab1', 'lab2', 'expected'),
+    [  # pairs 1, 7, 17 and 25 of the published test data of Sharma, Wu and Dalal (2005)
+        ((50.0, 2.6772, -79.7751), (50.0, 0.0, -82.7485), 2.0425),
+        ((50.0, 0.0, 0.0), (50.0, -1.0, 2.0), 2.3669),
+        ((50.0, 2.5, 0.0), (73.0, 25.0, -18.0), 27.1492),
+        ((60.2574, -34.0099, 36.2677), (60.4626, -34.1751, 39.4387), 1.2644),
+    ],
+)
+def test_delta_e2000_reference_values(lab1, lab2, expected):
+    assert delta_e2000(lab1, lab2) == pytest.approx(expected, abs=1e-4)
+
+
+def over(fg: str, bg: str, alpha: float) -> str:
+    """*fg* at opacity *alpha* composited over *bg*, as the plot paints it (per channel, in sRGB)."""
+    mix = [round(alpha * int(fg[i : i + 2], 16) + (1 - alpha) * int(bg[i : i + 2], 16)) for i in (1, 3, 5)]
+    return '#' + ''.join(f'{c:02X}' for c in mix)
+
+
+#: Two replicate colours, and a replicate colour and a mark it is drawn beside, differ by this CIEDE2000 at least.
+DISTINCT = 15.0
+
+
+@pytest.mark.parametrize('name', THEMES)
+def test_each_replicate_colour_reads_on_the_plot_and_apart_from_every_other_mark(name):
+    """DESIGN.md §2: each replicate's colour, at the opacity its points are drawn at, stands out from the plot
+    by 3 : 1 and from every other replicate colour by ΔE₀₀ 15; so it does from the means (``text-primary``)
+    and from every colour the fitted curve may take."""
+    from gui.design.plot_theme import REPLICATE_ALPHA
+    from gui.design.tokens import REPLICATE_COLOURS
+    from gui.plot_appearance import FIT_COLOURS
+
+    theme = THEMES[name]
+    surface = theme['bg-surface']
+    drawn = {f'replicate-{i}': over(theme[f'replicate-{i}'], surface, REPLICATE_ALPHA) for i in range(1, 13)}
+    assert REPLICATE_COLOURS == 12 and f'replicate-{REPLICATE_COLOURS + 1}' not in theme
+    for key, colour in drawn.items():
+        ratio = contrast(colour, surface)
+        assert ratio >= NON_TEXT, f'{name}: {key} at {REPLICATE_ALPHA} on bg-surface is {ratio:.2f} : 1'
+    for (a, ca), (b, cb) in itertools.combinations(drawn.items(), 2):
+        d = delta_e2000(_lab(ca), _lab(cb))
+        assert d >= DISTINCT, f'{name}: {a} and {b} differ by ΔE₀₀ {d:.1f}, below {DISTINCT}'
+    others = {'text-primary', *(token for _label, token in FIT_COLOURS.values())}
+    for key, colour in drawn.items():
+        for other in others:
+            d = delta_e2000(_lab(colour), _lab(theme[other]))
+            assert d >= DISTINCT, f'{name}: {key} and {other} differ by ΔE₀₀ {d:.1f}, below {DISTINCT}'
 
 
 @pytest.mark.parametrize('name', THEMES)

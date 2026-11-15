@@ -834,10 +834,14 @@ def test_the_mean_and_sd_cover_only_the_replicates_the_fit_used_and_the_rest_are
 
     assert plot.data.active == [False, False, True, True]
     assert plot.data.mean_sd and len(plot.data.curves) == 1
+    # One entry per replicate, named by its letter and marked by its place in the data, so it
+    # takes the colour its points are drawn in; the ones not used keep theirs, drawn as ×.
+    assert plot.data.replicate_ids == ['0', '1', '2', '3']
     assert plot.legend == [
-        ('dots', 'Replicates (2)'),
-        ('cross', 'B switched off'),
-        ('cross', 'A left out by the fit'),
+        ('cross', 'A left out by the fit', 0),
+        ('cross', 'B switched off', 1),
+        ('dots', 'C', 2),
+        ('dots', 'D', 3),
         ('mean', 'Mean ± SD'),
         ('line', 'Fit'),
     ]

@@ -2,12 +2,12 @@
 
 A :class:`PlotAppearance` styles the titration plot of Measurements and Fit results and
 its saved figure: the size of the replicates' points and of the mean's, the replicates'
-mark and colour, the fitted curve's width and colour, the width of the error bars, and
-the size of the axis text. Every choice is one of a short menu, and each maps to a
-token — a ``SIZE`` entry, a colour of both themes, a ``TYPE`` role — so the plot stays
+mark and colours, the fitted curve's width and colour, the width of the error bars, and
+the size of the axis text. Every choice is one of a short menu, and each maps to
+tokens — a ``SIZE`` entry, colours of both themes, a ``TYPE`` role — so the plot stays
 in the design in either theme. The means and the error bars keep ``text-primary``. The
-built-in appearance draws the plot as DESIGN.md §7 describes it, the fitted curve in
-``accent``.
+built-in appearance draws the plot as DESIGN.md §7 describes it: each replicate in a
+colour of its own, the fitted curve in ``accent``.
 
 Each session holds its own appearance. It is written into the session's results file
 (:meth:`PlotAppearance.to_dict`) and stored as the start of new sessions in the
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 
-from gui.design.tokens import SIZE
+from gui.design.tokens import REPLICATE_COLOURS, SIZE
 
 #: The point sizes offered: key → (label, ``SIZE`` token).
 MARKER_SIZES = {
@@ -41,14 +41,18 @@ WIDTHS = {
     'thick': ('Thick', 'stroke-thick'),
 }
 
-#: The colours offered for the replicates' points: key → (label, colour token). Each is a
-#: token of both themes, so the plot keeps its contrast in light and dark; none is the
-#: ``text-primary`` of the means.
+#: The colours offered for the replicates' points: key → (label, colour tokens). Replicate *n* of
+#: the data takes the *n*-th token, so it keeps its colour in every view and when others are
+#: switched off; *Grey* draws every replicate in one. Each is a token of both themes, so the plot
+#: keeps its contrast in light and dark; none is the ``text-primary`` of the means.
 COLOURS = {
-    'grey': ('Grey', 'replicate'),
-    'blue': ('Blue', 'series-1'),
-    'magenta': ('Magenta', 'series-2'),
+    'by-replicate': ('By replicate', tuple(f'replicate-{n}' for n in range(1, REPLICATE_COLOURS + 1))),
+    'grey': ('Grey', ('replicate',)),
 }
+
+#: Colours a record may state for the replicates that draw every replicate in one colour, which
+#: this version offers as Grey: the record keeps one colour for every replicate.
+SINGLE_COLOURS = {'blue': 'grey', 'magenta': 'grey'}
 
 #: The colours offered for the fitted curve: key → (label, colour token), ``accent`` first.
 FIT_COLOURS = {
@@ -100,7 +104,7 @@ class PlotAppearance:
     replicate_shape: str = 'circle'
     fit_width: str = 'medium'
     error_bar_width: str = 'thin'
-    replicate_colour: str = 'grey'
+    replicate_colour: str = 'by-replicate'
     fit_colour: str = 'teal'
     text_size: str = 'standard'
 
@@ -147,10 +151,19 @@ class PlotAppearance:
         """The width of the mean ± SD error bars, in px."""
         return SIZE[WIDTHS[self.error_bar_width][1]]
 
-    @property
-    def replicate_token(self) -> str:
-        """The colour token of the replicates' points."""
-        return COLOURS[self.replicate_colour][1]
+    def replicate_mark(self, index: int) -> tuple[str, str]:
+        """The colour token and pyqtgraph symbol of the replicate at *index* in the data's order (A is 0).
+
+        By replicate, the colours repeat past the last with the next mark of :data:`SHAPES`, so
+        every replicate up to three times the colours has a mark of its own; Grey draws every
+        replicate alike.
+        """
+        tokens = COLOURS[self.replicate_colour][1]
+        if len(tokens) == 1:
+            return tokens[0], self.symbol
+        shapes = list(SHAPES)
+        shape = shapes[(shapes.index(self.replicate_shape) + index // len(tokens)) % len(shapes)]
+        return tokens[index % len(tokens)], SHAPES[shape][1]
 
     @property
     def fit_token(self) -> str:
@@ -181,7 +194,8 @@ class PlotAppearance:
     def from_dict(cls, d: object) -> PlotAppearance:
         """The appearance *d* records (:meth:`to_dict`).
 
-        A field it does not name keeps the built-in choice. Raises ``ValueError``, in words
+        A field it does not name keeps the built-in choice. A colour of :data:`SINGLE_COLOURS`
+        for the replicates is read as the choice it maps to. Raises ``ValueError``, in words
         for the user, on anything else: not a record of fields, a field this version has
         not got, or a choice its menu does not offer.
         """
@@ -190,7 +204,10 @@ class PlotAppearance:
         unknown = sorted(str(k) for k in d if k not in _MENUS)
         if unknown:
             raise ValueError(f'The plot appearance names settings this version does not have: {", ".join(unknown)}.')
-        return cls(**{k: str(v) for k, v in d.items()})
+        record = {k: str(v) for k, v in d.items()}
+        if 'replicate_colour' in record:
+            record['replicate_colour'] = SINGLE_COLOURS.get(record['replicate_colour'], record['replicate_colour'])
+        return cls(**record)
 
 
 #: The appearance a session starts from when no other is stored.

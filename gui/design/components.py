@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import sys
+from collections.abc import Callable
 
 from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTextBoundaryFinder, QVariantAnimation, pyqtSignal
 from PyQt6.QtGui import (
@@ -40,7 +41,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.design import icons
-from gui.design.plot_theme import replicate_alpha
+from gui.design.plot_theme import REPLICATE_ALPHA
 from gui.design.tokens import RADIUS, SIZE, Theme, font, space
 
 #: The platform's window-button colours (close, minimise, zoom): drawn where a frameless
@@ -2113,9 +2114,11 @@ class LegendRow(QWidget):
     as entered) and ``diamond`` (a best fit). A kind ending in ``+band`` draws its mark over
     the accent tint of a shaded interval, for the reading whose interval the plot shades.
 
-    :meth:`set_marks` draws ``dots`` and ``line`` as a plot of the titration styles them. A click
-    on the × of ``rings`` emits :attr:`removed`; with *removable* off, as in a saved figure,
-    ``rings`` has no ×.
+    ``dots`` and ``cross`` may name one replicate, ``(kind, text, index)`` with its place in
+    the data's order: the entry is then one point or one × in that replicate's colour and mark,
+    which :meth:`set_marks` takes from the titration plot's appearance. A click on the × of
+    ``rings`` emits :attr:`removed`; with *removable* off, as in a saved figure, ``rings`` has
+    no ×.
     """
 
     removed = pyqtSignal()
@@ -2125,30 +2128,32 @@ class LegendRow(QWidget):
     ):
         super().__init__()
         self.t, self.dot_alpha, self.removable = theme, dot_alpha, removable
-        self.dot_color, self.dot_symbol, self.line_width, self.line_color = 'replicate', 'o', 2.0, 'accent'
+        self.line_width, self.line_color = 2.0, 'accent'
+        self.replicate_mark: Callable[[int], tuple[str, str]] = lambda _index: ('replicate', 'o')
         self.setFixedHeight(20)
         self.set_items(items)
 
-    def set_marks(self, dot_color: str, dot_symbol: str, line_width: float, line_color: str = 'accent') -> None:
-        """Draw ``dots`` in colour token *dot_color* with pyqtgraph's *dot_symbol* (``o``, ``s``, ``t1``)
-        and the ``line`` *line_width* px wide in colour token *line_color*, as the plot draws its
-        replicates and curve."""
-        self.dot_color, self.dot_symbol, self.line_width = dot_color, dot_symbol, line_width
-        self.line_color = line_color
+    def set_marks(
+        self, replicate_mark: Callable[[int], tuple[str, str]], line_width: float, line_color: str = 'accent'
+    ) -> None:
+        """Draw a replicate's entry in the colour token and pyqtgraph symbol (``o``, ``s``, ``t1``)
+        *replicate_mark* gives its index, and the ``line`` *line_width* px wide in colour token
+        *line_color*, as the plot draws its replicates and curve."""
+        self.replicate_mark, self.line_width, self.line_color = replicate_mark, line_width, line_color
         self.update()
 
-    def set_items(self, items: list[tuple[str, str]]) -> None:
+    def set_items(self, items: list[tuple]) -> None:
         """Show *items* as the legend."""
         self.items = items
         fm = QFontMetrics(font('small'))
-        self.setFixedWidth(max(0, sum(self._width(kind, txt, fm) for kind, txt in items) - space(5)))
+        self.setFixedWidth(max(0, sum(self._width(kind, txt, fm) for kind, txt, *_ in items) - space(5)))
         self.update()
-        if self.removable and any(kind == 'rings' for kind, _ in items):
+        if self.removable and any(kind == 'rings' for kind, *_ in items):
             self.setToolTip('The × removes the overlay')
 
     def dots_alpha(self) -> float:
-        """The opacity the replicates' dots are drawn at, in the theme as it is now."""
-        return replicate_alpha(self.t) if self.dot_alpha is None else self.dot_alpha
+        """The opacity the replicates' dots are drawn at."""
+        return REPLICATE_ALPHA if self.dot_alpha is None else self.dot_alpha
 
     def _width(self, kind: str, txt: str, fm: QFontMetrics) -> int:
         return 20 + fm.horizontalAdvance(txt) + (space(2) + 12 if kind == 'rings' and self.removable else 0) + space(5)
@@ -2157,7 +2162,7 @@ class LegendRow(QWidget):
         """Where the × of the ``rings`` entry is drawn, if there is one."""
         fm = QFontMetrics(font('small'))
         x = 0.0
-        for kind, txt in self.items:
+        for kind, txt, *_ in self.items:
             if kind == 'rings' and self.removable:
                 close_x = x + 20 + fm.horizontalAdvance(txt) + space(2)
                 return QRectF(close_x - 2, 0, 16, self.height())
@@ -2178,18 +2183,28 @@ class LegendRow(QWidget):
         p.setFont(font('small'))
         fm = p.fontMetrics()
         x, cy = 0.0, self.height() / 2
-        for kind, txt in self.items:
+        for kind, txt, *index in self.items:
             if kind.endswith('+band'):
                 kind = kind.removesuffix('+band')
                 p.fillPath(
                     _rounded(QRectF(x + 1, cy - 7, 14, 14), RADIUS['control'] / 2),
                     t.q('accent', 0.16 if t.dark else 0.14),
                 )
-            if kind == 'dots':
+            if index:
+                colour, symbol = self.replicate_mark(index[0])
+                if kind == 'dots':
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(t.q(colour, self.dots_alpha()))
+                    paint_symbol(p, symbol, QPointF(x + 7.5, cy), 3.5)
+                else:
+                    p.setPen(QPen(t.q(colour, self.dots_alpha()), 1.4))
+                    for s in (-1, 1):
+                        p.drawLine(QPointF(x + 4, cy - 3.5 * s), QPointF(x + 11, cy + 3.5 * s))
+            elif kind == 'dots':
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(t.q(self.dot_color, self.dots_alpha()))
+                p.setBrush(t.q('replicate', self.dots_alpha()))
                 for dx, dy in ((3, 2), (8, -2.5), (12, 1.5)):
-                    paint_symbol(p, self.dot_symbol, QPointF(x + dx, cy + dy), 2.5)
+                    paint_symbol(p, 'o', QPointF(x + dx, cy + dy), 2.5)
             elif kind == 'rings':
                 p.setPen(QPen(t.q('text-secondary'), 1.3))
                 p.setBrush(Qt.BrushStyle.NoBrush)

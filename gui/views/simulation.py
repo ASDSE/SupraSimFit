@@ -46,7 +46,7 @@ from gui.binding import CATEGORIES
 from gui.dataset import Dataset
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
-from gui.design.plot_theme import apply_plot_theme, fit_line, px, replicate_alpha, scatter
+from gui.design.plot_theme import REPLICATE_ALPHA, apply_plot_theme, fit_line, px, scatter
 from gui.design.tokens import SIZE, Theme, font, space
 from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.plotting.export import ExportRefused, export_stacked
@@ -268,7 +268,7 @@ class SimulationPlots(QObject):
         cp.getAxis('left').setLabel(f'Concentration ({unit})')
         cp.getAxis('bottom').setLabel(f'{x_name} ({unit})')
         for row in sim.signals:
-            self._add(sp, scatter(t, sim.x * scale, row * self.y_scale, 'replicate', replicate_alpha(t), 6), 2)
+            self._add(sp, scatter(t, sim.x * scale, row * self.y_scale, 'replicate', REPLICATE_ALPHA, 6), 2)
         if overlay is not None:
             for row in overlay.signals:
                 rings = scatter(t, overlay.x * scale, row * self.y_scale, 'text-secondary', 0.75, 7, hollow=True)
