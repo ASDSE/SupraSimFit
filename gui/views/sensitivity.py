@@ -37,7 +37,7 @@ from gui.design.plot_theme import apply_plot_theme, px, scatter
 from gui.design.tokens import HEAT_STOPS, RADIUS, SIZE, Theme, font, space
 from gui.plotting.export import export_widget
 from gui.plotting.labels import plain_label
-from gui.session_model import SessionModel
+from gui.session_model import Change, SessionModel
 from gui.widgets.assay_conditions import condition_field
 
 
@@ -641,13 +641,7 @@ class SensitivityView(QObject):
         self.locked = False
         self.canvas = self._build_canvas()
         self.side = self._build_side()
-        model.sensitivity_changed.connect(lambda _replaced: self.refresh())
-        model.results_changed.connect(lambda _scope: self.refresh())
-        model.run_changed.connect(lambda _kind, _running: self.refresh())
-        model.data_changed.connect(self.refresh)
-        model.uncertainty_changed.connect(self.refresh)
-        model.binding_changed.connect(self.refresh)
-        model.analysis_changed.connect(self.refresh)
+        model.changed.connect(self._on_changed)
         appearance().changed.connect(self._restyle)
         self.refresh()
 
@@ -957,6 +951,19 @@ class SensitivityView(QObject):
         position = bar.value()
         self.refresh()
         QTimer.singleShot(0, lambda: bar.setValue(position))
+
+    def _on_changed(self, what: Change) -> None:
+        drawn_from = (
+            Change.DATA
+            | Change.RESULTS
+            | Change.SENSITIVITY
+            | Change.RUN
+            | Change.BINDING
+            | Change.UNCERTAINTY
+            | Change.ANALYSIS
+        )
+        if what & drawn_from:
+            self.refresh()
 
     def refresh(self) -> None:
         model = self.model

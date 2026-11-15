@@ -24,7 +24,7 @@ from gui.design.tokens import SIZE
 from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.plotting.export import ExportRefused
 from gui.plotting.labels import and_join, stated_uncertainty
-from gui.session_model import CONCENTRATIONS_REQUIRED, SessionModel
+from gui.session_model import CONCENTRATIONS_REQUIRED, Change, SessionModel
 from gui.views.binding import BindingView
 from gui.views.confidence import ConfidenceView
 from gui.views.fit_results import FitResultsView
@@ -141,10 +141,8 @@ class FittingSession(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model = SessionModel(self)
-        self._assay_shown = None  # the model the views that follow it were last given
         self._setup_ui()
         self._connect_signals()
-        self._on_binding_changed()
 
     # ------------------------------------------------------------------
     # Views
@@ -582,7 +580,6 @@ class FittingSession(QWidget):
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
-        self.model.data_changed.connect(self._on_data_changed)
         self._measurements.new_session_link.clicked.connect(self.new_session_requested)
 
         self._uncertainty.review_requested.connect(lambda: self.view_requested.emit('Ka confidence'))
@@ -594,35 +591,19 @@ class FittingSession(QWidget):
         self._results.save_plot.clicked.connect(lambda: self.export_plot('Fit results'))
         self._appearance.save_plot.clicked.connect(lambda: self.export_plot('Plot appearance'))
         self._measurements.save_plot.clicked.connect(lambda: self.export_plot('Measurements'))
-        self.model.uncertainty_changed.connect(self.changed)
-        self.model.binding_changed.connect(self._on_binding_changed)
-
         self._sensitivity.view_requested.connect(self.view_requested)
-        self.model.analysis_changed.connect(self.changed)
-
-        model = self.model
-        model.run_changed.connect(lambda _kind, _running: self._show_running())
-        model.progress.connect(lambda _done, _total: self._on_progress())
-        model.profile_changed.connect(self._show_running)
-        model.sensitivity_changed.connect(lambda _replaced: self.changed.emit())
-        model.plot_appearance_changed.connect(self.changed)
-        model.warning.connect(lambda title, message: QMessageBox.warning(self, title, message))
-        for signal in (model.results_changed, model.name_changed, model.status_changed):
-            signal.connect(self.changed)
+        # The views follow the model first, connected as they were built; then the window.
+        self.model.changed.connect(self._on_changed)
+        self.model.warning.connect(lambda title, message: QMessageBox.warning(self, title, message))
 
     # ------------------------------------------------------------------
     # Panel slots
     # ------------------------------------------------------------------
 
-    def _on_data_changed(self) -> None:
-        self.changed.emit()
-
-    def _on_binding_changed(self) -> None:
-        """Give Measurements the model chosen, which names its titrant, once it changes."""
-        assay_type = self.model.binding.assay_type
-        if assay_type is not self._assay_shown:
-            self._assay_shown = assay_type
-            self._measurements.refresh()
+    def _on_changed(self, what: Change) -> None:
+        """Show the work running once it changed, then let the window draw the session again."""
+        if what & (Change.RUN | Change.PROFILE | Change.PROGRESS):
+            self._show_running()
         self.changed.emit()
 
     def copy_from(self, other: FittingSession) -> None:
@@ -654,25 +635,13 @@ class FittingSession(QWidget):
     # Model slots
     # ------------------------------------------------------------------
 
-    def _on_progress(self) -> None:
-        self._progress_line.set_progress(self.model.progress_fraction())
-        self.changed.emit()
-
     def _show_running(self) -> None:
-        """Show the work running here: the progress line, and the inputs that feed it locked until it ends."""
+        """Show the work running here on the progress line."""
         model = self.model
-        running = model.running()
-        if running:
+        if model.running():
             self._progress_line.set_progress(model.progress_fraction())
         else:
             self._progress_line.stop()
-        # A fit and an analysis each read the binding model and the uncertainties
-        # as they were when it started, so those stay as they were read until it ends.
-        work = model.fit_running() or model.sensitivity_running()
-        self._binding.set_locked(work)
-        self._uncertainty.set_locked(work)
-        self._sensitivity.set_locked(work)
-        self.changed.emit()
 
     def _show_input_shifts(self) -> None:
         """Show the Notes side panel of Ka confidence with the input shifts in view."""

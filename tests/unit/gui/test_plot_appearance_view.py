@@ -19,6 +19,7 @@ from PyQt6.QtCore import Qt  # noqa: E402
 
 from core.assays.registry import AssayType  # noqa: E402
 from gui.plot_appearance import BUILT_IN, CROSS_SCALE, PlotAppearance  # noqa: E402
+from gui.session_model import Change  # noqa: E402
 from tests.unit.gui.session_setup import state_binding  # noqa: E402
 from tests.unit.gui.test_plot_appearance import CHANGED  # noqa: E402
 from tests.unit.gui.test_results import fit_on, four_replicates  # noqa: E402
@@ -44,7 +45,7 @@ def _fitted(session) -> None:
     session.model.load(four_replicates(), None)
     session.model.set_replicate('0', False)
     session.model._held_fit_results = [fit_on(session.model.measurement_set)]
-    session.model.results_changed.emit('all')
+    session.model.changed.emit(Change.RESULTS)
 
 
 def _items(plot, kind):

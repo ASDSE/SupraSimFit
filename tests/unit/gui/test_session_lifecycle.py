@@ -32,7 +32,7 @@ from gui.widgets.assay_conditions import assay_class  # noqa: E402
 from tests.unit.gui.sensitivity_results import fake_run as _fake_run  # noqa: E402
 from tests.unit.gui.sensitivity_results import made_on as _made_on  # noqa: E402
 from tests.unit.gui.sensitivity_results import sobol_result as _sobol_result  # noqa: E402
-from tests.unit.gui.session_setup import state_binding, state_dilution  # noqa: E402
+from tests.unit.gui.session_setup import state_binding, state_dilution, status_messages  # noqa: E402
 
 _IDA_DATA = Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt'
 
@@ -336,8 +336,7 @@ def test_stopping_a_fit_leaves_the_session_as_it_was_and_lets_the_next_fit_start
     session.run_fit()
     worker = session.model._fit_worker
     _wait_until(qapp, worker.isRunning)
-    said: list[str] = []
-    session.model.status_changed.connect(said.append)
+    said = status_messages(session.model)
 
     session.model.cancel_fit()
 
@@ -408,8 +407,7 @@ def test_the_demo_states_typical_input_uncertainties_and_says_so(qapp, dialogs, 
     session = _session(dialogs)
     _state_shared_source(session, SharedSource('Host and dye stock', 4.0, ('h0', 'd0')))
     state_binding(session, bounds={'Ka_guest': (1e-8, 1e9)})
-    messages: list[str] = []
-    session.model.status_changed.connect(messages.append)
+    messages = status_messages(session.model)
 
     session.load_demo_ida()
 
@@ -581,8 +579,7 @@ def test_a_second_analysis_is_refused_while_one_is_running(qapp, dialogs, watchf
 def test_loading_data_says_that_it_stopped_the_running_fit(qapp, dialogs, watchful_fit):
     """Minutes of work must not end without a word — the no-silent-fallbacks rule."""
     session = _session(dialogs)
-    messages: list[str] = []
-    session.model.status_changed.connect(messages.append)
+    messages = status_messages(session.model)
 
     session.run_fit()
     _wait_until(qapp, lambda: len(watchful_fit) == 1)

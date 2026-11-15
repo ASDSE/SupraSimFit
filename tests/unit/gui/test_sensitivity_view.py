@@ -28,8 +28,9 @@ from core.pipeline.sensitivity import SensitivityMode  # noqa: E402
 from core.units import Q_  # noqa: E402
 from gui import sensitivity as S  # noqa: E402
 from gui.plotting.labels import STOPPING_TEXT  # noqa: E402
+from gui.session_model import Change  # noqa: E402
 from tests.unit.gui import sensitivity_results as F  # noqa: E402
-from tests.unit.gui.session_setup import state_binding  # noqa: E402
+from tests.unit.gui.session_setup import state_binding, status_messages  # noqa: E402
 
 #: The demo titration, found from this file so the tests run from any directory.
 IDA_DATA = str(Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt')
@@ -64,7 +65,7 @@ def _hold(session, result, note=None) -> None:
     state_binding(session, assay_type=AssayType[result.assay_type])
     model._sensitivity_result = result
     model._sensitivity_note = note
-    model.sensitivity_changed.emit(True)
+    model.changed.emit(Change.SENSITIVITY)
 
 
 def test_building_a_session_and_drawing_a_run_flashes_no_window(qapp):
@@ -297,7 +298,7 @@ def test_the_what_if_chosen_and_an_open_window_outlive_a_redraw_of_the_same_run(
     view.open_source_plots('Ka_guest')
     (window,) = view.windows
 
-    session.model.results_changed.emit('notes')
+    session.model.changed.emit(Change.RESULTS)
     session.model.analysis_edited()
     appearance().set_mode('dark')
     appearance().set_mode('light')
@@ -524,8 +525,7 @@ def test_a_run_counts_its_fits_on_the_status_bar_and_estimates_the_time_left(qap
     from gui import workers
 
     monkeypatch.setattr(workers, 'run_sensitivity', F.fake_run(40, pause=0.01))
-    messages = []
-    demo_session.model.status_changed.connect(messages.append)
+    messages = status_messages(demo_session.model)
 
     demo_session.run_sensitivity()
     assert demo_session._sensitivity.locked, 'the settings that feed the run lock while it goes'
@@ -550,8 +550,7 @@ def test_a_stopping_run_says_so_on_the_status_bar_and_not_its_counts(qapp, monke
         return F.sobol_result()
 
     monkeypatch.setattr(workers, 'run_sensitivity', run)
-    messages = []
-    demo_session.model.status_changed.connect(messages.append)
+    messages = status_messages(demo_session.model)
 
     demo_session.run_sensitivity()
     demo_session.run_primary('Sensitivity')  # the toolbar's Stop
@@ -650,8 +649,7 @@ def test_one_run_is_quoted_the_same_number_of_fits_wherever_it_is_counted(qapp, 
         'gui.fitting_session.QMessageBox.question',
         lambda parent, title, text, *args: (asked.append(text), QMessageBox.StandardButton.Yes)[1],
     )
-    messages = []
-    demo_session.model.status_changed.connect(messages.append)
+    messages = status_messages(demo_session.model)
 
     demo_session.run_sensitivity()
     _wait_for_worker(demo_session, qapp)
@@ -682,7 +680,7 @@ def test_a_seed_typed_and_run_at_once_is_the_seed_the_run_uses(qapp, monkeypatch
     view = demo_session._sensitivity
     view.seed_check.toggled.emit(True)
     QTest.keyClicks(view.seed.editor, '424242')
-    demo_session.model.results_changed.emit('notes')  # any redraw while the field is being typed in
+    demo_session.model.changed.emit(Change.RESULTS)  # any redraw while the field is being typed in
 
     assert view.seed.editor.text().endswith('424242')
     demo_session.run_primary('Sensitivity')

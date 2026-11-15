@@ -26,7 +26,7 @@ from gui.design.appearance import theme
 from gui.design.tokens import SIZE, space
 from gui.plotting.labels import THIN, times_ten, verdict_headline
 from gui.results import interval_caption, ka_blocks, test_rows
-from gui.session_model import SessionModel
+from gui.session_model import Change, SessionModel
 from gui.uncertainty import ADDITION_MODES, HELP_HTML, HELP_TITLE, REPLICATE_KINDS, InputEntry, spread_pct
 from gui.widgets.assay_conditions import format_condition
 from gui.widgets.info_button import show_help
@@ -184,10 +184,7 @@ class UncertaintyView(QObject):
         self.amount_w = C.Field.width_for(_WIDEST_AMOUNT, 'from')
         self.canvas = self._build_canvas()
         self.side = self._build_side()
-        model.uncertainty_changed.connect(self.refresh)
-        model.data_changed.connect(self.refresh)
-        model.results_changed.connect(lambda _scope: self._refresh_side())
-        model.profile_changed.connect(self._refresh_side)
+        model.changed.connect(self._on_changed)
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -423,6 +420,16 @@ class UncertaintyView(QObject):
     # ------------------------------------------------------------------
     # Drawing from the model
     # ------------------------------------------------------------------
+
+    def _on_changed(self, what: Change) -> None:
+        # A fit and an analysis read the statement as it was when they started.
+        running = self.model.fit_running() or self.model.sensitivity_running()
+        if running != self._locked:
+            self.set_locked(running)
+        elif what & (Change.UNCERTAINTY | Change.DATA):
+            self.refresh()
+        elif what & (Change.RESULTS | Change.PROFILE):
+            self._refresh_side()
 
     def refresh(self) -> None:
         """Draw the statement as the model holds it, rebuilding the rows when the inputs or sources changed."""

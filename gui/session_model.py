@@ -14,10 +14,12 @@ name, and what is running.
 from __future__ import annotations
 
 import copy
+import functools
 import logging
 import math
 import time
 from dataclasses import dataclass, field, replace
+from enum import Flag, auto
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -76,6 +78,44 @@ from gui.widgets.assay_conditions import (
 from gui.workers import FitWorker, ProfileWorker, SensitivityWorker, retire
 
 logger = logging.getLogger(__name__)
+
+
+class Change(Flag):
+    """What one edit of a session changed; :attr:`SessionModel.changed` carries the union."""
+
+    DATA = auto()  # the files, the concentrations as stated, the replicates in use
+    RESULTS = auto()  # the held fits, which of them are shown, and the notes hiding the rest
+    PROFILE = auto()  # the Ka profile of the latest fit: started, arrived, failed or dropped
+    SENSITIVITY = auto()  # the sensitivity result held, or what is known of the last run
+    RUN = auto()  # a fit or a sensitivity run started or ended
+    PROGRESS = auto()  # the count of the running sensitivity analysis
+    BINDING = auto()  # the binding model as stated
+    UNCERTAINTY = auto()  # the statement of the input uncertainties
+    ANALYSIS = auto()  # the settings of the next sensitivity run
+    DISPLAY = auto()  # the concentration unit the titration plots are drawn in
+    APPEARANCE = auto()  # the appearance of the titration plot
+    NAME = auto()  # the session's name
+    STATUS = auto()  # the status message
+
+
+def _edit(method):
+    """Make *method* one edit of the session: what it changes is said once, after it has returned.
+
+    Edits nest, so an edit that calls another is still said once, when the
+    outermost one returns and every piece of state derived from it is up to date.
+    """
+
+    @functools.wraps(method)
+    def edit(self: SessionModel, *args: Any, **kwargs: Any) -> Any:
+        self._depth += 1
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._depth -= 1
+            self._say()
+
+    return edit
+
 
 _FIT_RUNNING_NOTE = (
     'A fit is already running in this session. Wait for it to finish, or stop it with Stop, then run the fit again.'
@@ -397,52 +437,17 @@ class SessionModel(QObject):
 
     Signals
     -------
-    status_changed(str)
-        A message for the status bar; the latest is :attr:`status`.
-    name_changed(str)
-        The session's name (:meth:`name`) may have changed.
-    run_changed(str, bool)
-        A run started (``True``) or ended (``False``): ``'fit'`` or ``'sensitivity'``.
-    progress(int, int)
-        How many fits of the running sensitivity analysis are done, of how many.
-    results_changed(str)
-        The held fits or the notes hiding them changed. ``'notes'``: only a
-        note may have changed; ``'points'``: the loaded points changed as
-        well; ``'all'``: the fits shown or hidden changed, or new ones arrived.
-    profile_changed()
-        The Ka profile of the latest fit started, arrived, failed or was dropped.
-    sensitivity_changed(bool)
-        A sensitivity run ended or its result was dropped. ``True`` when the
-        held result was replaced (by a new one or by none), ``False`` when the
-        run ended without one and the previous result stands.
+    changed(Change)
+        What an edit changed, said once the edit is over and every piece of
+        state derived from it — which fits are shown, the notes hiding the
+        rest, the profile, the sensitivity note — is up to date.
     warning(str, str)
-        Work in the background failed: a title and a message to show.
-    uncertainty_changed()
-        The statement of the input uncertainties (:attr:`uncertainty`) changed.
-    binding_changed()
-        The binding model as stated (:attr:`binding`) changed.
-    analysis_changed()
-        The settings of the next sensitivity run (:attr:`analysis`) changed.
-    plot_appearance_changed()
-        The appearance of the titration plot (:attr:`plot_appearance`) changed.
-    display_unit_changed(str)
-        The concentration unit the titration plots are drawn in changed (:meth:`set_display_unit`).
+        Work in the background failed: a title and a message to show, said
+        after the :attr:`changed` of the edit that met the failure.
     """
 
-    status_changed = pyqtSignal(str)
-    data_changed = pyqtSignal()
-    name_changed = pyqtSignal(str)
-    run_changed = pyqtSignal(str, bool)
-    progress = pyqtSignal(int, int)
-    results_changed = pyqtSignal(str)
-    profile_changed = pyqtSignal()
-    sensitivity_changed = pyqtSignal(bool)
+    changed = pyqtSignal(Change)
     warning = pyqtSignal(str, str)
-    uncertainty_changed = pyqtSignal()
-    binding_changed = pyqtSignal()
-    analysis_changed = pyqtSignal()
-    plot_appearance_changed = pyqtSignal()
-    display_unit_changed = pyqtSignal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -492,6 +497,31 @@ class SessionModel(QObject):
         self._sensitivity_seconds: float | None = None  # how long the run held took
         self._sensitivity_workers: int | None = None  # the worker processes it ran on
         self._run_workers: int | None = None
+        # Edits (:func:`_edit`): how deep the one running is nested, and what it has changed and has to say.
+        self._depth = 0
+        self._changes = Change(0)
+        self._warnings: list[tuple[str, str]] = []
+
+    def _note(self, change: Change) -> None:
+        """Record *change* to say once the edit making it is over; said at once outside an edit."""
+        self._changes |= change
+        self._say()
+
+    def _warn(self, title: str, message: str) -> None:
+        """Say *message* in a warning once the edit that met it is over."""
+        self._warnings.append((title, message))
+        self._say()
+
+    def _say(self) -> None:
+        """Say what changed, then the warnings met, unless an edit is still under way."""
+        if self._depth:
+            return
+        changes, self._changes = self._changes, Change(0)
+        warnings, self._warnings = self._warnings, []
+        if changes:
+            self.changed.emit(changes)
+        for title, message in warnings:
+            self.warning.emit(title, message)
 
     # ------------------------------------------------------------------
     # Data
@@ -517,10 +547,12 @@ class SessionModel(QObject):
         """The first file the loaded data were read from."""
         return self._source_file
 
+    @_edit
     def load(self, ms: MeasurementSet, source_file: str | None) -> None:
         """Take *ms* as the session's data, clearing every result and stopping the work running on the old data."""
         self._take(Dataset.from_set(ms, source_file))
 
+    @_edit
     def load_files(self, paths: list[str]) -> Refusal | None:
         """Load *paths* as the session's data in place of what it holds; say why when they cannot be loaded."""
         try:
@@ -530,6 +562,7 @@ class SessionModel(QObject):
         self._take(dataset)
         return None
 
+    @_edit
     def add_files(self, paths: list[str]) -> Refusal | None:
         """Add *paths* to the session's data as further replicates, keeping every result; say why when they cannot be.
 
@@ -548,6 +581,7 @@ class SessionModel(QObject):
         self.show_status(f'Added {added} file{"s" if added != 1 else ""} — {self._loaded_text()}')
         return None
 
+    @_edit
     def remove_file(self, path: str) -> Refusal | None:
         """Remove the file *path* and its replicates; the session's last file clears the data."""
         if self._dataset is None:
@@ -564,6 +598,7 @@ class SessionModel(QObject):
         self.show_status(f'Removed {Path(path).name} — {self._loaded_text()}')
         return None
 
+    @_edit
     def select_channel(self, channel: str) -> Refusal | None:
         """Show *channel* of a multi-channel file: other data, so every result is cleared."""
         try:
@@ -573,11 +608,13 @@ class SessionModel(QObject):
         self._take(self._dataset)
         return None
 
+    @_edit
     def set_imported_unit(self, unit: str) -> None:
         """State the concentrations in *unit*: other concentrations, so every result is cleared."""
         self._dataset.set_imported_unit(unit)
         self._take(self._dataset)
 
+    @_edit
     def set_concentration(self, index: int, text: str) -> Refusal | None:
         """Set point *index* to *text* in the imported unit; other concentrations, so every result is cleared."""
         try:
@@ -587,6 +624,7 @@ class SessionModel(QObject):
         self._take(self._dataset)
         return None
 
+    @_edit
     def load_concentrations(self, path: str) -> tuple[Refusal | None, str | None]:
         """Take the concentrations from *path*: the refusal, or a notice when their unit was converted."""
         try:
@@ -597,6 +635,7 @@ class SessionModel(QObject):
         self.show_status(f'Concentrations loaded from {Path(path).name}')
         return None, notice
 
+    @_edit
     def save_concentrations(self, path: str) -> Refusal | None:
         """Write the concentrations as stated to *path*."""
         try:
@@ -609,24 +648,27 @@ class SessionModel(QObject):
         self.show_status(f'Concentrations saved to {Path(path).name}')
         return None
 
+    @_edit
     def set_replicate(self, replica_id: str, on: bool) -> None:
         """Use replicate *replica_id* in the fit (*on*) or switch it off."""
         self.measurement_set.set_active(replica_id, on)
-        self.replicates_changed()
+        self._data_changed()
 
+    @_edit
     def reset_replicates(self) -> None:
         """Use every replicate again."""
         self.measurement_set.reset_active()
-        self.replicates_changed()
+        self._data_changed()
         self.show_status('Replicates reset — all in use')
 
+    @_edit
     def remove_outliers(self, threshold: float, min_replicates: int) -> Refusal | None:
         """Switch off the replicates the outlier filter finds at *threshold*; say why when it cannot run."""
         try:
             self._dataset.remove_outliers(threshold, min_replicates)
         except InvalidData as exc:
             return Refusal('Outlier Removal', str(exc))
-        self.replicates_changed()
+        self._data_changed()
         ms = self.measurement_set
         self.show_status(f'Outlier removal applied — {ms.n_active} of {ms.n_replicas} replicates in use')
         return None
@@ -644,6 +686,7 @@ class SessionModel(QObject):
             loaded = f'Loaded: {self._loaded_text()}'
             self.show_status(f'{loaded} — the running {stopped} was stopped' if stopped else loaded)
 
+    @_edit
     def clear(self) -> None:
         """Drop the data and every result, stopping the work still running."""
         stopped = self.running_work()
@@ -654,22 +697,16 @@ class SessionModel(QObject):
     def _replace_data(self, dataset: Dataset | None) -> None:
         self._stop_fit()
         self._dataset = dataset
-        self.name_changed.emit(self.name())
         self._held_fit_results = []
         self._clear_profile()
         self._clear_sensitivity()
-        self.data_changed.emit()
-        self.check_results(force=True)
+        self._note(Change.NAME | Change.DATA)
+        self.check_results()
 
     def _data_changed(self) -> None:
-        """The files changed and the replicates with them; the results are checked against them again."""
-        self.data_changed.emit()
-        self.check_results(redraw=True, force=True)
-
-    def replicates_changed(self) -> None:
-        """Check the results again once replicates were switched on or off in the loaded data."""
-        self.data_changed.emit()
-        self.check_results(redraw=True)
+        """The files or the replicates in use changed; the results are checked against them again."""
+        self._note(Change.NAME | Change.DATA)
+        self.check_results()
 
     def dataset_file(self) -> str | None:
         """The file the session's data come from: the loaded one, else the one the latest shown fit was made on."""
@@ -685,12 +722,14 @@ class SessionModel(QObject):
     def settings(self) -> SessionSettings:
         return self._settings
 
+    @_edit
     def set_display_unit(self, unit: str) -> None:
         """Draw the titration plots with the concentrations in *unit* from now on, and say so when it changed."""
         if unit != self._settings.display_unit:
             self.update_settings(display_unit=unit)
-            self.display_unit_changed.emit(unit)
+            self._note(Change.DISPLAY)
 
+    @_edit
     def update_settings(self, **changes: Any) -> None:
         """Take *changes* to the settings, and check the held results when one they are checked by changed.
 
@@ -720,6 +759,7 @@ class SessionModel(QObject):
             'per_replica': form.per_replica,
         }
 
+    @_edit
     def binding_edited(self, finished: bool = True) -> None:
         """Take the binding model as :attr:`binding` states it now, and say it changed.
 
@@ -734,8 +774,7 @@ class SessionModel(QObject):
         self.uncertainty.set_conditions(form.conditions(), form.condition_units(), finished)
         self._take_settings({**self.binding_settings(), **self.uncertainty_settings()}, check=finished)
         self.analysis.set_inputs(list(self._settings.input_labels))
-        self.binding_changed.emit()
-        self.uncertainty_changed.emit()
+        self._note(Change.BINDING | Change.UNCERTAINTY)
 
     def uncertainty_settings(self) -> dict[str, Any]:
         """The settings :attr:`uncertainty` states: the error model, the inputs' names and its problems."""
@@ -746,14 +785,16 @@ class SessionModel(QObject):
             'input_problems': tuple(form.problems()),
         }
 
+    @_edit
     def uncertainty_edited(self) -> None:
         """Take the statement of :attr:`uncertainty` as it reads now, and say it changed."""
         self.update_settings(**self.uncertainty_settings())
-        self.uncertainty_changed.emit()
+        self._note(Change.UNCERTAINTY)
 
+    @_edit
     def analysis_edited(self) -> None:
         """Take the settings of the next sensitivity run as :attr:`analysis` states them now, and say they changed."""
-        self.analysis_changed.emit()
+        self._note(Change.ANALYSIS)
 
     def _analysis_inputs(self) -> tuple[ErrorModel, Mapping[str, str], dict[str, float]]:
         """What the analysis settings are read against: the stated sources, the inputs' names, their entered values."""
@@ -778,20 +819,23 @@ class SessionModel(QObject):
         """
         return self._plot_appearance
 
+    @_edit
     def set_plot_appearance(self, appearance: PlotAppearance) -> None:
         """Draw the titration plot with *appearance* from now on."""
         if appearance != self._plot_appearance:
             self._plot_appearance = appearance
-            self.plot_appearance_changed.emit()
+            self._note(Change.APPEARANCE)
 
+    @_edit
     def edit_finished(self) -> None:
         """Once an edit of the conditions is finished, make the conversions waiting for them and check the results."""
         if self.uncertainty.convert_pending():
             self._take_settings(self.uncertainty_settings(), check=True)
-            self.uncertainty_changed.emit()
+            self._note(Change.UNCERTAINTY)
         else:
             self.check_results()
 
+    @_edit
     def bounds_from_dye_alone(self, path: str) -> Refusal | None:
         """Bound the signal coefficients by a dye-alone calibration in *path*; say why when it cannot be used.
 
@@ -836,6 +880,7 @@ class SessionModel(QObject):
             return self._custom_name
         return Path(self._source_file).stem if self._source_file else 'New session'
 
+    @_edit
     def copy_from(self, other: SessionModel) -> None:
         """Take a copy of everything *other* states, and none of its results.
 
@@ -855,28 +900,33 @@ class SessionModel(QObject):
         self._held_fit_results = []
         self._clear_profile()
         self._clear_sensitivity()
-        self.name_changed.emit(self.name())
-        self.data_changed.emit()
-        self.binding_changed.emit()
-        self.uncertainty_changed.emit()
-        self.analysis_changed.emit()
-        self.plot_appearance_changed.emit()
-        self.check_results(force=True)
+        self._note(
+            Change.NAME
+            | Change.DATA
+            | Change.BINDING
+            | Change.UNCERTAINTY
+            | Change.ANALYSIS
+            | Change.DISPLAY
+            | Change.APPEARANCE
+        )
+        self.check_results()
 
+    @_edit
     def set_custom_name(self, name: str) -> None:
         """Name the session *name*; an empty name gives it back its automatic one."""
         self._custom_name = name.strip() or None
-        self.name_changed.emit(self.name())
+        self._note(Change.NAME)
 
     @property
     def status(self) -> str:
         """The latest status message."""
         return self._status
 
+    @_edit
     def show_status(self, message: str) -> None:
         """Say *message* on the status bar."""
         self._status = message
-        self.status_changed.emit(message)
+        self._note(Change.STATUS)
 
     # ------------------------------------------------------------------
     # Results
@@ -963,15 +1013,13 @@ class SessionModel(QObject):
         latest = self.mismatch_note(hidden[-1], 'hidden fit' if n == 1 else 'latest hidden fit', 'run the fit again')
         return f'{head} {latest}'
 
-    def check_results(self, *, redraw: bool = False, force: bool = False) -> None:
+    @_edit
+    def check_results(self) -> None:
         """Show every held result whose record matches the loaded selection and the settings, and hide the rest.
 
         No number is recomputed: a hidden result is shown again exactly as it
-        was. :attr:`results_changed` says how much the views redraw: ``'all'``
-        when a result is shown or hidden or *force* is set, for new results;
-        ``'points'`` with *redraw*, for a change to the loaded points; else
-        ``'notes'``. A change that hides a result replaces the status bar's
-        message about it, which described results the views no longer show.
+        was. A change that hides a result replaces the status bar's message
+        about it, which described results the views no longer show.
         """
         notes: dict[str, str] = {}
         for result in self._held_fit_results:
@@ -991,7 +1039,7 @@ class SessionModel(QObject):
         self._sensitivity_note = sensitivity_note
         if changed and (notes or sensitivity_note):
             self.show_status(_RESULTS_HIDDEN_NOTE)
-        self.results_changed.emit('all' if changed or force else 'points' if redraw else 'notes')
+        self._note(Change.RESULTS)
 
     def mismatch_note(
         self, result: FitResult | None, what: str, redo: str, *, uncertainties: bool = True
@@ -1266,6 +1314,7 @@ class SessionModel(QObject):
             )
         return ImportCheck(accepted, refusal, '\n\n'.join(notices) or None)
 
+    @_edit
     def show_imported(self, results: list[FitResult], path: str, appearance: PlotAppearance | None = None) -> None:
         """Hold *results*, checked by :meth:`check_imported`, in place of the fits held now.
 
@@ -1277,7 +1326,7 @@ class SessionModel(QObject):
         # Imported fits carry no Ka profile; the profile waits for the next fit.
         self._clear_profile()
         self._held_fit_results = results
-        self.check_results(force=True)
+        self.check_results()
         self.show_status(f'Imported {len(results)} result(s) from {path}')
 
     # ------------------------------------------------------------------
@@ -1483,6 +1532,7 @@ class SessionModel(QObject):
                 return Refusal(title, _problem_list(verb, problems))
         return None
 
+    @_edit
     def run_fit(self) -> Refusal | None:
         """Start a background fit on a copy of the loaded data, so later changes never reach it; or say why not."""
         ms = self.measurement_set
@@ -1527,10 +1577,11 @@ class SessionModel(QObject):
         self._fit_worker.finished.connect(self._on_fit_complete)
         self._fit_worker.error.connect(self._on_fit_error)
         self._fit_worker.start()
-        self.run_changed.emit('fit', True)
+        self._note(Change.RUN)
         self.show_status(fitting)
         return None
 
+    @_edit
     def cancel_fit(self) -> None:
         """Stop the fit running in this session, leaving every result as it was before it started.
 
@@ -1543,17 +1594,18 @@ class SessionModel(QObject):
         self._stop_fit()
         self.show_status('Fit stopped — nothing in the session was changed.')
 
+    @_edit
     def _on_fit_complete(self, result: FitResult) -> None:
         worker = self._fit_worker
         if self.sender() is not worker:
             return  # a fit whose data were replaced while it ran
         self._fit_worker = None
         retire(worker)
-        self.run_changed.emit('fit', False)
+        self._note(Change.RUN)
 
         # The fit is held, then shown or hidden by the selection as it is now.
         self._held_fit_results = [result]
-        self.check_results(force=True)
+        self.check_results()
         # The previous fit's profile describes data this one replaces, and only
         # one profile worker is reachable at a time: drop it through the one
         # path that sees its thread out.
@@ -1573,7 +1625,7 @@ class SessionModel(QObject):
             self._profile_worker.finished.connect(self._on_profile_complete)
             self._profile_worker.error.connect(self._on_profile_error)
             self._profile_worker.start()
-        self.profile_changed.emit()
+        self._note(Change.PROFILE)
 
         hidden = self._hidden_fit_notes.get(result.id)
         if hidden is not None:
@@ -1599,14 +1651,15 @@ class SessionModel(QObject):
             f'{f" — {on_bound}" if on_bound else ""}{f" — {verdict}" if verdict else ""}'
         )
 
+    @_edit
     def _on_fit_error(self, msg: str) -> None:
         worker = self._fit_worker
         if self.sender() is not worker:
             return
         self._fit_worker = None
         retire(worker)
-        self.run_changed.emit('fit', False)
-        self.warning.emit('Fit Error', msg)
+        self._note(Change.RUN)
+        self._warn('Fit Error', msg)
         self.show_status(f'Fit failed: {msg}')
 
     def _stop_fit(self) -> None:
@@ -1617,8 +1670,9 @@ class SessionModel(QObject):
         self._fit_worker = None
         worker.cancel()
         retire(worker)
-        self.run_changed.emit('fit', False)
+        self._note(Change.RUN)
 
+    @_edit
     def _on_profile_complete(self, profile: ProfileSet) -> None:
         worker = self._profile_worker
         if self.sender() is not worker:
@@ -1626,8 +1680,9 @@ class SessionModel(QObject):
         self._profile_worker = None
         retire(worker)
         self._profile = profile
-        self.profile_changed.emit()
+        self._note(Change.PROFILE)
 
+    @_edit
     def _on_profile_error(self, msg: str) -> None:
         worker = self._profile_worker
         if self.sender() is not worker:
@@ -1636,7 +1691,7 @@ class SessionModel(QObject):
         retire(worker)
         self._profile_error = msg
         self.show_status('The Kₐ profile could not be worked out — the fit itself is unaffected. See Ka confidence.')
-        self.profile_changed.emit()
+        self._note(Change.PROFILE)
 
     def _stop_profile(self) -> None:
         """Stop the Ka profile still being computed and see its thread out."""
@@ -1653,7 +1708,7 @@ class SessionModel(QObject):
         self._profiled_fit = None
         self._profile = None
         self._profile_error = None
-        self.profile_changed.emit()
+        self._note(Change.PROFILE)
 
     def sensitivity_refusal(self, problems: Sequence[str] = ()) -> Refusal | None:
         """Why the sensitivity analysis cannot start now; ``None`` when it can.
@@ -1703,6 +1758,7 @@ class SessionModel(QObject):
             f'Start the analysis?'
         )
 
+    @_edit
     def run_sensitivity(self, config: SensitivityConfig) -> Refusal | None:
         """Start a background Ka input-sensitivity run of *config*, or say why it cannot start."""
         refusal = self.sensitivity_refusal()
@@ -1730,16 +1786,18 @@ class SessionModel(QObject):
         self._progress = None
         self._sensitivity_error = None
         self._sensitivity_worker.start()
-        self.run_changed.emit('sensitivity', True)
+        self._note(Change.RUN)
         self.show_status('Running sensitivity analysis…')
         return None
 
+    @_edit
     def cancel_sensitivity(self) -> None:
         """Ask the running sensitivity analysis to stop; it reports what it finished."""
         if self._sensitivity_worker is not None:
             self._sensitivity_worker.cancel()
             self.show_status(STOPPING_TEXT)
 
+    @_edit
     def _on_sensitivity_progress(self, done: int, total: int) -> None:
         """Report progress, with a time estimate once there is enough to judge.
 
@@ -1749,7 +1807,7 @@ class SessionModel(QObject):
         contradictory answers.
         """
         self._progress = (done, total)
-        self.progress.emit(done, total)
+        self._note(Change.PROGRESS)
         if self._sensitivity_worker is not None and self._sensitivity_worker.cancelled:
             self.show_status(STOPPING_TEXT)
             return
@@ -1760,6 +1818,7 @@ class SessionModel(QObject):
         else:
             self.show_status(f'Analysing — {done:,} of {total:,}')
 
+    @_edit
     def _on_sensitivity_complete(self, result: SensitivityResult) -> None:
         worker = self._sensitivity_worker
         if self.sender() is not worker:
@@ -1772,8 +1831,7 @@ class SessionModel(QObject):
         self._sensitivity_workers = self._run_workers
         # Shown or hidden by the selection as it is now, before any view draws it.
         self.check_results()
-        self.sensitivity_changed.emit(True)
-        self.run_changed.emit('sensitivity', False)
+        self._note(Change.SENSITIVITY | Change.RUN)
         hidden = self._sensitivity_note
         if hidden is not None:
             # The counts describe a result no view is showing, so the note takes their place.
@@ -1795,6 +1853,7 @@ class SessionModel(QObject):
         else:
             self.show_status(f'Sensitivity complete — {succeeded:,} of {planned:,} fits succeeded')
 
+    @_edit
     def _on_sensitivity_stopped(self) -> None:
         """A run cancelled before it had a single finished fit: there is nothing to show for it."""
         worker = self._sensitivity_worker
@@ -1802,10 +1861,10 @@ class SessionModel(QObject):
             return  # a run whose data were replaced while it went
         self._sensitivity_worker = None
         retire(worker)
-        self.sensitivity_changed.emit(False)
-        self.run_changed.emit('sensitivity', False)
+        self._note(Change.SENSITIVITY | Change.RUN)
         self.show_status('Sensitivity stopped — no fits had finished')
 
+    @_edit
     def _on_sensitivity_error(self, msg: str) -> None:
         worker = self._sensitivity_worker
         if self.sender() is not worker:
@@ -1813,9 +1872,8 @@ class SessionModel(QObject):
         self._sensitivity_worker = None
         retire(worker)
         self._sensitivity_error = msg
-        self.run_changed.emit('sensitivity', False)
-        self.sensitivity_changed.emit(False)
-        self.warning.emit('Sensitivity Analysis', msg)
+        self._note(Change.RUN | Change.SENSITIVITY)
+        self._warn('Sensitivity Analysis', msg)
         self.show_status(f'Sensitivity failed: {msg}')
 
     def _stop_sensitivity(self) -> None:
@@ -1826,7 +1884,7 @@ class SessionModel(QObject):
         self._sensitivity_worker = None
         worker.cancel()
         retire(worker)
-        self.run_changed.emit('sensitivity', False)
+        self._note(Change.RUN)
 
     def _clear_sensitivity(self) -> None:
         """Drop the sensitivity result and stop a run still going.
@@ -1839,8 +1897,9 @@ class SessionModel(QObject):
         self._sensitivity_note = None
         self._sensitivity_error = None
         self._sensitivity_seconds = self._sensitivity_workers = None
-        self.sensitivity_changed.emit(True)
+        self._note(Change.SENSITIVITY)
 
+    @_edit
     def stop(self) -> None:
         """Stop the work running in this session, as the toolbar's Stop does.
 
@@ -1867,6 +1926,7 @@ class SessionModel(QObject):
             if worker is not None:
                 worker.cancel()
 
+    @_edit
     def shutdown(self) -> None:
         """Stop every background run this session started and wait for its thread to end.
 

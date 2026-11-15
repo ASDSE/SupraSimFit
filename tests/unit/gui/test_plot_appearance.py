@@ -26,6 +26,7 @@ from gui.plot_appearance import (  # noqa: E402
     WIDTHS,
     PlotAppearance,
 )
+from gui.session_model import Change  # noqa: E402
 
 #: An appearance that differs from the built-in one in every field.
 CHANGED = PlotAppearance(
@@ -224,7 +225,7 @@ def test_a_stored_appearance_that_cannot_be_read_is_a_refusal_the_new_session_ca
 def test_setting_an_appearance_says_so_once_and_setting_it_again_says_nothing(make_model):
     model = make_model()
     said = []
-    model.plot_appearance_changed.connect(lambda: said.append(model.plot_appearance))
+    model.changed.connect(lambda what: said.append(model.plot_appearance) if Change.APPEARANCE in what else None)
 
     model.set_plot_appearance(CHANGED)
     model.set_plot_appearance(CHANGED)
@@ -236,11 +237,11 @@ def test_a_duplicate_session_takes_the_appearance_of_the_one_it_copies(make_mode
     source, copy = make_model(), make_model()
     source.set_plot_appearance(CHANGED)
     said = []
-    copy.plot_appearance_changed.connect(lambda: said.append(True))
+    copy.changed.connect(lambda what: said.append(Change.APPEARANCE in what))
 
     copy.copy_from(source)
 
-    assert copy.plot_appearance == CHANGED and said
+    assert copy.plot_appearance == CHANGED and said == [True]
 
 
 def test_a_results_file_carries_the_appearance_to_the_session_that_imports_it(make_model, tmp_path):

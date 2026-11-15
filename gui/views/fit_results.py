@@ -26,7 +26,7 @@ from gui import results as R
 from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE, font, space
-from gui.session_model import SessionModel
+from gui.session_model import Change, SessionModel
 from gui.views.titration import TitrationPlot, legend_marks
 
 
@@ -58,13 +58,7 @@ class FitResultsView(QObject):
         self.callouts: list[R.CalloutSpec] = []  # what the callouts on the canvas say
         self.canvas = self._build_canvas()
         self.side = self._build_side()
-        # Every change to the data is followed by results_changed once the held fits were
-        # checked against it, so the view never draws a fit against data it was not made on.
-        model.results_changed.connect(lambda _scope: self.refresh())
-        model.profile_changed.connect(self.refresh)
-        model.binding_changed.connect(self.refresh)
-        model.plot_appearance_changed.connect(self._show_plot_appearance)
-        model.display_unit_changed.connect(lambda _unit: self.refresh())
+        model.changed.connect(self._on_changed)
         self._show_plot_appearance()
         self.refresh()
 
@@ -240,6 +234,12 @@ class FitResultsView(QObject):
     # ------------------------------------------------------------------
     # Drawing from the model
     # ------------------------------------------------------------------
+
+    def _on_changed(self, what: Change) -> None:
+        if Change.APPEARANCE in what:
+            self._show_plot_appearance()
+        if what & (Change.DATA | Change.RESULTS | Change.PROFILE | Change.BINDING | Change.DISPLAY):
+            self.refresh()
 
     def _show_plot_appearance(self) -> None:
         look = self.model.plot_appearance

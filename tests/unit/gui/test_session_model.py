@@ -157,8 +157,10 @@ def test_loading_data_clears_the_results_and_stops_the_running_fit(qapp, make_mo
 
 def test_a_cancelled_fit_leaves_the_previous_result_as_it_was(qapp, make_model, fitted, watchful_fit):
     model = _holding(make_model, fitted)
-    redraws: list[str] = []
-    model.results_changed.connect(redraws.append)
+    from gui.session_model import Change
+
+    redraws: list[Change] = []
+    model.changed.connect(lambda what: redraws.append(what) if Change.RESULTS in what else None)
     assert model.run_fit() is None
     worker = model._fit_worker
     _wait_until(qapp, worker.isRunning)
@@ -176,8 +178,10 @@ def test_a_cancelled_fit_leaves_the_previous_result_as_it_was(qapp, make_model, 
 
 def test_the_session_is_named_by_the_user_else_by_its_data_file(make_model):
     model = make_model()
+    from gui.session_model import Change
+
     names: list[str] = []
-    model.name_changed.connect(names.append)
+    model.changed.connect(lambda what: names.append(model.name()) if Change.NAME in what else None)
     assert model.name() == 'New session'
 
     model.load(_data(), '/data/tryptamine_424.txt')

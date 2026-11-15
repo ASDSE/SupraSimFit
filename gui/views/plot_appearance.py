@@ -27,7 +27,7 @@ from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.tokens import SIZE, font, space
 from gui.plot_appearance import BUILT_IN, PlotAppearance, badge, menu
-from gui.session_model import SessionModel
+from gui.session_model import Change, SessionModel
 from gui.views.titration import TitrationPlot, legend_marks
 
 #: What the canvas says the appearance styles.
@@ -76,11 +76,7 @@ class PlotAppearanceView(QObject):
         self.model, self.parent, self.t = model, parent, theme()
         self.canvas = self._build_canvas()
         self.side = self._build_side()
-        model.plot_appearance_changed.connect(self._show_plot_appearance)
-        model.results_changed.connect(lambda _scope: self.refresh())
-        model.data_changed.connect(self.refresh)
-        model.binding_changed.connect(self.refresh)
-        model.display_unit_changed.connect(lambda _unit: self.refresh())
+        model.changed.connect(self._on_changed)
         appearance().changed.connect(self._show_form)
         self._show_plot_appearance()
 
@@ -208,6 +204,12 @@ class PlotAppearanceView(QObject):
     def export_image(self, path: str) -> None:
         """Save the titration plot as shown to *path*, PNG or SVG, in the light theme on white."""
         self.plot.export_image(path)
+
+    def _on_changed(self, what: Change) -> None:
+        if Change.APPEARANCE in what:
+            self._show_plot_appearance()
+        elif what & (Change.DATA | Change.RESULTS | Change.BINDING | Change.DISPLAY):
+            self.refresh()
 
     def _show_plot_appearance(self) -> None:
         look = self.model.plot_appearance

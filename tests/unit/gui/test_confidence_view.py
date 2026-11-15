@@ -20,6 +20,7 @@ from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet  # noqa
 from core.pipeline.varpro import KaInterval  # noqa: E402
 from gui import confidence as CF  # noqa: E402
 from gui.design import components as C  # noqa: E402
+from gui.session_model import Change  # noqa: E402
 from tests.unit.gui.test_fit_results_view import _CONFLICT, _SHIFTS, _pixels_near  # noqa: E402
 from tests.unit.gui.test_results import _stepwise, aware_result, result  # noqa: E402
 
@@ -52,8 +53,7 @@ def _show(session, fit, profile=None, *, running=False, error=None) -> None:
     model._profile = profile
     model._profile_error = error
     model._profile_worker = object() if running else None
-    model.results_changed.emit('all')
-    model.profile_changed.emit()
+    model.changed.emit(Change.RESULTS | Change.PROFILE)
 
 
 def test_before_any_fit_the_view_says_what_to_do_with_the_platform_s_shortcut(session):

@@ -35,7 +35,7 @@ from gui.design.plot_theme import apply_plot_theme, px
 from gui.design.tokens import SIZE, Theme, font, space
 from gui.plotting.export import export_widget
 from gui.plotting.labels import THIN, fmt_param_plain
-from gui.session_model import SessionModel
+from gui.session_model import Change, SessionModel
 
 #: The legend row of a profile plot: both readings, their accepted Ka and the best fit.
 LEGEND = [
@@ -386,9 +386,7 @@ class ConfidenceView(QObject):
         self.side = self._build_side()
         self.guide_link = C.link_button('Reading this plot  →')
         self.guide_link.clicked.connect(self.guide_requested)
-        model.results_changed.connect(lambda _scope: self.refresh())
-        model.profile_changed.connect(self.refresh)
-        model.data_changed.connect(self.refresh)
+        model.changed.connect(self._on_changed)
         appearance().changed.connect(self._restyle)
         self.refresh()
 
@@ -533,6 +531,10 @@ class ConfidenceView(QObject):
     def badge(self) -> str | None:
         """The summary beside the title: ``Profile likelihood · 95 %`` while a fit of a binding constant is shown."""
         return CF.badge(self._fit())
+
+    def _on_changed(self, what: Change) -> None:
+        if what & (Change.DATA | Change.RESULTS | Change.PROFILE):
+            self.refresh()
 
     def refresh(self) -> None:
         model = self.model

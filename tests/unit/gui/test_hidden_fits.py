@@ -43,7 +43,7 @@ from core.units import Q_  # noqa: E402
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data  # noqa: E402
 from tests.unit.gui.sensitivity_results import made_on as _made_on  # noqa: E402
 from tests.unit.gui.sensitivity_results import sobol_result as _sobol_result  # noqa: E402
-from tests.unit.gui.session_setup import state_binding, state_dilution  # noqa: E402
+from tests.unit.gui.session_setup import state_binding, state_dilution, status_messages  # noqa: E402
 from tests.unit.gui.test_session_lifecycle import _state_shared_source  # noqa: E402
 
 _CONDITIONS = {
@@ -295,8 +295,7 @@ def test_switching_a_used_replicate_off_hides_the_fit_everywhere_until_it_is_bac
 def test_the_status_bar_stops_describing_results_that_have_been_hidden(qapp, make_session, fit, dialogs):
     """A completion message would otherwise report numbers no tab is showing any more."""
     session = _shown_session(qapp, make_session, fit)
-    messages: list[str] = []
-    session.model.status_changed.connect(messages.append)
+    messages = status_messages(session.model)
     session.model.show_status('Fit complete — R²=0.9991, RMSE=1.23×10¹, 2 of 3 replicates used')
 
     _toggle(session, 'a', False)
@@ -1083,8 +1082,7 @@ def test_the_status_bar_keeps_saying_that_too_few_replicates_were_tested(qapp, m
     """With two replicates the replicate test cannot run: the start and the end of the fit both say so."""
     session = make_session(_data())
     _toggle(session, 'c', False)
-    messages: list[str] = []
-    session.model.status_changed.connect(messages.append)
+    messages = status_messages(session.model)
 
     session.run_fit()
 
@@ -1112,8 +1110,7 @@ def test_a_fit_finishing_after_a_used_replicate_was_switched_off_is_held_hidden_
 ):
     session = make_session(_data())
     session.run_fit()
-    messages: list[str] = []
-    session.model.status_changed.connect(lambda text: messages.append(text) if text.startswith('Fit') else None)
+    said = status_messages(session.model)
 
     _toggle(session, 'b', False)
     _wait_until(qapp, lambda: session.model.profile is not None)
@@ -1127,21 +1124,20 @@ def test_a_fit_finishing_after_a_used_replicate_was_switched_off_is_held_hidden_
     profile = session.model.profile.profiles['Ka_guest']
     # Profiled on the replicates the fit used, with its weights: the profile's best fit is the fit's.
     assert profile.best_ka == pytest.approx(held.parameters['Ka_guest'].magnitude, rel=1e-9)
-    assert messages == [f'Fit complete but hidden — {session.model.hidden_results_note()}']
+    assert [text for text in said if text.startswith('Fit')] == [
+        f'Fit complete but hidden — {session.model.hidden_results_note()}'
+    ]
 
 
 def test_a_finished_fit_names_the_replicates_it_left_out_and_why(qapp, make_session, dialogs, slow_fit):
     """Minutes of data must not be dropped without a word — the no-silent-fallbacks rule."""
     session = make_session(_data())
-    messages: list[str] = []
-    session.model.status_changed.connect(
-        lambda text: messages.append(text) if text.startswith('Fit complete') else None
-    )
+    said = status_messages(session.model)
 
     session.run_fit()
     _wait_until(qapp, lambda: session.model.profile is not None)
 
-    (message,) = messages
+    (message,) = [text for text in said if text.startswith('Fit complete')]
     assert '2 of 3 replicates used' in message
     assert 'Replicate C left out:' in message
     assert 'needs a different Ka' in message

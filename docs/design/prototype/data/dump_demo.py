@@ -65,7 +65,7 @@ def main():
     import gui.fitting_session as fs
     from core.pipeline.inputs import TITRANT
     from core.pipeline.reporting import fit_replica_ids, input_replica_ids, reports_conditional, summarize_parameters
-    from gui.session_model import SessionModel
+    from gui.session_model import Change, SessionModel
 
     captured = {}
     orig = SessionModel._on_profile_complete
@@ -80,7 +80,7 @@ def main():
     session.resize(1440, 900)
     session.show()
     statuses = []
-    session.model.status_changed.connect(statuses.append)
+    session.model.changed.connect(lambda what: statuses.append(session.model.status) if Change.STATUS in what else None)
 
     session.load_demo_ida()
     t0 = time.monotonic()

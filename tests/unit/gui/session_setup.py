@@ -36,3 +36,12 @@ def state_dilution(session, stock: float | None, contains: tuple[str, ...] = ())
     form.contains = set(contains)
     form.set_diluted(stock is not None)
     session.model.binding_edited()
+
+
+def status_messages(model) -> list[str]:
+    """The status messages *model* says from now on, one per edit that sets one."""
+    from gui.session_model import Change
+
+    said: list[str] = []
+    model.changed.connect(lambda what: said.append(model.status) if Change.STATUS in what else None)
+    return said

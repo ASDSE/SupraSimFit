@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import QLabel, QWidget  # noqa: E402
 from core.assays.registry import AssayType  # noqa: E402
 from core.pipeline.inputs import TITRANT, AdditionError, InputSpec, SharedSource  # noqa: E402
 from core.units import Q_  # noqa: E402
+from gui.session_model import Change  # noqa: E402
 
 
 @pytest.fixture
@@ -252,7 +253,7 @@ def _aware_fit():
 
 def test_the_side_panel_sets_the_input_aware_interval_beside_the_one_at_the_inputs_as_entered(view):
     view.model._held_fit_results = [_aware_fit()]
-    view.model.results_changed.emit('all')
+    view.model.changed.emit(Change.RESULTS)
 
     (chart,) = view.charts
     assert [(row['label'], row['color'], row['text']) for row in chart.rows] == [
@@ -270,7 +271,7 @@ def test_the_tests_are_marked_as_judged_and_a_conflict_names_no_input(view):
     from gui.design import components as C
 
     view.model._held_fit_results = [_aware_fit()]
-    view.model.results_changed.emit('all')
+    view.model.changed.emit(Change.RESULTS)
 
     rows = [view.test_rows.itemAt(i).widget() for i in range(view.test_rows.count())]
     marks = [(row.findChild(C.Icon).tone, [label.text() for label in row.findChildren(QLabel)]) for row in rows]
@@ -297,7 +298,7 @@ def _show(view, fit, rows=None, monkeypatch=None) -> None:
         ]
         monkeypatch.setattr('gui.results.summarize_parameters', lambda _fit: edited)
     view.model._held_fit_results = [fit]
-    view.model.results_changed.emit('all')
+    view.model.changed.emit(Change.RESULTS)
 
 
 def _additions_only_fit():

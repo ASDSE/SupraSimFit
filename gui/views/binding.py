@@ -23,7 +23,7 @@ from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE, space
 from gui.plotting.labels import CONSTANT_NAMES, and_join, fmt_constant, fmt_param, fmt_param_plain, fmt_unit_pretty
-from gui.session_model import SessionModel
+from gui.session_model import Change, SessionModel
 from gui.views.uncertainty import COL_KIND, COL_NAME, COL_UNIT, GUTTER
 from gui.widgets.assay_conditions import ASSAY_NAMES, TITRANT_STOCK_FIELD, UNIT_CHOICES
 from gui.widgets.info_button import show_help
@@ -173,8 +173,7 @@ class BindingView(QObject):
         self._settle.setInterval(_EDIT_SETTLE_MS)
         self._settle.timeout.connect(self._finished)
         self.canvas = self._build_canvas()
-        model.binding_changed.connect(self.refresh)
-        model.data_changed.connect(self.refresh)
+        model.changed.connect(self._on_changed)
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -430,6 +429,14 @@ class BindingView(QObject):
     # ------------------------------------------------------------------
     # Drawing from the model
     # ------------------------------------------------------------------
+
+    def _on_changed(self, what: Change) -> None:
+        # A fit and an analysis read the binding model as it was when they started.
+        running = self.model.fit_running() or self.model.sensitivity_running()
+        if running != self._locked:
+            self.set_locked(running)
+        elif what & (Change.BINDING | Change.DATA):
+            self.refresh()
 
     def refresh(self) -> None:
         """Draw the binding model as the model holds it, rebuilding the rows when the model chosen changed."""

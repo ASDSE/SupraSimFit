@@ -18,6 +18,7 @@ from PyQt6.QtCore import Qt  # noqa: E402
 from core.assays.registry import AssayType  # noqa: E402
 from core.pipeline.diagnostics import Conflict, FitDiagnostics, InputShift, MisfitTest, Verdict  # noqa: E402
 from gui.design import components as C  # noqa: E402
+from gui.session_model import Change  # noqa: E402
 from tests.unit.gui.session_setup import state_binding  # noqa: E402
 from tests.unit.gui.test_results import aware_result, fit_on, four_replicates  # noqa: E402
 
@@ -49,7 +50,7 @@ def session(qapp):
 def _show(session, fit) -> None:
     """Hold *fit* as the session's shown result, as a finished fit is held."""
     session.model._held_fit_results = [fit]
-    session.model.results_changed.emit('all')
+    session.model.changed.emit(Change.RESULTS)
 
 
 def test_before_any_fit_the_view_says_what_to_do_with_the_platform_s_shortcut(session):
@@ -552,7 +553,7 @@ def test_a_hidden_fit_draws_the_data_without_its_curve(session):
     fit = fit_on(ms)
     fit.metadata['data_fingerprint'] = 'other data'
     session.model._held_fit_results = [fit]
-    session.model.check_results(force=True)
+    session.model.check_results()
     view = session._results
 
     assert view.plot.data.curves == [] and view.plot.data.active == [True] * 4
@@ -602,7 +603,7 @@ def test_a_saved_figure_keeps_its_size_whatever_its_caption_says(session, tmp_pa
     from gui.views.titration import EXPORT_SIZE
 
     session.model._held_fit_results = _shown_fits(2)
-    session.model.results_changed.emit('all')
+    session.model.changed.emit(Change.RESULTS)
     view = session._results
     png, svg = tmp_path / 'fit.png', tmp_path / 'fit.svg'
     view.export_image(str(png))
@@ -635,7 +636,7 @@ def test_the_titration_header_keeps_its_room_with_several_fits_shown(qapp, monke
     session.model.set_replicate('0', False)  # one replicate switched off, one left out: the longest legend
     fit = fit_on(session.model.measurement_set, left_out=('1',), input_shifts={'h0': _SHIFTS['h0']})
     session.model._held_fit_results = [replace(fit, r_squared=0.99 - i / 100) for i in range(n)]
-    session.model.results_changed.emit('all')
+    session.model.changed.emit(Change.RESULTS)
     for _ in range(6):
         qapp.processEvents()
     view = session._results

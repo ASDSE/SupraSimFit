@@ -25,7 +25,7 @@ from gui.design import icons
 from gui.design.appearance import theme
 from gui.design.tokens import Theme, font, space
 from gui.plotting.labels import _display_label, and_join, times_ten
-from gui.session_model import SessionModel
+from gui.session_model import Change, SessionModel
 from gui.views.titration import TitrationData, TitrationPlot, legend_marks
 
 NEW_SESSION = 'Load data into a new session…'
@@ -147,10 +147,7 @@ class MeasurementsView(QObject):
         self.model, self.parent, self.t = model, parent, theme()
         self.canvas = self._build_canvas()
         self.side = self._build_side()
-        model.data_changed.connect(self.refresh)
-        model.results_changed.connect(lambda _scope: self.refresh())
-        model.plot_appearance_changed.connect(self._show_plot_appearance)
-        model.display_unit_changed.connect(lambda _unit: self.refresh())
+        model.changed.connect(self._on_changed)
         self._show_plot_appearance()
         self.refresh()
 
@@ -406,6 +403,15 @@ class MeasurementsView(QObject):
     # Drawing from the model
     # ------------------------------------------------------------------
 
+    def _on_changed(self, what: Change) -> None:
+        if Change.APPEARANCE in what:
+            self._show_plot_appearance()
+        # The model chosen names the titrant on the concentration axis.
+        if what & (Change.DATA | Change.DISPLAY) or (
+            Change.BINDING in what and self.model.settings.assay_type is not self.assay_shown
+        ):
+            self.refresh()
+
     def _show_plot_appearance(self) -> None:
         look = self.model.plot_appearance
         self.plot.set_plot_appearance(look)
@@ -422,7 +428,8 @@ class MeasurementsView(QObject):
         ms = model.measurement_set
         unit = model.settings.display_unit
         self.display_unit.set_choice(unit)
-        x_name = ASSAY_REGISTRY[model.settings.assay_type].x_label
+        self.assay_shown = model.settings.assay_type
+        x_name = ASSAY_REGISTRY[self.assay_shown].x_label
         if ms is None:
             self.files.set_rows([])
             self.files_summary.setText('')
