@@ -37,3 +37,25 @@ def test_an_unknown_control_is_refused(qapp):
 
     with pytest.raises(ValueError, match='0 controls on screen'):
         render('Measurements', state='empty', open_menu='No such control')
+
+
+def test_a_render_is_drawn_in_the_style_the_app_ships_with(qapp):
+    """The harness sets the application up as launch() does, whatever style the process had."""
+    from PyQt6.QtWidgets import QStyleFactory
+
+    from docs.design.render import render
+
+    other = next(name for name in QStyleFactory.keys() if name.lower() != 'fusion')
+    before = qapp.style().name()
+    qapp.setStyle(other)
+    try:
+        render('Measurements', state='empty')
+        # The theme's style sheet wraps the style; without it the style reads its own name.
+        sheet = qapp.styleSheet()
+        qapp.setStyleSheet('')
+        style = qapp.style().name()
+        qapp.setStyleSheet(sheet)
+    finally:
+        qapp.setStyle(before)
+
+    assert style.lower() == 'fusion'

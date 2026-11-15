@@ -1,9 +1,10 @@
 """Render a view of the running app: the real :class:`FittingMainWindow`, drawn off screen.
 
-A visual check looks at what the app itself draws, opened menus included. The window
-runs under the platform's own style and platform plugin (on macOS, real font metrics),
-never shown on screen, with the update check off; Demo IDA supplies the data. Every
-render starts from a new window, so one render never sees another's state.
+A visual check looks at what the app itself draws, opened menus included. The
+application is set up as the app ships it (:func:`gui.main_window.start_application`:
+locale, Fusion style, icon) on the platform's own plugin (on macOS, real font metrics);
+the window is never shown on screen, and the update check is off; Demo IDA supplies the
+data. Every render starts from a new window, so one render never sees another's state.
 
 Run from the repository root::
 
@@ -31,14 +32,14 @@ import tempfile
 import time
 from unittest import mock
 
-from PyQt6.QtCore import QCoreApplication, QEvent, QEventLoop, QLocale, QSettings, Qt, QThread
+from PyQt6.QtCore import QCoreApplication, QEvent, QEventLoop, QSettings, Qt, QThread
 from PyQt6.QtGui import QImage
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from gui.design.appearance import appearance
 from gui.fitting_session import VIEWS
-from gui.main_window import FittingMainWindow
+from gui.main_window import FittingMainWindow, start_application
 
 STATES = ('empty', 'demo-loaded', 'demo-fitted')
 THEMES = ('light', 'dark')
@@ -56,8 +57,8 @@ def render(
 ) -> QImage:
     """The image of *view* in a new main window of *size*, in *theme*, at *state*, with *open_menu* open.
 
-    Needs a running :class:`QApplication`. A message box the app raises on the way
-    is not shown; what it says is raised as a :class:`RuntimeError`.
+    The running application is set up as the app ships it first. A message box the
+    app raises on the way is not shown; what it says is raised as a :class:`RuntimeError`.
     """
     if view not in VIEWS:
         raise ValueError(f'unknown view {view!r}; the views are {", ".join(VIEWS)}')
@@ -65,9 +66,7 @@ def render(
         raise ValueError(f'unknown state {state!r}; the states are {", ".join(STATES)}')
     if theme not in THEMES:
         raise ValueError(f'unknown theme {theme!r}; the themes are {", ".join(THEMES)}')
-    app = QApplication.instance()
-    if not isinstance(app, QApplication):
-        raise RuntimeError('render() needs a running QApplication')
+    app = start_application(sys.argv[:1])
 
     said: list[str] = []
 
@@ -148,13 +147,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--menu', help='the accessible name of the control whose menu to open')
     args = parser.parse_args(argv)
 
-    QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
     with tempfile.TemporaryDirectory() as store:
         QSettings.setDefaultFormat(QSettings.Format.IniFormat)
         QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, store)
         QCoreApplication.setOrganizationName('SupraSimFit-Render')
         QCoreApplication.setApplicationName('render')
-        _app = QApplication(sys.argv[:1])  # held for the whole render
+        _app = start_application(sys.argv[:1])  # held for the whole render
         image = render(args.view, theme=args.theme, state=args.state, open_menu=args.menu)
         if not image.save(args.out):
             sys.exit(f'Could not write {args.out}.')

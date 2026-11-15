@@ -747,11 +747,25 @@ def _app_icon_path() -> str | None:
     return None
 
 
+def start_application(argv: list[str]) -> QApplication:
+    """The application as the app runs it, created from *argv* unless one is running.
+
+    English (US) locale — a dot as decimal separator in every field — set before the
+    application exists, the Fusion style and the app icon. :func:`launch` and the render
+    harness (``docs/design/render.py``) both start from it, so a render is drawn as the
+    app ships.
+    """
+    QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
+    app = QApplication.instance() or QApplication(argv)
+    app.setStyle('Fusion')
+    icon_path = _app_icon_path()
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
+    return app
+
+
 def launch() -> None:
     """Entry point — create the QApplication and launch the main window."""
-    # Force English locale globally: dot as decimal separator, comma as thousands
-    QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-
     # Set org/app identity before QApplication so QSettings (used by
     # gui.preferences) lands in the correct per-user location.
     QCoreApplication.setOrganizationName(ORG_NAME)
@@ -766,14 +780,9 @@ def launch() -> None:
         except Exception:
             pass
 
-    app = QApplication.instance() or QApplication(sys.argv)
-    app.setStyle('Fusion')
+    app = start_application(sys.argv)
     reset = preferences.reset_unreadable()  # said once the window is on screen
     appearance().set_mode(preferences.appearance_mode())
-
-    icon_path = _app_icon_path()
-    if icon_path:
-        app.setWindowIcon(QIcon(icon_path))
 
     window = FittingMainWindow()
     # pyqtgraph, imported with the views, has put in a hook that only prints; this one replaces it.
