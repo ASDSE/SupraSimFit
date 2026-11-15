@@ -426,7 +426,8 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
 - **Saved figure head:** every saved plot carries, above it, the head its header row
   states on screen — the title in `body-strong`, the description in `small`, the legend
   at the right (on a line of its own under them where one line cannot hold both) — then
-  any notes in `small`, wrapped to the figure's width. A saved **titration** is that head
+  any notes in `small`, wrapped to the figure's width; a titration's title, description
+  and notes read at its plot text step instead (§8). A saved **titration** is that head
   above the plot as the view draws it, with its replicate display and appearance: in
   Fit results, Plot appearance and *Export several…*, the legend of replicates, mean ± SD
   and fit, and a summary of the fit drawn — one line per binding constant with its
