@@ -8,7 +8,7 @@ Simulation windows, and :func:`problems` says what is wrong with the menu it ope
 - a row's label gets less room than its text takes;
 - the card reaches past the window it opens in;
 - a choice menu (every row a choice) does not mark exactly one row, the dropdown's
-  current one, or draws its check mark on another row than that one.
+  current one, draws its check mark on another row than that one, or does not open on it.
 """
 
 from __future__ import annotations
@@ -79,6 +79,8 @@ def problems(opener: QWidget, popover: C._Popover) -> list[str]:
         current = getattr(opener, 'current', None)
         if len(checked) != 1 or (current is not None and checked != [current]):
             found.append(f'{name}: the choice menu marks rows {checked}, the current choice is {current}')
+        elif popover.hover != checked[0]:
+            found.append(f'{name}: the choice menu opens on row {popover.hover}, not on its choice {checked[0]}')
         image = popover.grab().toImage()
         accent = popover.t.q('accent')
         for i, row in enumerate(rows):

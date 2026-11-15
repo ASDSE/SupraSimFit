@@ -117,6 +117,30 @@ def test_a_menu_with_no_room_below_its_anchor_opens_above_it(qapp):
     host.close()
 
 
+def test_a_menu_of_choices_opens_on_the_checked_one_and_a_menu_of_commands_on_none(qapp):
+    from PyQt6.QtGui import QAction
+
+    host = _host(qapp, 400)
+    anchor = C.Button(theme(), 'ghost', 'Display', menu=True)
+    anchor.setParent(host)
+    anchor.show()
+    choices = [QAction(name, host) for name in ('One', 'Two', 'Three')]
+    for i, action in enumerate(choices):
+        action.setCheckable(True)
+        action.setChecked(i == 2)
+
+    menu = C.PopoverMenu(theme(), host, choices)
+    menu.popup(anchor)
+    assert menu.hover == 2
+    menu.close_popover()
+
+    menu = C.PopoverMenu(theme(), host, [QAction('Export…', host), None, QAction('Copy', host)])
+    menu.popup(anchor)
+    assert menu.hover is None
+    menu.close_popover()
+    host.close()
+
+
 def test_a_dropdown_shows_its_current_option_on_its_face_and_offers_it_in_its_menu_as_written(qapp):
     host = _host(qapp, 400)
     options = ['K<sub>a</sub> dye', '[Host]<sub>0</sub>']

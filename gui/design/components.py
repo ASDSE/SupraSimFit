@@ -1041,7 +1041,8 @@ class PopoverMenu(_Popover):
     :mod:`gui.design.icons`), its label — the ``design_html`` property where it is rich
     text, else its text — and its shortcut, on the :class:`MenuColumns` its rows need; a
     row is drawn quiet and cannot be chosen while its action is disabled. Choosing a row
-    closes the menu and triggers its action. The card is as wide as its widest row, and
+    closes the menu and triggers its action. A menu of choices — every row checkable — opens
+    on its checked row, unless *hover* names another. The card is as wide as its widest row, and
     at least *least_width* (a choice menu is as wide as its field); *role* is the type
     role of the labels. *note* is the footnote, wrapped to the card. The card's top-left
     sits at (``SHADOW``, ``SHADOW - 4``).
@@ -1059,6 +1060,9 @@ class PopoverMenu(_Popover):
         role: str = 'body',
         least_width: float = 0,
     ):
+        choices = [a for a in actions if a is not None]
+        if hover is None and choices and all(a.isCheckable() for a in choices):
+            hover = next((i for i, a in enumerate(choices) if a.isChecked()), None)
         super().__init__(t, parent, hover)
         self.actions_, self.note = actions, note
         self.columns = MenuColumns.of(actions, role)
@@ -1531,8 +1535,7 @@ class Dropdown(QWidget):
             action.setChecked(i == self.current)
             action.triggered.connect(lambda _on=False, i=i: self.chosen.emit(i))
             actions.append(action)
-        hover = self.current if 0 <= self.current < len(actions) else None
-        menu = PopoverMenu(self.t, self.window(), actions, hover=hover, role=self.ROLE, least_width=self.width())
+        menu = PopoverMenu(self.t, self.window(), actions, role=self.ROLE, least_width=self.width())
         menu.popup(self)
 
     def paintEvent(self, _):
