@@ -193,7 +193,7 @@ class ProfileFigure(QWidget):
 
         Each lane's name sits at its left end and its track starts after the name, so no
         line runs through the text; where a name would reach the lane's first bar, the axis
-        opens further left until it clears it.
+        it shares with the profile opens further left, just far enough for every name to clear it.
         """
         t, plot = self.t, self.plot
         pw = pg.PlotWidget()
@@ -232,17 +232,25 @@ class ProfileFigure(QWidget):
             placed.append((y, name, track, first))
 
         def clear_names():
-            (x0, x1), width = vb.viewRange()[0], vb.width()
+            width = vb.width()
             if width <= 0:
                 return
+            # The left edge at which every name, *room* px from it, ends before its lane's first bar: x0 + room·(x1 − x0)/w
+            # ≤ first. It is set on the profile above, whose axis the strip follows, so the two stay on one axis.
+            home, x1 = plot.x_range
+            x0 = home
+            for _y, name, _track, first in placed:
+                room = space(1) + name.boundingRect().width() + space(2)
+                if room < width:
+                    x0 = min(x0, (first - room * x1 / width) / (1 - room / width))
+            main = self.main.getPlotItem().getViewBox()
+            if abs(main.viewRange()[0][0] - x0) > 1e-9 * (x1 - x0):
+                main.setXRange(x0, x1, padding=0)
+                return  # the range change runs this again
             dx = (x1 - x0) / width
-            for y, name, track, first in placed:
+            for y, name, track, _first in placed:
                 name.setPos(x0 + space(1) * dx, y)
-                end = x0 + (space(1) + name.boundingRect().width() + space(2)) * dx
-                if end > first > x0:
-                    vb.setXRange(x0 - 1.1 * (end - first), x1, padding=0)
-                    return  # the range change runs this again
-                track.setData([end, x1], [y, y])
+                track.setData([x0 + (space(1) + name.boundingRect().width() + space(2)) * dx, x1], [y, y])
 
         vb.sigResized.connect(clear_names)
         vb.sigXRangeChanged.connect(clear_names)

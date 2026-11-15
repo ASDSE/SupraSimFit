@@ -193,35 +193,54 @@ def test_the_axis_text_rule_catches_a_title_over_the_tick_labels(qapp):
     pw.close()
 
 
-def test_the_names_on_a_profile_s_strip_stand_whole_at_every_step(qapp, demo):
-    """Each reading's name sits inside its lane of the strip — two readings, as an input-aware fit draws — however
-    large the plot text."""
+def test_the_names_on_a_profile_s_strip_stand_whole_clear_of_their_bars_and_on_the_plot_s_axis(qapp, demo):
+    """Each reading's name sits whole inside its lane of the strip, ending before the lane's first bar, however large the
+    plot text and however the figure was sized on its way to its width; where a name needs the axis opened further left,
+    the profile above opens with it, so the strip's Ka stay under the plot's."""
     from dataclasses import replace
 
     import pyqtgraph as pg
 
     from gui import confidence as CF
     from gui.design.appearance import theme
+    from gui.design.tokens import space
     from gui.views.confidence import ProfileFigure
 
     fit, profile = demo
     (plot,) = [CF.profile_plot(fit, p) for p in profile.profiles.values()]
-    two = replace(plot, curves=[plot.curves[0], replace(plot.curves[0], label='Input-aware')])
+    lo, hi = plot.x_range
+    # The reported reading's first bar starts a twentieth of the axis in: no name of either reading fits before it.
+    near_edge = [(10 ** (lo + 0.05 * (hi - lo)), 10 ** (lo + 0.3 * (hi - lo)))]
+    curve = plot.curves[0]
+    two = replace(
+        plot,
+        curves=[replace(curve, label='Inputs as entered'), replace(curve, label='Input-aware', stretches=near_edge)],
+    )
     for step in STEPS:
         figure = ProfileFigure(theme(), two, step)
         figure.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-        figure.resize(900, 420)
+        figure.resize(520, 420)  # as a window lays the canvas out on its way to its width
         figure.show()
         qapp.processEvents()
+        figure.resize(900, 420)
+        qapp.processEvents()
         figure.strip.grab()  # an in-plot label takes its place in the view as the plot paints
-        area = figure.strip.getPlotItem().getViewBox().sceneBoundingRect()
-        names = [i for i in figure.strip.getPlotItem().items if isinstance(i, pg.TextItem)]
+        strip = figure.strip.getPlotItem()
+        vb = strip.getViewBox()
+        area = vb.sceneBoundingRect()
+        names = {i.textItem.toPlainText(): i for i in strip.items if isinstance(i, pg.TextItem)}
 
         def text(n):
             margin = n.textItem.document().documentMargin()
             return n.sceneBoundingRect().adjusted(margin, margin, -margin, -margin)
 
-        assert len(names) == 2 and all(area.contains(text(n)) for n in names), step
+        assert vb.viewRange()[0] == pytest.approx(figure.main.getPlotItem().getViewBox().viewRange()[0]), step
+        assert set(names) == {'Inputs as entered', 'Input-aware'}, step
+        for label, name in names.items():
+            assert area.contains(text(name)), (step, label, text(name), area)
+        for c in two.curves:
+            first_bar = vb.mapViewToScene(pg.Point(np.log10(c.stretches[0][0]), 0)).x()
+            assert text(names[c.label]).right() + space(1) <= first_bar, (step, c.label)
         figure.close()
 
 
