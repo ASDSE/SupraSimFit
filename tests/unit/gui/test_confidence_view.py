@@ -338,9 +338,11 @@ def test_each_saved_plot_title_sits_closer_to_its_own_plot_than_to_the_one_above
     try:
         first, second = figure.findChildren(ProfileFigure)
         title = next(w for w in figure.findChildren(PaintedText) if w.text == 'Kₐ HG₂')
+        top = title.mapTo(figure, title.rect().topLeft()).y()
+        bottom = title.mapTo(figure, title.rect().bottomLeft()).y()
 
-        above = title.geometry().top() - first.geometry().bottom()
-        below = second.geometry().top() - title.geometry().bottom()
+        above = top - first.geometry().bottom()
+        below = second.geometry().top() - bottom
         assert below < above
     finally:
         figure.close()

@@ -8,11 +8,11 @@ This module owns every export-time concern in one place:
   staying tiny at high resolutions.
 
 PyQtGraph provides ``ImageExporter`` and ``SVGExporter`` natively, and
-both accept a ``PlotItem``, so a single plot is written through the
-library's own exporters; plots stacked on one axis are written by
-:func:`export_stacked`, each through those exporters and set one above the
-other. A whole tab — text, controls and several plots
-— is painted by Qt itself in :func:`export_widget`.
+both accept a ``PlotItem``: :func:`export_stacked` writes each plot of a
+figure through them and sets it under the painted head
+:func:`figure_head` gives it — title, caption, legend and notes. A whole
+tab — text, controls and several plots — is painted by Qt itself in
+:func:`export_widget`.
 
 The only piece of "manual plumbing" that remains is
 :func:`_screen_space_items_to_scene_space`. This addresses a real
@@ -27,7 +27,9 @@ off for the duration of the render and restores it on exit.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
+from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,7 +38,8 @@ import pyqtgraph.exporters  # noqa: F401 — registers exporters
 from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import QGraphicsItem, QWidget
 
-from gui.design.tokens import LIGHT
+from gui.design import components as C
+from gui.design.tokens import LIGHT, Theme, space
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QGraphicsScene
@@ -44,6 +47,33 @@ if TYPE_CHECKING:
 
 #: The page a saved figure is drawn on: the light theme's surface, white (DESIGN.md §7).
 PAPER = QColor(LIGHT['bg-surface'])
+
+
+def figure_head(t: Theme, title: str, caption: str, legend: QWidget, width: int, notes: Sequence[str] = ()) -> QWidget:
+    """A saved plot's head in theme *t*, *width* px wide, as the plot's header line states it on screen.
+
+    Its *title* and *caption* on the left and its *legend* on the right — on a line of its
+    own under them where one line cannot hold all three — then each of *notes*, a line of
+    plain text wrapped to the width. An empty caption takes no room.
+    """
+    title_text = C.PaintedText(t, title, 'body-strong')
+    texts = [title_text, *([C.PaintedText(t, caption, 'small')] if caption else [])]
+    for text in texts:
+        text.setFixedWidth(text.minimumWidth())
+    words = [texts[0], *([3, texts[1]] if caption else [])]
+    room = sum(text.width() for text in texts) + (space(3) if caption else 0) + space(5) + legend.width()
+    if room <= width:
+        rows = [C.hbox(*words, None, legend, spacing=0)]
+    else:
+        rows = [C.hbox(*words, None, spacing=0), C.hbox(legend, None, spacing=0)]
+    for note in notes:
+        # Kept as written: rich text would otherwise fold the thin spaces of 1.59 × 10⁸ into plain ones.
+        rows += [C.PaintedNote(t, f'<span style="white-space:pre-wrap">{escape(note)}</span>', 'small', width)]
+    w = C.Figure(t)
+    w.setLayout(C.vbox(*rows, spacing=1, margins=(0, 3, 0, 2)))
+    w.setFixedWidth(width)
+    w.adjustSize()
+    return w
 
 
 class ExportRefused(ValueError):
@@ -88,46 +118,6 @@ def _screen_space_items_to_scene_space(scene: 'QGraphicsScene'):
 
 def _ext(path: str | Path) -> str:
     return Path(path).suffix.lower()
-
-
-def export_plot_item(
-    plot_item: pg.PlotItem,
-    path: str | Path,
-    *,
-    width_px: int | None = None,
-) -> None:
-    """Export a single ``pg.PlotItem`` to PNG or SVG.
-
-    Parameters
-    ----------
-    plot_item
-        The plot item to export.
-    path
-        Output path. ``.png`` → rasterised PNG, ``.svg`` → vector SVG.
-    width_px
-        Output width in pixels for PNG. Height is derived by PyQtGraph
-        from the plot's aspect ratio. Ignored for SVG.
-
-    Raises
-    ------
-    ValueError
-        If the file extension is not ``.png`` or ``.svg``.
-    """
-    ext = _ext(path)
-    scene = plot_item.scene()
-    if ext == '.png':
-        exporter = pg.exporters.ImageExporter(plot_item)
-        if width_px is not None:
-            exporter.parameters()['width'] = int(width_px)
-        with _screen_space_items_to_scene_space(scene):
-            exporter.export(str(path))
-    elif ext == '.svg':
-        exporter = pg.exporters.SVGExporter(plot_item)
-        exporter.export(str(path))
-    else:
-        raise ExportRefused(
-            f"A plot is saved as a picture or a drawing, so '{ext}' cannot be written. Use .png or .svg."
-        )
 
 
 def export_stacked(parts: list[pg.PlotItem | QWidget], path: str | Path, *, width_px: int) -> None:
@@ -240,7 +230,7 @@ def export_widget(
     A tab that mixes labels with several plots is one picture to the reader, so
     it is painted as one: ``QWidget.render`` walks the tree and every child
     paints itself through the same painter. Screen-space items are flipped into
-    scene space for the duration, as in :func:`export_plot_item`, so a legend
+    scene space for the duration, as in :func:`export_stacked`, so a legend
     scales with the rest.
 
     Parameters
@@ -253,8 +243,8 @@ def export_widget(
         Output path, which must end in ``.png``. Qt's SVG painter drops the clip
         that keeps each plot's curves inside its axes, so a whole tab drawn as
         SVG puts a curve that runs past its axes across the legend and the text
-        beside it. A single plot still exports to SVG through
-        :func:`export_plot_item`, which draws through pyqtgraph's own exporter.
+        beside it. Plots set one above the other export to SVG through
+        :func:`export_stacked`, which draws each through pyqtgraph's own exporter.
     width_px
         Output width in pixels; the height follows the widget's aspect ratio.
 

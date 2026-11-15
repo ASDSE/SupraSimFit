@@ -441,12 +441,19 @@ def _over_white(colour: str, alpha: float) -> str:
 
 
 def test_the_saved_titration_is_the_plot_drawn_light_on_white_in_a_dark_window(qapp, session, tmp_path):
-    """The saved image is the plot itself — replicates and the fitted curve — in the light theme, on white."""
+    """The saved figure's plot — replicates and the fitted curve — is drawn in the light theme, on white."""
     from PyQt6.QtGui import QColor, QImage
 
     from gui.design.appearance import appearance
     from gui.design.plot_theme import REPLICATE_ALPHA
     from gui.design.tokens import Theme
+    from gui.views.titration import EXPORT_SIZE
+
+    def plot_of(path) -> QImage:
+        """The plot of a saved figure, under its head: the figure's last rows, at twice the plot's size."""
+        image = QImage(str(path))
+        height = 2 * EXPORT_SIZE[1]
+        return image.copy(0, image.height() - height, image.width(), height)
 
     ms = four_replicates()
     state_binding(session, assay_type=AssayType.GDA)
@@ -458,7 +465,7 @@ def test_the_saved_titration_is_the_plot_drawn_light_on_white_in_a_dark_window(q
         session._results.export_image(str(path))
     finally:
         appearance().set_mode('light')
-    image = QImage(str(path))
+    image = plot_of(path)
     light = Theme(dark=False)
     replicates = [_over_white(light[f'replicate-{n}'], REPLICATE_ALPHA) for n in (1, 2, 3, 4)]
     # The same figure without the replicates' own points, and without the mean ± SD: what each adds is its own.
@@ -468,7 +475,7 @@ def test_the_saved_titration_is_the_plot_drawn_light_on_white_in_a_dark_window(q
         session.model.set_replicate_display(display)
         other = tmp_path / f'{display}.png'
         view.export_image(str(other))
-        counts[name] = QImage(str(other))
+        counts[name] = plot_of(other)
     session.model.set_replicate_display(0)
 
     assert QColor(image.pixel(2, 2)).name() == '#ffffff'
@@ -584,8 +591,10 @@ def _shown_fits(n: int):
     ]
 
 
-def test_a_saved_figure_keeps_its_size_whatever_its_caption_says(session, tmp_path):
-    """Every fit's numbers are said in full, wrapped to the figure, so a long caption does not widen the image."""
+def test_a_saved_figure_keeps_its_width_whatever_its_summary_says(session, tmp_path):
+    """Every fit's numbers are said in full, wrapped to the figure, so a long summary does not widen the image."""
+    import re
+
     from PyQt6.QtGui import QImage
 
     from gui.views.titration import EXPORT_SIZE
@@ -598,16 +607,12 @@ def test_a_saved_figure_keeps_its_size_whatever_its_caption_says(session, tmp_pa
     view.export_image(str(svg))
     image, text = QImage(str(png)), svg.read_text(encoding='utf-8')
 
-    assert image.width() / image.devicePixelRatio() == EXPORT_SIZE[0]
-    # Above the axes, in a row that holds every line of it.
-    figure = view.plot.figure()
-    plot_item = figure.pw.getPlotItem()
-    title = plot_item.titleLabel
-    assert title.item.boundingRect().height() <= title.size().height() + 1
-    assert title.sceneBoundingRect().bottom() <= plot_item.vb.sceneBoundingRect().top()
-    figure.close()
-    words = ' '.join(view.plot.data.caption).split()
-    assert len(view.plot.data.caption) == 2 and all(word in text for word in words if word.isalpha())
+    assert image.width() == 2 * EXPORT_SIZE[0]  # the PNG at twice the figure's width
+    assert float(re.search(r'<svg[^>]*\swidth="([\d.]+)"', text).group(1)) == EXPORT_SIZE[0]
+    summary = view.titration.summary
+    assert summary[0].startswith('Reported fit: ') and summary[-1].startswith('Other fit 1 (dashed): ')
+    words = ' '.join(summary).split()
+    assert all(word in text for word in words if word.isalpha())
 
 
 @pytest.mark.parametrize('n', [2, 3])

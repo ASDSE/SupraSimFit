@@ -152,7 +152,7 @@ def _export_plot(monkeypatch, tmp_path):
     session = FittingSession()
     session.model.load(_measured(), str(tmp_path / 'data.csv'))
     monkeypatch.setattr('gui.fitting_session.QFileDialog.getSaveFileName', lambda *a: (str(tmp_path / 'p.png'), ''))
-    monkeypatch.setattr(session._measurements.plot, 'export_image', _broken)
+    monkeypatch.setattr(session._measurements, 'export_image', _broken)
     return session, lambda: session.export_plot('Measurements')
 
 

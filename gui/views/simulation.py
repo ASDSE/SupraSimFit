@@ -49,7 +49,7 @@ from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import REPLICATE_ALPHA, apply_plot_theme, fit_line, px, scatter
 from gui.design.tokens import SIZE, Theme, font, space
 from gui.dialogs.plot_guide_dialog import show_plot_guide
-from gui.plotting.export import ExportRefused, export_stacked
+from gui.plotting.export import ExportRefused, export_stacked, figure_head
 from gui.plotting.labels import fmt_species, superscript
 from gui.simulation import (
     COMPLEXES,
@@ -123,16 +123,6 @@ def _legend_items(form) -> list[tuple[str, str]]:
 #: Each plot's title and caption, as the canvas heads it.
 TITRATION_HEAD = ('Titration', 'simulated signal')
 SPECIES_HEAD = ('Species', 'in the cuvette')
-
-
-def _figure_head(t: Theme, head: tuple[str, str], legend: QWidget) -> QWidget:
-    """A saved plot's head in theme *t*: its title and caption on the left, its *legend* on the right."""
-    title, caption = (C.PaintedText(t, text, role) for text, role in zip(head, ('body-strong', 'small'), strict=True))
-    for text in (title, caption):
-        text.setFixedWidth(text.minimumWidth())
-    w = C.Figure(t)
-    w.setLayout(C.hbox(title, 3, caption, None, legend, spacing=0, margins=(0, 3, 0, 2)))
-    return w
 
 
 # ── Canvas ─────────────────────────────────────────────────────────────────────────
@@ -984,15 +974,13 @@ class SimulationWindow(QMainWindow):
             pw.show()
         figure.show(self.sim, self.form.overlay, self.form.grid.unit, self.form.x_name)
         figure.set_pointer_visible(False)
-        species = _Readout(light)
+        species, width = _Readout(light), EXPORT_SIZE[0]
         species.set_values('', '', [(word, [(k, '') for k in keys]) for word, keys in species_groups(self.sim.species)])
         heads = [
-            _figure_head(light, TITRATION_HEAD, C.LegendRow(light, _legend_items(self.form), removable=False)),
-            _figure_head(light, SPECIES_HEAD, species),
+            figure_head(light, *TITRATION_HEAD, C.LegendRow(light, _legend_items(self.form), removable=False), width),
+            figure_head(light, *SPECIES_HEAD, species, width),
         ]
         for head in heads:
-            head.setFixedWidth(EXPORT_SIZE[0])
-            head.adjustSize()
             head.show()
         QApplication.processEvents()
         try:

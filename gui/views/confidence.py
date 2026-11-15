@@ -33,7 +33,7 @@ from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import apply_plot_theme, px
 from gui.design.tokens import SIZE, Theme, font, space
-from gui.plotting.export import export_widget
+from gui.plotting.export import export_widget, figure_head
 from gui.plotting.labels import THIN, fmt_param_plain
 from gui.session_model import Change, SessionModel
 
@@ -467,6 +467,7 @@ class ConfidenceView(QObject):
         light = Theme(dark=False)
         figure = C.Figure(light)
         lay = C.vbox(spacing=0, margins=(6, 5, 6, 5))
+        width = SIZE['export-width'] - 2 * space(6)  # inside the figure's margins
         plots = [CF.profile_plot(fit, p) for p in profile.profiles.values()]
         headers = {h.key: h for h in CF.headers(fit)}
 
@@ -480,11 +481,7 @@ class ConfidenceView(QObject):
                 for r in headers[plot.key].readings
             )
             gap()
-            lay.addLayout(
-                C.hbox(C.PaintedText(light, plot.name, 'body-strong'), None, C.LegendRow(light, _legend(plot)))
-            )
-            lay.addWidget(C.PaintedText(light, line, 'small'))
-            lay.addSpacing(space(2))
+            lay.addWidget(figure_head(light, plot.name, '', C.LegendRow(light, _legend(plot)), width, [line]))
             fig = ProfileFigure(light, plot, interactive=False)
             fig.setFixedHeight(SIZE['export-plot'])
             lay.addWidget(fig)

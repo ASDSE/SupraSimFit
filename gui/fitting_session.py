@@ -198,7 +198,7 @@ class FittingSession(QWidget):
 
     def _plot_widget_of(self, view: str):
         return {
-            'Measurements': self._measurements.plot,
+            'Measurements': self._measurements,
             'Fit results': self._results,
             'Ka confidence': self._confidence,
             'Sensitivity': self._sensitivity,
@@ -214,7 +214,7 @@ class FittingSession(QWidget):
                 'This view has no plot to save. Open Measurements, Fit results, Ka confidence, Sensitivity or '
                 'Plot appearance.'
             )
-        if widget is self._measurements.plot:
+        if widget is self._measurements:
             return None if model.measurement_set is not None else 'There is no titration yet. Load data, then save it.'
         if widget is self._results or widget is self._appearance:
             if model.measurement_set is None and not model.fit_results:
@@ -479,9 +479,10 @@ class FittingSession(QWidget):
     def export_plot(self, view: str) -> None:
         """Save the plot of *view*.
 
-        The titration plot of Fit results offers PNG or SVG. Ka confidence and
-        Sensitivity are saved as one picture of several plots, which only PNG can
-        carry: see :func:`~gui.plotting.export.export_widget`. An edit still being
+        The titration of Measurements, Fit results and Plot appearance is saved as PNG or
+        SVG, under its head (:meth:`~gui.views.titration.TitrationPlot.export_image`). Ka
+        confidence and Sensitivity are saved as one picture of several plots, which only PNG
+        can carry: see :func:`~gui.plotting.export.export_widget`. An edit still being
         typed is finished first, so the picture matches the settings.
         """
         self._finish_edits()
@@ -493,7 +494,7 @@ class FittingSession(QWidget):
         # A whole tab is saved as one picture, which rules out SVG; see
         # gui.plotting.export.export_widget.
         tag, formats = {
-            self._measurements.plot: ('titration', 'PNG image (*.png);;SVG vector (*.svg)'),
+            self._measurements: ('titration', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._results: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._appearance: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._confidence: ('confidence', 'PNG image (*.png)'),

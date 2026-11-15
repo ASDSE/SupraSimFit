@@ -399,6 +399,17 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
 - Linked plots (signal above species) share the x axis and the left axis width, so their
   plot areas line up.
 - Exports render with the light theme on white.
+- **Saved figure head:** every saved plot carries, above it, the head its header row
+  states on screen — the title in `body-strong`, the description in `small`, the legend
+  at the right (on a line of its own under them where one line cannot hold both) — then
+  any notes in `small`, wrapped to the figure's width. A saved **titration** is that head
+  above the plot as the view draws it, with its replicate display and appearance: in
+  Fit results, Plot appearance and *Export several…*, the legend of replicates, mean ± SD
+  and fit, and a summary of the fit drawn — one line per binding constant with its
+  reading and interval (`Kₐ guest 1.59 × 10⁸ M⁻¹ (Input-aware), 95 % interval 1.14 –
+  2.08 × 10⁸ M⁻¹`), then `R² 0.9980 · Replicates used 7 of 8 (A switched off)`, and each
+  other fit shown in a line of its numbers; in Measurements, the raw titration under
+  *raw signal, as loaded* and its legend, with no fit.
 
 ---
 
@@ -495,8 +506,8 @@ that could not be worked out is said in a sentence in place of the plots. Side p
 with *Reading this plot →*: Inputs conflict (the shifts in % and σ, with the warning mark
 and p-value in the header) or the input shifts, Reading the curves, Split interval, Open
 sides, Second binding step, What the intervals rest on, What widened the intervals, Joint
-region. Exported figures use the same axis: each plot under its legend and its readings in
-one line, the joint region last, without the readout card.
+region. Exported figures use the same axis: each plot under its head — its name and legend,
+its readings as a note — the joint region last, without the readout card.
 
 ### Sensitivity — `sensitivity_*.jpg`
 Canvas, for sensitivity indices: one block per binding constant, named by the glossary

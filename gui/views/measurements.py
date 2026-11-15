@@ -4,7 +4,8 @@ that decide which points and replicates reach the fit (DESIGN.md §8).
 Canvas: the Files table (*Add files…*, × removes a file), a note on how added files are
 used, after a fit a cue naming the fitted value with *Show fit results*, and the raw
 Titration plot — drawn by :func:`gui.results.titration` with no fit — with its display
-unit. Side panel *Measurement settings*:
+unit and the image export, which saves it raw: its points under its description and
+legend, with no fit. Side panel *Measurement settings*:
 Concentrations, Replicates and Outlier removal. Every change goes to the session's
 model; the view redraws when the model says the data changed.
 """
@@ -32,6 +33,9 @@ from gui.session_model import Change, SessionModel
 from gui.views.titration import TitrationPlot, legend_marks
 
 NEW_SESSION = 'Load data into a new session…'
+
+#: What the titration's header and its saved figure say of the plot beside its title.
+RAW_DESCRIPTION = 'raw signal, as loaded'
 
 
 def molar(value: float) -> str:
@@ -199,6 +203,10 @@ class MeasurementsView(QObject):
         if refusal is not None:
             self.refresh()
 
+    def export_image(self, path: str) -> None:
+        """Save the raw titration to *path*, PNG or SVG, in the light theme on white, under its description and legend."""
+        self.plot.export_image(path, self.titration.legend, RAW_DESCRIPTION)
+
     def focus_concentrations(self) -> None:
         """Open the first concentration for typing, for a fit that needs real concentrations."""
         self.conc_section.header.set_open(True)
@@ -299,7 +307,7 @@ class MeasurementsView(QObject):
             C.hbox(
                 C.label('Titration', 'body-strong'),
                 3,
-                C.label('raw signal, as loaded', 'small', 'tertiary'),
+                C.label(RAW_DESCRIPTION, 'small', 'tertiary'),
                 None,
                 self.legend,
                 6,
@@ -460,7 +468,7 @@ class MeasurementsView(QObject):
         self.display_unit.set_choice(unit)
         self.assay_shown = model.settings.assay_type
         x_name = ASSAY_REGISTRY[self.assay_shown].x_label
-        titration = R.titration(ms, [], self.assay_shown, R.RAW)
+        titration = self.titration = R.titration(ms, [], self.assay_shown, R.RAW)
         self.legend.set_items(titration.legend)
         self.plot.show_data(titration.data, unit)
         self._refresh_cue()

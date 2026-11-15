@@ -733,24 +733,39 @@ def other_fits_note(shown: Sequence[FitResult]) -> str | None:
     return f'The dashed curves are other fits shown with the reported one. {listed}'
 
 
-def figure_caption(shown: Sequence[FitResult]) -> list[str]:
-    """What a saved titration states under its title: each shown fit's numbers, the reported one first."""
+def figure_summary(shown: Sequence[FitResult], ms) -> list[str]:
+    """What a saved titration states under its head: the reported fit — the last of *shown* — and any other.
+
+    One line per binding constant with the reading reported and its interval, then R² and
+    the replicates used (*ms* the data loaded, or ``None``); each other fit, whose curve is
+    drawn dashed, in a line of its numbers.
+    """
     if not shown:
         return []
-    if len(shown) == 1:
-        return [fit_numbers(shown[0])]
-    others = [f'Other fit {i} (dashed): {fit_numbers(fit)}' for i, fit in enumerate(shown[:-1], start=1)]
-    return [f'Reported fit: {fit_numbers(shown[-1])}', *others]
+    fit, reported = shown[-1], reading(shown[-1])[0]
+    lines = [
+        f'{block.plain_name} {block.plain_value} ({reported}), {block.level} {block.interval}'
+        for block in ka_blocks(fit)
+    ]
+    q = quality(fit, ms)
+    used = '' if q.used == _NO_VALUE else f' · Replicates used {q.used}' + (f' ({q.used_note})' if q.used_note else '')
+    lines.append(f'R² {q.r2}{used}')
+    if len(shown) > 1:
+        lines[0] = f'Reported fit: {lines[0]}'
+    lines += [f'Other fit {i} (dashed): {fit_numbers(other)}' for i, other in enumerate(shown[:-1], start=1)]
+    return lines
 
 
 @dataclass(frozen=True)
 class Titration:
-    """What the titration plot of Fit results shows: its data, legend row and description.
+    """What the titration plot of Fit results shows: its data, legend row and description, and what its saved figure adds.
 
     The legend names each replicate drawn by its letter, ``(kind, text, index)`` with its
     place in the data's order, so it is marked in the replicate's own colour.
     *replicates_note* says the fits drawn used different replicates; *others_note* gives
-    the numbers of the fits drawn beside the reported one.
+    the numbers of the fits drawn beside the reported one. *summary* is what a saved figure
+    states under its head, where the view on screen has the headline and Fit details
+    (:func:`figure_summary`).
     """
 
     data: TitrationData | None
@@ -758,6 +773,7 @@ class Titration:
     description: str = ''
     replicates_note: str | None = None
     others_note: str | None = None
+    summary: list[str] = field(default_factory=list)
 
 
 def _curve_legend(n: int) -> list[tuple[str, str]]:
@@ -779,7 +795,7 @@ def titration(ms, shown: Sequence[FitResult], assay_type: AssayType, display: in
     the order the app names them A, B, … (:func:`~core.pipeline.reporting.replica_order`),
     which with the data loaded is the data's own. The reported fit's curve is drawn solid, any other shown
     fit's dashed, with its numbers in :attr:`Titration.others_note` and every fit's in
-    the saved image's caption. With no fit shown every active replicate is drawn and
+    the saved figure's :attr:`Titration.summary`. With no fit shown every active replicate is drawn and
     averaged. Without data, the shown curves alone. *display* is the index of
     :data:`REPLICATE_DISPLAYS`.
     """
@@ -787,16 +803,14 @@ def titration(ms, shown: Sequence[FitResult], assay_type: AssayType, display: in
     replicates, mean = display in (0, 2), display in (0, 1)
     shifted = SHIFTED_CURVE_NOTE if shown and shown[-1].input_shifts else ''
     others_note = other_fits_note(shown)
-    caption = figure_caption(shown)
+    summary = figure_summary(shown, ms)
     if ms is None:
         if not shown:
             return Titration(None, [])
         x = np.asarray(shown[-1].x_fit.magnitude, dtype=float)
         curves = [(np.asarray(r.x_fit.magnitude, float), np.asarray(r.y_fit.magnitude, float)) for r in shown]
-        data = TitrationData(
-            x, np.empty((0, x.size)), [], x_name, curves=curves[-1:], other_curves=curves[:-1], caption=caption
-        )
-        return Titration(data, _curve_legend(len(curves)), shifted, others_note=others_note)
+        data = TitrationData(x, np.empty((0, x.size)), [], x_name, curves=curves[-1:], other_curves=curves[:-1])
+        return Titration(data, _curve_legend(len(curves)), shifted, others_note=others_note, summary=summary)
     plot = prepare_plot_data(ms, list(shown), show_dropped=True)
     order = list(ms.replica_ids)
     used = {rid for rid, _ in plot['active_replicas']}
@@ -813,7 +827,6 @@ def titration(ms, shown: Sequence[FitResult], assay_type: AssayType, display: in
         curves=curves[-1:],
         replicates=replicates,
         other_curves=curves[:-1],
-        caption=caption,
         replicate_ids=order,
     )
     legend: list[tuple] = []
@@ -828,7 +841,7 @@ def titration(ms, shown: Sequence[FitResult], assay_type: AssayType, display: in
     if mean and used:
         legend.append(('mean', 'Mean ± SD'))
     legend += _curve_legend(len(curves))
-    return Titration(data, legend, shifted, differing_replicates_note(plot['fits'], order), others_note)
+    return Titration(data, legend, shifted, differing_replicates_note(plot['fits'], order), others_note, summary)
 
 
 # ---------------------------------------------------------------------------

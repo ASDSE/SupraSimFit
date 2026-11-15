@@ -1046,21 +1046,23 @@ def test_every_fit_drawn_is_told_apart_and_each_one_s_numbers_are_given():
     assert ('line', 'Reported fit') in plot.legend and ('line-other', 'Other fit') in plot.legend
     assert f'3.30{THIN}×{THIN}10⁵' in plot.others_note and 'R² 0.9871' in plot.others_note
     assert [c.title for c in R.callouts(reported, None, others_note=plot.others_note)] == ['Other fits shown']
-    reported_line, other_line = plot.data.caption
-    assert reported_line.startswith('Reported fit: Kₐ guest 1.24') and 'R² 0.9980' in reported_line
-    assert other_line.startswith('Other fit 1 (dashed): Kₐ guest 3.30')
+    reported_ka, reported_quality, other_line = plot.summary
+    assert reported_ka.startswith('Reported fit: Kₐ guest 1.24') and reported_quality.startswith('R² 0.9980')
+    assert other_line.startswith('Other fit 1 (dashed): Kₐ guest 3.30') and 'R² 0.9871' in other_line
     single = R.titration(ms, [reported], AssayType.GDA)
     assert single.others_note is None and single.legend[-1] == ('line', 'Fit')
 
 
-def test_the_caption_of_a_saved_figure_states_the_interval_and_that_the_curve_is_drawn_at_moved_inputs():
+def test_the_summary_of_a_saved_figure_states_the_reading_the_interval_r2_and_the_replicates_used():
+    """A saved figure leaves the headline and Fit details behind, so it states what they say of the fit."""
     ms = four_replicates()
-    moved = fit_on(ms, input_shifts={'h0': InputShift('h0', -0.04, -1.3, False)})
-    (line,) = R.titration(ms, [moved], AssayType.GDA).data.caption
+    aware = aware_result(metadata={'active_replica_ids': ['1', '2', '3'], 'replica_ids_fit': ['1', '2']})
+    ka, quality = R.figure_summary([aware], ms)
 
-    assert f'95{THIN}% interval 0.700 – 2.20{THIN}×{THIN}10⁶ M⁻¹' in line
-    assert line.endswith(R.SHIFTED_CURVE_NOTE)
-    assert R.SHIFTED_CURVE_NOTE not in R.titration(ms, [fit_on(ms)], AssayType.GDA).data.caption[0]
+    assert ka == f'Kₐ guest 1.30{THIN}×{THIN}10⁶ M⁻¹ (Input-aware), 95{THIN}% interval 0.500 – 3.00{THIN}×{THIN}10⁶ M⁻¹'
+    assert quality == 'R² 0.9980 · Replicates used 2 of 4 (A switched off · D left out by the fit)'
+    (conditional,) = R.figure_summary([fit_on(ms)], ms)[:1]
+    assert f'(Inputs as entered), 95{THIN}% interval 0.700 – 2.20{THIN}×{THIN}10⁶ M⁻¹' in conditional
 
 
 def test_numbers_in_fit_details_are_written_with_thin_spaces_around_the_times_sign():

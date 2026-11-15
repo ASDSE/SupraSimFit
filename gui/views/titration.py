@@ -2,15 +2,16 @@
 
 One plot draws the raw data in Measurements and the fit in Fit results and Plot
 appearance, with the session's :class:`~gui.plot_appearance.PlotAppearance`. It is drawn
-from the theme on screen and redrawn when the theme changes; a saved image is drawn
-again in the light theme on white, with the same appearance (DESIGN.md §7).
+from the theme on screen and redrawn when the theme changes; a saved figure draws it
+again in the light theme on white, with the same appearance, under the head the view
+states beside it: title, description and legend, and the summary of a fit (DESIGN.md §7).
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from html import escape
 
 import numpy as np
 import pyqtgraph as pg
@@ -22,12 +23,12 @@ from core.units import Q_
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import REPLICATE_ALPHA, apply_plot_theme, fit_line, px, scatter
-from gui.design.tokens import SIZE, TYPE, Theme, font, space
+from gui.design.tokens import SIZE, Theme, font
 from gui.plot_appearance import BUILT_IN, PlotAppearance
-from gui.plotting.export import export_plot_item
+from gui.plotting.export import export_stacked, figure_head
 from gui.plotting.labels import superscript
 
-#: Size of a saved titration image, in logical px.
+#: Size of the plot of a saved titration figure, in logical px; its head sets the figure's height above it.
 EXPORT_SIZE = (SIZE['export-width'], SIZE['export-titration'])
 
 #: Width of the caps of the mean ± SD error bars, as a fraction of the x span drawn.
@@ -44,9 +45,7 @@ class TitrationData:
     keeps them in every view and when others are switched off. A replicate not used is
     drawn as × in its colour; *mean_sd* adds the mean ± SD of the used ones, and
     *replicates* ``False`` leaves every replicate's own points out. *curves* are drawn
-    solid, *other_curves* — fits shown beside the reported one — dashed. *caption* is what
-    a saved image states above the plot, one line each; the view on screen states it
-    elsewhere.
+    solid, *other_curves* — fits shown beside the reported one — dashed.
     """
 
     x_molar: np.ndarray
@@ -58,7 +57,6 @@ class TitrationData:
     curves: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
     replicates: bool = True
     other_curves: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
-    caption: list[str] = field(default_factory=list)
     replicate_ids: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -70,25 +68,6 @@ def legend_marks(legend: C.LegendRow, plot_appearance: PlotAppearance) -> None:
     """Draw the replicates and the fitted curve in *legend* as *plot_appearance* draws them in the plot."""
     look = plot_appearance
     legend.set_marks(look.replicate_mark, look.fit_px, look.fit_token)
-
-
-def wrap_caption(line: str, fm: QFontMetrics, width: int) -> list[str]:
-    """*line* broken into lines no wider than *width* in *fm*: between its clauses (``; ``), and
-    between the words of a clause too long for a line of its own."""
-    pieces: list[tuple[str, str]] = []  # (what joins it to the text before, the text)
-    for k, clause in enumerate(line.split('; ')):
-        words = [clause] if fm.horizontalAdvance(clause) <= width else clause.split(' ')
-        pieces += [('; ' if k and i == 0 else ' ', word) for i, word in enumerate(words)]
-    lines: list[str] = []
-    current = ''
-    for joiner, text in pieces:
-        if current and fm.horizontalAdvance(current + joiner + text) <= width:
-            current += joiner + text
-        else:
-            if current:
-                lines.append(current + joiner.rstrip())
-            current = text
-    return [*lines, current]
 
 
 def power_of_ten(values: np.ndarray) -> int:
@@ -197,40 +176,34 @@ class TitrationPlot(QWidget):
             self._add(fit_line(t, cx * scale, cy * y_scale, width=look.fit_px, color=look.fit_token))
 
     def figure(self) -> TitrationPlot:
-        """The plot as a saved image draws it, off screen: the light theme on white with the
-        plot's appearance, at :data:`EXPORT_SIZE`, its caption above the axes in a row as
-        tall as its lines.
+        """The plot as a saved figure draws it, off screen: the light theme on white with the
+        plot's appearance, at :data:`EXPORT_SIZE`.
 
         The caller closes it.
         """
-        light = Theme(dark=False)
-        copy = TitrationPlot(light, self.plot_appearance)
+        copy = TitrationPlot(Theme(dark=False), self.plot_appearance)
         copy.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         copy.resize(*EXPORT_SIZE)
         copy.show_data(self.data, self.unit)
-        if self.data is not None and self.data.caption:
-            # Wrapped to the figure, so a long caption never widens the image past EXPORT_SIZE.
-            fm, room = QFontMetrics(font('small')), EXPORT_SIZE[0] - 2 * space(8)  # the axes take the rest
-            lines = [part for line in self.data.caption for part in wrap_caption(line, fm, room)]
-            pi = copy.pw.getPlotItem()
-            pi.setTitle(
-                '<br>'.join(escape(line) for line in lines),
-                color=light['text-secondary'],
-                size=f'{TYPE["small"][0]}px',
-                justify='left',
-            )
-            height = math.ceil(pi.titleLabel.item.boundingRect().height())
-            pi.titleLabel.setMaximumHeight(height)
-            pi.layout.setRowFixedHeight(0, height)
         copy.show()
         QApplication.processEvents()
         return copy
 
-    def export_image(self, path: str) -> None:
-        """Save the plot to *path* (PNG or SVG) as :meth:`figure` draws it."""
+    def export_image(self, path: str, legend: list[tuple], description: str = '', summary: Sequence[str] = ()) -> None:
+        """Save the plot to *path* (PNG or SVG) as one figure: the head the view states beside it above :meth:`figure`.
+
+        The head is the title *Titration* with the view's *description* and its *legend* — drawn with
+        the plot's appearance — then the lines of *summary*, a fit's numbers where the view draws one.
+        """
+        light = Theme(dark=False)
+        key = C.LegendRow(light, legend, removable=False)
+        legend_marks(key, self.plot_appearance)
+        head = figure_head(light, 'Titration', description, key, EXPORT_SIZE[0], summary)
+        head.show()
         copy = self.figure()
         try:
-            export_plot_item(copy.pw.getPlotItem(), path)
+            export_stacked([head, copy.pw.getPlotItem()], path, width_px=2 * EXPORT_SIZE[0])
         finally:
-            copy.close()
-            copy.deleteLater()
+            for w in (head, copy):
+                w.close()
+                w.deleteLater()

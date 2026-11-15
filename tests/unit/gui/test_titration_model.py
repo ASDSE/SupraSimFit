@@ -51,7 +51,7 @@ def _same(a, b) -> bool:
     arrays = all(np.array_equal(getattr(a, k), getattr(b, k)) for k in ('x_molar', 'signals'))
     curves = [(len(x.curves), len(x.other_curves)) for x in (a, b)]
     pairs = [np.array_equal(u, v) for c, d in zip(a.curves, b.curves, strict=True) for u, v in zip(c, d, strict=True)]
-    flags = [(x.active, x.x_name, x.mean_sd, x.replicates, x.caption) for x in (a, b)]
+    flags = [(x.active, x.x_name, x.mean_sd, x.replicates) for x in (a, b)]
     return arrays and curves[0] == curves[1] and all(pairs) and flags[0] == flags[1]
 
 

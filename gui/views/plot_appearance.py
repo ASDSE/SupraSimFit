@@ -202,8 +202,10 @@ class PlotAppearanceView(QObject):
         return badge(self.model.plot_appearance)
 
     def export_image(self, path: str) -> None:
-        """Save the titration plot as shown to *path*, PNG or SVG, in the light theme on white."""
-        self.plot.export_image(path)
+        """Save the titration plot as shown to *path*, PNG or SVG, in the light theme on white: the figure
+        Fit results saves."""
+        t = self.titration
+        self.plot.export_image(path, t.legend, t.description, t.summary)
 
     def _on_changed(self, what: Change) -> None:
         if Change.APPEARANCE in what:
@@ -247,6 +249,7 @@ class PlotAppearanceView(QObject):
         shown = model.fit_results
         assay_type = AssayType[shown[-1].assay_type] if shown else model.settings.assay_type
         titration = R.titration(model.measurement_set, shown, assay_type, model.settings.replicate_display)
+        self.titration = titration
         has_plot = titration.data is not None
         self.plot.show_data(titration.data, model.settings.display_unit)
         self.legend.set_items(titration.legend)
