@@ -163,8 +163,12 @@ marks. The set is `gui/design/icons.py`; a new icon is added there in the same s
 Appearance follows the System / Light / Dark setting (§8, Settings), applied at once to
 every open window. One app-level object holds the current `Theme` and emits a signal when
 it changes; under *System* it follows the operating system's colour scheme
-(`QStyleHints.colorScheme`). On a change it re-applies the stylesheet and palette, and
-every painted component, which reads the theme from that object, repaints. **Exported
+(`QStyleHints.colorScheme`). Light and Dark are also the colour scheme Qt is asked for
+(`QStyleHints.setColorScheme`; *System* asks for none), so what Qt takes from the platform
+— the palette roles the theme leaves unset, native file dialogs, window frames, the menu
+bar — follows the app's choice, not the operating system's. On a change it re-applies the
+stylesheet and palette, and every painted component, which reads the theme from that
+object, repaints. **Exported
 figures always use the light plot theme on a white background**, whatever the window
 shows.
 

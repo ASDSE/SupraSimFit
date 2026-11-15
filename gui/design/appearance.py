@@ -4,7 +4,10 @@ Every window and painted component holds :attr:`Appearance.theme`, one object re
 place, so a change of theme needs no rebuilding: :meth:`Appearance.set_mode` resolves it,
 re-applies the stylesheet and palette and repaints every widget, then emits
 :attr:`Appearance.changed` for what draws outside ``paintEvent`` (pyqtgraph plots).
-Under *System* the theme follows the operating system's colour scheme.
+Under *System* the theme follows the operating system's colour scheme. The mode is also
+the colour scheme Qt is asked for, so what Qt draws from the platform — the palette roles
+the theme leaves unset, native file dialogs, window frames, the menu bar — is drawn in the
+app's choice, not the operating system's.
 """
 
 from __future__ import annotations
@@ -15,7 +18,9 @@ from PyQt6.QtWidgets import QApplication
 from gui.design.stylesheet import stylesheet
 from gui.design.tokens import Theme
 
-MODES = ('system', 'light', 'dark')
+#: The colour scheme Qt is asked for in each mode; ``Unknown`` lets the platform's own apply.
+SCHEMES = {'system': Qt.ColorScheme.Unknown, 'light': Qt.ColorScheme.Light, 'dark': Qt.ColorScheme.Dark}
+MODES = tuple(SCHEMES)
 
 
 class Appearance(QObject):
@@ -27,6 +32,7 @@ class Appearance(QObject):
         super().__init__(app)
         self._app = app
         self.mode = mode
+        app.styleHints().setColorScheme(SCHEMES[mode])
         self.theme = Theme(self._dark())
         app.styleHints().colorSchemeChanged.connect(lambda _scheme: self._follow_system())
         self._apply()
@@ -36,6 +42,7 @@ class Appearance(QObject):
         if mode not in MODES:
             raise ValueError(f'unknown appearance mode {mode!r}')
         self.mode = mode
+        self._app.styleHints().setColorScheme(SCHEMES[mode])
         self._resolve()
 
     def _follow_system(self) -> None:
