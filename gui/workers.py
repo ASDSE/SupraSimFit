@@ -14,6 +14,7 @@ from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set
 from core.pipeline.profile import fit_profile
 from core.pipeline.sensitivity import SensitivityConfig, SensitivityRunError, run_sensitivity
 from core.pipeline.varpro import FitCancelled, FitRefused
+from gui.errors import unexpected
 
 logger = logging.getLogger(__name__)
 
@@ -22,20 +23,13 @@ logger = logging.getLogger(__name__)
 # status bar on the interface thread.
 _PROGRESS_INTERVAL = 0.1
 
-#: Shown when the fit fails for a reason the pipeline does not state itself.
-_FIT_FAILED = (
-    'The fit could not be completed. Check the assay conditions, the parameter bounds and the '
-    'input uncertainties, then run it again.'
+#: What a failure the pipeline does not state itself stopped, said with where its details are (:func:`unexpected`).
+_FIT_FAILED = 'The fit stopped on an unexpected error and gave no result.'
+_PROFILE_FAILED = (
+    'The range of Kₐ your data support could not be worked out for this fit: the Kₐ profile stopped on an'
+    ' unexpected error.'
 )
-
-#: Shown when the Ka profile fails for a reason the pipeline does not state itself.
-_PROFILE_FAILED = 'The range of Kₐ your data support could not be worked out for this fit.'
-
-#: Shown when the sensitivity analysis fails for a reason the pipeline does not state itself.
-_SENSITIVITY_FAILED = (
-    'The sensitivity analysis could not be completed. Check the data, the assay conditions and the '
-    'input uncertainties, then run it again.'
-)
+_SENSITIVITY_FAILED = 'The sensitivity analysis stopped on an unexpected error and gave no result.'
 
 
 #: The signals a caller listens to on its workers; a retired worker's are cut.
@@ -172,7 +166,7 @@ class FitWorker(QThread):
             # Anything else, a library's own ValueError included, carries text
             # written for a developer: it is logged and reported in one sentence.
             logger.exception('Fit failed')
-            self.error.emit(_FIT_FAILED)
+            self.error.emit(unexpected(_FIT_FAILED))
 
 
 class ProfileWorker(QThread):
@@ -258,7 +252,7 @@ class ProfileWorker(QThread):
             self.error.emit(f'The range of Kₐ your data support could not be worked out:\n{exc}')
         except Exception:
             logger.exception('Ka profile failed')
-            self.error.emit(_PROFILE_FAILED)
+            self.error.emit(unexpected(_PROFILE_FAILED))
 
 
 class SensitivityWorker(QThread):
@@ -394,4 +388,4 @@ class SensitivityWorker(QThread):
             self.error.emit(f'The sensitivity analysis could not run:\n{exc}')
         except Exception:
             logger.exception('Sensitivity analysis failed')
-            self.error.emit(_SENSITIVITY_FAILED)
+            self.error.emit(unexpected(_SENSITIVITY_FAILED))

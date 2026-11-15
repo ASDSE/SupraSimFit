@@ -1261,7 +1261,7 @@ def test_a_fit_the_pipeline_refuses_is_reported_in_its_own_words(qapp, monkeypat
     shown, library, unexpected = messages
     assert shown == refusal
     for message in (library, unexpected):
-        assert 'broadcast' not in message and message.startswith('The fit could not be completed.')
+        assert 'broadcast' not in message and message.startswith('The fit stopped on an unexpected error')
 
 
 def test_a_dilution_difference_without_data_reads_as_a_sentence(

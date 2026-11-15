@@ -22,6 +22,7 @@ from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.tokens import SIZE, Theme, space
 from gui.dialogs.plot_guide_dialog import show_plot_guide
+from gui.errors import install_exception_hook, log_dir
 from gui.fitting_session import NAVIGATION, VIEWS, FittingSession
 from gui.preferences import APP_NAME, ORG_NAME
 from gui.results import RUN_FIT_KEY
@@ -775,6 +776,8 @@ def launch() -> None:
         app.setWindowIcon(QIcon(icon_path))
 
     window = FittingMainWindow()
+    # pyqtgraph, imported with the views, has put in a hook that only prints; this one replaces it.
+    install_exception_hook(window, log_dir())
     window.show()
     if reset:
         QMessageBox.warning(

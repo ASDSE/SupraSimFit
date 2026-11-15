@@ -456,7 +456,7 @@ def test_worker_reports_an_unexpected_failure_in_plain_words(qapp, monkeypatch):
     messages = []
     worker.error.connect(messages.append)
     worker.run()
-    assert len(messages) == 1 and 'could not be completed' in messages[0] and '_jansen' not in messages[0]
+    assert len(messages) == 1 and 'stopped on an unexpected error' in messages[0] and '_jansen' not in messages[0]
 
     def written(*args, **kwargs):
         raise SensitivityRunError('The analysis stopped because one of the re-fits could not be completed. Retry.')
