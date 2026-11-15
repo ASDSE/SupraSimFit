@@ -64,6 +64,20 @@ def test_every_painted_component_of_the_loaded_demo_is_given_the_room_its_conten
     assert {where: found for where, found in seen.items() if found} == {}
 
 
+def test_the_loaded_demo_at_the_narrowest_window_cuts_no_text_and_gives_every_component_its_room(qapp, window):
+    """A window made as narrow as it goes gives each view its least width: a line of text there wraps or gives way to
+    an ellipsis rather than being cut off."""
+    session = window.active_session()
+    assert session.set_up_demo_ida()
+    window.resize(800, 800)  # below the window's least width, which it keeps
+    settle(qapp)
+    assert window.width() == window.minimumSizeHint().width()
+
+    seen = sweep(qapp, window, check=layout_rules.check)
+
+    assert {where: found for where, found in seen.items() if found} == {}
+
+
 def test_a_segmented_control_beside_a_stretch_shows_each_option_whole(qapp):
     options = ['Fixed', 'σ', 'Range']
     control = C.Segmented(theme(), options)

@@ -373,6 +373,9 @@ Every component meets these rules:
   holding the widest in `body-strong`; a slider room for its handle to travel past its
   decade ticks), or fixed by its content — so a layout never gives it less; text that may
   give way, a file name or the session's name, asks for an ellipsis.
+- **No text is cut off.** A line of text wider than the room it is given wraps (a note or
+  hint) or gives way to an ellipsis (a name; a plot description, its whole text on
+  hover); a plain one-line label is never clipped.
 - **Shortcuts in the platform's keys.** Every shortcut shown in a menu, tooltip or hint
   is rendered from its action's `QKeySequence` in native text (⌘ on macOS, Ctrl
   elsewhere), never written as a literal.

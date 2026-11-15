@@ -305,13 +305,14 @@ class MeasurementsView(QObject):
         self.files_summary = C.label('', 'small', 'tertiary')
         self.files = FilesTable(t)
         self.files.remove_requested.connect(self._remove)
-        note = C.label(
+        # Takes the row's width and wraps where the canvas is narrower than its line, so it never widens the split.
+        note = C.wrapped(
             'Added files become replicates on this concentration grid. Another experiment needs its own session.',
             'small',
-            'secondary',
         )
-        note.setMinimumWidth(1)  # keeps the canvas from widening the split
         self.new_session_link = C.link_button(NEW_SESSION)
+        note_row = C.hbox(C.Icon(t, 'info', 'text-tertiary'), note, 3, self.new_session_link, spacing=3)
+        note_row.setStretchFactor(note, 1)
         self.cue_host = QWidget()
         self.cue_box = C.vbox(spacing=0, margins=(0, 0, 0, 4))
         self.cue_host.setLayout(self.cue_box)
@@ -328,7 +329,7 @@ class MeasurementsView(QObject):
             2,
             self.files,
             3,
-            C.hbox(C.Icon(t, 'info', 'text-tertiary'), note, 3, self.new_session_link, None, spacing=3),
+            note_row,
             6,
             C.hairline(),
             5,

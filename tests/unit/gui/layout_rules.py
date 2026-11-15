@@ -7,12 +7,14 @@ Simulation windows:
 - every painted component on screen — a class of the app that paints itself — reports the
   size its content needs, as a minimum size hint or a size it fixes, and its layout gives it
   at least that;
-- no plot header cuts its text short.
+- no plot header cuts its text short;
+- no plain one-line label is narrower than its text, which it would cut with no ellipsis.
 """
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 from gui.design import components as C
 
@@ -64,6 +66,21 @@ def cut_headers(window: QWidget) -> list[str]:
     return found
 
 
+def cut_labels(window: QWidget) -> list[str]:
+    """The plain one-line labels on screen in *window* narrower than their text: they cut it with no ellipsis."""
+    found = []
+    for lbl in window.findChildren(QLabel):
+        if not lbl.isVisible() or lbl.window() is not window or isinstance(lbl, C.ElidedLabel):
+            continue
+        if lbl.wordWrap() or lbl.textFormat() == Qt.TextFormat.RichText or not lbl.text() or '\n' in lbl.text():
+            continue
+        margins = lbl.contentsMargins()
+        need = lbl.fontMetrics().horizontalAdvance(lbl.text())
+        if lbl.width() - margins.left() - margins.right() < need:
+            found.append(f'{lbl.text()!r} is cut in {lbl.width()} px, its text needs {need}')
+    return found
+
+
 def check(_app: QApplication, window: QWidget, where: str, seen: dict[str, list[str]]) -> None:
     """Record under *where* in *seen* what in *window* breaks the rules of this module."""
-    seen[where] = undersized(window) + cut_headers(window)
+    seen[where] = undersized(window) + cut_headers(window) + cut_labels(window)
