@@ -66,3 +66,20 @@ def test_a_pointer_with_no_plot_on_screen_is_refused(qapp):
 
     with pytest.raises(ValueError, match='no plot is on screen'):
         render('Binding model', state='empty', pointer=(0.5, 0.5))
+
+
+def test_a_window_the_main_window_opens_is_drawn_at_its_own_size(qapp):
+    from docs.design.render import render
+    from gui.views.simulation import WINDOW_SIZE
+
+    image = render('Simulation', state='empty')
+
+    assert (image.width(), image.height()) == WINDOW_SIZE
+
+
+def test_a_render_at_a_scale_has_that_many_device_pixels_per_logical_pixel(qapp):
+    from docs.design.render import render
+
+    image = render('Measurements', state='empty', scale=1.5)
+
+    assert (image.width(), image.height()) == (2160, 1350)

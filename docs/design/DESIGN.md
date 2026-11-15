@@ -8,12 +8,15 @@ silently, and the answer becomes part of this document and the tokens.
   radius, sizes, type), `stylesheet.py` (the QSS template), `components.py` (the shared
   controls), `plot_theme.py` (pyqtgraph) and `icons.py`. The code holds every value; this
   document says how to use them.
-- **Reference screens.** `docs/design/screens/<view>_<light|dark>.jpg` show each view as
-  approved, at 1.5× scale (the main window is 1440 × 900, the Simulation window
-  1280 × 800). They are rendered from `gui/design` by
-  `uv run python -m docs.design.prototype.render --all`, so their colours are the tokens'. A view is finished when its real render
-  (`docs/design/render.py`, the running window drawn off screen) matches its reference in both themes. Binding model and Plot appearance have no
-  reference screen; they are forms built from the components (§8).
+- **Reference screens.** `docs/design/screens/<name>_<light|dark>.jpg` show the approved
+  look of the running app with Demo IDA, its fit and its sensitivity analysis, at 1.5×
+  scale (the main window is 1440 × 900, the Simulation window 1280 × 800, the Settings
+  window its own size): every view, an empty session, and the menus and the readout the
+  pointer opens. `uv run python -m docs.design.render --all docs/design/screens` renders
+  them all from the real windows (`SCREENS` in `docs/design/render.py`), so they show
+  what ships. A change to a view is finished when its render (`docs/design/render.py`,
+  the running window drawn off screen) has been compared with the view's references in
+  both themes; a deliberate change to the approved look renders the references again.
 - **Rules for agents.** `gui/CLAUDE.md` is the short, binding version of this document.
 
 Views set no stylesheet of their own.
@@ -461,7 +464,7 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
 
 Each view below is the approved design; its reference screens are in `screens/`.
 
-### Measurements — `measurements_*.jpg`
+### Measurements — `measurements_*.jpg`, `measurements_unit_*.jpg`, `empty_*.jpg`
 Canvas: the **Files** table (file, format, replicate letter, points; *Add files…*, × to
 remove one), a one-line note on how added files are used (*Load data into a new
 session…* as its link), and the raw **Titration** plot — each replicate's own points as
@@ -476,7 +479,7 @@ concentration list, *Load vector…* / *Save vector…*), Replicates (replicate 
 *Reset all*), Outlier removal (Z-score threshold, minimum replicates, *Apply* / *Reset*,
 the last result in a sentence).
 
-### Binding model
+### Binding model — `binding_*.jpg`
 A form from the same components as Input uncertainty, under an intro sentence with
 *About this model* (the help of the model chosen): **Model** — the two-level assay choice
 (category, then model) with a one-line summary of what it fits; **Conditions** — the
@@ -497,7 +500,7 @@ Side panel *Effect on the fit*: the interval of the last fit (Input-aware agains
 as entered, compact interval chart), the three tests against what was stated, and
 *Also used by*.
 
-### Fit results — `fit_*.jpg`
+### Fit results — `fit_*.jpg`, `fit_replicates_*.jpg`
 Canvas: the headline — Ka in `metric` with its Input-aware badge and 95 % interval —
 the interval chart against the reading at the inputs as entered, *All results and
 diagnostics →*, any callout, and the **Titration** plot with a replicate-display tool —
@@ -525,7 +528,7 @@ the total the model holds fixed where its balance ties them, `* Not separately d
 while the dye total is fixed.`, and a note where a signal parameter ended on an entered
 bound); Input shifts.
 
-### Ka confidence — `confidence_*.jpg`
+### Ka confidence — `confidence_*.jpg`, `confidence_readout_*.jpg`
 Canvas: the two readings side by side (Input-aware in `metric`; Inputs as entered in
 `title`, with *Split* where the interval has a gap; each with its 95 % interval and how far
 each end lies from the estimate) — the one reading, Inputs as entered, where every input is
@@ -553,7 +556,7 @@ sides, Second binding step, What the intervals rest on, What widened the interva
 region. Exported figures use the same axis: each plot under its head — its name and legend,
 its readings as a note — the joint region last, without the readout card.
 
-### Sensitivity — `sensitivity_*.jpg`
+### Sensitivity — `sensitivity_*.jpg`, `sensitivity_whatif_*.jpg`, `sensitivity_heatmap_*.jpg`
 Canvas, for sensitivity indices: one block per binding constant, named by the glossary
 where there are two (Kₐ HG, Kₐ HG₂). Its headline is the spread of Kₐ from the stated
 inputs (×/÷ factor in `title`, 1 SD in decades, the value it is centred on — the fit at the
@@ -606,7 +609,7 @@ is drawn again in the light theme on white: the run's callouts as notes; per con
 spread, the samples and the shares, with its own callouts and the chart's notes under them;
 for a heatmap, each map with its colour bar.
 
-### Plot appearance
+### Plot appearance — `appearance_*.jpg`, `appearance_colour_*.jpg`
 The appearance of the session's **titration plot**: the plot in Measurements and in Fit
 results, and the figure saved from it (also in a batch export). Ka confidence,
 Sensitivity and the Simulation window take no appearance setting; they are drawn from the

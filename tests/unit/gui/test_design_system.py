@@ -299,10 +299,11 @@ def test_no_module_of_the_interface_carries_a_literal():
     assert not offenders, 'literals outside the tokens:\n' + '\n'.join(offenders)
 
 
-def test_every_reference_screen_named_in_the_design_exists_in_both_themes():
+def test_the_reference_screens_are_the_ones_the_design_names_and_the_render_command_draws():
+    """DESIGN.md, ``docs.design.render.SCREENS`` and ``docs/design/screens/`` list the same screens, in both themes."""
+    from docs.design.render import SCREENS as RENDERED
+
     named = set(re.findall(r'`?([a-z_]+)_(?:\*|light|dark)\.jpg`?', DESIGN_DOC.read_text(encoding='utf-8')))
-    assert named, 'DESIGN.md names no reference screen'
-    missing = [
-        f'{v}_{m}.jpg' for v in sorted(named) for m in ('light', 'dark') if not (SCREENS / f'{v}_{m}.jpg').is_file()
-    ]
-    assert not missing, f'missing reference screens: {missing}'
+    assert named == set(RENDERED)
+    on_disk = {p.name for p in SCREENS.glob('*.jpg')}
+    assert on_disk == {f'{v}_{m}.jpg' for v in RENDERED for m in ('light', 'dark')}

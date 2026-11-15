@@ -37,4 +37,4 @@ Binding rules:
   `uv run python -m docs.design.render <view> <out.png> [--theme dark] [--state …] [--menu …] [--pointer across,down]`
   — the running window as the app ships it, off screen — and compare it with its
   reference screen before calling it finished. A deliberate change to an approved view
-  updates its screens with `uv run python -m docs.design.prototype.render --all`.
+  renders its screens again with `uv run python -m docs.design.render --all docs/design/screens`.

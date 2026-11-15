@@ -30,19 +30,18 @@ def qapp():
 
 
 def test_the_fitted_state_is_drawn_after_the_fit_and_its_profile(qapp):
-    from docs.design.render import render
-    from gui.main_window import FittingMainWindow
+    from docs.design import render as R
 
     seen: list[tuple[bool, bool]] = []
-    grab = FittingMainWindow.grab
+    snapshot = R._snapshot
 
-    def noting_grab(window, *args):
+    def noting_snapshot(window, scale):
         model = window.active_session().model
         seen.append((model.running(), model.profile is not None))
-        return grab(window, *args)
+        return snapshot(window, scale)
 
-    with mock.patch.object(FittingMainWindow, 'grab', noting_grab):
-        image = render('Ka confidence', state='demo-fitted')
+    with mock.patch.object(R, '_snapshot', noting_snapshot):
+        image = R.render('Ka confidence', state='demo-fitted')
 
     assert (image.width(), image.height()) == (1440, 900)
     assert seen == [(False, True)]
@@ -50,14 +49,13 @@ def test_the_fitted_state_is_drawn_after_the_fit_and_its_profile(qapp):
 
 def test_the_heatmap_state_reads_the_cell_under_the_pointer(qapp):
     """``demo-heatmap`` holds a finished heatmap, and *pointer* moves the readout to the cell under it."""
-    from docs.design.render import render
+    from docs.design import render as R
     from gui import sensitivity as S
-    from gui.main_window import FittingMainWindow
 
     seen: list[tuple] = []
-    grab = FittingMainWindow.grab
+    snapshot = R._snapshot
 
-    def noting_grab(window, *args):
+    def noting_snapshot(window, scale):
         session = window.active_session()
         (figure,) = session._sensitivity.heatmap_figures
         hm = figure.hm
@@ -68,10 +66,10 @@ def test_the_heatmap_state_reads_the_cell_under_the_pointer(qapp):
         seen.append(
             (session.model.running(), figure.cell.isVisible(), figure.card.title, S.heatmap_readout(hm, ix, iy)[0])
         )
-        return grab(window, *args)
+        return snapshot(window, scale)
 
-    with mock.patch.object(FittingMainWindow, 'grab', noting_grab):
-        render('Sensitivity', state='demo-heatmap', pointer=(0.3, 0.7))
+    with mock.patch.object(R, '_snapshot', noting_snapshot):
+        R.render('Sensitivity', state='demo-heatmap', pointer=(0.3, 0.7))
 
     ((running, outlined, title, expected),) = seen
     assert not running and outlined and title == expected
