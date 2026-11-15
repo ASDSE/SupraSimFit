@@ -347,7 +347,7 @@ class _KnobRow(QWidget):
         self.value.setAccessibleName(f'{name} ({knob.shown_unit})')
         self.value.edited.connect(lambda text: view.edit(lambda f: f.set_value(self.key, text)))
         if knob.kind == 'concentration':
-            self.unit = C.Dropdown(t, knob.unit, UNIT_W, options=list(CONCENTRATION_UNITS))
+            self.unit = C.Dropdown(t, CONCENTRATION_UNITS, CONCENTRATION_UNITS.index(knob.unit), UNIT_W)
             self.unit.setAccessibleName(f'Unit of {name}')
             self.unit.chosen.connect(lambda i: view.edit(lambda f: f.set_unit(self.key, CONCENTRATION_UNITS[i])))
         else:
@@ -369,7 +369,7 @@ class _KnobRow(QWidget):
     def sync(self, knob: Knob) -> None:
         self.value.set_text(knob.value_text())
         if isinstance(self.unit, C.Dropdown):
-            self.unit.set_choice(knob.unit)
+            self.unit.set_current(CONCENTRATION_UNITS.index(knob.unit))
         self.slider.set_pos(knob.pos(), knob.decades())
         for end, text in zip(self.ends, knob.end_texts(), strict=True):
             end.set_text(text)
@@ -453,7 +453,7 @@ class SimulationWindow(QMainWindow):
         overlay.setToolTip('Show a measurement file over the simulated titration')
         overlay.clicked.connect(self.overlay_data)
         self.export = C.tool_button(t, 'Export', 'export', menu=True)
-        self.export.clicked.connect(lambda: self._menu([self.act_image, self.act_data], self.export, width=220))
+        self.export.clicked.connect(lambda: self._menu([self.act_image, self.act_data], self.export))
         help_btn = C.tool_button(t, None, 'help')
         help_btn.setToolTip('How the simulation works')
         help_btn.setAccessibleName('How the simulation works')
@@ -539,12 +539,12 @@ class SimulationWindow(QMainWindow):
         w.setObjectName('Inspector')
         w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         w.setMinimumWidth(SIZE['inspector-min'])
-        self.more = C.tool_button(t, None, 'more')
+        self.more = C.tool_button(t, None, 'more', menu=True)
         self.more.setToolTip('Save, load or reset these settings')
         self.more.setAccessibleName('Settings menu')
         self.more.clicked.connect(
             lambda: self._menu(
-                [self.act_save, self.act_load, None, self.act_reset], self.more, SETTINGS_NOTE, 264, True
+                [self.act_save, self.act_load, None, self.act_reset], self.more, SETTINGS_NOTE, right=True
             )
         )
         close = C.tool_button(t, None, 'x')
@@ -559,19 +559,17 @@ class SimulationWindow(QMainWindow):
         head.setFixedHeight(SIZE['toolbar'] - space(2))
 
         # Binding model: the category, then the model within it.
-        self.category = C.Dropdown(t, '', VALUE_W, options=list(CATEGORIES))
+        self.category = C.Dropdown(t, list(CATEGORIES), width=VALUE_W)
         self.category.setAccessibleName('Category of the binding model')
         self.category.chosen.connect(
             lambda i: self.edit(lambda f: f.choose_category(list(CATEGORIES)[i]), rebuild=True)
         )
-        self.model_menu = C.Dropdown(t, '', VALUE_W)
+        self.model_menu = C.Dropdown(t, width=VALUE_W)
         self.model_menu.setAccessibleName('Binding model')
         self.model_menu.chosen.connect(
             lambda i: self.edit(lambda f: f.choose_model(CATEGORIES[f.category][i]), rebuild=True)
         )
         for dropdown in (self.category, self.model_menu):
-            dropdown.setMinimumWidth(0)
-            dropdown.setMaximumWidth(16_777_215)
             dropdown.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         model = _widget(C.vbox(self.category, self.model_menu, spacing=2))
 
@@ -616,7 +614,7 @@ class SimulationWindow(QMainWindow):
             'share of the volume that came from it: the titrant concentration over the stock.'
         )
         self.stock.edited.connect(lambda text: self.edit(lambda f: f.set_stock(text)))
-        self.stock_unit = C.Dropdown(t, '', UNIT_W, options=list(CONCENTRATION_UNITS))
+        self.stock_unit = C.Dropdown(t, CONCENTRATION_UNITS, width=UNIT_W)
         self.stock_unit.setAccessibleName('Unit of the titrant stock concentration')
         self.stock_unit.chosen.connect(lambda i: self.edit(lambda f: f.set_stock_unit(CONCENTRATION_UNITS[i])))
         unit = _widget(C.vbox(C.label('', 'small', 'secondary'), self.stock_unit, spacing=1))
@@ -660,7 +658,7 @@ class SimulationWindow(QMainWindow):
         for field, name in ((self.start, 'From'), (self.stop, 'To'), (self.n_points, 'Points')):
             field.setAccessibleName(f'{name} of the concentrations')
             field.edited.connect(lambda _text: self._edit_even())
-        self.grid_unit = C.Dropdown(t, '', UNIT_W, options=list(CONCENTRATION_UNITS))
+        self.grid_unit = C.Dropdown(t, CONCENTRATION_UNITS, width=UNIT_W)
         self.grid_unit.setAccessibleName('Unit of the concentrations')
         self.grid_unit.chosen.connect(lambda i: self.edit(lambda f: f.set_grid_unit(CONCENTRATION_UNITS[i])))
         unit = _widget(C.vbox(C.label('', 'small', 'secondary'), self.grid_unit, spacing=1))
@@ -749,10 +747,10 @@ class SimulationWindow(QMainWindow):
         bar.setLayout(lay)
         return bar
 
-    def _menu(self, actions: list, anchor: C.Button, note: str = '', width: int = 264, right: bool = False) -> None:
+    def _menu(self, actions: list, anchor: C.Button, note: str = '', right: bool = False) -> None:
         if self._popover is not None:
             self._popover.close_popover()
-        menu = C.PopoverMenu(self.t, self, actions, note, width)
+        menu = C.PopoverMenu(self.t, self, actions, note)
         anchor.setCheckable(True)
         anchor.setChecked(True)
 
@@ -835,11 +833,9 @@ class SimulationWindow(QMainWindow):
     def _sync(self) -> None:
         """Show every setting of the form and draw the simulation."""
         form = self.form
-        meta = ASSAY_REGISTRY[form.assay_type]
-        self.category.set_choice(form.category)
-        self.model_menu.set_choice(
-            meta.subtype_label, [ASSAY_REGISTRY[a].subtype_label for a in CATEGORIES[form.category]]
-        )
+        models = CATEGORIES[form.category]
+        self.category.set_current(list(CATEGORIES).index(form.category))
+        self.model_menu.set_options([ASSAY_REGISTRY[a].subtype_label for a in models], models.index(form.assay_type))
         for key, row in self.rows.items():
             row.sync(form.knobs[key])
         self.dilution_box.setVisible(form.offers_dilution)
@@ -847,7 +843,7 @@ class SimulationWindow(QMainWindow):
         self.stock_row.setVisible(form.diluted)
         self.stock.set_text(form.stock_text())
         self.stock.setAccessibleName(f'Titrant stock concentration ({form.stock_unit})')
-        self.stock_unit.set_choice(form.stock_unit)
+        self.stock_unit.set_current(CONCENTRATION_UNITS.index(form.stock_unit))
         self.contains_row.setVisible(form.diluted and form.offers_contains)
         for key, box in self._contains.items():
             box.set_checked(key in form.contains)
@@ -864,7 +860,7 @@ class SimulationWindow(QMainWindow):
         self.start.set_text(value_text(g.start * scale))
         self.stop.set_text(value_text(g.stop * scale))
         self.n_points.set_text(str(g.points))
-        self.grid_unit.set_choice(g.unit)
+        self.grid_unit.set_current(CONCENTRATION_UNITS.index(g.unit))
         self.step.setText(f'Step {value_text(float(f"{(g.stop - g.start) / (g.points - 1) * scale:.2g}"))} {g.unit}')
         self.custom_note.setText(
             f'Taken from {escape(g.source)}, so the model is computed where the data were measured.'

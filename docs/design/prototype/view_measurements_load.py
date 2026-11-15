@@ -16,8 +16,6 @@ from gui.design.tokens import Theme
 from . import view_measurements
 from .common import command
 
-W = 312  # the menu's card
-
 
 def items() -> list:
     return [
@@ -40,7 +38,7 @@ def build(t: Theme) -> dict:
         btn.setChecked(True)
         btn.update()
         pos = btn.mapTo(root, btn.rect().bottomLeft())
-        menu = C.PopoverMenu(t, root, items(), NOTE, W, hover=0)
+        menu = C.PopoverMenu(t, root, items(), NOTE, hover=0)
         menu.move(pos.x() - C.SHADOW, pos.y() + 2)
         menu.show()
         menu.raise_()

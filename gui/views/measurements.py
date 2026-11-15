@@ -13,6 +13,7 @@ model; the view redraws when the model says the data changed.
 from __future__ import annotations
 
 import math
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -287,7 +288,7 @@ class MeasurementsView(QObject):
         self.cue_box = C.vbox(spacing=0, margins=(0, 0, 0, 4))
         self.cue_host.setLayout(self.cue_box)
         self.legend = C.LegendRow(t, [])
-        self.display_unit = C.Dropdown(t, 'µM', 72, options=list(UNITS))
+        self.display_unit = C.Dropdown(t, list(UNITS))
         self.display_unit.setAccessibleName('Display unit of the titration plot')
         self.display_unit.chosen.connect(self._set_display_unit)
         self.save_plot = C.tool_button(t, None, 'image')
@@ -341,7 +342,7 @@ class MeasurementsView(QObject):
             'tertiary',
         )
         unit_note.setWordWrap(True)
-        self.channel = C.Dropdown(t, '', 200)
+        self.channel = C.Dropdown(t)
         self.channel.setAccessibleName('Channel of the plate export')
         self.channel.chosen.connect(self._choose_channel)
         self.channel_row = QWidget()
@@ -467,7 +468,7 @@ class MeasurementsView(QObject):
         model, dataset = self.model, self.model.dataset
         ms = model.measurement_set
         unit = model.settings.display_unit
-        self.display_unit.set_choice(unit)
+        self.display_unit.set_current(UNITS.index(unit))
         self.assay_shown = model.settings.assay_type
         x_name = ASSAY_REGISTRY[self.assay_shown].x_label
         titration = self.titration = R.titration(ms, [], self.assay_shown, R.RAW)
@@ -521,8 +522,8 @@ class MeasurementsView(QObject):
         self.conc_section.header.set_trailing(f'{ms.n_points} points')
         self.channel_row.setVisible(len(dataset.channels) > 1)
         if dataset.channels:
-            labels = [dataset.channel_label(c) for c in dataset.channels]
-            self.channel.set_choice(dataset.channel_label(dataset.channel), labels)
+            labels = [escape(dataset.channel_label(c)) for c in dataset.channels]
+            self.channel.set_options(labels, dataset.channels.index(dataset.channel))
         # Replicates
         self._set_chips([(rid, letters[rid], ms.is_active(rid), rid in by_filter) for rid in ms.replica_ids])
         self.reps_section.header.set_trailing(f'{ms.n_active} of {ms.n_replicas} used')

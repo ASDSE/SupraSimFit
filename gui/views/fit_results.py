@@ -81,7 +81,7 @@ class FitResultsView(QObject):
         # The plot's header line gives way to the legend, cut short where both do not fit.
         self.description = C.ElidedLabel('', 'small', 'tertiary')
         self.legend = C.LegendRow(t, [])
-        self.display_tool = C.tool_button(t, None, 'scatter')
+        self.display_tool = C.tool_button(t, None, 'scatter', menu=True)
         self.display_tool.setToolTip('Replicate display')
         self.display_tool.setAccessibleName('Replicate display of the titration plot')
         self.display_tool.clicked.connect(self._open_display_menu)
@@ -210,7 +210,7 @@ class FitResultsView(QObject):
         return actions
 
     def _open_display_menu(self) -> None:
-        menu = C.PopoverMenu(self.t, self.parent.window(), self.display_actions(), width=SIZE['inspector-min'])
+        menu = C.PopoverMenu(self.t, self.parent.window(), self.display_actions())
         menu.popup(self.display_tool)
 
     def show_diagnostics(self, area: QScrollArea) -> None:

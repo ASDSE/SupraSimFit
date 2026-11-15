@@ -544,7 +544,7 @@ class FittingMainWindow(QMainWindow):
     def _open_export_menu(self) -> None:
         actions = [self._act_results, self._act_txt, self._act_csv, self._act_raw, None, self._act_plot]
         actions += [None, self._act_several]
-        self._show_menu(C.PopoverMenu(self._t, self, actions, width=264), self._toolbar.export)
+        self._show_menu(C.PopoverMenu(self._t, self, actions), self._toolbar.export)
 
     def _show_menu(self, menu: C.PopoverMenu, button: C.Button) -> None:
         button.setCheckable(True)

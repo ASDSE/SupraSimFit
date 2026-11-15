@@ -566,9 +566,9 @@ def what_if_block(t: Theme) -> QWidget:
     sec = t['text-secondary']
     controls = C.hbox(
         C.label('Reduce', 'body', 'secondary'),
-        C.Dropdown(t, name(src), 168),
+        C.Dropdown(t, [name(src)], 0, 168),
         C.label('to', 'body', 'secondary'),
-        C.Dropdown(t, f'σ {stated / 2:g} %', 84, align_right=True),
+        C.Dropdown(t, [f'σ {stated / 2:g} %'], 0, 84, align_right=True),
         3,
         C.label(
             f'<span style="color:{sec}">and the spread of K{sub("a", 10)} guest shrinks from</span> '
@@ -662,12 +662,9 @@ def inspector(t: Theme) -> QWidget:
         'small',
         'tertiary',
     )
-    seed_row = C.hbox(
-        C.Checkbox(t, 'Fixed seed'),
-        None,
-        C.Dropdown(t, '0', 120, disabled=True, chevron=False, align_right=True),
-        spacing=3,
-    )
+    seed = C.Dropdown(t, ['0'], 0, 120, chevron=False, align_right=True)
+    seed.setEnabled(False)
+    seed_row = C.hbox(C.Checkbox(t, 'Fixed seed'), None, seed, spacing=3)
     seed_cap = wrapped('Off: fresh draws each run.', 'small', 'tertiary')
     settings = QWidget()
     settings.setLayout(

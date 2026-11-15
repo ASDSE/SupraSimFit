@@ -606,7 +606,7 @@ def open_settings_menu(t: Theme, root: QWidget) -> None:
     btn.setCheckable(True)
     btn.setChecked(True)
     btn.update()
-    menu = C.PopoverMenu(t, root, SETTINGS_MENU, SETTINGS_NOTE, 264)
+    menu = C.PopoverMenu(t, root, SETTINGS_MENU, SETTINGS_NOTE)
     pos = btn.mapTo(root, btn.rect().bottomRight())
     menu.move(pos.x() - menu.width() + C.SHADOW + 1, pos.y() + 2)
     menu.show()

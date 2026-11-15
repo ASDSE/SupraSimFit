@@ -111,7 +111,7 @@ class _ConditionRow:
         self.value.typed.connect(lambda text: view._typed(lambda f: f.edit(key, text)))
         self.value.edited.connect(lambda _text: view._finished())
         if field.unit_type == 'concentration':
-            self.unit = C.Dropdown(t, entry.unit, COL_UNIT, options=_UNITS)
+            self.unit = C.Dropdown(t, _UNITS, _UNITS.index(entry.unit), COL_UNIT)
             self.unit.setAccessibleName(f'Unit of {entry.name}')
             self.unit.chosen.connect(lambda i: view._edit(lambda f: f.set_unit(key, _UNITS[i])))
         else:
@@ -232,10 +232,10 @@ class BindingView(QObject):
 
         # Model
         options = list(CATEGORIES)
-        self.category = C.Dropdown(t, '', self.form_w, options=options)
+        self.category = C.Dropdown(t, options, width=self.form_w)
         self.category.setAccessibleName('Category of the binding model')
         self.category.chosen.connect(lambda i: self._edit(lambda f: f.choose_category(options[i])))
-        self.assay = C.Dropdown(t, '', self.form_w)
+        self.assay = C.Dropdown(t, width=self.form_w)
         self.assay.setAccessibleName('Binding model')
         self.assay.chosen.connect(lambda i: self._edit(lambda f: f.choose_model(CATEGORIES[f.category][i])))
         self.summary = C.label('', 'small', 'tertiary', rich=True)
@@ -272,7 +272,7 @@ class BindingView(QObject):
         self.stock.setToolTip(TITRANT_STOCK_FIELD.tooltip)
         self.stock.typed.connect(lambda text: self._typed(lambda f: f.edit(TITRANT_STOCK, text)))
         self.stock.edited.connect(lambda _text: self._finished())
-        self.stock_unit = C.Dropdown(t, '', COL_UNIT, options=_UNITS)
+        self.stock_unit = C.Dropdown(t, _UNITS, width=COL_UNIT)
         self.stock_unit.setAccessibleName('Unit of the titrant stock concentration')
         self.stock_unit.chosen.connect(lambda i: self._edit(lambda f: f.set_unit(TITRANT_STOCK, _UNITS[i])))
         self.stock_caption = _caption('Stock concentration')
@@ -441,19 +441,17 @@ class BindingView(QObject):
     def refresh(self) -> None:
         """Draw the binding model as the model holds it, rebuilding the rows when the model chosen changed."""
         form = self.model.binding
-        meta = ASSAY_REGISTRY[form.assay_type]
         shape = (form.assay_type, tuple(form.entries), tuple(form.bound_entries))
         if shape != self._shape:
             self._build_rows()
             self._shape = shape
         on = not self._locked
         models = CATEGORIES[form.category]
-        self.category.set_choice(form.category)
-        self.assay.set_choice(meta.subtype_label, [ASSAY_REGISTRY[at].subtype_label for at in models])
+        self.category.set_current(list(CATEGORIES).index(form.category))
+        self.assay.set_options([ASSAY_REGISTRY[at].subtype_label for at in models], models.index(form.assay_type))
         name = ASSAY_NAMES[form.assay_type][0]
         self.summary.setText(_model_summary(form))
         for dropdown in (self.category, self.assay):
-            dropdown.disabled = not on
             dropdown.setEnabled(on)
 
         # Conditions
@@ -464,8 +462,7 @@ class BindingView(QObject):
             row.value.set_text(entry.amount.text)
             row.value.setAccessibleName(f'{entry.name} ({entry.unit})')
             if isinstance(row.unit, C.Dropdown):
-                row.unit.set_choice(entry.unit)
-                row.unit.disabled = not on
+                row.unit.set_current(_UNITS.index(entry.unit))
             problem = form.condition_problem(key)
             row.problem.show_problems([problem] if problem else [])
             for control in row.controls():
@@ -479,8 +476,7 @@ class BindingView(QObject):
             widget.setVisible(form.diluted)
         self.stock.set_text(form.stock.amount.text)
         self.stock.setAccessibleName(f'Titrant stock concentration ({form.stock.unit})')
-        self.stock_unit.set_choice(form.stock.unit)
-        self.stock_unit.disabled = not on
+        self.stock_unit.set_current(_UNITS.index(form.stock.unit))
         for control in (self.stock, self.stock_unit):
             control.setEnabled(on)
         stock_problems = [p for p in (form.condition_problem(TITRANT_STOCK), self.model.stock_problem()) if p]

@@ -31,6 +31,9 @@ SIZE = {
     'control': 28,
     'badge': 18,
     'menu-item': 32,
+    # A menu row's icon and its check mark.
+    'menu-icon': 16,
+    'menu-check': 14,
     'axis-left': 56,
     'axis-bottom': 44,
     # The column grid of the Input uncertainty inputs table; the span column takes the rest.

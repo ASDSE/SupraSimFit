@@ -17,7 +17,6 @@ from dataclasses import replace
 from html import escape
 
 from PyQt6.QtCore import QObject, Qt
-from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import QLayout, QWidget
 
 from core.assays.registry import AssayType
@@ -25,7 +24,6 @@ from gui import preferences
 from gui import results as R
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
-from gui.design.tokens import SIZE, font, space
 from gui.plot_appearance import BUILT_IN, PlotAppearance, badge, menu
 from gui.session_model import Change, SessionModel
 from gui.views.titration import TitrationPlot, legend_marks
@@ -150,18 +148,14 @@ class PlotAppearanceView(QObject):
                 self.choices[name] = control
                 fields.append(field(caption, control))
             sections.append(C.section(t, title, body(*fields), first=not sections))
-        # The colours, each a menu with the colour's swatch beside the choice — the first three
+        # The colours, each a menu with each colour's swatch beside its name — the first three
         # replicates' for By replicate. The means and the error bars keep their own colour (DESIGN.md §7).
-        swatch = QFontMetrics(font('number')).horizontalAdvance('●●● ')
         colours = []
         for name, caption, accessible in (
             ('replicate_colour', 'Replicate points', 'Colour of the replicate points'),
             ('fit_colour', 'Fitted curve', 'Colour of the fitted curve'),
         ):
-            names = [label for label, _token in menu(name).values()]
-            width = max(QFontMetrics(font('body')).horizontalAdvance(n) for n in names) + swatch
-            width += 2 * space(4) + SIZE['control']  # the inset before the choice, and the chevron's room
-            control = C.Dropdown(t, '', width, options=names)
+            control = C.Dropdown(t)
             control.setAccessibleName(accessible)
             control.chosen.connect(lambda i, name=name: self._choose(name, i))
             self.choices[name] = control
@@ -230,10 +224,12 @@ class PlotAppearanceView(QObject):
             if isinstance(control, C.Segmented):
                 control.set_current(index)
             else:
-                tokens = menu(name)[getattr(look, name)][1]
-                shown = (tokens,) if name == 'fit_colour' else tokens[:3]
-                dots = ''.join(f'<span style="color:{self.t[token]}">●</span>' for token in shown)
-                control.set_choice(f'{dots} {escape(look.label(name))}')
+                options = []
+                for label, tokens in menu(name).values():
+                    shown = (tokens,) if name == 'fit_colour' else tokens[:3]
+                    dots = ''.join(f'<span style="color:{self.t[token]}">●</span>' for token in shown)
+                    options.append(f'{dots} {escape(label)}')
+                control.set_options(options, index)
         self.refresh_buttons()
 
     def refresh_buttons(self) -> None:

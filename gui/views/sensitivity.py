@@ -704,23 +704,20 @@ class SensitivityView(QObject):
                 spacing=2,
             )
         )
-        self.x_axis = C.Dropdown(t, '', SIZE['input-name'], options=[])
+        self.x_axis = C.Dropdown(t)
         self.x_axis.setAccessibleName('X axis of the heatmap')
         self.x_axis.chosen.connect(lambda i: self._set_axis('x', i))
-        self.y_axis = C.Dropdown(t, '', SIZE['input-name'], options=[])
+        self.y_axis = C.Dropdown(t)
         self.y_axis.setAccessibleName('Y axis of the heatmap')
         self.y_axis.chosen.connect(lambda i: self._set_axis('y', i))
-        span_w = QFontMetrics(font('number')).horizontalAdvance('±3σ') + 2 * space(6)
         spans = [S.span_label(v) for v in S.SPANS]
-        self.x_span = C.Dropdown(t, '', span_w, options=spans)
+        self.x_span = C.Dropdown(t, spans)
         self.x_span.setAccessibleName('Span of the X axis, in σ either side of the entered value')
         self.x_span.chosen.connect(lambda i: self._set_span('x', i))
-        self.y_span = C.Dropdown(t, '', span_w, options=spans)
+        self.y_span = C.Dropdown(t, spans)
         self.y_span.setAccessibleName('Span of the Y axis, in σ either side of the entered value')
         self.y_span.chosen.connect(lambda i: self._set_span('y', i))
-        grids = [S.grid_label(n) for n in S.GRIDS]
-        grid_w = max(QFontMetrics(font('body')).horizontalAdvance(g) for g in grids) + 2 * space(6)
-        self.grid = C.Dropdown(t, '', grid_w, options=grids)
+        self.grid = C.Dropdown(t, [S.grid_label(n) for n in S.GRIDS])
         self.grid.setAccessibleName('Grid of the heatmap, cells per axis')
         self.grid.chosen.connect(self._set_grid)
         self.heatmap_part = _widget(
@@ -832,9 +829,6 @@ class SensitivityView(QObject):
             self.grid,
         ):
             control.setEnabled(not locked)
-        for dropdown in (self.x_axis, self.y_axis, self.x_span, self.y_span, self.grid):
-            dropdown.disabled = locked
-            dropdown.update()
         self.seed.setEnabled(not locked and self.model.analysis.fixed_seed)
 
     # ------------------------------------------------------------------
@@ -1184,14 +1178,9 @@ class SensitivityView(QObject):
         t = self.t
         sources = block.what_if
         names = [S.source_label(S._assay(result), key) for key in sources]
-        plain = [plain_label(n) for n in names]
-        fm = QFontMetrics(font('number'))
-        source_w = max(fm.horizontalAdvance(n) for n in plain) + 2 * space(6)
-        pick = C.Dropdown(t, names[0], source_w, options=plain)
+        pick = C.Dropdown(t, names)
         pick.setAccessibleName(f'Source to reduce, for {plain_label(block.name)}')
-        targets = S.what_if_targets(result, sources[0])
-        target_w = max(fm.horizontalAdvance(text) for _r, text in targets) + 2 * space(6)
-        to = C.Dropdown(t, '', target_w + space(5), options=[text for _r, text in targets])
+        to = C.Dropdown(t)
         to.setAccessibleName(f'Uncertainty to reduce it to, for {plain_label(block.name)}')
         sentence = C.copyable(C.label('', 'number', rich=True))
         detail = C.copyable(C.wrapped('', 'small', 'tertiary', rich=True))
@@ -1202,8 +1191,8 @@ class SensitivityView(QObject):
             source = sources[state[0]]
             options = S.what_if_targets(result, source)
             ratio, text = options[state[1]]
-            pick.set_choice(names[state[0]])
-            to.set_choice(text, [o for _r, o in options])
+            pick.set_current(state[0])
+            to.set_options([o for _r, o in options], state[1])
             answer = S.what_if_answer(result, block.key, source, ratio)
             quiet = f'<span style="color:{t["text-secondary"]}">'
             if answer.after:
@@ -1267,17 +1256,14 @@ class SensitivityView(QObject):
         self.seed_note.setText('On: the same draws every run.' if form.fixed_seed else 'Off: fresh draws each run.')
         keys = list(labels)
         names = [labels[k] for k in keys]
-        widest = max((QFontMetrics(font('number')).horizontalAdvance(n) for n in names), default=0) + 2 * space(6)
-        room = SIZE['inspector'] - 2 * space(5) - space(4) - self.x_span.width() - space(2)
         for dropdown, key in ((self.x_axis, form.x_key), (self.y_axis, form.y_key)):
-            dropdown.setFixedWidth(min(widest, room))
-            dropdown.set_choice(labels.get(key, ''), names)
+            dropdown.set_options(names, keys.index(key) if key in labels else -1)
         x_shown, y_shown = form.spans_shown(errors)
-        self.x_span.set_choice(S.span_label(form.x_span))
-        self.y_span.set_choice(S.span_label(form.y_span))
+        self.x_span.set_current(S.SPANS.index(form.x_span))
+        self.y_span.set_current(S.SPANS.index(form.y_span))
         self.x_span.setVisible(x_shown)
         self.y_span.setVisible(y_shown)
-        self.grid.set_choice(S.grid_label(form.grid))
+        self.grid.set_current(S.GRIDS.index(form.grid))
         self.problem.show_problems(model.analysis_problems())
         # Error sources
         _clear(self.sources_box)

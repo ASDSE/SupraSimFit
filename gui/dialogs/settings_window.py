@@ -138,7 +138,8 @@ class SettingsWindow(QWidget):
 
         self.worker_counts = preferences.worker_choices()
         stored = preferences.get_int(preferences.WORKER_COUNT_KEY, 0)
-        self.cores = C.Dropdown(ct, worker_label(stored), width, options=[worker_label(n) for n in self.worker_counts])
+        labels = [worker_label(n) for n in self.worker_counts]
+        self.cores = C.Dropdown(ct, labels, self.worker_counts.index(stored), width)
         self.cores.setAccessibleName('Processor cores')
         self.cores.chosen.connect(self._choose_cores)
         analysis = C.SettingsCard(
@@ -193,7 +194,7 @@ class SettingsWindow(QWidget):
     def _choose_cores(self, index: int) -> None:
         count = self.worker_counts[index]
         preferences.set_int(preferences.WORKER_COUNT_KEY, count)
-        self.cores.set_choice(worker_label(count))
+        self.cores.set_current(index)
 
     # ------------------------------------------------------------------
     # Drawing

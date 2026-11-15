@@ -12,7 +12,9 @@ from __future__ import annotations
 import math
 import sys
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from html import escape
+from typing import TYPE_CHECKING, NamedTuple
 
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTextBoundaryFinder, QVariantAnimation, pyqtSignal
 from PyQt6.QtGui import (
@@ -20,6 +22,7 @@ from PyQt6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QFontMetricsF,
     QKeySequence,
     QPainter,
     QPainterPath,
@@ -234,8 +237,9 @@ class Button(QAbstractButton):
 
     ``ghost`` is icon and label with no border until hover, ``icon`` a 28 × 28 icon
     button, ``primary`` an accent fill; a disabled ``ghost`` or ``icon`` button draws its
-    icon and label in ``text-tertiary`` and takes no hover fill. Painting keeps the icon-label gap, the menu
-    chevron (*menu*) and the focus ring on the token grid. *checked* makes it a toggle,
+    icon and label in ``text-tertiary`` and takes no hover fill. *menu* says a click opens a menu, which a
+    labelled button shows with a chevron. Painting keeps the icon-label gap, the menu
+    chevron and the focus ring on the token grid. *checked* makes it a toggle,
     shown pressed.
     """
 
@@ -258,6 +262,11 @@ class Button(QAbstractButton):
             w = space(3) + (16 + space(2) if icon_name else 0) + fm.horizontalAdvance(text)
             w += (space(2) + 12 if menu else 0) + (space(4) if variant == 'primary' else space(3))
             self.setFixedWidth(w)
+
+    @property
+    def opens_menu(self) -> bool:
+        """Whether a click opens a menu (*menu*): a labelled button draws its chevron."""
+        return self._menu
 
     def set_text(self, text: str, icon_name: str | None = None) -> None:
         """Change the label (and the icon, *icon_name*) in place; the width stays, so a toolbar never shifts."""
@@ -585,6 +594,9 @@ class SessionSwitcher(QAbstractButton):
     session is busy (*busy*). *open_* draws it with the popover open.
     """
 
+    #: A click opens a menu, the session popover.
+    opens_menu = True
+
     def __init__(self, theme: Theme, name: str, detail: str, count: int = 1, busy: int = 0, open_: bool = False):
         super().__init__()
         self.t, self._name, self._detail, self._count, self._busy = theme, name, detail, count, busy
@@ -760,46 +772,128 @@ def shortcut_text(action: QAction) -> str:
     return action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
 
 
-def _menu_command(
-    p: QPainter, t: Theme, row: QRectF, action: QAction, icon_x: float, text_x: float, key_inset: float
-) -> None:
+def menu_html(action: QAction) -> str:
+    """The label of a menu row as rich text: the action's ``design_html`` property, else its text escaped."""
+    return action.property('design_html') or escape(action.text())
+
+
+class MenuRow(NamedTuple):
+    """One row of a menu, in the widget's coordinates: the row and its check, icon, label and shortcut columns."""
+
+    rect: QRectF
+    check: QRectF
+    icon: QRectF
+    label: QRectF
+    key: QRectF
+    action: QAction
+
+
+@dataclass(frozen=True)
+class MenuColumns:
+    """The columns of a menu's rows — check mark, icon, label, shortcut — measured from what the rows hold.
+
+    A column no row uses takes no room: the check column only where a row can be checked,
+    the icon column only where a row has an icon (``design_icon``), the shortcut column
+    only where a row has a shortcut. The label column is as wide as the widest label in
+    type role *role*. Sizing a menu (:attr:`width`) and painting its rows (:meth:`row`)
+    read the same columns, so every label gets the room its text takes.
+    """
+
+    role: str
+    check: float
+    icon: float
+    label: float
+    key: float
+
+    @classmethod
+    def of(cls, actions: list, role: str = 'body') -> MenuColumns:
+        """The columns of the rows of *actions* (``None`` a separator), labels in type role *role*."""
+        rows = [a for a in actions if a is not None]
+        keys = QFontMetricsF(font('small'))
+        return cls(
+            role=role,
+            check=SIZE['menu-check'] + space(2) if any(a.isCheckable() for a in rows) else 0,
+            icon=SIZE['menu-icon'] + space(3) if any(a.property('design_icon') for a in rows) else 0,
+            label=math.ceil(max((rich_width(menu_html(a), role) for a in rows), default=0)),
+            key=math.ceil(max((keys.horizontalAdvance(shortcut_text(a)) for a in rows), default=0)),
+        )
+
+    @property
+    def width(self) -> float:
+        """The width of a row that shows every column in full."""
+        return space(3) + self.check + self.icon + self.label + (space(5) + self.key if self.key else 0) + space(3)
+
+    def row(self, rect: QRectF, action: QAction) -> MenuRow:
+        """The columns of *action*'s row *rect*; the label takes what the row has beside the others."""
+        x, h = rect.left() + space(3), rect.height()
+        label_x = x + self.check + self.icon
+        key_x = rect.right() - space(3) - self.key
+        label_right = key_x - space(5) if self.key else rect.right() - space(3)
+        return MenuRow(
+            rect,
+            QRectF(x, rect.top() + (h - SIZE['menu-check']) / 2, SIZE['menu-check'], SIZE['menu-check']),
+            QRectF(x + self.check, rect.top() + (h - SIZE['menu-icon']) / 2, SIZE['menu-icon'], SIZE['menu-icon']),
+            QRectF(label_x, rect.top(), label_right - label_x, h),
+            QRectF(key_x, rect.top(), self.key, h),
+            action,
+        )
+
+
+def _menu_command(p: QPainter, t: Theme, row: MenuRow, role: str) -> None:
+    """Paint *row*: its check mark while its action is checked, its icon, its label and its shortcut."""
+    action = row.action
     on = action.isEnabled()
-    h = SIZE['menu-item']
+    if action.isChecked():
+        icons.paint(
+            p,
+            'check',
+            t.q('accent' if on else 'text-tertiary'),
+            row.check.left(),
+            row.check.top(),
+            SIZE['menu-check'],
+            2,
+        )
     ic = action.property('design_icon')
     if ic:
         icons.paint(
-            p, ic, t.q('text-secondary' if on else 'text-tertiary'), row.left() + icon_x, row.top() + (h - 16) / 2
+            p, ic, t.q('text-secondary' if on else 'text-tertiary'), row.icon.left(), row.icon.top(), SIZE['menu-icon']
         )
-    p.setFont(font('body'))
-    p.setPen(t.q('text-primary' if on else 'text-tertiary'))
-    p.drawText(
-        QRectF(row.left() + text_x, row.top(), row.width() - 100, h), Qt.AlignmentFlag.AlignVCenter, action.text()
-    )
+    paint_rich(p, row.label, menu_html(action), role, t.q('text-primary' if on else 'text-tertiary'))
     key = shortcut_text(action)
     if key:
         p.setFont(font('small'))
         p.setPen(t.q('text-tertiary'))
-        right = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
-        p.drawText(QRectF(row.left(), row.top(), row.width() - key_inset, h), right, key)
+        p.drawText(row.key, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, key)
 
 
 class _Popover(QWidget):
-    """What every popover shares: it floats over its window, follows the pointer and the keys, and closes.
+    """What every popover shares: it floats over its window, follows the pointer and the keys, scrolls, and closes.
 
     A popover is a child of the window it opens in, drawn with its shadow inside its own
-    rectangle. :meth:`popup` shows it below an anchor; a press outside it, Escape, or
-    the window losing focus or changing size closes it, and :attr:`closed` says so.
-    Subclasses lay out their rows in :meth:`_rows` — ``(rect, enabled)`` per row that
-    can be chosen — and act on one in :meth:`_activate`. *hover* draws a row as under
-    the pointer, for a still picture of the popover.
+    rectangle. A subclass sizes it to its whole card with :meth:`_size_card`; :meth:`popup`
+    shows it below an anchor, or above it where the window has more room there, its card
+    cut to the room the window has and scrolled (wheel, arrow keys) where its rows need
+    more. A press outside it, Escape, or the window losing focus or changing size closes
+    it, and :attr:`closed` says so. Subclasses lay out their rows from :meth:`_top`, where
+    the card's content starts as scrolled, in :meth:`_rows` — ``(rect, enabled)`` per row
+    that can be chosen — and act on one in :meth:`_activate`. *hover* draws a row as under
+    the pointer: the row the keys start from, and in a still picture of the popover.
     """
 
     closed = pyqtSignal()
+
+    #: The room between a popover's card and the window's edges.
+    GAP = space(1)
+    #: The room between a popover's card and its anchor: the widget starts 2 px past the anchor, its card the
+    #: shadow's room (less the shadow's 4-px drop) further in.
+    ANCHOR_GAP = 2 + SHADOW - 4
 
     def __init__(self, t: Theme, parent: QWidget, hover: int | None = None):
         super().__init__(parent)
         self.t, self.hover = t, hover
         self._anchor: QWidget | None = None
+        self._card_h = 0.0
+        self._scroll = 0.0
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -810,24 +904,58 @@ class _Popover(QWidget):
     def _activate(self, index: int) -> None:
         raise NotImplementedError
 
+    def _size_card(self, width: float, height: float) -> None:
+        """Size the popover to a card of *width* × *height*, its whole content, plus the shadow's room."""
+        self._card_h = height
+        self.setFixedSize(math.ceil(width) + 2 * SHADOW, math.ceil(height) + 2 * SHADOW)
+
     def _row_at(self, pos: QPointF) -> int | None:
+        if not self._card().contains(pos):
+            return None
         for i, (rect, on) in enumerate(self._rows()):
             if on and rect.contains(pos):
                 return i
         return None
 
     def _card(self) -> QRectF:
+        """The card as shown, in the widget's coordinates: all of it, or what the window has room for."""
         return QRectF(SHADOW, SHADOW - 4, self.width() - 2 * SHADOW, self.height() - 2 * SHADOW)
+
+    def _top(self) -> float:
+        """Where the card's content starts, scrolled."""
+        return self._card().top() - self._scroll
+
+    def _scroll_to(self, offset: float) -> None:
+        self._scroll = max(0.0, min(offset, self._card_h - self._card().height()))
+        self.update()
+
+    def _reveal(self, index: int) -> None:
+        """Scroll row *index* fully into the card."""
+        rect, card = self._rows()[index][0], self._card()
+        if rect.top() < card.top():
+            self._scroll_to(self._scroll - (card.top() - rect.top()))
+        elif rect.bottom() > card.bottom():
+            self._scroll_to(self._scroll + (rect.bottom() - card.bottom()))
 
     # Showing and closing -------------------------------------------------------
     def popup(self, anchor: QWidget, right: bool = False) -> None:
-        """Show the popover under *anchor*, its card's left edge on the anchor's (or right edge, *right*)."""
+        """Show the popover under *anchor*, or over it where the window has more room above; its card's left
+        edge on the anchor's (or right edge, *right*), and cut to the window's height where it is taller."""
         self._anchor = anchor
         window = self.parentWidget()
-        corner = anchor.rect().bottomRight() if right else anchor.rect().bottomLeft()
-        pos = anchor.mapTo(window, corner)
-        x = pos.x() - (self.width() - SHADOW) if right else pos.x() - SHADOW
-        self.move(max(0, min(x, window.width() - self.width())), pos.y() + 2)
+        top_left = anchor.mapTo(window, anchor.rect().topLeft())
+        below = window.height() - self.GAP - (top_left.y() + anchor.height() + self.ANCHOR_GAP)
+        above = top_left.y() - self.ANCHOR_GAP - self.GAP
+        down = self._card_h <= below or below >= above
+        card_h = min(self._card_h, below if down else above)
+        self.setFixedHeight(math.floor(card_h) + 2 * SHADOW)
+        lift = SHADOW - 4  # the card's top in the widget
+        card_top = top_left.y() + anchor.height() + self.ANCHOR_GAP if down else top_left.y() - self.ANCHOR_GAP - card_h
+        x = top_left.x() + (anchor.width() - self.width() + SHADOW if right else -SHADOW)
+        self.move(max(0, min(x, window.width() - self.width())), round(card_top - lift))
+        self._scroll_to(0)
+        if self.hover is not None:
+            self._reveal(self.hover)
         self.show()
         self.raise_()
         self.setFocus(Qt.FocusReason.PopupFocusReason)
@@ -870,6 +998,11 @@ class _Popover(QWidget):
         self.hover = None
         self.update()
 
+    def wheelEvent(self, event) -> None:
+        step = event.pixelDelta().y() or event.angleDelta().y() / 120 * SIZE['menu-item']
+        self._scroll_to(self._scroll - step)
+        self.hover = self._row_at(event.position())
+
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             index = self._row_at(event.position())
@@ -896,56 +1029,73 @@ class _Popover(QWidget):
             self.hover = enabled[0 if direction > 0 else -1]
         else:
             self.hover = enabled[(enabled.index(self.hover) + direction) % len(enabled)]
+        self._reveal(self.hover)
         self.update()
 
 
 class PopoverMenu(_Popover):
-    """A menu of commands in a popover card, with an optional quiet footnote under them.
+    """A menu of commands, or of choices, in a popover card, with an optional quiet footnote under them.
 
-    *actions* are the commands, ``None`` a separator. Each row draws its action's icon
-    (the ``design_icon`` property, a name in :mod:`gui.design.icons`), text and shortcut, and
-    is drawn quiet and cannot be chosen while its action is disabled. Choosing a row
-    closes the menu and triggers its action. *note* is the footnote, wrapped to the
-    card. The widget is *width* plus the shadow margin on every side, so its card's
-    top-left sits at (``SHADOW``, ``SHADOW - 4``).
+    *actions* are the rows, ``None`` a separator. Each row draws its action's check mark
+    while it is checked, its icon (the ``design_icon`` property, a name in
+    :mod:`gui.design.icons`), its label — the ``design_html`` property where it is rich
+    text, else its text — and its shortcut, on the :class:`MenuColumns` its rows need; a
+    row is drawn quiet and cannot be chosen while its action is disabled. Choosing a row
+    closes the menu and triggers its action. The card is as wide as its widest row, and
+    at least *least_width* (a choice menu is as wide as its field); *role* is the type
+    role of the labels. *note* is the footnote, wrapped to the card. The card's top-left
+    sits at (``SHADOW``, ``SHADOW - 4``).
     """
 
     PAD = 6
 
     def __init__(
-        self, t: Theme, parent: QWidget, actions: list, note: str = '', width: int = 312, hover: int | None = None
+        self,
+        t: Theme,
+        parent: QWidget,
+        actions: list,
+        note: str = '',
+        hover: int | None = None,
+        role: str = 'body',
+        least_width: float = 0,
     ):
         super().__init__(t, parent, hover)
-        self.actions_, self.note, self.card_w = actions, note, width
+        self.actions_, self.note = actions, note
+        self.columns = MenuColumns.of(actions, role)
+        self.card_w = max(least_width, self.columns.width + 2 * self.PAD)
         rows = sum(9 if a is None else SIZE['menu-item'] for a in actions)
         note_h = 9 + self._note_h() + space(3) if note else 0
-        self.setFixedSize(width + 2 * SHADOW, self.PAD + rows + note_h + self.PAD + 2 * SHADOW)
+        self._size_card(self.card_w, self.PAD + rows + note_h + self.PAD)
         self.setAccessibleName('Menu')
 
     def _note_h(self) -> int:
         fm = QFontMetrics(font('small'))
-        w = self.card_w - 2 * self.PAD - 2 * space(3)
+        w = int(self.card_w) - 2 * self.PAD - 2 * space(3)
         return fm.boundingRect(0, 0, w, 200, Qt.TextFlag.TextWordWrap, self.note).height()
 
-    def _layout(self) -> tuple[list[tuple[QRectF, QAction]], list[float], float]:
+    def _layout(self) -> tuple[list[MenuRow], list[float], float]:
         card = self._card()
         x0, w = card.left() + self.PAD, card.width() - 2 * self.PAD
-        y = card.top() + self.PAD
+        y = self._top() + self.PAD
         rows, separators = [], []
         for a in self.actions_:
             if a is None:
                 separators.append(y)
                 y += 9
             else:
-                rows.append((QRectF(x0, y, w, SIZE['menu-item']), a))
+                rows.append(self.columns.row(QRectF(x0, y, w, SIZE['menu-item']), a))
                 y += SIZE['menu-item']
         return rows, separators, y
 
+    def menu_rows(self) -> list[MenuRow]:
+        """The rows as laid out and painted, in the widget's coordinates, scrolled."""
+        return self._layout()[0]
+
     def _rows(self) -> list[tuple[QRectF, bool]]:
-        return [(rect, a.isEnabled()) for rect, a in self._layout()[0]]
+        return [(row.rect, row.action.isEnabled()) for row in self.menu_rows()]
 
     def _activate(self, index: int) -> None:
-        action = self._layout()[0][index][1]
+        action = self.menu_rows()[index].action
         self.close_popover()
         action.trigger()
 
@@ -955,14 +1105,15 @@ class PopoverMenu(_Popover):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         card = self._card()
         paint_popover(p, t, card)
+        p.setClipPath(_rounded(card, RADIUS['popover']))
         rows, separators, y = self._layout()
         x0, w = card.left() + self.PAD, card.width() - 2 * self.PAD
         for sy in separators:
             _menu_separator(p, t, x0, sy, w)
-        for k, (rect, a) in enumerate(rows):
-            if k == self.hover and a.isEnabled():
-                p.fillPath(_rounded(rect, RADIUS['control']), t.q('bg-hover'))
-            _menu_command(p, t, rect, a, icon_x=space(3), text_x=40, key_inset=space(3))
+        for k, row in enumerate(rows):
+            if k == self.hover and row.action.isEnabled():
+                p.fillPath(_rounded(row.rect, RADIUS['control']), t.q('bg-hover'))
+            _menu_command(p, t, row, self.columns.role)
         if self.note:
             y = _menu_separator(p, t, x0, y, w) + space(2)
             p.setFont(font('small'))
@@ -981,7 +1132,8 @@ class SessionPopover(_Popover):
     *sessions* are dicts with ``name``, ``detail``, ``state`` (``warning``, ``running``,
     ``stale``, ``done`` or ``''``), ``status`` (the state in words, right of the name)
     and, while running, ``progress`` (0–1); *current* is the index of the session on
-    screen. *commands* are actions, ``None`` a separator. Choosing a session emits
+    screen. *commands* are actions, ``None`` a separator, laid out on the :class:`MenuColumns`
+    of every menu; the card is *width* wide, or wider where a command needs it. Choosing a session emits
     :attr:`session_chosen`; double-clicking its name edits it in place, and Return
     emits :attr:`renamed` with the new name.
     """
@@ -1006,18 +1158,20 @@ class SessionPopover(_Popover):
         hover: int | None = None,
     ):
         super().__init__(t, parent, hover)
-        self.sessions, self.commands, self.current, self.card_w = sessions, commands, current, width
+        self.sessions, self.commands, self.current = sessions, commands, current
         self.title, self.title_hint = title, title_hint
         self._editor: QLineEdit | None = None
+        self.columns = MenuColumns.of(commands)
+        self.card_w = max(width, self.columns.width + 2 * self.PAD)
         h = self.PAD + self.HEAD_H + len(sessions) * self.ROW_H + 9
         h += sum(9 if c is None else SIZE['menu-item'] for c in commands) + self.PAD + space(3)
-        self.setFixedSize(width + 2 * SHADOW, h + 2 * SHADOW)
+        self._size_card(self.card_w, h)
         self.setAccessibleName('Open sessions')
 
-    def _layout(self) -> tuple[list[QRectF], list[tuple[QRectF, QAction]], list[float]]:
+    def _layout(self) -> tuple[list[QRectF], list[MenuRow], list[float]]:
         card = self._card()
         x0, w = card.left() + self.PAD, card.width() - 2 * self.PAD
-        y = card.top() + self.PAD + self.HEAD_H
+        y = self._top() + self.PAD + self.HEAD_H
         session_rows = []
         for _ in self.sessions:
             session_rows.append(QRectF(x0, y, w, self.ROW_H))
@@ -1030,13 +1184,17 @@ class SessionPopover(_Popover):
                 separators.append(y)
                 y += 9
             else:
-                commands.append((QRectF(x0, y, w, SIZE['menu-item']), c))
+                commands.append(self.columns.row(QRectF(x0, y, w, SIZE['menu-item']), c))
                 y += SIZE['menu-item']
         return session_rows, commands, separators
 
+    def menu_rows(self) -> list[MenuRow]:
+        """The command rows as laid out and painted, in the widget's coordinates, scrolled."""
+        return self._layout()[1]
+
     def _rows(self) -> list[tuple[QRectF, bool]]:
         sessions, commands, _ = self._layout()
-        return [(r, True) for r in sessions] + [(r, a.isEnabled()) for r, a in commands]
+        return [(r, True) for r in sessions] + [(row.rect, row.action.isEnabled()) for row in commands]
 
     def _activate(self, index: int) -> None:
         sessions, commands, _ = self._layout()
@@ -1044,7 +1202,7 @@ class SessionPopover(_Popover):
             self.close_popover()
             self.session_chosen.emit(index)
             return
-        action = commands[index - len(sessions)][1]
+        action = commands[index - len(sessions)].action
         self.close_popover()
         action.trigger()
 
@@ -1099,9 +1257,10 @@ class SessionPopover(_Popover):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         card = self._card()
         paint_popover(p, t, card)
+        p.setClipPath(_rounded(card, RADIUS['popover']))
         sessions, commands, separators = self._layout()
         x0, w = card.left() + self.PAD, card.width() - 2 * self.PAD
-        head = QRectF(x0 + 8, card.top() + self.PAD, w - 16, self.HEAD_H)
+        head = QRectF(x0 + 8, self._top() + self.PAD, w - 16, self.HEAD_H)
         p.setFont(font('overline'))
         p.setPen(t.q('text-tertiary'))
         p.drawText(head, Qt.AlignmentFlag.AlignVCenter, self.title)
@@ -1140,10 +1299,10 @@ class SessionPopover(_Popover):
                 icons.paint(p, 'check', t.q('accent'), r.right() - 26, r.top() + 27, 14, 2)
         for sy in separators:
             _menu_separator(p, t, x0, sy, w)
-        for k, (rect, a) in enumerate(commands):
-            if k + len(sessions) == self.hover and a.isEnabled():
-                p.fillPath(_rounded(rect, RADIUS['control']), t.q('bg-hover'))
-            _menu_command(p, t, rect, a, icon_x=14, text_x=46, key_inset=10)
+        for k, row in enumerate(commands):
+            if k + len(sessions) == self.hover and row.action.isEnabled():
+                p.fillPath(_rounded(row.rect, RADIUS['control']), t.q('bg-hover'))
+            _menu_command(p, t, row, self.columns.role)
         p.end()
 
 
@@ -1278,38 +1437,72 @@ class Field(QWidget):
 
 
 class Dropdown(QWidget):
-    """A popup button: ``bg-surface`` (``bg-raised`` in dark) in a 1-px outline, trailing chevron.
+    """A choice among *options*: a field-styled box (``bg-surface``, ``bg-raised`` in dark) showing the current
+    one beside a chevron, which opens its choice menu.
 
-    *text* is rich text, so a source name keeps its subscript. *disabled* greys it;
-    *chevron* False and *align_right* show a value that is read rather than chosen.
+    *options* are rich text (a source name keeps its subscript; data in them escaped), written
+    once and shown both on the face — option *current*, nothing for ``-1`` — and in the
+    menu, which lists them in the same type role, marks the current one with a check and
+    opens on it. Choosing one emits :attr:`chosen` with its index; the owner then shows its
+    model's choice with :meth:`set_current`. The box is as wide as its widest option needs,
+    and at least *width* (a column of a grid). A disabled dropdown is greyed and opens
+    nothing; *chevron* False and *align_right* show a value that is read rather than chosen.
     """
 
     chosen = pyqtSignal(int)
 
+    #: The type role of the options, on the face and in the menu.
+    ROLE = 'number'
+
     def __init__(
         self,
         t: Theme,
-        text: str,
-        width: int,
-        disabled: bool = False,
+        options: list[str] = (),
+        current: int = -1,
+        width: int = 0,
         chevron: bool = True,
         align_right: bool = False,
-        options: list[str] | None = None,
     ):
         super().__init__()
-        self.t, self.text, self.disabled, self.chevron, self.align_right = t, text, disabled, chevron, align_right
-        self.options = options or []
-        self.setFixedSize(width, SIZE['control'])
-        if self.options:
+        self.t, self.least_width, self.chevron, self.align_right = t, width, chevron, align_right
+        self.setFixedHeight(SIZE['control'])
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        if chevron:
             self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.set_options(list(options), current)
 
-    def set_choice(self, text: str, options: list[str] | None = None) -> None:
-        """Show *text* as the choice, and offer *options* from now on when given."""
-        self.text = text
-        if options is not None:
-            self.options = options
+    @property
+    def opens_menu(self) -> bool:
+        """Whether a click opens a menu: a dropdown with options to choose from."""
+        return self.chevron and bool(self.options)
+
+    @property
+    def text(self) -> str:
+        """The current option, as rich text; ``''`` for none."""
+        return self.options[self.current] if 0 <= self.current < len(self.options) else ''
+
+    def set_options(self, options: list[str], current: int) -> None:
+        """Offer *options* from now on, option *current* chosen, and take the width the widest needs."""
+        self.options, self.current = list(options), current
+        widest = max((rich_width(o, self.ROLE) for o in self.options), default=0)
+        need = max(self.least_width, math.ceil(space(3) + widest + self._right()))
+        self.setMinimumWidth(need)
+        self.resize(need, SIZE['control'])  # a layout gives it its place again
+        self.updateGeometry()
         self.update()
+
+    def set_current(self, index: int) -> None:
+        """Show option *index* as the choice."""
+        self.current = index
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        return QSize(self.minimumWidth(), SIZE['control'])
+
+    def _right(self) -> int:
+        """The room right of the text: the chevron's, or the inset."""
+        return SIZE['control'] if self.chevron else space(3)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1321,33 +1514,42 @@ class Dropdown(QWidget):
         else:
             super().keyPressEvent(event)
 
+    def changeEvent(self, event) -> None:
+        if event.type() == QEvent.Type.EnabledChange:
+            self.update()
+        super().changeEvent(event)
+
     def open_menu(self) -> None:
-        """Offer the options in a menu under the dropdown; choosing one emits :attr:`chosen`."""
-        if not self.options or self.disabled:
+        """Open the choice menu under the dropdown (over it where the window has more room there)."""
+        if not self.opens_menu or not self.isEnabled():
             return
         actions = []
-        for i, text in enumerate(self.options):
-            action = QAction(text, self)
+        for i, html in enumerate(self.options):
+            action = QAction(QTextDocumentFragment.fromHtml(html).toPlainText(), self)
+            action.setProperty('design_html', html)
+            action.setCheckable(True)
+            action.setChecked(i == self.current)
             action.triggered.connect(lambda _on=False, i=i: self.chosen.emit(i))
             actions.append(action)
-        fm = QFontMetrics(font('body'))
-        width = max(self.width(), max(fm.horizontalAdvance(o) for o in self.options) + 2 * space(6))
-        menu = PopoverMenu(self.t, self.window(), actions, width=width)
+        hover = self.current if 0 <= self.current < len(actions) else None
+        menu = PopoverMenu(self.t, self.window(), actions, hover=hover, role=self.ROLE, least_width=self.width())
         menu.popup(self)
 
     def paintEvent(self, _):
         t = self.t
         h = SIZE['control']
+        on = self.isEnabled()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = _rounded(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), RADIUS['control'])
-        p.fillPath(path, t.q('bg-subtle' if self.disabled else ('bg-raised' if t.dark else 'bg-surface')))
-        p.setPen(QPen(t.q('border' if self.disabled else 'border-strong'), 1))
+        p.fillPath(path, t.q(('bg-raised' if t.dark else 'bg-surface') if on else 'bg-subtle'))
+        p.setPen(QPen(t.q('border-strong' if on else 'border'), 1))
         p.drawPath(path)
-        inset = 10
-        right = h if self.chevron else inset
-        tone = t.q('text-tertiary' if self.disabled else 'text-primary')
-        paint_rich(p, QRectF(inset, 0, self.width() - inset - right, h), self.text, 'number', tone, self.align_right)
+        text = QRectF(space(3), 0, self.width() - space(3) - self._right(), h)
+        p.save()
+        p.setClipRect(text)
+        paint_rich(p, text, self.text, self.ROLE, t.q('text-primary' if on else 'text-tertiary'), self.align_right)
+        p.restore()
         if self.chevron:
             icons.paint(p, 'chevron-down', t.q('text-tertiary'), self.width() - 22, (h - 12) / 2, 12, 2)
         if self.hasFocus():

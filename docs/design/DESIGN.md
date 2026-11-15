@@ -133,7 +133,8 @@ the TXT/CSV reports use `estimate [low, high]`.
 - **Spacing** (`SPACE`, `space(n)`): 0, 2, 4, 8, 12, 16, 24, 32, 48 px. Margins and
   spacings take only these.
 - **Fixed sizes** (`SIZE`): sidebar 232, side panel 320 (at least 280), toolbar 52,
-  status bar 28, nav item 28, session switcher 44, controls 28, badges 18, plot axes 56
+  status bar 28, nav item 28, session switcher 44, controls 28, badges 18, menu rows 32 with a
+  16-px icon and a 14-px check mark, plot axes 56
   (left) and 44 (bottom) px; the inputs grid of Input uncertainty: name 168, kind 156,
   stated in 88 and spread bar 96 px wide, rows 60 px high; the headline column of Fit
   results, 264; the sample histogram of Sensitivity, 104; the least height of an analysis
@@ -338,12 +339,13 @@ the same tokens.
 | **Focus ring** | 2 px accent around the focused control, on every keyboard-reachable control |
 | **Segmented control** | Mutually exclusive options (Fixed / σ / Range, units, modes). Light: `bg-subtle` track, selected segment `bg-surface` with a `border` outline, other labels `text-secondary`. Dark: `bg-window` track, selected segment `bg-raised` lifted by 6 % `text-primary` with a `border-strong` outline, other labels `text-tertiary`. Selected label `body-strong`; single options can be disabled |
 | **Field** | Right-aligned value in a 6-px-radius box, an optional leading symbol inside (`σ`); its unit beside it — a segmented control where the unit is chosen once for a row or section, a menu beside a single value; a disabled state (Fixed seed off) |
-| **Dropdown** | Field-styled box with the current choice and a chevron; opens a menu |
+| **Dropdown** | Field-styled box with the current choice and a chevron; opens its choice menu. Its options are written once, as rich text, and shown both on the face and in the menu in the same type role (`number`); the box is as wide as its widest option needs, or the column it sits in where that is wider |
 | **Checkbox** | Box with an accent check; label to its right |
 | **Toggle** | Pill switch for on/off settings in the Settings window; accent when on |
 | **Slider** | Track in accent up to the knob, ticks, and its two end values at either side, each edited in place |
 | **Badge** | Pill, 18 px; tones `neutral` and `accent` (§5) |
-| **Menu** | Popover on `bg-raised`: icon, label, right-aligned shortcut in `text-tertiary`, separators, optional footer note |
+| **Menu** | Popover on `bg-raised`: check mark, icon, label, right-aligned shortcut in `text-tertiary`, separators, optional footer note. Its rows share one column layout measured from what they hold — a check column where a row can be checked, an icon column where a row has an icon, a label column as wide as the widest label, a shortcut column where a row has a shortcut — so the card is as wide as its widest row and every label is shown whole. It opens below its anchor, or above it where the window has more room there; a menu taller than the room is cut to it and scrolls (wheel, arrow keys). It stays inside the window it opens in |
+| **Choice menu** | The menu of a dropdown, or of a tool whose rows are mutually exclusive choices (the replicate display): every row a choice, the current one marked with an accent check and the menu opened on it, at least as wide as its dropdown. Choosing a row closes it and sets the choice |
 | **Navigation item** | Icon, label, status mark; hover and selected fills (§3) |
 | **Session switcher and popover** | §4; the popover is `bg-raised`, 10-px radius, `border` outline, floating shadow |
 | **File card** | Sidebar foot (§3) |
@@ -603,7 +605,7 @@ appearance): **Markers** — replicate points and mean points *Small* / *Medium*
 (`stroke-thin` / `stroke-medium` / `stroke-thick`); **Colour** — replicate points, *By
 replicate* (built in: each replicate its `replicate-n`, past twelve the colours again
 with the next mark — circle, square, triangle — after the one chosen) or *Grey* (every
-replicate in `replicate`, one mark), the menu showing the first three replicates' colours
+replicate in `replicate`, one mark), each choice shown with its swatch — the first three replicates' colours
 beside *By replicate*; and fitted curve, *Teal* (`accent`, built in), *Blue* (`series-1`),
 *Magenta* (`series-2`) or *Text colour* (`text-primary`) — never a free colour picker;
 the means and their error bars stay `text-primary`, so no choice draws the replicates in
