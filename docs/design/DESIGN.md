@@ -399,8 +399,12 @@ Each view below is the approved design; its reference screens are in `screens/`.
 ### Measurements — `measurements_*.jpg`
 Canvas: the **Files** table (file, format, replicate letter, points; *Add files…*, × to
 remove one), a one-line note on how added files are used (*Load data into a new
-session…* as its link), and the raw **Titration** plot with a *Display unit* menu in its
-header. Side panel *Measurement settings*: Concentrations (under the small heading *Units in
+session…* as its link), and the raw **Titration** plot — each replicate's own points as
+loaded, no mean and no curve, drawn by the one titration plot model with no fit — with a
+*Display unit* menu in its header. While a fit is on view, a neutral callout above the
+plot names it — *Fitted* `Kₐ guest 1.59 × 10⁸ M⁻¹ — the fitted curve is in Fit results.`
+— with the action *Show fit results*; it is absent with no fit, while the results are
+hidden and while a fit runs. Side panel *Measurement settings*: Concentrations (under the small heading *Units in
 the file*, the unit the file's concentrations are stated in — a statement about the file,
 which reinterprets the numbers, kept apart from the plot's *Display unit* — then the
 concentration list, *Load vector…* / *Save vector…*), Replicates (replicate chips,
@@ -431,7 +435,10 @@ as entered, compact interval chart), the three tests against what was stated, an
 ### Fit results — `fit_*.jpg`
 Canvas: the headline — Ka in `metric` with its Input-aware badge and 95 % interval —
 the interval chart against the reading at the inputs as entered, *All results and
-diagnostics →*, any callout, and the **Titration** plot with a replicate-display tool.
+diagnostics →*, any callout, and the **Titration** plot with a replicate-display tool —
+the one control of the session's replicate display: *Replicates and mean ± SD*, *Mean ±
+SD only* or *Replicates only*, which Fit results, Plot appearance and every saved
+titration figure draw alike.
 With two binding constants the headline stacks: one row per Ka (K₁, K₂), each with its
 value, interval and interval-chart rows, above the plot. What an interval needs said
 beside it is its tooltip: what *Split* means on the interval chart, what widened it or
@@ -451,8 +458,7 @@ and p-value, a test that could not run reading its reason, the full sentence of 
 hover; Parameters (estimate and unit; degenerate ones starred, with one footnote naming
 the total the model holds fixed where its balance ties them, `* Not separately determined
 while the dye total is fixed.`, and a note where a signal parameter ended on an entered
-bound); Input shifts; Display — the replicates on the plot as *Replicates and mean ± SD*,
-*Mean ± SD only* or *Replicates only*.
+bound); Input shifts.
 
 ### Ka confidence — `confidence_*.jpg`
 Canvas: the two readings side by side (Input-aware in `metric`; Inputs as entered in
@@ -540,7 +546,8 @@ The appearance of the session's **titration plot**: the plot in Measurements and
 results, and the figure saved from it (also in a batch export). Ka confidence,
 Sensitivity and the Simulation window take no appearance setting; they are drawn from the
 tokens alone. Canvas: a sentence saying what the settings style, then the **Titration**
-plot as Fit results draws it — the fit where there is one, else the data — with its
+plot as Fit results draws it — the fit where there is one, else the data, in the
+session's replicate display — with its
 legend and the image export; with nothing loaded, a sentence saying what to load. Every
 choice redraws the plot at once, here and in the other views. Side panel *Titration
 plot*, headed by *Reset to defaults* (a link; it gives this session the built-in

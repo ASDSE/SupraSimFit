@@ -244,7 +244,7 @@ class PlotAppearanceView(QObject):
         model = self.model
         shown = model.fit_results
         assay_type = AssayType[shown[-1].assay_type] if shown else model.settings.assay_type
-        titration = R.titration(model.measurement_set, shown, assay_type)
+        titration = R.titration(model.measurement_set, shown, assay_type, model.settings.replicate_display)
         has_plot = titration.data is not None
         self.plot.show_data(titration.data, model.settings.display_unit)
         self.legend.set_items(titration.legend)

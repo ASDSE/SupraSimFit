@@ -64,6 +64,7 @@ from gui.plotting.labels import (
     stated_uncertainty,
     verdict_headline,
 )
+from gui.results import REPLICATE_DISPLAYS
 from gui.sensitivity import NOTHING_VARIES, AnalysisForm
 from gui.uncertainty import UncertaintyForm
 from gui.widgets.assay_conditions import (
@@ -92,7 +93,7 @@ class Change(Flag):
     BINDING = auto()  # the binding model as stated
     UNCERTAINTY = auto()  # the statement of the input uncertainties
     ANALYSIS = auto()  # the settings of the next sensitivity run
-    DISPLAY = auto()  # the concentration unit the titration plots are drawn in
+    DISPLAY = auto()  # how the titration plots are drawn: the concentration unit and the replicate display
     APPEARANCE = auto()  # the appearance of the titration plot
     NAME = auto()  # the session's name
     STATUS = auto()  # the status message
@@ -274,6 +275,10 @@ class SessionSettings:
         Why the uncertainties as stated cannot be used, one sentence per problem.
     display_unit : str
         The concentration unit the plots show.
+    replicate_display : int
+        What the titration plots show of the replicates: the index of
+        :data:`gui.results.REPLICATE_DISPLAYS` — their points and mean ± SD, the mean
+        ± SD only, or their points only.
     """
 
     assay_type: AssayType = AssayType.GDA
@@ -288,6 +293,7 @@ class SessionSettings:
     input_labels: Mapping[str, str] = field(default_factory=dict)
     input_problems: tuple[str, ...] = ()
     display_unit: str = 'µM'
+    replicate_display: int = 0
 
     def fit_config(self) -> FitConfig:
         """The configuration a fit or an analysis runs under: the replicate mode and the bounds."""
@@ -741,6 +747,15 @@ class SessionModel(QObject):
             self._note(Change.DISPLAY)
 
     @_edit
+    def set_replicate_display(self, index: int) -> None:
+        """Show the replicates on the titration plots as :data:`gui.results.REPLICATE_DISPLAYS` [*index*] says."""
+        if not 0 <= index < len(REPLICATE_DISPLAYS):
+            raise ValueError(f'No replicate display {index}; there are {len(REPLICATE_DISPLAYS)}.')
+        if index != self._settings.replicate_display:
+            self.update_settings(replicate_display=index)
+            self._note(Change.DISPLAY)
+
+    @_edit
     def update_settings(self, **changes: Any) -> None:
         """Take *changes* to the settings, and check the held results when one they are checked by changed.
 
@@ -896,9 +911,9 @@ class SessionModel(QObject):
         """Take a copy of everything *other* states, and none of its results.
 
         Its data — the files, the concentrations as stated, which replicates are
-        used — its binding model, input uncertainties, display unit and plot
-        appearance. The copy is named after *other*, so the two read apart in the
-        switcher.
+        used — its binding model, input uncertainties, display unit, replicate
+        display and plot appearance. The copy is named after *other*, so the two
+        read apart in the switcher.
         """
         self.shutdown()
         self._dataset = copy.deepcopy(other._dataset)

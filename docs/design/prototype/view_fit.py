@@ -255,7 +255,6 @@ def inspector(t: Theme) -> QWidget:
         C.section(t, 'Diagnostics', dw),
         C.section(t, 'Parameters', pw),
         C.section(t, 'Input shifts', sw),
-        C.section(t, 'Display', None, open_=False, trailing='Neutral replicates'),
         None,
         spacing=0,
         margins=(5, 0, 5, 4),

@@ -2,7 +2,9 @@
 that decide which points and replicates reach the fit (DESIGN.md §8).
 
 Canvas: the Files table (*Add files…*, × removes a file), a note on how added files are
-used, and the Titration plot with its display unit. Side panel *Measurement settings*:
+used, after a fit a cue naming the fitted value with *Show fit results*, and the raw
+Titration plot — drawn by :func:`gui.results.titration` with no fit — with its display
+unit. Side panel *Measurement settings*:
 Concentrations, Replicates and Outlier removal. Every change goes to the session's
 model; the view redraws when the model says the data changed.
 """
@@ -19,6 +21,7 @@ from PyQt6.QtWidgets import QFileDialog, QGridLayout, QMessageBox, QSizePolicy, 
 
 from core.assays.registry import ASSAY_REGISTRY
 from core.units import Q_
+from gui import results as R
 from gui.dataset import UNITS, file_filter
 from gui.design import components as C
 from gui.design import icons
@@ -26,7 +29,7 @@ from gui.design.appearance import theme
 from gui.design.tokens import Theme, font, space
 from gui.plotting.labels import _display_label, and_join, times_ten
 from gui.session_model import Change, SessionModel
-from gui.views.titration import TitrationData, TitrationPlot, legend_marks
+from gui.views.titration import TitrationPlot, legend_marks
 
 NEW_SESSION = 'Load data into a new session…'
 
@@ -139,8 +142,10 @@ class MeasurementsView(QObject):
     """The canvas and side panel of Measurements over *model*; *parent* is where its dialogs open.
 
     :attr:`new_session_link` is the note's *Load data into a new session…*, which the window
-    answers.
+    answers; :attr:`view_requested` asks for another view (the cue's *Show fit results*).
     """
+
+    view_requested = pyqtSignal(str)
 
     def __init__(self, model: SessionModel, parent: QWidget):
         super().__init__(parent)
@@ -270,6 +275,9 @@ class MeasurementsView(QObject):
         )
         note.setMinimumWidth(1)  # keeps the canvas from widening the split
         self.new_session_link = C.link_button(NEW_SESSION)
+        self.cue_host = QWidget()
+        self.cue_box = C.vbox(spacing=0, margins=(0, 0, 0, 4))
+        self.cue_host.setLayout(self.cue_box)
         self.legend = C.LegendRow(t, [])
         self.display_unit = C.Dropdown(t, 'µM', 72, options=list(UNITS))
         self.display_unit.setAccessibleName('Display unit of the titration plot')
@@ -287,6 +295,7 @@ class MeasurementsView(QObject):
             6,
             C.hairline(),
             5,
+            self.cue_host,
             C.hbox(
                 C.label('Titration', 'body-strong'),
                 3,
@@ -418,6 +427,20 @@ class MeasurementsView(QObject):
             Change.BINDING in what and self.model.settings.assay_type is not self.assay_shown
         ):
             self.refresh()
+        elif what & (Change.RESULTS | Change.RUN):
+            self._refresh_cue()
+
+    def _refresh_cue(self) -> None:
+        """Say the fit shown above the raw plot, with *Show fit results*; nothing where :func:`gui.results.fit_cue` says nothing."""
+        while self.cue_box.count():
+            C.drop(self.cue_box.takeAt(0).widget())
+        fit, note = self.model.fit_view()
+        text = R.fit_cue(fit, note, self.model.fit_running())
+        self.cue_host.setVisible(text is not None)
+        if text is not None:
+            cue = C.Callout(self.t, 'neutral', 'Fitted', text, R.SHOW_FIT)
+            cue.action.clicked.connect(lambda: self.view_requested.emit('Fit results'))
+            self.cue_box.addWidget(cue)
 
     def _show_plot_appearance(self) -> None:
         look = self.model.plot_appearance
@@ -437,11 +460,13 @@ class MeasurementsView(QObject):
         self.display_unit.set_choice(unit)
         self.assay_shown = model.settings.assay_type
         x_name = ASSAY_REGISTRY[self.assay_shown].x_label
+        titration = R.titration(ms, [], self.assay_shown, R.RAW)
+        self.legend.set_items(titration.legend)
+        self.plot.show_data(titration.data, unit)
+        self._refresh_cue()
         if ms is None:
             self.files.set_rows([])
             self.files_summary.setText('')
-            self.legend.set_items([])
-            self.plot.show_data(None, unit)
             self.grid.set_values([], f'{x_name} (M)')
             self.conc_section.header.set_trailing('')
             self.reps_section.header.set_trailing('')
@@ -479,20 +504,6 @@ class MeasurementsView(QObject):
         self.files_summary.setText(
             f'{n_files} file{"" if n_files == 1 else "s"} · {ms.n_replicas} replicate{"" if ms.n_replicas == 1 else "s"}'
             f' · one grid of {ms.n_points} points, {x_disp.min():.3g} – {x_disp.max():.3g} {unit}'
-        )
-        off = [letters[r] for r in ms.replica_ids if not ms.is_active(r)]
-        items = [('dots', f'Replicates ({ms.n_active})')]
-        if off:
-            items.append(('cross', f'{and_join(off)} switched off'))
-        self.legend.set_items(items)
-        self.plot.show_data(
-            TitrationData(
-                x_molar=np.asarray(ms.concentrations, dtype=float),
-                signals=np.asarray(ms.signals, dtype=float),
-                active=[ms.is_active(r) for r in ms.replica_ids],
-                x_name=x_name,
-            ),
-            unit,
         )
         # Concentrations
         self.imported_unit.set_current(UNITS.index(dataset.imported_unit))

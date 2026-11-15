@@ -90,13 +90,11 @@ INPUT_AWARE = 'Input-aware'
 AS_ENTERED = 'Inputs as entered'
 SPLIT = 'Split'
 
-#: What the titration plot shows of the replicates, as *Display* offers it: the long name
-#: and the segment's short one.
-REPLICATE_DISPLAYS = (
-    ('Replicates and mean ± SD', 'Both'),
-    ('Mean ± SD only', 'Mean ± SD'),
-    ('Replicates only', 'Replicates'),
-)
+#: What the titration plot shows of the replicates, as the replicate-display tool offers it.
+REPLICATE_DISPLAYS = ('Replicates and mean ± SD', 'Mean ± SD only', 'Replicates only')
+
+#: The replicate display of the raw titration in Measurements: each replicate's own points, as loaded.
+RAW = 2
 
 LEGACY_NOTE = (
     'Imported from a file written by an earlier version: a multi-start estimate without a confidence interval. '
@@ -330,6 +328,11 @@ class KaBlock:
     def plain_name(self) -> str:
         """The constant's glossary name as plain text, ``Kₐ guest``."""
         return fmt_param_plain(self.key)
+
+    @property
+    def plain_value(self) -> str:
+        """The headline value with its unit as plain text: ``1.59 × 10⁸ M⁻¹``, ``not limited below 2.41 × 10³ M⁻¹``."""
+        return ' '.join(text for text in (self.qualifier.lower(), self.value, self.unit) if text)
 
 
 def ka_blocks(fit: FitResult, profile=None, profile_running: bool = False) -> list[KaBlock]:
@@ -696,11 +699,27 @@ def fit_numbers(fit: FitResult) -> str:
     reported = reading(fit)[0]
     parts = []
     for block in ka_blocks(fit):
-        value = ' '.join(text for text in (block.qualifier.lower(), block.value, block.unit) if text)
-        parts.append(f'{block.plain_name} {value} ({reported}), {block.level} {block.interval}')
+        parts.append(f'{block.plain_name} {block.plain_value} ({reported}), {block.level} {block.interval}')
     parts.append(f'R² {fmt_r2(fit.r_squared)}')
     line = '; '.join(parts)
     return f'{line}; {SHIFTED_CURVE_NOTE}' if fit.input_shifts else line
+
+
+#: The action of Measurements' fit cue: the view it switches to.
+SHOW_FIT = 'Show fit results'
+
+
+def fit_cue(fit: FitResult | None, note: str | None, fit_running: bool) -> str | None:
+    """What Measurements says above its raw titration of the fit shown, or ``None`` where it says nothing.
+
+    ``Kₐ guest 1.59 × 10⁸ M⁻¹ — the fitted curve is in Fit results.`` Nothing with no fit,
+    while *note* hides it, or while a fit runs: the value would then describe no fit on
+    view.
+    """
+    if fit is None or note is not None or fit_running:
+        return None
+    values = and_join(f'{block.plain_name} {block.plain_value}' for block in ka_blocks(fit))
+    return f'{values} — the fitted curve is in Fit results.' if values else 'The fitted curve is in Fit results.'
 
 
 def other_fits_note(shown: Sequence[FitResult]) -> str | None:

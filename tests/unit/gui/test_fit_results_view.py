@@ -2,8 +2,8 @@
 
 What the text and numbers say is pinned by ``test_results.py``; here only the view's own
 work: the empty view, the callout's action, the link to the details, the side panel's
-least width, the layout of Fit quality and Diagnostics, copyable results, the replicate
-display, the plot's ticks and error bars and the exported image.
+least width, the layout of Fit quality and Diagnostics, copyable results, the plot's ticks
+and error bars and the exported image.
 """
 
 from __future__ import annotations
@@ -419,19 +419,6 @@ def test_the_results_can_be_copied(session):
     assert all(label.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse for label in values)
 
 
-def test_the_replicate_display_redraws_the_plot_and_names_the_choice(session):
-    ms = four_replicates()
-    state_binding(session, assay_type=AssayType.GDA)
-    session.model.load(ms, None)
-    view = session._results
-
-    view.set_display(1)
-
-    assert view.plot.data.replicates is False and view.plot.data.mean_sd is True
-    assert view.display_section.header._trailing == 'Mean ± SD only'
-    assert view.display_choice.current == 1
-
-
 def _pixels_near(image, colour, tolerance: int = 24) -> int:
     """How many pixels of *image* lie within *tolerance* of *colour* in every channel."""
     from PyQt6.QtGui import QColor, QImage
@@ -478,11 +465,11 @@ def test_the_saved_titration_is_the_plot_drawn_light_on_white_in_a_dark_window(q
     view = session._results
     counts = {}
     for name, display in (('without replicates', 1), ('without mean', 2)):
-        view.set_display(display)
+        session.model.set_replicate_display(display)
         other = tmp_path / f'{display}.png'
         view.export_image(str(other))
         counts[name] = QImage(str(other))
-    view.set_display(0)
+    session.model.set_replicate_display(0)
 
     assert QColor(image.pixel(2, 2)).name() == '#ffffff'
     assert _pixels_near(image, light['accent']) > 40  # the fitted curve

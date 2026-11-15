@@ -4,13 +4,13 @@ Canvas: the headline — each binding constant in the ``metric`` role with the b
 reading reported (Input-aware, or Inputs as entered) and its 95 % interval, beside the
 interval chart that sets it against the reading at the inputs as entered — then *All
 results and diagnostics →*, any callout, and the **Titration** plot with its legend, the
-replicate-display tool and the image export. The notes of an interval are the tooltips of
-its interval line and chart, and why the single-replicate fits differ from it the tooltip of
-their line. Side panel *Fit details*, which fits its least width and never scrolls sideways:
+replicate-display tool (the session's one replicate display) and the image export. The
+notes of an interval are the tooltips of its interval line and chart, and why the
+single-replicate fits differ from it the tooltip of their line. Side panel *Fit details*, which fits its least width and never scrolls sideways:
 Fit quality (R², RMSE, replicates used, noise), the replicates' own fits where each was
 fitted separately, Diagnostics (each test with its mark and p-value, its full sentence on
 hover), Parameters with the footnote of the starred ones and its notes, Input shifts — each
-input's name shown whole, a long one broken where it must be — and Display.
+input's name shown whole, a long one broken where it must be.
 Everything is read from the session model's held results and redrawn when the model says
 they changed; the text and numbers come from :mod:`gui.results`.
 """
@@ -54,7 +54,6 @@ class FitResultsView(QObject):
     def __init__(self, model: SessionModel, parent: QWidget):
         super().__init__(parent)
         self.model, self.parent, self.t = model, parent, theme()
-        self.display = 0  # the index of R.REPLICATE_DISPLAYS
         self.callouts: list[R.CalloutSpec] = []  # what the callouts on the canvas say
         self.canvas = self._build_canvas()
         self.side = self._build_side()
@@ -167,19 +166,11 @@ class FitResultsView(QObject):
         shifts = QWidget()
         shifts.setLayout(C.vbox(self.shift_grid, 3, self.shift_note, spacing=0))
 
-        # Display
-        self.display_choice = C.Segmented(t, [short for _long, short in R.REPLICATE_DISPLAYS], current=0)
-        self.display_choice.setAccessibleName('What the titration plot shows of the replicates')
-        self.display_choice.changed.connect(self.set_display)
-        display = QWidget()
-        display.setLayout(C.vbox(C.hbox(self.display_choice, None), spacing=0))
-
         self.quality_section = C.section(t, 'Fit quality', quality, first=True)
         self.replicates_section = C.section(t, 'Replicates', replicates)
         self.diagnostics_section = C.section(t, 'Diagnostics', diagnostics)
         self.parameters_section = C.section(t, 'Parameters', parameters)
         self.shifts_section = C.section(t, 'Input shifts', shifts)
-        self.display_section = C.section(t, 'Display', display, open_=False, trailing=R.REPLICATE_DISPLAYS[0][0])
         self.sections = QWidget()
         self.sections.setLayout(
             C.vbox(
@@ -194,7 +185,7 @@ class FitResultsView(QObject):
         content = QWidget()
         self.no_fit_box = QWidget()
         self.no_fit_box.setLayout(C.vbox(self.no_fit, spacing=0, margins=(0, 0, 0, 3)))
-        content.setLayout(C.vbox(self.no_fit_box, self.sections, self.display_section, spacing=0))
+        content.setLayout(C.vbox(self.no_fit_box, self.sections, spacing=0))
         return content
 
     @staticmethod
@@ -205,22 +196,20 @@ class FitResultsView(QObject):
     # Commands
     # ------------------------------------------------------------------
 
-    def set_display(self, index: int) -> None:
-        """Show the replicates as :data:`gui.results.REPLICATE_DISPLAYS` [*index*] says."""
-        self.display = index
-        self.display_choice.set_current(index)
-        self.display_section.header.set_trailing(R.REPLICATE_DISPLAYS[index][0])
-        self._refresh_plot()
+    def display_actions(self) -> list[QAction]:
+        """The choices of the replicate-display tool, the session's own checked; each sets the session's display."""
+        actions = []
+        for i, name in enumerate(R.REPLICATE_DISPLAYS):
+            action = QAction(name, self)
+            action.setCheckable(True)
+            action.setChecked(i == self.model.settings.replicate_display)
+            action.triggered.connect(lambda _on=False, i=i: self.model.set_replicate_display(i))
+            actions.append(action)
+        return actions
 
     def _open_display_menu(self) -> None:
-        actions = []
-        for i, (long, _short) in enumerate(R.REPLICATE_DISPLAYS):
-            action = QAction(long, self)
-            action.setCheckable(True)
-            action.setChecked(i == self.display)
-            action.triggered.connect(lambda _on=False, i=i: self.set_display(i))
-            actions.append(action)
-        C.PopoverMenu(self.t, self.parent.window(), actions, width=SIZE['inspector-min']).popup(self.display_tool)
+        menu = C.PopoverMenu(self.t, self.parent.window(), self.display_actions(), width=SIZE['inspector-min'])
+        menu.popup(self.display_tool)
 
     def show_diagnostics(self, area: QScrollArea) -> None:
         """Open Diagnostics and scroll *area*, the side panel's, to it."""
@@ -281,7 +270,7 @@ class FitResultsView(QObject):
         model = self.model
         shown = model.fit_results
         assay_type = AssayType[shown[-1].assay_type] if shown else model.settings.assay_type
-        titration = R.titration(model.measurement_set, shown, assay_type, self.display)
+        titration = R.titration(model.measurement_set, shown, assay_type, model.settings.replicate_display)
         self.plot.show_data(titration.data, model.settings.display_unit)
         self.legend.set_items(titration.legend)
         self.description.set_full_text(titration.description)

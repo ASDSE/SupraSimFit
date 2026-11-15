@@ -592,6 +592,7 @@ class FittingSession(QWidget):
         self._appearance.save_plot.clicked.connect(lambda: self.export_plot('Plot appearance'))
         self._measurements.save_plot.clicked.connect(lambda: self.export_plot('Measurements'))
         self._sensitivity.view_requested.connect(self.view_requested)
+        self._measurements.view_requested.connect(self.view_requested)
         # The views follow the model first, connected as they were built; then the window.
         self.model.changed.connect(self._on_changed)
         self.model.warning.connect(lambda title, message: QMessageBox.warning(self, title, message))
