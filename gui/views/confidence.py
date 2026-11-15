@@ -292,7 +292,6 @@ class ProfileFigure(QWidget):
         """Put the card at the plot's top-right corner and the Ka tag at the top of the hairline."""
         vb = self.main.getPlotItem().getViewBox()
         rect = self.main.mapFromScene(vb.sceneBoundingRect()).boundingRect()
-        self.card.adjustSize()
         self.card.move(rect.right() - self.card.width() - space(3), rect.top() + space(3))
         self.card.raise_()
         if self.tag.isVisible():

@@ -14,12 +14,14 @@ import pytest
 
 pytest.importorskip('PyQt6')
 
-from PyQt6.QtCore import Qt  # noqa: E402
+from PyQt6.QtCore import QPointF, Qt  # noqa: E402
+from PyQt6.QtGui import QFontMetrics  # noqa: E402
 
 from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet  # noqa: E402
 from core.pipeline.varpro import KaInterval  # noqa: E402
 from gui import confidence as CF  # noqa: E402
 from gui.design import components as C  # noqa: E402
+from gui.design.tokens import font, space  # noqa: E402
 from gui.session_model import Change  # noqa: E402
 from tests.unit.gui.test_fit_results_view import _CONFLICT, _SHIFTS, _pixels_near  # noqa: E402
 from tests.unit.gui.test_results import _stepwise, aware_result, result  # noqa: E402
@@ -132,16 +134,58 @@ def test_the_card_reads_the_estimate_until_the_pointer_reads_another_ka(qapp, se
     _show(session, fit, profile)
     (figure,) = session._confidence.figures
     best = np.log10(fit.parameters['Ka_guest'].magnitude)
-    assert figure.card.title.text() == figure.plot.readout_title(best) and not figure.hair.isVisible()
+    assert figure.card.title == figure.plot.readout_title(best) and not figure.hair.isVisible()
 
     figure.show_at(best + 0.3)
 
-    (name, value, verdict) = figure.card.rows[0]
-    assert figure.card.title.text() == figure.plot.readout_title(best + 0.3) and figure.hair.isVisible()
-    assert (name.text(), verdict.text()) == ('Inputs as entered', CF.readout(figure.plot, best + 0.3)[0].verdict)
-    assert value.text() == CF.readout(figure.plot, best + 0.3)[0].value
+    (_color, name, value, verdict, _quiet) = figure.card.rows[0]
+    assert figure.card.title == figure.plot.readout_title(best + 0.3) and figure.hair.isVisible()
+    assert (name, verdict) == ('Inputs as entered', CF.readout(figure.plot, best + 0.3)[0].verdict)
+    assert value == CF.readout(figure.plot, best + 0.3)[0].value
     figure.leaveEvent(None)
-    assert not figure.hair.isVisible() and figure.card.title.text() == figure.plot.readout_title(best)
+    assert not figure.hair.isVisible() and figure.card.title == figure.plot.readout_title(best)
+
+
+def move_pointer(qapp, figure, x: float, y: float) -> None:
+    """Move the pointer to (*x*, *y*) in *figure*'s data coordinates, as the plot's scene reports a move."""
+    vb = figure.main.getPlotItem().getViewBox()
+    figure.main.scene().sigMouseMoved.emit(vb.mapViewToScene(QPointF(x, y)))
+    figure._proxy.flush()
+    qapp.processEvents()
+
+
+def assert_card_fits(figure) -> None:
+    """The readout card of *figure* holds every text it paints, from its fonts' advances, inside the plot area."""
+    card = figure.card
+    title, value_font, small = (QFontMetrics(font(role)) for role in ('label', 'small-number', 'small'))
+    across, down = 2 * space(4), 2 * space(3)
+    line = max(small.height(), value_font.height())
+    assert card.width() >= across + title.horizontalAdvance(card.title)
+    for _color, name, value, verdict, _quiet in card.rows:
+        row = space(4) + small.horizontalAdvance(name) + value_font.horizontalAdvance(value)
+        row += small.horizontalAdvance(verdict) + (3 if verdict else 2) * space(3)
+        assert card.width() >= across + row, f'{name} {value} {verdict} does not fit'
+    assert card.height() >= down + title.height() + len(card.rows) * line
+    assert card.size() == card.sizeHint(), 'the card is the size its content asks for'
+    vb = figure.main.getPlotItem().getViewBox()
+    plot_area = figure.main.mapFromScene(vb.sceneBoundingRect()).boundingRect()
+    assert plot_area.contains(card.geometry()), 'the card lies inside the plot area'
+
+
+def test_the_card_fits_what_it_reads_after_a_pointer_move_and_keeps_its_size(qapp, session, demo):
+    fit, profile = demo
+    _show(session, fit, profile)
+    qapp.processEvents()
+    (figure,) = session._confidence.figures
+    best = np.log10(fit.parameters['Ka_guest'].magnitude)
+
+    move_pointer(qapp, figure, best + 0.3, 1.0)
+    assert figure.hair.isVisible() and len(figure.card.rows) == len(figure.plot.curves)
+    assert_card_fits(figure)
+    size = figure.card.size()
+    move_pointer(qapp, figure, best - 0.2, 1.0)
+    move_pointer(qapp, figure, best + 0.3, 1.0)
+    assert figure.card.size() == size, 'the same reading takes the same room'
 
 
 def test_enlarge_gives_the_plots_the_canvas_and_gives_back_the_readings(session):

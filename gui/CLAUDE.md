@@ -34,7 +34,7 @@ Binding rules:
 - **Open choices** — a design choice DESIGN.md does not settle — are put to the owner, never
   picked silently; the answer goes into DESIGN.md and the tokens.
 - **Done means seen.** Render the view in light and dark with
-  `uv run python -m docs.design.render <view> <out.png> [--theme dark] [--state …] [--menu …]`
+  `uv run python -m docs.design.render <view> <out.png> [--theme dark] [--state …] [--menu …] [--pointer across,down]`
   — the running window as the app ships it, off screen — and compare it with its
   reference screen before calling it finished. A deliberate change to an approved view
   updates its screens with `uv run python -m docs.design.prototype.render --all`.

@@ -2742,73 +2742,86 @@ class PlotHeader(QWidget):
         return super().event(event)
 
 
-class _Swatch(QWidget):
-    """A 12-px stroke in a series' colour, as the readout card marks its rows."""
-
-    def __init__(self, t: Theme, color: str):
-        super().__init__()
-        self.t, self.color = t, color
-        self.setFixedSize(space(4), space(5))
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(self.t.q(self.color), 2)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(pen)
-        cy = self.height() / 2
-        p.drawLine(QPointF(1, cy), QPointF(self.width() - 1, cy))
-        p.end()
-
-
 class ReadoutCard(QWidget):
     """The values under the pointer as a card at a plot's top-right corner (DESIGN.md §6, Readout).
 
-    A title, then one row per series: its swatch, name, value — right-aligned in tabular
-    figures, so the decimal points line up — and a verdict, quieter where it is the negative
-    one. :meth:`set_values` fills it; it is selectable, so a reading can be copied.
+    A title in ``label`` ``text-secondary``, then one row per series: a 12-px stroke in its
+    colour, its name, its value — right-aligned in tabular figures, so the decimal points
+    line up — and a verdict, quieter where it is the negative one. The verdict column is
+    left out where no row has one. :meth:`set_values` fills it; one pass over the fonts'
+    metrics both sizes and paints it, so its size is always that of what it reads. It lets
+    the pointer through to the plot, whose values it reads; its accessible name carries
+    the reading.
     """
 
     def __init__(self, t: Theme, parent: QWidget | None = None):
         super().__init__(parent)
-        self.t = t
-        self.grid = QGridLayout()
-        self.grid.setContentsMargins(space(4), space(3), space(4), space(3))
-        self.grid.setHorizontalSpacing(space(3))
-        self.grid.setVerticalSpacing(space(1))
-        self.title = copyable(label('', 'label', 'secondary'))
-        self.grid.addWidget(self.title, 0, 0, 1, 4)
-        self.grid.setColumnStretch(1, 1)
-        self.setLayout(self.grid)
-        self.rows: list[tuple[QLabel, QLabel, QLabel]] = []
+        self.t, self.title = t, ''
+        self.rows: list[tuple[str, str, str, str, bool]] = []
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.set_values('', [])
 
     def set_values(self, title: str, rows: list[tuple[str, str, str, str, bool]]) -> None:
         """Show *title* over *rows*, each ``(colour token, name, value, verdict, quiet)``."""
-        self.title.setText(title)
-        for i in reversed(range(self.grid.count())):
-            widget = self.grid.itemAt(i).widget()
-            if widget is not self.title:
-                drop(widget)
-        digits = QFontMetrics(font('small-number')).horizontalAdvance('00.00')
-        self.rows = []
-        for r, (color, name, value, verdict, quiet) in enumerate(rows, start=1):
-            value_label = copyable(label(value, 'small-number'))
-            value_label.setMinimumWidth(digits)
-            value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            name_label = label(name, 'small')
-            verdict_label = label(verdict, 'small', 'secondary' if quiet else None)
-            self.grid.addWidget(_Swatch(self.t, color), r, 0)
-            self.grid.addWidget(name_label, r, 1)
-            self.grid.addWidget(value_label, r, 2)
-            self.grid.addWidget(verdict_label, r, 3)
-            self.rows.append((name_label, value_label, verdict_label))
-        self.setAccessibleName(f'{title}: ' + '; '.join(f'{n} {v}, {d}' for _c, n, v, d, _q in rows))
-        self.adjustSize()
+        self.title, self.rows = title, rows
+        self.setAccessibleName(f'{title}: ' + '; '.join(f'{n} {v}, {d}'.removesuffix(', ') for _c, n, v, d, _q in rows))
+        self.setFixedSize(self.sizeHint())
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        return self._run(None)
+
+    def minimumSizeHint(self) -> QSize:
+        return self._run(None)
+
+    def _run(self, p: QPainter | None) -> QSize:
+        """Lay the card out from its fonts' metrics, painting it with *p* where one is given; its size."""
+        t = self.t
+        title_fm, name_fm, value_fm = (QFontMetrics(font(role)) for role in ('label', 'small', 'small-number'))
+        left, top, gap, swatch = space(4), space(3), space(3), space(4)
+        line = max(space(5), name_fm.height(), value_fm.height())
+        name_w = max((name_fm.horizontalAdvance(n) for _c, n, *_ in self.rows), default=0)
+        value_w = max(
+            [value_fm.horizontalAdvance('00.00')] + [value_fm.horizontalAdvance(v) for _c, _n, v, *_ in self.rows]
+        )
+        verdict_w = max((name_fm.horizontalAdvance(d) for *_, d, _q in self.rows), default=0)
+        body = swatch + gap + name_w + gap + value_w + (gap + verdict_w if verdict_w else 0)
+        title_w = title_fm.horizontalAdvance(self.title)
+        name_w += max(0, title_w - body)  # the names take the room a longer title leaves
+        width = 2 * left + max(body, title_w)
+        height = 2 * top + title_fm.height() + len(self.rows) * (space(1) + line)
+        if p is not None:
+            flags = Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextDontClip
+            paint_raised(p, t, QRectF(0, 0, width, height), RADIUS['surface'])
+            p.setFont(font('label'))
+            p.setPen(t.q('text-secondary'))
+            p.drawText(QRectF(left, top, title_w, title_fm.height()), flags, self.title)
+            y = top + title_fm.height()
+            for color, name, value, verdict, quiet in self.rows:
+                y += space(1)
+                cy = y + line / 2
+                pen = QPen(t.q(color), 2)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                p.drawLine(QPointF(left + 1, cy), QPointF(left + swatch - 1, cy))
+                x = left + swatch + gap
+                p.setFont(font('small'))
+                p.setPen(t.q('text-primary'))
+                p.drawText(QRectF(x, y, name_w, line), flags, name)
+                x += name_w + gap
+                p.setFont(font('small-number'))
+                p.drawText(QRectF(x, y, value_w, line), flags | Qt.AlignmentFlag.AlignRight, value)
+                if verdict:
+                    p.setFont(font('small'))
+                    p.setPen(t.q('text-secondary' if quiet else 'text-primary'))
+                    p.drawText(QRectF(x + value_w + gap, y, verdict_w, line), flags, verdict)
+                y += line
+        return QSize(width, height)
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        paint_raised(p, self.t, QRectF(self.rect()), RADIUS['surface'])
+        self._run(p)
         p.end()
 
 

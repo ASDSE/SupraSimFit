@@ -59,3 +59,10 @@ def test_a_render_is_drawn_in_the_style_the_app_ships_with(qapp):
         qapp.setStyle(before)
 
     assert style.lower() == 'fusion'
+
+
+def test_a_pointer_with_no_plot_on_screen_is_refused(qapp):
+    from docs.design.render import render
+
+    with pytest.raises(ValueError, match='no plot is on screen'):
+        render('Binding model', state='empty', pointer=(0.5, 0.5))

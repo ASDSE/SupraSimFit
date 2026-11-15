@@ -356,7 +356,7 @@ the same tokens.
 | **Shift bar** | An input's shift in σ against a ±1 σ band. In Fit details the % stands beside it, σ on hover; in the Ka confidence notes both % and σ |
 | **Replicate chip** | Replicate letter with ✓ when used or × when switched off, `z` when the outlier filter switched it off; click toggles |
 | **Legend row** | Above a plot, right-aligned, each entry drawn with the series' own mark |
-| **Readout** | The values under the pointer: a dotted vertical hairline through the plot(s) with a value tag, and the values in a row above the plot or a card at its top-right corner; in Simulation the species readout row is also the legend |
+| **Readout** | The values under the pointer: a dotted vertical hairline through the plot(s) with a value tag, and the values in a row above the plot or a card at its top-right corner; in Simulation the species readout row is also the legend. The card is painted: one pass over its fonts' metrics sizes and draws it, so it is always as large as what it reads and the same reading takes the same room; it lets the pointer through to the plot beneath |
 | **Table** | Header row in `text-tertiary`, rows separated by hairlines, numbers right-aligned in tabular figures |
 
 Every component meets these rules:

@@ -46,3 +46,32 @@ def test_the_fitted_state_is_drawn_after_the_fit_and_its_profile(qapp):
 
     assert (image.width(), image.height()) == (1440, 900)
     assert seen == [(False, True)]
+
+
+def test_the_heatmap_state_reads_the_cell_under_the_pointer(qapp):
+    """``demo-heatmap`` holds a finished heatmap, and *pointer* moves the readout to the cell under it."""
+    from docs.design.render import render
+    from gui import sensitivity as S
+    from gui.main_window import FittingMainWindow
+
+    seen: list[tuple] = []
+    grab = FittingMainWindow.grab
+
+    def noting_grab(window, *args):
+        session = window.active_session()
+        (figure,) = session._sensitivity.heatmap_figures
+        hm = figure.hm
+        vb = figure.main.getPlotItem().getViewBox()
+        area = vb.viewRect()
+        x, y = area.left() + 0.3 * area.width(), area.bottom() - 0.7 * area.height()
+        ix, iy = int(abs(hm.x - x).argmin()), int(abs(hm.y - y).argmin())
+        seen.append(
+            (session.model.running(), figure.cell.isVisible(), figure.card.title, S.heatmap_readout(hm, ix, iy)[0])
+        )
+        return grab(window, *args)
+
+    with mock.patch.object(FittingMainWindow, 'grab', noting_grab):
+        render('Sensitivity', state='demo-heatmap', pointer=(0.3, 0.7))
+
+    ((running, outlined, title, expected),) = seen
+    assert not running and outlined and title == expected

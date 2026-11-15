@@ -31,6 +31,7 @@ from gui.plotting.labels import STOPPING_TEXT  # noqa: E402
 from gui.session_model import Change  # noqa: E402
 from tests.unit.gui import sensitivity_results as F  # noqa: E402
 from tests.unit.gui.session_setup import state_binding, status_messages  # noqa: E402
+from tests.unit.gui.test_confidence_view import assert_card_fits, move_pointer  # noqa: E402
 from tests.unit.gui.test_plot_navigation import NONE, ZOOM, _wheel  # noqa: E402
 
 #: The demo titration, found from this file so the tests run from any directory.
@@ -202,11 +203,26 @@ def test_a_heatmap_reads_the_cell_under_the_pointer_and_the_entered_one_without(
     _hold(session, F.heatmap_result())
     (figure,) = session._sensitivity.heatmap_figures
 
-    assert figure.card.title.text() == S.heatmap_readout(figure.hm, 1, 1)[0]
+    assert figure.card.title == S.heatmap_readout(figure.hm, 1, 1)[0]
     figure.show_cell(2, 0)
-    assert figure.card.title.text() == S.heatmap_readout(figure.hm, 2, 0)[0]
+    assert figure.card.title == S.heatmap_readout(figure.hm, 2, 0)[0]
     assert figure.cell.isVisible()
     assert session.view_badge('Sensitivity') == S.badge(F.heatmap_result(), session.model.analysis)
+
+
+def test_the_heatmap_card_fits_the_cell_it_reads_and_keeps_its_size(qapp, session):
+    _hold(session, F.heatmap_result())
+    qapp.processEvents()
+    (figure,) = session._sensitivity.heatmap_figures
+    hm = figure.hm
+
+    move_pointer(qapp, figure, hm.x[2], hm.y[0])
+    assert figure.cell.isVisible() and figure.card.title == S.heatmap_readout(hm, 2, 0)[0]
+    assert_card_fits(figure)
+    size = figure.card.size()
+    move_pointer(qapp, figure, hm.x[0], hm.y[0])
+    move_pointer(qapp, figure, hm.x[2], hm.y[0])
+    assert figure.card.size() == size, 'the same reading takes the same room'
 
 
 @pytest.fixture

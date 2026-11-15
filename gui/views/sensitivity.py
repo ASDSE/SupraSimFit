@@ -514,7 +514,6 @@ class HeatmapFigure(QWidget):
     def _place(self, *_) -> None:
         vb = self.main.getPlotItem().getViewBox()
         rect = self.main.mapFromScene(vb.sceneBoundingRect()).boundingRect()
-        self.card.adjustSize()
         self.card.move(rect.right() - self.card.width() - space(3), rect.top() + space(3))
         self.card.raise_()
 
