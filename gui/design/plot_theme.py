@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import QApplication
 
-from gui.design.tokens import SIZE, TYPE, Theme, family, font, space
+from gui.design.tokens import SIZE, Theme, family, font, plot_font, space
 
 #: The opacity of a replicate's points and of the × of one not used, in the plot and in its legend, in
 #: both themes. Points of one replicate that overlap another's still show its edge, and each replicate's
@@ -27,15 +27,17 @@ def apply_plot_theme(
     x_title: str,
     y_title: str,
     y_grid: list[float] | None = None,
-    tick_role: str = 'small-number',
-    title_role: str = 'label',
+    text: str | None = None,
 ) -> pg.PlotItem:
     """Style *pw* for theme *t*: surface background, left and bottom axes only, no y tick
-    marks — horizontal grid lines carry the scale — 4-px outward x ticks, tick labels in
-    *tick_role* and axis titles in *title_role*.
+    marks — horizontal grid lines carry the scale — 4-px outward x ticks, tick labels and
+    axis titles at step *text* of :data:`~gui.design.tokens.PLOT_TEXT` (the titration plot,
+    whose size Plot appearance chooses), or with none in the ``small-number`` and ``label``
+    roles of the window's type (the analysis plots).
 
-    The axes are :data:`SIZE` ``axis-left`` wide and ``axis-bottom`` tall in the standard
-    roles, and grow by what larger roles add to a four-figure tick label and a title line.
+    The axes are :data:`SIZE` ``axis-left`` wide and ``axis-bottom`` tall with the
+    ``small-number`` and ``label`` roles, and grow by what larger text adds to a four-figure
+    tick label and a title line, so they grow by even steps as the plot text does.
     The grid follows the y axis's own ticks as the range changes. *y_grid* pins the ticks
     and their grid lines instead, for a plot whose range is fixed.
     """
@@ -44,7 +46,10 @@ def apply_plot_theme(
     pi.hideButtons()
     pi.setMenuEnabled(False)
     pi.layout.setContentsMargins(0, 0, space(3), 0)
-    tick_font = font(tick_role)
+    if text is None:
+        tick_font, title_font = font('small-number'), font('label')
+    else:
+        tick_font, title_font = plot_font(text, 'tick'), plot_font(text, 'title')
     for side in ('top', 'right'):
         pi.showAxis(side, False)
     for side in ('left', 'bottom'):
@@ -56,17 +61,16 @@ def apply_plot_theme(
     left, bottom = pi.getAxis('left'), pi.getAxis('bottom')
     left.setStyle(tickLength=0, tickTextOffset=8, autoExpandTextSpace=True)
     bottom.setStyle(tickLength=4, tickTextOffset=6)
-    size, weight, _ = TYPE[title_role]
     label_style = {
         'color': t['text-secondary'],
-        'font-size': f'{size}px',
-        'font-weight': str(int(weight.value)),
+        'font-size': f'{title_font.pixelSize()}px',
+        'font-weight': str(int(title_font.weight())),
         'font-family': family(),
     }
     left.setLabel(y_title, **label_style)
     bottom.setLabel(x_title, **label_style)
     ticks, standard_ticks = QFontMetrics(tick_font), QFontMetrics(font('small-number'))
-    title_grows = QFontMetrics(font(title_role)).height() - QFontMetrics(font('label')).height()
+    title_grows = QFontMetrics(title_font).height() - QFontMetrics(font('label')).height()
     left.setWidth(
         SIZE['axis-left'] + ticks.horizontalAdvance('0000') - standard_ticks.horizontalAdvance('0000') + title_grows
     )

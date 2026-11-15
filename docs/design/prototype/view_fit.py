@@ -75,7 +75,7 @@ def hero(t: Theme) -> QWidget:
 def titration_plot(t: Theme) -> pg.PlotWidget:
     pw = pg.PlotWidget()
     pw.setFrameShape(pg.QtWidgets.QFrame.Shape.NoFrame)
-    pi = apply_plot_theme(pw, t, 'Guest (µM)', 'Signal (10⁵ a.u.)', [0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
+    pi = apply_plot_theme(pw, t, 'Guest (µM)', 'Signal (10⁵ a.u.)', [0.5, 1.0, 1.5, 2.0, 2.5, 3.0], text='standard')
     x = np.array(DEMO['x_uM'])
     s = 1e-5
     for rep in DEMO['replicates']:

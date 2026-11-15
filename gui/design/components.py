@@ -18,6 +18,7 @@ from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTextBound
 from PyQt6.QtGui import (
     QAction,
     QColor,
+    QFont,
     QFontMetrics,
     QKeySequence,
     QPainter,
@@ -3036,15 +3037,16 @@ class Figure(QWidget):
 class PaintedNote(QWidget):
     """A paragraph of rich text painted in a given theme and wrapped to *width*, for a saved figure.
 
-    Reads in ``text-secondary`` whatever the window's palette, as :class:`PaintedText` does.
+    Reads in ``text-secondary`` whatever the window's palette, as :class:`PaintedText` does, in
+    type role *role* or, where given, *text_font*.
     """
 
-    def __init__(self, t: Theme, text: str, role: str, width: int):
+    def __init__(self, t: Theme, text: str, role: str, width: int, text_font: QFont | None = None):
         super().__init__()
         self.t, self.text, self.role = t, text, role
         self.doc = QTextDocument()
         self.doc.setDocumentMargin(0)
-        self.doc.setDefaultFont(font(role))
+        self.doc.setDefaultFont(text_font or font(role))
         self.doc.setHtml(f'<span style="color:{t["text-secondary"]}">{text}</span>')
         self.doc.setTextWidth(width)
         self.setFixedSize(width, math.ceil(self.doc.size().height()))
@@ -3059,19 +3061,21 @@ class PaintedText(QWidget):
     """One line of text painted in a given theme, for a saved figure whatever the window's palette.
 
     ``body-strong`` is a title in ``text-primary``; every other role reads in ``text-secondary``.
+    It is drawn in *role*'s font or, where given, *text_font* (the plot text of a titration figure).
     """
 
-    def __init__(self, t: Theme, text: str, role: str):
+    def __init__(self, t: Theme, text: str, role: str, text_font: QFont | None = None):
         super().__init__()
         self.t, self.text, self.role = t, text, role
-        metrics = QFontMetrics(font(role))
+        self.text_font = text_font or font(role)
+        metrics = QFontMetrics(self.text_font)
         self.setFixedHeight(metrics.height() + space(2))
         self.setMinimumWidth(metrics.horizontalAdvance(text))
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.setFont(font(self.role))
+        p.setFont(self.text_font)
         p.setPen(self.t.q('text-primary' if self.role == 'body-strong' else 'text-secondary'))
         p.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text)
         p.end()

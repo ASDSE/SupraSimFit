@@ -110,7 +110,7 @@ def test_a_choice_in_the_form_redraws_every_titration_plot_at_once(session, qapp
 def test_the_saved_figure_is_drawn_in_the_light_theme_on_white_with_the_chosen_sizes(session):
     from gui.design.appearance import appearance
     from gui.design.plot_theme import px
-    from gui.design.tokens import LIGHT, SIZE, TYPE
+    from gui.design.tokens import LIGHT, SIZE, plot_font
 
     _fitted(session)
     session.model.set_plot_appearance(CHANGED)
@@ -132,40 +132,126 @@ def test_the_saved_figure_is_drawn_in_the_light_theme_on_white_with_the_chosen_s
         assert curve_pen.color().name() == LIGHT['series-2'].lower()
         assert curve_pen.widthF() == px(SIZE['stroke-thick'])
         bottom = figure.pw.getPlotItem().getAxis('bottom')
-        assert bottom.style['tickFont'].pixelSize() == TYPE[CHANGED.tick_role][0]
+        assert bottom.style['tickFont'].pixelSize() == plot_font(CHANGED.text_step, 'tick').pixelSize()
     finally:
         figure.close()
 
 
-def test_larger_axis_text_grows_the_axes_so_it_stays_as_whole_as_the_standard_text(qapp):
-    """A larger tick and title role widens and heightens the axes by what it adds: under the x ticks, and
-    beside the widest y tick, as much room is left for the axis title as at the standard size."""
-    from PyQt6.QtGui import QFontMetrics
+#: The axis text sizes Plot appearance offers, smallest first.
+TEXT_STEPS = ('standard', 'large', 'larger')
 
-    from gui.design.tokens import font
+
+def _axes(size: str):
+    """The left and bottom axes of a titration plot of four replicates drawn with axis text *size*, and its plot."""
     from gui.views.titration import TitrationData, TitrationPlot
 
     ms = four_replicates()
-    below, beside = {}, {}
-    for size in ('standard', 'larger'):
-        look = PlotAppearance(text_size=size)
-        plot = TitrationPlot(plot_appearance=look)
-        plot.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-        plot.resize(900, 600)
-        plot.show_data(
-            TitrationData(ms.concentrations, ms.signals * 1e3, [True] * 4, 'Guest', replicate_ids=list(ms.replica_ids)),
-            'µM',
-        )
+    plot = TitrationPlot(plot_appearance=PlotAppearance(text_size=size))
+    plot.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    plot.resize(900, 600)
+    plot.show_data(
+        TitrationData(ms.concentrations, ms.signals * 1e3, [True] * 4, 'Guest', replicate_ids=list(ms.replica_ids)),
+        'µM',
+    )
+    return plot, plot.pw.getPlotItem().getAxis('left'), plot.pw.getPlotItem().getAxis('bottom')
+
+
+def _title_font(axis):
+    """The font *axis* draws its title in, as its label style states it."""
+    from PyQt6.QtGui import QFont
+
+    from gui.design.tokens import family
+
+    f = QFont(family())
+    f.setPixelSize(int(axis.labelStyle['font-size'].removesuffix('px')))
+    f.setWeight(QFont.Weight(int(axis.labelStyle['font-weight'])))
+    return f
+
+
+def _drawn_text(size: str) -> dict[str, tuple[int, int]]:
+    """The (px, weight) the plot draws its tick labels and axis titles in at axis text *size*."""
+    plot, _left, bottom = _axes(size)
+    try:
+        tick = bottom.style['tickFont']
+        title = (int(bottom.labelStyle['font-size'].removesuffix('px')), int(bottom.labelStyle['font-weight']))
+        return {'tick': (tick.pixelSize(), int(tick.weight())), 'title': title}
+    finally:
+        plot.close()
+
+
+@pytest.mark.parametrize('part', ['tick', 'title'])
+def test_each_axis_text_size_is_one_even_step_up_at_one_weight(qapp, part):
+    """Standard → Large → Larger reads as two equal steps: each a constant ratio up (within 5 %) and at
+    least 2 px, and the weight never changes, so a step changes the size of the text and nothing else."""
+    drawn = [_drawn_text(size)[part] for size in TEXT_STEPS]
+    sizes = [px for px, _weight in drawn]
+    ratios = [b / a for a, b in zip(sizes, sizes[1:], strict=False)]
+
+    assert all(b - a >= 2 for a, b in zip(sizes, sizes[1:], strict=False)), sizes
+    assert max(ratios) / min(ratios) <= 1.05, ratios
+    assert len({weight for _px, weight in drawn}) == 1, drawn
+
+
+def test_the_axes_grow_with_the_text_in_even_steps_and_keep_it_whole(qapp):
+    """Each larger size widens and heightens the axes by about as much as the step before did, never by a
+    jump, and leaves as much room for the axis title, under the x ticks and beside the widest y tick, as the
+    standard size does."""
+    from PyQt6.QtGui import QFontMetrics
+
+    boxes, below, beside = [], {}, {}
+    for size in TEXT_STEPS:
+        plot, left, bottom = _axes(size)
         plot.show()
         qapp.processEvents()
-        left, bottom = (plot.pw.getPlotItem().getAxis(side) for side in ('left', 'bottom'))
-        ticks, title = QFontMetrics(font(look.tick_role)), QFontMetrics(font(look.title_role))
+        ticks = QFontMetrics(bottom.style['tickFont'])
+        title = QFontMetrics(_title_font(bottom))
+        boxes.append((left.width(), bottom.height()))
         below[size] = bottom.height() - ticks.height() - title.height()
         beside[size] = left.width() - ticks.horizontalAdvance('0000') - title.height()
         plot.close()
 
-    assert below['larger'] >= below['standard'] > 0
-    assert beside['larger'] >= beside['standard'] > 0
+    for side in (0, 1):
+        grows = [b[side] - a[side] for a, b in zip(boxes, boxes[1:], strict=False)]
+        assert min(grows) > 0 and max(grows) <= 1.5 * min(grows), boxes
+    assert all(below[size] >= below['standard'] > 0 for size in TEXT_STEPS)
+    assert all(beside[size] >= beside['standard'] > 0 for size in TEXT_STEPS)
+
+
+@pytest.mark.parametrize('size', TEXT_STEPS)
+def test_the_x_axis_title_of_a_saved_figure_is_whole_at_every_size(qapp, tmp_path, size):
+    """The figure ends under the x axis title, so its descenders (the µ and the brackets of ``(µM)``) must
+    end inside the image: the bottom pixel row is blank."""
+    from PyQt6.QtGui import QImage
+
+    plot, _left, _bottom = _axes(size)
+    try:
+        plot.export_image(str(tmp_path / 'titration.png'), [])
+    finally:
+        plot.close()
+    image = QImage(str(tmp_path / 'titration.png'))
+    last = image.height() - 1
+
+    assert all(image.pixelColor(x, last).lightness() > 240 for x in range(image.width()))
+
+
+def test_the_head_of_a_saved_figure_reads_in_the_axis_text_size(qapp):
+    """The caption and the fit's summary of a saved titration figure take the tick labels' size, and its title
+    the axis titles', so the head reads at the size of the plot under it at every step."""
+    from gui.design import components as C
+    from gui.design.tokens import Theme, plot_font
+    from gui.plotting.export import figure_head
+
+    light = Theme(dark=False)
+    for size in TEXT_STEPS:
+        step = PlotAppearance(text_size=size).text_step
+        legend = C.LegendRow(light, [], removable=False)
+        head = figure_head(light, 'Titration', 'raw signal', legend, 900, ['Reported fit: Ka = 1.5 × 10⁸ M⁻¹'], step)
+        title, caption = head.findChildren(C.PaintedText)
+        (note,) = head.findChildren(C.PaintedNote)
+        assert title.text_font.pixelSize() == plot_font(step, 'title').pixelSize()
+        assert caption.text_font.pixelSize() == plot_font(step, 'tick').pixelSize()
+        assert note.doc.defaultFont().pixelSize() == plot_font(step, 'tick').pixelSize()
+        head.close()
 
 
 def test_with_nothing_loaded_the_canvas_says_what_to_load(session):
@@ -217,8 +303,8 @@ def test_every_titration_plot_follows_the_display_unit_and_saves_in_it(session):
 
 
 def test_a_new_text_size_restyles_the_axes_of_a_plot_already_on_screen(session):
-    """Tick labels and axis titles take the new roles at once, in every view, not only in a new figure."""
-    from gui.design.tokens import TYPE
+    """Tick labels and axis titles take the new size at once, in every view, not only in a new figure."""
+    from gui.design.tokens import plot_font
 
     _fitted(session)
     look = PlotAppearance(text_size='larger')
@@ -226,8 +312,8 @@ def test_a_new_text_size_restyles_the_axes_of_a_plot_already_on_screen(session):
 
     for plot in (session._measurements.plot, session._results.plot, session._appearance.plot):
         bottom = plot.pw.getPlotItem().getAxis('bottom')
-        assert bottom.style['tickFont'].pixelSize() == TYPE[look.tick_role][0]
-        assert f'{TYPE[look.title_role][0]}px' in bottom.labelStyle['font-size']
+        assert bottom.style['tickFont'].pixelSize() == plot_font(look.text_step, 'tick').pixelSize()
+        assert bottom.labelStyle['font-size'] == f'{plot_font(look.text_step, "title").pixelSize()}px'
 
 
 def _swatch(legend, item, columns=18) -> tuple[list, object]:

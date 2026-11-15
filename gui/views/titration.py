@@ -25,7 +25,7 @@ from core.units import Q_
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import REPLICATE_ALPHA, apply_plot_theme, fit_line, px, scatter
-from gui.design.tokens import SIZE, Theme, font
+from gui.design.tokens import SIZE, Theme, plot_font, space
 from gui.plot_appearance import BUILT_IN, PlotAppearance
 from gui.plotting.export import export_stacked, figure_head
 from gui.plotting.labels import superscript
@@ -121,17 +121,19 @@ class TitrationPlot(QWidget):
         self.pw = pg.PlotWidget()
         self.pw.setFrameShape(QFrame.Shape.NoFrame)
         look = self.plot_appearance
-        pi = apply_plot_theme(self.pw, self.t, '', '', tick_role=look.tick_role, title_role=look.title_role)
+        pi = apply_plot_theme(self.pw, self.t, '', '', text=look.text_step)
         # A tick on an edge of the range, such as the 0 and 1 of the empty plot's 0–1, has its
         # label centred on that edge. Half a label of room above the axes and right of them
         # keeps such labels whole, and the x axis draws its end labels into that half label —
         # on the left into the y axis's room — where it would otherwise leave them out. The
         # widest a concentration tick reads is four characters (1000, 12.5); a wider one at
-        # the right edge is left out, never cut.
-        fm = QFontMetrics(font(look.tick_role))
+        # the right edge is left out, never cut. pyqtgraph sets the x axis title a little below the
+        # axes' room, its descenders (the µ and brackets of µM) a pixel past it; room below the axes
+        # keeps them whole at the foot of a saved figure.
+        fm = QFontMetrics(plot_font(look.text_step, 'tick'))
         half_label = math.ceil(fm.horizontalAdvance('0000') / 2)
-        left, _top, right, bottom = pi.layout.getContentsMargins()
-        pi.layout.setContentsMargins(left, math.ceil(fm.height() / 2), max(right, half_label), bottom)
+        left, _top, right, _bottom = pi.layout.getContentsMargins()
+        pi.layout.setContentsMargins(left, math.ceil(fm.height() / 2), max(right, half_label), space(1))
         pi.getAxis('bottom').setStyle(hideOverlappingLabels=half_label)
         self._items = []
         self.layout().addWidget(self.pw)
@@ -142,7 +144,7 @@ class TitrationPlot(QWidget):
         """Draw the plot with *plot_appearance* from now on; another text size styles the axes afresh."""
         old, new = self.plot_appearance, plot_appearance
         self.plot_appearance = new
-        if (old.tick_role, old.title_role) != (new.tick_role, new.title_role):
+        if old.text_step != new.text_step:
             self._restyle()
         else:
             self.redraw()
@@ -215,12 +217,15 @@ class TitrationPlot(QWidget):
         """Save the plot to *path* (PNG or SVG) as one figure: the head the view states beside it above :meth:`figure`.
 
         The head is the title *Titration* with the view's *description* and its *legend* — drawn with
-        the plot's appearance — then the lines of *summary*, a fit's numbers where the view draws one.
+        the plot's appearance — then the lines of *summary*, a fit's numbers where the view draws one;
+        its title, description and summary read at the plot's axis text size.
         """
         light = Theme(dark=False)
         key = C.LegendRow(light, legend, removable=False)
         legend_marks(key, self.plot_appearance)
-        head = figure_head(light, 'Titration', description, key, EXPORT_SIZE[0], summary)
+        head = figure_head(
+            light, 'Titration', description, key, EXPORT_SIZE[0], summary, self.plot_appearance.text_step
+        )
         head.show()
         copy = self.figure()
         try:

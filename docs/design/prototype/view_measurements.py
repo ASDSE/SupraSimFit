@@ -113,7 +113,7 @@ class SourcesTable(QWidget):
 def titration_plot(t: Theme) -> pg.PlotWidget:
     pw = pg.PlotWidget()
     pw.setFrameShape(pg.QtWidgets.QFrame.Shape.NoFrame)
-    pi = apply_plot_theme(pw, t, f'{X_NAME} (µM)', 'Signal (10³ a.u.)', [0, 2, 4, 6, 8, 10])
+    pi = apply_plot_theme(pw, t, f'{X_NAME} (µM)', 'Signal (10³ a.u.)', [0, 2, 4, 6, 8, 10], text='standard')
     s = 1e-3
     for i, on in enumerate(ACTIVE):
         y = SIG[i] * s

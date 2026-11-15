@@ -39,7 +39,7 @@ from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import QGraphicsItem, QWidget
 
 from gui.design import components as C
-from gui.design.tokens import LIGHT, Theme, space
+from gui.design.tokens import LIGHT, Theme, plot_font, space
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QGraphicsScene
@@ -49,26 +49,38 @@ if TYPE_CHECKING:
 PAPER = QColor(LIGHT['bg-surface'])
 
 
-def figure_head(t: Theme, title: str, caption: str, legend: QWidget, width: int, notes: Sequence[str] = ()) -> QWidget:
+def figure_head(
+    t: Theme,
+    title: str,
+    caption: str,
+    legend: QWidget,
+    width: int,
+    notes: Sequence[str] = (),
+    text: str | None = None,
+) -> QWidget:
     """A saved plot's head in theme *t*, *width* px wide, as the plot's header line states it on screen.
 
     Its *title* and *caption* on the left and its *legend* on the right — on a line of its
     own under them where one line cannot hold all three — then each of *notes*, a line of
-    plain text wrapped to the width. An empty caption takes no room.
+    plain text wrapped to the width. An empty caption takes no room. With a step *text* of
+    :data:`~gui.design.tokens.PLOT_TEXT` — the axis text of the plot under it — the title reads
+    at the size of its axis titles and the caption and notes at the size of its tick labels.
     """
-    title_text = C.PaintedText(t, title, 'body-strong')
-    texts = [title_text, *([C.PaintedText(t, caption, 'small')] if caption else [])]
-    for text in texts:
-        text.setFixedWidth(text.minimumWidth())
+    title_font, body_font = (plot_font(text, 'title'), plot_font(text, 'tick')) if text else (None, None)
+    title_text = C.PaintedText(t, title, 'body-strong', title_font)
+    texts = [title_text, *([C.PaintedText(t, caption, 'small', body_font)] if caption else [])]
+    for text_item in texts:
+        text_item.setFixedWidth(text_item.minimumWidth())
     words = [texts[0], *([3, texts[1]] if caption else [])]
-    room = sum(text.width() for text in texts) + (space(3) if caption else 0) + space(5) + legend.width()
+    room = sum(text_item.width() for text_item in texts) + (space(3) if caption else 0) + space(5) + legend.width()
     if room <= width:
         rows = [C.hbox(*words, None, legend, spacing=0)]
     else:
         rows = [C.hbox(*words, None, spacing=0), C.hbox(legend, None, spacing=0)]
     for note in notes:
         # Kept as written: rich text would otherwise fold the thin spaces of 1.59 × 10⁸ into plain ones.
-        rows += [C.PaintedNote(t, f'<span style="white-space:pre-wrap">{escape(note)}</span>', 'small', width)]
+        html = f'<span style="white-space:pre-wrap">{escape(note)}</span>'
+        rows += [C.PaintedNote(t, html, 'small', width, body_font)]
     w = C.Figure(t)
     w.setLayout(C.vbox(*rows, spacing=1, margins=(0, 3, 0, 2)))
     w.setFixedWidth(width)

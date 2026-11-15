@@ -106,12 +106,22 @@ The platform UI font (SF Pro on macOS, Segoe UI on Windows), four sizes on any s
 | Role | Size / weight | Use |
 |---|---|---|
 | `metric` | 28 px DemiBold, tabular | The headline value of a view (the reported Ka) |
-| `title` | 20 px DemiBold | Toolbar title; axis titles at *Larger* axis text (§8) |
-| `number-large` | 20 px, tabular | Tick labels at *Larger* axis text (§8) |
+| `title` | 20 px DemiBold | Toolbar title |
 | `body`, `body-strong` | 13 px Normal / DemiBold | Text, controls, section titles, selected segments |
 | `number`, `number-strong` | 13 px, tabular | Values in rows and tables |
 | `label`, `small`, `small-number` | 12 px Medium / Normal / tabular | Captions, axis titles, ticks, hints |
 | `overline` | 12 px DemiBold, sentence case, `text-tertiary` | Sidebar group titles, popover headings |
+
+**Plot text** (`PLOT_TEXT`, `plot_font()`) is a scale of its own: the axis text of the
+titration plot and the head of its saved figure, in the three sizes Plot appearance offers
+(§8). Each step is 2 px up and about one ratio from the last, and the weight is the same
+at every step, so a larger size changes the size of the text and nothing else.
+
+| Step | Tick labels | Axis titles |
+|---|---|---|
+| *Standard* | 14 px Normal, tabular | 16 px Medium |
+| *Large* | 16 px Normal, tabular | 18 px Medium |
+| *Larger* | 18 px Normal, tabular | 20 px Medium |
 
 Numbers use tabular figures so columns align. Scientific notation is `1.59 × 10⁸`, thin
 spaces around `×`, superscript exponent. Where a view states an interval in prose or a
@@ -373,9 +383,13 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
 `gui/design/plot_theme.py` styles every pyqtgraph plot:
 
 - `bg-surface` background; left and bottom axes only, in `border-strong`; tick labels in
-  `text-secondary`, `small-number`; axis titles in the `label` role with the unit in
-  parentheses (`Guest (µM)`, `Signal (10⁵ a.u.)`, the power of ten that of the largest
-  value drawn).
+  `text-secondary`; axis titles with the unit in parentheses (`Guest (µM)`,
+  `Signal (10⁵ a.u.)`, the power of ten that of the largest value drawn). The titration
+  plot sets its tick labels and axis titles at the plot text step its appearance chooses
+  (§2, §8); the other plots in `small-number` and `label`. The axes are `axis-left` wide
+  and `axis-bottom` tall with `small-number` and `label`, and grow by what larger text adds
+  to a four-figure tick label and a title line, so they grow by even steps as the plot
+  text does.
 - No y tick marks: horizontal grid lines in `grid` follow the y axis's ticks; 4-px
   outward x ticks.
 - **Titration series:** each replicate's dots in its own colour (`replicate-n`) at 80 %,
@@ -593,9 +607,9 @@ beside *By replicate*; and fitted curve, *Teal* (`accent`, built in), *Blue* (`s
 *Magenta* (`series-2`) or *Text colour* (`text-primary`) — never a free colour picker;
 the means and their error bars stay `text-primary`, so no choice draws the replicates in
 the colour of the means; **Text** — axis text *Standard* / *Large* /
-*Larger*, the tick labels and axis titles in the type roles `small-number` and `label`,
-`number` and `body-strong`, or `number-large` and `title` (tick labels always in tabular
-figures); **New sessions** — *Use for new sessions* (outline button; one click stores the
+*Larger*, the steps of the plot text (§2): tick labels 14, 16 or 18 px, axis titles 16, 18
+or 20 px, at one weight; a saved figure's head follows it, its title at the axis titles'
+size and its description and fit summary at the tick labels'; **New sessions** — *Use for new sessions* (outline button; one click stores the
 whole appearance, and it is enabled while the stored one differs). The built-in appearance is the titration of §7. The form
 feeds no fit or analysis, so it stays open while one runs. The badge reads *Built-in
 appearance* or *Custom appearance*.

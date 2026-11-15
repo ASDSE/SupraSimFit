@@ -56,7 +56,7 @@ def store(qapp):
 
 
 def test_the_built_in_appearance_draws_the_titration_as_the_design_specifies():
-    """DESIGN.md §7: replicate n in ``replicate-n``, 6-px dots and means, 1-px error bars, a 2-px accent curve, label-role text."""
+    """DESIGN.md §7: replicate n in ``replicate-n``, 6-px dots and means, 1-px error bars, a 2-px accent curve, standard axis text."""
     look = BUILT_IN
 
     assert (look.replicate_px, look.mean_px, look.symbol) == (6, 6, 'o')
@@ -67,7 +67,7 @@ def test_the_built_in_appearance_draws_the_titration_as_the_design_specifies():
         ('replicate-2', 'o'),
         ('replicate-12', 'o'),
     ]
-    assert (look.tick_role, look.title_role) == ('small-number', 'label')
+    assert look.text_step == 'standard'
 
 
 def test_every_field_survives_a_round_trip_through_json():
@@ -146,29 +146,38 @@ def test_the_replicates_never_take_the_colour_of_the_means_and_the_curve_is_buil
     assert all(token in LIGHT and token in DARK for _label, token in FIT_COLOURS.values())
 
 
-def test_every_tick_label_role_has_tabular_figures():
+def test_every_tick_label_has_tabular_figures(qapp):
     """DESIGN.md §2: numbers use tabular figures so a column of tick labels aligns digit for digit."""
-    from gui.design.tokens import TYPE
+    from PyQt6.QtGui import QFont
 
-    assert all(TYPE[tick][2] for _label, tick, _title in TEXT_SIZES.values())
+    from gui.design.tokens import plot_font
+
+    assert all(plot_font(step, 'tick').featureValue(QFont.Tag('tnum')) == 1 for _label, step in TEXT_SIZES.values())
 
 
-def test_every_choice_maps_to_a_token_of_both_themes_and_a_type_role():
-    """No menu offers a value outside the tokens, so a choice keeps both themes and the type scale."""
-    from gui.design.tokens import DARK, LIGHT, SIZE, TYPE
+def test_every_choice_maps_to_a_token_of_both_themes_and_a_step_of_the_plot_text():
+    """No menu offers a value outside the tokens, so a choice keeps both themes and the plot text scale."""
+    from gui.design.tokens import PLOT_TEXT, SIZE
 
     assert all(token in SIZE for _label, token in (*MARKER_SIZES.values(), *WIDTHS.values()))
     assert all(token in LIGHT and token in DARK for _label, tokens in COLOURS.values() for token in tokens)
-    assert all(tick in TYPE and title in TYPE for _label, tick, title in TEXT_SIZES.values())
+    assert [step for _label, step in TEXT_SIZES.values()] == list(PLOT_TEXT)
     assert {symbol for _label, symbol in SHAPES.values()} == {'o', 's', 't1'}
 
 
-def test_larger_text_takes_larger_type_roles():
-    from gui.design.tokens import TYPE
+@pytest.mark.parametrize('part', ['tick', 'title'])
+def test_the_plot_text_rises_in_even_steps_of_at_least_two_px_at_one_weight(qapp, part):
+    """DESIGN.md §8: Standard → Large → Larger are two equal steps — one ratio within 5 %, each at least
+    2 px — and the weight is the same at every step, so a larger size changes the size and nothing else."""
+    from gui.design.tokens import plot_font
 
-    sizes = [(TYPE[tick][0], TYPE[title][0]) for _label, tick, title in TEXT_SIZES.values()]
+    fonts = [plot_font(step, part) for _label, step in TEXT_SIZES.values()]
+    sizes = [f.pixelSize() for f in fonts]
+    ratios = [b / a for a, b in zip(sizes, sizes[1:], strict=False)]
 
-    assert sizes == sorted(sizes) and len(set(sizes)) == len(sizes)
+    assert all(b - a >= 2 for a, b in zip(sizes, sizes[1:], strict=False)), sizes
+    assert max(ratios) / min(ratios) <= 1.05, ratios
+    assert len({f.weight() for f in fonts}) == 1
 
 
 # ── The preference new sessions start from ─────────────────────────────────────────

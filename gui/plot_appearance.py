@@ -4,8 +4,8 @@ A :class:`PlotAppearance` styles the titration plot of Measurements and Fit resu
 its saved figure: the size of the replicates' points and of the mean's, the replicates'
 mark and colours, the fitted curve's width and colour, the width of the error bars, and
 the size of the axis text. Every choice is one of a short menu, and each maps to
-tokens — a ``SIZE`` entry, colours of both themes, a ``TYPE`` role — so the plot stays
-in the design in either theme. The means and the error bars keep ``text-primary``. The
+tokens — a ``SIZE`` entry, colours of both themes, a step of ``PLOT_TEXT`` — so the plot
+stays in the design in either theme. The means and the error bars keep ``text-primary``. The
 built-in appearance draws the plot as DESIGN.md §7 describes it: each replicate in a
 colour of its own, the fitted curve in ``accent``.
 
@@ -58,12 +58,11 @@ FIT_COLOURS = {
     'text': ('Text colour', 'text-primary'),
 }
 
-#: The sizes offered for the axis text: key → (label, tick-label role, axis-title role).
-#: Every tick-label role has tabular figures, so a column of ticks aligns digit for digit.
+#: The sizes offered for the axis text: key → (label, ``PLOT_TEXT`` step).
 TEXT_SIZES = {
-    'standard': ('Standard', 'small-number', 'label'),
-    'large': ('Large', 'number', 'body-strong'),
-    'larger': ('Larger', 'number-large', 'title'),
+    'standard': ('Standard', 'standard'),
+    'large': ('Large', 'large'),
+    'larger': ('Larger', 'larger'),
 }
 
 #: The × of a replicate switched off is drawn a sixth larger than a point, so its thin
@@ -167,14 +166,9 @@ class PlotAppearance:
         return FIT_COLOURS[self.fit_colour][1]
 
     @property
-    def tick_role(self) -> str:
-        """The type role of the tick labels."""
+    def text_step(self) -> str:
+        """The step of ``PLOT_TEXT`` the tick labels and axis titles are drawn at."""
         return TEXT_SIZES[self.text_size][1]
-
-    @property
-    def title_role(self) -> str:
-        """The type role of the axis titles."""
-        return TEXT_SIZES[self.text_size][2]
 
     def label(self, name: str) -> str:
         """The label of the choice field *name* holds, as its menu shows it."""

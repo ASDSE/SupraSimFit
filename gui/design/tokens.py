@@ -218,7 +218,6 @@ TYPE = {
     #  role:          (px, weight, tabular figures)
     'metric': (28, QFont.Weight.DemiBold, True),
     'title': (20, QFont.Weight.DemiBold, False),
-    'number-large': (20, QFont.Weight.Normal, True),
     'body': (13, QFont.Weight.Normal, False),
     'body-strong': (13, QFont.Weight.DemiBold, False),
     'number': (13, QFont.Weight.Normal, True),
@@ -228,6 +227,18 @@ TYPE = {
     'small-number': (12, QFont.Weight.Normal, True),
     'overline': (12, QFont.Weight.DemiBold, False),
 }
+
+# ── Plot text: the axis text of the titration plot and of the head of its saved figure, in the
+# three sizes Plot appearance offers. Each step is 2 px up, about one ratio apart; the weight is
+# the same at every step, so a step changes the size and nothing else. Tick labels are Normal with
+# tabular figures, axis titles Medium.
+PLOT_TEXT = {
+    #  step:      (tick px, title px)
+    'standard': (14, 16),
+    'large': (16, 18),
+    'larger': (18, 20),
+}
+PLOT_TEXT_WEIGHT = {'tick': QFont.Weight.Normal, 'title': QFont.Weight.Medium}
 
 
 def space(n: int) -> int:
@@ -250,6 +261,16 @@ def font(role: str) -> QFont:
         f.setFeature(QFont.Tag('tnum'), 1)
     if role == 'metric':
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -0.4)
+    return f
+
+
+def plot_font(step: str, part: str) -> QFont:
+    """The QFont of the plot text at *step* of :data:`PLOT_TEXT`; *part* is ``tick`` (tabular figures) or ``title``."""
+    f = QFont(family())
+    f.setPixelSize(PLOT_TEXT[step][0 if part == 'tick' else 1])
+    f.setWeight(PLOT_TEXT_WEIGHT[part])
+    if part == 'tick':
+        f.setFeature(QFont.Tag('tnum'), 1)
     return f
 
 
