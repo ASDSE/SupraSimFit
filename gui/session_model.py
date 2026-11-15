@@ -431,9 +431,14 @@ class SessionModel(QObject):
     every change to the replicates, the conditions, the assay type, the
     parameter bounds, the replicate mode or the input uncertainties, a result
     that no longer matches is hidden behind a note naming what changed, and
-    shown again, unchanged, once they match. A change to the data itself
-    clears the results and stops any work still running. One fit or analysis
-    runs at a time.
+    shown again, unchanged, once they match. An edit of the data in place —
+    a file added or removed, the unit the concentrations are stated in, a
+    concentration, the channel shown — is checked the same way: a result made
+    on other data is hidden, and shown again once the data match it. Only
+    data loaded in place of the session's own, or cleared, drop every result.
+    Either kind of change stops the fit and the analysis still running, which
+    were given the data as they were before it. One fit or analysis runs at a
+    time.
 
     Signals
     -------
@@ -478,7 +483,7 @@ class SessionModel(QObject):
         self._custom_name: str | None = None
         self._progress: tuple[int, int] | None = None  # the running analysis's count, done of total
         self._status = ''
-        # Results. A result is held until the data change or a new result
+        # Results. A result is held until other data are loaded or a new result
         # replaces it, and shown while it matches the loaded selection and the
         # settings; a hidden result comes back unchanged once they match.
         self._held_fit_results: list[FitResult] = []
@@ -577,8 +582,7 @@ class SessionModel(QObject):
             return Refusal('Files Not Added', str(exc))
         added = len(dataset.files) - len(self._dataset.files)
         self._dataset = dataset
-        self._data_changed()
-        self.show_status(f'Added {added} file{"s" if added != 1 else ""} — {self._loaded_text()}')
+        self._data_edited(f'Added {added} file{"s" if added != 1 else ""} — {self._loaded_text()}')
         return None
 
     @_edit
@@ -594,34 +598,37 @@ class SessionModel(QObject):
             self.clear()
             return None
         self._dataset = dataset
-        self._data_changed()
-        self.show_status(f'Removed {Path(path).name} — {self._loaded_text()}')
+        self._data_edited(f'Removed {Path(path).name} — {self._loaded_text()}')
         return None
 
     @_edit
     def select_channel(self, channel: str) -> Refusal | None:
-        """Show *channel* of a multi-channel file: other data, so every result is cleared."""
+        """Show *channel* of a multi-channel file: an edit of the data in place (:meth:`_data_edited`)."""
+        if channel == self._dataset.channel:
+            return None
         try:
             self._dataset.select_channel(channel)
         except InvalidData as exc:
             return Refusal('Channel Error', str(exc))
-        self._take(self._dataset)
+        self._data_edited(f'Showing channel {self._dataset.channel_label(channel)}')
         return None
 
     @_edit
     def set_imported_unit(self, unit: str) -> None:
-        """State the concentrations in *unit*: other concentrations, so every result is cleared."""
+        """Read the concentrations as stated in *unit*: an edit of the data in place (:meth:`_data_edited`)."""
+        if unit == self._dataset.imported_unit:
+            return
         self._dataset.set_imported_unit(unit)
-        self._take(self._dataset)
+        self._data_edited(f'Concentrations now stated in {unit}')
 
     @_edit
     def set_concentration(self, index: int, text: str) -> Refusal | None:
-        """Set point *index* to *text* in the imported unit; other concentrations, so every result is cleared."""
+        """Set point *index* to *text* in the imported unit: an edit of the data in place (:meth:`_data_edited`)."""
         try:
             self._dataset.set_concentration(index, text)
         except InvalidData as exc:
             return Refusal('Invalid Concentration', f'{exc} The point keeps its value.')
-        self._take(self._dataset)
+        self._data_edited(f'Point {index + 1} set to {text} {self._dataset.imported_unit}')
         return None
 
     @_edit
@@ -631,8 +638,7 @@ class SessionModel(QObject):
             notice = self._dataset.load_concentrations(path)
         except InvalidData as exc:
             return Refusal('Concentrations Not Loaded', str(exc)), None
-        self._take(self._dataset)
-        self.show_status(f'Concentrations loaded from {Path(path).name}')
+        self._data_edited(f'Concentrations loaded from {Path(path).name}')
         return None, notice
 
     @_edit
@@ -677,34 +683,39 @@ class SessionModel(QObject):
         ms = self.measurement_set
         return f'{ms.n_points} points × {ms.n_replicas} replicates, {ms.n_active} in use'
 
-    def _take(self, dataset: Dataset | None) -> None:
-        """Hold *dataset* as the session's data, clearing every result and stopping the work on the old data."""
-        # Both describe the data being replaced, so neither can be left running.
-        stopped = self.running_work()
-        self._replace_data(dataset)
-        if dataset is not None:
-            loaded = f'Loaded: {self._loaded_text()}'
-            self.show_status(f'{loaded} — the running {stopped} was stopped' if stopped else loaded)
+    def _take(self, dataset: Dataset) -> None:
+        """Hold *dataset* as the session's data in place of its own, dropping every result."""
+        self._dataset = dataset
+        self._data_edited(f'Loaded: {self._loaded_text()}', discard=True)
 
     @_edit
     def clear(self) -> None:
         """Drop the data and every result, stopping the work still running."""
-        stopped = self.running_work()
-        self._replace_data(None)
-        if stopped:
-            self.show_status(f'Data cleared — the running {stopped} was stopped')
+        self._dataset = None
+        self._data_edited('Data cleared', discard=True)
 
-    def _replace_data(self, dataset: Dataset | None) -> None:
+    def _data_edited(self, message: str, *, discard: bool = False) -> None:
+        """The session's data changed: stop the work on the data it had, check the results again, say *message*.
+
+        The fit and the analysis still running were given the data as they
+        were, so their results would describe data no longer loaded; the Ka
+        profile describes the fit it belongs to and runs on. *discard* drops
+        every result, for data loaded in place of the session's own; an edit in
+        place keeps them, hidden while they were made on other data
+        (:meth:`mismatch_note`) and shown again, unchanged, once the data match.
+        """
+        stopped = self.running_work()
         self._stop_fit()
-        self._dataset = dataset
-        self._held_fit_results = []
-        self._clear_profile()
-        self._clear_sensitivity()
-        self._note(Change.NAME | Change.DATA)
-        self.check_results()
+        self._stop_sensitivity()
+        if discard:
+            self._held_fit_results = []
+            self._clear_profile()
+            self._clear_sensitivity()
+        self._data_changed()
+        self.show_status(f'{message} — the running {stopped} was stopped' if stopped else message)
 
     def _data_changed(self) -> None:
-        """The files or the replicates in use changed; the results are checked against them again."""
+        """The data or the replicates in use changed; the held results are checked against them again."""
         self._note(Change.NAME | Change.DATA)
         self.check_results()
 

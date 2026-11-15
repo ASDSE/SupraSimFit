@@ -257,6 +257,12 @@ session, reached through the session switcher.
 - **Load data ▾** has three commands: *Add files to this session…* ⌘O, *Replace data…*,
   *Load data into a new session…* ⇧⌘O. Adding keeps every fit; replacing is always an
   explicit choice. Every load command goes through the session model (`load_files()`, `add_files()`).
+- **Edits of the data in place keep every result.** Adding or removing a file, stating the
+  concentrations in another unit, typing or loading concentrations, and switching the
+  channel of a plate export hide a result made on other data (*Results hidden*) and show
+  it again, unchanged, once the data match it. Only *Replace data…* and removing the last
+  file drop the results. Any change to the data stops the fit or analysis running, which
+  was given the data as they were; the status bar says what changed and what it stopped.
 
 ![Load data menu](screens/measurements_load_light.jpg)
 
@@ -394,7 +400,9 @@ Each view below is the approved design; its reference screens are in `screens/`.
 Canvas: the **Files** table (file, format, replicate letter, points; *Add files…*, × to
 remove one), a one-line note on how added files are used (*Load data into a new
 session…* as its link), and the raw **Titration** plot with a *Display unit* menu in its
-header. Side panel *Measurement settings*: Concentrations (imported unit, the
+header. Side panel *Measurement settings*: Concentrations (under the small heading *Units in
+the file*, the unit the file's concentrations are stated in — a statement about the file,
+which reinterprets the numbers, kept apart from the plot's *Display unit* — then the
 concentration list, *Load vector…* / *Save vector…*), Replicates (replicate chips,
 *Reset all*), Outlier removal (Z-score threshold, minimum replicates, *Apply* / *Reset*,
 the last result in a sentence).

@@ -215,20 +215,25 @@ def inspector(t: Theme) -> QWidget:
 
     # Concentrations
     unit_row = C.hbox(
-        C.label('Imported unit', 'body', 'secondary'),
+        C.label('Concentrations', 'body', 'secondary'),
         None,
         C.Segmented(t, ['nM', 'µM', 'mM', 'M'], current=3, width=168),
         spacing=3,
     )
-    unit_note = C.label('Changing it reinterprets the values below.', 'small', 'tertiary')
+    unit_note = C.label(
+        'The numbers below are read in this unit. To draw the plot in another unit, use its Display unit.',
+        'small',
+        'tertiary',
+    )
     unit_note.setWordWrap(True)
     vec = C.hbox(C.link_button('Load vector…'), C.link_button('Save vector…'), None, spacing=5)
     conc = QWidget()
     conc.setLayout(
         C.vbox(
+            C.label('Units in the file', 'label', 'tertiary'),
             unit_row,
             unit_note,
-            3,
+            5,
             C.ConcentrationGrid(t, [molar(v) for v in DATA['x_M']], f'{X_NAME} (M)'),
             2,
             vec,

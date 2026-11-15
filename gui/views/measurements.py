@@ -311,11 +311,16 @@ class MeasurementsView(QObject):
 
     def _build_side(self) -> QWidget:
         t = self.t
-        # Concentrations
+        # Concentrations: first the unit the file states them in, a statement about the file
+        # under a heading of its own, apart from the plot's display unit.
         self.imported_unit = C.Segmented(t, list(UNITS), current=UNITS.index('M'), width=168)
-        self.imported_unit.setAccessibleName('Unit the concentrations are stated in')
+        self.imported_unit.setAccessibleName('Unit the concentrations in the file are stated in')
         self.imported_unit.changed.connect(self._set_imported_unit)
-        unit_note = C.label('Changing it reinterprets the values below.', 'small', 'tertiary')
+        unit_note = C.label(
+            'The numbers below are read in this unit. To draw the plot in another unit, use its Display unit.',
+            'small',
+            'tertiary',
+        )
         unit_note.setWordWrap(True)
         self.channel = C.Dropdown(t, '', 200)
         self.channel.setAccessibleName('Channel of the plate export')
@@ -331,8 +336,10 @@ class MeasurementsView(QObject):
         conc = QWidget()
         conc.setLayout(
             C.vbox(
-                C.hbox(C.label('Imported unit', 'body', 'secondary'), None, self.imported_unit, spacing=3),
+                C.label('Units in the file', 'label', 'tertiary'),
+                C.hbox(C.label('Concentrations', 'body', 'secondary'), None, self.imported_unit, spacing=3),
                 unit_note,
+                5,
                 self.channel_row,
                 3,
                 self.grid,

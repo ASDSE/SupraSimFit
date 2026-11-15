@@ -1271,3 +1271,129 @@ def test_a_dilution_difference_without_data_reads_as_a_sentence(
     assert session.model.hidden_results_note() == (
         'The dilution by the titrant is now switched off. Switch it back on, or run the fit again.'
     )
+
+
+# ---------------------------------------------------------------------------
+# Edits of the data in place: the unit, a concentration, the channel
+# ---------------------------------------------------------------------------
+
+_OTHER_DATA = 'This fit was made on other data than the data loaded now. Run the fit again.'
+
+
+def _two_channels(monkeypatch, session) -> None:
+    """Load into *session* a plate export whose first channel is :func:`_data` and whose second reads twice as high."""
+    import pandas as pd
+
+    from gui import dataset as dataset_module
+
+    ms = _data()
+    frame = pd.DataFrame(
+        [
+            {'concentration': x, 'signal': factor * y, 'replica': rid, 'channel': channel}
+            for channel, factor in (('chA', 1.0), ('chB', 2.0))
+            for rid, row in zip(ms.replica_ids, ms.signals, strict=True)
+            for x, y in zip(ms.concentrations, row, strict=True)
+        ]
+    )
+    frame.attrs['ensight_metadata'] = {'channels': {'chA': {}, 'chB': {}}}
+
+    def open_plate(cls, paths):
+        ds = dataset_module.Dataset()
+        ds._channel_frame = frame
+        ds.channels, ds.channel = ['chA', 'chB'], 'chA'
+        ds.ms = dataset_module._make_ms(dataset_module._slice_channel(frame, 'chA'), 'plate.csv')
+        ds.face_values = np.asarray(ds.ms.concentrations, dtype=np.float64).copy()
+        ds.files = (dataset_module.SourceFile('plate.csv', 'EnSight plate export', tuple(ds.ms.replica_ids)),)
+        return ds
+
+    monkeypatch.setattr(dataset_module.Dataset, 'open', classmethod(open_plate))
+    assert session.model.load_files(['plate.csv']) is None
+    assert session.model.measurement_set.fingerprint() == ms.fingerprint(), 'channel A is the data the fit was made on'
+
+
+def _assert_back(session, fit, sensitivity, before) -> None:
+    """The very results held before the edit are shown again, their numbers, profile and analysis unchanged."""
+    model = session.model
+    assert model.fit_results[-1] is fit
+    assert model.hidden_results_note() is None
+    assert _numbers(session) == before
+    assert model.profiled_fit is fit and model.profile is not None
+    assert session._confidence.has_plot()
+    assert model.sensitivity_result is sensitivity and model.sensitivity_note is None
+
+
+def test_reading_the_concentrations_in_another_unit_hides_the_results_and_the_unit_of_the_fit_restores_them(
+    qapp, make_session, fit, dialogs
+):
+    """The control reads the file's numbers in another unit: other data, so the results are hidden, never dropped."""
+    from gui.dataset import UNITS
+
+    session = _shown_session(qapp, make_session, fit)
+    sensitivity = _deliver_sensitivity(session, fit)
+    before = _numbers(session)
+    control = session._measurements.imported_unit
+
+    control.changed.emit(UNITS.index('mM'))
+
+    assert session.model.held_fit_results == [fit]
+    _assert_hidden(session, _OTHER_DATA)
+    assert session.model.sensitivity_note is not None
+    assert session.model.profiled_fit is fit
+
+    control.changed.emit(UNITS.index('M'))
+
+    _assert_back(session, fit, sensitivity, before)
+
+
+def test_a_concentration_edited_and_typed_back_restores_the_fit(qapp, make_session, fit, dialogs):
+    session = _shown_session(qapp, make_session, fit)
+    sensitivity = session.model.sensitivity_result
+    before = _numbers(session)
+    original = repr(float(session.model.dataset.face_values[3]))
+
+    assert session.model.set_concentration(3, '1e-3') is None
+    _assert_hidden(session, _OTHER_DATA)
+
+    assert session.model.set_concentration(3, original) is None
+    _assert_back(session, fit, sensitivity, before)
+
+
+def test_switching_to_another_channel_and_back_restores_the_fit(qapp, make_session, fit, dialogs, monkeypatch):
+    session = make_session()
+    _two_channels(monkeypatch, session)
+    _deliver(session, fit)
+    _wait_until(qapp, lambda: session.model.profile is not None)
+    before = _numbers(session)
+
+    assert session.model.select_channel('chB') is None
+    _assert_hidden(session, _OTHER_DATA)
+
+    assert session.model.select_channel('chA') is None
+    _assert_back(session, fit, None, before)
+
+
+def test_an_edit_in_place_says_what_it_did_and_not_that_data_were_loaded(qapp, make_session, fit, dialogs):
+    session = _shown_session(qapp, make_session, fit)
+    said = status_messages(session.model)
+
+    session.model.set_imported_unit('mM')
+    session.model.set_concentration(0, '0')
+
+    assert said == ['Concentrations now stated in mM', 'Point 1 set to 0 mM']
+
+
+def test_an_edit_in_place_stops_the_running_fit_and_keeps_the_fit_held(qapp, make_session, fit, dialogs, slow_fit):
+    """The running fit was given the data before the edit, so its result would describe data no longer loaded."""
+    session = _shown_session(qapp, make_session, fit)
+    session.run_fit()
+    worker = session.model._fit_worker
+
+    session.model.set_imported_unit('mM')
+    worker.wait()
+    for _ in range(5):
+        qapp.processEvents()
+
+    assert not session.model.fit_running()
+    assert session.model.held_fit_results == [fit]
+    assert session.model.status == 'Concentrations now stated in mM — the running fit was stopped'
+    assert dialogs['warning'] == []
