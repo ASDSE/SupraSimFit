@@ -380,13 +380,12 @@ class ConfidenceView(QObject):
     """The canvas and side panel of Ka confidence over *model*; *parent* is the session.
 
     :attr:`shifts_requested` asks for *Notes* with the input shifts in view (the conflict
-    callout's action), :attr:`save_requested` for the plot image, :attr:`guide_requested`
-    for the plot guide at Ka confidence; the session answers each.
+    callout's action), :attr:`save_requested` for the plot image; the session answers each, and opens the
+    Help window at Ka confidence from :attr:`guide_link`.
     """
 
     shifts_requested = pyqtSignal()
     save_requested = pyqtSignal()
-    guide_requested = pyqtSignal()
 
     def __init__(self, model: SessionModel, parent: QWidget):
         super().__init__(parent)
@@ -398,7 +397,6 @@ class ConfidenceView(QObject):
         self.canvas = self._build_canvas()
         self.side = self._build_side()
         self.guide_link = C.link_button('Reading this plot  →')
-        self.guide_link.clicked.connect(self.guide_requested)
         model.changed.connect(self._on_changed)
         appearance().changed.connect(self._restyle)
         self.refresh()

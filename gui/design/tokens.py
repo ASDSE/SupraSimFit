@@ -80,9 +80,6 @@ SIZE = {
     'export-titration': 600,
     'export-signal': 520,
     'export-species': 400,
-    # The least size of the help dialog the views open from their help links.
-    'help-width': 560,
-    'help-height': 420,
 }
 
 #: Colours of the replicates (``replicate-1`` … ``replicate-12``); past them the colours repeat with the next mark.

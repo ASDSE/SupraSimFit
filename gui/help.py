@@ -1,15 +1,24 @@
-"""The text of Help ▸ Reading the plots: what each plot shows and how to read it.
+"""The text of the Help window: one section per view of the main window and one for the Simulation window.
 
-``PLOT_GUIDE`` maps the name of each view with a plot — the session's views and the
-Simulation window — to its section as HTML, in the order the guide lists them.
-:class:`gui.dialogs.plot_guide_dialog.PlotGuideDialog` shows one section at a time.
+Each section says what its view shows and how to read it, and what the settings of its side
+panel do. :data:`SECTIONS` lists them in the order the window does; :func:`section_html`
+writes one, the Binding model section for the model chosen. The text keeps one convention:
+a topic is a ``<p class="topic">`` paragraph and a sub-head a paragraph in bold, which
+:class:`gui.dialogs.help_window.HelpWindow` draws in the design's type roles.
 
 Every section with a plot Demo IDA fills (:meth:`gui.fitting_session.FittingSession.load_demo_ida`)
 ends on an example that reads the demo's numbers, held in :data:`DEMO` as the app writes
-them; ``tests/integration/test_plot_guide_demo.py`` works them out again from a demo fit.
+them; ``tests/integration/test_help_demo.py`` works them out again from a demo fit.
 """
 
 from __future__ import annotations
+
+from core.assays.registry import AssayType
+from core.data_processing.measurement_set import MIN_POINTS
+from core.pipeline.sensitivity import _SOBOL_BLOCKS
+from gui.binding import help_html
+from gui.dataset import readable_extensions
+from gui.uncertainty import HELP_HTML as _INPUT_UNCERTAINTY
 
 #: Demo IDA's numbers as the views write them: its fit, Ka profile, a Sensitivity indices run
 #: at Fixed seed 0 and N = 1024, and the Simulation window as it opens.
@@ -42,8 +51,18 @@ DEMO: dict[str, str] = {
 }
 
 _MEASUREMENTS = """
-<p>The <b>Titration</b> plot shows the raw signal of every replicate against the titrant
-concentration, as loaded.</p>
+<p class="topic">Files</p>
+<p>The files of one experiment, each as one or more replicates on one concentration grid:
+<i>Add files…</i> adds another titration of the same experiment, &times; removes a file. The
+format is read from the file; SupraSimFit reads {formats}. A titration needs at least
+{min_points} points, a concentration of zero or more at each, and every replicate a signal at
+every concentration; data that break one of these are refused with the file, the replicate
+and the point named. Another experiment belongs in a session of its own: <i>Load data into a
+new session…</i></p>
+
+<p class="topic">Titration</p>
+<p>The plot shows the raw signal of every replicate against the titrant concentration, as
+loaded.</p>
 <ul>
 <li>Dots: the replicates the fit will use, named A, B, &hellip; in the Files table.</li>
 <li>Crosses: replicates switched off, by you under <i>Replicates</i> or by <i>Outlier removal</i>.
@@ -53,6 +72,41 @@ are read in the unit set under <i>Concentrations</i>.</li>
 </ul>
 <p>Replicates that agree lie on top of each other. One that runs apart from the rest is the one to
 check, or to switch off.</p>
+
+<p class="topic">Measurement settings</p>
+<p>The side panel, <i>Measurement settings</i>, decides which points and replicates reach the
+fit.</p>
+<p><b>Concentrations</b></p>
+<p><i>Units in the file</i> states the unit the file gives its concentrations in. It is a
+statement about the file: changing it reads the same numbers in another unit, so every
+concentration changes. A plate export with several channels shows one at a time, chosen under
+<i>Channel</i>. Each concentration in the list can be typed over; <i>Load vector…</i> reads a
+list of concentrations from a file and <i>Save vector…</i> writes this one.</p>
+<p><b>Replicates</b></p>
+<p>One chip per replicate: a replicate switched off is left out of the fit and drawn as
+crosses, but never deleted. <i>Reset all</i> switches every replicate back on.</p>
+<p><b>Outlier removal</b></p>
+<p>Switches off any replicate that lies unusually far from the others. At each concentration
+it takes the median of the replicates in use and their median absolute deviation (MAD), and
+gives each replicate the modified z-score
+<i>z</i> = 0.6745 &middot; |signal &minus; median| / MAD; the factor 0.6745 puts <i>z</i> on
+the scale of a standard deviation of normal noise. A replicate whose largest <i>z</i> at any
+concentration is above the <i>Z-score threshold</i> is switched off, and the line under the
+fields names the point and the <i>z</i> that put it out. Median and MAD are robust: one bad
+replicate does not hide another.</p>
+<ul>
+<li><i>Z-score threshold</i>: 3.5, as the field opens, removes only clearly inconsistent
+replicates; 2 to 2.5 also removes ones only slightly off, for very clean data; 5 or more
+removes almost nothing.</li>
+<li><i>Min replicates</i>: the fewest replicates in use the removal runs on. With fewer it does
+not run and says so, so it never leaves one or two curves to fit.</li>
+</ul>
+<p><i>Apply</i> works on the replicates in use only, so each Apply can switch off one more:
+the worst replicate goes first, and the median and MAD of the rest no longer carry it. A
+replicate already off stays off at a new threshold; <i>Reset</i> (or <i>Reset all</i> under
+Replicates) switches every one back on before you apply another. Look at which replicates were
+switched off before you trust the fit.</p>
+
 <p><b>Example: Demo IDA</b> (Tools &#9656; Demo IDA) loads {loaded} replicates. <i>Outlier removal</i>
 switches {off} off, so {off} is drawn as crosses and the others as dots; Fit details then counts
 {used} replicates used.</p>
@@ -66,7 +120,7 @@ covers that &mdash; and <i>Inputs as entered</i> where every input is fixed. The
 draws both readings on one K<sub>a</sub> axis; <i>Split</i> marks an interval whose accepted
 K<sub>a</sub> come in separate stretches.</p>
 
-<p><b>Titration</b></p>
+<p class="topic">Titration</p>
 <ul>
 <li>Dots: the replicates the fit used.</li>
 <li>Crosses: replicates the fit did not use &mdash; switched off, or left out by the fit when each
@@ -81,7 +135,8 @@ file.</li>
 one side &mdash; the model misses something the data contain, however high R&sup2; is. How
 precisely the data fix K<sub>a</sub> is the interval, not R&sup2;.</p>
 
-<p><b>Fit details</b></p>
+<p class="topic">Fit details</p>
+<p>The side panel, <i>Fit details</i>, holds everything else the fit reports.</p>
 <ul>
 <li><i>Fit quality</i>: R&sup2;, RMSE, the replicates used, and the noise the replicates show
 &mdash; a constant part in a.u. plus a part proportional to the signal &mdash; by which the fit
@@ -142,7 +197,7 @@ uncertainty: a &sigma; drawn from a normal distribution, a range evenly between 
 sample counts the same however well it fits, so the spread shows how far the stated inputs move
 K<sub>a</sub>; it is not a confidence interval.</p>
 
-<p><b>Sensitivity indices</b></p>
+<p class="topic">Sensitivity indices</p>
 <ul>
 <li>Spread from the stated inputs: one standard deviation of log<sub>10</sub> K<sub>a</sub>, as a
 &times;/&divide; factor and in decades, centred on the fit at the inputs as entered.</li>
@@ -164,10 +219,45 @@ from the samples already drawn.</li>
 source&rsquo;s draw. A trend marks a source that matters.</li>
 </ul>
 
-<p><b>Heatmap</b>: two inputs stepped on a grid, one fit per cell, K<sub>a</sub> coloured from
+<p class="topic">Heatmap</p>
+<p>Two inputs stepped on a grid, one fit per cell, K<sub>a</sub> coloured from
 dark violet (low) to yellow (high) with its colour bar. The diamond marks the inputs as entered;
 the card reads the cell under the pointer. An empty cell is one the binding model has no solution
 for. Worrying: a sharp edge, where K<sub>a</sub> jumps between neighbouring cells.</p>
+
+<p class="topic">Analysis settings</p>
+<p>The side panel, <i>Analysis settings</i>, sets up the next run; the settings that feed a run
+lock while it runs.</p>
+<p><b>Run</b></p>
+<ul>
+<li><i>Mode</i>: <i>Sensitivity indices</i> varies every error source together and measures
+how much of the spread of K<sub>a</sub> each one is responsible for; <i>Heatmap</i> sweeps two
+inputs on a grid.</li>
+<li><i>Sample size (N)</i>: how thoroughly the inputs are explored. A run fits N &times; (k + 2)
+samples for k sources that vary, plus two refits per input for the elasticities, so every step
+up doubles the time; the menu counts the fits. The whiskers of the indices come from
+{blocks} separate sample sets and narrow as N grows. Whiskers that stand apart settle which of
+two sources matters more; overlapping ones do not settle it, and a larger N may.</li>
+<li><i>Fixed seed</i>: the same seed draws the same samples, so a run can be repeated exactly;
+off, every run draws afresh.</li>
+<li><i>X axis</i> and <i>Y axis</i> of a heatmap: two different inputs, each stated as a
+&sigma; or a range under Input uncertainty, never <i>Fixed</i>. An axis stated as a range runs
+over its range; one stated as a &sigma; runs &plusmn;1, 2 or 3 &sigma; either side of the
+entered value, and must stay above zero there. Every other input keeps its entered value.</li>
+<li><i>Grid</i>: the steps per axis, one fit per cell, so the cost grows with the square;
+11 &times; 11 is a good start.</li>
+</ul>
+<p><b>Error sources</b></p>
+<p>The sources the run varies, as stated under Input uncertainty, where <i>Edit in Input
+uncertainty</i> changes them. A source shared by several inputs is one item: its share is what
+re-making that stock, or recalibrating that pipette, would take away.</p>
+<p><b>This run</b></p>
+<p>What the result on screen was made with: the samples and fits, the sample blocks or the
+grid, the median R&sup2; of the samples, how long it took on how many processor cores, the
+seed, and whether it was stopped.</p>
+<p><b>Display</b></p>
+<p><i>K<sub>a</sub> axis</i>: K<sub>a</sub> on a log<sub>10</sub> or a linear axis in the
+plots.</p>
 
 <p><b>Example: Demo IDA</b>, <i>Sensitivity indices</i> with <i>Fixed seed</i> on at {seed} and
 N = {n}. The spread of K<sub>a</sub> guest from the stated inputs is {spread} ({decades}) around
@@ -177,14 +267,23 @@ first, {top}, known exactly, <i>Spread if exact</i> says {exact} decades would b
 
 _PLOT_APPEARANCE = """
 <p>The titration plot as Fit results draws it, styled by this session&rsquo;s settings in the
-side panel: the size of the replicate and mean points, the replicate mark and colour, the colour
-and width of the curve, the width of the error bars and the size of the plot text. They apply
-to the titration plot in Measurements and Fit results, and to a figure saved from it. The means
-and their error bars keep the colour of the text.</p>
-<p>The size of the plot text applies to every plot of the session — the profiles and joint
-region of Ka confidence, the samples, heatmap and plots against each source of Sensitivity —
-and to the figures saved from them. The Simulation window draws at the size stored for new
-sessions.</p>
+side panel, <i>Titration plot</i>. They apply to the titration plot in Measurements and Fit
+results, and to a figure saved from it, and every choice redraws the plots at once.
+<i>Reset to defaults</i> goes back to the built-in appearance.</p>
+<ul>
+<li><b>Markers</b>: the size of the replicate and of the mean points, and the replicates&rsquo;
+mark.</li>
+<li><b>Lines</b>: the width of the fitted curve and of the error bars.</li>
+<li><b>Colour</b>: the replicates <i>By replicate</i>, each in its own colour, or all in
+<i>Grey</i>; and the colour of the fitted curve. The means and their error bars keep the colour
+of the text.</li>
+<li><b>Text</b>: the size of the plot text, which applies to every plot of the session &mdash;
+the profiles and joint region of Ka confidence, the samples, heatmap and plots against each
+source of Sensitivity &mdash; and to the figures saved from them.</li>
+<li><b>New sessions</b>: <i>Use for new sessions</i> stores this appearance, and every new
+session starts from it; Settings can go back to the built-in one. The Simulation window draws
+at the text size stored for new sessions.</li>
+</ul>
 """
 
 _SIMULATION = """
@@ -196,14 +295,31 @@ measurement points, an overlaid file as rings.</li>
 partner &mdash; solid for a complex, dashed for a free species. The row above it reads each
 species at the concentration under the pointer.</li>
 </ul>
-<p><b>Noise</b>: each simulated point gets random noise with
+<p class="topic">Noise</p>
+<p>Each simulated point gets random noise with
 &sigma; = &radic;(floor&sup2; + (proportional &times; signal)&sup2;) &mdash; a constant part in
 a.u. and a part that grows with the signal, the law the fit reads off measured replicates.
 <i>Read from overlaid data</i> takes both parts from an overlaid file with two or more
 replicates. Without noise, one noise-free replicate is simulated.</p>
-<p><b>Fixed totals</b> stay constant until you choose <i>Are diluted</i>: each addition then
+<p class="topic">Fixed totals</p>
+<p>The fixed totals stay constant until you choose <i>Are diluted</i>: each addition then
 dilutes every total the titrant stock does not hold by the titrant concentration over the
 stock, as the fit does with the same stock.</p>
+<p class="topic">Simulation settings</p>
+<p>The side panel, <i>Simulation settings</i>, holds the model and what it is simulated at;
+every change redraws the plots. Each slider&rsquo;s end values can be typed over, and the
+&#8943; menu saves, loads and resets the settings.</p>
+<ul>
+<li><b>Binding model</b>: the category and model, as in the Binding model view.</li>
+<li><b>Binding constants</b>: on log sliders, in M<sup>&minus;1</sup>.</li>
+<li><b>Fixed totals</b>: each total in the cuvette with its unit, and whether the totals stay
+constant or are diluted by the titrant stock.</li>
+<li><b>Concentrations</b>: the titrant concentrations measured at, in even steps or as a list
+of your own.</li>
+<li><b>Noise</b>: the floor and the proportional part, the number of replicates, the seed and
+<i>New draw</i>.</li>
+<li><b>Signal</b>: the signal coefficients of the model.</li>
+</ul>
 <p><i>Fit in new session</i> opens the data as shown in a new session and fits it. The values you
 simulated with are not passed to the fit, so it searches as it does on measured data.</p>
 
@@ -212,11 +328,32 @@ K<sub>a</sub> guest {entered} M⁻¹. The species row opens at {sim_x}: HG {sim_
 {sim_hd} and G {sim_g} µM, so most of the guest added is bound.</p>
 """
 
-PLOT_GUIDE: dict[str, str] = {
-    'Measurements': _MEASUREMENTS.format(**DEMO),
+#: The sections of the Help window, in the order it lists them: the views of the main window
+#: (:data:`gui.fitting_session.NAVIGATION`), then the Simulation window.
+SECTIONS = (
+    'Measurements',
+    'Binding model',
+    'Input uncertainty',
+    'Fit results',
+    'Ka confidence',
+    'Sensitivity',
+    'Plot appearance',
+    'Simulation',
+)
+
+_STATIC: dict[str, str] = {
+    'Measurements': _MEASUREMENTS.format(formats=', '.join(readable_extensions()), min_points=MIN_POINTS, **DEMO),
+    'Input uncertainty': _INPUT_UNCERTAINTY,
     'Fit results': _FIT_RESULTS.format(**DEMO),
     'Ka confidence': _KA_CONFIDENCE.format(**DEMO),
-    'Sensitivity': _SENSITIVITY.format(**DEMO),
+    'Sensitivity': _SENSITIVITY.format(blocks=_SOBOL_BLOCKS, **DEMO),
     'Plot appearance': _PLOT_APPEARANCE,
     'Simulation': _SIMULATION.format(**DEMO),
 }
+
+
+def section_html(section: str, assay_type: AssayType) -> str:
+    """The text of *section*, a name in :data:`SECTIONS`; Binding model's describes *assay_type*."""
+    if section == 'Binding model':
+        return help_html(assay_type)
+    return _STATIC[section]

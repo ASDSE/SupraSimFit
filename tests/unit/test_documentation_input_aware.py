@@ -110,10 +110,10 @@ def test_the_binding_model_help_points_at_the_view_the_uncertainties_are_entered
     """The Binding model help of a model with inputs sends the reader to a view, under the name the sidebar gives it."""
     pytest.importorskip('PyQt6')
     from core.assays.registry import AssayType
-    from gui import binding, uncertainty
+    from gui import binding
     from gui.fitting_session import VIEWS
 
-    heading = uncertainty.HELP_HTML.split('<h3>')[1].split('</h3>')[0].strip()
+    heading = 'Input uncertainty'
     assert heading in VIEWS
     # Dye alone has no entered input to state an uncertainty for, so its help has no view to point at.
     for assay_type in (at for at in AssayType if at is not AssayType.DYE_ALONE):

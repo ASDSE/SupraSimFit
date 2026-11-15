@@ -49,10 +49,8 @@ CATEGORIES: dict[str, list[AssayType]] = {}
 for _assay_type, _meta in ASSAY_REGISTRY.items():
     CATEGORIES.setdefault(_meta.category, []).append(_assay_type)
 
-HELP_TITLE = 'Binding model'
-
 _CONDITIONS_HELP_HTML = """
-<h3>Conditions</h3>
+<p class="topic">Conditions</p>
 <p>The conditions are what the model needs besides the data: the fixed totals in the
 cuvette and any binding constant measured beforehand. Each concentration is entered in
 nM, µM, mM or M, chosen beside it; a binding constant in M<sup>−1</sup>. Switching the
@@ -64,7 +62,7 @@ interval covers that as well.</p>
 """
 
 _STOCK_HELP_HTML = """
-<h3>Titrant stock</h3>
+<p class="topic">Titrant stock</p>
 <p>Here you state whether each addition of titrant dilutes the sample. The fixed
 concentrations <b>stay constant</b> when the samples were made up to the same volume, or
 when the titrant stock was prepared in the sample solution itself; otherwise they are
@@ -84,7 +82,7 @@ at the sample's own concentration: the additions leave that one where it is.</p>
 """
 
 _BOUNDS_HELP_HTML = """
-<h3>Bounds of the fitted parameters</h3>
+<p class="topic">Bounds of the fitted parameters</p>
 <p>Lower and upper limits for each fitted parameter. They open on the defaults of the
 model; edit them to constrain the fit where you know more, and <b>Reset to defaults</b>
 brings the defaults back.</p>
@@ -139,7 +137,7 @@ def _dye_alone_help(keys: tuple[str, ...]) -> str:
     """The help of *Bounds from dye alone…* for a model whose signal coefficients *keys* it bounds."""
     lines = '<br>\n  '.join(f'<i>{_DYE_ALONE_BOUNDS[key]}</i>' for key in keys)
     return (
-        '<h4>Bounds from dye alone</h4>\n'
+        '<p><b>Bounds from dye alone</b></p>\n'
         + _DYE_ALONE_DEGENERACY_HTML
         + '<p><b>Bounds from dye alone…</b> fits a straight line\n'
         '<i>S = slope &middot; [D] + intercept</i> to a dye-only calibration recorded on the same\n'
@@ -152,7 +150,7 @@ def _dye_alone_help(keys: tuple[str, ...]) -> str:
 
 #: The help of the replicate choice; it states the level and the replicate count the test needs.
 REPLICATES_HELP_HTML = """
-<h3>Replicates</h3>
+<p class="topic">Replicates</p>
 
 <p><b>What is fitted either way</b></p>
 <p>The reported fit is always the fit of the <i>average</i> of the replicates
@@ -240,7 +238,7 @@ def help_html(assay_type: AssayType) -> str:
     if fields:
         conditions = _CONDITIONS_HELP_HTML
     else:
-        conditions = f'<h3>Conditions</h3>\n<p>{name} needs no conditions besides the data.</p>\n'
+        conditions = f'<p class="topic">Conditions</p>\n<p>{name} needs no conditions besides the data.</p>\n'
     if any(f.unit_type == 'concentration' for f in fields):
         conditions += _STOCK_HELP_HTML
     unlimited = any(
@@ -253,7 +251,7 @@ def help_html(assay_type: AssayType) -> str:
     else:
         bounds = _BOUNDS_LINE_HELP_HTML
         replicates = (
-            f'<h3>Replicates</h3>\n<p>{name} is fitted from the average of the replicates '
+            f'<p class="topic">Replicates</p>\n<p>{name} is fitted from the average of the replicates '
             'switched on: with no binding constant there is nothing to test the replicates by.</p>\n'
         )
     return model + conditions + head + bounds + parameters + SCI_NOTE_HTML + replicates

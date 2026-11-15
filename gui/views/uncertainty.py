@@ -27,9 +27,8 @@ from gui.design.tokens import SIZE, space
 from gui.plotting.labels import THIN, times_ten, verdict_headline
 from gui.results import interval_caption, ka_blocks, test_rows
 from gui.session_model import Change, SessionModel
-from gui.uncertainty import ADDITION_MODES, HELP_HTML, HELP_TITLE, REPLICATE_KINDS, InputEntry, spread_pct
+from gui.uncertainty import ADDITION_MODES, REPLICATE_KINDS, InputEntry, spread_pct
 from gui.widgets.assay_conditions import format_condition
-from gui.widgets.info_button import show_help
 
 _KINDS = (None, SpecKind.SIGMA, SpecKind.INTERVAL)
 
@@ -196,9 +195,6 @@ class UncertaintyView(QObject):
         change(self.model.uncertainty)
         self.model.uncertainty_edited()
 
-    def show_help(self) -> None:
-        show_help(self.parent.window(), HELP_TITLE, HELP_HTML)
-
     def set_locked(self, locked: bool) -> None:
         """Lock every control while a fit or an analysis reads the statement."""
         self._locked = locked
@@ -223,7 +219,6 @@ class UncertaintyView(QObject):
             'move within what you state, and the Sensitivity analysis draws them from it.'
         )
         self.help_link = C.link_button('About input uncertainty')
-        self.help_link.clicked.connect(self.show_help)
         self.unavailable = C.wrapped('', 'body', 'secondary')
 
         self.table = QWidget()

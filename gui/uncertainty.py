@@ -39,10 +39,7 @@ from core.units import Q_, Quantity
 from gui.plotting.labels import plain_label
 from gui.widgets.assay_conditions import ASSAY_CONDITIONS, UNIT_CHOICES, ConditionField, input_labels
 
-HELP_TITLE = 'Input uncertainty'
-
 HELP_HTML = """
-<h3>Input uncertainty</h3>
 <p>How far each input may be off: the titrant concentrations and the fixed
 conditions (<i>[Host]<sub>0</sub></i>, <i>[Dye]<sub>0</sub></i>,
 <i>K<sub>a,dye</sub></i>, …). Each carries pipetting, weighing or calibration error,
@@ -93,7 +90,7 @@ neither a fit nor an analysis starts until you change the value or choose
 <b>Fixed</b>.</p>
 <p>Use realistic numbers: pipetting error is often a few percent, a stated
 literature K<sub>a,dye</sub> may be uncertain by 10–20%.</p>
-<h3>Shared error sources</h3>
+<p class="topic">Shared error sources</p>
 <p>The entry on an input above is the error <b>only that input</b> has. An error several
 inputs have in common — their solutions come from one stock, were weighed on one balance
 or pipetted with one pipette — is a <b>shared error source</b>: name it, state its σ in
@@ -105,7 +102,7 @@ percentage the other way.</p>
 <p>Both the interval of every fit and the K<sub>a</sub> Sensitivity analysis use exactly
 this model. The analysis reports a shared source as one item, which is what you can act
 on: one stock to re-make, one pipette to recalibrate.</p>
-<h3>Random error of each addition</h3>
+<p class="topic">Random error of each addition</p>
 <p>The titrant entry above moves the whole series by one factor — a stock or dilution
 error that shifts every concentration by the same fraction. The scatter of the individual
 additions is stated here instead. Choose <i>One cuvette</i>, sequential additions where
@@ -128,6 +125,14 @@ replicates. <i>Repeated reads of one titration</i> share them, and their average
 titrations is the setting the view opens with.</p>
 <p>A σ larger than the real one gives a wider interval than needed. The K<sub>a</sub>
 Sensitivity analysis samples the same error and ranks it against the other sources.</p>
+<p class="topic">Effect on the fit</p>
+<p>The side panel, <i>Effect on the fit</i>, reads the last fit against what you stated.
+<b>Interval of the last fit</b> draws each binding constant's <i>Input-aware</i> interval
+beside the one of the <i>Inputs as entered</i> on one K<sub>a</sub> axis.
+<b>Inputs against what you stated</b> gives the fit's tests: whether the curve misses the data,
+with the inputs moved and as entered, and whether the inputs together moved further than you
+stated; <i>Review in Ka confidence</i> shows where the fit put them. <b>Also used by</b>
+names the Sensitivity analysis, which draws the inputs from the same statement.</p>
 """
 
 #: Significant figures an amount is written with when the form writes it.

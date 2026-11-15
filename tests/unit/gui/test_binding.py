@@ -390,7 +390,7 @@ def test_the_help_explains_only_what_the_model_offers():
     calibration = help_html(AssayType.DYE_ALONE)
     # (Its own description says how a binding session uses the calibration; the command's section is not there.)
     for absent in (
-        '<h4>Bounds from dye alone',
+        '<p><b>Bounds from dye alone',
         'Each replicate separately',
         'association constant is',
         'no upper',
@@ -400,10 +400,10 @@ def test_the_help_explains_only_what_the_model_offers():
     assert 'fitted from the average of the replicates switched on' in calibration
 
     ida = help_html(AssayType.IDA)
-    assert '<h4>Bounds from dye alone' in ida and REPLICATES_HELP_HTML in ida
+    assert '<p><b>Bounds from dye alone' in ida and REPLICATES_HELP_HTML in ida
 
     # A stepwise host–guest model has no dye: the help offers no calibration.
-    assert '<h4>Bounds from dye alone' not in help_html(AssayType.DBA_HG2)
+    assert '<p><b>Bounds from dye alone' not in help_html(AssayType.DBA_HG2)
 
 
 @pytest.mark.parametrize('assay_type', list(AssayType))
@@ -424,7 +424,7 @@ def test_the_help_headings_are_in_sentence_case(assay_type):
     from gui.plotting.labels import plain_label
 
     html = help_html(assay_type)
-    headings = re.findall(r'<h[34]>(.*?)</h[34]>', html) + re.findall(r'<p><b>(.*?)</b></p>', html)
+    headings = re.findall(r'<p class="topic">(.*?)</p>', html) + re.findall(r'<p><b>(.*?)</b></p>', html)
     for heading in headings:
         words = plain_label(heading).split()[1:]
         assert not [w for w in words if re.fullmatch(r'[A-Z][a-z]+\W*', w)], heading

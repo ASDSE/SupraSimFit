@@ -21,7 +21,7 @@ from gui import preferences
 from gui.design import components as C
 from gui.design.appearance import DesignStyle, appearance, theme
 from gui.design.tokens import SIZE, Theme, space
-from gui.dialogs.plot_guide_dialog import show_plot_guide
+from gui.dialogs.help_window import HelpWindow
 from gui.errors import install_exception_hook, log_dir
 from gui.fitting_session import NAVIGATION, VIEWS, FittingSession
 from gui.preferences import APP_NAME, ORG_NAME
@@ -103,8 +103,8 @@ class _Toolbar(C.TitleBarArea):
         self.load.setObjectName('LoadData')
         self.export = C.tool_button(t, 'Export', 'export', menu=True)
         self.help = C.tool_button(t, None, 'help')
-        self.help.setToolTip('Reading the plots')
-        self.help.setAccessibleName('Reading the plots')
+        self.help.setToolTip('Help for this view')
+        self.help.setAccessibleName('Help')
         self.side = C.tool_button(t, None, 'panel-right', checked=True)
         self.side.setToolTip('Show or hide the side panel')
         self.side.setAccessibleName('Side panel')
@@ -185,6 +185,7 @@ class FittingMainWindow(QMainWindow):
         self._update_worker: UpdateCheckWorker | None = None
         self._sim_window: QMainWindow | None = None
         self._settings_window: QWidget | None = None
+        self._help: HelpWindow | None = None
         self._sessions: list[FittingSession] = []
         self._view = 'Measurements'
         self._side_visible = True
@@ -259,7 +260,7 @@ class FittingMainWindow(QMainWindow):
         self._toolbar.sidebar_toggle.clicked.connect(lambda: self._set_sidebar_visible(True))
         self._toolbar.load.clicked.connect(self._open_load_menu)
         self._toolbar.export.clicked.connect(self._open_export_menu)
-        self._toolbar.help.clicked.connect(self._show_guide)
+        self._toolbar.help.clicked.connect(lambda: self.open_help(self._view))
         self._toolbar.side.clicked.connect(lambda: self._set_side_visible(self._toolbar.side.isChecked()))
         self._toolbar.run.clicked.connect(self._on_primary)
         self._status.clicked.connect(self._open_switcher)
@@ -287,7 +288,7 @@ class FittingMainWindow(QMainWindow):
         self._act_several = _action(self, 'Export several…', 'layers', 'Ctrl+Shift+E', self._on_export_several)
         self._act_demo = _action(self, 'Demo IDA', '', None, self._on_load_demo)
         self._act_simulate = _action(self, 'Simulate…', '', None, self._on_simulate)
-        self._act_guide = _action(self, 'Reading the plots…', '', None, self._show_guide)
+        self._act_help = _action(self, 'SupraSimFit help', '', keys.HelpContents, lambda: self.open_help(self._view))
         self._act_check_updates = _action(
             self, 'Check for updates…', '', None, lambda: self._run_update_check(silent=False)
         )
@@ -334,7 +335,7 @@ class FittingMainWindow(QMainWindow):
         view_menu.addSeparator()
         view_menu.addActions(list(self._view_actions.values()))
         help_menu = mb.addMenu('&Help')
-        help_menu.addAction(self._act_guide)
+        help_menu.addAction(self._act_help)
         help_menu.addSeparator()
         help_menu.addAction(self._act_check_updates)
 
@@ -386,6 +387,8 @@ class FittingMainWindow(QMainWindow):
         self._status.set_text(text)
         self._status.dot.set_tone(tone)
         self._status.model_line.setText('  ·  '.join(model.model_line()))
+        if self._help is not None:
+            self._help.set_assay(model.binding.assay_type)
 
     # ------------------------------------------------------------------
     # Sessions
@@ -400,6 +403,7 @@ class FittingMainWindow(QMainWindow):
         session.side_panel_requested.connect(lambda: self._set_side_visible(True))
         session.view_requested.connect(self.show_view)
         session.new_session_requested.connect(self._on_load_new)
+        session.help_requested.connect(self.open_help)
         session.set_side_panels_visible(self._side_visible)
         session.show_view(self._view)
         self._sessions.append(session)
@@ -605,19 +609,40 @@ class FittingMainWindow(QMainWindow):
         if session is not None:
             session.open_export_multiple_dialog()
 
-    def _show_guide(self) -> None:
-        show_plot_guide(self, self._view)
+    def _help_window(self) -> HelpWindow:
+        """The window's one Help window, made on first use."""
+        if self._help is None:
+            self._help = HelpWindow(self.active_session().model.binding.assay_type, self)
+        return self._help
 
-    def _on_simulate(self) -> None:
-        """Open (or raise) the Simulation window."""
+    def open_help(self, section: str) -> None:
+        """Bring up the Help window at *section*, a name in :data:`gui.help.SECTIONS`.
+
+        The window keeps one Help window: a second request raises the open one at its section.
+        """
+        help_window = self._help_window()
+        help_window.set_assay(self.active_session().model.binding.assay_type)
+        help_window.show_section(section)
+        help_window.show()
+        help_window.raise_()
+        help_window.activateWindow()
+
+    def _simulation_window(self) -> QMainWindow:
+        """The window's one Simulation window, made and wired on first use."""
         if self._sim_window is None:
             from gui.views.simulation import SimulationWindow
 
             self._sim_window = SimulationWindow(self)
             self._sim_window.fit_requested.connect(self._fit_simulation)
-        self._sim_window.show()
-        self._sim_window.raise_()
-        self._sim_window.activateWindow()
+            self._sim_window.help_requested.connect(lambda: self.open_help('Simulation'))
+        return self._sim_window
+
+    def _on_simulate(self) -> None:
+        """Open (or raise) the Simulation window."""
+        simulation = self._simulation_window()
+        simulation.show()
+        simulation.raise_()
+        simulation.activateWindow()
 
     def _fit_simulation(self, form, simulation) -> None:
         """Give the simulated data and the binding model of *form* to a session of their own, and fit them.

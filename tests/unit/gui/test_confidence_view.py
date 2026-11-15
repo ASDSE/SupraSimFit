@@ -118,11 +118,9 @@ def test_the_conflict_callout_opens_notes_at_the_input_shifts(qapp, session):
     assert side.isVisible() and section.isVisible() and section.header._open
 
 
-def test_reading_this_plot_opens_the_guide_at_ka_confidence(session, monkeypatch):
-    from gui import fitting_session
-
+def test_reading_this_plot_asks_for_the_help_at_ka_confidence(session):
     opened: list[str] = []
-    monkeypatch.setattr(fitting_session, 'show_plot_guide', lambda _parent, key: opened.append(key))
+    session.help_requested.connect(opened.append)
 
     session._confidence.guide_link.click()
 

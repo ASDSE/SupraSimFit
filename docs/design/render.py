@@ -13,11 +13,13 @@ Run from the repository root::
     uv run python -m docs.design.render Measurements out.png --menu "Display unit of the titration plot"
     uv run python -m docs.design.render "Ka confidence" out.png --pointer 0.65,0.5
     uv run python -m docs.design.render Simulation out.png
+    uv run python -m docs.design.render Help out.png --section "Binding model"
     uv run python -m docs.design.render --all docs/design/screens
     uv run python -m docs.design.render --all docs/design/screens --only switcher --theme dark
 
 *view* is a view of the main window, or one of the windows it opens (``Settings``,
-``Simulation``), drawn at its own size. ``--all`` writes the reference screens of the
+``Simulation``, ``Help``), drawn at its own size; *section* is the Help window's section
+on show, by default the one of the view on screen. ``--all`` writes the reference screens of the
 design (:data:`SCREENS`) as ``<name>_<light|dark>.jpg`` at :data:`SCALE` × the window's
 size, each in a process of its own; ``--only`` and ``--theme`` narrow it.
 
@@ -65,10 +67,11 @@ from gui import preferences
 from gui.design import components as C
 from gui.design.appearance import appearance
 from gui.fitting_session import _DEMO_IDA_PATH, VIEWS
+from gui.help import SECTIONS
 from gui.main_window import FittingMainWindow, start_application
 
 #: The windows the main window opens, drawn at their own size.
-WINDOWS = ('Settings', 'Simulation')
+WINDOWS = ('Settings', 'Simulation', 'Help')
 STATES = ('empty', 'demo-loaded', 'demo-fitted', 'demo-sensitivity', 'demo-heatmap')
 THEMES = ('light', 'dark')
 #: The longest a render waits for the demo's fit, its Ka profile and a sensitivity analysis, in seconds.
@@ -78,7 +81,7 @@ SCALE = 1.5
 JPEG_QUALITY = 80
 #: How many reference screens are rendered at once, each in a process of its own.
 PROCESSES = 4
-#: The Fixed seed of every sensitivity analysis a render runs: the seed of the plot guide's example.
+#: The Fixed seed of every sensitivity analysis a render runs: the seed of the Help window's example.
 SEED = 0
 #: The processor cores the command line's analyses run on, whatever the machine has.
 WORKERS = 2
@@ -92,6 +95,7 @@ def render(
     open_menu: str | None = None,
     pointer: tuple[float, float] | None = None,
     prepare: Callable[[QWidget], None] | None = None,
+    section: str | None = None,
     size: tuple[int, int] = (1440, 900),
     scale: float = 1.0,
 ) -> QImage:
@@ -99,8 +103,9 @@ def render(
     and the pointer at *pointer* over the first plot on screen, at *scale* device pixels per logical pixel.
 
     *view* is a view of the main window or one of :data:`WINDOWS`, opened by the main
-    window's own command and drawn at its own size. *prepare* is called with the window
-    drawn once it shows *view*, before the menu opens. The running application is set up
+    window's own command and drawn at its own size; the Help window opens at *section*, or
+    else at the view on screen. *prepare* is called with the window drawn once it shows
+    *view*, before the menu opens. The running application is set up
     as the app ships it first. A message box the app raises on the way is not shown; what
     it says is raised as a :class:`RuntimeError`.
     """
@@ -110,6 +115,8 @@ def render(
         raise ValueError(f'unknown state {state!r}; the states are {", ".join(STATES)}')
     if theme not in THEMES:
         raise ValueError(f'unknown theme {theme!r}; the themes are {", ".join(THEMES)}')
+    if section is not None and (view != 'Help' or section not in SECTIONS):
+        raise ValueError(f'a section is one of {", ".join(SECTIONS)}, and only the Help window shows one')
     app = start_application(sys.argv[:1])
 
     said: list[str] = []
@@ -154,7 +161,7 @@ def render(
             check()
             target = window
             if view in WINDOWS:
-                target = _open_window(window, view)
+                target = _open_window(window, view, section)
             else:
                 window.show_view(view)
             _settle(app)
@@ -168,7 +175,7 @@ def render(
             check()
             return _snapshot(target, scale)
         finally:
-            for other in (window._settings_window, window._sim_window):
+            for other in (window._settings_window, window._sim_window, window._help):
                 if other is not None:
                     other.close()
             window.close()
@@ -177,20 +184,24 @@ def render(
             appearance().set_mode(previous)
 
 
-def _open_window(window: FittingMainWindow, name: str) -> QWidget:
-    """Open the window *name* with the main window's own command, made off screen first so that nothing shows."""
+def _open_window(window: FittingMainWindow, name: str, section: str | None = None) -> QWidget:
+    """Open the window *name* with the main window's own command, made off screen first so that nothing shows;
+    the Help window at *section*, else at the view on screen."""
     from gui.dialogs.settings_window import SettingsWindow
-    from gui.views.simulation import SimulationWindow
 
     if name == 'Settings':
         window._settings_window = other = SettingsWindow(window._act_check_updates, window)
         command = window._act_settings
-    else:
-        window._sim_window = other = SimulationWindow(window)
-        other.fit_requested.connect(window._fit_simulation)
+    elif name == 'Simulation':
+        other = window._simulation_window()
         command = window._act_simulate
+    else:
+        other = window._help_window()
+        command = window._act_help
     other.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     command.trigger()
+    if section is not None:
+        window.open_help(section)
     return other
 
 
@@ -294,6 +305,7 @@ class Screen:
     open_menu: str | None = None
     pointer: tuple[float, float] | None = None
     prepare: Callable[[QWidget], None] | None = None
+    section: str | None = None
 
 
 #: The reference screens of the design (``docs/design/screens/<name>_<light|dark>.jpg``), by name.
@@ -318,6 +330,7 @@ SCREENS: dict[str, Screen] = {
     'simulation_scrolled': Screen('Simulation', state='empty', open_menu='Settings menu', prepare=_settings_at_end),
     'simulation_overlay': Screen('Simulation', state='empty', prepare=_overlay_demo),
     'preferences': Screen('Settings', state='empty'),
+    'help': Screen('Help', state='empty', section='Measurements'),
 }
 
 
@@ -331,6 +344,7 @@ def render_screen(name: str, theme: str, directory: Path) -> Path:
         open_menu=screen.open_menu,
         pointer=screen.pointer,
         prepare=screen.prepare,
+        section=screen.section,
         scale=SCALE,
     )
     out = directory / f'{name}_{theme}.jpg'
@@ -376,6 +390,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         '--pointer', type=_pointer, help='across,down: where over the first plot on screen the pointer rests (0 to 1)'
     )
+    parser.add_argument('--section', choices=SECTIONS, help='with Help: the section on show')
     parser.add_argument('--all', type=Path, metavar='DIR', help='write every reference screen to DIR')
     parser.add_argument('--only', nargs='+', choices=list(SCREENS), metavar='NAME', help='with --all: these screens')
     args = parser.parse_args(argv)
@@ -404,7 +419,12 @@ def main(argv: list[str] | None = None) -> None:
             print(render_screen(names[0], themes[0], args.all), flush=True)
             return
         image = render(
-            args.view, theme=args.theme or 'light', state=args.state, open_menu=args.menu, pointer=args.pointer
+            args.view,
+            theme=args.theme or 'light',
+            state=args.state,
+            open_menu=args.menu,
+            pointer=args.pointer,
+            section=args.section,
         )
         if not image.save(args.out):
             sys.exit(f'Could not write {args.out}.')

@@ -156,8 +156,7 @@ the TXT/CSV reports use `estimate [low, high]`.
   a 14-px diamond, a 9-px dot where the pointer meets a curve, a 1.25-px whisker with
   6-px caps — and Simulation's pointer marks, 10 px on the signal and 8 px on each
   species; a saved figure 900 px wide inside a white margin of 24 (`figure-margin`), each Ka profile or joint region in it 420 px high,
-  the titration plot 600, Simulation's signal and species plots 520 and 400; the help
-  dialog at least 560 × 420.
+  the titration plot 600, Simulation's signal and species plots 520 and 400.
 - **Radius** (`RADIUS`): 6 px controls, 8 px cards, 10 px popovers, menus and the
   Settings window, 2 px the Sobol' index bars; badges and toggles are fully rounded, at
   half their height.
@@ -241,7 +240,7 @@ without them gets no styling.
   + 2 more` for several) and `<assay> · <n> replicates × <m> points`. Clicking it opens
   Measurements.
 - **Toolbar** (`bg-surface`): the view title in `title` and its summary badge; at the
-  right *Load data ▾*, *Export ▾*, a divider, Help, the side-panel toggle and the
+  right *Load data ▾*, *Export ▾*, a divider, Help (the Help window at the view on screen), the side-panel toggle and the
   **primary button** — *Run fit* (⌘R), or *Run analysis* in Sensitivity — at one fixed
   width in every view, so the toolbar never shifts. It belongs to the session on screen:
   while that session runs it reads *Stop* (⌘R stops too). *Export ▾* holds: Results file… (⌘S,
@@ -262,7 +261,8 @@ without them gets no styling.
   · 1 binding constant · Profile likelihood, 95 % · Weighted by noise law`).
 - **Menu bar**: *File* (New session ⌘T, Load data…, Open results file…, the export
   commands, Settings… on Windows and Linux, Quit), *Tools* (Simulate…, Demo IDA), *View*,
-  *Help* (Reading the plots…, Check for updates…). On macOS *Settings…* ⌘, is in the app
+  *Help* (SupraSimFit help, at the view on screen, with the platform's help key; Check for
+  updates…). On macOS *Settings…* ⌘, is in the app
   menu.
 
 **Shortcuts** are written here in macOS notation. In code a command uses Qt's standard
@@ -380,6 +380,7 @@ the same tokens.
 | **Legend row** | Above a plot, right-aligned, each entry drawn with the series' own mark |
 | **Readout** | The values under the pointer: a dotted vertical hairline through the plot(s) with a value tag, and the values in a row above the plot or a card at its top-right corner; in Simulation the species readout row is also the legend. The card is painted: one pass over its fonts' metrics sizes and draws it, so it is always as large as what it reads and the same reading takes the same room; it lets the pointer through to the plot beneath |
 | **Table** | Header row in `text-tertiary`, rows separated by hairlines, numbers right-aligned in tabular figures |
+| **Help window** | The app's one help: §8, *Help window* |
 
 Every component meets these rules:
 
@@ -504,7 +505,7 @@ the last result in a sentence).
 
 ### Binding model — `binding_*.jpg`
 A form from the same components as Input uncertainty, under an intro sentence with
-*About this model* (the help of the model chosen): **Model** — the two-level assay choice
+*About this model* (the Help window at Binding model, which describes the model chosen): **Model** — the two-level assay choice
 (category, then model) with a one-line summary of what it fits; **Conditions** — the
 entered conditions as fields with units; **Titrant stock** — *Stay constant* / *Are
 diluted*, then the stock and the concentrations it holds; **Bounds of the fitted
@@ -513,7 +514,8 @@ average* / *Each replicate separately*, with a note on what the choice does (a m
 no binding constant shows only the note: it is fitted from the average). No side panel.
 
 ### Input uncertainty — `uncertainty_*.jpg`
-Canvas: an intro sentence with *About input uncertainty*; **Each input** — one row per
+Canvas: an intro sentence with *About input uncertainty* (the Help window at Input
+uncertainty); **Each input** — one row per
 input on a shared column grid: name and entered value, Fixed / σ / Range, amount, stated
 in (% or unit), the ±2σ span on one shared ±20 % axis, and the span in numbers. A range
 states its *from* and *to* in two fields stacked in the amount column; the unit is the one
@@ -722,6 +724,22 @@ its unit with the totals it holds. The values of what the fit searches for — t
 constants it fits and the signal coefficients — do not travel, as starting values or as
 bounds: the fit searches as it does on measured data. The session shows Fit results and
 the fit runs.
+
+### Help window — `help_*.jpg`
+The app's one help, a non-modal window of its own beside the main window, one per main
+window: a second request raises it at the section asked for. Sidebar surface: one
+navigation item per section, with the icon of its view — the main window's views in
+sidebar order, then *Simulation*. Canvas surface: the section's name in `title`, its text
+in `body` at the reading measure (`measure`), selectable. Each section says what its view
+shows and how to read it, then what each group of its side panel does, under the group's
+name as the panel shows it; a section with a plot Demo IDA fills ends on an example that
+reads the demo's numbers. *Binding model* describes the model of the session on screen —
+the model, its conditions, the titrant stock, the bounds, each parameter, the replicates —
+and follows a change of model or of session while it is open. A topic of a section is set
+in `body-strong` with a step of room above it, a sub-head in bold. It opens from the
+toolbar's Help and Help ▸ *SupraSimFit help* at the view on screen, from *About this
+model*, *About input uncertainty* and *Reading this plot →* at their views, and from the
+Simulation window's Help at *Simulation*. It has no buttons; it closes as any window does.
 
 ### Settings window — `preferences_*.jpg`
 Opened with ⌘, (*Settings…* in the app menu on macOS; *File ▸ Settings…* on Windows and

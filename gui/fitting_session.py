@@ -21,7 +21,6 @@ from core.pipeline.inputs import TITRANT, InputSpec
 from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE
-from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.plotting.export import ExportRefused
 from gui.plotting.labels import and_join, stated_uncertainty
 from gui.session_model import CONCENTRATIONS_REQUIRED, Change, SessionModel
@@ -130,6 +129,9 @@ class FittingSession(QWidget):
         Measurements for concentrations a fit needs.
     new_session_requested()
         Emitted by *Load data into a new session…* inside a view.
+    help_requested(str)
+        Emitted by a help link inside a view (*About this model*, *About input
+        uncertainty*, *Reading this plot →*) with the Help section it opens.
     """
 
     changed = pyqtSignal()
@@ -137,6 +139,7 @@ class FittingSession(QWidget):
     side_panel_requested = pyqtSignal()
     view_requested = pyqtSignal(str)
     new_session_requested = pyqtSignal()
+    help_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -588,7 +591,12 @@ class FittingSession(QWidget):
         self._results.details_requested.connect(self._show_fit_details)
         self._confidence.shifts_requested.connect(self._show_input_shifts)
         self._confidence.save_requested.connect(lambda: self.export_plot('Ka confidence'))
-        self._confidence.guide_requested.connect(lambda: show_plot_guide(self.window(), 'Ka confidence'))
+        for section, link in (
+            ('Binding model', self._binding.help_link),
+            ('Input uncertainty', self._uncertainty.help_link),
+            ('Ka confidence', self._confidence.guide_link),
+        ):
+            link.clicked.connect(lambda _checked=False, section=section: self.help_requested.emit(section))
         self._results.save_plot.clicked.connect(lambda: self.export_plot('Fit results'))
         self._appearance.save_plot.clicked.connect(lambda: self.export_plot('Plot appearance'))
         self._measurements.save_plot.clicked.connect(lambda: self.export_plot('Measurements'))

@@ -19,7 +19,7 @@ exponents are small values: <code>1e-6</code> is 0.000 001.</p>
 
 
 _KA_DYE_HTML = """
-<h3>K<sub>a,dye</sub> &mdash; host&ndash;dye association constant</h3>
+<p class="topic">K<sub>a,dye</sub> &mdash; host&ndash;dye association constant</p>
 
 <p><b>What it means physically</b></p>
 <p>Equilibrium constant for the reaction
@@ -64,7 +64,7 @@ the dye is fully complexed from the first point.</p>
 """
 
 _KA_GUEST_HTML = """
-<h3>K<sub>a</sub> guest &mdash; host&ndash;guest association constant</h3>
+<p class="topic">K<sub>a</sub> guest &mdash; host&ndash;guest association constant</p>
 
 <p><b>What it means physically</b></p>
 <p>Equilibrium constant for <i>H + G &#x21CC; HG</i> in
@@ -97,7 +97,7 @@ curve to lower guest concentrations.</p>
 """
 
 _I0_HTML = """
-<h3>I<sub>0</sub> &mdash; baseline signal</h3>
+<p class="topic">I<sub>0</sub> &mdash; baseline signal</p>
 
 <p><b>What it means physically</b></p>
 <p>The constant term in the signal model: solvent background, detector
@@ -131,7 +131,7 @@ is physically identifiable in that case.</p>
 """
 
 _I_DYE_FREE_HTML = """
-<h3>I<sub>D</sub> &mdash; free-dye signal coefficient</h3>
+<p class="topic">I<sub>D</sub> &mdash; free-dye signal coefficient</p>
 
 <p><b>What it means physically</b></p>
 <p>Molar response of the instrument to free dye: how much signal is
@@ -157,7 +157,7 @@ titration.</p>
 """
 
 _I_DYE_BOUND_HTML = """
-<h3>I<sub>HD</sub> &mdash; host&ndash;dye complex signal coefficient</h3>
+<p class="topic">I<sub>HD</sub> &mdash; host&ndash;dye complex signal coefficient</p>
 
 <p><b>What it means physically</b></p>
 <p>Molar response of the instrument to the host&ndash;dye complex, in
@@ -186,7 +186,7 @@ parameter to recover reliably.</p>
 """
 
 _SLOPE_HTML = """
-<h3>Slope &mdash; dye-alone calibration slope</h3>
+<p class="topic">Slope &mdash; dye-alone calibration slope</p>
 
 <p><b>What it means physically</b></p>
 <p>Instrument response per unit dye concentration in the absence of
@@ -208,7 +208,7 @@ I<sub>D</sub> in the dye-alone assay.</p>
 """
 
 _INTERCEPT_HTML = """
-<h3>Intercept &mdash; dye-alone calibration intercept</h3>
+<p class="topic">Intercept &mdash; dye-alone calibration intercept</p>
 
 <p><b>What it means physically</b></p>
 <p>The extrapolated signal at zero dye concentration in a
@@ -230,7 +230,7 @@ I<sub>0</sub> of later IDA/DBA fits when you bound them from a dye-alone calibra
 """
 
 _KA_HG_HTML = """
-<h3>K<sub>a</sub> HG &mdash; first stepwise association constant</h3>
+<p class="topic">K<sub>a</sub> HG &mdash; first stepwise association constant</p>
 <p><b>What it means</b></p>
 <p>Association constant for the first binding step <i>H + G &#x21CC; HG</i>
 (M<sup>&minus;1</sup>). Shared by the 1:2 (HG<sub>2</sub>) and 2:1
@@ -245,7 +245,7 @@ values you entered.</p>
 """
 
 _KA_HG2_HTML = """
-<h3>K<sub>a</sub> HG&#x2082; &mdash; second stepwise constant (1:2)</h3>
+<p class="topic">K<sub>a</sub> HG&#x2082; &mdash; second stepwise constant (1:2)</p>
 <p>Association constant for <i>HG + G &#x21CC; HG<sub>2</sub></i>
 (M<sup>&minus;1</sup>), the binding of a second guest. The ratio
 K<sub>a</sub> HG&#x2082;/K<sub>a</sub> HG reports cooperativity relative to
@@ -255,7 +255,7 @@ statement about the two together belongs to the joint region on
 """
 
 _KA_H2G_HTML = """
-<h3>K<sub>a</sub> H&#x2082;G &mdash; second stepwise constant (2:1)</h3>
+<p class="topic">K<sub>a</sub> H&#x2082;G &mdash; second stepwise constant (2:1)</p>
 <p>Association constant for <i>HG + H &#x21CC; H<sub>2</sub>G</i>
 (M<sup>&minus;1</sup>), the binding of a second host to the same guest.
 Strongly correlated with K<sub>a</sub> HG, so a statement about the two
@@ -264,31 +264,31 @@ the two intervals read side by side.</p>
 """
 
 _I_G_HTML = """
-<h3>I<sub>G</sub> &mdash; free-guest signal coefficient</h3>
+<p class="topic">I<sub>G</sub> &mdash; free-guest signal coefficient</p>
 <p>Per-molar signal contribution of unbound guest (a.u./M). Like all the
 linear signal coefficients it is only weakly identifiable on its own;
 constrain it with a calibration if a fit looks unstable.</p>
 """
 
 _I_H_HTML = """
-<h3>I<sub>H</sub> &mdash; free-host signal coefficient</h3>
+<p class="topic">I<sub>H</sub> &mdash; free-host signal coefficient</p>
 <p>Per-molar signal contribution of unbound host (a.u./M). <b>Pinned to zero
 by default</b> &mdash; most hosts are optically silent. Widen its bounds to fit
 it.</p>
 """
 
 _I_HG_HTML = """
-<h3>I<sub>HG</sub> &mdash; 1:1 complex signal coefficient</h3>
+<p class="topic">I<sub>HG</sub> &mdash; 1:1 complex signal coefficient</p>
 <p>Per-molar signal contribution of the HG complex (a.u./M).</p>
 """
 
 _I_HG2_HTML = """
-<h3>I<sub>HG&#x2082;</sub> &mdash; 1:2 complex signal coefficient</h3>
+<p class="topic">I<sub>HG&#x2082;</sub> &mdash; 1:2 complex signal coefficient</p>
 <p>Per-molar signal contribution of the HG<sub>2</sub> complex (a.u./M).</p>
 """
 
 _I_H2G_HTML = """
-<h3>I<sub>H&#x2082;G</sub> &mdash; 2:1 complex signal coefficient</h3>
+<p class="topic">I<sub>H&#x2082;G</sub> &mdash; 2:1 complex signal coefficient</p>
 <p>Per-molar signal contribution of the H<sub>2</sub>G complex (a.u./M).</p>
 """
 

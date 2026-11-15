@@ -1,9 +1,11 @@
-"""Help ▸ Reading the plots: a non-modal guide with one section per view that has a plot.
+"""The Help window: one non-modal window per main window, a section per view and one for the Simulation window.
 
 The sections are listed as navigation items on the sidebar surface, each with the icon of
 its view; the section chosen is shown on the canvas surface, its title in ``title`` and its
-text in ``body`` at a reading measure. Everything is drawn from the theme, so the guide
-follows a change of appearance like every other window.
+text in ``body`` at a reading measure, a topic of it in ``body-strong`` with room above it.
+The Binding model section describes the model of the session on screen
+(:meth:`HelpWindow.set_assay`). Everything is drawn from the theme, so the window follows a
+change of appearance like every other window.
 """
 
 from __future__ import annotations
@@ -11,27 +13,34 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QButtonGroup, QDialog, QScrollArea, QWidget
 
+from core.assays.registry import AssayType
 from gui.design import components as C
 from gui.design.appearance import theme
-from gui.design.tokens import SIZE, space
-from gui.plot_guide import PLOT_GUIDE
+from gui.design.tokens import SIZE, TYPE, space
+from gui.help import SECTIONS, section_html
 
 #: The icon of the Simulation window's section; the session's views take their sidebar icons.
 SIMULATION_ICON = 'scatter'
 
 
-class PlotGuideDialog(QDialog):
-    """The guide's sections listed on the left, the chosen one on the right.
+def _topic_style() -> str:
+    """The style of a topic paragraph: the ``body-strong`` role, with a step of room above it."""
+    px, weight, _tabular = TYPE['body-strong']
+    return f'<style>p.topic {{ font-size: {px}px; font-weight: {weight.value}; margin-top: {space(6)}px; }}</style>'
 
-    Non-modal, so the plot it describes stays in view and usable beside it.
-    :func:`show_plot_guide` keeps one guide per window.
+
+class HelpWindow(QDialog):
+    """The sections listed on the left, the chosen one on the right.
+
+    Non-modal, so the view it describes stays in view and usable beside it. The main
+    window keeps one and raises it at a section (:meth:`gui.main_window.FittingMainWindow.open_help`).
     """
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, assay_type: AssayType, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        from gui.fitting_session import NAVIGATION  # the session imports this module
+        from gui.fitting_session import NAVIGATION  # the session's module imports the main window's
 
-        self.setWindowTitle('Reading the plots')
+        self.setWindowTitle('Help')
         self.setModal(False)
         t = theme()
         view_icons = {view: icon for _group, items in NAVIGATION for view, icon in items}
@@ -40,7 +49,7 @@ class PlotGuideDialog(QDialog):
         group = QButtonGroup(self)
         group.setExclusive(True)
         nav = C.vbox(spacing=1, margins=(4, 5, 4, 4))
-        for title in PLOT_GUIDE:
+        for title in SECTIONS:
             item = C.NavItem(t, title, view_icons.get(title, SIMULATION_ICON))
             item.clicked.connect(lambda _checked=False, key=title: self.show_section(key))
             group.addButton(item)
@@ -72,34 +81,25 @@ class PlotGuideDialog(QDialog):
 
         self.setLayout(C.hbox(sidebar, C.hairline(vertical=True), canvas, spacing=0))
         self.resize(SIZE['sidebar'] + SIZE['measure'] + 2 * space(7) + space(4), SIZE['measure'] + SIZE['toolbar'])
+        self._assay_type = assay_type
         self._current = ''
-        self.show_section(next(iter(PLOT_GUIDE)))
+        self.show_section(SECTIONS[0])
 
     def current_section(self) -> str:
-        """The section on show, a key of :data:`gui.plot_guide.PLOT_GUIDE`."""
+        """The section on show, a name in :data:`gui.help.SECTIONS`."""
         return self._current
 
-    def show_section(self, key: str) -> None:
-        """Show the section *key* of :data:`gui.plot_guide.PLOT_GUIDE`."""
-        self._current = key
-        self._items[key].setChecked(True)
-        self._title.setText(key)
-        self._text.setText(PLOT_GUIDE[key])
+    def show_section(self, section: str) -> None:
+        """Show *section*, a name in :data:`gui.help.SECTIONS`, from its top."""
+        self._current = section
+        self._items[section].setChecked(True)
+        self._title.setText(section)
+        self._text.setText(_topic_style() + section_html(section, self._assay_type))
         self._scroll.verticalScrollBar().setValue(0)
 
-
-def show_plot_guide(parent: QWidget, view: str | None = None) -> PlotGuideDialog:
-    """Bring up the guide of *parent*'s window, at the section of *view* where it has one, and return it.
-
-    The window keeps one guide: a second call raises the open one rather than opening another.
-    """
-    window = parent.window()
-    guide = window.findChild(PlotGuideDialog)
-    if guide is None:
-        guide = PlotGuideDialog(window)
-    if view in PLOT_GUIDE:
-        guide.show_section(view)
-    guide.show()
-    guide.raise_()
-    guide.activateWindow()
-    return guide
+    def set_assay(self, assay_type: AssayType) -> None:
+        """Describe *assay_type* in the Binding model section, at once where that section is on show."""
+        if assay_type is not self._assay_type:
+            self._assay_type = assay_type
+            if self._current == 'Binding model':
+                self._text.setText(_topic_style() + section_html(self._current, assay_type))

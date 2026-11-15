@@ -11,7 +11,7 @@ physics first, the model second, then practical tuning guidance.
 from __future__ import annotations
 
 _GDA_HTML = """
-<h3>Guest displacement assay (GDA)</h3>
+<p class="topic">Guest displacement assay (GDA)</p>
 
 <p><b>What the experiment does</b></p>
 <p>Dye is titrated into a pre-equilibrated mixture of host and a competing
@@ -68,7 +68,7 @@ the guest directly, prefer DBA or IDA.</p>
 """
 
 _IDA_HTML = """
-<h3>Indicator displacement assay (IDA)</h3>
+<p class="topic">Indicator displacement assay (IDA)</p>
 
 <p><b>What the experiment does</b></p>
 <p>A pre-formed host&ndash;dye (indicator) complex is titrated with a
@@ -118,7 +118,7 @@ bound at the start of the titration.</p>
 """
 
 _DBA_HtoD_HTML = """
-<h3>Direct binding assay &mdash; host titrated into dye (DBA H&rarr;D)</h3>
+<p class="topic">Direct binding assay &mdash; host titrated into dye (DBA H&rarr;D)</p>
 
 <p><b>What the experiment does</b></p>
 <p>A fixed concentration of dye is held in the cuvette while host is
@@ -174,7 +174,7 @@ geometry.</p>
 """
 
 _DBA_DtoH_HTML = """
-<h3>Direct binding assay &mdash; dye titrated into host (DBA D&rarr;H)</h3>
+<p class="topic">Direct binding assay &mdash; dye titrated into host (DBA D&rarr;H)</p>
 
 <p><b>What the experiment does</b></p>
 <p>A fixed concentration of host is kept in the cuvette and dye is
@@ -211,7 +211,7 @@ fluorescence complicates the reversed geometry.</p>
 """
 
 _DYE_ALONE_HTML = """
-<h3>Dye alone &mdash; linear calibration</h3>
+<p class="topic">Dye alone &mdash; linear calibration</p>
 
 <p><b>What the experiment does</b></p>
 <p>A dilution series of dye (no host, no guest) is measured. The result
@@ -248,7 +248,7 @@ K<sub>a</sub> interval.</p>
 """
 
 _DBA_HG2_HTML = """
-<h3>Stepwise 1:2 host&ndash;guest binding (HG<sub>2</sub>)</h3>
+<p class="topic">Stepwise 1:2 host&ndash;guest binding (HG<sub>2</sub>)</p>
 
 <p><b>What the experiment does</b></p>
 <p>Guest is titrated into a fixed concentration of host that can bind
@@ -300,7 +300,7 @@ you know it, and the guest concentrations of the titrant series, under
 """
 
 _DBA_H2G_HTML = """
-<h3>Stepwise 2:1 host&ndash;guest binding (H<sub>2</sub>G)</h3>
+<p class="topic">Stepwise 2:1 host&ndash;guest binding (H<sub>2</sub>G)</p>
 
 <p><b>What the experiment does</b></p>
 <p>Guest is titrated into a fixed concentration of host where <i>two</i>

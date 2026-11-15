@@ -1,9 +1,9 @@
-"""The plot guide's Demo IDA examples read the numbers the views show for the demo.
+"""The Help window's Demo IDA examples read the numbers the views show for the demo.
 
 Demo IDA states input uncertainties, so its fit is the input-aware one, which costs
 seconds, and the Sensitivity example needs a seeded Sobol' run at the smallest N the
 window offers: this check lives here, the slow layer, while the fast layer only checks
-that every section carries its example (``tests/unit/gui/test_plot_guide.py``).
+that every section carries its example (``tests/unit/gui/test_help.py``).
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ def qapp():
     return QApplication.instance() or QApplication(sys.argv)
 
 
-def test_the_guide_examples_are_the_numbers_demo_ida_shows(qapp):
-    """Every figure of :data:`gui.plot_guide.DEMO` is worked out again as its view writes it, to the digit shown."""
+def test_the_help_examples_are_the_numbers_demo_ida_shows(qapp):
+    """Every figure of :data:`gui.help.DEMO` is worked out again as its view writes it, to the digit shown."""
     import gui.confidence as Cf
     import gui.results as R
     import gui.sensitivity as S
@@ -35,7 +35,7 @@ def test_the_guide_examples_are_the_numbers_demo_ida_shows(qapp):
     from core.pipeline.reporting import fit_replica_ids
     from core.pipeline.sensitivity import run_sensitivity
     from gui.fitting_session import _DEMO_IDA_PATH, _DEMO_UNCERTAINTIES
-    from gui.plot_guide import DEMO
+    from gui.help import DEMO
     from gui.session_model import SessionModel
     from gui.simulation import SimulationForm, readout_value, species_groups
     from gui.widgets.assay_conditions import assay_class

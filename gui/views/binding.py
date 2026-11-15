@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QFileDialog, QGridLayout, QMessageBox, QScrollArea, 
 from core.assays.registry import ASSAY_REGISTRY, ParamKind
 from core.pipeline.inputs import TITRANT_STOCK
 from core.pipeline.varpro import projectable
-from gui.binding import CATEGORIES, HELP_TITLE, help_html
+from gui.binding import CATEGORIES
 from gui.dataset import file_filter
 from gui.design import components as C
 from gui.design.appearance import theme
@@ -26,7 +26,6 @@ from gui.plotting.labels import CONSTANT_NAMES, and_join, fmt_constant, fmt_para
 from gui.session_model import Change, SessionModel
 from gui.views.uncertainty import COL_KIND, COL_NAME, COL_UNIT, GUTTER
 from gui.widgets.assay_conditions import ASSAY_NAMES, TITRANT_STOCK_FIELD, UNIT_CHOICES
-from gui.widgets.info_button import show_help
 
 #: The widest value a field must show: a sign, five figures and an exponent.
 _WIDEST_VALUE = '−1.2345e−12'
@@ -194,9 +193,6 @@ class BindingView(QObject):
         self._settle.stop()
         self.model.edit_finished()
 
-    def show_help(self) -> None:
-        show_help(self.parent.window(), HELP_TITLE, help_html(self.model.binding.assay_type))
-
     def set_locked(self, locked: bool) -> None:
         """Lock every control while a fit or an analysis reads the binding model."""
         self._locked = locked
@@ -228,7 +224,6 @@ class BindingView(QObject):
             'fit looks for each parameter.'
         )
         self.help_link = C.link_button('About this model')
-        self.help_link.clicked.connect(self.show_help)
 
         # Model
         options = list(CATEGORIES)

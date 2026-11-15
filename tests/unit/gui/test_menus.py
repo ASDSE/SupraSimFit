@@ -1,7 +1,7 @@
 """Every menu is laid out from what its rows hold (DESIGN.md §6, *Menu* and *Choice menu*).
 
 The sweep opens every menu the real window offers with Demo IDA loaded — every view, its
-sections open, the Settings and Simulation windows — and holds each to the rules of
+sections open, the Settings, Simulation and Help windows — and holds each to the rules of
 :mod:`tests.unit.gui.menus`. The fitted state, with the menus only a fit or a sensitivity
 run shows, is swept in ``tests/integration/test_menus.py``. The component tests pin
 where a menu opens and how it scrolls when its window is short.

@@ -49,7 +49,6 @@ from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import REPLICATE_ALPHA, apply_plot_theme, fit_line, px, scatter
 from gui.design.tokens import SIZE, Theme, font, plot_font, space
-from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.plot_appearance import BUILT_IN
 from gui.plotting.export import ExportRefused, export_stacked, figure_head
 from gui.plotting.labels import fmt_species, superscript
@@ -381,10 +380,12 @@ class SimulationWindow(QMainWindow):
     """The Simulation window; see the module docstring.
 
     :attr:`fit_requested` carries the form and the simulation on screen when *Fit in new
-    session* is pressed; the main window opens the session.
+    session* is pressed; the main window opens the session. :attr:`help_requested` is the
+    toolbar's Help; the main window opens its Help window at Simulation.
     """
 
     fit_requested = pyqtSignal(object, object)
+    help_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -470,10 +471,10 @@ class SimulationWindow(QMainWindow):
         overlay.clicked.connect(self.overlay_data)
         self.export = C.tool_button(t, 'Export', 'export', menu=True)
         self.export.clicked.connect(lambda: self._menu([self.act_image, self.act_data], self.export))
-        help_btn = C.tool_button(t, None, 'help')
-        help_btn.setToolTip('How the simulation works')
-        help_btn.setAccessibleName('How the simulation works')
-        help_btn.clicked.connect(lambda: show_plot_guide(self, 'Simulation'))
+        self.help_button = C.tool_button(t, None, 'help')
+        self.help_button.setToolTip('How the simulation works')
+        self.help_button.setAccessibleName('How the simulation works')
+        self.help_button.clicked.connect(self.help_requested)
         self.side = C.tool_button(t, None, 'panel-right', checked=True)
         self.side.setToolTip('Show or hide the side panel')
         self.side.setAccessibleName('Side panel')
@@ -498,7 +499,7 @@ class SimulationWindow(QMainWindow):
                 2,
                 divider,
                 2,
-                help_btn,
+                self.help_button,
                 self.side,
                 2,
                 fit,

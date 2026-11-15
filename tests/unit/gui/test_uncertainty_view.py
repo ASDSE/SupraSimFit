@@ -194,15 +194,6 @@ def test_with_no_fit_the_side_panel_says_so(view):
     assert not view.tests_section.isVisibleTo(view.side)
 
 
-def test_about_input_uncertainty_opens_the_help(view, monkeypatch):
-    seen = []
-    monkeypatch.setattr('gui.views.uncertainty.show_help', lambda parent, title, html: seen.append((title, html)))
-
-    view.help_link.click()
-
-    assert seen and seen[0][0] == 'Input uncertainty' and 'Shared error sources' in seen[0][1]
-
-
 def _aware_fit():
     """An IDA fit whose inputs moved further than stated: the conflict rejects, the curve fits once they move."""
     import numpy as np

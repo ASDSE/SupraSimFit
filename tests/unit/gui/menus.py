@@ -129,7 +129,7 @@ def open_sections(window: QWidget) -> None:
 def sweep(
     app: QApplication, window, seen: dict[str, list[str]] | None = None, check: Callable = check_window
 ) -> dict[str, list[str]]:
-    """Open every menu of every view of the main window *window*, and of its Settings and Simulation windows.
+    """Open every menu of every view of the main window *window*, and of its Settings, Simulation and Help windows.
 
     Returns what is wrong with each menu, keyed by where it opened and by its opener's name.
     *check* ``(app, window, where, seen)`` is what is looked at in each view and window, every
@@ -146,12 +146,12 @@ def sweep(
         settle(app)
         check(app, window, view, seen)
     from gui.dialogs.settings_window import SettingsWindow
-    from gui.views.simulation import SimulationWindow
+    from gui.help import SECTIONS
 
     # The windows the main window opens, made off screen first so that opening them shows nothing.
     window._settings_window = SettingsWindow(window._act_check_updates, window)
-    window._sim_window = SimulationWindow(window)
-    for other in (window._settings_window, window._sim_window):
+    others = (window._settings_window, window._simulation_window(), window._help_window())
+    for other in others:
         other.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     window._open_settings()
     settle(app)
@@ -164,4 +164,9 @@ def sweep(
     settle(app)
     check(app, simulation, 'Simulation', seen)
     simulation.close()
+    for section in SECTIONS:
+        window.open_help(section)
+        settle(app)
+        check(app, window._help, f'Help: {section}', seen)
+    window._help.close()
     return seen
