@@ -12,7 +12,7 @@ silently, and the answer becomes part of this document and the tokens.
   approved, at 1.5× scale (the main window is 1440 × 900, the Simulation window
   1280 × 800). They are rendered from `gui/design` by
   `uv run python -m docs.design.prototype.render --all`, so their colours are the tokens'. A view is finished when its real render
-  matches its reference in both themes. Binding model and Plot appearance have no
+  (`docs/design/render.py`, the running window drawn off screen) matches its reference in both themes. Binding model and Plot appearance have no
   reference screen; they are forms built from the components (§8).
 - **Rules for agents.** `gui/CLAUDE.md` is the short, binding version of this document.
 

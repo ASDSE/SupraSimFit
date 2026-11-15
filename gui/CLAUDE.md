@@ -33,7 +33,8 @@ Binding rules:
 - **Exported figures** use the light plot theme on white, whatever the window shows.
 - **Open choices** — a design choice DESIGN.md does not settle — are put to the owner, never
   picked silently; the answer goes into DESIGN.md and the tokens.
-- **Done means seen.** Render the view in light and dark and compare it with its
-  reference screen before calling it finished (offscreen Qt renders with Fusion; confirm
-  platform-specific looks on the platform). A deliberate change to an approved view
+- **Done means seen.** Render the view in light and dark with
+  `uv run python -m docs.design.render <view> <out.png> [--theme dark] [--state …] [--menu …]`
+  — the running window under the platform's own style, off screen — and compare it with its
+  reference screen before calling it finished. A deliberate change to an approved view
   updates its screens with `uv run python -m docs.design.prototype.render --all`.
