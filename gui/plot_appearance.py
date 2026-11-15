@@ -50,10 +50,6 @@ COLOURS = {
     'grey': ('Grey', ('replicate',)),
 }
 
-#: Colours a record may state for the replicates that draw every replicate in one colour, which
-#: this version offers as Grey: the record keeps one colour for every replicate.
-SINGLE_COLOURS = {'blue': 'grey', 'magenta': 'grey'}
-
 #: The colours offered for the fitted curve: key → (label, colour token), ``accent`` first.
 FIT_COLOURS = {
     'teal': ('Teal', 'accent'),
@@ -194,8 +190,7 @@ class PlotAppearance:
     def from_dict(cls, d: object) -> PlotAppearance:
         """The appearance *d* records (:meth:`to_dict`).
 
-        A field it does not name keeps the built-in choice. A colour of :data:`SINGLE_COLOURS`
-        for the replicates is read as the choice it maps to. Raises ``ValueError``, in words
+        A field it does not name keeps the built-in choice. Raises ``ValueError``, in words
         for the user, on anything else: not a record of fields, a field this version has
         not got, or a choice its menu does not offer.
         """
@@ -204,10 +199,7 @@ class PlotAppearance:
         unknown = sorted(str(k) for k in d if k not in _MENUS)
         if unknown:
             raise ValueError(f'The plot appearance names settings this version does not have: {", ".join(unknown)}.')
-        record = {k: str(v) for k, v in d.items()}
-        if 'replicate_colour' in record:
-            record['replicate_colour'] = SINGLE_COLOURS.get(record['replicate_colour'], record['replicate_colour'])
-        return cls(**record)
+        return cls(**{k: str(v) for k, v in d.items()})
 
 
 #: The appearance a session starts from when no other is stored.

@@ -81,13 +81,20 @@ def test_a_record_that_leaves_a_field_out_keeps_the_built_in_choice_for_it():
     assert PlotAppearance.from_dict({'fit_colour': 'blue'}) == PlotAppearance(fit_colour='blue')
 
 
-@pytest.mark.parametrize('single', ['blue', 'magenta', 'grey'])
-def test_a_record_stating_one_colour_for_every_replicate_is_read_as_grey(single):
-    """A file or preference may state one colour for every replicate; it is read as Grey, the one choice
-    that draws every replicate in one colour, never as the colours by replicate."""
-    look = PlotAppearance.from_dict({'replicate_colour': single, 'replicate_shape': 'square'})
+@pytest.mark.parametrize('single', ['blue', 'magenta'])
+def test_a_record_stating_a_replicate_colour_this_version_does_not_offer_is_refused(single):
+    """A record whose replicate colour the menu does not offer is refused in words naming the choices,
+    never drawn in another colour without a word: the app draws what the user chose or says it cannot."""
+    with pytest.raises(ValueError) as refused:
+        PlotAppearance.from_dict({'replicate_colour': single})
 
-    assert look == PlotAppearance(replicate_colour='grey', replicate_shape='square')
+    said = str(refused.value)
+    assert f'“{single}”' in said and all(key in said for key in COLOURS)
+
+
+def test_grey_draws_every_replicate_in_one_colour_with_the_mark_chosen():
+    look = PlotAppearance(replicate_colour='grey', replicate_shape='square')
+
     assert {look.replicate_mark(i) for i in range(20)} == {('replicate', 's')}
 
 

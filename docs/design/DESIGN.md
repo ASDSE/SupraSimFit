@@ -571,8 +571,7 @@ replicate in `replicate`, one mark), the menu showing the first three replicates
 beside *By replicate*; and fitted curve, *Teal* (`accent`, built in), *Blue* (`series-1`),
 *Magenta* (`series-2`) or *Text colour* (`text-primary`) — never a free colour picker;
 the means and their error bars stay `text-primary`, so no choice draws the replicates in
-the colour of the means. A results file or stored preference that states one colour for
-every replicate, *Blue* or *Magenta*, is read as *Grey*; **Text** — axis text *Standard* / *Large* /
+the colour of the means; **Text** — axis text *Standard* / *Large* /
 *Larger*, the tick labels and axis titles in the type roles `small-number` and `label`,
 `number` and `body-strong`, or `number-large` and `title` (tick labels always in tabular
 figures); **New sessions** — *Use for new sessions* (outline button; one click stores the

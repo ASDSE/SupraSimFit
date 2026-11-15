@@ -2106,7 +2106,7 @@ class LegendRow(QWidget):
     """A plot legend as non-wrapping chips whose swatches are drawn with the plot's own marks.
 
     *items* are ``(kind, text)``: ``dots`` (replicates, at *dot_alpha*, by default the
-    opacity the titration plot draws them at), ``cross`` (a replicate switched off),
+    opacity the titration plot draws them at), ``cross`` (a replicate not used, always named),
     ``rings`` (an overlaid file, with an × that removes it), ``mean`` (mean ± SD), ``line``
     (the fitted or model curve, or the reported reading), ``line-other`` (a fit shown beside
     the reported one), ``line-secondary`` (the reading at the inputs as entered), ``bars``
@@ -2114,7 +2114,7 @@ class LegendRow(QWidget):
     as entered) and ``diamond`` (a best fit). A kind ending in ``+band`` draws its mark over
     the accent tint of a shaded interval, for the reading whose interval the plot shades.
 
-    ``dots`` and ``cross`` may name one replicate, ``(kind, text, index)`` with its place in
+    ``dots`` may and ``cross`` does name one replicate, ``(kind, text, index)`` with its place in
     the data's order: the entry is then one point or one × in that replicate's colour and mark,
     which :meth:`set_marks` takes from the titration plot's appearance. A click on the × of
     ``rings`` emits :attr:`removed`; with *removable* off, as in a saved figure, ``rings`` has
@@ -2210,10 +2210,6 @@ class LegendRow(QWidget):
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 for dx, dy in ((3.5, 2), (8.5, -2.5), (13, 1.5)):
                     p.drawEllipse(QPointF(x + dx, cy + dy), 2.4, 2.4)
-            elif kind == 'cross':
-                p.setPen(QPen(t.q('replicate-off'), 1.4))
-                for s in (-1, 1):
-                    p.drawLine(QPointF(x + 4, cy - 3.5 * s), QPointF(x + 11, cy + 3.5 * s))
             elif kind == 'mean':
                 p.setPen(QPen(t.q('text-primary'), 1))
                 p.drawLine(QPointF(x + 7.5, cy - 6), QPointF(x + 7.5, cy + 6))
