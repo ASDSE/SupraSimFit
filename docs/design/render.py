@@ -22,16 +22,18 @@ design (:data:`SCREENS`) as ``<name>_<light|dark>.jpg`` at :data:`SCALE` × the 
 size, each in a process of its own; ``--only`` and ``--theme`` narrow it.
 
 The command line reads and writes a settings store of its own that starts empty, so a
-render shows the built-in preferences whatever the user's are. The states:
+render shows the built-in preferences whatever the user's are, with the analysis pinned to
+:data:`WORKERS` processor cores. A sensitivity analysis runs at Fixed seed :data:`SEED`, so
+every render of a state draws the same samples. The states:
 
 - ``empty`` — a new session;
 - ``demo-loaded`` — Demo IDA's data and settings, before the fit;
 - ``demo-fitted`` — Demo IDA's fit finished, and the Ka profile the session works out
   after every fit finished too;
 - ``demo-sensitivity`` — that, and the sensitivity analysis the session opens on (Sobol'
-  indices, the smallest sample size);
+  indices, the smallest sample size) at Fixed seed :data:`SEED`;
 - ``demo-heatmap`` — that fit, and a heatmap of the sensitivity analysis over the first
-  two inputs Demo IDA states uncertain, on the coarsest grid.
+  two inputs Demo IDA states uncertain, on the coarsest grid, at Fixed seed :data:`SEED`.
 
 *open_menu* names the control whose menu is opened, by its accessible name; the menu
 is a child of the window, so it is in the image. *pointer* puts the pointer over the
@@ -59,6 +61,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QMessageBox, QScrollArea, QWidget
 
 from core.pipeline.sensitivity import SensitivityMode
+from gui import preferences
 from gui.design import components as C
 from gui.design.appearance import appearance
 from gui.fitting_session import _DEMO_IDA_PATH, VIEWS
@@ -75,6 +78,10 @@ SCALE = 1.5
 JPEG_QUALITY = 80
 #: How many reference screens are rendered at once, each in a process of its own.
 PROCESSES = 4
+#: The Fixed seed of every sensitivity analysis a render runs: the seed of the plot guide's example.
+SEED = 0
+#: The processor cores the command line's analyses run on, whatever the machine has.
+WORKERS = 2
 
 
 def render(
@@ -136,9 +143,10 @@ def render(
                 check()
                 _wait(app, model)
                 if state != 'demo-fitted':
+                    model.analysis.fixed_seed, model.analysis.seed_text = True, str(SEED)
                     if state == 'demo-heatmap':
                         model.analysis.mode = SensitivityMode.HEATMAP
-                        model.analysis_edited()
+                    model.analysis_edited()
                     refusal = model.run_sensitivity(model.analysis_config())
                     if refusal is not None:
                         raise RuntimeError(f'The sensitivity analysis could not start: {refusal.message}')
@@ -391,6 +399,7 @@ def main(argv: list[str] | None = None) -> None:
         QCoreApplication.setOrganizationName('SupraSimFit-Render')
         QCoreApplication.setApplicationName('render')
         _app = start_application(sys.argv[:1])  # held for the whole render
+        preferences.set_int(preferences.WORKER_COUNT_KEY, WORKERS)
         if args.all is not None:
             print(render_screen(names[0], themes[0], args.all), flush=True)
             return

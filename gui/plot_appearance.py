@@ -2,8 +2,8 @@
 
 A :class:`PlotAppearance` styles the titration plot of Measurements and Fit results and
 its saved figure: the size of the replicates' points and of the mean's, the replicates'
-mark and colours, the fitted curve's width and colour, the width of the error bars, and
-the size of the axis text. Every choice is one of a short menu, and each maps to
+mark and colours, the fitted curve's width and colour and the width of the error bars;
+and the size of the plot text, which every plot of the session and its saved figure take. Every choice is one of a short menu, and each maps to
 tokens — a ``SIZE`` entry, colours of both themes, a step of ``PLOT_TEXT`` — so the plot
 stays in the design in either theme. The means and the error bars keep ``text-primary``. The
 built-in appearance draws the plot as DESIGN.md §7 describes it: each replicate in a
@@ -58,7 +58,7 @@ FIT_COLOURS = {
     'text': ('Text colour', 'text-primary'),
 }
 
-#: The sizes offered for the axis text: key → (label, ``PLOT_TEXT`` step).
+#: The sizes offered for the plot text: key → (label, ``PLOT_TEXT`` step).
 TEXT_SIZES = {
     'standard': ('Standard', 'standard'),
     'large': ('Large', 'large'),
@@ -78,7 +78,7 @@ _MENUS = {
     'error_bar_width': (WIDTHS, 'the width of the error bars'),
     'replicate_colour': (COLOURS, 'the colour of the replicate points'),
     'fit_colour': (FIT_COLOURS, 'the colour of the fitted curve'),
-    'text_size': (TEXT_SIZES, 'the size of the axis text'),
+    'text_size': (TEXT_SIZES, 'the size of the plot text'),
 }
 
 
@@ -167,7 +167,7 @@ class PlotAppearance:
 
     @property
     def text_step(self) -> str:
-        """The step of ``PLOT_TEXT`` the tick labels and axis titles are drawn at."""
+        """The step of ``PLOT_TEXT`` the text of every plot of the session is drawn at."""
         return TEXT_SIZES[self.text_size][1]
 
     def label(self, name: str) -> str:

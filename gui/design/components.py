@@ -236,8 +236,9 @@ class Button(QAbstractButton):
     """One painted button for the three variants the app needs.
 
     ``ghost`` is icon and label with no border until hover, ``icon`` a 28 × 28 icon
-    button, ``primary`` an accent fill; a disabled ``ghost`` or ``icon`` button draws its
-    icon and label in ``text-tertiary`` and takes no hover fill. *menu* says a click opens a menu, which a
+    button, ``primary`` an accent fill; a disabled button draws its icon and label in
+    ``text-disabled`` — a disabled ``primary`` on ``bg-subtle`` in place of the accent — and
+    takes no hover fill. *menu* says a click opens a menu, which a
     labelled button shows with a chevron. Painting keeps the icon-label gap, the menu
     chevron and the focus ring on the token grid. *checked* makes it a toggle,
     shown pressed.
@@ -284,18 +285,19 @@ class Button(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
         bg = None
+        on = self.isEnabled()
         if self.variant == 'primary':
-            bg = t.q('accent-hover' if self.underMouse() else 'accent')
+            bg = t.q(('accent-hover' if self.underMouse() else 'accent') if on else 'bg-subtle')
         elif self.isChecked():
             bg = t.q('bg-subtle')
-        elif self.underMouse() and self.isEnabled():
+        elif self.underMouse() and on:
             bg = t.q('bg-hover')
         if bg is not None:
             p.fillPath(_rounded(r, RADIUS['control']), bg)
         fg = t.q('on-accent') if self.variant == 'primary' else t.q('text-primary')
         ic = t.q('on-accent') if self.variant == 'primary' else t.q('text-secondary')
-        if not self.isEnabled() and self.variant != 'primary':
-            fg = ic = t.q('text-tertiary')
+        if not on:
+            fg = ic = t.q('text-disabled')
         if self.variant == 'icon':
             icons.paint(p, self._icon, ic, (h - 16) / 2, (h - 16) / 2, 16)
         else:
@@ -311,7 +313,8 @@ class Button(QAbstractButton):
             p.setPen(fg)
             p.drawText(QRectF(x, 0, r.width() - x, h), Qt.AlignmentFlag.AlignVCenter, self._text)
             if self._menu:
-                icons.paint(p, 'chevron-down', t.q('text-tertiary'), r.width() - space(3) - 12, (h - 12) / 2, 12, 2)
+                chevron = t.q('text-tertiary' if on else 'text-disabled')
+                icons.paint(p, 'chevron-down', chevron, r.width() - space(3) - 12, (h - 12) / 2, 12, 2)
         if self.hasFocus():
             _focus_ring(p, t, r)
         p.end()
@@ -436,9 +439,9 @@ class OutlineButton(QAbstractButton):
         p.setPen(QPen(t.q('border-strong'), 1))
         p.drawPath(path)
         x = space(4)
-        tone = 'text-primary' if self.isEnabled() else 'text-tertiary'
+        tone = 'text-primary' if self.isEnabled() else 'text-disabled'
         if self.icon:
-            icons.paint(p, self.icon, t.q('text-secondary' if self.isEnabled() else 'text-tertiary'), x, (h - 16) / 2)
+            icons.paint(p, self.icon, t.q('text-secondary' if self.isEnabled() else 'text-disabled'), x, (h - 16) / 2)
             x += 16 + space(2)
         p.setFont(font('body-strong'))
         p.setPen(t.q(tone))
@@ -900,7 +903,7 @@ def _menu_command(p: QPainter, t: Theme, row: MenuRow, role: str) -> None:
         icons.paint(
             p,
             'check',
-            t.q('accent' if on else 'text-tertiary'),
+            t.q('accent' if on else 'text-disabled'),
             row.check.left(),
             row.check.top(),
             SIZE['menu-check'],
@@ -909,13 +912,13 @@ def _menu_command(p: QPainter, t: Theme, row: MenuRow, role: str) -> None:
     ic = action.property('design_icon')
     if ic:
         icons.paint(
-            p, ic, t.q('text-secondary' if on else 'text-tertiary'), row.icon.left(), row.icon.top(), SIZE['menu-icon']
+            p, ic, t.q('text-secondary' if on else 'text-disabled'), row.icon.left(), row.icon.top(), SIZE['menu-icon']
         )
-    paint_rich(p, row.label, menu_html(action), role, t.q('text-primary' if on else 'text-tertiary'))
+    paint_rich(p, row.label, menu_html(action), role, t.q('text-primary' if on else 'text-disabled'))
     key = shortcut_text(action)
     if key:
         p.setFont(font('small'))
-        p.setPen(t.q('text-tertiary'))
+        p.setPen(t.q('text-tertiary' if on else 'text-disabled'))
         p.drawText(row.key, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, key)
 
 
@@ -1374,7 +1377,7 @@ class Field(QWidget):
     *prefix* (σ, from, to) at the left and *suffix* unit at the right; ``choice`` shows
     *text* with a trailing chevron (a unit menu, a model menu); an editable ``text`` field
     takes words, left-aligned (a name). *width* 0 lets it fill its column. *focused* draws
-    the accent outline and the focus halo. A disabled field is drawn sunken, its text quiet.
+    the accent outline and the focus halo. A disabled field is drawn sunken, its text in ``text-disabled``.
     """
 
     edited = pyqtSignal(str)
@@ -1469,26 +1472,27 @@ class Field(QWidget):
             p.setPen(QPen(t.q('accent', 0.25), 3))
             p.drawPath(_rounded(r.adjusted(-2, -2, 2, 2), RADIUS['surface']))
         middle = Qt.AlignmentFlag.AlignVCenter
+        quiet = t.q('text-tertiary' if on else 'text-disabled')
         if self.kind == 'choice':
             p.setFont(font('body'))
-            p.setPen(t.q('text-primary'))
+            p.setPen(t.q('text-primary' if on else 'text-disabled'))
             p.drawText(r.adjusted(space(3), 0, -24, 0), middle, self.text)
-            icons.paint(p, 'chevron-down', t.q('text-tertiary'), r.right() - 20, 8, 12, 2)
+            icons.paint(p, 'chevron-down', quiet, r.right() - 20, 8, 12, 2)
             p.end()
             return
         right = space(3)
         if self.prefix:
             p.setFont(font('body'))
-            p.setPen(t.q('text-tertiary'))
+            p.setPen(quiet)
             p.drawText(r.adjusted(space(3), 0, 0, 0), middle, self.prefix)
         if self.suffix:
             p.setFont(font('small'))
-            p.setPen(t.q('text-tertiary'))
+            p.setPen(quiet)
             p.drawText(r.adjusted(0, 0, -right, 0), middle | Qt.AlignmentFlag.AlignRight, self.suffix)
             right += QFontMetrics(p.font()).horizontalAdvance(self.suffix) + space(2)
         if self.editor is None:
             p.setFont(font('number'))
-            p.setPen(t.q('text-primary' if on else 'text-tertiary'))
+            p.setPen(t.q('text-primary' if on else 'text-disabled'))
             p.drawText(r.adjusted(0, 0, -right, 0), middle | Qt.AlignmentFlag.AlignRight, self.text)
         p.end()
 
@@ -1604,10 +1608,11 @@ class Dropdown(QWidget):
         text = QRectF(space(3), 0, self.width() - space(3) - self._right(), h)
         p.save()
         p.setClipRect(text)
-        paint_rich(p, text, self.text, self.ROLE, t.q('text-primary' if on else 'text-tertiary'), self.align_right)
+        paint_rich(p, text, self.text, self.ROLE, t.q('text-primary' if on else 'text-disabled'), self.align_right)
         p.restore()
         if self.chevron:
-            icons.paint(p, 'chevron-down', t.q('text-tertiary'), self.width() - 22, (h - 12) / 2, 12, 2)
+            chevron = t.q('text-tertiary' if on else 'text-disabled')
+            icons.paint(p, 'chevron-down', chevron, self.width() - 22, (h - 12) / 2, 12, 2)
         if self.hasFocus():
             _focus_ring(p, t, QRectF(self.rect()))
         p.end()
@@ -1709,7 +1714,7 @@ class Segmented(QWidget):
                 p.drawLine(QPointF(seg.left(), 8), QPointF(seg.left(), r.height() - 8))
             p.setFont(font('body-strong' if sel else 'body'))
             if off:
-                p.setPen(t.q('text-tertiary', 0.6))
+                p.setPen(t.q('text-disabled'))
             elif sel:
                 p.setPen(t.q('text-primary'))
             else:
@@ -1774,13 +1779,13 @@ class Checkbox(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = _rounded(QRectF(0.5, 6.5, 15, 15), 4)
         if self.checked:
-            p.fillPath(path, t.q('accent', 1.0 if on else 0.5))
+            p.fillPath(path, t.q('accent' if on else 'text-disabled'))
             icons.paint(p, 'check', t.q('on-accent'), 2, 8, 12, 2.6)
         else:
             p.fillPath(path, t.q(('bg-raised' if t.dark else 'bg-surface') if on else 'bg-subtle'))
             p.setPen(QPen(t.q('border-strong' if on else 'border'), 1))
             p.drawPath(path)
-        tone = t.q('text-primary' if on else 'text-tertiary')
+        tone = t.q('text-primary' if on else 'text-disabled')
         text_rect = QRectF(24, 0, self.width() - 24, h)
         if self.rich:
             paint_rich(p, text_rect, self.text, 'body', tone)
@@ -1794,7 +1799,10 @@ class Checkbox(QWidget):
 
 
 class Toggle(QWidget):
-    """An on/off switch, 36 × 20: an accent track with the knob at the right when *on*; a click or Space flips it."""
+    """An on/off switch, 36 × 20: an accent track with the knob at the right when *on*; a click or Space flips it.
+
+    Disabled, its track is ``text-disabled`` whether on or off.
+    """
 
     toggled = pyqtSignal(bool)
 
@@ -1825,7 +1833,8 @@ class Toggle(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
-        p.fillPath(_rounded(r, r.height() / 2), t.q('accent' if self.on else 'border-strong'))
+        track = ('accent' if self.on else 'border-strong') if self.isEnabled() else 'text-disabled'
+        p.fillPath(_rounded(r, r.height() / 2), t.q(track))
         knob = QRectF(r.right() - 18 if self.on else 2, 2, 16, 16)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(t.q('shadow', 46 / 255))
@@ -1842,7 +1851,7 @@ class Slider(QWidget):
 
     *decades* > 0 marks each decade under the track, so a log scale reads as one. Pressing
     or dragging on it moves the handle there, the arrow keys by a hundredth, and
-    :attr:`moved` carries each new position.
+    :attr:`moved` carries each new position. Disabled, its fill is ``text-disabled``.
     """
 
     moved = pyqtSignal(float)
@@ -1905,7 +1914,7 @@ class Slider(QWidget):
         x0, x1, cy = r, self.width() - r, 7.0
         p.fillPath(_rounded(QRectF(x0, cy - 2, x1 - x0, 4), 2), t.q('border-strong' if t.dark else 'bg-hover'))
         hx = x0 + self.pos * (x1 - x0)
-        p.fillPath(_rounded(QRectF(x0, cy - 2, hx - x0, 4), 2), t.q('accent'))
+        p.fillPath(_rounded(QRectF(x0, cy - 2, hx - x0, 4), 2), t.q('accent' if self.isEnabled() else 'text-disabled'))
         if self.decades:
             p.setPen(QPen(t.q('text-tertiary' if t.dark else 'border-strong', 0.8), 1))
             for k in range(self.decades + 1):
@@ -2006,7 +2015,7 @@ class SliderEnd(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setFont(font('small-number'))
-        p.setPen(self.t.q('text-tertiary'))
+        p.setPen(self.t.q('text-tertiary' if self.isEnabled() else 'text-disabled'))
         p.drawText(self.text_rect(), Qt.AlignmentFlag.AlignCenter, self.text)
         p.end()
 
@@ -2345,7 +2354,7 @@ class Callout(QFrame):
 def spaced_ticks(
     ticks: list[tuple[float, str]], x_of, fm: QFontMetrics, left: float, right: float
 ) -> list[tuple[str, QRectF]]:
-    """The tick labels a log axis draws, each with its box at the top of the label line.
+    """The tick labels a log axis draws, each with its box at the top of the label line, as tall as a line of *fm*.
 
     Each label is centred on its tick and kept inside *left* to *right*. Where two would
     come closer than ``space(2)``, the rounder value keeps its label — a power of ten,
@@ -2362,7 +2371,7 @@ def spaced_ticks(
         value, text = ticks[i]
         width = fm.horizontalAdvance(text) + 4
         x = min(max(x_of(value) - width / 2, left), right - width)
-        box = QRectF(x, 0, width, 16)
+        box = QRectF(x, 0, width, fm.height())
         if all(box.left() >= r.right() + space(2) or box.right() + space(2) <= r.left() for _t, r in placed):
             placed.append((text, box))
     return sorted(placed, key=lambda item: item[1].left())

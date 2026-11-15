@@ -44,6 +44,7 @@ def test_a_render_is_drawn_in_the_style_the_app_ships_with(qapp):
     from PyQt6.QtWidgets import QStyleFactory
 
     from docs.design.render import render
+    from gui.design.appearance import DesignStyle
 
     other = next(name for name in QStyleFactory.keys() if name.lower() != 'fusion')
     before = qapp.style().name()
@@ -53,12 +54,13 @@ def test_a_render_is_drawn_in_the_style_the_app_ships_with(qapp):
         # The theme's style sheet wraps the style; without it the style reads its own name.
         sheet = qapp.styleSheet()
         qapp.setStyleSheet('')
-        style = qapp.style().name()
+        style = qapp.style()
+        shipped = isinstance(style, DesignStyle) and style.baseStyle().name().lower() == 'fusion'
         qapp.setStyleSheet(sheet)
     finally:
         qapp.setStyle(before)
 
-    assert style.lower() == 'fusion'
+    assert shipped
 
 
 def test_a_pointer_with_no_plot_on_screen_is_refused(qapp):

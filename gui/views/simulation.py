@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QFontMetrics, QKeySequence, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -42,13 +42,15 @@ from core.assays.registry import ASSAY_REGISTRY
 from core.data_processing.concentration import read_raw_concentrations, save_concentration_vector
 from core.data_processing.measurement_set import InvalidData
 from core.units import Q_
+from gui import preferences
 from gui.binding import CATEGORIES
 from gui.dataset import Dataset
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import REPLICATE_ALPHA, apply_plot_theme, fit_line, px, scatter
-from gui.design.tokens import SIZE, Theme, font, space
+from gui.design.tokens import SIZE, Theme, font, plot_font, space
 from gui.dialogs.plot_guide_dialog import show_plot_guide
+from gui.plot_appearance import BUILT_IN
 from gui.plotting.export import ExportRefused, export_stacked, figure_head
 from gui.plotting.labels import fmt_species, superscript
 from gui.simulation import (
@@ -191,7 +193,7 @@ class _Readout(QWidget):
 
 
 class SimulationPlots(QObject):
-    """The titration above the species, on one titrant axis, drawn in theme *t*.
+    """The titration above the species, on one titrant axis, drawn in theme *t* at plot text *step*.
 
     The two plot widgets are placed by the caller. :meth:`show` draws a simulation; :meth:`point_at` moves the pointer's hairline, the
     marker and value tag on the model, and the species markers, and :attr:`pointed` says
@@ -200,9 +202,9 @@ class SimulationPlots(QObject):
 
     pointed = pyqtSignal(int)
 
-    def __init__(self, t: Theme):
+    def __init__(self, t: Theme, step: str):
         super().__init__()
-        self.t = t
+        self.t, self.step = t, step
         self.sim: Simulation | None = None
         self.overlay: Overlay | None = None
         self.unit, self.x_name = 'µM', ''
@@ -219,8 +221,8 @@ class SimulationPlots(QObject):
 
     def _style(self) -> None:
         t = self.t
-        sp = apply_plot_theme(self.signal_pw, t, '', 'Signal (a.u.)')
-        cp = apply_plot_theme(self.species_pw, t, '', 'Concentration (µM)')
+        sp = apply_plot_theme(self.signal_pw, t, '', 'Signal (a.u.)', self.step)
+        cp = apply_plot_theme(self.species_pw, t, '', 'Concentration (µM)', self.step)
         # The titration shares the species plot's titrant axis: an axis line with ticks, no values.
         ax = sp.getAxis('bottom')
         ax.setStyle(showValues=False, tickLength=4)
@@ -228,7 +230,7 @@ class SimulationPlots(QObject):
         ax.setHeight(6)
         # A y tick on the top edge of the range has its label centred on that edge: half a
         # label of room above the axes keeps it whole.
-        half_label = math.ceil(QFontMetrics(font('small-number')).height() / 2)
+        half_label = math.ceil(QFontMetrics(plot_font(self.step, 'tick')).height() / 2)
         for pi in (sp, cp):
             pi.getViewBox().setMouseEnabled(x=False, y=False)
             pi.getAxis('left').setStyle(autoExpandTextSpace=False)
@@ -387,6 +389,7 @@ class SimulationWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.t = theme()
+        self.text_step = self._plot_step()
         self.form = SimulationForm()
         self.sim: Simulation | None = None
         self._problem: str | None = None
@@ -419,6 +422,19 @@ class SimulationWindow(QMainWindow):
         root.setFocus()  # no control holds the focus, so no focus ring shows until the keyboard moves it
         appearance().changed.connect(self._restyle)
         self._rebuild()
+
+    def _plot_step(self) -> str:
+        """The plot text step stored for new sessions, which the window's plots and their figure are drawn at.
+
+        A stored appearance that cannot be read is said in a warning once the window is up, and
+        the plots take the built-in step.
+        """
+        try:
+            return preferences.plot_appearance_default().text_step
+        except ValueError as exc:
+            message = f'{exc} The plots here use the built-in text size until another is stored in Plot appearance.'
+            QTimer.singleShot(0, lambda: QMessageBox.warning(self, 'Plot Appearance Not Read', message))
+            return BUILT_IN.text_step
 
     # ------------------------------------------------------------------
     # Building
@@ -504,7 +520,7 @@ class SimulationWindow(QMainWindow):
         image.setAccessibleName('Save the titration and species plots as one image')
         image.clicked.connect(self.export_image)
         self.readout = _Readout(t)
-        self.plots = SimulationPlots(t)
+        self.plots = SimulationPlots(t, self.text_step)
         self.plots.pointed.connect(self._show_readout)
         titration_head = C.PlotHeader(t, TITRATION_HEAD[0], self.legend, [image], TITRATION_HEAD[1])
         species_head = C.hbox(
@@ -890,7 +906,7 @@ class SimulationWindow(QMainWindow):
 
     def _restyle(self) -> None:
         """Draw the plots again in the theme as it is now: a theme styles their axes and grid once."""
-        old, new = self.plots, SimulationPlots(self.t)
+        old, new = self.plots, SimulationPlots(self.t, self.text_step)
         new.index = old.index
         new.pointed.connect(self._show_readout)
         for a, b in ((old.signal_pw, new.signal_pw), (old.species_pw, new.species_pw)):
@@ -954,7 +970,7 @@ class SimulationWindow(QMainWindow):
         if not path:
             return
         light = Theme(dark=False)
-        figure = SimulationPlots(light)
+        figure = SimulationPlots(light, self.text_step)
         for pw, height in zip((figure.signal_pw, figure.species_pw), EXPORT_HEIGHTS, strict=True):
             pw.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
             pw.resize(EXPORT_SIZE[0], height)
@@ -964,15 +980,21 @@ class SimulationWindow(QMainWindow):
         species, width = _Readout(light), EXPORT_SIZE[0]
         species.set_values('', '', [(word, [(k, '') for k in keys]) for word, keys in species_groups(self.sim.species)])
         heads = [
-            figure_head(light, *TITRATION_HEAD, C.LegendRow(light, _legend_items(self.form), removable=False), width),
-            figure_head(light, *SPECIES_HEAD, species, width),
+            figure_head(
+                light,
+                *TITRATION_HEAD,
+                C.LegendRow(light, _legend_items(self.form), removable=False),
+                width,
+                text=self.text_step,
+            ),
+            figure_head(light, *SPECIES_HEAD, species, width, text=self.text_step),
         ]
         for head in heads:
             head.show()
         QApplication.processEvents()
         try:
             export_stacked(
-                [heads[0], figure.signal_pw.getPlotItem(), heads[1], figure.species_pw.getPlotItem()],
+                [heads[0], figure.signal_pw.getPlotItem(), 5, heads[1], figure.species_pw.getPlotItem()],
                 path,
                 width_px=2 * EXPORT_SIZE[0],
             )

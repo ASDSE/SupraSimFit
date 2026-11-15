@@ -597,6 +597,7 @@ def test_a_saved_figure_keeps_its_width_whatever_its_summary_says(session, tmp_p
 
     from PyQt6.QtGui import QImage
 
+    from gui.design.tokens import SIZE
     from gui.views.titration import EXPORT_SIZE
 
     session.model._held_fit_results = _shown_fits(2)
@@ -607,8 +608,9 @@ def test_a_saved_figure_keeps_its_width_whatever_its_summary_says(session, tmp_p
     view.export_image(str(svg))
     image, text = QImage(str(png)), svg.read_text(encoding='utf-8')
 
-    assert image.width() == 2 * EXPORT_SIZE[0]  # the PNG at twice the figure's width
-    assert float(re.search(r'<svg[^>]*\swidth="([\d.]+)"', text).group(1)) == EXPORT_SIZE[0]
+    page = EXPORT_SIZE[0] + 2 * SIZE['figure-margin']
+    assert image.width() == 2 * page  # the PNG at twice the figure's width, its margin round it
+    assert float(re.search(r'<svg[^>]*\swidth="([\d.]+)"', text).group(1)) == page
     summary = view.titration.summary
     assert summary[0].startswith('Reported fit: ') and summary[-1].startswith('Other fit 1 (dashed): ')
     words = ' '.join(summary).split()

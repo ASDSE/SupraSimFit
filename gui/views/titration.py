@@ -25,7 +25,7 @@ from core.units import Q_
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import REPLICATE_ALPHA, apply_plot_theme, fit_line, px, scatter
-from gui.design.tokens import SIZE, Theme, plot_font, space
+from gui.design.tokens import SIZE, Theme, plot_font
 from gui.plot_appearance import BUILT_IN, PlotAppearance
 from gui.plotting.export import export_stacked, figure_head
 from gui.plotting.labels import superscript
@@ -121,19 +121,17 @@ class TitrationPlot(QWidget):
         self.pw = pg.PlotWidget()
         self.pw.setFrameShape(QFrame.Shape.NoFrame)
         look = self.plot_appearance
-        pi = apply_plot_theme(self.pw, self.t, '', '', text=look.text_step)
+        pi = apply_plot_theme(self.pw, self.t, '', '', look.text_step)
         # A tick on an edge of the range, such as the 0 and 1 of the empty plot's 0–1, has its
         # label centred on that edge. Half a label of room above the axes and right of them
         # keeps such labels whole, and the x axis draws its end labels into that half label —
         # on the left into the y axis's room — where it would otherwise leave them out. The
         # widest a concentration tick reads is four characters (1000, 12.5); a wider one at
-        # the right edge is left out, never cut. pyqtgraph sets the x axis title a little below the
-        # axes' room, its descenders (the µ and brackets of µM) a pixel past it; room below the axes
-        # keeps them whole at the foot of a saved figure.
+        # the right edge is left out, never cut.
         fm = QFontMetrics(plot_font(look.text_step, 'tick'))
         half_label = math.ceil(fm.horizontalAdvance('0000') / 2)
-        left, _top, right, _bottom = pi.layout.getContentsMargins()
-        pi.layout.setContentsMargins(left, math.ceil(fm.height() / 2), max(right, half_label), space(1))
+        left, _top, right, bottom = pi.layout.getContentsMargins()
+        pi.layout.setContentsMargins(left, math.ceil(fm.height() / 2), max(right, half_label), bottom)
         pi.getAxis('bottom').setStyle(hideOverlappingLabels=half_label)
         self._items = []
         self.layout().addWidget(self.pw)

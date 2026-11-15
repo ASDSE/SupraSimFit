@@ -28,9 +28,10 @@ QPushButton[role="link"] {
     border: none; background: transparent; color: {{accent}}; padding: 0px; min-height: 20px;
 }
 QPushButton[role="link"]:hover { color: {{accent-hover}}; }
-QPushButton[role="link"]:disabled { color: {{text-tertiary}}; }
+QPushButton[role="link"]:disabled { color: {{text-disabled}}; }
 QScrollArea { border: none; background: transparent; }
 QLineEdit[role="field"] { background: transparent; border: none; padding: 0px; color: {{text-primary}}; }
+QLineEdit[role="field"]:disabled { color: {{text-disabled}}; }
 QScrollBar:vertical { width: 8px; background: transparent; margin: 0px; }
 QScrollBar::handle:vertical { background: {{opacity(text-tertiary, 0.35)}}; border-radius: 4px; min-height: 32px; }
 QScrollBar::handle:vertical:hover { background: {{opacity(text-tertiary, 0.6)}}; }

@@ -5,7 +5,8 @@ results draws it — the fit where there is one, else the data — with its lege
 image export; with nothing loaded, a sentence saying what to load. Side panel *Titration
 plot*, headed by *Reset to defaults*: Markers (the replicates' and the mean's point size,
 the replicates' mark), Lines (the fitted curve and the error bars), Colour (the
-replicates, from a short menu of the theme's colours), Text (the axis text) and New
+replicates, from a short menu of the theme's colours), Text (the plot text of every plot of
+the session) and New
 sessions (*Use for new sessions* and what new sessions start from). Every choice goes to the session model's
 :class:`~gui.plot_appearance.PlotAppearance` and redraws the plot at once. The appearance
 feeds no fit or analysis, so the form stays open while one runs.
@@ -31,7 +32,8 @@ from gui.views.titration import TitrationPlot, legend_marks
 #: What the canvas says the appearance styles.
 SCOPE = (
     'These settings style this session’s titration plot in Measurements and Fit results, and the figure saved '
-    'from it. Saved figures use the light theme on white.'
+    'from it. The text size applies to every plot of the session — Ka confidence and Sensitivity too — and to '
+    'the figures saved from them. Saved figures use the light theme on white.'
 )
 
 #: What the canvas says before there is anything to draw.
@@ -147,10 +149,10 @@ class PlotAppearanceView(QObject):
             colours.append(C.vbox(C.label(caption, 'label', 'secondary'), C.hbox(control, None), spacing=2))
         sections.append(C.section(t, 'Colour', body(*colours)))
         text = C.Segmented(t, [label for label, *_ in menu('text_size').values()])
-        text.setAccessibleName('Size of the axis text')
+        text.setAccessibleName('Size of the text of every plot')
         text.changed.connect(lambda i: self._choose('text_size', i))
         self.choices['text_size'] = text
-        sections.append(C.section(t, 'Text', body(field('Axis text', text))))
+        sections.append(C.section(t, 'Text', body(field('Plot text', text))))
         # New sessions
         self.use_for_new = C.OutlineButton(t, 'Use for new sessions')
         self.use_for_new.setToolTip('Start every new session with this appearance')

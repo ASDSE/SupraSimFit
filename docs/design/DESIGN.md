@@ -14,7 +14,8 @@ silently, and the answer becomes part of this document and the tokens.
   window its own size): every view, an empty session, and the menus and the readout the
   pointer opens. `uv run python -m docs.design.render --all docs/design/screens` renders
   them all from the real windows (`SCREENS` in `docs/design/render.py`), so they show
-  what ships. A change to a view is finished when its render (`docs/design/render.py`,
+  what ships; each sensitivity analysis runs at Fixed seed 0 on two processor cores, so a
+  render of the same build draws the same samples. A change to a view is finished when its render (`docs/design/render.py`,
   the running window drawn off screen) has been compared with the view's references in
   both themes; a deliberate change to the approved look renders the references again.
 - **Rules for agents.** `gui/CLAUDE.md` is the short, binding version of this document.
@@ -70,6 +71,7 @@ stylesheet template.
 | `text-primary` | Body text, values, titles |
 | `text-secondary` | Labels, captions, axis tick labels, secondary values |
 | `text-tertiary` | Hints, notes, units after a value, shortcuts in menus, column headers of dense tables |
+| `text-disabled` | The text, icon and marks of a disabled control: its label, value, chevron, check and a slider's fill or a toggle's track; the palette's disabled text |
 | `accent`, `accent-hover` | Reported (input-aware) result and fitted curve; selection; 2-px keyboard focus ring; links; primary button; work in progress (status-bar dot while work runs, the switcher's busy dot, progress rings); the open session switcher's outline and icon tile |
 | `accent-subtle` | Tint behind accent text and marks: Input-aware badge, the switcher's icon tile |
 | `on-accent` | Text and icons on accent |
@@ -85,6 +87,10 @@ stylesheet template.
 
 **Contrast.** Every text token meets WCAG AA (4.5 : 1) on every background text is drawn
 on, hover and selection fills included, and each status colour on its own `-bg`.
+`text-disabled` is the one exception, by design: on every ground a disabled control stands
+on (`bg-window`, `bg-sidebar`, `bg-surface`, `bg-raised`, `bg-subtle`) it stands out by more
+than 1.6 : 1, so it still reads as a word, and by at most 3 : 1, two thirds of the AA every
+enabled text keeps, so a disabled control is never taken for an enabled one.
 `tests/unit/gui/test_design_system.py` checks both themes.
 
 **Data marks** may use a token at reduced opacity; text never does. The approved plots
@@ -115,16 +121,21 @@ The platform UI font (SF Pro on macOS, Segoe UI on Windows), four sizes on any s
 | `label`, `small`, `small-number` | 12 px Medium / Normal / tabular | Captions, axis titles, ticks, hints |
 | `overline` | 12 px DemiBold, sentence case, `text-tertiary` | Sidebar group titles, popover headings |
 
-**Plot text** (`PLOT_TEXT`, `plot_font()`) is a scale of its own: the axis text of the
-titration plot and the head of its saved figure, in the three sizes Plot appearance offers
+**Plot text** (`PLOT_TEXT`, `plot_font()`) is a scale of its own: the text of every plot —
+the titration, Ka confidence's profiles, strips and joint region, Sensitivity's sample
+histogram, heatmap and plots against each source, the Simulation window's titration and
+species — and the heads of their saved figures, in the three sizes Plot appearance offers
 (§8). Each step is 2 px up and about one ratio from the last, and the weight is the same
 at every step, so a larger size changes the size of the text and nothing else.
 
-| Step | Tick labels | Axis titles |
+| Step | Tick labels, in-plot labels, figure notes | Axis titles, figure titles |
 |---|---|---|
-| *Standard* | 14 px Normal, tabular | 16 px Medium |
-| *Large* | 16 px Normal, tabular | 18 px Medium |
-| *Larger* | 18 px Normal, tabular | 20 px Medium |
+| *Standard* | 16 px Normal, tabular | 18 px Medium |
+| *Large* | 18 px Normal, tabular | 20 px Medium |
+| *Larger* | 20 px Normal, tabular | 22 px Medium |
+
+The rows and values of Sensitivity's index chart stay in the window's type: its columns
+line up with the variance budget's table beneath it.
 
 Numbers use tabular figures so columns align. Scientific notation is `1.59 × 10⁸`, thin
 spaces around `×`, superscript exponent. Where a view states an interval in prose or a
@@ -137,14 +148,14 @@ the TXT/CSV reports use `estimate [low, high]`.
   spacings take only these.
 - **Fixed sizes** (`SIZE`): sidebar 232, side panel 320 (at least 280), toolbar 52,
   status bar 28, nav item 28, session switcher 44, controls 28, badges 18, menu rows 32 with a
-  16-px icon and a 14-px check mark, plot axes 56
-  (left) and 44 (bottom) px; the inputs grid of Input uncertainty: name 168, kind 156,
+  16-px icon and a 14-px check mark; the inputs grid of Input uncertainty: name 168, kind 156,
   stated in 88 and spread bar 96 px wide, rows 60 px high; the headline column of Fit
-  results, 264; the sample histogram of Sensitivity, 104; the least height of an analysis
+  results, 264; the bars of Sensitivity's sample histogram, 64, its labels and axis added
+  at their text's height; the least height of an analysis
   plot on screen, 320; the marks of the analysis plots — an estimate or entered point as
   a 14-px diamond, a 9-px dot where the pointer meets a curve, a 1.25-px whisker with
   6-px caps — and Simulation's pointer marks, 10 px on the signal and 8 px on each
-  species; a saved figure 900 px wide, each Ka profile or joint region in it 420 px high,
+  species; a saved figure 900 px wide inside a white margin of 24 (`figure-margin`), each Ka profile or joint region in it 420 px high,
   the titration plot 600, Simulation's signal and species plots 520 and 400; the help
   dialog at least 560 × 420.
 - **Radius** (`RADIUS`): 6 px controls, 8 px cards, 10 px popovers, menus and the
@@ -168,8 +179,12 @@ every open window. One app-level object holds the current `Theme` and emits a si
 it changes; under *System* it follows the operating system's colour scheme
 (`QStyleHints.colorScheme`). Light and Dark are also the colour scheme Qt is asked for
 (`QStyleHints.setColorScheme`; *System* asks for none), so what Qt takes from the platform
-— the palette roles the theme leaves unset, native file dialogs, window frames, the menu
-bar — follows the app's choice, not the operating system's. On a change it re-applies the
+— native file dialogs, window frames, the menu bar — follows the app's choice, not the
+operating system's. The palette sets every role of every group from the theme (disabled
+text in `text-disabled` on `bg-subtle`), so nothing Qt draws takes a platform colour. The app
+runs `DesignStyle`, Fusion with the icons of a message box drawn from the icon set in the
+theme on screen — a question or a notice in `accent`, a warning in `warning`, an error in
+`danger` — each standing out from the box by 3 : 1 in both themes. On a change it re-applies the
 stylesheet and palette, and every painted component, which reads the theme from that
 object, repaints. **Exported
 figures always use the light plot theme on a white background**, whatever the window
@@ -340,7 +355,7 @@ the same tokens.
 | Component | What it is and its rules |
 |---|---|
 | **Primary button** | Filled accent, `on-accent` icon and label; one per window; fixed width in the toolbar |
-| **Tool button** | Icon and optional text, no border, `bg-hover` on hover; ▾ when it opens a menu; a checked state for toggles (side panel); disabled, its icon and text in `text-tertiary` with no hover fill |
+| **Tool button** | Icon and optional text, no border, `bg-hover` on hover; ▾ when it opens a menu; a checked state for toggles (side panel); disabled, its icon and text in `text-disabled` with no hover fill |
 | **Outline button** | `border-strong` outline on `bg-surface`; secondary actions in forms (*Apply*, *Check now*) |
 | **Link** | Accent text with an optional trailing →; navigates or opens detail |
 | **Focus ring** | 2 px accent around the focused control, on every keyboard-reachable control |
@@ -391,6 +406,10 @@ Every component meets these rules:
 - **Results can be copied.** The headline value, intervals and the Fit details tables
   are selectable.
 - **Selection holds.** Clicking the selected navigation item keeps it selected.
+- **Disabled reads as disabled.** A disabled control draws its text, icon, chevron and
+  marks in `text-disabled`, on the sunken `bg-subtle` where it has a fill, never in
+  `accent`: buttons (a disabled primary on `bg-subtle`), outline buttons, links, fields,
+  menus and their rows, segmented controls, checkboxes, toggles and sliders alike.
 
 ---
 
@@ -402,12 +421,13 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
 
 - `bg-surface` background; left and bottom axes only, in `border-strong`; tick labels in
   `text-secondary`; axis titles with the unit in parentheses (`Guest (µM)`,
-  `Signal (10⁵ a.u.)`, the power of ten that of the largest value drawn). The titration
-  plot sets its tick labels and axis titles at the plot text step its appearance chooses
-  (§2, §8); the other plots in `small-number` and `label`. The axes are `axis-left` wide
-  and `axis-bottom` tall with `small-number` and `label`, and grow by what larger text adds
-  to a four-figure tick label and a title line, so they grow by even steps as the plot
-  text does.
+  `Signal (10⁵ a.u.)`, the power of ten that of the largest value drawn). Every plot sets
+  its tick labels, axis titles and in-plot labels at the plot text step of the session's
+  appearance (§2, §8). The axes are sized from that text's metrics (`axis_box()`): the left
+  one holds a four-figure tick label (or the widest label a plot names), its offset, a step
+  and a line of title, the bottom one the outward ticks, a line of tick labels, a step and a
+  line of title — so the axes grow with the text and a title never meets a tick label. An
+  axis title set later is placed again at once, whole and centred on its axis.
 - No y tick marks: horizontal grid lines in `grid` follow the y axis's ticks; 4-px
   outward x ticks.
 - **Titration series:** each replicate's dots in its own colour (`replicate-n`) at 80 %,
@@ -445,11 +465,14 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
 - Linked plots (signal above species) share the x axis and the left axis width, so their
   plot areas line up.
 - Exports render with the light theme on white.
-- **Saved figure head:** every saved plot carries, above it, the head its header row
-  states on screen — the title in `body-strong`, the description in `small`, the legend
-  at the right (on a line of its own under them where one line cannot hold both) — then
-  any notes in `small`, wrapped to the figure's width; a titration's title, description
-  and notes read at its plot text step instead (§8). A saved **titration** is that head
+- **Saved figure:** every saved figure stands on white with one margin round it,
+  `figure-margin` (24 px), which both writers put there (`export_stacked()`,
+  `export_widget()`); nothing in a figure brings a margin of its own. Each plot carries,
+  above it, the head its header row states on screen (`figure_head()`) — the title, the
+  description, the legend at the right (on a line of its own under them, still at the
+  right, where one line cannot hold all three, as the screen's header puts it) — then any
+  notes, wrapped to the figure's width; the title reads at the axis titles' size of the
+  session's plot text, the description and notes at its tick labels' size (§2). A saved **titration** is that head
   above the plot as the view draws it, with its replicate display and appearance: in
   Fit results, Plot appearance and *Export several…*, the legend of replicates, mean ± SD
   and fit, and a summary of the fit drawn — one line per binding constant with its
@@ -605,15 +628,17 @@ the sample blocks or the grid, the median R² of the samples, the duration and w
 processes, the seed used, and whether it was stopped. **Display** — a log₁₀ or a linear Kₐ
 axis. The settings that feed a run lock while one runs. The badge reads what the run shown
 was made with, else the next run: `Sobol' · N = 1024`, `Heatmap · 21 × 21`. A saved figure
-is drawn again in the light theme on white: the run's callouts as notes; per constant its
-spread, the samples and the shares, with its own callouts and the chart's notes under them;
-for a heatmap, each map with its colour bar.
+is drawn again in the light theme on white, at the session's plot text: the run's callouts
+as notes; per constant a head of its name, its spread and the samples' fold, then the
+samples and, under its own head and legend, the shares, with its own callouts and the
+chart's notes under them; for a heatmap, each map under its head with its colour bar.
 
 ### Plot appearance — `appearance_*.jpg`, `appearance_colour_*.jpg`
 The appearance of the session's **titration plot**: the plot in Measurements and in Fit
-results, and the figure saved from it (also in a batch export). Ka confidence,
-Sensitivity and the Simulation window take no appearance setting; they are drawn from the
-tokens alone. Canvas: a sentence saying what the settings style, then the **Titration**
+results, and the figure saved from it (also in a batch export); and the size of the text
+of **every plot** of the session — Ka confidence and Sensitivity too — and of the figures
+saved from them. The Simulation window, part of no session, draws at the text size stored
+for new sessions. Canvas: a sentence saying what the settings style, then the **Titration**
 plot as Fit results draws it — the fit where there is one, else the data, in the
 session's replicate display — with its
 legend and the image export; with nothing loaded, a sentence saying what to load. Every
@@ -629,10 +654,10 @@ replicate in `replicate`, one mark), each choice shown with its swatch — the f
 beside *By replicate*; and fitted curve, *Teal* (`accent`, built in), *Blue* (`series-1`),
 *Magenta* (`series-2`) or *Text colour* (`text-primary`) — never a free colour picker;
 the means and their error bars stay `text-primary`, so no choice draws the replicates in
-the colour of the means; **Text** — axis text *Standard* / *Large* /
-*Larger*, the steps of the plot text (§2): tick labels 14, 16 or 18 px, axis titles 16, 18
-or 20 px, at one weight; a saved figure's head follows it, its title at the axis titles'
-size and its description and fit summary at the tick labels'; **New sessions** — *Use for new sessions* (outline button; one click stores the
+the colour of the means; **Text** — plot text *Standard* / *Large* /
+*Larger*, the steps of the plot text (§2): tick labels 16, 18 or 20 px, axis titles 18, 20
+or 22 px, at one weight, in every plot of the session; a saved figure's head follows it, its
+title at the axis titles' size and its description and fit summary at the tick labels'; **New sessions** — *Use for new sessions* (outline button; one click stores the
 whole appearance, and it is enabled while the stored one differs). The built-in appearance is the titration of §7. The form
 feeds no fit or analysis, so it stays open while one runs. The badge reads *Built-in
 appearance* or *Custom appearance*.
@@ -654,7 +679,10 @@ saves the titration above the species on their shared axis as one PNG or SVG in 
 theme on white, each plot under its title with its legend — the titration's entries and the
 species' names and line styles as the window shows them; Data file…), Help, the side-panel toggle, and the primary *Fit in new session*. Canvas:
 **Titration** (simulated replicates at the measurement points, the model drawn
-continuously) above **Species** on the same x axis, with the readout at the pointer. Each
+continuously) above **Species** on the same x axis, with the readout at the pointer. Both
+plots, and the curve image saved from them, draw at the plot text size stored for new
+sessions (§8, Plot appearance); a stored appearance that cannot be read is said in a
+warning, and the plots take the built-in size. Each
 species takes the colour of its partner — `species-dye`, `species-guest`, `species-host`,
 `species-step2` (§2) — solid in a complex and dashed when free; the reported-result accent
 and the Sobol' series colours are not used for species.

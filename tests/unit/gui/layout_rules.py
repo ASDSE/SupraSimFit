@@ -8,12 +8,14 @@ Simulation windows:
   size its content needs, as a minimum size hint or a size it fixes, and its layout gives it
   at least that;
 - no plot header cuts its text short;
-- no plain one-line label is narrower than its text, which it would cut with no ellipsis.
+- no plain one-line label is narrower than its text, which it would cut with no ellipsis;
+- every axis title of a plot on screen stands whole inside its plot, clear of the tick labels.
 """
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+import pyqtgraph as pg
+from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 from gui.design import components as C
@@ -81,6 +83,51 @@ def cut_labels(window: QWidget) -> list[str]:
     return found
 
 
+def title_rect(axis: pg.AxisItem) -> QRectF:
+    """Where *axis* draws its title's text, in scene coordinates: its label's box less the document's own margin."""
+    margin = axis.label.document().documentMargin()
+    return axis.label.sceneBoundingRect().adjusted(margin, margin, -margin, -margin)
+
+
+def _tick_band(axis: pg.AxisItem) -> QRectF:
+    """Where *axis* draws its tick labels, in scene coordinates, as wide (left) or tall (bottom) as the widest drawn."""
+    offset = axis.style['tickTextOffset'][0 if axis.orientation == 'left' else 1]
+    start = max(0, axis.style['tickLength']) + offset
+    w, h = axis.width(), axis.height()
+    if axis.orientation == 'left':
+        band = QRectF(w - start - axis.textWidth, 0, axis.textWidth, h)
+    else:
+        band = QRectF(0, start, w, axis.textHeight)
+    return axis.mapRectToScene(band)
+
+
+def axis_text_problems(pw: pg.PlotWidget) -> list[str]:
+    """How the axis text of *pw* is cut: a title reaching past the plot's edge, or drawn over its tick labels."""
+    pw.grab()  # the axes measure the tick labels they draw as they paint
+    found = []
+    inside = pw.mapToScene(pw.viewport().rect()).boundingRect()
+    for side in ('left', 'bottom'):
+        axis = pw.getPlotItem().getAxis(side)
+        if not axis.isVisible() or not axis.label.isVisible() or not axis.labelText:
+            continue
+        title = title_rect(axis)
+        if not inside.adjusted(-0.5, -0.5, 0.5, 0.5).contains(title):
+            found.append(f'the {side} axis title {axis.labelText!r} reaches past the plot')
+        if axis.style['showValues'] and title.intersects(_tick_band(axis)):
+            found.append(f'the {side} axis title {axis.labelText!r} runs over its tick labels')
+    return found
+
+
+def cut_axis_text(window: QWidget) -> list[str]:
+    """The axis text cut in the plots on screen in *window*, each plot named by its accessible name or class."""
+    found = []
+    for pw in window.findChildren(pg.PlotWidget):
+        if pw.isVisible() and pw.window() is window:
+            name = _name(pw.parentWidget()) if pw.parentWidget() is not None else 'a plot'
+            found += [f'{name}: {problem}' for problem in axis_text_problems(pw)]
+    return found
+
+
 def check(_app: QApplication, window: QWidget, where: str, seen: dict[str, list[str]]) -> None:
     """Record under *where* in *seen* what in *window* breaks the rules of this module."""
-    seen[where] = undersized(window) + cut_headers(window) + cut_labels(window)
+    seen[where] = undersized(window) + cut_headers(window) + cut_labels(window) + cut_axis_text(window)

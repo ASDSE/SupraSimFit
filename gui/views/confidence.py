@@ -31,8 +31,8 @@ from gui import confidence as CF
 from gui import results as R
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
-from gui.design.plot_theme import apply_plot_theme, px
-from gui.design.tokens import SIZE, Theme, font, space
+from gui.design.plot_theme import apply_plot_theme, axis_box, least_height, px
+from gui.design.tokens import SIZE, Theme, font, plot_font, space
 from gui.plotting.export import export_widget, figure_head
 from gui.plotting.labels import THIN, fmt_param_plain
 from gui.session_model import Change, SessionModel
@@ -68,10 +68,11 @@ def _dotted(t: Theme, color: str):
     return pen
 
 
-def _tag(t: Theme, text: str, anchor, role: str = 'small-number', filled: bool = False) -> pg.TextItem:
-    """An in-plot label in ``text-secondary``; *filled* backs it with the plot surface, for marks running up to it."""
+def _tag(t: Theme, text: str, anchor, step: str, filled: bool = False) -> pg.TextItem:
+    """An in-plot label in ``text-secondary`` at the tick labels' size of plot text *step*; *filled* backs it with
+    the plot surface, for marks running up to it."""
     item = pg.TextItem(text, color=t.q('text-secondary'), anchor=anchor, fill=t.q('bg-surface') if filled else None)
-    item.setFont(font(role))
+    item.setFont(plot_font(step, 'tick'))
     item.setZValue(5)
     return item
 
@@ -80,18 +81,17 @@ class ProfileFigure(QWidget):
     """One binding constant's profile plot over the strip of the Ka each reading accepts.
 
     The plot reads each curve's scaled drop against one cut-off line at 1; the strip shares
-    its log-Ka axis. With *interactive* the pointer draws a hairline with its Ka at the top
-    and the readout card reads every curve there; elsewhere the card reads the reported
-    estimate.
+    its log-Ka axis. Its text is at plot text *step*. With *interactive* the pointer draws a
+    hairline with its Ka at the top and the readout card reads every curve there; elsewhere
+    the card reads the reported estimate.
     """
 
-    def __init__(self, t: Theme, plot: CF.ProfilePlot, interactive: bool = True):
+    def __init__(self, t: Theme, plot: CF.ProfilePlot, step: str, interactive: bool = True):
         super().__init__()
-        self.t, self.plot = t, plot
+        self.t, self.plot, self.step = t, plot, step
         self.main = pg.PlotWidget()
         self.main.setFrameShape(QFrame.Shape.NoFrame)
-        pi = apply_plot_theme(self.main, t, '', CF.Y_TITLE, list(CF.Y_TICKS))
-        pi.getAxis('left').setWidth(SIZE['axis-left'])
+        pi = apply_plot_theme(self.main, t, '', CF.Y_TITLE, step, [(v, f'{v:g}') for v in CF.Y_TICKS])
         bottom = pi.getAxis('bottom')
         bottom.setTicks([plot.ticks])
         bottom.setStyle(showValues=False, tickLength=space(2))
@@ -105,7 +105,6 @@ class ProfileFigure(QWidget):
         self.risers: list[pg.PlotDataItem] = []
         self._draw(pi)
         self.strip = self._strip()
-        self.main.setMinimumHeight(SIZE['plot-min'] - self.strip.height())
 
         self.card = C.ReadoutCard(t, self.main)
         self.tag = C.ValueTag(t, self.main)
@@ -133,7 +132,6 @@ class ProfileFigure(QWidget):
             self.card.hide()
 
         self.setLayout(C.vbox(self.main, 2, self.strip, spacing=0))
-        self.setMinimumHeight(SIZE['plot-min'])
         self.setAccessibleName(f'Profile plot of {plot.name}')
 
     # ------------------------------------------------------------------
@@ -158,7 +156,7 @@ class ProfileFigure(QWidget):
         cut.setZValue(1.5)
         pi.addItem(cut, ignoreBounds=True)
         self.cut_line = cut
-        label = _tag(t, plot.cut_label, anchor=(1, 1.05))
+        label = _tag(t, plot.cut_label, (1, 1.05), self.step)
         label.setPos(plot.x_range[1], CF.CUT)
         pi.addItem(label, ignoreBounds=True)
         self.cut_label = label
@@ -200,16 +198,16 @@ class ProfileFigure(QWidget):
         t, plot = self.t, self.plot
         pw = pg.PlotWidget()
         pw.setFrameShape(QFrame.Shape.NoFrame)
-        pi = apply_plot_theme(pw, t, plot.x_title, '', [])
+        pi = apply_plot_theme(pw, t, plot.x_title, '', self.step, [])
         left = pi.getAxis('left')
-        left.setTicks([[]])
         left.showLabel(False)
         left.setPen(pg.mkPen(None))
-        left.setWidth(SIZE['axis-left'])
         pi.getAxis('bottom').setTicks([plot.ticks])
         pi.setXLink(self.main.getPlotItem())
         lanes = list(reversed(plot.curves))
-        pi.setYRange(-0.75, len(lanes) - 0.25, padding=0)
+        # A lane is a control tall, or as tall as its name and a step either side where the text is larger.
+        pitch = max(SIZE['control'], QFontMetrics(plot_font(self.step, 'tick')).height() + 2 * space(1))
+        pi.setYRange(-0.75, len(lanes) - 0.5, padding=0)
         vb = pi.getViewBox()
         vb.setMouseEnabled(x=False, y=False)
         self.bars: dict[str, list[pg.PlotDataItem]] = {}
@@ -228,7 +226,7 @@ class ProfileFigure(QWidget):
                 pi.addItem(bar, ignoreBounds=True)
                 bars.append(bar)
             self.bars[curve.label] = bars
-            name = _tag(t, curve.label, anchor=(0, 0.5), role='small', filled=True)
+            name = _tag(t, curve.label, (0, 0.5), self.step, filled=True)
             pi.addItem(name, ignoreBounds=True)
             first = math.log10(curve.stretches[0][0]) if curve.stretches else plot.x_range[1]
             placed.append((y, name, track, first))
@@ -249,7 +247,7 @@ class ProfileFigure(QWidget):
         vb.sigResized.connect(clear_names)
         vb.sigXRangeChanged.connect(clear_names)
         clear_names()
-        pw.setFixedHeight(SIZE['axis-bottom'] + len(lanes) * SIZE['control'])
+        pw.setFixedHeight(axis_box(self.step)[1] + round((len(lanes) + 0.25) * pitch))
         return pw
 
     # ------------------------------------------------------------------
@@ -303,22 +301,27 @@ class ProfileFigure(QWidget):
         super().resizeEvent(event)
         self._place()
 
+    def minimumSizeHint(self) -> QSize:
+        # An analysis plot's least height, or more where the plot's title along its axis needs it.
+        held = least_height(self.main.getPlotItem()) + space(2) + self.strip.height()
+        return QSize(super().minimumSizeHint().width(), max(SIZE['plot-min'], held))
+
     def sizeHint(self) -> QSize:
         # Its least height: the canvas lays out its height for its width from preferred heights,
         # and the plot takes whatever height the canvas has left over.
-        return QSize(super().sizeHint().width(), self.minimumHeight())
+        return QSize(super().sizeHint().width(), self.minimumSizeHint().height())
 
 
 class RegionFigure(QWidget):
-    """The joint region of two binding constants: the accepted pairs, the best fit and each constant's own interval."""
+    """The joint region of two binding constants: the accepted pairs, the best fit and each constant's own interval,
+    its text at plot text *step*."""
 
-    def __init__(self, t: Theme, region: CF.Region):
+    def __init__(self, t: Theme, region: CF.Region, step: str):
         super().__init__()
         self.t, self.region = t, region
         self.main = pg.PlotWidget()
         self.main.setFrameShape(QFrame.Shape.NoFrame)
-        pi = apply_plot_theme(self.main, t, region.x_title, region.y_title, [v for v, _ in region.y_ticks])
-        pi.getAxis('left').setTicks([region.y_ticks])
+        pi = apply_plot_theme(self.main, t, region.x_title, region.y_title, step, list(region.y_ticks))
         pi.getAxis('bottom').setTicks([region.x_ticks])
         x_lo, x_hi, y_lo, y_hi = region.extent
         rgba = np.zeros(region.accepted.shape + (4,), dtype=np.ubyte)
@@ -355,11 +358,14 @@ class RegionFigure(QWidget):
         pi.setRange(xRange=(x_lo, x_hi), yRange=(y_lo, y_hi), padding=0.02)
         pi.getViewBox().setMouseEnabled(x=False, y=False)
         self.setLayout(C.vbox(self.main, spacing=0))
-        self.setMinimumHeight(SIZE['plot-min'])
         self.setAccessibleName('Joint region of the two binding constants')
 
+    def minimumSizeHint(self) -> QSize:
+        # An analysis plot's least height, or more where its title along the y axis needs it.
+        return QSize(super().minimumSizeHint().width(), max(SIZE['plot-min'], least_height(self.main.getPlotItem())))
+
     def sizeHint(self) -> QSize:
-        return QSize(super().sizeHint().width(), self.minimumHeight())
+        return QSize(super().sizeHint().width(), self.minimumSizeHint().height())
 
 
 class ConfidenceView(QObject):
@@ -457,22 +463,24 @@ class ConfidenceView(QObject):
     def export_figure(self) -> QWidget:
         """The figure :meth:`export_image` saves, laid out and shown off screen; the caller closes it.
 
-        Drawn again in the light theme on white, on the same scaled-drop axis, each plot
-        under its title and legend and its readings in one line, set apart from the plot
-        above it; the readout card is left out, a saved figure having no pointer.
+        Drawn again in the light theme on white, at the session's plot text, on the same
+        scaled-drop axis, each plot under its title and legend and its readings in one line,
+        set apart from the plot above it; the readout card is left out, a saved figure having
+        no pointer.
         """
         fit = self._fit()
         profile = self.model.profile
+        step = self.model.plot_appearance.text_step
         light = Theme(dark=False)
         figure = C.Figure(light)
-        lay = C.vbox(spacing=0, margins=(6, 5, 6, 5))
-        width = SIZE['export-width'] - 2 * space(6)  # inside the figure's margins
+        lay = C.vbox(spacing=0)
+        width = SIZE['export-width']
         plots = [CF.profile_plot(fit, p) for p in profile.profiles.values()]
         headers = {h.key: h for h in CF.headers(fit)}
 
         def gap() -> None:
             if lay.count():
-                lay.addSpacing(space(7))
+                lay.addSpacing(space(8))
 
         for plot in [p for p in plots if p is not None]:
             line = '; '.join(
@@ -480,17 +488,15 @@ class ConfidenceView(QObject):
                 for r in headers[plot.key].readings
             )
             gap()
-            lay.addWidget(figure_head(light, plot.name, '', C.LegendRow(light, _legend(plot)), width, [line]))
-            fig = ProfileFigure(light, plot, interactive=False)
+            lay.addWidget(figure_head(light, plot.name, '', C.LegendRow(light, _legend(plot)), width, [line], step))
+            fig = ProfileFigure(light, plot, step, interactive=False)
             fig.setFixedHeight(SIZE['export-plot'])
             lay.addWidget(fig)
         region = CF.joint_region(fit, profile)
         if region is not None:
-            title = 'Joint region' + (f' · {region.description}' if region.description else '')
             gap()
-            lay.addWidget(C.PaintedText(light, title, 'body-strong'))
-            lay.addSpacing(space(2))
-            reg = RegionFigure(light, region)
+            lay.addWidget(figure_head(light, 'Joint region', region.description, None, width, (), step))
+            reg = RegionFigure(light, region, step)
             reg.setFixedHeight(SIZE['export-plot'])
             lay.addWidget(reg)
         figure.setLayout(lay)
@@ -529,7 +535,7 @@ class ConfidenceView(QObject):
         return CF.badge(self._fit())
 
     def _on_changed(self, what: Change) -> None:
-        if what & (Change.DATA | Change.RESULTS | Change.PROFILE):
+        if what & (Change.DATA | Change.RESULTS | Change.PROFILE | Change.APPEARANCE):
             self.refresh()
 
     def refresh(self) -> None:
@@ -660,6 +666,7 @@ class ConfidenceView(QObject):
         plots = [CF.profile_plot(fit, p) for p in profile.profiles.values()]
         many = len(plots) > 1
         box = self.plots_box
+        step = self.model.plot_appearance.text_step
 
         def gap() -> None:
             if box.count():
@@ -673,14 +680,14 @@ class ConfidenceView(QObject):
                 )
                 box.addWidget(fixed)
                 continue
-            figure = ProfileFigure(self.t, plot)
+            figure = ProfileFigure(self.t, plot, step)
             self.figures.append(figure)
             box.addWidget(self._plot_header(plot.name if many else 'Profile', _legend(plot)))
             box.addSpacing(space(2))
             box.addWidget(figure, 1)
         region = CF.joint_region(fit, profile)
         if region is not None:
-            self.region_figure = RegionFigure(self.t, region)
+            self.region_figure = RegionFigure(self.t, region, step)
             title = C.hbox(C.label('Joint region', 'body-strong'), 3, C.label(region.description, 'small', 'tertiary'))
             title.addStretch(1)
             gap()

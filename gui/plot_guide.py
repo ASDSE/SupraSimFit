@@ -178,10 +178,13 @@ first, {top}, known exactly, <i>Spread if exact</i> says {exact} decades would b
 _PLOT_APPEARANCE = """
 <p>The titration plot as Fit results draws it, styled by this session&rsquo;s settings in the
 side panel: the size of the replicate and mean points, the replicate mark and colour, the colour
-and width of the curve, the width of the error bars and the size of the axis text. They apply
+and width of the curve, the width of the error bars and the size of the plot text. They apply
 to the titration plot in Measurements and Fit results, and to a figure saved from it. The means
 and their error bars keep the colour of the text.</p>
-<p>Ka confidence, Sensitivity and the Simulation window take no appearance setting.</p>
+<p>The size of the plot text applies to every plot of the session — the profiles and joint
+region of Ka confidence, the samples, heatmap and plots against each source of Sensitivity —
+and to the figures saved from them. The Simulation window draws at the size stored for new
+sessions.</p>
 """
 
 _SIMULATION = """

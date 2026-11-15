@@ -15,7 +15,8 @@ import re
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import QByteArray
+from PyQt6.QtCore import QByteArray, Qt
+from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtSvg import QSvgRenderer
 
 from gui.design import icons
@@ -30,7 +31,7 @@ THEMES = {'light': LIGHT, 'dark': DARK}
 
 # Every background text is drawn on; bg-raised is a surface of its own only in dark.
 TEXT_BACKGROUNDS = ('bg-window', 'bg-sidebar', 'bg-surface', 'bg-raised', 'bg-subtle', 'bg-hover', 'bg-selected')
-TEXT_TOKENS = ('text-primary', 'text-secondary', 'text-tertiary', 'accent')
+TEXT_TOKENS = ('text-primary', 'text-secondary', 'text-tertiary', 'accent')  # enabled text; text-disabled below
 # Coloured text on its own tint: badges, callouts, the selected navigation item.
 PAIRS = (
     ('on-accent', 'accent'),
@@ -230,6 +231,129 @@ def test_scales_are_ordered_and_on_the_grid():
     assert all(v % 2 == 0 for v in steps)
     assert all(v % 4 == 0 for v in steps if v >= 4)
     assert {px for px, _, _ in TYPE.values()} == {28, 20, 13, 12}
+
+
+#: The surfaces a disabled control is drawn on: the window, its panels and surfaces, and the sunken fill of a field.
+DISABLED_GROUNDS = ('bg-window', 'bg-sidebar', 'bg-surface', 'bg-raised', 'bg-subtle')
+#: Disabled text stands out from its ground by more than this, so it still reads as a word…
+DISABLED_LEAST = 1.6
+#: …and by no more than two thirds of the AA every enabled text keeps, so it is never taken for enabled text.
+DISABLED_MOST = AA * 2 / 3
+
+
+@pytest.mark.parametrize('name', THEMES)
+def test_disabled_text_is_quiet_yet_readable_on_every_ground_a_disabled_control_stands_on(name):
+    """DESIGN.md §2: ``text-disabled`` stands out from each ground by more than 1.6 : 1 and by at most 3 : 1, two
+    thirds of the 4.5 : 1 of ``text-tertiary``, the quietest enabled text."""
+    theme = THEMES[name]
+    for ground in DISABLED_GROUNDS:
+        ratio = contrast(theme['text-disabled'], theme[ground])
+        assert DISABLED_LEAST < ratio <= DISABLED_MOST, f'{name}: text-disabled on {ground} is {ratio:.2f} : 1'
+
+
+#: The palette's roles: every one Qt draws with.
+ROLES = [r for r in QPalette.ColorRole if r not in (QPalette.ColorRole.NoRole, QPalette.ColorRole.NColorRoles)]
+GROUPS = (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive, QPalette.ColorGroup.Disabled)
+
+
+@pytest.mark.parametrize('dark', [False, True])
+def test_every_palette_role_of_every_group_is_a_token_of_the_theme(qapp, dark):
+    """What Qt draws itself takes no colour of the platform's (DESIGN.md §2, Themes): every role of the palette, in
+    each group, is a colour of the theme, and disabled text is ``text-disabled``."""
+    theme = Theme(dark)
+    palette = theme.palette()
+    tokens = {v.lower() for v in theme.c.values()}
+    for group in GROUPS:
+        for role in ROLES:
+            colour = palette.color(group, role).name()
+            assert colour in tokens, f'{group.name} {role.name} is {colour}, no colour of the theme'
+    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
+        assert palette.color(QPalette.ColorGroup.Disabled, role).name() == theme['text-disabled'].lower()
+        assert palette.color(QPalette.ColorGroup.Active, role).name() == theme['text-primary'].lower()
+
+
+def _controls(t: Theme) -> dict:
+    """One of each control of :mod:`gui.design.components` that a view disables, with text or an icon to read."""
+    from PyQt6.QtGui import QAction
+
+    from gui.design import components as C
+
+    rows = [QAction('Export several…')]
+    rows[0].setEnabled(False)
+    menu = C.PopoverMenu(t, None, rows)
+    return {
+        'button': C.Button(t, 'ghost', 'Overlay data', 'open'),
+        'icon button': C.Button(t, 'icon', icon_name='image'),
+        'outline button': C.OutlineButton(t, 'Use for new sessions'),
+        'field': C.Field(t, '4.30', 96, suffix='µM'),
+        'dropdown': C.Dropdown(t, ['Fixed', 'σ'], current=0, width=120),
+        'segmented': C.Segmented(t, ['Fixed', 'σ', 'Range']),
+        'checkbox': C.Checkbox(t, 'Fixed seed', checked=False),
+        'menu row': menu,
+    }
+
+
+def _ink(widget) -> QColor:
+    """The colour *widget* paints on its theme's surface that stands out most from the colour it paints most, at two
+    device px per px."""
+    from collections import Counter
+
+    from PyQt6.QtGui import QImage
+    from PyQt6.QtWidgets import QWidget
+
+    image = QImage(widget.size() * 2, QImage.Format.Format_ARGB32)
+    image.setDevicePixelRatio(2)
+    image.fill(widget.t.q('bg-surface'))
+    widget.render(image, flags=QWidget.RenderFlag.DrawChildren)
+    pixels = [image.pixelColor(x, y) for x in range(image.width()) for y in range(image.height())]
+    ground = Counter(p.name() for p in pixels).most_common(1)[0][0]
+    return max(pixels, key=lambda p: contrast(p.name(), ground))
+
+
+@pytest.mark.parametrize('dark', [False, True], ids=['light', 'dark'])
+def test_every_disabled_control_draws_its_text_and_icon_in_text_disabled(qapp, dark):
+    """A disabled control reads as one at a glance: its strongest mark is ``text-disabled``, where enabled it is a
+    colour of enabled text."""
+    t = Theme(dark)
+    enabled_text = {t[k].lower() for k in ('text-primary', 'text-secondary', 'accent')}
+    for name, control in _controls(t).items():
+        control.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        control.show()
+        qapp.processEvents()
+        on = _ink(control)
+        if name == 'menu row':
+            control.actions_[0].setEnabled(True)
+            on = _ink(control)
+            control.actions_[0].setEnabled(False)
+        else:
+            control.setEnabled(False)
+        off = _ink(control)
+        assert _close(off, t['text-disabled']), f'{name}: disabled, it paints {off.name()}'
+        assert any(_close(on, c) for c in enabled_text), f'{name}: enabled, it paints {on.name()}'
+        control.close()
+
+
+def _close(colour: QColor, token: str, tolerance: int = 6) -> bool:
+    want = QColor(token)
+    return all(abs(a - b) <= tolerance for a, b in zip(colour.getRgb()[:3], want.getRgb()[:3], strict=True))
+
+
+@pytest.mark.parametrize('dark', [False, True], ids=['light', 'dark'])
+def test_a_disabled_slider_and_toggle_take_no_accent(qapp, dark):
+    """The accent of a slider's fill and a toggle's track says *on*; disabled, both are drawn in ``text-disabled``."""
+    from gui.design import components as C
+
+    t = Theme(dark)
+    for control in (C.Slider(t, 0.6), C.Toggle(t, on=True)):
+        control.resize(max(control.width(), 120), control.height())
+        control.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        control.show()
+        control.setEnabled(False)
+        qapp.processEvents()
+        image = control.grab().toImage()
+        colours = {image.pixelColor(x, y).name() for x in range(image.width()) for y in range(image.height())}
+        assert t['accent'].lower() not in colours and t['text-disabled'].lower() in colours, type(control).__name__
+        control.close()
 
 
 @pytest.mark.parametrize('dark', [False, True])

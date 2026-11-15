@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import math
+
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import QApplication
 
-from gui.design.tokens import SIZE, Theme, family, font, plot_font, space
+from gui.design.tokens import SIZE, Theme, family, plot_font, space
 
 #: The opacity of a replicate's points and of the × of one not used, in the plot and in its legend, in
 #: both themes. Points of one replicate that overlap another's still show its edge, and each replicate's
@@ -21,35 +23,51 @@ def px(n: float) -> float:
     return n * QApplication.instance().devicePixelRatio()
 
 
+#: The room pyqtgraph sets between an axis and its tick labels: beside the left axis, and under the bottom
+#: axis past its outward ticks.
+TICK_OFFSET = {'left': 8, 'bottom': 6}
+TICK_LENGTH = 4
+
+
+def axis_box(step: str, widest: str = '0000') -> tuple[int, int]:
+    """The width of the left axis and the height of the bottom one at plot text *step*, from the fonts' metrics.
+
+    Each holds its tick labels — the left one as wide as *widest*, four figures unless the
+    plot names wider ticks — their offset from the axis, a step of ``space(2)`` and a line
+    of axis title, so the axes grow as the text does and a title never meets a tick label.
+    """
+    ticks = QFontMetrics(plot_font(step, 'tick'))
+    title = QFontMetrics(plot_font(step, 'title')).lineSpacing()
+    left = TICK_OFFSET['left'] + ticks.horizontalAdvance(widest) + space(2) + title
+    bottom = TICK_LENGTH + TICK_OFFSET['bottom'] + ticks.height() + space(2) + title
+    return left, bottom
+
+
 def apply_plot_theme(
     pw: pg.PlotWidget,
     t: Theme,
     x_title: str,
     y_title: str,
-    y_grid: list[float] | None = None,
-    text: str | None = None,
+    step: str,
+    y_ticks: list[tuple[float, str]] | None = None,
 ) -> pg.PlotItem:
     """Style *pw* for theme *t*: surface background, left and bottom axes only, no y tick
     marks — horizontal grid lines carry the scale — 4-px outward x ticks, tick labels and
-    axis titles at step *text* of :data:`~gui.design.tokens.PLOT_TEXT` (the titration plot,
-    whose size Plot appearance chooses), or with none in the ``small-number`` and ``label``
-    roles of the window's type (the analysis plots).
+    axis titles at *step* of :data:`~gui.design.tokens.PLOT_TEXT`, the step the session's
+    Plot appearance chooses, on axes sized for it (:func:`axis_box`).
 
-    The axes are :data:`SIZE` ``axis-left`` wide and ``axis-bottom`` tall with the
-    ``small-number`` and ``label`` roles, and grow by what larger text adds to a four-figure
-    tick label and a title line, so they grow by even steps as the plot text does.
-    The grid follows the y axis's own ticks as the range changes. *y_grid* pins the ticks
-    and their grid lines instead, for a plot whose range is fixed.
+    The grid follows the y axis's own ticks as the range changes. *y_ticks* — (value,
+    label) pairs — pins the ticks and their grid lines instead, for a plot whose range is
+    fixed, and the left axis is as wide as its widest label. A pixel of room left of and
+    under the axes holds the axis titles whole where pyqtgraph sets them, a pixel past them,
+    and a title set later is placed again at once.
     """
     pw.setBackground(t['bg-surface'])
     pi = pw.getPlotItem()
     pi.hideButtons()
     pi.setMenuEnabled(False)
-    pi.layout.setContentsMargins(0, 0, space(3), 0)
-    if text is None:
-        tick_font, title_font = font('small-number'), font('label')
-    else:
-        tick_font, title_font = plot_font(text, 'tick'), plot_font(text, 'title')
+    pi.layout.setContentsMargins(space(1), 0, space(3), space(1))
+    tick_font, title_font = plot_font(step, 'tick'), plot_font(step, 'title')
     for side in ('top', 'right'):
         pi.showAxis(side, False)
     for side in ('left', 'bottom'):
@@ -59,8 +77,8 @@ def apply_plot_theme(
         ax.setTickFont(tick_font)
         ax.enableAutoSIPrefix(False)
     left, bottom = pi.getAxis('left'), pi.getAxis('bottom')
-    left.setStyle(tickLength=0, tickTextOffset=8, autoExpandTextSpace=True)
-    bottom.setStyle(tickLength=4, tickTextOffset=6)
+    left.setStyle(tickLength=0, tickTextOffset=TICK_OFFSET['left'], autoExpandTextSpace=True)
+    bottom.setStyle(tickLength=TICK_LENGTH, tickTextOffset=TICK_OFFSET['bottom'])
     label_style = {
         'color': t['text-secondary'],
         'font-size': f'{title_font.pixelSize()}px',
@@ -69,22 +87,32 @@ def apply_plot_theme(
     }
     left.setLabel(y_title, **label_style)
     bottom.setLabel(x_title, **label_style)
-    ticks, standard_ticks = QFontMetrics(tick_font), QFontMetrics(font('small-number'))
-    title_grows = QFontMetrics(title_font).height() - QFontMetrics(font('label')).height()
-    left.setWidth(
-        SIZE['axis-left'] + ticks.horizontalAdvance('0000') - standard_ticks.horizontalAdvance('0000') + title_grows
-    )
-    bottom.setHeight(SIZE['axis-bottom'] + ticks.height() - standard_ticks.height() + title_grows)
+    for ax in (left, bottom):
+        # pyqtgraph places an axis title only as the axis is resized; one set later on an axis of fixed size
+        # would stay where the last title's size put it, cut off or off centre.
+        ax.label.document().contentsChanged.connect(lambda ax=ax: ax.resizeEvent())
+    fm = QFontMetrics(tick_font)
+    widest = max(['0000', *(text for _v, text in y_ticks or ())], key=fm.horizontalAdvance)
+    width, height = axis_box(step, widest)
+    left.setWidth(width)
+    bottom.setHeight(height)
     grid_pen = pg.mkPen(t['grid'], width=1)
-    if y_grid is None:
+    if y_ticks is None:
         _follow_ticks_with_grid(pi, grid_pen)
     else:
-        left.setTicks([[(v, f'{v:g}') for v in y_grid]])
-        for v in y_grid:
+        left.setTicks([list(y_ticks)])
+        for v, _text in y_ticks:
             _add_grid_line(pi, v, grid_pen)
     pi.getViewBox().setBorder(None)
     pi.getViewBox().setDefaultPadding(0.02)
     return pi
+
+
+def least_height(pi: pg.PlotItem) -> int:
+    """The least height of plot *pi* that holds its left axis title whole: the title along the axis, the bottom
+    axis under it and the room above the axes."""
+    title = pi.getAxis('left').label.boundingRect().width()
+    return math.ceil(title + pi.getAxis('bottom').height() + pi.layout.getContentsMargins()[1])
 
 
 def _add_grid_line(pi: pg.PlotItem, y: float, pen) -> pg.InfiniteLine:

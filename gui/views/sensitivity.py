@@ -34,9 +34,9 @@ from core.pipeline.varpro import projectable
 from gui import sensitivity as S
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
-from gui.design.plot_theme import apply_plot_theme, px, scatter
-from gui.design.tokens import HEAT_STOPS, RADIUS, SIZE, Theme, font, space
-from gui.plotting.export import export_widget
+from gui.design.plot_theme import apply_plot_theme, axis_box, least_height, px, scatter
+from gui.design.tokens import HEAT_STOPS, RADIUS, SIZE, Theme, font, plot_font, space
+from gui.plotting.export import export_widget, figure_head
 from gui.plotting.labels import plain_label
 from gui.session_model import Change, SessionModel
 from gui.widgets.assay_conditions import condition_field
@@ -92,24 +92,28 @@ class SampleHistogram(QWidget):
 
     Input-aware is an accent line with its interval as the accent tint behind the bars;
     Inputs as entered a dashed line with its interval as a bracket across the top of the
-    bars. Each is labelled at its top end, a second row taking a label the first cannot.
+    bars. Each is labelled at its top end, a second row taking a label the first cannot. Its
+    labels and ticks are at the tick labels' size of plot text *step*, and it is as tall as
+    its bars (``histogram``), a row of labels above them and its axis below.
     """
 
-    def __init__(self, t: Theme, hist: S.Histogram):
+    def __init__(self, t: Theme, hist: S.Histogram, step: str):
         super().__init__()
         self.t, self.hist = t, hist
-        fm = QFontMetrics(font('small'))
+        self.tick_font = plot_font(step, 'tick')
+        fm = QFontMetrics(self.tick_font)
         self.label_h = fm.height()
-        self.axis_h = QFontMetrics(font('small-number')).height() + space(3)
-        self.setMinimumHeight(SIZE['histogram'])
+        self.axis_h = fm.height() + space(3)
+        self.setMinimumHeight(self.label_h + space(2) + SIZE['histogram'] + self.axis_h)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setAccessibleName(f'Samples of Kₐ. {hist.fold}' if hist.fold else 'Samples of Kₐ')
 
     def minimumSizeHint(self) -> QSize:
         # Each reading's label whole, on a row of its own where two do not fit side by side, and the axis unit.
-        labels = [QFontMetrics(font('small')).horizontalAdvance(m.label) + 1 for m in self.hist.markers]
-        unit = QFontMetrics(font('small-number')).horizontalAdvance(self.hist.unit) + space(1)
-        return QSize(math.ceil(max([unit, *labels])) + 2, SIZE['histogram'])
+        fm = QFontMetrics(self.tick_font)
+        labels = [fm.horizontalAdvance(m.label) + 1 for m in self.hist.markers]
+        unit = fm.horizontalAdvance(self.hist.unit) + space(1)
+        return QSize(math.ceil(max([unit, *labels])) + 2, self.minimumHeight())
 
     def sizeHint(self) -> QSize:
         return self.minimumSizeHint()
@@ -121,7 +125,7 @@ class SampleHistogram(QWidget):
     def _label_rows(self) -> list[tuple[S.Marker, QRectF]]:
         """Each marker's label box: centred on its line and kept inside the plot; one that would run into a label
         already placed moves beside it, and onto a row of its own only where there is no room beside it."""
-        fm = QFontMetrics(font('small'))
+        fm = QFontMetrics(self.tick_font)
         w = self.width() - 2.0
         gap = space(4)
         placed: list[tuple[S.Marker, QRectF]] = []
@@ -171,8 +175,8 @@ class SampleHistogram(QWidget):
             p.fillPath(path, _sample_fill(t, bool(hist.inside[i])))
         p.setPen(QPen(t.q('border-strong'), 1))
         p.drawLine(QPointF(0, base + 0.5), QPointF(w, base + 0.5))
-        fm = QFontMetrics(font('small-number'))
-        p.setFont(font('small-number'))
+        fm = QFontMetrics(self.tick_font)
+        p.setFont(self.tick_font)
         unit_w = fm.horizontalAdvance(hist.unit) + space(1)
         for value, _text in hist.ticks:
             x = self._x(value)
@@ -208,7 +212,6 @@ class SampleHistogram(QWidget):
                 dash.setDashPattern([3, 2.5])
                 p.setPen(dash)
             p.drawLine(QPointF(x, y0), QPointF(x, base))
-        p.setFont(font('small'))
         for marker, box in labels:
             p.setPen(t.q('accent' if marker.kind == 'aware' else 'text-secondary'))
             p.drawText(box, Qt.AlignmentFlag.AlignVCenter, marker.label)
@@ -385,25 +388,27 @@ def heat_map(t: Theme) -> pg.ColorMap:
 
 
 class HeatBar(QWidget):
-    """The colour bar beside a heatmap: the heat scale from low (bottom) to high, its ticks and its title above."""
+    """The colour bar beside a heatmap: the heat scale from low (bottom) to high, its ticks and its title above, at
+    plot text *step*, its foot level with the heatmap's x axis."""
 
-    def __init__(self, t: Theme, hm: S.Heatmap):
+    def __init__(self, t: Theme, hm: S.Heatmap, step: str):
         super().__init__()
-        self.t, self.hm = t, hm
-        fm = QFontMetrics(font('small-number'))
+        self.t, self.hm, self.step = t, hm, step
+        self.tick_font, self.title_font = plot_font(step, 'tick'), plot_font(step, 'title')
+        fm = QFontMetrics(self.tick_font)
         tick_w = max((fm.horizontalAdvance(text) for _v, text in hm.ticks), default=0)
         self.bar_w = space(4)
-        title_w = QFontMetrics(font('label')).horizontalAdvance(hm.bar_title)
-        self.setFixedWidth(max(self.bar_w + space(2) + tick_w + space(2), title_w + space(1)))
+        title_w = QFontMetrics(self.title_font).horizontalAdvance(hm.bar_title)
+        self.setFixedWidth(max(self.bar_w + space(2) + tick_w, title_w))
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
     def paintEvent(self, _):
         t, hm = self.t, self.hm
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        title_h = QFontMetrics(font('label')).height() + space(2)
-        top, bottom = title_h + space(2), self.height() - SIZE['axis-bottom']
-        p.setFont(font('label'))
+        title_h = QFontMetrics(self.title_font).height() + space(2)
+        top, bottom = title_h + space(2), self.height() - axis_box(self.step)[1]
+        p.setFont(self.title_font)
         p.setPen(t.q('text-secondary'))
         p.drawText(
             QRectF(0, 0, self.width(), title_h),
@@ -418,8 +423,8 @@ class HeatBar(QWidget):
         p.setPen(QPen(t.q('border-strong'), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(QRectF(0.5, top + 0.5, self.bar_w - 1, h - 1))
-        p.setFont(font('small-number'))
-        fm = QFontMetrics(font('small-number'))
+        p.setFont(self.tick_font)
+        fm = QFontMetrics(self.tick_font)
         for value, text in hm.ticks:
             y = bottom - (value - hm.lo) / (hm.hi - hm.lo) * h
             p.setPen(QPen(t.q('border-strong'), 1))
@@ -435,14 +440,15 @@ class HeatBar(QWidget):
 
 class HeatmapFigure(QWidget):
     """Kₐ over two swept inputs on the heat scale, the entered point marked, the colour bar beside it and the value
-    under the pointer as a readout card at the plot's top-right corner (the entered cell without a pointer)."""
+    under the pointer as a readout card at the plot's top-right corner (the entered cell without a pointer), its
+    text at plot text *step*."""
 
-    def __init__(self, t: Theme, hm: S.Heatmap, interactive: bool = True):
+    def __init__(self, t: Theme, hm: S.Heatmap, step: str, interactive: bool = True):
         super().__init__()
         self.t, self.hm = t, hm
         self.main = pg.PlotWidget()
         self.main.setFrameShape(QFrame.Shape.NoFrame)
-        pi = apply_plot_theme(self.main, t, hm.x_title, hm.y_title)
+        pi = apply_plot_theme(self.main, t, hm.x_title, hm.y_title, step)
         pi.getViewBox().setMouseEnabled(x=False, y=False)
         values = np.asarray(hm.values, dtype=float)
         shown = np.isfinite(values)
@@ -471,7 +477,7 @@ class HeatmapFigure(QWidget):
         self.cell.hide()
         pi.addItem(self.cell)
         pi.setRange(xRange=(x0, x0 + xw), yRange=(y0, y0 + yh), padding=0)
-        self.bar = HeatBar(t, hm)
+        self.bar = HeatBar(t, hm, step)
         self.card = C.ReadoutCard(t, self.main)
         self.default = (int(np.argmin(np.abs(hm.x - hm.entered[0]))), int(np.argmin(np.abs(hm.y - hm.entered[1]))))
         self.show_cell(*self.default, pointer=False)
@@ -481,7 +487,6 @@ class HeatmapFigure(QWidget):
         else:
             self.card.hide()
         self.setLayout(C.hbox(self.main, 3, self.bar, spacing=0))
-        self.setMinimumHeight(SIZE['plot-min'])
         self.setAccessibleName(f'Heatmap of {hm.name} over {hm.x_label} and {hm.y_label}')
 
     def show_cell(self, ix: int, iy: int, pointer: bool = True) -> None:
@@ -521,8 +526,12 @@ class HeatmapFigure(QWidget):
         super().resizeEvent(event)
         self._place()
 
+    def minimumSizeHint(self) -> QSize:
+        # An analysis plot's least height, or more where its title along the y axis needs it.
+        return QSize(super().minimumSizeHint().width(), max(SIZE['plot-min'], least_height(self.main.getPlotItem())))
+
     def sizeHint(self) -> QSize:
-        return QSize(super().sizeHint().width(), self.minimumHeight())
+        return QSize(super().sizeHint().width(), self.minimumSizeHint().height())
 
 
 def _extent(values: np.ndarray) -> tuple[float, float, float]:
@@ -541,17 +550,18 @@ class SourcePlotsWindow(QWidget):
     each draw axis opens on its source's range (:attr:`~gui.sensitivity.SourcePlot.x_range`)
     with :data:`MARGIN` of it at each end, and labels its ticks, a range's ends among them.
     The plots zoom and pan (:class:`~gui.design.components.PlotNavigation`); *Reset view*,
-    or a double-click, frames them as they opened. The window draws its plots again when
-    the theme changes, each where the user left it.
+    or a double-click, frames them as they opened. Their text is at plot text *step*. The
+    window draws its plots again when the theme or the step changes.
     """
 
     COLUMNS = 3
     #: The share of a draw axis left free at each end, so a sample on an end of a range stays clear of the frame.
     MARGIN = 0.03
 
-    def __init__(self, t: Theme, plots: list[S.SourcePlot], note: str, ka_name: str, log: bool, parent=None):
+    def __init__(self, t: Theme, plots: list[S.SourcePlot], note: str, ka_name: str, log: bool, step: str, parent=None):
         super().__init__(parent, Qt.WindowType.Window)
         self.t, self.source_plots, self.note, self.ka_name, self.log = t, plots, note, ka_name, log
+        self.step = step
         self.setWindowTitle(f'{ka_name} against each source')
         self.plots: list[pg.PlotWidget] = []
         self.navigation = C.PlotNavigation(t, 'Reset the view of every plot')
@@ -563,6 +573,12 @@ class SourcePlotsWindow(QWidget):
         appearance().changed.connect(self._draw)
         rows = max(1, math.ceil(len(plots) / self.COLUMNS))
         self.resize(self.COLUMNS * SIZE['plot-min'] + 2 * space(7), min(rows, 2) * SIZE['plot-min'] + 2 * space(7))
+
+    def set_step(self, step: str) -> None:
+        """Draw the plots at plot text *step* from now on."""
+        if step != self.step:
+            self.step = step
+            self._draw()
 
     def _draw(self) -> None:
         """Build the plots in the theme as it is now."""
@@ -580,7 +596,7 @@ class SourcePlotsWindow(QWidget):
         # A tick on an end of the draw axis has its label centred there, wider than the margin
         # the axis leaves: the axis draws its labels up to half the widest one past its own
         # edges — on the right into room kept beside the plot, on the left into the Kₐ axis's.
-        fm = QFontMetrics(font('small-number'))
+        fm = QFontMetrics(plot_font(self.step, 'tick'))
         widest = max((fm.horizontalAdvance(text) for p in self.source_plots for _v, text in p.x_ticks), default=0)
         half_label = math.ceil(widest / 2)
         self.plots, homes = [], []
@@ -591,16 +607,15 @@ class SourcePlotsWindow(QWidget):
             y_title = ''
             if i % self.COLUMNS == 0:
                 y_title = ka_name if axis is None else f'{ka_name} ({axis[2].lstrip("×").strip()})'
-            pi = apply_plot_theme(pw, t, plot.x_title, y_title, [v for v, _text in axis[1]] if axis else None)
+            pi = apply_plot_theme(pw, t, plot.x_title, y_title, self.step, list(axis[1]) if axis else None)
             if axis is not None:
                 pi.addItem(scatter(t, plot.x, np.log10(plot.y) if self.log else plot.y, 'text-secondary', 0.45, 5))
-                pi.getAxis('left').setTicks([axis[1]])
             bottom = pi.getAxis('bottom')
             bottom.setTicks([plot.x_ticks])
             bottom.setStyle(hideOverlappingLabels=half_label)
             left, top, right, below = pi.layout.getContentsMargins()
             pi.layout.setContentsMargins(left, top, max(right, half_label), below)
-            pw.setMinimumSize(SIZE['plot-min'] - space(7), SIZE['plot-min'] - space(7))
+            pw.setMinimumSize(SIZE['plot-min'] - space(7), max(SIZE['plot-min'] - space(7), least_height(pi)))
             pw.setAccessibleName(f'{ka_name} against {plain_label(plot.name)}')
             grid.addWidget(pw, i // self.COLUMNS, i % self.COLUMNS)
             self.plots.append(pw)
@@ -864,7 +879,13 @@ class SensitivityView(QObject):
         result = self.model.sensitivity_result
         plots, note = S.source_plots(result, ka_key)
         window = SourcePlotsWindow(
-            self.t, plots, note, plain_label(S.ka_name(ka_key)), self.model.analysis.log_axis, self.parent
+            self.t,
+            plots,
+            note,
+            plain_label(S.ka_name(ka_key)),
+            self.model.analysis.log_axis,
+            self.model.plot_appearance.text_step,
+            self.parent,
         )
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.destroyed.connect(lambda *_: self.windows.remove(window) if window in self.windows else None)
@@ -874,23 +895,26 @@ class SensitivityView(QObject):
     def export_figure(self) -> QWidget:
         """The figure :meth:`export_image` saves, laid out and shown off screen; the caller closes it.
 
-        Drawn again in the light theme on white: the run's callouts as notes; per binding
-        constant its spread, the samples with both readings, the share of the variance by
-        source and the notes that qualify them; for a heatmap, each map with its colour bar.
+        Drawn again in the light theme on white, at the session's plot text: the run's callouts
+        as notes; per binding constant its spread, the samples with both readings, the share of
+        the variance by source and the notes that qualify them; for a heatmap, each map with its
+        colour bar. Each part stands under a head as a saved plot's is (:func:`figure_head`).
         """
         model = self.model
         result = model.sensitivity_result
+        step = model.plot_appearance.text_step
         light = Theme(dark=False)
         figure = C.Figure(light)
-        lay = C.vbox(spacing=0, margins=(6, 5, 6, 5))
+        lay = C.vbox(spacing=0)
         fit = self._fit()
         log = model.analysis.log_axis
-        note_w = SIZE['export-width'] - 2 * space(6)
+        width = SIZE['export-width']
 
         def notes(texts: list[str]) -> None:
             for text in texts:
-                lay.addSpacing(space(2))
-                lay.addWidget(C.PaintedNote(light, text, 'small', note_w))
+                if lay.count():
+                    lay.addSpacing(space(2))
+                lay.addWidget(C.PaintedNote(light, text, 'small', width, plot_font(step, 'tick')))
 
         notes([f'{escape(c.title)}. {escape(c.body)}' for c in S.callouts(result, fit, None)])
         first = not lay.count()
@@ -899,9 +923,9 @@ class SensitivityView(QObject):
                 if not first:
                     lay.addSpacing(space(7))
                 first = False
-                lay.addWidget(C.PaintedText(light, f'{hm.name} over {hm.x_label} and {hm.y_label}', 'body-strong'))
-                lay.addSpacing(space(2))
-                fig = HeatmapFigure(light, hm, interactive=False)
+                title = f'{hm.name} over {hm.x_label} and {hm.y_label}'
+                lay.addWidget(figure_head(light, title, '', None, width, (), step))
+                fig = HeatmapFigure(light, hm, step, interactive=False)
                 fig.setFixedHeight(SIZE['export-width'] // 2)
                 lay.addWidget(fig)
         else:
@@ -909,21 +933,16 @@ class SensitivityView(QObject):
                 if not first:
                     lay.addSpacing(space(7))
                 first = False
-                lay.addWidget(C.PaintedText(light, plain_label(block.name), 'body-strong'))
-                lay.addWidget(C.PaintedText(light, S.figure_caption(result, block), 'small'))
+                lines = [S.figure_caption(result, block)]
+                if block.histogram is not None and block.histogram.fold:
+                    lines.append(block.histogram.fold)
+                lay.addWidget(figure_head(light, plain_label(block.name), '', None, width, lines, step))
                 if block.histogram is not None:
-                    if block.histogram.fold:
-                        lay.addWidget(C.PaintedText(light, block.histogram.fold, 'small'))
-                    lay.addWidget(SampleHistogram(light, block.histogram))
+                    lay.addWidget(SampleHistogram(light, block.histogram, step))
                 if block.chart is not None and block.chart.rows:
                     lay.addSpacing(space(5))
-                    lay.addLayout(
-                        C.hbox(
-                            C.PaintedText(light, 'Share of the variance, by source', 'body-strong'),
-                            None,
-                            IndexLegend(light),
-                        )
-                    )
+                    head = 'Share of the variance, by source'
+                    lay.addWidget(figure_head(light, head, '', IndexLegend(light), width, (), step))
                     lay.addWidget(IndexChartView(light, block.chart, self._name_width(block)))
                 notes(S.figure_notes(block))
         figure.setLayout(lay)
@@ -965,6 +984,7 @@ class SensitivityView(QObject):
             | Change.BINDING
             | Change.UNCERTAINTY
             | Change.ANALYSIS
+            | Change.APPEARANCE
         )
         if what & drawn_from:
             self.refresh()
@@ -1019,7 +1039,8 @@ class SensitivityView(QObject):
         """
         fit = self._fit() if result is not None else None
         units = tuple(sorted(self.model.settings.condition_units.items()))
-        key = (result, fit, self.model.analysis.log_axis, self.t.dark, units)
+        step = self.model.plot_appearance.text_step
+        key = (result, fit, self.model.analysis.log_axis, self.t.dark, units, step)
         drawn, self.drawn = self.drawn, key
         if drawn is not None and drawn[0] is result and drawn[1] is fit and drawn[2:] == key[2:]:
             return
@@ -1028,6 +1049,8 @@ class SensitivityView(QObject):
             for window in self.windows:
                 window.close()
             self.windows = []
+        for window in self.windows:
+            window.set_step(step)
         _clear(self.blocks_box)
         _clear(self.head_box)
         self.head_host.hide()
@@ -1045,7 +1068,7 @@ class SensitivityView(QObject):
                 title = f'{hm.name} over {hm.x_label} and {hm.y_label}'
                 self.blocks_box.addWidget(C.label(title, 'body-strong'))
                 self.blocks_box.addSpacing(space(2))
-                figure = HeatmapFigure(self.t, hm)
+                figure = HeatmapFigure(self.t, hm, step)
                 self.heatmap_figures.append(figure)
                 self.blocks_box.addWidget(figure)
             self.blocks_box.addSpacing(space(2))
@@ -1158,7 +1181,7 @@ class SensitivityView(QObject):
             # A withheld constant's samples carry no fold, so its key names none.
             key = [BarChip(t), C.label(block.histogram.fold, 'small', 'secondary')] if block.histogram.fold else []
             key_row = C.hbox(*key, None, link, spacing=2)
-            histogram = SampleHistogram(t, block.histogram)
+            histogram = SampleHistogram(t, block.histogram, self.model.plot_appearance.text_step)
             self.histograms.append(histogram)
             right_items = [key_row, histogram]
         right = _widget(C.vbox(*right_items, None, spacing=2))

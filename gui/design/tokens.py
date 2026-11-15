@@ -34,8 +34,6 @@ SIZE = {
     # A menu row's icon and its check mark.
     'menu-icon': 16,
     'menu-check': 14,
-    'axis-left': 56,
-    'axis-bottom': 44,
     # The column grid of the Input uncertainty inputs table; the span column takes the rest.
     'input-name': 168,
     'input-kind': 156,
@@ -44,8 +42,8 @@ SIZE = {
     'input-row': 60,
     # The headline column of Fit results: a binding constant's name, value and interval.
     'headline': 264,
-    # The height of the sample histogram of Sensitivity, its labels and axis included.
-    'histogram': 104,
+    # The height of the bars of Sensitivity's sample histogram; its labels above and its axis below add their text.
+    'histogram': 64,
     # The least height of an analysis plot on screen (a Ka profile, the joint region), below which its canvas scrolls.
     'plot-min': 320,
     # The longest line of help or warning text under a control, for a comfortable reading measure.
@@ -74,8 +72,9 @@ SIZE = {
     # The Simulation window's marks where the pointer meets the signal and each species.
     'pointer-signal': 10,
     'pointer-species': 8,
-    # A saved figure: its width, and the height of each plot in it — a Ka profile or the
+    # A saved figure: the white margin round everything in it, its width inside that margin, and the height of each plot in it — a Ka profile or the
     # joint region, the titration plot, Simulation's signal and species plots.
+    'figure-margin': 24,
     'export-width': 900,
     'export-plot': 420,
     'export-titration': 600,
@@ -107,6 +106,8 @@ LIGHT = {
     'text-primary': '#1C2024',
     'text-secondary': '#4C535C',
     'text-tertiary': '#656A71',
+    # A disabled control's text and icon: quieter than any enabled text, still read as a word.
+    'text-disabled': '#A1A7AE',
     'accent': '#067581',
     'accent-hover': '#06646E',
     'accent-subtle': '#E6F3F4',
@@ -172,6 +173,7 @@ DARK = {
     'text-primary': '#E8EAED',
     'text-secondary': '#A2AAB4',
     'text-tertiary': '#959CA4',
+    'text-disabled': '#5A6068',
     'accent': '#3BB5C1',
     'accent-hover': '#5BC6D0',
     'accent-subtle': '#12353A',
@@ -231,15 +233,15 @@ TYPE = {
     'overline': (12, QFont.Weight.DemiBold, False),
 }
 
-# ── Plot text: the axis text of the titration plot and of the head of its saved figure, in the
-# three sizes Plot appearance offers. Each step is 2 px up, about one ratio apart; the weight is
-# the same at every step, so a step changes the size and nothing else. Tick labels are Normal with
-# tabular figures, axis titles Medium.
+# ── Plot text: the text of every plot and of the head of its saved figure, in the three sizes
+# Plot appearance offers. Each step is 2 px up, about one ratio apart; the weight is the same at
+# every step, so a step changes the size and nothing else. Tick labels are Normal with tabular
+# figures, axis titles Medium.
 PLOT_TEXT = {
     #  step:      (tick px, title px)
-    'standard': (14, 16),
-    'large': (16, 18),
-    'larger': (18, 20),
+    'standard': (16, 18),
+    'large': (18, 20),
+    'larger': (20, 22),
 }
 PLOT_TEXT_WEIGHT = {'tick': QFont.Weight.Normal, 'title': QFont.Weight.Medium}
 
@@ -298,28 +300,51 @@ class Theme:
         return col
 
     def palette(self) -> QPalette:
-        """The QPalette that native-drawn controls (Fusion) read their colours from."""
-        p = QPalette()
+        """The QPalette that native-drawn controls (Fusion) read their colours from.
+
+        Every role of every group is a token, so nothing Qt draws takes a colour of the
+        platform's. Disabled text is ``text-disabled`` on the sunken ``bg-subtle`` a disabled
+        field shows; an inactive window reads as an active one.
+        """
         r = QPalette.ColorRole
-        for role, key in (
-            (r.Window, 'bg-window'),
-            (r.WindowText, 'text-primary'),
-            (r.Base, 'bg-surface'),
-            (r.AlternateBase, 'bg-subtle'),
-            (r.Text, 'text-primary'),
-            (r.PlaceholderText, 'text-tertiary'),
-            (r.Button, 'bg-surface'),
-            (r.ButtonText, 'text-primary'),
-            (r.Highlight, 'accent'),
-            (r.HighlightedText, 'on-accent'),
-            (r.ToolTipBase, 'bg-raised'),
-            (r.ToolTipText, 'text-primary'),
-            (r.Link, 'accent'),
-            (r.Mid, 'border-strong'),
-            (r.Dark, 'border-strong'),
-            (r.Light, 'bg-surface'),
-        ):
-            p.setColor(role, self.q(key))
+        roles = {
+            r.Window: 'bg-window',
+            r.WindowText: 'text-primary',
+            r.Base: 'bg-surface',
+            r.AlternateBase: 'bg-subtle',
+            r.Text: 'text-primary',
+            r.PlaceholderText: 'text-tertiary',
+            r.Button: 'bg-surface',
+            r.ButtonText: 'text-primary',
+            r.BrightText: 'on-accent',
+            r.Highlight: 'accent',
+            r.HighlightedText: 'on-accent',
+            r.Accent: 'accent',
+            r.ToolTipBase: 'bg-raised',
+            r.ToolTipText: 'text-primary',
+            r.Link: 'accent',
+            r.LinkVisited: 'accent',
+            r.Light: 'bg-surface',
+            r.Midlight: 'bg-subtle',
+            r.Mid: 'border-strong',
+            r.Dark: 'border-strong',
+            r.Shadow: 'shadow',
+        }
+        disabled = {
+            **roles,
+            r.WindowText: 'text-disabled',
+            r.Text: 'text-disabled',
+            r.ButtonText: 'text-disabled',
+            r.PlaceholderText: 'text-disabled',
+            r.Base: 'bg-subtle',
+            r.Button: 'bg-subtle',
+            r.Highlight: 'border-strong',
+        }
+        p = QPalette()
+        g = QPalette.ColorGroup
+        for group, keys in ((g.Active, roles), (g.Inactive, roles), (g.Disabled, disabled)):
+            for role, key in keys.items():
+                p.setColor(group, role, self.q(key))
         return p
 
     def render(self, template: str) -> str:

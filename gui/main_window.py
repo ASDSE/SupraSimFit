@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 from _version import __version__
 from gui import preferences
 from gui.design import components as C
-from gui.design.appearance import appearance, theme
+from gui.design.appearance import DesignStyle, appearance, theme
 from gui.design.tokens import SIZE, Theme, space
 from gui.dialogs.plot_guide_dialog import show_plot_guide
 from gui.errors import install_exception_hook, log_dir
@@ -751,13 +751,14 @@ def start_application(argv: list[str]) -> QApplication:
     """The application as the app runs it, created from *argv* unless one is running.
 
     English (US) locale — a dot as decimal separator in every field — set before the
-    application exists, the Fusion style and the app icon. :func:`launch` and the render
+    application exists, the app's style (:class:`~gui.design.appearance.DesignStyle`, Fusion with
+    the design's message-box icons) and the app icon. :func:`launch` and the render
     harness (``docs/design/render.py``) both start from it, so a render is drawn as the
     app ships.
     """
     QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
     app = QApplication.instance() or QApplication(argv)
-    app.setStyle('Fusion')
+    app.setStyle(DesignStyle())
     icon_path = _app_icon_path()
     if icon_path:
         app.setWindowIcon(QIcon(icon_path))
