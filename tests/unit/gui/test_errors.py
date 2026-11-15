@@ -113,3 +113,76 @@ def test_a_worker_failure_names_the_step_and_the_log(qapp, monkeypatch, boundary
     assert message.startswith('The fit stopped on an unexpected error')
     assert str(log_file) in message and '_solve' not in message
     assert 'ZeroDivisionError: float division by zero in _solve' in log_file.read_text(encoding='utf-8')
+
+
+def _broken(*args, **kwargs):
+    raise TypeError("unsupported operand type(s) for *: 'NoneType' and 'float' in _broken")
+
+
+def _measured():
+    import numpy as np
+
+    from core.data_processing.measurement_set import MeasurementSet
+
+    return MeasurementSet(concentrations=np.arange(1.0, 4.0), signals=np.ones((1, 3)), replica_ids=('a',))
+
+
+def _import_results(monkeypatch, tmp_path):
+    from gui.fitting_session import FittingSession
+
+    session = FittingSession()
+    monkeypatch.setattr('gui.fitting_session.QFileDialog.getOpenFileName', lambda *a: (str(tmp_path / 'r.json'), ''))
+    monkeypatch.setattr('gui.session.import_results', _broken)
+    return session, session.import_results
+
+
+def _export_raw_data(monkeypatch, tmp_path):
+    from gui.fitting_session import FittingSession
+
+    session = FittingSession()
+    session.model.load(_measured(), str(tmp_path / 'data.csv'))
+    monkeypatch.setattr('gui.fitting_session.QFileDialog.getSaveFileName', lambda *a: (str(tmp_path / 'raw.txt'), ''))
+    monkeypatch.setattr('core.io.formats.measurement_writer.write_measurements_txt', _broken)
+    return session, session.export_raw_data
+
+
+def _export_plot(monkeypatch, tmp_path):
+    from gui.fitting_session import FittingSession
+
+    session = FittingSession()
+    session.model.load(_measured(), str(tmp_path / 'data.csv'))
+    monkeypatch.setattr('gui.fitting_session.QFileDialog.getSaveFileName', lambda *a: (str(tmp_path / 'p.png'), ''))
+    monkeypatch.setattr(session._measurements.plot, 'export_image', _broken)
+    return session, lambda: session.export_plot('Measurements')
+
+
+def _load_vector(monkeypatch, tmp_path):
+    from gui.views.simulation import SimulationWindow
+
+    window = SimulationWindow()
+    monkeypatch.setattr('gui.views.simulation.QFileDialog.getOpenFileName', lambda *a: (str(tmp_path / 'c.json'), ''))
+    monkeypatch.setattr('gui.views.simulation.read_raw_concentrations', _broken)
+    return window, window.load_vector
+
+
+def _export_batch(monkeypatch, tmp_path):
+    from gui.session import ExportableArtefact, export_batch
+
+    art = ExportableArtefact('report', 'Report', '.txt', True, writer=_broken)
+    return None, lambda: export_batch([art], tmp_path, 'run')
+
+
+@pytest.mark.parametrize('action', [_import_results, _export_raw_data, _export_plot, _load_vector, _export_batch])
+def test_a_failure_said_in_a_generic_sentence_leaves_its_traceback_in_the_log(
+    qapp, monkeypatch, tmp_path, boundary, action
+):
+    """Where a failure is caught and said in the app's own words, the error behind it is still in the log."""
+    log_file, _said = boundary
+    owner, run = action(monkeypatch, tmp_path)
+    run()
+
+    logged = log_file.read_text(encoding='utf-8')
+    assert "TypeError: unsupported operand type(s) for *: 'NoneType' and 'float' in _broken" in logged
+    assert 'Traceback' in logged
+    if owner is not None:
+        owner.close()

@@ -1077,6 +1077,7 @@ class SimulationWindow(QMainWindow):
         try:
             values = read_raw_concentrations(path).to('M').magnitude
         except Exception:
+            logger.exception('Could not read concentrations from %s', path)
             QMessageBox.warning(
                 self,
                 'Concentrations Not Loaded',

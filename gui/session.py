@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -63,6 +64,8 @@ from gui.widgets.assay_conditions import result_input_labels
 
 if TYPE_CHECKING:
     from gui.fitting_session import FittingSession
+
+logger = logging.getLogger(__name__)
 
 
 def export_results(results: list[FitResult], path: str | Path, appearance: PlotAppearance | None = None) -> None:
@@ -1195,6 +1198,9 @@ def export_batch(
         try:
             art.writer(dest)
             outcomes.append((art.label, dest, None))
+        except ExportRefused as exc:
+            outcomes.append((art.label, dest, exc))
         except Exception as exc:
+            logger.exception('Could not export %s to %s', art.label, dest)
             outcomes.append((art.label, dest, exc))
     return outcomes

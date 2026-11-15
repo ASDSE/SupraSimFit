@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -31,6 +32,8 @@ from gui.views.measurements import MeasurementsView
 from gui.views.plot_appearance import PlotAppearanceView
 from gui.views.sensitivity import SensitivityView
 from gui.views.uncertainty import UncertaintyView
+
+logger = logging.getLogger(__name__)
 
 #: A session's views as the sidebar groups them: (group, ((view, icon), …)).
 NAVIGATION = (
@@ -410,6 +413,7 @@ class FittingSession(QWidget):
                     path = str(Path(path).with_suffix('.txt'))
                 write_measurements_txt(ms, path)
         except Exception:
+            logger.exception('Could not save the raw data to %s', path)
             QMessageBox.warning(
                 self,
                 'Export Error',
@@ -444,6 +448,7 @@ class FittingSession(QWidget):
         try:
             results = import_results(path)
         except Exception:
+            logger.exception('Could not import results from %s', path)
             QMessageBox.warning(
                 self,
                 'Import Error',
@@ -510,6 +515,7 @@ class FittingSession(QWidget):
             QMessageBox.warning(self, 'Save Plot', str(exc))
             return
         except Exception:
+            logger.exception('Could not save the plot to %s', path)
             QMessageBox.warning(
                 self,
                 'Export Error',
