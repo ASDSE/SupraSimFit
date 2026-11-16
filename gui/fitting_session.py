@@ -16,15 +16,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.assays.registry import AssayType
-from core.pipeline.inputs import TITRANT, InputSpec
 from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE
 from gui.plotting.export import ExportRefused
 from gui.plotting.labels import and_join, stated_uncertainty
 from gui.results import Place
-from gui.session_model import Change, Refusal, SessionModel
+from gui.session_model import DEMO_UNCERTAINTIES, Change, Refusal, SessionModel
 from gui.views.binding import BindingView
 from gui.views.confidence import ConfidenceView
 from gui.views.fit_results import FitResultsView
@@ -42,18 +40,6 @@ NAVIGATION = (
     ('Presentation', (('Plot appearance', 'palette'),)),
 )
 VIEWS = tuple(view for _group, items in NAVIGATION for view, _icon in items)
-
-_DEMO_IDA_PATH = Path(__file__).parent.parent / 'data' / 'IDA_system.txt'
-
-#: The input uncertainties Demo IDA states: a literature Ka,dye known to about 10 %, and
-#: stock concentrations pipetted to about 3 %. Typical figures, so that the demo's first fit
-#: reports the interval that covers them.
-_DEMO_UNCERTAINTIES = {
-    'Ka_dye': InputSpec.sigma_pct(10.0),
-    'h0': InputSpec.sigma_pct(3.0),
-    'd0': InputSpec.sigma_pct(3.0),
-    TITRANT: InputSpec.sigma_pct(3.0),
-}
 
 
 class _SidePanel(QWidget):
@@ -292,7 +278,8 @@ class FittingSession(QWidget):
             self.reveal(refusal.place)
 
     def load_demo_ida(self) -> None:
-        """Load the bundled IDA demo dataset and fit it with the demo's own settings (:meth:`set_up_demo_ida`).
+        """Load the bundled IDA demo dataset into this session and fit it with the demo's own settings
+        (:meth:`SessionModel.set_up_demo`).
 
         What the settings are is said on the status bar while the fit runs.
         """
@@ -302,48 +289,19 @@ class FittingSession(QWidget):
         if self.model.fit_running():
             labels = self.model.settings.input_labels
             stated = and_join(
-                f'{labels[key]} {stated_uncertainty(spec, "")}' for key, spec in _DEMO_UNCERTAINTIES.items()
+                f'{labels[key]} {stated_uncertainty(spec, "")}' for key, spec in DEMO_UNCERTAINTIES.items()
             )
             self.model.show_status(f'Demo settings: {stated} — fitting…')
 
     def set_up_demo_ida(self) -> bool:
-        """State the demo's settings and load the bundled IDA demo dataset, without fitting it.
-
-        The same settings whatever the session held before:
-
-        - the IDA assay with its default conditions (Ka,dye 16.8 MM⁻¹,
-          [Host]₀ 4.3 µM, [Dye]₀ 6 µM) and constant totals;
-        - the IDA default parameter bounds;
-        - the input uncertainties of :data:`_DEMO_UNCERTAINTIES` — Ka,dye
-          σ 10 %, [Host]₀, [Dye]₀ and the titrant σ 3 % each — and no shared
-          source or error of the additions, so the first fit reports the
-          interval that covers them, with the conditional one beside it;
-        - the replicates averaged without the per-replicate test;
-        - Outlier Removal applied as the panel is set (its defaults unless changed).
+        """State the demo's settings and load its data (:meth:`SessionModel.set_up_demo`), without fitting them.
 
         Returns whether the data are loaded; where they are not, a message box said why.
         """
-        if not _DEMO_IDA_PATH.exists():
-            QMessageBox.warning(self, 'Demo Data Missing', f'Could not find:\n{_DEMO_IDA_PATH}')
-            return False
-        busy = self.model.busy_note()
-        if busy is not None:
-            QMessageBox.warning(self, 'Already Running', busy)
-            return False
-
-        binding = self.model.binding
-        binding.set_assay(AssayType.IDA)
-        binding.set_per_replica(False)
-        self.model.binding_edited()
-        self.model.uncertainty.set_specs(_DEMO_UNCERTAINTIES)
-        self.model.uncertainty_edited()
-
-        # Loading resets the replicates and clears the results.
-        refusal = self.model.load_files([str(_DEMO_IDA_PATH)]) or self.model.remove_outliers(3.5, 3)
+        refusal = self.model.set_up_demo()
         if refusal is not None:
             QMessageBox.warning(self, refusal.title, refusal.message)
-            return False
-        return True
+        return refusal is None
 
     def _default_save_name(self, suffix: str, tag: str = '') -> str:
         """A default save filename from the stem of the session's data file (:meth:`SessionModel.dataset_file`)."""
@@ -622,6 +580,10 @@ class FittingSession(QWidget):
 
     def _connect_signals(self) -> None:
         self._measurements.new_session_link.clicked.connect(self.new_session_requested)
+        # Every empty state loads into this session: the files asked for, or the demo, which it fits.
+        for view in (self._measurements, self._results, self._confidence, self._sensitivity, self._appearance):
+            view.empty_state.load.clicked.connect(self.replace_data)
+            view.empty_state.demo.clicked.connect(self.load_demo_ida)
 
         for view in (self._measurements, self._uncertainty, self._results, self._confidence, self._sensitivity):
             view.reveal_requested.connect(self.reveal)

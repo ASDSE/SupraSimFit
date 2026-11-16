@@ -520,7 +520,8 @@ class UncertaintyView(QObject):
                 C.drop(item.widget())
         if fit is None or note is not None:
             self.no_fit.setText(
-                'No fit is shown. Run a fit to see the interval and the tests the stated uncertainties give.'
+                f'{self.model.empty_view("Fit results").title}. The interval and the tests the stated uncertainties '
+                'give appear here with the fit.'
                 if fit is None
                 else f'The last fit is not shown. {note}'
             )

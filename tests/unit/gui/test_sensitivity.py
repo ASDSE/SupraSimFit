@@ -883,11 +883,3 @@ def test_a_new_run_going_is_said_only_where_run_state_shows():
     """The last result stays on show under its own callouts; no callout says a run is going."""
     titles = [c.title for c in S.callouts(F.sobol_result(), None, None, running=True)]
     assert titles == ['Not a confidence interval']
-
-
-def test_the_empty_canvas_names_only_the_steps_still_to_take():
-    """A session with data and a varying source is told to run, not to state what it already stated."""
-    assert S.empty_sentence(True, True, '⌘R') == 'No analysis yet. Choose Run analysis (⌘R).'
-    assert 'Input uncertainty' in S.empty_sentence(True, False, '⌘R')
-    no_data = S.empty_sentence(False, True, '⌘R')
-    assert 'Load data' in no_data and 'Input uncertainty' not in no_data

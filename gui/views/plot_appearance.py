@@ -36,9 +36,6 @@ SCOPE = (
     'the figures saved from them. Saved figures use the light theme on white.'
 )
 
-#: What the canvas says before there is anything to draw.
-EMPTY = 'Load data in Measurements to see the titration plot here.'
-
 #: The segmented choices of the form: (section, ((field, caption, accessible name), …)).
 _SEGMENTED = (
     (
@@ -89,7 +86,7 @@ class PlotAppearanceView(QObject):
         w = QWidget()
         w.setObjectName('Canvas')
         w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        self.empty = C.wrapped(EMPTY, 'body', 'secondary')
+        self.empty_state = C.EmptyState(t)
         self.legend = C.LegendRow(t, [])
         self.save_plot = C.tool_button(t, None, 'image')
         self.save_plot.setToolTip('Save the plot as an image')
@@ -99,15 +96,13 @@ class PlotAppearanceView(QObject):
         lay = C.vbox(
             C.wrapped(SCOPE, 'body', 'secondary'),
             5,
-            self.empty,
+            self.empty_state,
             self.header,
             2,
             spacing=0,
             margins=(6, 5, 6, 4),
         )
         lay.addWidget(self.plot, 1)
-        self._stretch = lay.count()
-        lay.addStretch(0)
         w.setLayout(lay)
         return w
 
@@ -235,12 +230,12 @@ class PlotAppearanceView(QObject):
         assay_type = AssayType[shown[-1].assay_type] if shown else model.settings.assay_type
         titration = R.titration(model.measurement_set, shown, assay_type, model.settings.replicate_display)
         self.titration = titration
-        has_plot = titration.data is not None
+        empty = model.empty_view('Plot appearance')
+        self.empty_state.show_empty(empty)
+        has_plot = empty is None
         self.plot.show_data(titration.data, model.settings.display_unit)
         self.legend.set_items(titration.legend)
         self.header.set_description(titration.description)
-        self.empty.setVisible(not has_plot)
+        # With no plot, the empty state takes its room.
         self.header.setVisible(has_plot)
         self.plot.setVisible(has_plot)
-        # With no plot the sentence sits at the top, the room below it left empty.
-        self.canvas.layout().setStretch(self._stretch, 0 if has_plot else 1)

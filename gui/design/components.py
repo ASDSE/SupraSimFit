@@ -2365,6 +2365,47 @@ class Callout(QFrame):
         p.end()
 
 
+class EmptyState(QWidget):
+    """What a view shows in place of content it does not have yet (DESIGN.md §6, *Empty state*): a title, one
+    sentence and, in a session that holds nothing, *Load data…* (:attr:`load`) and *Try the demo data*
+    (:attr:`demo`), centred in the room the view's content would take.
+    """
+
+    def __init__(self, t: Theme):
+        super().__init__()
+        self.title = label('', 'title')
+        self.title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.sentence = wrapped('', 'body', 'secondary')
+        self.sentence.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.sentence.setMaximumWidth(SIZE['measure'])
+        self.load = OutlineButton(t, 'Load data…', 'open')
+        self.load.setAccessibleDescription('Choose titration files to load into this session')
+        self.demo = link_button('Try the demo data')
+        self.demo.setAccessibleName('Try the demo data')
+        self.demo.setAccessibleDescription(
+            'Load the bundled indicator displacement titration into this session and fit it'
+        )
+        self.actions = QWidget()
+        self.actions.setLayout(hbox(None, self.load, 4, self.demo, None, spacing=0))
+        # The sentence takes the width up to its measure, the stretches either side the rest, so it stands centred.
+        row = hbox(None, self.sentence, None, spacing=0)
+        row.setStretchFactor(self.sentence, 100)
+        self.setLayout(vbox(None, self.title, 2, row, 5, self.actions, None, spacing=0))
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self.hide()
+
+    def show_empty(self, empty) -> None:
+        """Show *empty* — its ``title``, ``sentence`` and, where it ``offers_data``, the two commands — or hide where
+        it is ``None`` (:class:`gui.session_model.EmptyView`)."""
+        self.setVisible(empty is not None)
+        if empty is None:
+            return
+        self.title.setText(empty.title)
+        self.sentence.setText(empty.sentence)
+        self.actions.setVisible(empty.offers_data)
+        self.setAccessibleName(f'{empty.title}: {empty.sentence}')
+
+
 # ── Reveal ─────────────────────────────────────────────────────────────────────────
 
 

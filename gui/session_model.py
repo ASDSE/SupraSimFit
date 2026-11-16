@@ -24,14 +24,15 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QStandardPaths, pyqtSignal
+from PyQt6.QtGui import QKeySequence
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import InvalidData, MeasurementSet
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.pipeline.diagnostics import Verdict
 from core.pipeline.fit_pipeline import FitConfig, FitResult
-from core.pipeline.inputs import TITRANT_STOCK, ErrorModel, source_name
+from core.pipeline.inputs import TITRANT, TITRANT_STOCK, ErrorModel, InputSpec, source_name
 from core.pipeline.profile import ProfileSet
 from core.pipeline.reporting import fit_replica_ids, input_replica_ids, parameters_on_bound, summarize_parameters
 from core.pipeline.results_io import verify_imported_result
@@ -48,7 +49,8 @@ from core.pipeline.varpro import REPLICATE_TEST_MIN, projectable
 from core.units import Q_, Quantity
 from gui import preferences
 from gui.binding import BindingForm, binding_constants
-from gui.dataset import Dataset
+from gui.confidence import NO_KA as NO_KA_TO_PROFILE
+from gui.dataset import DEMO_IDA, OUTLIER_DEFAULTS, Dataset, bundled
 from gui.plot_appearance import BUILT_IN, PlotAppearance
 from gui.plotting.labels import (
     STOPPING_TEXT,
@@ -64,8 +66,9 @@ from gui.plotting.labels import (
     stated_uncertainty,
     verdict_headline,
 )
-from gui.results import REPLICATE_DISPLAYS, Place
-from gui.sensitivity import NOTHING_VARIES, AnalysisForm
+from gui.results import REPLICATE_DISPLAYS, RUN_FIT_KEY, Place
+from gui.sensitivity import NO_KA as NO_KA_TO_FOLLOW
+from gui.sensitivity import NOTHING_VARIES, RUN_ANALYSIS_KEY, AnalysisForm
 from gui.uncertainty import UncertaintyForm
 from gui.widgets.assay_conditions import (
     ASSAY_NAMES,
@@ -214,6 +217,48 @@ class Refusal:
     title: str
     message: str
     place: Place | None = None
+
+
+@dataclass(frozen=True)
+class EmptyView:
+    """What a view shows in place of content it does not have yet (:meth:`SessionModel.empty_view`).
+
+    *title* names the state in a few words, which a side panel says alone; *sentence* says
+    what comes next; *offers_data* puts *Load data…* and *Try the demo data* under them, in
+    a session that holds nothing.
+    """
+
+    title: str
+    sentence: str
+    offers_data: bool = False
+
+
+#: The input uncertainties the demo states: a literature Ka,dye known to about 10 %, and stock
+#: concentrations pipetted to about 3 %. Typical figures, so that the demo's first fit reports
+#: the interval that covers them.
+DEMO_UNCERTAINTIES = {
+    'Ka_dye': InputSpec.sigma_pct(10.0),
+    'h0': InputSpec.sigma_pct(3.0),
+    'd0': InputSpec.sigma_pct(3.0),
+    TITRANT: InputSpec.sigma_pct(3.0),
+}
+
+#: The views that show a result or a plot of the data, and so can have nothing to show yet.
+EMPTY_VIEWS = ('Measurements', 'Fit results', 'Ka confidence', 'Sensitivity', 'Plot appearance')
+
+#: What each of :data:`EMPTY_VIEWS` asks for while the session holds no data.
+_LOAD_DATA = {
+    'Measurements': 'Load the titration files of this experiment',
+    'Fit results': 'Load your titration files to fit them',
+    'Ka confidence': 'Load your titration files and fit them to see the Kₐ profile here',
+    'Sensitivity': 'Load your titration files to see here how the stated input uncertainties move each Kₐ',
+    'Plot appearance': 'Load your titration files to see the titration plot these settings style',
+}
+
+
+def _shortcut(key: str) -> str:
+    """*key* as the platform writes it: ⌘R on macOS, Ctrl+R elsewhere."""
+    return QKeySequence(key).toString(QKeySequence.SequenceFormat.NativeText)
 
 
 @dataclass(frozen=True)
@@ -1364,6 +1409,40 @@ class SessionModel(QObject):
         """Whether the Ka profile of the latest fit is still being computed."""
         return self._profile_worker is not None
 
+    def set_up_demo(self) -> Refusal | None:
+        """State the demo's settings and load its bundled titration (:data:`gui.dataset.DEMO_IDA`), without fitting it.
+
+        The same settings whatever the session held before:
+
+        - the IDA assay with its default conditions (Ka,dye 16.8 MM⁻¹, [Host]₀ 4.3 µM,
+          [Dye]₀ 6 µM), constant totals and default parameter bounds;
+        - the input uncertainties of :data:`DEMO_UNCERTAINTIES` — Ka,dye σ 10 %, [Host]₀,
+          [Dye]₀ and the titrant σ 3 % each — and no shared source or error of the
+          additions, so the first fit reports the interval that covers them, with the
+          conditional one beside it;
+        - the replicates averaged without the per-replicate test;
+        - Outlier removal at its defaults (:data:`gui.dataset.OUTLIER_DEFAULTS`: Z-score
+          threshold 3.5, Min replicates 3), which Measurement settings then shows.
+
+        Says why where the demo cannot be set up: its data missing, or work running here.
+        """
+        if not DEMO_IDA.exists():
+            return Refusal(
+                'Demo Data Missing',
+                f'The demo data ({DEMO_IDA.name}) are missing from this installation. Reinstall SupraSimFit to '
+                'bring them back.',
+            )
+        busy = self.busy_note()
+        if busy is not None:
+            return Refusal('Already Running', busy)
+        self.binding.set_assay(AssayType.IDA)
+        self.binding.set_per_replica(False)
+        self.binding_edited()
+        self.uncertainty.set_specs(DEMO_UNCERTAINTIES)
+        self.uncertainty_edited()
+        # Loading resets the replicates and clears the results.
+        return self.load_files([str(DEMO_IDA)]) or self.remove_outliers(*OUTLIER_DEFAULTS)
+
     def busy_note(self) -> str | None:
         """Why the fit cannot start now — the work already running here — or ``None`` when it can.
 
@@ -1469,6 +1548,74 @@ class SessionModel(QObject):
         if n:
             words += f' · {_count(n, "warning")}'
         return ('warning' if n else 'done'), words, 0.0
+
+    def is_empty(self) -> bool:
+        """Whether the session holds nothing and runs nothing: no data, no results, no work."""
+        return self.measurement_set is None and not self.held_fit_results and not self.running()
+
+    def empty_view(self, view: str) -> EmptyView | None:
+        """What *view* shows in place of its content, or ``None`` where it has content to show.
+
+        One rule for every view of :data:`EMPTY_VIEWS`, which reads the work running: a fit
+        or an analysis on its way is said as running, never as not made. A result the data
+        no longer match is content — its view says so in a callout — and a model with no
+        binding constant leaves Ka confidence and Sensitivity nothing to follow.
+        """
+        ms = self.measurement_set
+        if view in ('Fit results', 'Ka confidence'):
+            fit, note = self.fit_view()
+            if fit is not None:
+                if view == 'Ka confidence' and note is None and not projectable(AssayType[fit.assay_type]):
+                    return EmptyView('No binding constant', NO_KA_TO_PROFILE)
+                return None
+            if self.fit_running():
+                return EmptyView('Fit running', 'The fit is running. Its results appear here when it finishes.')
+            if ms is not None:
+                key = _shortcut(RUN_FIT_KEY)
+                return EmptyView(
+                    'No fit yet', f'Check the binding model and its conditions, then choose Run fit ({key}).'
+                )
+        elif view == 'Sensitivity':
+            if not projectable(self.settings.assay_type):
+                return EmptyView('No binding constant', NO_KA_TO_FOLLOW)
+            if self.sensitivity_result is not None:
+                return None
+            if self.sensitivity_running():
+                return EmptyView(
+                    'Analysis running',
+                    'The analysis is running. Its results appear here when it finishes; the status bar counts its fits.',
+                )
+            if ms is not None:
+                run = f'choose Run analysis ({_shortcut(RUN_ANALYSIS_KEY)})'
+                steps = (
+                    run
+                    if self.settings.errors.varies
+                    else f'state how uncertain each input is under Input uncertainty, then {run}'
+                )
+                return EmptyView('No analysis yet', f'{steps[0].upper()}{steps[1:]}.')
+        elif view in ('Measurements', 'Plot appearance'):
+            if ms is not None or (view == 'Plot appearance' and self.fit_results):
+                return None
+        else:
+            return None
+        if self.is_empty():
+            return EmptyView(
+                'No data loaded',
+                f'{_LOAD_DATA[view]}, or try the demo data: an indicator displacement titration, fitted as it loads.',
+                offers_data=True,
+            )
+        return EmptyView(
+            'No data loaded', f'{_LOAD_DATA[view]} with Load data; they take the place of the results held.'
+        )
+
+    def save_folder(self) -> Path:
+        """The folder a save offers first: the data file's own, or Documents where the data are a bundled example
+        (inside the app) or come from no file."""
+        src = self.dataset_file()
+        if src and not bundled(src) and Path(src).parent.is_dir():
+            return Path(src).parent
+        documents = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation))
+        return documents if documents.is_dir() else Path.home()
 
     def view_status(self, view: str) -> tuple[str, float]:
         """The navigation mark of *view* (see :func:`gui.design.components.paint_status_glyph`) and its progress."""

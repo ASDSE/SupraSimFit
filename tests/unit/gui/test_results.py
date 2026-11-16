@@ -892,14 +892,6 @@ def test_without_data_the_shown_curves_are_drawn_alone():
     assert R.titration(None, [], AssayType.GDA).data is None
 
 
-def test_the_empty_view_says_what_to_do_with_the_platform_shortcut():
-    assert (
-        R.empty_sentence(False, '⌘R')
-        == 'No fit yet. Add your titration files with Load data, then choose Run fit (⌘R).'
-    )
-    assert 'Run fit (Ctrl+R)' in R.empty_sentence(True, 'Ctrl+R')
-
-
 # ---------------------------------------------------------------------------
 # Numbers read for what they are
 # ---------------------------------------------------------------------------

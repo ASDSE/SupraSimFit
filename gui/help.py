@@ -107,8 +107,8 @@ replicate already off stays off at a new threshold; <i>Reset</i> (or <i>Reset al
 Replicates) switches every one back on before you apply another. Look at which replicates were
 switched off before you trust the fit.</p>
 
-<p><b>Example: Demo IDA</b> (Tools &#9656; Demo IDA) loads {loaded} replicates. <i>Outlier removal</i>
-switches {off} off, so {off} is drawn as crosses and the others as dots; Fit details then counts
+<p><b>Example: Demo IDA</b> (Load data &#9656; Open demo data (IDA)) loads {loaded} replicates. <i>Outlier
+removal</i>, at the Z-score threshold and Min replicates the panel shows, switches {off} off, so {off} is drawn as crosses and the others as dots; Fit details then counts
 {used} replicates used.</p>
 """
 

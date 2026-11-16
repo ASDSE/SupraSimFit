@@ -257,7 +257,7 @@ def test_the_head_of_a_saved_figure_reads_in_the_axis_text_size(qapp):
 def test_with_nothing_loaded_the_canvas_says_what_to_load(session):
     view = session._appearance
 
-    assert not view.empty.isHidden() and 'Load data' in view.empty.text()
+    assert not view.empty_state.isHidden() and view.empty_state.load.isVisibleTo(view.empty_state)
     assert view.plot.isHidden() and view.header.isHidden()
     assert session.plot_export_note('Plot appearance') is not None
 

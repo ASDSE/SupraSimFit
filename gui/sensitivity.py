@@ -375,22 +375,6 @@ def badge(result: SensitivityResult | None, form: AnalysisForm) -> str:
 # ---------------------------------------------------------------------------
 
 
-def empty_sentence(has_data: bool, varies: bool, shortcut: str) -> str:
-    """What the canvas says before any analysis, with *shortcut* the platform's text for Run analysis.
-
-    It names only the steps still to take: loading data where none is loaded, stating an
-    uncertainty where no source *varies*.
-    """
-    steps = [] if has_data else ['add your titration files with Load data']
-    if not varies:
-        steps.append('state how uncertain each input is under Input uncertainty')
-    steps.append(f'choose Run analysis ({shortcut})')
-    first, *rest = steps
-    text = ', '.join([first, *rest[:-1]]) + (f', then {rest[-1]}' if rest else '')
-    return f'No analysis yet. {text[0].upper()}{text[1:]}.'
-
-
-RUNNING = 'The analysis is running. Its results appear here when it finishes; the status bar counts its fits.'
 NO_KA = 'This model has no association constant, so there is nothing for a sensitivity analysis to follow.'
 
 

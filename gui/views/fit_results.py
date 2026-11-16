@@ -18,7 +18,7 @@ they changed; the text and numbers come from :mod:`gui.results`.
 from __future__ import annotations
 
 from PyQt6.QtCore import QMargins, QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QFont, QKeySequence
+from PyQt6.QtGui import QAction, QFont
 from PyQt6.QtWidgets import QGridLayout, QLayout, QWidget
 
 from core.assays.registry import AssayType
@@ -69,7 +69,7 @@ class FitResultsView(QObject):
         w = QWidget()
         w.setObjectName('Canvas')
         w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        self.empty = C.wrapped('', 'body', 'secondary')
+        self.empty_state = C.EmptyState(t)
         self.headline = QWidget()
         self.headline_box = C.vbox(spacing=4)
         self.replicate_line = C.copyable(C.wrapped('', 'small', 'secondary', rich=True))
@@ -90,9 +90,9 @@ class FitResultsView(QObject):
             t, 'Titration', self.legend, [self.display_tool, 1, self.plot.navigation.tool, 1, self.save_plot]
         )
         lay = C.vbox(
-            self.empty,
             self.headline,
             self.callout_host,
+            self.empty_state,
             6,
             self.header,
             2,
@@ -211,7 +211,7 @@ class FitResultsView(QObject):
     def _on_changed(self, what: Change) -> None:
         if Change.APPEARANCE in what:
             self._show_plot_appearance()
-        if what & (Change.DATA | Change.RESULTS | Change.PROFILE | Change.BINDING | Change.DISPLAY):
+        if what & (Change.DATA | Change.RESULTS | Change.PROFILE | Change.RUN | Change.BINDING | Change.DISPLAY):
             self.refresh()
 
     def _show_plot_appearance(self) -> None:
@@ -233,11 +233,13 @@ class FitResultsView(QObject):
         fit, note = model.fit_view()
         shown = fit if note is None else None
         ms = model.measurement_set
-        shortcut = QKeySequence(R.RUN_FIT_KEY).toString(QKeySequence.SequenceFormat.NativeText)
-        self.empty.setText(R.empty_sentence(ms is not None, shortcut))
-        self.empty.setVisible(fit is None)
+        empty = model.empty_view('Fit results')
+        self.empty_state.show_empty(empty)
         self._refresh_headline(shown)
         titration = self._refresh_plot()
+        # With nothing to show, the empty state takes the plot's room.
+        self.header.setVisible(empty is None)
+        self.plot.setVisible(empty is None)
         self._refresh_callouts(
             R.callouts(
                 shown,
@@ -248,7 +250,7 @@ class FitResultsView(QObject):
                 others_note=titration.others_note,
             )
         )
-        self._refresh_side(shown, note)
+        self._refresh_side(shown, note, empty)
 
     def _refresh_plot(self) -> R.Titration:
         model = self.model
@@ -354,13 +356,11 @@ class FitResultsView(QObject):
     # Fit details
     # ------------------------------------------------------------------
 
-    def _refresh_side(self, fit, note: str | None) -> None:
+    def _refresh_side(self, fit, note: str | None, empty) -> None:
         self.sections.setVisible(fit is not None)
         self.no_fit_box.setVisible(fit is None)
         if fit is None:
-            self.no_fit.setText(
-                f'The last fit is not shown. {note}' if note else 'No fit yet. Run a fit to see its details here.'
-            )
+            self.no_fit.setText(f'The last fit is not shown. {note}' if note else f'{empty.title}.')
             return
         ms = self.model.measurement_set
         # Fit quality

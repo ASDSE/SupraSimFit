@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import QFileDialog, QGridLayout, QMessageBox, QSizePolicy, 
 from core.assays.registry import ASSAY_REGISTRY
 from core.units import Q_
 from gui import results as R
-from gui.dataset import UNITS, file_filter
+from gui.dataset import OUTLIER_DEFAULTS, UNITS, file_filter
 from gui.design import components as C
 from gui.design import icons
 from gui.design.appearance import theme
@@ -320,6 +320,7 @@ class MeasurementsView(QObject):
         self.save_plot.setToolTip('Save the plot as an image')
         self.save_plot.setAccessibleName('Save the titration plot as an image')
         self.plot = TitrationPlot()
+        self.empty_state = C.EmptyState(t)
         lay = C.vbox(
             C.hbox(C.label('Files', 'body-strong'), 3, self.files_summary, None, add, spacing=0),
             2,
@@ -348,10 +349,12 @@ class MeasurementsView(QObject):
             ),
             2,
             spacing=0,
-            margins=(6, 5, 6, 4),
         )
         lay.addWidget(self.plot, 1)
-        w.setLayout(lay)
+        # The files and their plot, which the empty state takes the place of while the session holds no data.
+        self.content = QWidget()
+        self.content.setLayout(lay)
+        w.setLayout(C.vbox(self.empty_state, self.content, spacing=0, margins=(6, 5, 6, 4)))
         return w
 
     def _build_side(self) -> QWidget:
@@ -409,9 +412,11 @@ class MeasurementsView(QObject):
         reps.setLayout(C.vbox(chips, C.hbox(None, self.reset_all, spacing=2), self.replicate_note, spacing=2))
         self._chips: list[QWidget] = []
         # Outlier removal
-        self.threshold = C.Field(t, '3.5', editable=True)
+        threshold, least = OUTLIER_DEFAULTS
+        self._outlier_shown: dict | None = None  # the outlier removal whose settings the fields show
+        self.threshold = C.Field(t, f'{threshold:g}', editable=True)
         self.threshold.setAccessibleName('Z-score threshold of outlier removal')
-        self.min_replicates = C.Field(t, '3', editable=True)
+        self.min_replicates = C.Field(t, str(least), editable=True)
         self.min_replicates.setAccessibleName('Minimum replicates in use for outlier removal')
         self.outlier_note = C.label('', 'small', 'secondary')
         self.outlier_note.setWordWrap(True)
@@ -465,6 +470,13 @@ class MeasurementsView(QObject):
             self.refresh()
         elif what & (Change.RESULTS | Change.RUN):
             self._refresh_cue()
+            self._refresh_empty()
+
+    def _refresh_empty(self) -> None:
+        """Put the empty state in place of the files and their plot while the session holds no data."""
+        empty = self.model.empty_view('Measurements')
+        self.empty_state.show_empty(empty)
+        self.content.setVisible(empty is None)
 
     def _refresh_cue(self) -> None:
         """Say the fit shown above the raw plot, with *Show fit results*; nothing where :func:`gui.results.fit_cue` says nothing."""
@@ -500,6 +512,7 @@ class MeasurementsView(QObject):
         self.legend.set_items(titration.legend)
         self.plot.show_data(titration.data, unit)
         self._refresh_cue()
+        self._refresh_empty()
         if ms is None:
             self.files.set_rows([])
             self.files_summary.setText('')
@@ -559,7 +572,11 @@ class MeasurementsView(QObject):
             else ''
         )
         self.replicate_note.setText(f'{lead}Click a replicate to switch it on or off.')
-        # Outlier removal
+        # Outlier removal: the fields show the settings of the last one applied, the demo's among them.
+        if last is not None and last is not self._outlier_shown:
+            self.threshold.set_text(f'{last["threshold"]:g}')
+            self.min_replicates.set_text(str(last['min_replicas']))
+        self._outlier_shown = last
         self.outlier_result_row.setVisible(last is not None)
         if last is not None:
             self.outlier_note.setText(self._outlier_sentence(last, letters, ms, unit))

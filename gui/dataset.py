@@ -33,6 +33,21 @@ logger = logging.getLogger(__name__)
 #: The concentration units a session's values can be stated in.
 UNITS: tuple[str, ...] = ('nM', 'µM', 'mM', 'M')
 
+#: The folder of the example datasets bundled with the app: inside the app, never a place to save to.
+EXAMPLES = Path(__file__).resolve().parent.parent / 'data'
+
+#: The bundled titration the demo loads: an indicator displacement assay (IDA) of eight replicates.
+DEMO_IDA = EXAMPLES / 'IDA_system.txt'
+
+#: The Z-score threshold and the least replicates in use that Outlier removal starts from, and the demo applies.
+OUTLIER_DEFAULTS: tuple[float, int] = (3.5, 3)
+
+
+def bundled(path: str) -> bool:
+    """Whether *path* is one of the example datasets bundled with the app (:data:`EXAMPLES`)."""
+    return Path(path).resolve().is_relative_to(EXAMPLES)
+
+
 #: Each reader's format, as the Files table names it.
 FORMATS = {
     'TxtReader': 'Tab-separated text',

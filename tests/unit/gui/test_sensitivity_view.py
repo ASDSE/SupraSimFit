@@ -114,8 +114,9 @@ def test_before_any_run_the_view_says_what_to_do_with_the_platform_s_shortcut(se
 
     view = session._sensitivity
     shortcut = QKeySequence('Ctrl+R').toString(QKeySequence.SequenceFormat.NativeText)
+    session.model.load_files([IDA_DATA])
 
-    assert not view.empty.isHidden() and f'Run analysis ({shortcut})' in view.empty.text()
+    assert not view.empty_state.isHidden() and f'Run analysis ({shortcut})' in view.empty_state.sentence.text()
     assert not view.has_plot() and view.blocks_host.isHidden()
     assert session.view_badge('Sensitivity') == S.badge(None, session.model.analysis)
 
@@ -124,7 +125,7 @@ def test_a_sobol_run_draws_its_spread_samples_shares_budget_and_what_if(session)
     _hold(session, F.sobol_result())
     view = session._sensitivity
 
-    assert view.empty.isHidden() and len(view.histograms) == len(view.charts) == len(view.tables) == 1
+    assert view.empty_state.isHidden() and len(view.histograms) == len(view.charts) == len(view.tables) == 1
     assert [c.title for c in view.callouts] == ['Not a confidence interval']
     (table,) = view.tables
     assert table.texts()[0][0] == 'Guest (titrant)'
@@ -189,7 +190,7 @@ def test_a_run_hidden_by_a_note_shows_the_note_and_none_of_its_numbers(session):
 def test_an_assay_with_no_association_constant_offers_no_analysis_and_says_why(session):
     state_binding(session, assay_type=AssayType.DYE_ALONE)
     view = session._sensitivity
-    assert view.empty.text() == S.NO_KA and not view.unavailable.isHidden()
+    assert view.empty_state.sentence.text() == S.NO_KA and not view.unavailable.isHidden()
     assert all(section.isHidden() for section in view.sections.values())
     assert not view.has_plot() and session.view_badge('Sensitivity') is None
     session.model.load_files([IDA_DATA])

@@ -55,12 +55,15 @@ def _show(session, fit) -> None:
 
 
 def test_before_any_fit_the_view_says_what_to_do_with_the_platform_s_shortcut(session):
+    from pathlib import Path
+
     from PyQt6.QtGui import QKeySequence
 
     view = session._results
     shortcut = QKeySequence('Ctrl+R').toString(QKeySequence.SequenceFormat.NativeText)
+    session.model.load_files([str(Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt')])
 
-    assert not view.empty.isHidden() and f'Run fit ({shortcut})' in view.empty.text()
+    assert not view.empty_state.isHidden() and f'Run fit ({shortcut})' in view.empty_state.sentence.text()
     assert view.headline.isHidden() and view.sections.isHidden()
     assert session.view_badge('Fit results') is None
 

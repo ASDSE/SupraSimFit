@@ -286,7 +286,7 @@ class FittingMainWindow(QMainWindow):
         self._act_raw = _action(self, 'Raw data…', 'file', None, lambda: self._on_session('export_raw_data'))
         self._act_plot = _action(self, 'Plot image…', 'image', None, self._on_save_plot)
         self._act_several = _action(self, 'Export several…', 'layers', 'Ctrl+Shift+E', self._on_export_several)
-        self._act_demo = _action(self, 'Demo IDA', '', None, self._on_load_demo)
+        self._act_demo = _action(self, 'Open demo data (IDA)', 'flask', None, self._on_load_demo)
         self._act_simulate = _action(self, 'Simulate…', '', None, self._on_simulate)
         self._act_help = _action(self, 'SupraSimFit help', '', keys.HelpContents, lambda: self.open_help(self._view))
         self._act_check_updates = _action(
@@ -425,8 +425,7 @@ class FittingMainWindow(QMainWindow):
     def _fresh_session(self) -> FittingSession:
         """The session on screen when it holds nothing and runs nothing, else a new one."""
         session = self.active_session()
-        model = session.model if session is not None else None
-        if model is None or model.measurement_set is not None or model.held_fit_results or model.running():
+        if session is None or not session.model.is_empty():
             return self._new_session()
         return session
 
@@ -546,7 +545,7 @@ class FittingMainWindow(QMainWindow):
         self._show_popover(popover, anchor)
 
     def _open_load_menu(self) -> None:
-        actions = [self._act_add, self._act_replace, None, self._act_load_new]
+        actions = [self._act_add, self._act_replace, None, self._act_load_new, None, self._act_demo]
         note = 'Added files become replicates and must share this session’s concentrations.'
         self._show_menu(C.PopoverMenu(self._t, self, actions, note), self._toolbar.load)
 

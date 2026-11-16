@@ -230,6 +230,7 @@ class ZScoreReplicaFilter:
                 'step': self.name,
                 'status': 'applied',
                 'threshold': self.threshold,
+                'min_replicas': self.min_replicas,
                 'dropped': dropped,
                 'evidence': evidence,
                 'kept': kept,

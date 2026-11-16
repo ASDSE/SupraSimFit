@@ -24,7 +24,7 @@ import math
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QMargins, QObject, QPointF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QFontMetrics, QKeySequence
+from PyQt6.QtGui import QFont, QFontMetrics
 from PyQt6.QtWidgets import QApplication, QFrame, QGridLayout, QLayout, QScrollArea, QSizePolicy, QWidget
 
 from gui import confidence as CF
@@ -410,7 +410,7 @@ class ConfidenceView(QObject):
         content = QWidget()
         content.setObjectName('Canvas')
         content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        self.empty = C.wrapped('', 'body', 'secondary')
+        self.empty_state = C.EmptyState(self.t)
         self.header_host = QWidget()
         self.header_box = C.vbox(spacing=5)
         self.header_host.setLayout(self.header_box)
@@ -422,7 +422,10 @@ class ConfidenceView(QObject):
         # Each plot's header sits tight above its plot; the plots stand further apart (_refresh_plots).
         self.plots_box = C.vbox(spacing=0)
         self.plots_host.setLayout(self.plots_box)
-        lay = C.vbox(self.empty, self.header_host, self.callout_host, self.message, spacing=0, margins=(6, 5, 6, 4))
+        lay = C.vbox(
+            self.header_host, self.callout_host, self.empty_state, self.message, spacing=0, margins=(6, 5, 6, 4)
+        )
+        lay.setStretchFactor(self.empty_state, 1)
         lay.addSpacing(space(6))
         lay.addWidget(self.plots_host, 1)
         # With no plot to fill the canvas, its spare height goes below the last part shown (_show_parts).
@@ -535,23 +538,19 @@ class ConfidenceView(QObject):
         return CF.badge(self._fit())
 
     def _on_changed(self, what: Change) -> None:
-        if what & (Change.DATA | Change.RESULTS | Change.PROFILE | Change.APPEARANCE):
+        if what & (Change.DATA | Change.RESULTS | Change.PROFILE | Change.RUN | Change.APPEARANCE):
             self.refresh()
 
     def refresh(self) -> None:
         model = self.model
         fit, note = model.fit_view()
         shown = fit if note is None else None
-        has_ka = shown is not None and bool(CF.headers(shown))
+        empty = model.empty_view('Ka confidence')
+        has_ka = shown is not None and empty is None
         ours = shown is not None and model.profiled_fit is shown
         profile = model.profile if ours else None
         pending = ours and model.profile_running()
-        shortcut = QKeySequence(R.RUN_FIT_KEY).toString(QKeySequence.SequenceFormat.NativeText)
-        if fit is None:
-            self.empty.setText(R.empty_sentence(model.measurement_set is not None, shortcut))
-        elif shown is not None and not has_ka:
-            self.empty.setText(CF.NO_KA)
-        self.empty.setVisible(fit is None or (shown is not None and not has_ka))
+        self.empty_state.show_empty(empty)
         self._refresh_headers(shown if has_ka else None, drawn=profile is not None)
         self._refresh_callouts(
             CF.callouts(
@@ -570,7 +569,7 @@ class ConfidenceView(QObject):
         self._refresh_plots(shown if has_ka else None, profile)
         if not self.figures:
             self.enlarged = False  # nothing left to enlarge, and no tool to put the readings back with
-        self._refresh_side(shown, note, profile if has_ka else None, has_ka)
+        self._refresh_side(shown, note, profile if has_ka else None, empty)
         self._show_parts()
 
     def _show_parts(self) -> None:
@@ -578,7 +577,10 @@ class ConfidenceView(QObject):
         self.callout_host.setVisible(bool(self.callouts) and not self.enlarged)
         self.message.setVisible(bool(self.message.text()))
         self.plots_host.setVisible(bool(self.figures))
-        self.canvas_box.setStretch(self.canvas_box.count() - 1, 0 if self.figures else 1)
+        # With no plot to fill the canvas, its spare height goes to the empty state, else below the last part shown.
+        self.canvas_box.setStretch(
+            self.canvas_box.count() - 1, 0 if self.figures or self.empty_state.isVisibleTo(self.content) else 1
+        )
 
     def _refresh_headers(self, fit, *, drawn: bool) -> None:
         """The readings of *fit*; *drawn* says whether its profile plots are drawn, which *Split* then points to."""
@@ -713,17 +715,15 @@ class ConfidenceView(QObject):
     # Notes
     # ------------------------------------------------------------------
 
-    def _refresh_side(self, fit, note: str | None, profile, has_ka: bool) -> None:
+    def _refresh_side(self, fit, note: str | None, profile, empty) -> None:
         _clear(self.notes_box)
         self.sections = {}
-        self.no_fit.setVisible(fit is None or not has_ka)
+        self.no_fit.setVisible(fit is None or empty is not None)
         if note:
             self.no_fit.setText(f'The last fit is not shown. {note}')
-        elif fit is None:
-            self.no_fit.setText('No fit yet. Run a fit to see its notes here.')
-        elif not has_ka:
-            self.no_fit.setText(CF.NO_KA)
-        if fit is None or not has_ka:
+        elif empty is not None:
+            self.no_fit.setText(empty.sentence if fit is not None else f'{empty.title}.')
+        if fit is None or empty is not None:
             return
         ms = self.model.measurement_set
         order = None if ms is None else list(ms.replica_ids)

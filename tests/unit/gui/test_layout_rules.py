@@ -78,6 +78,16 @@ def test_the_loaded_demo_at_the_narrowest_window_cuts_no_text_and_gives_every_co
     assert {where: found for where, found in seen.items() if found} == {}
 
 
+def test_an_empty_session_at_the_narrowest_window_cuts_no_text_and_gives_every_component_its_room(qapp, window):
+    """Every view's empty state — its title, sentence and two commands — stands whole in the least window."""
+    window.resize(800, 800)
+    settle(qapp)
+
+    seen = sweep(qapp, window, check=layout_rules.check)
+
+    assert {where: found for where, found in seen.items() if found} == {}
+
+
 def test_a_segmented_control_beside_a_stretch_shows_each_option_whole(qapp):
     options = ['Fixed', 'σ', 'Range']
     control = C.Segmented(theme(), options)

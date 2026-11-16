@@ -64,9 +64,10 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QScrollArea, QWidget
 
 from core.pipeline.sensitivity import SensitivityMode
 from gui import preferences
+from gui.dataset import DEMO_IDA
 from gui.design import components as C
 from gui.design.appearance import appearance
-from gui.fitting_session import _DEMO_IDA_PATH, VIEWS
+from gui.fitting_session import VIEWS
 from gui.help import SECTIONS
 from gui.main_window import FittingMainWindow, start_application
 
@@ -282,7 +283,7 @@ def _more_sessions(window: FittingMainWindow) -> None:
 
 def _overlay_demo(simulation: QWidget) -> None:
     """Lay Demo IDA's file over the simulation through *Overlay data…*, its file dialog answered with that file."""
-    with mock.patch('gui.views.simulation.QFileDialog.getOpenFileName', return_value=(str(_DEMO_IDA_PATH), '')):
+    with mock.patch('gui.views.simulation.QFileDialog.getOpenFileName', return_value=(str(DEMO_IDA), '')):
         simulation.overlay_data()
 
 

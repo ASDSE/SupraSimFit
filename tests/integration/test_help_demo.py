@@ -29,12 +29,10 @@ def test_the_help_examples_are_the_numbers_demo_ida_shows(qapp):
     import gui.confidence as Cf
     import gui.results as R
     import gui.sensitivity as S
-    from core.assays.registry import AssayType
     from core.pipeline.fit_pipeline import fit_measurement_set
     from core.pipeline.profile import fit_profile
     from core.pipeline.reporting import fit_replica_ids
     from core.pipeline.sensitivity import run_sensitivity
-    from gui.fitting_session import _DEMO_IDA_PATH, _DEMO_UNCERTAINTIES
     from gui.help import DEMO
     from gui.session_model import SessionModel
     from gui.simulation import SimulationForm, readout_value, species_groups
@@ -42,13 +40,7 @@ def test_the_help_examples_are_the_numbers_demo_ida_shows(qapp):
 
     # Demo IDA as load_demo_ida() states it, and the fit and Ka profile the session runs on it.
     model = SessionModel()
-    model.binding.set_assay(AssayType.IDA)
-    model.binding.set_per_replica(False)
-    model.binding_edited()
-    model.uncertainty.set_specs(_DEMO_UNCERTAINTIES)
-    model.uncertainty_edited()
-    assert model.load_files([str(_DEMO_IDA_PATH)]) is None
-    assert model.remove_outliers(3.5, 3) is None
+    assert model.set_up_demo() is None
     settings, ms = model.settings, model.measurement_set
     used = ms.with_active(ms.active_replica_ids)
     cls, conditions = assay_class(settings.assay_type), dict(settings.conditions)

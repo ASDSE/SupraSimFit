@@ -185,8 +185,7 @@ class ExportMultipleDialog(QDialog):
             s.endGroup()
         default_base = self._default_base()
         if not (folder and Path(folder).is_dir()):
-            src = self._session.model.dataset_file()
-            folder = str(Path(src).parent) if src and Path(src).parent.is_dir() else str(Path.home())
+            folder = str(self._session.model.save_folder())
         return folder, base if base and dataset == default_base else default_base
 
     def _save_settings(self) -> None:

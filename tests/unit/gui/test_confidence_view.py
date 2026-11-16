@@ -59,12 +59,15 @@ def _show(session, fit, profile=None, *, running=False, error=None) -> None:
 
 
 def test_before_any_fit_the_view_says_what_to_do_with_the_platform_s_shortcut(session):
+    from pathlib import Path
+
     from PyQt6.QtGui import QKeySequence
 
     view = session._confidence
     shortcut = QKeySequence('Ctrl+R').toString(QKeySequence.SequenceFormat.NativeText)
+    session.model.load_files([str(Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt')])
 
-    assert not view.empty.isHidden() and f'Run fit ({shortcut})' in view.empty.text()
+    assert not view.empty_state.isHidden() and f'Run fit ({shortcut})' in view.empty_state.sentence.text()
     assert view.header_host.isHidden() and not view.has_plot()
     assert session.view_badge('Ka confidence') is None
 
@@ -99,7 +102,7 @@ def test_a_fit_with_no_binding_constant_says_there_is_nothing_to_profile(session
     _show(session, replace(result(), assay_type='DYE_ALONE', intervals={}, parameters={}))
 
     view = session._confidence
-    assert view.empty.text() == CF.NO_KA and view.header_host.isHidden() and not view.has_plot()
+    assert view.empty_state.sentence.text() == CF.NO_KA and view.header_host.isHidden() and not view.has_plot()
 
 
 def test_reading_this_plot_asks_for_the_help_at_ka_confidence(session):

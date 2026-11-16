@@ -25,7 +25,7 @@ from html import escape
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QMargins, QObject, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QFontMetrics, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QFrame, QGridLayout, QLayout, QScrollArea, QSizePolicy, QWidget
 
 from core.pipeline.inputs import TITRANT, ErrorModel
@@ -680,7 +680,7 @@ class SensitivityView(QObject):
         content = QWidget()
         content.setObjectName('Canvas')
         content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        self.empty = C.wrapped('', 'body', 'secondary')
+        self.empty_state = C.EmptyState(self.t)
         # The first block's headline stands above the callouts (DESIGN.md §3); the rest of it, under them.
         self.head_host = QWidget()
         self.head_box = C.vbox(spacing=0)
@@ -692,10 +692,11 @@ class SensitivityView(QObject):
         self.blocks_box = C.vbox(spacing=0)
         self.blocks_host.setLayout(self.blocks_box)
         lay = C.vbox(
-            self.empty, self.head_host, self.callout_host, self.blocks_host, None, spacing=5, margins=(6, 5, 6, 4)
+            self.head_host, self.callout_host, self.empty_state, self.blocks_host, None, spacing=5, margins=(6, 5, 6, 4)
         )
+        lay.setStretchFactor(self.empty_state, 1)
         content.setLayout(lay)
-        self.content = content
+        self.content, self.canvas_box = content, lay
         area = QScrollArea()
         area.setWidgetResizable(True)
         area.setFrameShape(QFrame.Shape.NoFrame)
@@ -1000,15 +1001,10 @@ class SensitivityView(QObject):
         has_ka = projectable(settings.assay_type)
         has_data = model.measurement_set is not None
         shown = result if note is None else None
-        shortcut = QKeySequence(S.RUN_ANALYSIS_KEY).toString(QKeySequence.SequenceFormat.NativeText)
-        if not has_ka:
-            empty = S.NO_KA
-        elif result is None:
-            empty = S.RUNNING if running else S.empty_sentence(has_data, settings.errors.varies, shortcut)
-        else:
-            empty = ''
-        self.empty.setText(empty)
-        self.empty.setVisible(bool(empty))
+        empty = model.empty_view('Sensitivity')
+        self.empty_state.show_empty(empty)
+        # The empty state takes the canvas's spare height, else it goes below the last part shown.
+        self.canvas_box.setStretch(self.canvas_box.count() - 1, 0 if empty is not None else 1)
         nothing = has_ka and has_data and not settings.errors.varies
         specs = S.callouts(
             result, self._fit(), note, running=running, error=model.sensitivity_error, nothing_varies=nothing
@@ -1328,7 +1324,8 @@ class SensitivityView(QObject):
         _clear(self.run_box)
         result = model.sensitivity_result
         if result is None:
-            self.run_box.addWidget(C.wrapped('No run yet.', 'small', 'tertiary'))
+            empty = model.empty_view('Sensitivity')
+            self.run_box.addWidget(C.wrapped(f'{empty.title}.', 'small', 'tertiary'))
         elif model.sensitivity_note is not None:
             # A run that no longer describes the data gives none of its facts, as on the canvas.
             self.run_box.addWidget(

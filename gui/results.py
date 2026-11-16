@@ -561,7 +561,7 @@ def replicate_line(fit: FitResult) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# The summary beside the title, the callouts and the empty view
+# The summary beside the title and the callouts
 # ---------------------------------------------------------------------------
 
 
@@ -577,13 +577,6 @@ def badge(fit: FitResult | None, ms) -> str | None:
     n = len(used)
     count = f'{n} replicate{"" if n == 1 else "s"}' if n == total else f'{n} of {total} replicates'
     return f'{reading(fit)[0]} · {count}'
-
-
-def empty_sentence(has_data: bool, shortcut: str) -> str:
-    """What the view says before any fit, with *shortcut* the platform's text for Run fit."""
-    if not has_data:
-        return f'No fit yet. Add your titration files with Load data, then choose Run fit ({shortcut}).'
-    return f'No fit yet. Check the binding model and its conditions, then choose Run fit ({shortcut}).'
 
 
 class Place(Enum):

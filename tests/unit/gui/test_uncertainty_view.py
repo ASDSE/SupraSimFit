@@ -190,7 +190,7 @@ def test_tab_runs_through_the_inputs_the_sources_then_the_additions(view):
 
 def test_with_no_fit_the_side_panel_says_so(view):
     assert view.no_fit.isVisibleTo(view.side)
-    assert view.no_fit.text().startswith('No fit is shown.')
+    assert view.no_fit.text().startswith('No data loaded.')
     assert not view.tests_section.isVisibleTo(view.side)
 
 

@@ -261,7 +261,7 @@ without them gets no styling.
   clicking it opens the session switcher; right, the model line in `text-tertiary` (`Indicator displacement
   · 1 binding constant · Profile likelihood, 95 % · Weighted by noise law`).
 - **Menu bar**: *File* (New session ⌘T, Load data…, Open results file…, the export
-  commands, Settings… on Windows and Linux, Quit), *Tools* (Simulate…, Demo IDA), *View*,
+  commands, Settings… on Windows and Linux, Quit), *Tools* (Simulate…, Open demo data (IDA)), *View*,
   *Help* (SupraSimFit help, at the view on screen, with the platform's help key; Check for
   updates…). On macOS *Settings…* ⌘, is in the app
   menu.
@@ -295,9 +295,18 @@ session, reached through the session switcher.
   ring) — the session on screen marked with ✓; then the commands *New session* ⌘T, *Load
   data into a new session…* ⇧⌘O, *Open results file…*, *Duplicate <session>*, *Close
   <session>* ⌘W.
-- **Load data ▾** has three commands: *Add files to this session…* ⌘O, *Replace data…*,
-  *Load data into a new session…* ⇧⌘O. Adding keeps every fit; replacing is always an
-  explicit choice. Every load command goes through the session model (`load_files()`, `add_files()`).
+- **Load data ▾** has four commands: *Add files to this session…* ⌘O, *Replace data…*,
+  *Load data into a new session…* ⇧⌘O and, apart, *Open demo data (IDA)*. Adding keeps
+  every fit; replacing is always an explicit choice. Every load command goes through the
+  session model (`load_files()`, `add_files()`).
+- **The demo** is the bundled IDA titration (`gui.dataset.DEMO_IDA`) with its own settings
+  (`SessionModel.set_up_demo()`: the IDA model at its default conditions and bounds, typical
+  input uncertainties, Outlier removal at its defaults, which Measurement settings then
+  shows), fitted as it loads. It is where data are loaded: *Load data ▾* and *Tools ▸ Open
+  demo data (IDA)* fill the session on screen where it holds nothing, else a new one; the
+  empty state of every view of an empty session — a new session opens on it — fills that
+  session. Its file is a bundled example, inside the app, so a save offers the folder last
+  used or Documents, never the example's own folder (`SessionModel.save_folder()`).
 - **Edits of the data in place keep every result.** Adding or removing a file, stating the
   concentrations in another unit, typing or loading concentrations, and switching the
   channel of a plate export hide a result made on other data (*Results hidden*) and show
@@ -376,6 +385,7 @@ the same tokens.
 | **Side-panel section** | Disclosure header — chevron, `body-strong` title, trailing summary in `text-tertiary`, optionally a warning icon — its content, a hairline below |
 | **Settings group** | Rows separated by hairlines inside a bordered card on `bg-window`; a group title above |
 | **Callout** | §5 |
+| **Empty state** | What a view shows in place of content it does not have yet, centred in the room that content would take: a `title`, one sentence in `text-secondary` at most `measure` wide and, in a session that holds nothing, *Load data…* (outline button) beside *Try the demo data* (link), both filling that session. One rule of the session model (`SessionModel.empty_view()`) gives every view its words, reading the work running: a fit or an analysis on its way is said as running, never as not made. A side panel says its title alone. No view draws empty axes |
 | **Interval chart** | Log-Ka strip comparing intervals: Input-aware in accent, Inputs as entered in `text-secondary`, accepted stretches as bars, estimates as dots, numbers to the right. In the side panel a compact form stacks label and numbers above each bar |
 | **Shift bar** | An input's shift in σ against a ±1 σ band. In Fit details the % stands beside it, σ on hover; in the Ka confidence notes both % and σ |
 | **Replicate chip** | Replicate letter with ✓ when used or × when switched off, `z` when the outlier filter switched it off; click toggles |
@@ -515,12 +525,13 @@ loaded, no mean and no curve, drawn by the one titration plot model with no fit 
 *Display unit* menu in its header. While a fit is on view, a neutral callout above the
 plot names it — *Fitted* `Kₐ guest 1.59 × 10⁸ M⁻¹ — the fitted curve is in Fit results.`
 — with the action *Show fit results*; it is absent with no fit, while the results are
-hidden and while a fit runs. Side panel *Measurement settings*: Concentrations (under the small heading *Units in
+hidden and while a fit runs. With no data loaded the empty state stands in place of the
+files and the plot. Side panel *Measurement settings*: Concentrations (under the small heading *Units in
 the file*, the unit the file's concentrations are stated in — a statement about the file,
 which reinterprets the numbers, kept apart from the plot's *Display unit* — then the
 concentration list, *Load vector…* / *Save vector…*), Replicates (replicate chips,
-*Reset all*), Outlier removal (Z-score threshold, minimum replicates, *Apply* / *Reset*,
-the last result in a sentence).
+*Reset all*), Outlier removal (Z-score threshold, minimum replicates — those of the last
+removal applied, the demo's among them — *Apply* / *Reset*, the last result in a sentence).
 
 ### Binding model — `binding_*.jpg`
 A form from the same components as Input uncertainty, under an intro sentence with
@@ -550,7 +561,8 @@ the interval chart against the reading at the inputs as entered, *All results an
 diagnostics →*, any callout, and the **Titration** plot with a replicate-display tool —
 the one control of the session's replicate display: *Replicates and mean ± SD*, *Mean ±
 SD only* or *Replicates only*, which Fit results, Plot appearance and every saved
-titration figure draw alike.
+titration figure draw alike. With no fit on view the empty state stands in their place
+(*No data loaded*, *Fit running*, or *No fit yet* with the platform shortcut of *Run fit*).
 With two binding constants the headline stacks: one row per Ka (K₁, K₂), each with its
 value, interval and interval-chart rows, above the plot. What an interval needs said
 beside it is its tooltip: what *Split* means on the interval chart, what widened it or
@@ -599,6 +611,8 @@ and p-value in the header) or the input shifts, Reading the curves, Split interv
 sides, Second binding step, What the intervals rest on, What widened the intervals, Joint
 region. Exported figures use the same axis: each plot under its head — its name and legend,
 its readings as a note — the joint region last, without the readout card.
+With no fit on view the empty state stands in place of the readings and plots, as in Fit
+results; a fit of a model with no binding constant says there is no Kₐ to profile.
 
 ### Sensitivity — `sensitivity_*.jpg`, `sensitivity_whatif_*.jpg`, `sensitivity_heatmap_*.jpg`
 Canvas, for sensitivity indices: one block per binding constant, named by the glossary
@@ -634,9 +648,9 @@ the concentrations entered), the entered point as a diamond, and the readout car
 plot's top-right corner reading the cell under the pointer — its two inputs, Kₐ, its change
 from the entered point and R² — or the entered cell without a pointer.
 
-Before a run the canvas says what to do, with the platform shortcut of *Run analysis*;
-while one runs and none is held, that it is running. Progress shows only where run state
-does (§1).
+Before a run the empty state says what to do, naming only the steps still to take, with
+the platform shortcut of *Run analysis*; while one runs and none is held, that it is
+running. Progress shows only where run state does (§1).
 
 Side panel *Analysis settings*: **Run** — mode (Sensitivity indices / Heatmap); for
 indices, sample size N of 1024, 2048 or 4096 with what it costs, and *Fixed seed* with its
@@ -662,7 +676,7 @@ saved from them. The Simulation window, part of no session, draws at the text si
 for new sessions. Canvas: a sentence saying what the settings style, then the **Titration**
 plot as Fit results draws it — the fit where there is one, else the data, in the
 session's replicate display — with its
-legend and the image export; with nothing loaded, a sentence saying what to load. Every
+legend and the image export; with nothing loaded, the empty state. Every
 choice redraws the plot at once, here and in the other views. Side panel *Titration
 plot*, headed by *Reset to defaults* (a link; it gives this session the built-in
 appearance): **Markers** — replicate points and mean points *Small* / *Medium* / *Large*
