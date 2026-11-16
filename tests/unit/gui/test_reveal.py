@@ -360,3 +360,29 @@ def test_a_second_reveal_moves_the_one_mark(qapp, window):
 
     marks = [m for m in window.findChildren(C.RevealMark) if m.isVisible()]
     assert [m.target for m in marks] == [session._confidence.header_host]
+
+
+def test_the_mark_follows_its_place_scrolled_sideways(qapp):
+    """A place wider than its scroll area keeps its mark round it as the area scrolls sideways."""
+    from gui.design.appearance import theme
+
+    area = QScrollArea()
+    area.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    area.resize(300, 200)
+    content = QWidget()
+    content.setFixedSize(900, 600)
+    place = QWidget(content)
+    place.setGeometry(40, 40, 800, 100)
+    area.setWidget(content)
+    area.show()
+    _settle(qapp)
+    C.reveal(theme(), place)
+    bar = area.horizontalScrollBar()
+
+    bar.setValue(bar.maximum())
+    qapp.processEvents()
+
+    (mark,) = [m for m in area.findChildren(C.RevealMark) if m.isVisible()]
+    shown = QRect(place.mapTo(mark.parentWidget(), QPoint(0, 0)), place.size()).intersected(mark.parentWidget().rect())
+    assert mark.geometry().contains(shown), 'the mark rings what is shown of the place'
+    area.close()

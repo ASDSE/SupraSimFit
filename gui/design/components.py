@@ -2402,7 +2402,8 @@ class RevealMark(QWidget):
         target.installEventFilter(self)
         target.destroyed.connect(self.clear)
         if area is not None:
-            area.verticalScrollBar().valueChanged.connect(self._place)
+            for bar in (area.horizontalScrollBar(), area.verticalScrollBar()):
+                bar.valueChanged.connect(self._place)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.clear)
