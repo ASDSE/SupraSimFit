@@ -231,7 +231,7 @@ def test_straight_lines_between_the_drawn_points_follow_the_exact_profile():
     log_ka = np.linspace(np.log10(edges[0]) - 0.3, np.log10(edges[1]) + 0.3, 1500)
     exact = np.array([1.0 - projection.row_ssr({'Ka_guest': 10.0**t})[0] / ss_tot for t in log_ka])
     drawn = np.interp(log_ka, log_grid, profile.r2)
-    allowance = profile_module._CURVE_R2_TOL + profile_module._CURVE_DEPTH_TOL * (profile.best_r2 - exact)
+    allowance = varpro._CURVE_R2_TOL + varpro._CURVE_DEPTH_TOL * (profile.best_r2 - exact)
     assert np.all(np.abs(exact - drawn) <= allowance)
 
     # The line peaks at the best fit and meets the cut-off at the interval's edges.

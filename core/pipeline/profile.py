@@ -40,7 +40,6 @@ the profile keeps with the models, not a range of Ka it runs into.
 
 from __future__ import annotations
 
-import heapq
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Type
 
@@ -58,22 +57,13 @@ from core.pipeline.varpro import (
     FittedParameters,
     KaInterval,
     Projection,
+    _follow_curves,
     _interval,
     _ka_grid,
 )
 
-# The plotted curve joins exact points with straight lines. A stretch of it is
-# split while the exact R² at its midpoint misses the line by more than half of
-# its allowance, _CURVE_R2_TOL + _CURVE_DEPTH_TOL × (the curve's best R² − the
-# stretch's highest R²); a stretch that bends one way then stays within the
-# allowance of the exact curve. At the peak that is 1e-6 R². Below it, the
-# allowance is 0.1 % of the depth, so in any view that shows a stretch together
-# with the peak the line is off by less than 0.1 % of the view's height. The
-# curve has corners where a coefficient reaches its bound and jumps where a Ka
-# the model has no speciation for interrupts it, so the stretches with the worst
-# miss for their allowance are split first, a budget of extra evaluations bounds
-# the work, and _CURVE_MIN_STEP, in decades of Ka, stops the splitting at a
-# corner or a jump.
+# How a drawn curve is refined is the rule of varpro._follow_curves (see
+# _CURVE_R2_TOL there); the budgets below bound the work it does here.
 #
 # _CURVE_MAX_EXTRA bounds a curve of a model with one free binding constant,
 # which starts from _PROFILE_PER_DECADE points and costs one solve per point. It
@@ -100,11 +90,8 @@ from core.pipeline.varpro import (
 # top of the engine's own fit and intervals: 15 s (HG2) and 17 s (H2G) on one
 # idle core at 30 points on the default box, against 0.3 s for a model with one
 # free binding constant.
-_CURVE_R2_TOL = 1e-6
-_CURVE_DEPTH_TOL = 1e-3
 _CURVE_MAX_EXTRA = 2000
 _CURVE_MAX_EXTRA_TWO_KA = 200
-_CURVE_MIN_STEP = 1e-6
 
 # Points per axis of the joint region's grid. The region panel is a few hundred
 # pixels wide, so 64 cells across it are about 5 px each, below what the eye
@@ -132,7 +119,7 @@ class ProfileResult:
         Ka values in 1/M across the Ka bounds in force, ascending: a log-spaced
         grid plus the best fit, the interval's closed edges and extra points
         where the curves bend, so straight lines between them follow the exact
-        curves (see ``_CURVE_R2_TOL``). One point when Ka is pinned.
+        curves (see ``varpro._CURVE_R2_TOL``). One point when Ka is pinned.
     r2 : np.ndarray
         Best R² of the averaged signal at each grid Ka, minimised over every
         other parameter; ``nan`` at a Ka the equilibrium model cannot solve,
@@ -594,59 +581,6 @@ def _draw(
     grid, ssr = _follow_curves(ssr_at, ss_tot, grid, ssr, max_extra)
     grid, ssr = _with_points(ssr_at, grid, ssr, marks)
     return grid, np.where(np.isfinite(ssr), 1.0 - ssr / ss_tot, np.nan)
-
-
-def _follow_curves(
-    ssr_at: Callable[[float], np.ndarray], ss_tot: np.ndarray, grid: np.ndarray, ssr: np.ndarray, max_extra: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """*grid* with exact points added until straight lines between them follow every curve.
-
-    *ssr_at* gives each curve's best SSR at a Ka, *ss_tot* each curve's total
-    sum of squares and *ssr* each curve's SSR on *grid*. Every stretch between
-    neighbouring points is checked at its midpoint in log Ka, which becomes a
-    point. A stretch whose midpoint misses the line by more than half its
-    allowance (see ``_CURVE_R2_TOL``) on any curve at R² 0 or above is split,
-    the worst first, until none is left or the evaluations reach *max_extra*.
-    Curves below R² 0 across a stretch are off every plot and do not split it,
-    and neither does a curve the model cannot solve somewhere on the stretch,
-    which is not drawn across it.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        ``(Ka values, SSR per curve)`` in ascending Ka, shapes ``(n,)`` and ``(n, n_curves)``.
-    """
-    kas, ssrs = list(grid), list(ssr)
-    peak = np.max(1.0 - ssr / ss_tot, axis=0)
-    # Stretches to split, worst first: (-worst miss over allowance, tie-breaker, Ka and SSR at start, middle, end).
-    to_split: list[tuple] = []
-
-    def check(ka_a: float, ssr_a: np.ndarray, ka_b: float, ssr_b: np.ndarray) -> None:
-        log_a, log_b = np.log10(ka_a), np.log10(ka_b)
-        if log_b - log_a <= _CURVE_MIN_STEP:
-            return
-        ka_m = 10.0 ** (0.5 * (log_a + log_b))
-        ssr_m = ssr_at(ka_m)
-        kas.append(ka_m)
-        ssrs.append(ssr_m)
-        drawn = np.isfinite(ssr_a) & np.isfinite(ssr_m) & np.isfinite(ssr_b)
-        if not drawn.any():
-            return
-        r2_a, r2_m, r2_b = (1.0 - s[drawn] / ss_tot[drawn] for s in (ssr_a, ssr_m, ssr_b))
-        top = np.maximum(np.maximum(r2_a, r2_b), r2_m)
-        allowance = _CURVE_R2_TOL + _CURVE_DEPTH_TOL * (peak[drawn] - top)
-        miss = np.where(top >= 0.0, np.abs(r2_m - 0.5 * (r2_a + r2_b)) / (0.5 * allowance), 0.0)
-        if miss.max() > 1.0:
-            heapq.heappush(to_split, (-float(miss.max()), len(kas), ka_a, ssr_a, ka_m, ssr_m, ka_b, ssr_b))
-
-    for i in range(grid.size - 1):
-        check(grid[i], ssrs[i], grid[i + 1], ssrs[i + 1])
-    while to_split and len(kas) - grid.size + 2 <= max_extra:
-        _, _, ka_a, ssr_a, ka_m, ssr_m, ka_b, ssr_b = heapq.heappop(to_split)
-        check(ka_a, ssr_a, ka_m, ssr_m)
-        check(ka_m, ssr_m, ka_b, ssr_b)
-    order = np.argsort(kas)
-    return np.array(kas)[order], np.array(ssrs)[order]
 
 
 def _with_points(
