@@ -158,11 +158,14 @@ def _entered_accepts(data: Dataset, result: FitResult) -> Callable[[str], Callab
 
     That interval is the profile interval of the entered inputs, so a
     projection of the same assay and bounds re-cuts the profile it came from.
-    The projection carries the point weights *result* was fitted with and the
-    cut-off is widened by the factor the interval of that constant carries,
-    so what is re-cut is the profile the judged interval was cut from rather
-    than another one on the same data. It is built on the first call, which
-    only a split interval makes.
+    The projection carries the point weights *result* was fitted with, and a
+    Ka is judged against the cut-off of its own profile point's fit
+    (:meth:`~core.pipeline.varpro.Projection.cut_off`), which steps up where
+    that fit holds a signal coefficient on a bound the best fit leaves free,
+    widened by the factor the interval of that constant carries: what is
+    re-cut is the profile the judged interval was cut from, by the test it
+    was cut with. It is built on the first call, which only a split interval
+    makes.
     """
     held: dict[str, Any] = {}
 
@@ -172,9 +175,10 @@ def _entered_accepts(data: Dataset, result: FitResult) -> Callable[[str], Callab
                 projection = Projection(data.assay, data.assay.get_default_bounds(), point_weights=result.point_weights)
                 held['projection'] = projection
                 held['fit'] = projection.fit()
-            inflation = result.conditional.intervals[key].inflation
-            threshold = held['projection'].threshold(held['fit'], inflation=inflation)
-            return bool(held['projection'].profile(key)(ka) <= threshold)
+            projection = held['projection']
+            cut = projection.cut_off(held['fit'], inflation=result.conditional.intervals[key].inflation)
+            _, value, fitted = projection.profile_point(key, ka)
+            return bool(value <= cut(fitted))
 
         return accepts
 

@@ -26,7 +26,15 @@ from validation import checks, reference
 from validation.generate import dataset
 from validation.reference import agreement_row, pooling_row, reference_intervals
 from validation.scenarios import Scenario, SharedEntry, SpecEntry
-from validation.score import _profile_accepts, interval_facts, measurement_set, region_excess, score, score_replicates
+from validation.score import (
+    _entered_accepts,
+    _profile_accepts,
+    interval_facts,
+    measurement_set,
+    region_excess,
+    score,
+    score_replicates,
+)
 
 
 def interval(low: float, high: float, split: bool = False) -> KaInterval:
@@ -76,6 +84,45 @@ def test_a_ka_the_model_could_not_be_solved_at_is_not_accepted():
     """An infinite profile value is the model failing, which is no evidence that the Ka fits."""
     profile = SimpleNamespace(grid=np.array([1e4, 1e6]), objective=np.array([np.inf, 0.0]), threshold=5.0)
     assert _profile_accepts(profile)(10**5.0) is False
+
+
+#: A GDA titration whose conditional interval is split: the fit at some Ka
+#: inside it holds a signal coefficient on its bound that the best fit leaves
+#: free, so the cut-off steps up there and the interval accepts Ka the flat
+#: cut-off of the best fit would reject.
+SPLIT = Scenario(assay='GDA', regime=10.0, n_points=30, noise=0.03)
+SPLIT_SEED = 0
+
+
+def test_a_split_conditional_interval_is_scored_against_the_cut_off_it_was_cut_with():
+    """A Ka inside a split interval is covered exactly where the engine's own test accepts it.
+
+    The engine judges each Ka against the cut-off of its own profile point's
+    fit, which steps up wherever that fit holds a coefficient on a bound. A
+    scorer judging every Ka against the best fit's flat cut-off would count a
+    truth the interval accepts as missed.
+    """
+    data = dataset(SPLIT, SPLIT_SEED)
+    result = fit_measurement_set(
+        measurement_set(data),
+        ASSAY_CLASSES[AssayType[SPLIT.assay]],
+        dict(data.conditions),
+        FitConfig(per_replica=False, errors=SPLIT.error_model),
+    )
+    interval = result.conditional.intervals['Ka_guest']
+    assert interval.split, 'the case has to be split for this to say anything'
+    projection = Projection(data.assay, data.assay.get_default_bounds(), point_weights=result.point_weights)
+    fit = projection.fit()
+    cut = projection.cut_off(fit, inflation=interval.inflation)
+    flat = projection.threshold(fit, inflation=interval.inflation)
+    accepts = _entered_accepts(data, result)('Ka_guest')
+    stepped = 0
+    for ka in np.geomspace(interval.low, interval.high, 60):
+        _, value, fitted = projection.profile_point('Ka_guest', float(ka))
+        engine = bool(value <= cut(fitted))
+        stepped += engine and value > flat
+        assert accepts(float(ka)) is engine, ka
+    assert stepped, 'some Ka has to be accepted only past a step of the cut-off for this to say anything'
 
 
 def region(threshold: float) -> JointRegion:
