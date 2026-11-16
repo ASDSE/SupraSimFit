@@ -26,7 +26,12 @@ size, each in a process of its own; ``--only`` and ``--theme`` narrow it.
 The command line reads and writes a settings store of its own that starts empty, so a
 render shows the built-in preferences whatever the user's are, with the analysis pinned to
 :data:`WORKERS` processor cores. A sensitivity analysis runs at Fixed seed :data:`SEED`, so
-every render of a state draws the same samples. The states:
+every render of a state draws the same samples. The command line draws for a display of
+:data:`DISPLAY_RATIO` whatever display is attached: Qt lays text out, and the plots size
+their lines and points, for the device pixel ratio of the screen, so on a screen of another
+ratio the command runs itself again with Qt scaled to that one (``QT_SCALE_FACTOR``). Its
+processes stay out of the macOS Dock (``QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM``).
+The states:
 
 - ``empty`` — a new session;
 - ``demo-loaded`` — Demo IDA's data and settings, before the fit;
@@ -46,6 +51,7 @@ plot area from the top-left corner, so a readout reads the values under it.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import tempfile
@@ -78,6 +84,10 @@ THEMES = ('light', 'dark')
 TIMEOUT = 600
 #: Device pixels per logical pixel of a reference screen.
 SCALE = 1.5
+#: The device pixel ratio of the display the command line draws for, whatever display is attached.
+DISPLAY_RATIO = 2.0
+#: Set in the environment of the command run again on a display of :data:`DISPLAY_RATIO`.
+_ON_DISPLAY = 'SUPRASIMFIT_RENDER_ON_DISPLAY'
 JPEG_QUALITY = 80
 #: How many reference screens are rendered at once, each in a process of its own.
 PROCESSES = 4
@@ -369,6 +379,16 @@ def render_all(directory: Path, names: list[str], themes: list[str]) -> None:
         sys.exit('These screens could not be rendered:\n' + '\n'.join(failed))
 
 
+def _again_on_display(ratio: float, argv: list[str]) -> int:
+    """Run the command line *argv* again with Qt scaled from the attached screen's *ratio* to :data:`DISPLAY_RATIO`;
+    its exit status."""
+    if os.environ.get(_ON_DISPLAY):
+        sys.exit(f'Qt draws at {ratio:g} device pixels per logical pixel; QT_SCALE_FACTOR asked for {DISPLAY_RATIO:g}.')
+    factor = float(os.environ.get('QT_SCALE_FACTOR', 1)) * DISPLAY_RATIO / ratio
+    env = {**os.environ, 'QT_SCALE_FACTOR': repr(factor), _ON_DISPLAY: '1'}
+    return subprocess.run([sys.executable, '-m', __spec__.name, *argv], env=env, check=False).returncode
+
+
 def _pointer(text: str) -> tuple[float, float]:
     try:
         across, down = (float(part) for part in text.split(','))
@@ -392,6 +412,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--section', choices=SECTIONS, help='with Help: the section on show')
     parser.add_argument('--all', type=Path, metavar='DIR', help='write every reference screen to DIR')
     parser.add_argument('--only', nargs='+', choices=list(SCREENS), metavar='NAME', help='with --all: these screens')
+    argv = sys.argv[1:] if argv is None else argv
     args = parser.parse_args(argv)
     if args.all is None and (args.view is None or args.out is None):
         parser.error('name a view and the file to write, or --all and a folder')
@@ -407,12 +428,15 @@ def main(argv: list[str] | None = None) -> None:
         if len(names) * len(themes) > 1:
             render_all(args.all, names, themes)
             return
+    os.environ.setdefault('QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM', '1')
     with tempfile.TemporaryDirectory() as store:
         QSettings.setDefaultFormat(QSettings.Format.IniFormat)
         QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, store)
         QCoreApplication.setOrganizationName('SupraSimFit-Render')
         QCoreApplication.setApplicationName('render')
         _app = start_application(sys.argv[:1])  # held for the whole render
+        if (ratio := _app.primaryScreen().devicePixelRatio()) != DISPLAY_RATIO:
+            sys.exit(_again_on_display(ratio, argv))
         preferences.set_int(preferences.WORKER_COUNT_KEY, WORKERS)
         if args.all is not None:
             print(render_screen(names[0], themes[0], args.all), flush=True)
