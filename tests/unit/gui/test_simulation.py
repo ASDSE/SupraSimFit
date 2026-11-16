@@ -285,6 +285,17 @@ def test_a_value_the_form_refuses_is_said_beside_the_settings(qapp, window):
     assert view.problem.isHidden()
 
 
+def test_a_simulation_that_cannot_be_computed_refuses_a_save_without_telling_the_user_to_fit(qapp, window):
+    """The one sentence a refused fit, plot save and data save share names no action the user did not take."""
+    session = window.active_session()
+    window.show_view('Simulation')
+    session.model.edit_simulation(lambda f: f.set_diluted(True))
+    session.model.edit_simulation(lambda f: f.set_stock('0.001'))  # below the highest titrant concentration
+    assert session.model.simulated is None
+    note = session.plot_export_note('Simulation')
+    assert 'more concentrated than the highest titrant' in note and 'fit' not in note.lower()
+
+
 def test_the_sessions_data_are_drawn_over_the_simulation_and_its_noise_read_from_them(qapp, window):
     session = window.active_session()
     window.show_view('Simulation')

@@ -973,13 +973,14 @@ class SessionModel(QObject):
         self.edit_simulation(lambda f: f.read_noise(overlay.name, overlay.signals))
 
     def fit_refusal(self) -> Refusal | None:
-        """Why the simulated data cannot be fitted now; ``None`` when they can."""
+        """Why the simulated data cannot be fitted or saved now; ``None`` when they can. The message serves a fit, a
+        plot save and a data save alike, so it names none of them."""
         if self._simulated is not None:
             return None
         return Refusal(
             'Nothing to Fit',
             f'{self._simulation_problem or "The model cannot be computed with these settings."} Change the '
-            'settings in Simulation, then fit again.',
+            'settings in Simulation, then try again.',
         )
 
     @_edit
