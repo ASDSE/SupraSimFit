@@ -29,6 +29,7 @@ from validation.scenarios import Scenario, SharedEntry, SpecEntry
 from validation.score import (
     _entered_accepts,
     _profile_accepts,
+    _reported_accepts,
     interval_facts,
     measurement_set,
     region_excess,
@@ -80,6 +81,23 @@ def test_the_profile_decides_between_its_nodes_and_not_only_on_them():
     assert accepts(1e2) is False, 'a Ka past the grid is not something the profile accepted'
 
 
+def test_the_profile_judges_a_ka_against_the_cut_off_of_its_own_solution():
+    """Where the solution holds a parameter on a bound the optimum leaves free, its cut-off is higher than the
+    threshold of the optimum, and the interval was cut against that: a Ka over the threshold and under its own cut-off
+    is accepted, one over its own cut-off is not."""
+    profile = SimpleNamespace(
+        grid=np.array([1e4, 10**4.5, 10**4.5000001, 1e6, 1e8]),
+        objective=np.array([8.5, 7.0, 7.0, 0.0, 10.0]),
+        threshold=5.0,
+        cut=np.array([8.0, 8.0, 5.0, 5.0, 5.0]),
+    )
+    accepts = _profile_accepts(profile)
+    assert accepts(10**4.2) is True  # 7.9 on the line between the nodes: over the threshold, under the cut-off 8
+    assert accepts(10**4.4) is True
+    assert accepts(10**4.6) is False, 'past the step the cut-off is the threshold again, and the profile lies over it'
+    assert accepts(10**5.5) is True
+
+
 def test_a_ka_the_model_could_not_be_solved_at_is_not_accepted():
     """An infinite profile value is the model failing, which is no evidence that the Ka fits."""
     profile = SimpleNamespace(grid=np.array([1e4, 1e6]), objective=np.array([np.inf, 0.0]), threshold=5.0)
@@ -126,6 +144,31 @@ def test_a_split_conditional_interval_is_scored_against_the_cut_off_it_was_cut_w
         stepped += engine and value > flat
         assert accepts(float(ka)) is engine, ka
     assert stepped, 'some Ka has to be accepted only past a step of the cut-off for this to say anything'
+
+
+def test_a_reported_interval_no_input_may_move_is_scored_by_the_test_it_was_cut_with():
+    """With nothing stated about the inputs the reported interval is the conditional one, so a Ka inside it is
+    covered exactly where the engine's conditional test accepts it — the profile the fit carries beside it has nothing
+    to say there."""
+    data = dataset(SPLIT, SPLIT_SEED)
+    result = fit_measurement_set(
+        measurement_set(data),
+        ASSAY_CLASSES[AssayType[SPLIT.assay]],
+        dict(data.conditions),
+        FitConfig(per_replica=False, errors=SPLIT.error_model),
+    )
+    interval = result.intervals[SPLIT_KEY]
+    assert interval.split, 'the case has to be split for this to say anything'
+    projection = Projection(data.assay, data.assay.get_default_bounds(), point_weights=result.point_weights)
+    cut = projection.cut_off(projection.fit(), inflation=interval.inflation)
+    accepts = _reported_accepts(data, result)[SPLIT_KEY]
+    verdicts = set()
+    for ka in np.geomspace(interval.low, interval.high, 25):
+        _, value, fitted = projection.profile_point(SPLIT_KEY, float(ka))
+        engine = bool(value <= cut(fitted))
+        verdicts.add(engine)
+        assert accepts(float(ka)) is engine, ka
+    assert verdicts == {True, False}, 'the Ka read have to hold both verdicts for this to say anything'
 
 
 def region(threshold: float) -> JointRegion:

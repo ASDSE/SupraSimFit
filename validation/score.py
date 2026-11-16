@@ -24,6 +24,7 @@ from core.assays.registry import AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set, fit_measurement_set_per_replica
 from core.pipeline.profile import JointRegion, fit_profile
+from core.pipeline.reporting import reports_conditional
 from core.pipeline.varpro import FitRefused, KaInterval, Projection
 from validation.generate import Dataset, dataset
 from validation.scenarios import Scenario
@@ -120,12 +121,15 @@ def interval_facts(
 def _profile_accepts(profile) -> Callable[[float], bool]:
     """Whether the penalised profile of one binding constant accepts a Ka.
 
-    The profile was solved on a grid and the interval cut from it; the same
-    grid, read between its nodes, answers one Ka. A Ka past the grid, or
+    The profile was solved on a grid and the interval cut from it, each point
+    against the cut-off of its own solution (``cut``, the flat ``threshold``
+    where the profile carries none); the same grid, its excess over that
+    cut-off read between the nodes, answers one Ka. A Ka past the grid, or
     between two nodes the model could not be solved at, is not accepted.
     """
     grid = np.log10(profile.grid)
-    values = np.asarray(profile.objective, dtype=float)
+    cut = getattr(profile, 'cut', None)
+    values = np.asarray(profile.objective, dtype=float) - (profile.threshold if cut is None else np.asarray(cut))
 
     def accepts(ka: float) -> bool:
         t = float(np.log10(ka))
@@ -137,27 +141,38 @@ def _profile_accepts(profile) -> Callable[[float], bool]:
             return False
         span = grid[i] - grid[i - 1]
         value = right if span == 0 else left + (right - left) * (t - grid[i - 1]) / span
-        return bool(value <= profile.threshold)
+        return bool(value <= 0.0)
 
     return accepts
 
 
-def _reported_accepts(result: FitResult) -> dict[str, Callable[[float], bool]]:
-    """One acceptance test per binding constant of the reported interval.
+def _reported_accepts(
+    data: Dataset, result: FitResult, signals: np.ndarray | None = None
+) -> dict[str, Callable[[float], bool]]:
+    """One acceptance test per binding constant of the reported interval: the interval's own definition.
 
-    The fit carries the penalised profile it cut the interval from, which is
-    the plain profile where no input may move, so the test is the interval's
-    own definition rather than a second computation of it.
+    Where an input may move or an error of the additions is stated, the
+    reported interval is cut from the penalised profile the fit carries. Where
+    neither is, it is the conditional interval itself and is judged by the
+    conditional test (:func:`_entered_accepts`) of the signals the fit was made
+    from, *signals* where given.
     """
+    if reports_conditional(result):
+        entered = _entered_accepts(data, result, signals)
+        return {key: entered(key) for key in result.intervals or {}}
     aware = result.aware
     return {} if aware is None else {key: _profile_accepts(profile) for key, profile in aware.profiles.items()}
 
 
-def _entered_accepts(data: Dataset, result: FitResult) -> Callable[[str], Callable[[float], bool]]:
+def _entered_accepts(
+    data: Dataset, result: FitResult, signals: np.ndarray | None = None
+) -> Callable[[str], Callable[[float], bool]]:
     """A factory of acceptance tests for the interval at the inputs as entered.
 
     That interval is the profile interval of the entered inputs, so a
-    projection of the same assay and bounds re-cuts the profile it came from.
+    projection of the same assay and bounds re-cuts the profile it came from,
+    of *signals* where given — the average of the replicates a fit kept — and
+    of the average of every replicate otherwise.
     The projection carries the point weights *result* was fitted with, and a
     Ka is judged against the cut-off of its own profile point's fit
     (:meth:`~core.pipeline.varpro.Projection.cut_off`), which steps up where
@@ -172,7 +187,12 @@ def _entered_accepts(data: Dataset, result: FitResult) -> Callable[[str], Callab
     def for_key(key: str) -> Callable[[float], bool]:
         def accepts(ka: float) -> bool:
             if not held:
-                projection = Projection(data.assay, data.assay.get_default_bounds(), point_weights=result.point_weights)
+                projection = Projection(
+                    data.assay,
+                    data.assay.get_default_bounds(),
+                    point_weights=result.point_weights,
+                    signals=None if signals is None else signals[np.newaxis, :],
+                )
                 held['projection'] = projection
                 held['fit'] = projection.fit()
             projection = held['projection']
@@ -271,7 +291,7 @@ def score(scenario: Scenario, seed: int) -> dict[str, Any]:
         t_fit = time.perf_counter() - fit_started
         truth = data.ka_truth
         conditional = result.conditional
-        reported_accepts = _reported_accepts(result)
+        reported_accepts = _reported_accepts(data, result)
         entered_accepts = _entered_accepts(data, result)
         row: dict[str, Any] = {
             'truth': truth,
@@ -375,7 +395,8 @@ def score_replicates(scenario: Scenario, seed: int) -> dict[str, Any]:
         t_fit = time.perf_counter() - fit_started
         used = set(result.metadata['replica_ids_fit'])
         given = list(result.metadata['active_replica_ids'])
-        reported_accepts = _reported_accepts(result)
+        kept = data.signals[[int(rid[1:]) for rid in sorted(used)]].mean(axis=0)
+        reported_accepts = _reported_accepts(data, result, kept)
         return {
             'replicates': len(given),
             'departed': [f'r{row}' for row in (*scenario.noisy_rows, *scenario.shifted_rows)],
