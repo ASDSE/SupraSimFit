@@ -1,7 +1,7 @@
 """Widget tests for Fit results (:mod:`gui.views.fit_results`): what the view does with what :mod:`gui.results` says.
 
 What the text and numbers say is pinned by ``test_results.py``; here only the view's own
-work: the empty view, the callout's action, the link to the details, the side panel's
+work: the empty view, the place the callout's action names, the side panel's
 least width, the layout of Fit quality and Diagnostics, copyable results, the plot's ticks
 and error bars and the exported image.
 """
@@ -18,6 +18,7 @@ from PyQt6.QtCore import Qt  # noqa: E402
 from core.assays.registry import AssayType  # noqa: E402
 from core.pipeline.diagnostics import Conflict, FitDiagnostics, InputShift, MisfitTest, Verdict  # noqa: E402
 from gui.design import components as C  # noqa: E402
+from gui.results import Place  # noqa: E402
 from gui.session_model import Change  # noqa: E402
 from tests.unit.gui.session_setup import state_binding  # noqa: E402
 from tests.unit.gui.test_results import aware_result, fit_on, four_replicates  # noqa: E402
@@ -66,39 +67,14 @@ def test_before_any_fit_the_view_says_what_to_do_with_the_platform_s_shortcut(se
 
 def test_the_conflict_callout_reviews_the_inputs_in_ka_confidence(session):
     _show(session, aware_result(shifts=_SHIFTS, diagnostics=_CONFLICT))
-    requested: list[str] = []
-    session.view_requested.connect(requested.append)
+    requested = []
+    session._results.reveal_requested.connect(requested.append)
     (callout,) = [c for c in session._results.callout_host.findChildren(C.Callout) if c.action is not None]
 
     callout.action.click()
 
-    assert requested == ['Ka confidence']
+    assert requested == [Place.READINGS]
     assert session.view_badge('Fit results') == 'Input-aware'  # an imported fit that records no replicates
-
-
-def test_all_results_and_diagnostics_shows_the_side_panel_with_diagnostics_open(qapp, monkeypatch):
-    from PyQt6.QtWidgets import QPushButton
-
-    from gui.main_window import FittingMainWindow
-
-    monkeypatch.setattr(FittingMainWindow, '_run_update_check', lambda self, silent: None)
-    window = FittingMainWindow()
-    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-    window.show()
-    window.show_view('Fit results')
-    session = window.active_session()
-    _show(session, aware_result(shifts=_SHIFTS, diagnostics=_CONFLICT))
-    window._set_side_visible(False)
-    view = session._results
-    view.diagnostics_section.header.set_open(False)
-    (link,) = [b for b in view.headline.findChildren(QPushButton) if b.text().startswith('All results and diagnostics')]
-
-    link.click()
-    qapp.processEvents()
-
-    assert window._side_visible and session._views['Fit results'].side.isVisible()
-    assert view.diagnostics_section.header._open
-    window.close()
 
 
 def _window(qapp, monkeypatch, fit):

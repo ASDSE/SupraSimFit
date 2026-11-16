@@ -2,7 +2,7 @@
 
 What the text and the curves say is pinned by ``test_confidence.py``; here only the view's
 own work: its states (no fit, the profile still being worked out, a profile that failed, a
-fit with no binding constant), the callout's action and the guide link, the pointer's
+fit with no binding constant), the guide link, the pointer's
 readout, the enlarge tool, the stacked plots and joint region of two binding constants,
 and the saved figure.
 """
@@ -100,22 +100,6 @@ def test_a_fit_with_no_binding_constant_says_there_is_nothing_to_profile(session
 
     view = session._confidence
     assert view.empty.text() == CF.NO_KA and view.header_host.isHidden() and not view.has_plot()
-
-
-def test_the_conflict_callout_opens_notes_at_the_input_shifts(qapp, session):
-    _show(session, aware_result(shifts=_SHIFTS, diagnostics=_CONFLICT))
-    side = session._views['Ka confidence'].side
-    side.hide()
-    requested: list[bool] = []
-    session.side_panel_requested.connect(lambda: requested.append(True))
-    (callout,) = [c for c in session._confidence.callout_host.findChildren(C.Callout) if c.action is not None]
-
-    callout.action.click()
-    qapp.processEvents()
-
-    section = session._confidence.sections['conflict']
-    assert callout.action.text() == CF.SHOW_SHIFTS and requested == [True]
-    assert side.isVisible() and section.isVisible() and section.header._open
 
 
 def test_reading_this_plot_asks_for_the_help_at_ka_confidence(session):

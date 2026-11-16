@@ -253,7 +253,9 @@ def callouts(
     being computed.
     """
     specs = [
-        R.CalloutSpec(spec.tone, spec.title, spec.body, SHOW_SHIFTS) if spec.action == R.REVIEW else spec
+        R.CalloutSpec(spec.tone, spec.title, spec.body, SHOW_SHIFTS, R.Place.SHIFTS)
+        if spec.action == R.REVIEW
+        else spec
         for spec in R.callouts(fit, note, unchecked=unchecked, others_hidden=others_hidden)
     ]
     if pending and note is None:

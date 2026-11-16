@@ -82,6 +82,9 @@ SIZE = {
     'export-species': 400,
 }
 
+# ── Durations, in ms: how long the mark of a place a link revealed stays on it.
+DURATION = {'reveal-mark': 1500}
+
 #: Colours of the replicates (``replicate-1`` … ``replicate-12``); past them the colours repeat with the next mark.
 REPLICATE_COLOURS = 12
 

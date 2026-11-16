@@ -64,7 +64,7 @@ from gui.plotting.labels import (
     stated_uncertainty,
     verdict_headline,
 )
-from gui.results import REPLICATE_DISPLAYS
+from gui.results import REPLICATE_DISPLAYS, Place
 from gui.sensitivity import NOTHING_VARIES, AnalysisForm
 from gui.uncertainty import UncertaintyForm
 from gui.widgets.assay_conditions import (
@@ -208,19 +208,12 @@ _REFUSALS = {
 
 @dataclass(frozen=True)
 class Refusal:
-    """Why a run or an import cannot start: the title and the message a dialog shows."""
+    """Why a run or an import cannot start: the title and the message a dialog shows, and the *place*
+    holding what to change, which the session shows once the dialog is closed."""
 
     title: str
     message: str
-
-
-#: The refusal of a fit on data whose concentrations are column numbers standing
-#: in for the real ones; a view takes the user to where they are entered.
-CONCENTRATIONS_REQUIRED = Refusal(
-    'Concentrations Required',
-    'This dataset has placeholder concentrations. Enter the real '
-    'concentration list in Measurements before running the fit.',
-)
+    place: Place | None = None
 
 
 @dataclass(frozen=True)
@@ -1549,13 +1542,17 @@ class SessionModel(QObject):
 
     def _settings_refusal(self, verb: str) -> Refusal | None:
         """The first view whose settings cannot be used, with every problem it has; ``None`` when all can."""
-        for title, problems in (
-            ('Binding model', [*self._settings.assay_problems, self.stock_problem(), *self._settings.bound_problems]),
-            ('Input uncertainty', self._settings.input_problems),
+        for title, problems, place in (
+            (
+                'Binding model',
+                [*self._settings.assay_problems, self.stock_problem(), *self._settings.bound_problems],
+                Place.BINDING_PROBLEM,
+            ),
+            ('Input uncertainty', self._settings.input_problems, Place.INPUT_PROBLEM),
         ):
             problems = [problem for problem in problems if problem]
             if problems:
-                return Refusal(title, _problem_list(verb, problems))
+                return Refusal(title, _problem_list(verb, problems), place)
         return None
 
     @_edit
@@ -1571,7 +1568,12 @@ class SessionModel(QObject):
         # produce meaningless Ka values. Any plate-reader import that lacks
         # concentrations sets this flag, whatever the instrument.
         if ms.metadata.get(BMG_PLACEHOLDER_KEY):
-            return CONCENTRATIONS_REQUIRED
+            return Refusal(
+                'Concentrations Required',
+                'This dataset has placeholder concentrations. Enter the real '
+                'concentration list in Measurements before running the fit.',
+                Place.CONCENTRATIONS,
+            )
         refusal = self._settings_refusal('fit')
         if refusal is not None:
             return refusal
@@ -1761,9 +1763,9 @@ class SessionModel(QObject):
         # The analysis draws the inputs from the error sources stated, the same
         # ones the fit's interval accounts for.
         if not self._settings.errors.varies:
-            return Refusal('Sensitivity Analysis', NOTHING_VARIES)
+            return Refusal('Sensitivity Analysis', NOTHING_VARIES, Place.INPUTS)
         if problems:
-            return Refusal('Sensitivity Analysis', _problem_list('analysis', problems))
+            return Refusal('Sensitivity Analysis', _problem_list('analysis', problems), Place.ANALYSIS_PROBLEM)
         return None
 
     def sensitivity_cost_note(self, config: SensitivityConfig) -> str | None:

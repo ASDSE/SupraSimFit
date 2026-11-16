@@ -415,7 +415,7 @@ def callouts(
         out.append(R.CalloutSpec('warning', 'Analysis failed', ' '.join(error.split())))
     if result is None:
         if nothing_varies and not running:
-            out.append(R.CalloutSpec('neutral', 'Nothing to vary', NOTHING_VARIES, EDIT_INPUTS))
+            out.append(R.CalloutSpec('neutral', 'Nothing to vary', NOTHING_VARIES, EDIT_INPUTS, R.Place.INPUTS))
         return out
     if note is not None:
         return [*out, R.CalloutSpec('neutral', 'Results hidden', note)]
@@ -436,10 +436,13 @@ def callouts(
                 f'{drawn} on the inputs as entered, so they show how far the stated inputs move {names}, '
                 'not where it lies.',
                 R.REVIEW,
+                R.Place.READINGS,
             )
         )
     elif result.mode is SensitivityMode.SOBOL:
-        out.append(R.CalloutSpec('neutral', 'Not a confidence interval', NOT_A_CONFIDENCE_INTERVAL, COMPARE))
+        out.append(
+            R.CalloutSpec('neutral', 'Not a confidence interval', NOT_A_CONFIDENCE_INTERVAL, COMPARE, R.Place.FIT)
+        )
     stopped = stopped_sentence(result)
     if stopped:
         out.append(R.CalloutSpec('neutral', 'Analysis stopped', stopped))

@@ -25,7 +25,7 @@ from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE, space
 from gui.plotting.labels import THIN, times_ten, verdict_headline
-from gui.results import interval_caption, ka_blocks, test_rows
+from gui.results import Place, interval_caption, ka_blocks, test_rows
 from gui.session_model import Change, SessionModel
 from gui.uncertainty import ADDITION_MODES, REPLICATE_KINDS, InputEntry, spread_pct
 from gui.widgets.assay_conditions import format_condition
@@ -168,10 +168,11 @@ class _SourceRow(QWidget):
 class UncertaintyView(QObject):
     """The canvas and side panel of Input uncertainty over *model*; *parent* is where its dialogs open.
 
-    :attr:`review_requested` asks for Ka confidence, where the tests are reviewed.
+    :attr:`reveal_requested` asks for the readings of Ka confidence (*Review in Ka
+    confidence →*), where the tests are reviewed; the session shows them.
     """
 
-    review_requested = pyqtSignal()
+    reveal_requested = pyqtSignal(object)
 
     def __init__(self, model: SessionModel, parent: QWidget):
         super().__init__(parent)
@@ -396,7 +397,7 @@ class UncertaintyView(QObject):
         self.test_rows = C.vbox(spacing=0)
         self.tests_caption = C.wrapped('', 'small', 'tertiary')
         self.review = C.link_button('Review in Ka confidence  →')
-        self.review.clicked.connect(self.review_requested)
+        self.review.clicked.connect(lambda: self.reveal_requested.emit(Place.READINGS))
         tests = QWidget()
         tests.setLayout(C.vbox(self.test_rows, 2, self.tests_caption, 3, C.hbox(self.review, None), spacing=0))
         self.interval_section = C.section(t, 'Interval of the last fit', iv, first=True)

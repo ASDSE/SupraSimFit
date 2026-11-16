@@ -38,6 +38,7 @@ from gui.design.plot_theme import apply_plot_theme, axis_box, least_height, px, 
 from gui.design.tokens import HEAT_STOPS, RADIUS, SIZE, Theme, font, plot_font, space
 from gui.plotting.export import export_widget, figure_head
 from gui.plotting.labels import plain_label
+from gui.results import Place
 from gui.session_model import Change, SessionModel
 from gui.widgets.assay_conditions import condition_field
 
@@ -642,11 +643,12 @@ class SourcePlotsWindow(QWidget):
 class SensitivityView(QObject):
     """The canvas and side panel of Sensitivity over *model*; *parent* is the session.
 
-    :attr:`view_requested` asks for another view (Input uncertainty, Fit results, Ka
-    confidence) where a link points there; the session answers it.
+    :attr:`reveal_requested` asks for the :class:`~gui.results.Place` a link or a callout's
+    action names (the inputs of Input uncertainty, the headline of Fit results, the readings
+    of Ka confidence); the session shows it.
     """
 
-    view_requested = pyqtSignal(str)
+    reveal_requested = pyqtSignal(object)
 
     def __init__(self, model: SessionModel, parent: QWidget):
         super().__init__(parent)
@@ -781,7 +783,7 @@ class SensitivityView(QObject):
         # Error sources
         self.sources_box = C.vbox(spacing=1)
         self.edit_inputs = C.link_button('Edit in Input uncertainty  →')
-        self.edit_inputs.clicked.connect(lambda: self.view_requested.emit('Input uncertainty'))
+        self.edit_inputs.clicked.connect(lambda: self.reveal_requested.emit(Place.INPUTS))
         sources = _widget(C.vbox(_widget(self.sources_box), 2, C.hbox(self.edit_inputs, None), spacing=0))
         # This run
         self.run_box = C.vbox(spacing=0)
@@ -1020,13 +1022,8 @@ class SensitivityView(QObject):
         self.callouts = list(specs)
         for spec in specs:
             callout = C.Callout(self.t, spec.tone, spec.title, spec.body, spec.action or None)
-            target = {
-                S.EDIT_INPUTS: 'Input uncertainty',
-                S.COMPARE: 'Fit results',
-                'Review in Ka confidence': 'Ka confidence',
-            }.get(spec.action)
-            if target is not None:
-                callout.action.clicked.connect(lambda _=False, v=target: self.view_requested.emit(v))
+            if spec.place is not None:
+                callout.action.clicked.connect(lambda _=False, place=spec.place: self.reveal_requested.emit(place))
             self.callout_box.addWidget(callout)
         self.callout_host.setVisible(bool(specs))
 

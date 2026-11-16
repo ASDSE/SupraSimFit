@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from html import escape
 
 import numpy as np
@@ -585,17 +586,46 @@ def empty_sentence(has_data: bool, shortcut: str) -> str:
     return f'No fit yet. Check the binding model and its conditions, then choose Run fit ({shortcut}).'
 
 
+class Place(Enum):
+    """A place in a session's views that a link, a callout's action or a refusal takes the user to.
+
+    :meth:`gui.fitting_session.FittingSession.reveal` shows it: its view on screen, the
+    section holding it open, scrolled to the top of its scroll area, focused and marked.
+    """
+
+    #: Measurements' concentration grid, its first point open for typing.
+    CONCENTRATIONS = 'concentrations'
+    #: The headline of Fit results.
+    FIT = 'fit'
+    #: Diagnostics in Fit details.
+    DIAGNOSTICS = 'diagnostics'
+    #: The two readings of each binding constant in Ka confidence.
+    READINGS = 'readings'
+    #: The input shifts in the Notes of Ka confidence.
+    SHIFTS = 'shifts'
+    #: The inputs table of Input uncertainty.
+    INPUTS = 'inputs'
+    #: The first problem Binding model shows, with the setting it is about.
+    BINDING_PROBLEM = 'binding problem'
+    #: The first problem Input uncertainty shows, with the setting it is about.
+    INPUT_PROBLEM = 'input problem'
+    #: The problem beside the settings of the next sensitivity run.
+    ANALYSIS_PROBLEM = 'analysis problem'
+
+
 @dataclass(frozen=True)
 class CalloutSpec:
-    """One callout of the canvas (DESIGN.md §5): ``warning`` or ``neutral``, a title, a body and an optional action."""
+    """One callout of the canvas (DESIGN.md §5): ``warning`` or ``neutral``, a title, a body and an optional
+    action, which takes the user to *place*."""
 
     tone: str
     title: str
     body: str
     action: str = ''
+    place: Place | None = None
 
 
-#: The action of the conflict callout: the view it switches to.
+#: The action of the conflict callout, which shows the two readings in Ka confidence.
 REVIEW = 'Review in Ka confidence'
 
 
@@ -635,6 +665,7 @@ def callouts(
                     'Inputs conflict',
                     'Together, the inputs moved further from their entered values than you stated.',
                     REVIEW,
+                    Place.READINGS,
                 )
             )
         if 'misfit' in rejected:
@@ -705,7 +736,7 @@ def fit_numbers(fit: FitResult) -> str:
     return f'{line}; {SHIFTED_CURVE_NOTE}' if fit.input_shifts else line
 
 
-#: The action of Measurements' fit cue: the view it switches to.
+#: The action of Measurements' fit cue, which shows the headline of Fit results.
 SHOW_FIT = 'Show fit results'
 
 

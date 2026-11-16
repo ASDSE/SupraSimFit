@@ -16,7 +16,20 @@ from dataclasses import dataclass
 from html import escape
 from typing import TYPE_CHECKING, NamedTuple
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTextBoundaryFinder, QVariantAnimation, pyqtSignal
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTextBoundaryFinder,
+    QTimer,
+    QVariantAnimation,
+    pyqtSignal,
+)
 from PyQt6.QtGui import (
     QAction,
     QColor,
@@ -40,6 +53,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -47,7 +61,7 @@ from PyQt6.QtWidgets import (
 
 from gui.design import icons
 from gui.design.plot_theme import REPLICATE_ALPHA
-from gui.design.tokens import RADIUS, SIZE, Theme, font, space
+from gui.design.tokens import DURATION, RADIUS, SIZE, Theme, font, space
 
 if TYPE_CHECKING:
     import pyqtgraph as pg
@@ -2349,6 +2363,129 @@ class Callout(QFrame):
         p.setPen(QPen(self.t.q(edge), 1))
         p.drawPath(path)
         p.end()
+
+
+# ── Reveal ─────────────────────────────────────────────────────────────────────────
+
+
+def _scroll_area_of(widget: QWidget) -> QScrollArea | None:
+    """The scroll area *widget* scrolls in, or ``None`` where it scrolls in none."""
+    parent = widget.parentWidget()
+    while parent is not None and not isinstance(parent, QScrollArea):
+        parent = parent.parentWidget()
+    return parent
+
+
+class RevealMark(QWidget):
+    """The mark of a place a link revealed (DESIGN.md §6): a 2-px `accent` ring a gap of ``space(1)``
+    outside *target*'s edge, for ``DURATION['reveal-mark']`` ms.
+
+    It lies over the viewport of the scroll area the target scrolls in — or over the
+    target's parent — and is drawn inside it, follows the target as it scrolls, moves or resizes,
+    takes no pointer event, and clears early where the target is hidden or goes. A window
+    shows one mark: a new one clears the one before. It neither moves nor fades, so it
+    needs no reduced-motion form.
+    """
+
+    #: The ring's width, the keyboard-focus ring's.
+    RING = 2
+
+    def __init__(self, theme: Theme, target: QWidget):
+        area = _scroll_area_of(target)
+        super().__init__(area.viewport() if area is not None else target.parentWidget())
+        self.t, self.target = theme, target
+        for other in target.window().findChildren(RevealMark):
+            if other is not self:
+                other.clear()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        target.installEventFilter(self)
+        target.destroyed.connect(self.clear)
+        if area is not None:
+            area.verticalScrollBar().valueChanged.connect(self._place)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.clear)
+        self._timer.start(DURATION['reveal-mark'])
+        self._place()
+        self.raise_()
+        self.show()
+
+    def clear(self) -> None:
+        """Take the mark away."""
+        self.hide()
+        self.deleteLater()
+
+    def _place(self) -> None:
+        outset = self.RING + space(1)
+        corner = self.target.mapTo(self.parentWidget(), QPoint(0, 0))
+        ring = QRect(corner, self.target.size()).adjusted(-outset, -outset, outset, outset)
+        # Kept inside what it lies over, so a place at the top of its scroll area keeps the whole ring.
+        self.setGeometry(ring.intersected(self.parentWidget().rect()))
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.target:
+            if event.type() == QEvent.Type.Hide:
+                self.clear()
+            elif event.type() in (QEvent.Type.Move, QEvent.Type.Resize):
+                self._place()
+        return False
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(self.t.q('accent'), self.RING))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        half = self.RING / 2
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(half, half, -half, -half), RADIUS['surface'], RADIUS['surface'])
+        p.end()
+
+
+def _focus_in(target: QWidget) -> QWidget:
+    """What takes the focus when *target* is revealed: the target where Tab reaches it, else the first control
+    inside it Tab reaches, else the target itself, so that Tab goes on from there."""
+    reachable = Qt.FocusPolicy.TabFocus.value
+    if target.focusPolicy().value & reachable:
+        return target
+    widget = target.nextInFocusChain()
+    for _ in range(len(target.window().findChildren(QWidget))):
+        if widget is target:
+            break
+        if (
+            target.isAncestorOf(widget)
+            and widget.focusPolicy().value & reachable
+            and widget.isVisible()
+            and widget.isEnabled()
+        ):
+            return widget
+        widget = widget.nextInFocusChain()
+    return target
+
+
+def reveal(theme: Theme, target: QWidget) -> None:
+    """Show *target*, whose view is on screen: open every section holding it, scroll it to the top of its
+    scroll area, move the focus into it (:func:`_focus_in`) and ring it with a :class:`RevealMark`.
+
+    A target that stays hidden once its sections are open — a part the view shows only with a
+    result — is left as it is.
+    """
+    widget = target
+    while widget is not None:
+        header = getattr(widget, 'header', None)
+        if isinstance(header, SectionHeader):
+            header.set_open(True)
+        widget = widget.parentWidget()
+    # The view, its side panel and the sections just opened are laid out before the target is measured.
+    for _ in range(3):
+        QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest.value)
+    if not target.isVisible():
+        return
+    area = _scroll_area_of(target)
+    if area is not None:
+        top = target.mapTo(area.widget(), QPoint(0, 0)).y()
+        area.verticalScrollBar().setValue(top - (RevealMark.RING + space(2)))
+    _focus_in(target).setFocus(Qt.FocusReason.OtherFocusReason)
+    RevealMark(theme, target)
 
 
 def spaced_ticks(

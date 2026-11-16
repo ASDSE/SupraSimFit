@@ -72,7 +72,7 @@ stylesheet template.
 | `text-secondary` | Labels, captions, axis tick labels, secondary values |
 | `text-tertiary` | Hints, notes, units after a value, shortcuts in menus, column headers of dense tables |
 | `text-disabled` | The text, icon and marks of a disabled control: its label, value, chevron, check and a slider's fill or a toggle's track; the palette's disabled text |
-| `accent`, `accent-hover` | Reported (input-aware) result and fitted curve; selection; 2-px keyboard focus ring; links; primary button; work in progress (status-bar dot while work runs, the switcher's busy dot, progress rings); the open session switcher's outline and icon tile |
+| `accent`, `accent-hover` | Reported (input-aware) result and fitted curve; selection; 2-px keyboard focus ring and the reveal mark; links; primary button; work in progress (status-bar dot while work runs, the switcher's busy dot, progress rings); the open session switcher's outline and icon tile |
 | `accent-subtle` | Tint behind accent text and marks: Input-aware badge, the switcher's icon tile |
 | `on-accent` | Text and icons on accent |
 | `success`, `warning`, `danger` with `-bg` (and `warning-border`) | A result's passed test, warning or error: diagnostic marks, callouts, messages |
@@ -160,6 +160,7 @@ the TXT/CSV reports use `estimate [low, high]`.
 - **Radius** (`RADIUS`): 6 px controls, 8 px cards, 10 px popovers, menus and the
   Settings window, 2 px the Sobol' index bars; badges and toggles are fully rounded, at
   half their height.
+- **Durations** (`DURATION`): the reveal mark stays 1500 ms (`reveal-mark`).
 - **Hairlines** are 1 px `border`. Panels are separated by hairlines, not gaps or shadows.
 - **Shadows** only under what floats above the window — popovers, menus, the Settings
   window: `shadow` (black) at low opacity, deeper in dark than in light.
@@ -357,8 +358,9 @@ the same tokens.
 | **Primary button** | Filled accent, `on-accent` icon and label; one per window; fixed width in the toolbar |
 | **Tool button** | Icon and optional text, no border, `bg-hover` on hover; ▾ when it opens a menu; a checked state for toggles (side panel); disabled, its icon and text in `text-disabled` with no hover fill |
 | **Outline button** | `border-strong` outline on `bg-surface`; secondary actions in forms (*Apply*, *Check now*) |
-| **Link** | Accent text with an optional trailing →; navigates or opens detail |
+| **Link** | Accent text with an optional trailing →; navigates or opens detail. A link that names a place reveals it (below) |
 | **Focus ring** | 2 px accent around the focused control, on every keyboard-reachable control |
+| **Reveal mark** | A 2-px `accent` ring with the 8-px card radius, 2 px outside the edge of a place a link revealed and kept inside the scroll area it lies in, for `DURATION['reveal-mark']`; it takes no pointer event, clears early where the place is hidden, and a window shows one at a time. It neither moves nor fades, so it has no reduced-motion form |
 | **Segmented control** | Mutually exclusive options (Fixed / σ / Range, units, modes). Light: `bg-subtle` track, selected segment `bg-surface` with a `border` outline, other labels `text-secondary`. Dark: `bg-window` track, selected segment `bg-raised` lifted by 6 % `text-primary` with a `border-strong` outline, other labels `text-tertiary`. Selected label `body-strong`; single options can be disabled |
 | **Field** | Right-aligned value in a 6-px-radius box, an optional leading symbol inside (`σ`); its unit beside it — a segmented control where the unit is chosen once for a row or section, a menu beside a single value; a disabled state (Fixed seed off) |
 | **Dropdown** | Field-styled box with the current choice and a chevron; opens its choice menu. Its options are written once, as rich text, and shown both on the face and in the menu in the same type role (`number`); the box is as wide as its widest option needs, or the column it sits in where that is wider |
@@ -413,6 +415,23 @@ Every component meets these rules:
   menus and their rows, segmented controls, checkboxes, toggles and sliders alike.
 
 ---
+
+**Revealing a place.** Every link, callout action and refusal that names a place takes
+the user there in the same steps, whatever is on screen already, so a click always
+answers: the place's view comes on screen; the side panels show where the place is in
+one; every section holding it opens; it is scrolled to the top of its scroll area; the
+focus moves to it — the place itself where Tab reaches it, else the first control in it
+Tab reaches, else the place, so Tab goes on from there; and the reveal mark rings it. A
+refusal reveals its place once its dialog is closed. The places: Measurements'
+concentrations, the first point open for typing (*Concentrations Required*); the headline
+of Fit results (*Show fit results*, *Compare in Fit results*); Diagnostics in Fit details
+(*All results and diagnostics →*); the two readings of Ka confidence (*Review in Ka
+confidence*, the conflict callouts of Fit results and Sensitivity); the input shifts in
+its Notes (*Show the input shifts*); the inputs table of Input uncertainty (*Edit in Input
+uncertainty*, a sensitivity analysis refused for nothing to vary); and the first problem
+a refused run's settings show, with the setting it is about (Binding model, Input
+uncertainty, Sensitivity's Analysis settings). A place a view shows only with a result it
+does not hold yet leaves the view on screen and marks nothing.
 
 ## 7. Plots
 
@@ -537,8 +556,8 @@ value, interval and interval-chart rows, above the plot. What an interval needs 
 beside it is its tooltip: what *Split* means on the interval chart, what widened it or
 left a side open on the interval line. A fit of each replicate separately adds one line
 of the single-replicate fits under the headline, why they differ from the interval on
-hover. *All results and diagnostics →* shows the Fit details side panel where it is
-hidden and brings Diagnostics into view. Where the curve is drawn at the inputs the fit
+hover. *All results and diagnostics →* reveals Diagnostics in the Fit details side
+panel (§6). Where the curve is drawn at the inputs the fit
 moved, the plot header says so in its description: *curve drawn at the fitted input
 shifts*.
 
@@ -557,8 +576,8 @@ bound); Input shifts.
 Canvas: the two readings side by side (Input-aware in `metric`; Inputs as entered in
 `title`, with *Split* where the interval has a gap; each with its 95 % interval and how far
 each end lies from the estimate) — the one reading, Inputs as entered, where every input is
-exact — any callout (*Inputs conflict*, whose *Show the input shifts* opens Notes at the
-shifts; a neutral notice while the Ka profile is still being worked out, the readings shown
+exact — any callout (*Inputs conflict*, whose *Show the input shifts* reveals the shifts in
+Notes; a neutral notice while the Ka profile is still being worked out, the readings shown
 at once), and **one profile plot per binding constant** holding both profiles: Input-aware
 in `accent`, Inputs as entered in `text-secondary`, each estimate a diamond on its curve,
 the reported interval as an `accent` band at 8 %. The header row of each plot carries the

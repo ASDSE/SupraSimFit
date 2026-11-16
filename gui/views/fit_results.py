@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QMargins, QObject, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QFont, QKeySequence
-from PyQt6.QtWidgets import QGridLayout, QLayout, QScrollArea, QWidget
+from PyQt6.QtWidgets import QGridLayout, QLayout, QWidget
 
 from core.assays.registry import AssayType
 from gui import results as R
@@ -43,13 +43,12 @@ def _clear(layout: QLayout) -> None:
 class FitResultsView(QObject):
     """The canvas and side panel of Fit results over *model*; *parent* is where its menus open.
 
-    :attr:`review_requested` asks for Ka confidence (the conflict callout's action), and
-    :attr:`details_requested` for the side panel with Diagnostics in view (*All results
-    and diagnostics →*); the session answers both.
+    :attr:`reveal_requested` asks for the :class:`~gui.results.Place` a link or a callout's
+    action names (*All results and diagnostics →* Diagnostics, the conflict callout the
+    readings of Ka confidence); the session shows it.
     """
 
-    review_requested = pyqtSignal()
-    details_requested = pyqtSignal()
+    reveal_requested = pyqtSignal(object)
 
     def __init__(self, model: SessionModel, parent: QWidget):
         super().__init__(parent)
@@ -199,11 +198,6 @@ class FitResultsView(QObject):
         menu = C.PopoverMenu(self.t, self.parent.window(), self.display_actions())
         menu.popup(self.display_tool)
 
-    def show_diagnostics(self, area: QScrollArea) -> None:
-        """Open Diagnostics and scroll *area*, the side panel's, to it."""
-        self.diagnostics_section.header.set_open(True)
-        area.ensureWidgetVisible(self.diagnostics_section, 0, 0)
-
     def export_image(self, path: str) -> None:
         """Save the titration plot as shown to *path*, PNG or SVG, in the light theme on white: under its
         description and legend, with the summary of the fit drawn."""
@@ -281,7 +275,7 @@ class FitResultsView(QObject):
         blocks = R.ka_blocks(fit, profile, model.profile_running())
         text, tone = R.reading(fit)
         link = C.link_button('All results and diagnostics  →')
-        link.clicked.connect(self.details_requested)
+        link.clicked.connect(lambda: self.reveal_requested.emit(R.Place.DIAGNOSTICS))
         if not blocks:
             sentence = C.wrapped(
                 'This fit has no association constant. Its parameters are listed in Fit details.', 'body', 'secondary'
@@ -351,8 +345,8 @@ class FitResultsView(QObject):
         self.callouts = list(specs)
         for spec in specs:
             callout = C.Callout(self.t, spec.tone, spec.title, spec.body, spec.action or None)
-            if spec.action == R.REVIEW:
-                callout.action.clicked.connect(self.review_requested)
+            if spec.place is not None:
+                callout.action.clicked.connect(lambda _=False, place=spec.place: self.reveal_requested.emit(place))
             self.callout_box.addWidget(callout)
         self.callout_host.setVisible(bool(specs))
 

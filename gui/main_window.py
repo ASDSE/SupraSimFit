@@ -400,8 +400,7 @@ class FittingMainWindow(QMainWindow):
         session = FittingSession()
         session.changed.connect(self._refresh)
         session.side_panel_closed.connect(lambda: self._set_side_visible(False))
-        session.side_panel_requested.connect(lambda: self._set_side_visible(True))
-        session.view_requested.connect(self.show_view)
+        session.view_requested.connect(self._show_requested)
         session.new_session_requested.connect(self._on_load_new)
         session.help_requested.connect(self.open_help)
         session.set_side_panels_visible(self._side_visible)
@@ -477,6 +476,12 @@ class FittingMainWindow(QMainWindow):
         if session is not None:
             session.show_view(view)
         self._refresh()
+
+    def _show_requested(self, view: str, side: bool) -> None:
+        """Put *view* on screen for a session that asked, with the side panels shown where *side*."""
+        if side and not self._side_visible:
+            self._set_side_visible(True)
+        self.show_view(view)
 
     def _set_sidebar_visible(self, visible: bool) -> None:
         self._sidebar.setVisible(visible)

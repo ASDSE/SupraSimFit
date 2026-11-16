@@ -393,13 +393,6 @@ def test_a_heatmap_axis_problem_names_the_span_beside_the_settings(session):
     assert problem.isHidden()
 
 
-def test_the_links_ask_for_the_view_they_name(session):
-    asked = []
-    session.view_requested.connect(asked.append)
-    session._sensitivity.edit_inputs.click()
-    assert asked == ['Input uncertainty']
-
-
 def test_the_saved_figure_is_drawn_whatever_the_run(session, tmp_path):
     for result in (F.sobol_result(), F.heatmap_result(), F.two_ka_result()):
         _hold(session, result)

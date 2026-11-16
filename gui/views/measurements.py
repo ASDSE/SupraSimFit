@@ -175,10 +175,11 @@ class MeasurementsView(QObject):
     """The canvas and side panel of Measurements over *model*; *parent* is where its dialogs open.
 
     :attr:`new_session_link` is the note's *Load data into a new session…*, which the window
-    answers; :attr:`view_requested` asks for another view (the cue's *Show fit results*).
+    answers; :attr:`reveal_requested` asks for the headline of Fit results (the cue's *Show
+    fit results*), which the session shows.
     """
 
-    view_requested = pyqtSignal(str)
+    reveal_requested = pyqtSignal(object)
 
     def __init__(self, model: SessionModel, parent: QWidget):
         super().__init__(parent)
@@ -235,11 +236,6 @@ class MeasurementsView(QObject):
     def export_image(self, path: str) -> None:
         """Save the raw titration to *path*, PNG or SVG, in the light theme on white, under its description and legend."""
         self.plot.export_image(path, self.titration.legend, RAW_DESCRIPTION)
-
-    def focus_concentrations(self) -> None:
-        """Open the first concentration for typing, for a fit that needs real concentrations."""
-        self.conc_section.header.set_open(True)
-        self.grid.edit(0)
 
     def _load_vector(self) -> None:
         if self.model.dataset is None:
@@ -479,7 +475,7 @@ class MeasurementsView(QObject):
         self.cue_host.setVisible(text is not None)
         if text is not None:
             cue = C.Callout(self.t, 'neutral', 'Fitted', text, R.SHOW_FIT)
-            cue.action.clicked.connect(lambda: self.view_requested.emit('Fit results'))
+            cue.action.clicked.connect(lambda: self.reveal_requested.emit(R.Place.FIT))
             self.cue_box.addWidget(cue)
 
     def _show_plot_appearance(self) -> None:

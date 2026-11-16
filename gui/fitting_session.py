@@ -23,7 +23,8 @@ from gui.design.appearance import theme
 from gui.design.tokens import SIZE
 from gui.plotting.export import ExportRefused
 from gui.plotting.labels import and_join, stated_uncertainty
-from gui.session_model import CONCENTRATIONS_REQUIRED, Change, SessionModel
+from gui.results import Place
+from gui.session_model import Change, Refusal, SessionModel
 from gui.views.binding import BindingView
 from gui.views.confidence import ConfidenceView
 from gui.views.fit_results import FitResultsView
@@ -121,12 +122,9 @@ class FittingSession(QWidget):
         hidden, data or settings changed, or the session was renamed.
     side_panel_closed()
         Emitted when the side panel's close button is pressed.
-    side_panel_requested()
-        Emitted when the session needs the side panel shown, such as Fit details for
-        *All results and diagnostics →*.
-    view_requested(str)
-        Emitted when the session needs one of its views on screen, such as
-        Measurements for concentrations a fit needs.
+    view_requested(str, bool)
+        Emitted when the session needs one of its views on screen, with the side
+        panels shown where the flag is set — the first step of :meth:`reveal`.
     new_session_requested()
         Emitted by *Load data into a new session…* inside a view.
     help_requested(str)
@@ -136,8 +134,7 @@ class FittingSession(QWidget):
 
     changed = pyqtSignal()
     side_panel_closed = pyqtSignal()
-    side_panel_requested = pyqtSignal()
-    view_requested = pyqtSignal(str)
+    view_requested = pyqtSignal(str, bool)
     new_session_requested = pyqtSignal()
     help_requested = pyqtSignal(str)
 
@@ -161,6 +158,43 @@ class FittingSession(QWidget):
     def current_view(self) -> str:
         widget = self._stack.currentWidget()
         return next(name for name, page in self._views.items() if page is widget)
+
+    def reveal(self, place: Place) -> None:
+        """Take the user to *place*: its view on screen, the side panel shown where the place is in it, and
+        the place shown there (:func:`gui.design.components.reveal`); the concentrations with the first
+        point open for typing."""
+        view, target = self._place(place)
+        page = self._views[view]
+        in_side = target is not None and page.side is not None and page.side.isAncestorOf(target)
+        self.view_requested.emit(view, in_side)
+        if target is None:
+            return
+        C.reveal(theme(), target)
+        if place is Place.CONCENTRATIONS:
+            self._measurements.grid.edit(0)
+
+    def _place(self, place: Place) -> tuple[str, QWidget | None]:
+        """The view *place* is in and its widget, ``None`` where the view shows no such place now."""
+        if place is Place.CONCENTRATIONS:
+            return 'Measurements', self._measurements.conc_section
+        if place is Place.FIT:
+            return 'Fit results', self._results.headline
+        if place is Place.DIAGNOSTICS:
+            return 'Fit results', self._results.diagnostics_section
+        if place is Place.READINGS:
+            return 'Ka confidence', self._confidence.header_host
+        if place is Place.SHIFTS:
+            return 'Ka confidence', self._confidence.sections.get('conflict')
+        if place is Place.INPUTS:
+            return 'Input uncertainty', self._uncertainty.table
+        view = {
+            Place.BINDING_PROBLEM: 'Binding model',
+            Place.INPUT_PROBLEM: 'Input uncertainty',
+            Place.ANALYSIS_PROBLEM: 'Sensitivity',
+        }[place]
+        # A problem is shown beside the setting it is about: the place is the two together.
+        problems = [p for p in self._views[view].findChildren(C.Problem) if not p.isHidden()]
+        return view, problems[0].parentWidget() if problems else None
 
     def has_side_panel(self, view: str) -> bool:
         """Whether *view* has a side panel."""
@@ -244,15 +278,18 @@ class FittingSession(QWidget):
         return self._measurements.replace_data()
 
     def run_fit(self) -> None:
-        """Start a background fit of the loaded data with the settings shown; say why when it cannot start."""
+        """Start a background fit of the loaded data with the settings shown; where it cannot start, say why
+        and show the place holding what to change."""
         self._finish_edits()
         refusal = self.model.run_fit()
-        if refusal is None:
-            return
+        if refusal is not None:
+            self._refuse(refusal)
+
+    def _refuse(self, refusal: Refusal) -> None:
+        """Say why a run cannot start, then show the place holding what to change."""
         QMessageBox.warning(self, refusal.title, refusal.message)
-        if refusal == CONCENTRATIONS_REQUIRED:
-            self.view_requested.emit('Measurements')
-            self._measurements.focus_concentrations()
+        if refusal.place is not None:
+            self.reveal(refusal.place)
 
     def load_demo_ida(self) -> None:
         """Load the bundled IDA demo dataset and fit it with the demo's own settings (:meth:`set_up_demo_ida`).
@@ -586,10 +623,8 @@ class FittingSession(QWidget):
     def _connect_signals(self) -> None:
         self._measurements.new_session_link.clicked.connect(self.new_session_requested)
 
-        self._uncertainty.review_requested.connect(lambda: self.view_requested.emit('Ka confidence'))
-        self._results.review_requested.connect(lambda: self.view_requested.emit('Ka confidence'))
-        self._results.details_requested.connect(self._show_fit_details)
-        self._confidence.shifts_requested.connect(self._show_input_shifts)
+        for view in (self._measurements, self._uncertainty, self._results, self._confidence, self._sensitivity):
+            view.reveal_requested.connect(self.reveal)
         self._confidence.save_requested.connect(lambda: self.export_plot('Ka confidence'))
         for section, link in (
             ('Binding model', self._binding.help_link),
@@ -600,8 +635,6 @@ class FittingSession(QWidget):
         self._results.save_plot.clicked.connect(lambda: self.export_plot('Fit results'))
         self._appearance.save_plot.clicked.connect(lambda: self.export_plot('Plot appearance'))
         self._measurements.save_plot.clicked.connect(lambda: self.export_plot('Measurements'))
-        self._sensitivity.view_requested.connect(self.view_requested)
-        self._measurements.view_requested.connect(self.view_requested)
         # The views follow the model first, connected as they were built; then the window.
         self.model.changed.connect(self._on_changed)
         self.model.warning.connect(lambda title, message: QMessageBox.warning(self, title, message))
@@ -629,7 +662,7 @@ class FittingSession(QWidget):
         self._finish_edits()
         refusal = self.model.sensitivity_refusal(self.model.analysis_problems())
         if refusal is not None:
-            QMessageBox.warning(self, refusal.title, refusal.message)
+            self._refuse(refusal)
             return
         config = self.model.analysis_config()
         cost = self.model.sensitivity_cost_note(config)
@@ -639,7 +672,7 @@ class FittingSession(QWidget):
             return
         refusal = self.model.run_sensitivity(config)
         if refusal is not None:
-            QMessageBox.warning(self, refusal.title, refusal.message)
+            self._refuse(refusal)
 
     # ------------------------------------------------------------------
     # Model slots
@@ -652,17 +685,3 @@ class FittingSession(QWidget):
             self._progress_line.set_progress(model.progress_fraction())
         else:
             self._progress_line.stop()
-
-    def _show_input_shifts(self) -> None:
-        """Show the Notes side panel of Ka confidence with the input shifts in view."""
-        self.side_panel_requested.emit()
-        side = self._views['Ka confidence'].side
-        side.show()
-        self._confidence.show_shifts(side.scroll)
-
-    def _show_fit_details(self) -> None:
-        """Show the side panel of Fit results with Diagnostics in view."""
-        self.side_panel_requested.emit()
-        side = self._views['Fit results'].side
-        side.show()
-        self._results.show_diagnostics(side.scroll)

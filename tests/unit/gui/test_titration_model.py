@@ -18,6 +18,7 @@ pytest.importorskip('PyQt6')
 
 from core.assays.registry import AssayType  # noqa: E402
 from gui.design import components as C  # noqa: E402
+from gui.results import Place  # noqa: E402
 from gui.session_model import Change  # noqa: E402
 from tests.unit.gui.session_setup import state_binding  # noqa: E402
 from tests.unit.gui.test_results import THIN, fit_on, four_replicates  # noqa: E402
@@ -100,15 +101,15 @@ def test_measurements_names_the_fitted_value_and_opens_fit_results(session):
     session.model.load(four_replicates(), None)
     assert _cue(session) is None  # no fit yet
     _fitted(session)
-    requested: list[str] = []
-    session.view_requested.connect(requested.append)
+    requested = []
+    session._measurements.reveal_requested.connect(requested.append)
 
     cue = _cue(session)
     cue.action.click()
 
     assert f'Kₐ guest 1.24{THIN}×{THIN}10⁶ M⁻¹ — the fitted curve is in Fit results.' == cue.body.text()
     assert cue.action.text() == 'Show fit results'
-    assert requested == ['Fit results']
+    assert requested == [Place.FIT]
 
 
 def test_the_cue_is_gone_while_the_results_are_hidden(session):

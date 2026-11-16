@@ -379,12 +379,13 @@ class RegionFigure(QWidget):
 class ConfidenceView(QObject):
     """The canvas and side panel of Ka confidence over *model*; *parent* is the session.
 
-    :attr:`shifts_requested` asks for *Notes* with the input shifts in view (the conflict
-    callout's action), :attr:`save_requested` for the plot image; the session answers each, and opens the
-    Help window at Ka confidence from :attr:`guide_link`.
+    :attr:`reveal_requested` asks for the :class:`~gui.results.Place` a callout's action names
+    (the conflict callout's the input shifts in *Notes*), :attr:`save_requested` for the plot
+    image; the session answers each, and opens the Help window at Ka confidence from
+    :attr:`guide_link`.
     """
 
-    shifts_requested = pyqtSignal()
+    reveal_requested = pyqtSignal(object)
     save_requested = pyqtSignal()
 
     def __init__(self, model: SessionModel, parent: QWidget):
@@ -454,13 +455,6 @@ class ConfidenceView(QObject):
         for tool in self.enlarge_tools:
             tool.setChecked(on)
         self._show_parts()
-
-    def show_shifts(self, area: QScrollArea) -> None:
-        """Open the section of the input shifts and scroll *area*, the side panel's, to it."""
-        section = self.sections.get('conflict')
-        if section is not None:
-            section.header.set_open(True)
-            area.ensureWidgetVisible(section, 0, 0)
 
     def has_plot(self) -> bool:
         """Whether a profile plot is on the canvas, which the image export saves."""
@@ -660,8 +654,8 @@ class ConfidenceView(QObject):
         self.callouts = list(specs)
         for spec in specs:
             callout = C.Callout(self.t, spec.tone, spec.title, spec.body, spec.action or None)
-            if spec.action == CF.SHOW_SHIFTS:
-                callout.action.clicked.connect(self.shifts_requested)
+            if spec.place is not None:
+                callout.action.clicked.connect(lambda _=False, place=spec.place: self.reveal_requested.emit(place))
             self.callout_box.addWidget(callout)
 
     def _refresh_plots(self, fit, profile) -> None:
