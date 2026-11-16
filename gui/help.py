@@ -169,8 +169,8 @@ estimate a diamond.</li>
 best, as a share of the drop its own 95&thinsp;% test allows. The dotted line at 1 is the
 cut-off: where a curve is at or below it, that reading accepts the K<sub>a</sub>, so each curve
 crosses 1 exactly where its interval ends.</li>
-<li>Dotted riser: where the fit at a K<sub>a</sub> holds a signal parameter on its bound, the test
-allows a larger drop and the curve steps down.</li>
+<li>Dotted riser, with two binding constants: where the fit at a K<sub>a</sub> holds a signal
+parameter on its bound, the test allows a larger drop and the curve steps down.</li>
 <li>Shaded band: the reported interval. Strip under the plot: the K<sub>a</sub> each reading
 accepts, one bar per stretch.</li>
 <li>Card at the top right: each curve&rsquo;s scaled drop at the K<sub>a</sub> under the pointer,

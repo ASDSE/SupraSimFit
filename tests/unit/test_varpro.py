@@ -1155,8 +1155,7 @@ def _independent_one_ka(projection: Projection, per_decade: int = 40) -> tuple[f
     zero), a coefficient fitted where it lies above 1e-8 of the signal's weighted variation in those units, the rank of
     the fitted columns by their singular values at 1e-8; the best fit from a *per_decade* scan of the whole box refined
     by bounded Brent; and ``verdict(t)`` whether ``log10 Ka = t`` lies at or under
-    ``S_min (1 + m F(0.95; m, n - p) / (n - p))``, ``m`` one plus the coefficients the best fit fits beyond the fit
-    at t.
+    ``S_min (1 + F(0.95; 1, n - p) / (n - p))``, the plain F test of a model with one binding constant.
     """
     assay, root = projection.assay, np.sqrt(projection.point_weights)
     y = projection.signals[0] * root
@@ -1187,19 +1186,17 @@ def _independent_one_ka(projection: Projection, per_decade: int = 40) -> tuple[f
     dof = y.size - 1 - r_best
 
     def verdict(t: float) -> bool:
-        ssr, rank = solve(t)
-        m = 1 + max(0, r_best - rank)
-        return ssr <= s_min * (1.0 + m * f_dist.ppf(LEVEL, m, dof) / dof)
+        return solve(t)[0] <= s_min * (1.0 + f_dist.ppf(LEVEL, 1, dof) / dof)
 
     return float(best), s_min, verdict
 
 
 @pytest.mark.parametrize(('case', 'seed'), [('DBA_DtoH,K=0.1,n=8,noise=0.01', 32), ('GDA,K=0.1,n=8,noise=0.01', 150)])
-def test_a_one_ka_interval_holds_every_ka_the_test_accepts_past_a_step_of_the_cut_off(case, seed):
-    """Past the upper edge of the stretch around the estimate the fit puts a signal parameter on its bound, the cut-off
-    steps up, and the test accepts a few hundredths of a decade again, 0.36 and 0.14 decade further out. An
-    independent F test, read every two-thousandth of a decade over half a decade beyond each edge, accepts nothing
-    outside the interval and accepts the Ka just inside each edge."""
+def test_a_one_ka_interval_is_one_range_where_the_fit_pins_a_signal_parameter_past_its_edge(case, seed):
+    """Past the upper edge the fit puts a signal parameter on its bound. A model with one binding constant counts
+    nothing for it, so the test accepts no stretch out there: an independent plain F test, read every
+    two-thousandth of a decade over half a decade beyond each edge, accepts nothing outside the interval and
+    accepts the Ka just inside each edge, and the interval is not split."""
     projection = _grid_projection(case, seed)
     (key,) = projection.ka_keys
     interval = projection.interval(key, projection.fit())
@@ -1209,7 +1206,11 @@ def test_a_one_ka_interval_holds_every_ka_the_test_accepts_past_a_step_of_the_cu
     assert accepts(low + 1e-6) and accepts(high - 1e-6)
     beyond = np.concatenate([np.arange(low - 0.5, low - 1e-6, 5e-4), np.arange(high + 1e-6, high + 0.5, 5e-4)])
     assert not any(accepts(t) for t in beyond)
-    assert interval.split
+    fitted = projection.fitted_parameters
+    assert fitted({key: 10.0 ** (high + 0.4)}).rank < fitted(projection.fit().ka).rank, (
+        'a coefficient is pinned out there'
+    )
+    assert not interval.split
 
 
 def _independent_two_ka(projection: Projection, fit, key: str, per_decade: int = 32) -> Callable[[float], bool]:

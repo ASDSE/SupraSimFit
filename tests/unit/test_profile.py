@@ -258,8 +258,8 @@ def test_ida_demo_interval_matches_the_reference():
     assert profile.best_ka == pytest.approx(3.257e8, rel=0.03)
     assert profile.best_r2 == pytest.approx(0.99341, abs=1e-4)
     # Below 2.05e8 1/M the fit holds the offset on zero, which the best fit leaves
-    # free, so the lower edge is where the rise reaches the cut-off of two parameters.
-    assert interval.low == pytest.approx(1.576e8, rel=0.03)
+    # free; a model with one binding constant is still cut at the plain F test.
+    assert interval.low == pytest.approx(1.70e8, rel=0.03)
     assert interval.high == pytest.approx(9.847e8, rel=0.03)
     assert (interval.open_low, interval.open_high) == (False, False)
     assert not interval.split
@@ -275,26 +275,28 @@ def test_ida_demo_interval_matches_the_reference():
     )
 
 
-def test_the_cut_off_steps_by_one_numerator_degree_of_freedom_where_the_fit_pins_a_signal_parameter():
+def test_a_one_ka_profile_is_cut_at_one_level_where_the_fit_pins_a_signal_parameter():
+    # Below the estimate the demo's fit holds the offset on zero, which the best fit leaves
+    # free. A model with one binding constant counts nothing for it: the cut-off is the
+    # plain F test everywhere, so the scaled drop does not jump and the interval is one range.
     ms = _demo_ms()
     profile = fit_profile(ms, IDAAssay, _DEMO_CONDITIONS, _AVERAGE).profiles['Ka_guest']
     assay = ms.to_assay(IDAAssay, conditions=_DEMO_CONDITIONS, use_average=True)
     bounds = _resolve_bounds(assay, None)
     s_min, fitted = _independent_fit(assay, bounds, {'Ka_guest': profile.best_ka})
     ss_tot = float(np.sum((assay.y_data.magnitude - assay.y_data.magnitude.mean()) ** 2))
-    # Upper 5 % points of F(m, 9) from a printed table.
-    f_table = {1: 5.117, 2: 4.256}
+    # Upper 5 % point of F(1, 9) from a printed table.
+    cut = s_min * (1 + 5.117 / 9) / ss_tot
 
     low, high = profile.interval.low, profile.interval.high
-    counts = set()
+    pinned = False
     for at in np.flatnonzero((profile.grid > low / 3) & (profile.grid < high * 3))[::7]:
         _, fitted_here = _independent_fit(assay, bounds, {'Ka_guest': profile.grid[at]})
-        m = 1 + max(0, fitted - fitted_here)
-        counts.add(m)
-        assert 1.0 - profile.r2_cut[at] == pytest.approx(s_min * (1 + m * f_table[m] / 9) / ss_tot, rel=2e-4)
-    # The non-negative offset is on zero at the low Ka and free at the best fit and above it.
-    assert counts == {1, 2}
-    assert profile.r2_cut.max() == profile.r2_threshold
+        pinned |= fitted_here < fitted
+        assert 1.0 - profile.r2_cut[at] == pytest.approx(cut, rel=2e-4)
+    assert pinned, 'the offset is on zero at the low Ka'
+    assert np.all(profile.r2_cut == profile.r2_threshold)
+    assert not profile.interval.split
 
 
 def test_a_profile_whose_fits_pin_nothing_the_best_fit_leaves_free_is_cut_at_one_level(dba_noisy):
@@ -984,17 +986,23 @@ def test_the_scaled_drop_is_one_exactly_where_the_reported_interval_ends():
     The allowed rise is checked against the F test written out independently,
     ``S_min kappa m F(m, n - p) / (n - p)``, at every drawn point; the edges are
     roots of the profile minus that cut-off, so the curve meets 1 there to the
-    root finder's tolerance. On the demo the cut-off steps (m = 2 where the fit
-    holds the offset on zero), and the ratio follows the step.
+    root finder's tolerance. In a model with two binding constants the cut-off
+    steps (``m`` above 1 wherever the fit holds a signal parameter on a bound
+    that the best fit leaves free); on this titration the lower edge of Ka_HG
+    lies on such a step, and the ratio follows it.
     """
-    profile = fit_profile(_demo_ms(), IDAAssay, _DEMO_CONDITIONS, _AVERAGE).profiles['Ka_guest']
+    profile = fit_profile(_hg2_ms(n_points=12, frac=0.005, seed=0), HG2Assay, _HG2_CONDITIONS, _HG2_AVERAGE)
+    profile = profile.profiles['Ka_HG']
     drop = profile.scaled_drop()
     dof = profile.n_points - profile.n_params
     allowed = (profile.r2_top - profile.r2_cut) / (1.0 - profile.r2_top)
-    plain = f_dist.ppf(varpro.LEVEL, 1, dof) / dof
-    stepped = 2 * f_dist.ppf(varpro.LEVEL, 2, dof) / dof
-    assert np.all(np.isclose(allowed, plain, rtol=1e-9) | np.isclose(allowed, stepped, rtol=1e-9))
-    assert {bool(np.isclose(a, stepped, rtol=1e-9)) for a in allowed} == {True, False}
+    # One numerator degree of freedom for the constrained Ka, one more per pinned signal parameter.
+    levels = {m: m * f_dist.ppf(varpro.LEVEL, m, dof) / dof for m in (1, 2, 3, 4)}
+    counts = np.array([[m for m, level in levels.items() if np.isclose(a, level, rtol=1e-9)] for a in allowed])
+    assert counts.shape == (profile.grid.size, 1)
+    counts = counts[:, 0]
+    assert counts[profile.grid == profile.best_ka] == 1
+    assert counts[profile.grid == profile.interval.low] == 2, 'the lower edge lies where the cut-off steps'
     assert drop[profile.grid == profile.best_ka] == pytest.approx(0.0, abs=1e-12)
     for edge in (profile.interval.low, profile.interval.high):
         assert drop[profile.grid == edge] == pytest.approx(1.0, abs=1e-6)

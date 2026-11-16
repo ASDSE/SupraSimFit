@@ -114,8 +114,9 @@ If a proposed test doesn't serve one of these, question whether it's worth addin
   above its minimum, with the effective residual degrees of freedom
   `ν = n − p − Σw`. `p` counts what the best fit fitted — the Ka strictly inside
   their box, the signal columns strictly inside their bounds
-  (`Projection.fitted_parameters`) — and `m` is 1 plus the signal parameters the
-  best fit determines and the fit at that Ka holds on a bound, so it is 1
+  (`Projection.fitted_parameters`) — and `m` is 1 for a model with one binding
+  constant and, with two, 1 plus the signal parameters the best fit determines
+  and the fit at that Ka holds on a bound (`Projection.pinned`), so it is 1
   wherever none is. `κ ≥ 1` is the design effect of a noise law of positive share
   and, on the reported interval, of a stated error of the additions; it is
   exactly 1 without either. The second

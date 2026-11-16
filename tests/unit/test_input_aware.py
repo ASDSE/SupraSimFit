@@ -11,7 +11,7 @@ states for them, and the interval of Ka is cut from the penalised profile
   different algorithm (Nelder-Mead from seeded random starts on a
   species-function + BVLS residual), for one and two binding constants;
 - the closed edges lie on the F-test threshold of that independent objective,
-  and the cut-off of a profile point counts the signal parameters its own
+  and the cut-off of a one-Ka profile is one level whatever its own
   solution holds on a bound;
 - a repeat is bit-identical and an edge does not depend on the side root
   finding walks the bracket from; a loading that hands the offsets through is
@@ -41,14 +41,11 @@ from scipy.optimize import brentq, lsq_linear, minimize, minimize_scalar
 from scipy.stats import f as f_dist
 
 from core.assays import ASSAY_CLASSES
-from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.models.equilibrium import (
     dba_signal,
     dba_species,
-    gda_signal,
-    gda_species,
     h2g_signal,
     h2g_species,
     hg2_species,
@@ -78,7 +75,7 @@ from core.pipeline.varpro import (
 )
 from core.units import Q_
 from tests.conftest import DBA_TRUE, GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data
-from tests.unit.test_varpro import _ONE_STEP, _grid_projection, _hg2_truth_signal, _stepwise
+from tests.unit.test_varpro import _ONE_STEP, _grid_projection, _hg2_truth_signal, _independent_two_ka, _stepwise
 
 _IDA_SIGMAS = {'Ka_dye': 0.10, 'h0': 0.03, 'd0': 0.03, TITRANT: 0.03}
 
@@ -191,7 +188,7 @@ def test_closed_edges_lie_on_the_f_test_threshold_of_the_independent_objective(i
     assert profile.interval.level == LEVEL
 
 
-def test_the_cut_off_of_a_profile_point_counts_the_signal_parameters_its_own_solution_pins(ida_case):
+def test_the_cut_off_of_a_one_ka_profile_is_one_level_whatever_its_own_solution_pins(ida_case):
     assay, projection, _, result = ida_case
     profile = result.profiles['Ka_guest']
     x, y = assay.x_data.magnitude, assay.y_data.magnitude
@@ -211,15 +208,15 @@ def test_the_cut_off_of_a_profile_point_counts_the_signal_parameters_its_own_sol
     n, dof = assay.n_points, profile.interval.dof
     best = fitted(result.fit.ka['Ka_guest'], result.fit.offsets)
     given_up = set()
+    excess = n * np.log(1 + f_dist.ppf(LEVEL, 1, dof) / dof)
     for at in (0, int(np.argmin(profile.objective)), profile.grid.size - 1):
         offsets = dict(zip(result.fit.constraint_keys, profile.offsets[at]))
-        m = 1 + max(0, best - fitted(float(profile.grid[at]), offsets))
-        given_up.add(m)
-        excess = n * np.log(1 + m * f_dist.ppf(LEVEL, m, dof) / dof)
+        given_up.add(best - fitted(float(profile.grid[at]), offsets))
         assert profile.cut[at] == pytest.approx(result.fit.objective + excess, rel=1e-12)
     # At the ends of the Ka box the signal parameters run into their bounds; at the estimate none does.
-    assert given_up == {1, 2, 3}
-    assert profile.cut.min() == profile.threshold
+    # A model with one binding constant counts none of them: the plain F test throughout.
+    assert given_up == {0, 1, 2}
+    assert np.all(profile.cut == profile.threshold)
 
 
 def test_dba_profile_value_matches_the_independent_minimum():
@@ -538,8 +535,10 @@ def _independent_one_ka_excess(projection: Projection, species_of, ks) -> np.nda
     """The fixed-input profile of a one-Ka model minus its own F cut-off, from species functions and BVLS alone.
 
     The offset and the free and bound dye coefficients are solved in their bounds at every Ka of a 64-per-decade
-    scan, refined at its best point; ``m`` is one plus the rank of the columns the best fit leaves inside their
-    bounds that the solve at a tested Ka does not, and ``n - p`` that of the best fit.
+    scan, refined at its best point; the cut-off is the plain F test, ``m = 1``, at the ``n - p`` of the best fit.
+    ``p`` counts the columns left strictly inside their bounds and the Ka where the best fit lies strictly inside its
+    box: where the best point of the scan is an end of the box and the objective there is no higher than the
+    refinement's, the Ka rests on that bound and is not counted.
     """
     y = projection.signals[0]
     lb, ub = _coefficient_box(projection)
@@ -563,79 +562,38 @@ def _independent_one_ka_excess(projection: Projection, species_of, ks) -> np.nda
         options={'xatol': 1e-10},
     )
     best, best_rank = solve(10.0**found.x)
-    dof = y.size - 1 - best_rank
+    on_bound = i in (0, scan.size - 1) and solve(scan[i])[0] <= best
+    if on_bound:
+        best, best_rank = solve(scan[i])
+    dof = y.size - (0 if on_bound else 1) - best_rank
 
     def excess(k: float) -> float:
-        ssr, rank = solve(k)
-        m = 1 + max(0, best_rank - rank)
-        return ssr - best * (1.0 + m * f_dist.ppf(LEVEL, m, dof) / dof)
+        return solve(k)[0] - best * (1.0 + f_dist.ppf(LEVEL, 1, dof) / dof)
 
     return np.array([excess(k) for k in ks])
 
 
-def _vanishing(projection: Projection, keys) -> tuple:
-    """The fixed-input fit and interval of a one-Ka projection, and its input-aware interval at a sigma of 1e-5 %."""
+def _vanishing(projection: Projection, inputs, key: str) -> tuple:
+    """The fixed-input interval of *key* and its input-aware interval with *inputs* known to a sigma of 1e-5 %."""
     fit = projection.fit()
-    ((key, _),) = projection.ka_bounds.items()
     conditional = projection.interval(key, fit)
     tiny = constraints(
-        ErrorModel(specs={k: InputSpec.sigma_pct(1e-5) for k in keys}), projection.assay.get_conditions()
+        ErrorModel(specs={k: InputSpec.sigma_pct(1e-5) for k in inputs}), projection.assay.get_conditions()
     )
     return conditional, input_aware(projection, fit, tiny, conditional={key: conditional}).profiles[key].interval
 
 
 def test_an_accepted_stretch_inside_one_search_cell_extends_the_interval_as_far_as_the_fixed_input_one():
-    """Dye-to-host DBA, twelve points at 3 % noise, true Ka 2.2×10⁶ M⁻¹.
+    """Dye-to-host DBA of the reference-agreement grid (K h0 of 0.1, twelve points, 1 % noise, seed 351), its fit
+    on the top of the Ka box.
 
-    Below the estimate the cut-off steps up where a signal coefficient reaches its bound, so the test accepts Ka
-    down to 7.4×10⁴ M⁻¹, a stretch that starts and ends between two search-grid nodes the test rejects. Read at the
-    nodes alone the lower edge closes at 9.5×10⁴ M⁻¹; read as the fixed-input interval reads it, the vanishing-σ
-    interval holds every Ka the independent profile accepts.
+    The profile has a second minimum more than a decade below the stretch around the estimate: the plain F test
+    accepts Ka from about 1.95×10⁴ to 2.66×10⁴ M⁻¹, a stretch that starts and ends between the search-grid nodes
+    10^4.25 and 10^4.5 M⁻¹, both of which it rejects. Read at the nodes alone the lower edge closes between
+    5.6×10⁵ and 10⁶ M⁻¹; read as the fixed-input interval reads it, the vanishing-σ interval holds every Ka the
+    independent profile accepts.
     """
-    x = np.linspace(1e-7, 5e-5, 12)
-    y = dba_signal(I0=0.0, Ka_dye=2154904.336304565, I_dye_free=5e7, I_dye_bound=3e8, x_titrant=x, y_fixed=1e-5,
-                   mode='DtoH')  # fmt: skip
-    assay = ASSAY_CLASSES[AssayType.DBA_DtoH](
-        x_data=Q_(x, 'M'), y_data=Q_(_noisy(y, 0.03, 494788571), 'au'), fixed_conc=Q_(1e-5, 'M'), mode='DtoH'
-    )
-    projection = Projection(assay, ASSAY_REGISTRY[AssayType.DBA_DtoH].default_bounds)
-    conditional, aware = _vanishing(projection, ('fixed_conc', TITRANT))
-
-    accepted = np.geomspace(7.7e4, 8.9e4, 4)
-    assert (_independent_one_ka_excess(projection, lambda k: dba_species(k, x, 1e-5, mode='DtoH'), accepted) < 0).all()
-    assert aware.low < accepted[0] and not aware.open_low
-    assert abs(np.log10(aware.low / conditional.low)) < 2e-7
-
-
-def test_a_gap_inside_one_search_cell_is_reported_as_the_fixed_input_interval_reports_it():
-    """GDA, eight points at 0.5 % noise, true Ka 1.3×10⁴ M⁻¹: the profile rejects Ka about 4.5×10⁵ M⁻¹ between two
-    stretches it accepts, all of it inside one search cell."""
-    x = np.linspace(1e-7, 3e-5, 8)
-    y = gda_signal(I0=0.0, Ka_guest=13435.076103099427, I_dye_free=5e7, I_dye_bound=3e8, Ka_dye=5e5, h0=1e-5,
-                   d0_values=x, g0=2e-5)  # fmt: skip
-    assay = GDAAssay(
-        x_data=Q_(x, 'M'), y_data=Q_(_noisy(y, 0.005, 857474922), 'au'), Ka_dye=Q_(5e5, '1/M'), h0=Q_(1e-5, 'M'),
-        g0=Q_(2e-5, 'M'),
-    )  # fmt: skip
-    projection = Projection(assay, ASSAY_REGISTRY[AssayType.GDA].default_bounds)
-    conditional, aware = _vanishing(projection, ('h0', 'g0', TITRANT))
-
-    ks = (3.98e5, 4.47e5, 5.01e5)
-    excess = _independent_one_ka_excess(projection, lambda k: gda_species(k, 5e5, 1e-5, x, 2e-5), ks)
-    assert excess[0] < 0 < excess[1] and excess[2] < 0
-    assert aware.split and aware.high > ks[2]
-    assert abs(np.log10(aware.high / conditional.high)) < 2e-7
-
-
-def test_an_accepted_stretch_past_a_step_of_the_cut_off_is_inside_the_input_aware_interval_too():
-    """Dye-to-host DBA of the reference-agreement grid (K₂ h0 of 0.1, eight points, 1 % noise, seed 32).
-
-    Past the upper edge of the stretch around the estimate the fit puts a signal coefficient on its bound, the
-    cut-off steps up, and the test accepts Ka from 10^5.874 to 10^5.889 again, 0.35 decade further out and between
-    two search-grid nodes it rejects. The independent fixed-input profile accepts that stretch; at a vanishing σ the
-    input-aware interval reaches as far as the fixed-input one.
-    """
-    projection = _grid_projection('DBA_DtoH,K=0.1,n=8,noise=0.01', 32)
+    projection = _grid_projection('DBA_DtoH,K=0.1,n=12,noise=0.01', 351)
     assay = projection.assay
     index = assay.parameter_keys.index('Ka_dye')
 
@@ -644,11 +602,50 @@ def test_an_accepted_stretch_past_a_step_of_the_cut_off_is_inside_the_input_awar
         params[index] = k
         return assay.species(params)
 
-    conditional, aware = _vanishing(projection, ('fixed_conc', TITRANT))
-    accepted = 10.0 ** np.array([5.876, 5.882, 5.888])
-    assert (_independent_one_ka_excess(projection, species_of, accepted) < 0).all()
-    assert aware.high > accepted[-1] and not aware.open_high
-    assert abs(np.log10(aware.high / conditional.high)) < 2e-7
+    conditional, aware = _vanishing(projection, ('fixed_conc', TITRANT), 'Ka_dye')
+    accepted = np.geomspace(2.0e4, 2.6e4, 4)
+    # The two nodes of the cell, the stretch, and a Ka between it and the stretch around the estimate.
+    excess = _independent_one_ka_excess(projection, species_of, [10.0**4.25, *accepted, 10.0**4.5, 1e5])
+    assert excess[0] > 0 and (excess[1:5] < 0).all() and excess[5] > 0 and excess[6] > 0
+    assert aware.low < accepted[0] and not aware.open_low and aware.split
+    assert abs(np.log10(aware.low / conditional.low)) < 2e-7
+
+
+def test_a_gap_inside_one_search_cell_is_reported_as_the_fixed_input_interval_reports_it():
+    """2:1 titration of the reference-agreement grid (K₁ h0 of 1000, twelve points, 1 % noise, seed 9), the first
+    constant.
+
+    Between the search-grid nodes 10⁷ M⁻¹, which the test rejects, and 10^7.25 M⁻¹, which it accepts, the fit
+    holds a signal coefficient on its bound below 10^7.053 M⁻¹, where the cut-off steps up: the test accepts Ka
+    from 10^7.004 to 10^7.053 M⁻¹, rejects them up to 10^7.105 M⁻¹ and accepts them again from there, the gap and
+    the stretch below it all inside one search cell. An independent F test reads the same, and the vanishing-σ
+    interval reports the gap and reaches the lower edge of the fixed-input one.
+    """
+    projection = _grid_projection('DBA_H2G,K=1000,n=12,noise=0.01', 9)
+    conditional, aware = _vanishing(projection, ('h0', TITRANT), 'Ka_HG')
+    accepts = _independent_two_ka(projection, projection.fit(), 'Ka_HG')
+    verdicts = [accepts(t) for t in (7.0, 7.03, 7.05, 7.06, 7.08, 7.1, 7.13, 7.25)]
+    assert verdicts == [False, True, True, False, False, False, True, True]
+    assert aware.split and aware.low < 10.0**7.03 and not aware.open_low
+    assert abs(np.log10(aware.low / conditional.low)) < 2e-7
+
+
+def test_an_accepted_stretch_past_a_step_of_the_cut_off_is_inside_the_input_aware_interval_too():
+    """2:1 titration of the reference-agreement grid (K₁ h0 of 1000, twelve points, 1 % noise, seed 8), the second
+    constant.
+
+    Below 10^5.665 M⁻¹ the fit holds a signal coefficient on its bound that the best fit fits, so the cut-off of the
+    two-Ka test steps up there and the test accepts Ka down to 10^5.621 M⁻¹ again, past a stretch it rejects that
+    reaches up to about 10^5.75 M⁻¹, where the stretch around the estimate begins. The independent F test accepts that
+    stretch; at a vanishing σ the input-aware interval reaches as far as the fixed-input one.
+    """
+    projection = _grid_projection('DBA_H2G,K=1000,n=12,noise=0.01', 8)
+    conditional, aware = _vanishing(projection, ('h0', TITRANT), 'Ka_H2G')
+    accepts = _independent_two_ka(projection, projection.fit(), 'Ka_H2G')
+    verdicts = [accepts(t) for t in (5.5, 5.6, 5.63, 5.65, 5.665, 5.67, 5.7, 5.72, 5.8)]
+    assert verdicts == [False, False, True, True, True, False, False, False, True]
+    assert aware.low < 10.0**5.63 and not aware.open_low and aware.split
+    assert abs(np.log10(aware.low / conditional.low)) < 2e-7
 
 
 def test_a_binding_constant_whose_minimum_lies_on_its_bound_is_put_on_it_and_not_counted_as_fitted():

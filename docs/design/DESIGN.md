@@ -618,9 +618,9 @@ the pointer's hairline; the accepted stretches of each reading run in a strip un
 on its Ka axis. The y axis is each profile's **scaled drop**: its rise above its own minimum
 divided by the rise its own 95 % test allows, so every curve crosses one cut-off line at 1
 and a Ka below the line is one the data accept. Each curve is an exact rescaling of its own
-test, so the interval edges are unchanged; where the test allows a larger drop because the
-fit at that Ka holds a signal parameter on its bound, the curve breaks and a dotted riser
-carries it down. With two binding constants the canvas scrolls: the profile plots stack, one
+test, so the interval edges are unchanged; with two binding constants, where the test allows
+a larger drop because the fit at that Ka holds a signal parameter on its bound, the curve
+breaks and a dotted riser carries it down. With two binding constants the canvas scrolls: the profile plots stack, one
 per Ka named by the glossary, with the joint region below them (the accepted pairs in
 `text-secondary`, the best fit marked, each constant's own interval a faint band). A profile
 that could not be worked out is said in a sentence in place of the plots. Side panel *Notes*

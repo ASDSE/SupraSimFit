@@ -4,7 +4,9 @@ Readings, notes and callouts are checked on hand-built fits, against numbers wri
 the test. The curves are checked on real profiles — the bundled IDA demo at the inputs as
 entered, and a small input-aware fit — against the property that defines them: the scaled
 drop is an exact rescaling of each reading's own test, so the drawn curve meets the
-cut-off line at 1 where the reported interval ends.
+cut-off line at 1 where the reported interval ends. A split interval with a stepped cut-off,
+which only a model with two binding constants produces, is checked on a profile written out
+in the test.
 """
 
 from __future__ import annotations
@@ -18,8 +20,9 @@ import pytest
 pytest.importorskip('PyQt6')
 
 from core.pipeline.diagnostics import FitDiagnostics, InputShift  # noqa: E402
-from core.pipeline.profile import JointRegion, ProfileResult  # noqa: E402
+from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet  # noqa: E402
 from core.pipeline.varpro import KaInterval  # noqa: E402
+from core.units import Q_  # noqa: E402
 from gui import confidence as CF  # noqa: E402
 from gui import results as R  # noqa: E402
 from gui.plotting.labels import THIN  # noqa: E402
@@ -45,6 +48,25 @@ def _pixel(plot: CF.ProfilePlot) -> float:
 # ---------------------------------------------------------------------------
 # The readings
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope='module')
+def stepped():
+    """A fit at the inputs as entered whose interval is split by a step of the cut-off, and its profile.
+
+    R² falls as ``0.5 (t - 6)²`` below 0.99 with ``t = log10 Ka``. The plain test allows a fall of
+    0.045, so it accepts ``t`` from 5.7 to 6.3; below ``t = 5.5`` the fit holds a signal parameter
+    on its bound and the test allows four times that fall, so it accepts ``t`` from 5.4 to 5.5 too.
+    """
+    t = np.round(np.linspace(4.0, 8.0, 401), 2)
+    top, threshold, lowered = 0.99, 0.99 - 0.5 * 0.09, 0.99 - 0.5 * 0.36
+    interval = KaInterval(10**5.4, 10**6.3, False, False, 0.95, 16, split=True)
+    profile = ProfileResult(
+        'Ka_guest', 10.0**t, top - 0.5 * (t - 6.0) ** 2, 1e6, top, interval, threshold, 20, 4, False,
+        r2_cut=np.where(t < 5.5, lowered, threshold),
+    )  # fmt: skip
+    fit = result(parameters={**result().parameters, 'Ka_guest': Q_(1e6, '1/M')}, intervals={'Ka_guest': interval})
+    return fit, ProfileSet({'Ka_guest': profile}, None)
 
 
 def test_moved_inputs_give_input_aware_beside_inputs_as_entered_with_one_power_of_ten():
@@ -110,9 +132,10 @@ def test_the_drawn_curve_meets_the_cut_off_line_where_the_reported_interval_ends
     assert plot.x_range[0] < math.log10(interval.low) and math.log10(interval.high) < plot.x_range[1]
 
 
-def test_a_split_interval_draws_its_stretches_and_the_step_of_the_cut_off_as_a_riser(demo):
-    """Below the step the fit holds the offset on zero, the test allows a larger drop and the curve steps down."""
-    fit, profile = demo
+def test_a_split_interval_draws_its_stretches_and_the_step_of_the_cut_off_as_a_riser(stepped):
+    """Below the step the fit holds a signal parameter on its bound, the test allows a larger drop and the curve
+    steps down."""
+    fit, profile = stepped
     plot = CF.profile_plot(fit, profile.profiles['Ka_guest'])
     (entered,) = plot.curves
     interval = fit.intervals['Ka_guest']
@@ -133,8 +156,8 @@ def test_a_split_interval_draws_its_stretches_and_the_step_of_the_cut_off_as_a_r
         assert np.all(y[(ka >= lo) & (ka <= hi)] <= 1.0 + 1e-6)
 
 
-def test_the_readout_reads_each_curve_as_drawn_and_judges_it_by_its_stretches(demo):
-    fit, profile = demo
+def test_the_readout_reads_each_curve_as_drawn_and_judges_it_by_its_stretches(stepped):
+    fit, profile = stepped
     plot = CF.profile_plot(fit, profile.profiles['Ka_guest'])
     (entered,) = plot.curves
     (first, second) = entered.stretches
@@ -294,20 +317,20 @@ def test_replicates_the_fit_left_out_are_named_with_what_the_intervals_rest_on()
     assert rest[0].endswith('No interval reaches further than the parameter bounds this fit was given.')
 
 
-def test_a_split_interval_names_the_ka_it_rejects_between_its_stretches(demo):
-    fit, profile = demo
+def test_a_split_interval_names_the_ka_it_rejects_between_its_stretches(stepped):
+    fit, profile = stepped
     (first, second) = CF.profile_plot(fit, profile.profiles['Ka_guest']).curves[0].stretches
 
     split = _titles(fit, profile)['Split interval']
 
     gap = f'from {R.fmt_value(first[1])} to {R.fmt_value(second[0])} M⁻¹ is rejected.'
-    assert split[0].startswith('Inputs as entered: the range 1.52') and split[0].endswith(gap)
+    assert split[0].startswith('Inputs as entered: the range ') and split[0].endswith(gap)
     assert split[-1] == CF.split_explained(drawn=True) and 'strip under the plot' in split[-1]
 
 
-def test_a_split_interval_without_a_profile_names_no_plot_or_strip(demo):
+def test_a_split_interval_without_a_profile_names_no_plot_or_strip(stepped):
     """While the profile is computed, after it failed, or for an imported fit, no plot or strip is drawn."""
-    fit, _profile = demo
+    fit, _profile = stepped
 
     split = ' '.join(_titles(fit)['Split interval'])
 

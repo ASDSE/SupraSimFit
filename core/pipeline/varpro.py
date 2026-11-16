@@ -1166,6 +1166,21 @@ class Projection:
         """Parameter count ``p`` of the F test: what the best fit fitted (:meth:`fitted_parameters`)."""
         return self.fitted_parameters(fit.ka).count
 
+    def pinned(self, best_rank: int, rank: int) -> int:
+        """Signal parameters a test counts in ``m`` beyond the constrained binding constants.
+
+        A fit of signal-column rank *rank* holds ``best_rank - rank`` of the
+        parameters the best fit fits on a bound. A model with two binding
+        constants counts them: there the plain F test (``m = 1``) covers the
+        true constant in as few as 87.5 % of the titrations where the fit at it
+        pins a coefficient, and with the count in no fewer than 93.5 %
+        (``docs/scientific-summary.md``). A model with one binding constant
+        counts none: its plain test covers at the nominal level, and a count
+        would make the cut-off step along the profile, so that the test accepts
+        a Ka beyond one that fits better and is rejected.
+        """
+        return max(0, best_rank - rank) if len(self.ka_keys) == 2 else 0
+
     def fitted_parameters(
         self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None
     ) -> FittedParameters:
@@ -1283,7 +1298,8 @@ class Projection:
         ``S_min (1 + kappa m F(level; m, n - p) / (n - p))`` with ``m`` the
         number of constrained binding constants (one for an interval, two for
         the joint region) plus *released*, the parameters the best fit fits and
-        the fit at the tested Ka holds on a bound; ``p`` what the best fit
+        the fit at the tested Ka holds on a bound that the test counts
+        (:meth:`pinned`); ``p`` what the best fit
         fitted (:meth:`n_params`), ``S_min`` floored at ``_R2_RESOLUTION`` of
         the total sum of squares, and ``kappa`` the *inflation*, the design
         effect of :mod:`core.pipeline.inflation` (one: the plain F test).
@@ -1311,11 +1327,13 @@ class Projection:
 
         Every step is widened by the same *inflation*.
 
-        *released* is how far the rank of the signal columns that fit left
-        inside their bounds falls short of the best fit's, so along the binding
-        constants the cut-off is a step function that takes one value per
-        rank. What was fitted comes from the solve that gave the judged
-        residual (:meth:`solved`, :meth:`profile_point`).
+        *released* is :meth:`pinned`: in a model with two binding constants,
+        how far the rank of the signal columns that fit left inside their
+        bounds falls short of the best fit's, so along the binding constants
+        the cut-off is a step function that takes one value per rank; in a
+        model with one, zero, and the cut-off is one level. What was fitted
+        comes from the solve that gave the judged residual (:meth:`solved`,
+        :meth:`profile_point`).
 
         The other binding constant of a two-Ka model is not counted among what
         a tested value gives up when it rests on its bound there. Where it
@@ -1338,7 +1356,7 @@ class Projection:
         cuts: dict[int, float] = {}
 
         def at(rank: int) -> float:
-            released = max(0, fitted - rank)
+            released = self.pinned(fitted, rank)
             if released not in cuts:
                 cuts[released] = self.threshold(fit, level, n_constrained, released, inflation)
             return cuts[released]
@@ -1530,7 +1548,7 @@ class Projection:
         if self.second_step not in self.free_ka:
             return None
         _, value, fitted = self.profile_point(self.second_step, 0.0, _INNER_PER_DECADE)
-        m = 1 + max(0, self.fitted_parameters(fit.ka).rank - fitted.rank)
+        m = 1 + self.pinned(self.fitted_parameters(fit.ka).rank, fitted.rank)
         return _rise_p(value / self._floored(fit) - 1.0, m, self.n_points - self.n_params(fit), inflation)
 
     def _bound_behind(self, ka_key: str, other_ka: float, rise: Callable[[float], float], allowed: float) -> str:

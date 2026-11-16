@@ -1171,13 +1171,15 @@ def input_aware(
     def cut(optimum: _Point, dof: float, key: str) -> Callable[[int], float]:
         """Cut-off on *key*'s profile of a solution of each rank: one more parameter per signal parameter it pins.
 
-        As in :meth:`Projection.cut_off`, only the signal parameters: the other
+        Counted as :meth:`Projection.pinned` counts them, so a model with one
+        binding constant is cut at one level. As in :meth:`Projection.cut_off`,
+        only the signal parameters: the other
         binding constant and an input stated as a range reach a bound where the
         objective is flat towards it, and whether a solve lands on that bound
         or just inside it is arbitrary. Widened by the design effect of *key*.
         """
         fitted = optimum.fitted.rank
-        return lambda rank: optimum.value + _excess(n, dof, level, 1 + max(0, fitted - rank), kappa[key])
+        return lambda rank: optimum.value + _excess(n, dof, level, 1 + projection.pinned(fitted, rank), kappa[key])
 
     # Refused on what the model has free, wherever a fit puts it, so that whether a fit is made does
     # not depend on where the data happen to put its parameters.
@@ -1286,7 +1288,7 @@ def _one_step_p(problem: _Problem, trace: _Trace, optimum: _Point, dof: float, i
     zero = {trace.key: 0.0}
     starts = [optimum, trace.table[min(trace.table)], trace.entered(0.0, optimum.coords)]
     point = min((problem.solve(zero, start) for start in starts), key=lambda solved: solved.value)
-    m = 1 + max(0, optimum.fitted.rank - point.rank)
+    m = 1 + problem.projection.pinned(optimum.fitted.rank, point.rank)
     return _rise_p(np.expm1((point.value - optimum.value) / problem.n), m, dof, inflation)
 
 
