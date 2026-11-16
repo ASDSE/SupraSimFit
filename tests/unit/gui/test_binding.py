@@ -131,6 +131,8 @@ def test_a_binding_constant_is_entered_in_inverse_molar():
     [
         ('', '[Host]₀ has no value: enter a number.'),
         ('4,3', '[Host]₀: “4,3” is not a number. Enter a number, such as 2.5.'),
+        # Beyond the largest float: it would reach the fit as an infinite concentration.
+        ('1e400', '[Host]₀: “1e400” is not a number. Enter a number, such as 2.5.'),
         ('−1', '[Host]₀ is below zero: enter a value of 0 or more.'),
     ],
 )

@@ -69,7 +69,8 @@ def parse_decimal(text: str) -> Decimal | None:
     """The number *text* states, every figure kept, as typed or as a field writes it; ``None`` where it states none.
 
     Both ways a number is written read alike — ``1.68e7``, ``1.68 × 10⁷``, ``10⁷``, ``9 510``,
-    a real minus sign — so what a field shows reads back as the number it shows.
+    a real minus sign — so what a field shows reads back as the number it shows. A number
+    beyond the largest float states none, since it would reach the fit as infinite.
     """
     t = re.sub(r'[\s\u00a0\u2009\u202f]', '', text).replace('−', '-')
     decade = _DECADE_RE.match(t)
@@ -80,7 +81,7 @@ def parse_decimal(text: str) -> Decimal | None:
         value = Decimal(t)
     except InvalidOperation:
         return None
-    return value if value.is_finite() else None
+    return value if value.is_finite() and math.isfinite(float(value)) else None
 
 
 def parse_number(text: str) -> float | None:
