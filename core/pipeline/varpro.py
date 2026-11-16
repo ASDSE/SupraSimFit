@@ -2030,11 +2030,17 @@ def _read_steps(
     so it is halved again only where the profile at one of its points also
     lies above the higher cut-off by no more than the profile changes across
     it: where both lie further above, the profile between them does not reach
-    that cut-off either. Not read either are a stretch both of whose points
-    the test accepts, which lies inside the interval whatever the steps in
-    it, and a stretch with a point the model cannot be solved at, which has no
-    step to find. A step of the rank that leaves the cut-off where it is
-    leaves the excess continuous, so it opens no stretch and is not located.
+    that cut-off either. A stretch both of whose points the test accepts lies
+    inside the interval, but it holds a gap where the profile beside a step
+    lies above the lower of the two cut-offs, which makes the interval split;
+    by the same bound on how far the profile turns, it is read only where the
+    profile at one of its points lies under the lower cut-off by no more than
+    the step, and a half of it again only where the profile at one of its
+    points also lies under that cut-off by no more than the profile changes
+    across it. Not read is a stretch with a point the model cannot be solved
+    at, which has no step to find. A step of the rank that leaves the cut-off
+    where it is leaves the excess continuous, so it opens no stretch and is
+    not located.
     """
 
     def halve(a: float, b: float, top: bool) -> None:
@@ -2042,14 +2048,16 @@ def _read_steps(
         cut_a, cut_b = cut(rank_a), cut(rank_b)
         if (
             cut_a == cut_b
-            or (excess_a <= 0 and excess_b <= 0)
             or not (np.isfinite(excess_a) and np.isfinite(excess_b))
             or np.log10(b) - np.log10(a) <= _LOG_KA_XTOL
         ):
             return
         value_a, value_b = excess_a + cut_a, excess_b + cut_b
         slack = abs(cut_a - cut_b) if top else min(abs(cut_a - cut_b), abs(value_a - value_b))
-        if min(value_a, value_b) > max(cut_a, cut_b) + slack:
+        if excess_a <= 0 and excess_b <= 0:
+            if max(value_a, value_b) < min(cut_a, cut_b) - slack:
+                return
+        elif min(value_a, value_b) > max(cut_a, cut_b) + slack:
             return
         middle = float(10.0 ** (0.5 * (np.log10(a) + np.log10(b))))
         points[middle] = judge(middle)

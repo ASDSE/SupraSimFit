@@ -1147,6 +1147,32 @@ def test_an_accepted_stretch_that_begins_where_the_cut_off_steps_up_is_inside_th
     assert interval.split and not (interval.open_low or interval.open_high)
 
 
+@pytest.mark.parametrize('coarse', [False, True], ids=['profile-density', 'search-nodes'])
+def test_a_gap_between_two_accepted_points_where_the_cut_off_steps_makes_the_interval_split(coarse):
+    """A continuous profile ``(t - 3)²`` against a cut-off that steps up at t = 3.43, t = log10 Ka.
+
+    Below the step the cut-off is 0.41², so the profile crosses it at t = 3.41; from the step on it is 0.47², so the
+    test accepts again up to 3.47. Of the 20-per-decade profile, 3.40 lies under the first cut-off and 3.45 under the
+    second: both points read either side of the rejected stretch from 3.41 to 3.43 are accepted, and it is the step of
+    the cut-off between them that rejects it. The interval runs to 3.47 and is split.
+    """
+
+    step, cut = 3.43, {1: 0.41**2, 0: 0.47**2}
+
+    def judge(ka: float) -> tuple[float, int]:
+        t = np.log10(ka)
+        rank = 1 if t < step else 0
+        return (t - 3.0) ** 2 - cut[rank], rank
+
+    density = varpro._SEARCH_PER_DECADE if coarse else varpro._PROFILE_PER_DECADE
+    read = varpro._ka_grid(1.0, 1e6, density)
+    points = {float(ka): judge(ka) for ka in read.tolist()}
+    interval, _ = varpro._cut_interval(judge, points, 1e3, cut.get, LEVEL, 7, 1.0, nodes=read if coarse else None)
+    assert np.log10(interval.low) == pytest.approx(2.59, abs=2e-7)
+    assert np.log10(interval.high) == pytest.approx(3.47, abs=2e-7)
+    assert interval.split and not (interval.open_low or interval.open_high)
+
+
 def _independent_one_ka(projection: Projection, per_decade: int = 40) -> tuple[float, float, Callable[[float], bool]]:
     """The least-squares fit of a one-Ka titration and its F test, from this function's own solves.
 
