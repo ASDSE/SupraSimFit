@@ -6,7 +6,7 @@ image export; with nothing loaded, a sentence saying what to load. Side panel *T
 plot*, headed by *Reset to defaults*: Markers (the replicates' and the mean's point size,
 the replicates' mark), Lines (the fitted curve and the error bars), Colour (the
 replicates, from a short menu of the theme's colours), Text (the plot text of every plot of
-the session) and New
+the session, Simulation's included) and New
 sessions (*Use for new sessions* and what new sessions start from). Every choice goes to the session model's
 :class:`~gui.plot_appearance.PlotAppearance` and redraws the plot at once. The appearance
 feeds no fit or analysis, so the form stays open while one runs.
@@ -32,7 +32,7 @@ from gui.views.titration import TitrationPlot, legend_marks
 #: What the canvas says the appearance styles.
 SCOPE = (
     'These settings style this session’s titration plot in Measurements and Fit results, and the figure saved '
-    'from it. The text size applies to every plot of the session — Ka confidence and Sensitivity too — and to '
+    'from it. The text size applies to every plot of the session — Simulation, Ka confidence and Sensitivity too — and to '
     'the figures saved from them. Saved figures use the light theme on white.'
 )
 

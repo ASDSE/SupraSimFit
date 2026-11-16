@@ -2,8 +2,8 @@
 
 A control declares that it opens a menu (``opens_menu``): every dropdown with options,
 every menu button and the session switcher. :func:`sweep` clicks each one on screen in
-every view of the main window, every side-panel section open, and in the Settings and
-Simulation windows, and :func:`problems` says what is wrong with the menu it opened:
+every view of the main window — Simulation among them — every side-panel section open, and
+in the Settings and Help windows, and :func:`problems` says what is wrong with the menu it opened:
 
 - a row's label gets less room than its text takes;
 - the card reaches past the window it opens in;
@@ -129,7 +129,7 @@ def open_sections(window: QWidget) -> None:
 def sweep(
     app: QApplication, window, seen: dict[str, list[str]] | None = None, check: Callable = check_window
 ) -> dict[str, list[str]]:
-    """Open every menu of every view of the main window *window*, and of its Settings, Simulation and Help windows.
+    """Open every menu of every view of the main window *window*, and of its Settings and Help windows.
 
     Returns what is wrong with each menu, keyed by where it opened and by its opener's name.
     *check* ``(app, window, where, seen)`` is what is looked at in each view and window, every
@@ -150,20 +150,12 @@ def sweep(
 
     # The windows the main window opens, made off screen first so that opening them shows nothing.
     window._settings_window = SettingsWindow(window._act_check_updates, window)
-    others = (window._settings_window, window._simulation_window(), window._help_window())
-    for other in others:
+    for other in (window._settings_window, window._help_window()):
         other.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     window._open_settings()
     settle(app)
     check(app, window._settings_window, 'Settings', seen)
     window._settings_window.close()
-    window._on_simulate()
-    settle(app)
-    simulation = window._sim_window
-    open_sections(simulation)
-    settle(app)
-    check(app, simulation, 'Simulation', seen)
-    simulation.close()
     for section in SECTIONS:
         window.open_help(section)
         settle(app)

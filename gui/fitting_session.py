@@ -29,12 +29,14 @@ from gui.views.fit_results import FitResultsView
 from gui.views.measurements import MeasurementsView
 from gui.views.plot_appearance import PlotAppearanceView
 from gui.views.sensitivity import SensitivityView
+from gui.views.simulation import SimulationView
 from gui.views.uncertainty import UncertaintyView
 
 logger = logging.getLogger(__name__)
 
 #: A session's views as the sidebar groups them: (group, ((view, icon), …)).
 NAVIGATION = (
+    ('Design', (('Simulation', 'scatter'),)),
     ('Experiment', (('Measurements', 'table'), ('Binding model', 'flask'), ('Input uncertainty', 'sliders'))),
     ('Analysis', (('Fit results', 'fit'), ('Ka confidence', 'profile'), ('Sensitivity', 'bars'))),
     ('Presentation', (('Plot appearance', 'palette'),)),
@@ -135,10 +137,12 @@ class FittingSession(QWidget):
     # ------------------------------------------------------------------
 
     def show_view(self, view: str) -> None:
-        """Put *view* (one of :data:`VIEWS`) on screen."""
+        """Put *view* (one of :data:`VIEWS`) on screen; Simulation takes the session's binding model the first time."""
         if view == 'Plot appearance':
             # Another session may have stored the appearance for new sessions since.
             self._appearance.refresh_buttons()
+        if view == 'Simulation':
+            self.model.open_simulation()
         self._stack.setCurrentWidget(self._views[view])
 
     def current_view(self) -> str:
@@ -203,6 +207,8 @@ class FittingSession(QWidget):
 
     def view_badge(self, view: str) -> str | None:
         """The summary beside the title of *view*, or ``None`` for a view that states none yet."""
+        if view == 'Simulation':
+            return self._simulation.badge()
         if view == 'Measurements':
             return self._measurements.badge()
         if view == 'Binding model':
@@ -221,6 +227,7 @@ class FittingSession(QWidget):
 
     def _plot_widget_of(self, view: str):
         return {
+            'Simulation': self._simulation,
             'Measurements': self._measurements,
             'Fit results': self._results,
             'Ka confidence': self._confidence,
@@ -234,9 +241,12 @@ class FittingSession(QWidget):
         model = self.model
         if widget is None:
             return (
-                'This view has no plot to save. Open Measurements, Fit results, Ka confidence, Sensitivity or '
-                'Plot appearance.'
+                'This view has no plot to save. Open Simulation, Measurements, Fit results, Ka confidence, '
+                'Sensitivity or Plot appearance.'
             )
+        if widget is self._simulation:
+            refusal = model.fit_refusal()
+            return None if refusal is None else refusal.message
         if widget is self._measurements:
             return None if model.measurement_set is not None else 'There is no titration yet. Load data, then save it.'
         if widget is self._results or widget is self._appearance:
@@ -418,6 +428,10 @@ class FittingSession(QWidget):
             return
         self.model.show_status(f'Raw data exported to {path}')
 
+    def export_simulated_data(self) -> None:
+        """Save Simulation's simulated replicates, exactly as drawn, as a measurement file."""
+        self._simulation.export_data()
+
     def import_results(self) -> None:
         """Import fit results from JSON, check each against the loaded data, and show those that describe it.
 
@@ -476,8 +490,8 @@ class FittingSession(QWidget):
     def export_plot(self, view: str) -> None:
         """Save the plot of *view*.
 
-        The titration of Measurements, Fit results and Plot appearance is saved as PNG or
-        SVG, under its head (:meth:`~gui.views.titration.TitrationPlot.export_image`). Ka
+        Simulation's titration above its species, and the titration of Measurements, Fit
+        results and Plot appearance, are saved as PNG or SVG, under their heads (:meth:`~gui.views.titration.TitrationPlot.export_image`). Ka
         confidence and Sensitivity are saved as one picture of several plots, which only PNG
         can carry: see :func:`~gui.plotting.export.export_widget`. An edit still being
         typed is finished first, so the picture matches the settings.
@@ -491,6 +505,10 @@ class FittingSession(QWidget):
         # A whole tab is saved as one picture, which rules out SVG; see
         # gui.plotting.export.export_widget.
         tag, formats = {
+            self._simulation: (
+                f'simulation_{self.model.simulation.assay_type.name}',
+                'PNG image (*.png);;SVG vector (*.svg)',
+            ),
             self._measurements: ('titration', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._results: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
             self._appearance: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
@@ -538,6 +556,7 @@ class FittingSession(QWidget):
     # ------------------------------------------------------------------
 
     def _setup_ui(self) -> None:
+        self._simulation = SimulationView(self.model, self)
         self._measurements = MeasurementsView(self.model, self)
         self._binding = BindingView(self.model, self)
         self._uncertainty = UncertaintyView(self.model, self)
@@ -554,6 +573,9 @@ class FittingSession(QWidget):
             return panel
 
         self._views: dict[str, _View] = {
+            'Simulation': _View(
+                self._simulation.canvas, side('Simulation settings', self._simulation.side, link=self._simulation.more)
+            ),
             'Measurements': _View(self._measurements.canvas, side('Measurement settings', self._measurements.side)),
             'Binding model': _View(self._binding.canvas),
             'Input uncertainty': _View(self._uncertainty.canvas, side('Effect on the fit', self._uncertainty.side)),
@@ -596,6 +618,7 @@ class FittingSession(QWidget):
         self._results.save_plot.clicked.connect(lambda: self.export_plot('Fit results'))
         self._appearance.save_plot.clicked.connect(lambda: self.export_plot('Plot appearance'))
         self._measurements.save_plot.clicked.connect(lambda: self.export_plot('Measurements'))
+        self._simulation.save_plot.clicked.connect(lambda: self.export_plot('Simulation'))
         # The views follow the model first, connected as they were built; then the window.
         self.model.changed.connect(self._on_changed)
         self.model.warning.connect(lambda title, message: QMessageBox.warning(self, title, message))
@@ -611,7 +634,8 @@ class FittingSession(QWidget):
         self.changed.emit()
 
     def copy_from(self, other: FittingSession) -> None:
-        """Take a copy of what *other* states — data, binding model, input uncertainties — and none of its results."""
+        """Take a copy of what *other* states — data, binding model, input uncertainties, simulation — and none of its
+        results."""
         self.model.copy_from(other.model)
 
     # ------------------------------------------------------------------

@@ -72,11 +72,12 @@ def test_a_pointer_with_no_plot_on_screen_is_refused(qapp):
 
 def test_a_window_the_main_window_opens_is_drawn_at_its_own_size(qapp):
     from docs.design.render import render
-    from gui.views.simulation import WINDOW_SIZE
+    from gui.design.tokens import SIZE, space
 
-    image = render('Simulation', state='empty')
+    image = render('Help', state='empty')
 
-    assert (image.width(), image.height()) == WINDOW_SIZE
+    help_size = (SIZE['sidebar'] + SIZE['measure'] + 2 * space(7) + space(4), SIZE['measure'] + SIZE['toolbar'])
+    assert (image.width(), image.height()) == help_size
 
 
 def test_a_render_at_a_scale_has_that_many_device_pixels_per_logical_pixel(qapp):

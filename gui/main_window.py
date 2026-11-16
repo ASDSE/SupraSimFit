@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QCoreApplication, QLocale, QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
+from PyQt6.QtGui import QAction, QActionGroup, QFontMetrics, QIcon, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -20,7 +20,7 @@ from _version import __version__
 from gui import preferences
 from gui.design import components as C
 from gui.design.appearance import DesignStyle, appearance, theme
-from gui.design.tokens import SIZE, Theme, space
+from gui.design.tokens import SIZE, Theme, font, space
 from gui.dialogs.help_window import HelpWindow
 from gui.errors import install_exception_hook, log_dir
 from gui.fitting_session import NAVIGATION, VIEWS, FittingSession
@@ -86,6 +86,10 @@ class _Sidebar(QWidget):
         self.setLayout(lay)
 
 
+#: The primary button's label in a view while nothing runs; *Run fit* in every view not named.
+PRIMARY_LABELS = {'Sensitivity': 'Run analysis', 'Simulation': 'Fit the data'}
+
+
 class _Toolbar(C.TitleBarArea):
     """The toolbar: the view's title and badge, Load data ▾, Export ▾, Help, the side-panel toggle and Run."""
 
@@ -108,8 +112,9 @@ class _Toolbar(C.TitleBarArea):
         self.side = C.tool_button(t, None, 'panel-right', checked=True)
         self.side.setToolTip('Show or hide the side panel')
         self.side.setAccessibleName('Side panel')
-        # One width for every label ('Run fit', 'Run analysis', 'Stop'), so the toolbar never shifts.
-        self.run = C.primary_button(t, 'Run analysis', 'play')
+        # One width, its widest label's, for every label it shows, so the toolbar never shifts.
+        labels = [*PRIMARY_LABELS.values(), 'Run fit', 'Stop']
+        self.run = C.primary_button(t, max(labels, key=QFontMetrics(font('body-strong')).horizontalAdvance), 'play')
         divider = C.hairline(vertical=True)
         divider.setFixedHeight(space(6) - space(2))
         # Room for the window controls the title bar keeps on macOS while the sidebar is hidden.
@@ -183,7 +188,6 @@ class FittingMainWindow(QMainWindow):
         super().__init__(parent)
         self._t = theme()
         self._update_worker: UpdateCheckWorker | None = None
-        self._sim_window: QMainWindow | None = None
         self._settings_window: QWidget | None = None
         self._help: HelpWindow | None = None
         self._sessions: list[FittingSession] = []
@@ -287,7 +291,9 @@ class FittingMainWindow(QMainWindow):
         self._act_plot = _action(self, 'Plot image…', 'image', None, self._on_save_plot)
         self._act_several = _action(self, 'Export several…', 'layers', 'Ctrl+Shift+E', self._on_export_several)
         self._act_demo = _action(self, 'Open demo data (IDA)', 'flask', None, self._on_load_demo)
-        self._act_simulate = _action(self, 'Simulate…', '', None, self._on_simulate)
+        self._act_simulate = _action(self, 'Simulate…', '', None, lambda: self.show_view('Simulation'))
+        self._act_curve = _action(self, 'Curve image…', 'image', None, self._on_save_plot)
+        self._act_simulated_data = _action(self, 'Data file…', 'file-text', None, self._on_export_simulated_data)
         self._act_help = _action(self, 'SupraSimFit help', '', keys.HelpContents, lambda: self.open_help(self._view))
         self._act_check_updates = _action(
             self, 'Check for updates…', '', None, lambda: self._run_update_check(silent=False)
@@ -366,7 +372,7 @@ class FittingMainWindow(QMainWindow):
         bar.side.setEnabled(has_side)
         bar.side.setChecked(has_side and self._side_visible)
         running = model.running()
-        label = 'Stop' if running else ('Run analysis' if self._view == 'Sensitivity' else 'Run fit')
+        label = 'Stop' if running else PRIMARY_LABELS.get(self._view, 'Run fit')
         bar.run.set_text(label, 'stop' if running else 'play')
         bar.run.setAccessibleName(label)
         self._act_run.setText(label)
@@ -550,8 +556,11 @@ class FittingMainWindow(QMainWindow):
         self._show_menu(C.PopoverMenu(self._t, self, actions, note), self._toolbar.load)
 
     def _open_export_menu(self) -> None:
-        actions = [self._act_results, self._act_txt, self._act_csv, self._act_raw, None, self._act_plot]
-        actions += [None, self._act_several]
+        if self._view == 'Simulation':
+            actions = [self._act_curve, self._act_simulated_data]
+        else:
+            actions = [self._act_results, self._act_txt, self._act_csv, self._act_raw, None, self._act_plot]
+            actions += [None, self._act_several]
         self._show_menu(C.PopoverMenu(self._t, self, actions), self._toolbar.export)
 
     def _show_menu(self, menu: C.PopoverMenu, button: C.Button) -> None:
@@ -571,7 +580,11 @@ class FittingMainWindow(QMainWindow):
 
     def _on_primary(self) -> None:
         session = self.active_session()
-        if session is not None:
+        if session is None:
+            return
+        if self._view == 'Simulation' and not session.model.running():
+            self._fit_simulated(session)
+        else:
             session.run_primary(self._view)
 
     def _on_session(self, method: str) -> None:
@@ -631,34 +644,26 @@ class FittingMainWindow(QMainWindow):
         help_window.raise_()
         help_window.activateWindow()
 
-    def _simulation_window(self) -> QMainWindow:
-        """The window's one Simulation window, made and wired on first use."""
-        if self._sim_window is None:
-            from gui.views.simulation import SimulationWindow
+    def _on_export_simulated_data(self) -> None:
+        session = self.active_session()
+        if session is not None:
+            session.export_simulated_data()
 
-            self._sim_window = SimulationWindow(self)
-            self._sim_window.fit_requested.connect(self._fit_simulation)
-            self._sim_window.help_requested.connect(lambda: self.open_help('Simulation'))
-        return self._sim_window
+    def _fit_simulated(self, source: FittingSession) -> None:
+        """Fit the data *source* simulates with the binding model it simulates (:meth:`SimulationForm.carry_to`).
 
-    def _on_simulate(self) -> None:
-        """Open (or raise) the Simulation window."""
-        simulation = self._simulation_window()
-        simulation.show()
-        simulation.raise_()
-        simulation.activateWindow()
-
-    def _fit_simulation(self, form, simulation) -> None:
-        """Give the simulated data and the binding model of *form* to a session of their own, and fit them.
-
-        The session on screen takes them where it holds nothing and runs nothing; else a new one opens.
+        A session that holds nothing takes them as its data; a session with data keeps them, and a new
+        session, *Simulated <model>*, opens with the simulated data: measured data are never replaced.
         """
-        session = self._fresh_session()
-        form.carry_to(session.model, simulation)
+        refusal = source.model.fit_refusal()
+        if refusal is not None:
+            QMessageBox.warning(self, refusal.title, refusal.message)
+            return
+        form, simulated = source.model.simulation, source.model.simulated
+        target = source if source.model.is_empty() else self._new_session()
+        form.carry_to(target.model, simulated)
         self.show_view('Fit results')
-        self.raise_()
-        self.activateWindow()
-        session.run_fit()
+        target.run_fit()
 
     def _open_settings(self) -> None:
         """Open (or raise) the Settings window."""

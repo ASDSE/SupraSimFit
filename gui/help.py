@@ -1,4 +1,4 @@
-"""The text of the Help window: one section per view of the main window and one for the Simulation window.
+"""The text of the Help window: one section per view of the main window.
 
 Each section says what its view shows and how to read it, and what the settings of its side
 panel do. :data:`SECTIONS` lists them in the order the window does; :func:`section_html`
@@ -21,7 +21,7 @@ from gui.dataset import readable_extensions
 from gui.uncertainty import HELP_HTML as _INPUT_UNCERTAINTY
 
 #: Demo IDA's numbers as the views write them: its fit, Ka profile, a Sensitivity indices run
-#: at Fixed seed 0 and N = 1024, and the Simulation window as it opens.
+#: at Fixed seed 0 and N = 1024, and Simulation as it opens in the demo's session.
 DEMO: dict[str, str] = {
     'loaded': '8',
     'off': 'A',
@@ -279,18 +279,21 @@ mark.</li>
 of the text.</li>
 <li><b>Text</b>: the size of the plot text, which applies to every plot of the session &mdash;
 the profiles and joint region of Ka confidence, the samples, heatmap and plots against each
-source of Sensitivity &mdash; and to the figures saved from them.</li>
+source of Sensitivity, the titration and species of Simulation &mdash; and to the figures saved
+from them.</li>
 <li><b>New sessions</b>: <i>Use for new sessions</i> stores this appearance, and every new
-session starts from it; Settings can go back to the built-in one. The Simulation window draws
-at the text size stored for new sessions.</li>
+session starts from it; Settings can go back to the built-in one.</li>
 </ul>
 """
 
 _SIMULATION = """
-<p>The titration a binding model predicts, with the equations the fit uses.</p>
+<p>The titration a binding model predicts, with the equations the fit uses. Simulation keeps a
+copy of the binding model of its own: it opens on the model and conditions this session states
+in Binding model, and nothing you change here changes what the fit uses. <i>Use this
+session&rsquo;s model</i> takes them again.</p>
 <ul>
 <li><b>Titration</b>: the model as a continuous curve, the simulated replicates as dots at the
-measurement points, an overlaid file as rings.</li>
+measurement points, this session&rsquo;s data as rings where they are laid over it.</li>
 <li><b>Species</b>: the concentration of each species on the same x axis, one colour per binding
 partner &mdash; solid for a complex, dashed for a free species. The row above it reads each
 species at the concentration under the pointer.</li>
@@ -299,38 +302,44 @@ species at the concentration under the pointer.</li>
 <p>Each simulated point gets random noise with
 &sigma; = &radic;(floor&sup2; + (proportional &times; signal)&sup2;) &mdash; a constant part in
 a.u. and a part that grows with the signal, the law the fit reads off measured replicates.
-<i>Read from overlaid data</i> takes both parts from an overlaid file with two or more
-replicates. Without noise, one noise-free replicate is simulated.</p>
+<i>Read from session data</i> takes both parts from this session&rsquo;s replicates
+in use, two or more. Without noise, one noise-free replicate is simulated.</p>
 <p class="topic">Fixed totals</p>
 <p>The fixed totals stay constant until you choose <i>Are diluted</i>: each addition then
 dilutes every total the titrant stock does not hold by the titrant concentration over the
 stock, as the fit does with the same stock.</p>
 <p class="topic">Simulation settings</p>
 <p>The side panel, <i>Simulation settings</i>, holds the model and what it is simulated at;
-every change redraws the plots. Each slider&rsquo;s end values can be typed over, and the
-&#8943; menu saves, loads and resets the settings.</p>
+every change redraws the plots, and a value it cannot take is said at its top. Each
+slider&rsquo;s end values can be typed over, and the &#8943; menu saves, loads and resets the
+settings.</p>
 <ul>
-<li><b>Binding model</b>: the category and model, as in the Binding model view.</li>
+<li><b>Model</b>: the category and model, as in the Binding model view, and <i>Use this
+session&rsquo;s model</i>.</li>
 <li><b>Binding constants</b>: on log sliders, in M<sup>&minus;1</sup>.</li>
 <li><b>Fixed totals</b>: each total in the cuvette with its unit, and whether the totals stay
 constant or are diluted by the titrant stock.</li>
 <li><b>Concentrations</b>: the titrant concentrations measured at, in even steps or as a list
-of your own.</li>
+of your own. <i>Overlay this session&rsquo;s data</i> draws its replicates in use over the
+simulation and simulates at their concentrations.</li>
 <li><b>Noise</b>: the floor and the proportional part, the number of replicates, the seed and
 <i>New draw</i>.</li>
 <li><b>Signal</b>: the signal coefficients of the model.</li>
 </ul>
-<p><i>Fit in new session</i> opens the data as shown in a new session and fits it. The values you
+<p><i>Fit the data</i> fits the data as shown with the model simulated: in this session while it
+holds no data, else in a new session, so measured data are never replaced. The values you
 simulated with are not passed to the fit, so it searches as it does on measured data.</p>
 
-<p><b>Example: Demo IDA.</b> The window opens on IDA at Demo IDA&rsquo;s <i>Inputs as entered</i> fit,
-K<sub>a</sub> guest {entered} M⁻¹. The species row opens at {sim_x}: HG {sim_hg}, HD
-{sim_hd} and G {sim_g} µM, so most of the guest added is bound.</p>
+<p><b>Example: Demo IDA.</b> In the demo&rsquo;s session Simulation opens on IDA at its conditions
+and at Demo IDA&rsquo;s <i>Inputs as entered</i> fit, K<sub>a</sub> guest {entered} M⁻¹. The species
+row opens at {sim_x}: HG {sim_hg}, HD {sim_hd} and G {sim_g} µM, so most of the guest added is
+bound.</p>
 """
 
 #: The sections of the Help window, in the order it lists them: the views of the main window
-#: (:data:`gui.fitting_session.NAVIGATION`), then the Simulation window.
+#: (:data:`gui.fitting_session.NAVIGATION`).
 SECTIONS = (
+    'Simulation',
     'Measurements',
     'Binding model',
     'Input uncertainty',
@@ -338,7 +347,6 @@ SECTIONS = (
     'Ka confidence',
     'Sensitivity',
     'Plot appearance',
-    'Simulation',
 )
 
 _STATIC: dict[str, str] = {

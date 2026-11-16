@@ -1,7 +1,7 @@
 """Every painted component is given the room its content needs, and no plot header cuts its text (DESIGN.md §6, §7).
 
 The sweep walks the real window with Demo IDA loaded — every view, its sections open, the
-Settings, Simulation and Help windows — and holds it to the rules of :mod:`tests.unit.gui.layout_rules`.
+Settings and Help windows — and holds it to the rules of :mod:`tests.unit.gui.layout_rules`.
 The fitted state, whose plot headers carry a description, is swept in
 ``tests/integration/test_layout.py``. The component tests pin the two layouts the rules
 rest on: a segmented control beside a stretch, and a plot header at a width that cannot

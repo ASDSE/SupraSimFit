@@ -35,7 +35,7 @@ def test_the_help_examples_are_the_numbers_demo_ida_shows(qapp):
     from core.pipeline.sensitivity import run_sensitivity
     from gui.help import DEMO
     from gui.session_model import SessionModel
-    from gui.simulation import SimulationForm, readout_value, species_groups
+    from gui.simulation import readout_value, species_groups
     from gui.widgets.assay_conditions import assay_class
 
     # Demo IDA as load_demo_ida() states it, and the fit and Ka profile the session runs on it.
@@ -86,10 +86,10 @@ def test_the_help_examples_are_the_numbers_demo_ida_shows(qapp):
     first = S.budget_table(sens, 'Ka_guest').rows[0]
     assert (first[0].value, first[4].value) == (DEMO['top'], DEMO['exact'])
 
-    # Simulation: it opens on the Inputs as entered fit, and its species row at a third of the axis.
-    form = SimulationForm()
+    # Simulation: in the demo's session it opens on the Inputs as entered fit, its species row at a third of the axis.
+    model.open_simulation()
+    form, sim = model.simulation, model.simulated
     assert R.headline_value(form.knobs['Ka_guest'].value, '', (1, 1), (False, False))[0] == DEMO['entered']
-    sim = form.simulate()
     i = len(sim.x_dense) // 3
     scale = 1e6  # the grid's µM
     assert form.grid.unit == 'µM'

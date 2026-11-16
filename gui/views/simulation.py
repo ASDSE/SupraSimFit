@@ -1,16 +1,19 @@
-"""The Simulation window: forward simulation for experiment design, beside the fitting window (DESIGN.md §8).
+"""Simulation: forward simulation for experiment design, the first view of every session (DESIGN.md §8).
 
-A window of its own, part of no session: the main window's toolbar, side panel and status
-bar, without the sidebar. Toolbar: *Simulation* and its badge, *Overlay data…*, *Export ▾*,
-Help, the side-panel toggle and the primary *Fit in new session*. Canvas: **Titration**
-(the simulated replicates at the measurement points, the model drawn continuously, an
-overlaid file as rings) above **Species** on the same x axis, with the readout at the
-pointer. Side panel *Simulation settings*, its ⋯ menu holding *Save settings…*, *Load
-settings…* and *Reset to defaults*; under Fixed totals, whether the additions dilute them and
-the titrant stock, as Binding model states it. Every setting is
-:class:`~gui.simulation.SimulationForm`'s; every change recomputes both plots. The plots are
-drawn from the tokens alone; *Curve image…* saves both, the titration above the species on
-their shared axis, as one PNG or SVG in the light theme on white.
+Canvas: **Titration** (the simulated replicates at the measurement points, the model drawn
+continuously, the session's data as rings where they are laid over it) above **Species** on
+the same x axis, with the readout at the pointer. Side panel *Simulation settings*, its ⋯
+menu holding *Save settings…*, *Load settings…* and *Reset to defaults*: the binding model
+with *Use this session's model*, its binding constants, fixed totals — with whether the
+additions dilute them and the titrant stock, as Binding model states it — the
+concentrations, with *Overlay this session's data*, the noise, with *Read from session
+data*, and the signal. Every setting is the session's
+:class:`~gui.simulation.SimulationForm`, its own copy of a binding model
+(:meth:`~gui.session_model.SessionModel.edit_simulation`); every change recomputes both
+plots, and a setting refused is said at the top of the side panel. The plots are drawn
+from the tokens alone at the session's plot text; :meth:`SimulationView.export_image`
+saves both, the titration above the species on their shared axis, as one PNG or SVG in
+the light theme on white.
 """
 
 from __future__ import annotations
@@ -23,35 +26,21 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QFontMetrics, QKeySequence, QPainter, QPen
-from PyQt6.QtWidgets import (
-    QApplication,
-    QFileDialog,
-    QFrame,
-    QLabel,
-    QMainWindow,
-    QMessageBox,
-    QScrollArea,
-    QSizePolicy,
-    QSplitter,
-    QWidget,
-)
+from PyQt6.QtCore import QObject, QPointF, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QFontMetrics, QPainter, QPen
+from PyQt6.QtWidgets import QApplication, QFileDialog, QFrame, QLabel, QMessageBox, QSizePolicy, QWidget
 
 from core.assays.registry import ASSAY_REGISTRY
 from core.data_processing.concentration import read_raw_concentrations, save_concentration_vector
-from core.data_processing.measurement_set import InvalidData
 from core.units import Q_
-from gui import preferences
 from gui.binding import CATEGORIES
-from gui.dataset import Dataset
 from gui.design import components as C
 from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import REPLICATE_ALPHA, apply_plot_theme, fit_line, px, scatter
 from gui.design.tokens import SIZE, Theme, font, plot_font, space
-from gui.plot_appearance import BUILT_IN
-from gui.plotting.export import ExportRefused, export_stacked, figure_head
+from gui.plotting.export import export_stacked, figure_head
 from gui.plotting.labels import field_text, fmt_species, superscript
+from gui.session_model import Change, SessionModel
 from gui.simulation import (
     COMPLEXES,
     CONCENTRATION_UNITS,
@@ -60,7 +49,6 @@ from gui.simulation import (
     Overlay,
     Simulation,
     SimulationForm,
-    SimulationProblem,
     readout_value,
     species_groups,
     tag_text,
@@ -69,10 +57,9 @@ from gui.views.titration import EXPORT_SIZE, power_of_ten
 
 logger = logging.getLogger(__name__)
 
-WINDOW_SIZE = (1280, 800)
 VALUE_W, UNIT_W, END_W = SIZE['knob-value'], SIZE['knob-unit'], SIZE['slider-end']
 #: What the ⋯ menu's footnote says the settings file holds.
-SETTINGS_NOTE = 'Saves every value, slider end and noise setting of this window to a file.'
+SETTINGS_NOTE = 'Saves every value, slider end and noise setting of this simulation to a file.'
 #: What to check when a file cannot be written, after the sentence naming it.
 WRITE_HINT = 'Check that the folder exists and that you may write there.'
 #: Heights of the saved titration and species plots, in px at :data:`EXPORT_SIZE`'s width: the canvas's 13 : 10.
@@ -109,7 +96,7 @@ def species_pen(t: Theme, key: str, width: float | None = None) -> QPen:
 
 def _legend_items(form) -> list[tuple[str, str]]:
     """The titration's legend (:class:`~gui.design.components.LegendRow` items): the simulated replicates,
-    an overlaid file, the model."""
+    the session's data laid over them, the model."""
     r = form.replicates()
     if form.overlay is None:
         return [('dots', f'Simulated replicates ({r})'), ('line', 'Model')]
@@ -132,6 +119,8 @@ class _Readout(QWidget):
     """The species readout, which is also the species legend: the titrant at the pointer, then the complexes
     (solid) and the free species (dashed), each under its word, with its swatch and concentration.
 
+    One line where its width holds it; else it breaks between species onto further lines, each a
+    group's word kept with its first species, so the canvas never needs the width of the whole row.
     Without a titrant or concentrations it is the legend alone, as a saved figure carries it.
     """
 
@@ -142,51 +131,104 @@ class _Readout(QWidget):
         self.t = t
         self.x_text, self.unit = '', ''
         self.groups: list[tuple[str, list[tuple[str, str]]]] = []
-        self.setFixedHeight(self.HEIGHT)
+        policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
 
     def set_values(self, x_text: str, unit: str, groups: list[tuple[str, list[tuple[str, str]]]]) -> None:
         self.x_text, self.unit, self.groups = x_text, unit, groups
-        self.setFixedWidth(int(self._run(None)) + 1)
         flat = '; '.join(f'{word}: ' + ', '.join(f'{n} {v}' for n, v in items) for word, items in groups)
         self.setAccessibleName(f'{x_text}. {flat} {unit}')
+        self.updateGeometry()
         self.update()
 
-    def _run(self, p: QPainter | None) -> float:
-        t, h, x = self.t, float(self.HEIGHT), 0.0
+    def _pieces(self) -> list[tuple[float, list[tuple]]]:
+        """The pieces a line keeps whole, each ``(room before it on a line it does not start, its ops)``: the
+        titrant, a group's word with its first species — a divider in the room before it — each further
+        species; the unit rides on the last.
 
-        def text(s: str, role: str, tone: str) -> None:
-            nonlocal x
-            if p is not None:
-                p.setFont(font(role))
-                p.setPen(t.q(tone))
-                p.drawText(QRectF(x, 0, 400, h), Qt.AlignmentFlag.AlignVCenter, s)
-            x += QFontMetrics(font(role)).horizontalAdvance(s)
+        An op is ``('text', s, role, tone)``, ``('swatch', key)``, ``('gap', px)`` or ``('group',)``, which
+        starts a group.
+        """
+        divider = space(4) + 1 + space(4)
+        pieces: list[tuple[float, list[tuple]]] = []
+        if self.x_text:
+            pieces.append((0.0, [('text', self.x_text, 'small-number', 'text-primary')]))
+        for word, items in self.groups:
+            for i, (key, value) in enumerate(items):
+                ops = [('group',), ('text', word, 'small', 'text-tertiary'), ('gap', space(3))] if i == 0 else []
+                ops += [
+                    ('swatch', key),
+                    ('gap', 16 + space(2)),
+                    ('text', fmt_species(key, brackets=False), 'small', 'text-secondary'),
+                    ('gap', space(2)),
+                    ('text', value, 'small-number', 'text-primary'),
+                ]
+                pieces.append((divider if i == 0 else space(3), ops))
+        if pieces and self.unit:
+            pieces[-1][1].extend([('gap', space(3)), ('text', self.unit, 'small', 'text-tertiary')])
+        return pieces
 
-        text(self.x_text, 'small-number', 'text-primary')
-        for i, (word, items) in enumerate(self.groups):
-            if i or self.x_text:
-                x += space(4)
-                if p is not None:
-                    p.fillRect(QRectF(x, h / 2 - 6, 1, 12), t.q('border'))
-                x += 1 + space(4)
-            text(word, 'small', 'text-tertiary')
-            for key, value in items:
-                x += space(3)
-                if p is not None:
-                    p.setPen(species_pen(t, key))
-                    p.drawLine(QPointF(x + 1, h / 2), QPointF(x + 15, h / 2))
-                x += 16 + space(2)
-                text(fmt_species(key, brackets=False), 'small', 'text-secondary')
-                x += space(2)
-                text(value, 'small-number', 'text-primary')
-        x += space(3)
-        text(self.unit, 'small', 'text-tertiary')
-        return x
+    @staticmethod
+    def _width(ops: list[tuple]) -> float:
+        return sum(
+            op[1] if op[0] == 'gap' else QFontMetrics(font(op[2])).horizontalAdvance(op[1])
+            for op in ops
+            if op[0] in ('gap', 'text')
+        )
+
+    def _lines(self, width: float) -> list[list[tuple[float, list[tuple]]]]:
+        """The pieces on each line at *width*, each with where it starts."""
+        lines: list[list[tuple[float, list[tuple]]]] = [[]]
+        x = 0.0
+        for lead, ops in self._pieces():
+            w = self._width(ops)
+            if lines[-1] and x + lead + w > width:
+                lines.append([])
+                x = 0.0
+            x += lead if lines[-1] else 0.0
+            lines[-1].append((x, ops))
+            x += w
+        return lines
+
+    def sizeHint(self) -> QSize:
+        line = self._lines(math.inf)[0]
+        width = line[-1][0] + self._width(line[-1][1]) if line else 0
+        return QSize(math.ceil(width) + 1, self.HEIGHT)
+
+    def minimumSizeHint(self) -> QSize:
+        widest = max((self._width(ops) for _lead, ops in self._pieces()), default=0)
+        return QSize(math.ceil(widest) + 1, self.HEIGHT)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self.HEIGHT * len(self._lines(width))
 
     def paintEvent(self, _):
+        t, h = self.t, float(self.HEIGHT)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._run(p)
+        for row, line in enumerate(self._lines(self.width())):
+            top = row * h
+            for i, (x, ops) in enumerate(line):
+                if i and ops[0][0] == 'group':
+                    p.fillRect(QRectF(x - space(4) - 1, top + h / 2 - 6, 1, 12), t.q('border'))  # before a group
+                for op in ops:
+                    if op[0] == 'gap':
+                        x += op[1]
+                    elif op[0] == 'group':
+                        continue
+                    elif op[0] == 'swatch':
+                        p.setPen(species_pen(t, op[1]))
+                        p.drawLine(QPointF(x + 1, top + h / 2), QPointF(x + 15, top + h / 2))
+                    else:
+                        _kind, text, role, tone = op
+                        p.setFont(font(role))
+                        p.setPen(t.q(tone))
+                        p.drawText(QRectF(x, top, 400, h), Qt.AlignmentFlag.AlignVCenter, text)
+                        x += QFontMetrics(font(role)).horizontalAdvance(text)
         p.end()
 
 
@@ -339,7 +381,7 @@ class SimulationPlots(QObject):
 class _KnobRow(QWidget):
     """One input: name, value and unit on the first line; the slider between its two ends on the second."""
 
-    def __init__(self, view: SimulationWindow, knob: Knob):
+    def __init__(self, view: SimulationView, knob: Knob):
         super().__init__()
         t, self.key, self.view = view.t, knob.key, view
         name = knob.name()
@@ -375,138 +417,46 @@ class _KnobRow(QWidget):
             end.set_text(text)
 
 
-class SimulationWindow(QMainWindow):
-    """The Simulation window; see the module docstring.
+class SimulationView(QObject):
+    """The canvas and side panel of Simulation over *model*; *parent* is where its menus and dialogs open.
 
-    :attr:`fit_requested` carries the form and the simulation on screen when *Fit in new
-    session* is pressed; the main window opens the session. :attr:`help_requested` is the
-    toolbar's Help; the main window opens its Help window at Simulation.
+    :attr:`more` is the side panel's ⋯ menu, the link of its header.
     """
 
-    fit_requested = pyqtSignal(object, object)
-    help_requested = pyqtSignal()
-
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, model: SessionModel, parent: QWidget):
         super().__init__(parent)
-        self.t = theme()
-        self.text_step = self._plot_step()
-        self.form = SimulationForm()
+        self.model, self.parent, self.t = model, parent, theme()
         self.sim: Simulation | None = None
-        self._problem: str | None = None
-        self._popover: C.PopoverMenu | None = None
-        self.setWindowTitle('Simulation — SupraSimFit')
-        if C.MAC:
-            self.setWindowFlag(Qt.WindowType.ExpandedClientAreaHint, True)
-            self.setWindowFlag(Qt.WindowType.NoTitleBarBackgroundHint, True)
-            self.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
-        self.resize(*WINDOW_SIZE)
+        self.rows: dict[str, _KnobRow] = {}
+        self._built_for = None
         self._actions()
-        toolbar = self._build_toolbar()
-        self.split = QSplitter(Qt.Orientation.Horizontal)
-        self.split.setHandleWidth(1)
-        self.split.setChildrenCollapsible(False)
         self.canvas = self._build_canvas()
-        self.split.addWidget(self.canvas)
-        self.inspector = self._build_inspector()
-        self.split.addWidget(self.inspector)
-        self.split.setStretchFactor(0, 1)
-        self.split.setSizes([WINDOW_SIZE[0] - 1 - SIZE['inspector'], SIZE['inspector']])
-        root = QWidget()
-        root.setLayout(C.vbox(toolbar, C.hairline(), self.split, C.hairline(), self._build_status(), spacing=0))
-        root.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        if C.MAC:
-            root.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
-            if QApplication.platformName() == 'cocoa':
-                C.hide_title_text(self)
-        self.setCentralWidget(root)
-        root.setFocus()  # no control holds the focus, so no focus ring shows until the keyboard moves it
+        self.side = self._build_side()
+        model.changed.connect(self._on_changed)
         appearance().changed.connect(self._restyle)
         self._rebuild()
 
-    def _plot_step(self) -> str:
-        """The plot text step stored for new sessions, which the window's plots and their figure are drawn at.
+    @property
+    def form(self) -> SimulationForm:
+        return self.model.simulation
 
-        A stored appearance that cannot be read is said in a warning once the window is up, and
-        the plots take the built-in step.
-        """
-        try:
-            return preferences.plot_appearance_default().text_step
-        except ValueError as exc:
-            message = f'{exc} The plots here use the built-in text size until another is stored in Plot appearance.'
-            QTimer.singleShot(0, lambda: QMessageBox.warning(self, 'Plot Appearance Not Read', message))
-            return BUILT_IN.text_step
+    def badge(self) -> str:
+        return self.form.badge()
 
     # ------------------------------------------------------------------
     # Building
     # ------------------------------------------------------------------
 
     def _actions(self) -> None:
-        def action(text: str, icon: str, slot, shortcut: str = '') -> QAction:
+        def action(text: str, icon: str, slot) -> QAction:
             a = QAction(text, self)
             a.setProperty('design_icon', icon)
-            if shortcut:
-                a.setShortcut(QKeySequence(shortcut))
             a.triggered.connect(slot)
-            self.addAction(a)
             return a
 
-        self.act_save = action('Save settings…', 'save', self.save_settings, 'Ctrl+S')
+        self.act_save = action('Save settings…', 'save', self.save_settings)
         self.act_load = action('Load settings…', 'open', self.load_settings)
-        self.act_reset = action(
-            'Reset to defaults', 'rotate', lambda: self.edit(lambda f: f.set_assay(f.assay_type), rebuild=True)
-        )
-        self.act_image = action('Curve image…', 'image', self.export_image)
-        self.act_data = action('Data file…', 'file-text', self.export_data)
-
-    def _build_toolbar(self) -> QWidget:
-        t = self.t
-        bar = C.TitleBarArea()
-        bar.setObjectName('Toolbar')
-        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        bar.setFixedHeight(SIZE['toolbar'])
-        self.badge = C.badge('')
-        overlay = C.tool_button(t, 'Overlay data…', 'layers')
-        overlay.setToolTip('Show a measurement file over the simulated titration')
-        overlay.clicked.connect(self.overlay_data)
-        self.export = C.tool_button(t, 'Export', 'export', menu=True)
-        self.export.clicked.connect(lambda: self._menu([self.act_image, self.act_data], self.export))
-        self.help_button = C.tool_button(t, None, 'help')
-        self.help_button.setToolTip('How the simulation works')
-        self.help_button.setAccessibleName('How the simulation works')
-        self.help_button.clicked.connect(self.help_requested)
-        self.side = C.tool_button(t, None, 'panel-right', checked=True)
-        self.side.setToolTip('Show or hide the side panel')
-        self.side.setAccessibleName('Side panel')
-        self.side.clicked.connect(lambda: self.inspector.setVisible(self.side.isChecked()))
-        fit = C.primary_button(t, 'Fit in new session', 'arrow-up-right')
-        fit.setToolTip('Open the simulated data in a new session with this binding model and fit it')
-        fit.clicked.connect(self.fit_in_new_session)
-        divider = C.hairline(vertical=True)
-        divider.setFixedHeight(space(6) - space(2))
-        inset = QWidget()  # room for the window controls the title bar keeps on macOS
-        inset.setFixedWidth(space(8) + space(6))
-        inset.setVisible(C.MAC)
-        bar.setLayout(
-            C.hbox(
-                inset,
-                C.label('Simulation', 'title'),
-                3,
-                self.badge,
-                None,
-                overlay,
-                self.export,
-                2,
-                divider,
-                2,
-                self.help_button,
-                self.side,
-                2,
-                fit,
-                spacing=1,
-                margins=(6, 0, 5, 0),
-            )
-        )
-        return bar
+        self.act_reset = action('Reset to defaults', 'rotate', lambda: self.edit(lambda f: f.set_assay(f.assay_type)))
 
     def _build_canvas(self) -> QWidget:
         t = self.t
@@ -514,95 +464,61 @@ class SimulationWindow(QMainWindow):
         w.setObjectName('Canvas')
         w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.legend = C.LegendRow(t, [])
-        self.legend.removed.connect(lambda: self.edit(lambda f: f.set_overlay(None)))
-        image = C.tool_button(t, None, 'image')
-        image.setToolTip('Save the titration and species plots as one image')
-        image.setAccessibleName('Save the titration and species plots as one image')
-        image.clicked.connect(self.export_image)
+        self.legend.removed.connect(lambda: self.model.overlay_data(False))
+        self.save_plot = C.tool_button(t, None, 'image')
+        self.save_plot.setToolTip('Save the titration and species plots as one image')
+        self.save_plot.setAccessibleName('Save the titration and species plots as one image')
         self.readout = _Readout(t)
-        self.plots = SimulationPlots(t, self.text_step)
+        self.plots = SimulationPlots(t, self.model.plot_appearance.text_step)
         self.plots.pointed.connect(self._show_readout)
-        titration_head = C.PlotHeader(t, TITRATION_HEAD[0], self.legend, [image], TITRATION_HEAD[1])
-        species_head = C.hbox(
-            C.label(SPECIES_HEAD[0], 'body-strong'),
-            3,
-            C.label(SPECIES_HEAD[1], 'small', 'tertiary'),
-            None,
-            self.readout,
-            spacing=0,
-        )
+        titration_head = C.PlotHeader(t, TITRATION_HEAD[0], self.legend, [self.save_plot], TITRATION_HEAD[1])
+        species_head = C.PlotHeader(t, SPECIES_HEAD[0], self.readout, [], SPECIES_HEAD[1])
         lay = C.vbox(titration_head, 2, spacing=0, margins=(6, 5, 6, 4))
         lay.addWidget(self.plots.signal_pw, 13)
         lay.addSpacing(space(5))
-        lay.addLayout(species_head)
+        lay.addWidget(species_head)
         lay.addSpacing(space(2))
         lay.addWidget(self.plots.species_pw, 10)
         w.setLayout(lay)
         return w
 
-    def _build_inspector(self) -> QWidget:
+    def _build_side(self) -> QWidget:
         t = self.t
-        w = QWidget()
-        w.setObjectName('Inspector')
-        w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        w.setMinimumWidth(SIZE['inspector-min'])
         self.more = C.tool_button(t, None, 'more', menu=True)
         self.more.setToolTip('Save, load or reset these settings')
-        self.more.setAccessibleName('Settings menu')
-        self.more.clicked.connect(
-            lambda: self._menu(
-                [self.act_save, self.act_load, None, self.act_reset], self.more, SETTINGS_NOTE, right=True
-            )
-        )
-        close = C.tool_button(t, None, 'x')
-        close.setToolTip('Close the side panel')
-        close.setAccessibleName('Close Simulation settings')
-        close.clicked.connect(lambda: (self.inspector.hide(), self.side.setChecked(False)))
-        head = _widget(
-            C.hbox(
-                C.label('Simulation settings', 'body-strong'), None, self.more, close, spacing=1, margins=(5, 0, 3, 0)
-            )
-        )
-        head.setFixedHeight(SIZE['toolbar'] - space(2))
+        self.more.setAccessibleName('Simulation settings menu')
+        self.more.clicked.connect(self._open_more)
+        self.problem = C.Problem(t)
 
-        # Binding model: the category, then the model within it.
+        # Binding model: the category, then the model within it, and the session's own.
         self.category = C.Dropdown(t, list(CATEGORIES), width=VALUE_W)
         self.category.setAccessibleName('Category of the binding model')
-        self.category.chosen.connect(
-            lambda i: self.edit(lambda f: f.choose_category(list(CATEGORIES)[i]), rebuild=True)
-        )
+        self.category.chosen.connect(lambda i: self.edit(lambda f: f.choose_category(list(CATEGORIES)[i])))
         self.model_menu = C.Dropdown(t, width=VALUE_W)
         self.model_menu.setAccessibleName('Model in the category')
-        self.model_menu.chosen.connect(
-            lambda i: self.edit(lambda f: f.choose_model(CATEGORIES[f.category][i]), rebuild=True)
-        )
+        self.model_menu.chosen.connect(lambda i: self.edit(lambda f: f.choose_model(CATEGORIES[f.category][i])))
         for dropdown in (self.category, self.model_menu):
             dropdown.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        model = _widget(C.vbox(self.category, self.model_menu, spacing=2))
+        self.use_model = C.link_button('Use this session’s model')
+        self.use_model.setToolTip(
+            'Simulate the binding model, conditions and titrant stock this session states in Binding model'
+        )
+        self.use_model.clicked.connect(lambda: self.model.use_session_model())
+        model = _widget(C.vbox(self.category, self.model_menu, 1, C.hbox(self.use_model, None), spacing=2))
 
         self.knob_boxes = {kind: _widget(C.vbox(spacing=4)) for kind in ('binding', 'concentration', 'signal')}
         self.formula = _caption('')
         signal = _widget(C.vbox(self.knob_boxes['signal'], 2, self.formula, spacing=0))
         totals = _widget(C.vbox(self.knob_boxes['concentration'], 4, self._build_dilution(), spacing=0))
         self.sections = {
-            'model': C.section(t, 'Binding model', model, first=True),
+            'model': C.section(t, 'Model', model, first=True),
             'binding': C.section(t, 'Binding constants', self.knob_boxes['binding']),
             'concentration': C.section(t, 'Fixed totals', totals, trailing='in the cuvette'),
             'grid': C.section(t, 'Concentrations', self._build_grid()),
             'noise': C.section(t, 'Noise', self._build_noise()),
             'signal': C.section(t, 'Signal', signal, open_=False),
         }
-        body = QWidget()
-        body.setObjectName('InspectorBody')
-        body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        body.setLayout(C.vbox(*self.sections.values(), None, spacing=0, margins=(5, 0, 5, 4)))
-        self.scroll = QScrollArea()
-        self.scroll.setObjectName('InspectorScroll')
-        self.scroll.setWidget(body)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        w.setLayout(C.vbox(head, self.scroll, spacing=0))
-        return w
+        return _widget(C.vbox(self.problem, *self.sections.values(), spacing=0))
 
     def _build_dilution(self) -> QWidget:
         """Whether the additions dilute the fixed totals, the stock and the totals it holds, as Binding
@@ -658,6 +574,8 @@ class SimulationWindow(QMainWindow):
 
     def _build_grid(self) -> QWidget:
         t = self.t
+        self.overlay = C.Checkbox(t, 'Overlay this session’s data')
+        self.overlay.toggled.connect(self.model.overlay_data)
         self.grid_mode = C.Segmented(t, ['Even steps', 'Custom list'])
         self.grid_mode.setAccessibleName('How the concentrations are stated')
         self.grid_mode.changed.connect(lambda i: self.edit(lambda f: f.set_grid_mode(('even', 'custom')[i])))
@@ -698,7 +616,7 @@ class SimulationWindow(QMainWindow):
         self.custom = _widget(
             C.vbox(self.custom_note, 3, self.custom_grid, 2, C.hbox(load, save, None, spacing=5), spacing=0)
         )
-        return _widget(C.vbox(self.grid_mode, 3, self.even, self.custom, spacing=0))
+        return _widget(C.vbox(self.overlay, 3, self.grid_mode, 3, self.even, self.custom, spacing=0))
 
     def _build_noise(self) -> QWidget:
         t = self.t
@@ -722,8 +640,8 @@ class SimulationWindow(QMainWindow):
         self.new_draw = C.OutlineButton(t, 'New draw')
         self.new_draw.setToolTip('Draw new noise: moves the seed on by one')
         self.new_draw.clicked.connect(lambda: self.edit(lambda f: f.new_draw()))
-        self.read_noise = C.OutlineButton(t, 'Read from overlaid data')
-        self.read_noise.clicked.connect(self._read_noise)
+        self.read_noise = C.OutlineButton(t, 'Read from session data')
+        self.read_noise.clicked.connect(lambda: self.model.read_noise())
         level = C.hbox(_column('Floor', self.floor), 4, _column('Proportional', self.proportional), spacing=0)
         draws = C.hbox(_column('Replicates', self.replicates), 4, _column('Seed', self.seed), spacing=0)
         return _widget(
@@ -741,77 +659,48 @@ class SimulationWindow(QMainWindow):
             )
         )
 
-    def _build_status(self) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName('StatusBar')
-        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        bar.setFixedHeight(SIZE['statusbar'])
-        self.dot = C.StatusDot(self.t, 'text-tertiary')
-        self.status = C.ElidedLabel('Ready', 'small', 'secondary')
-        self.model_line = C.label('', 'small', 'tertiary')
-        lay = C.hbox(self.dot, 2, self.status, 4, self.model_line, spacing=0, margins=(5, 0, 5, 0))
-        lay.setStretchFactor(self.status, 1)
-        bar.setLayout(lay)
-        return bar
-
-    def _menu(self, actions: list, anchor: C.Button, note: str = '', right: bool = False) -> None:
-        if self._popover is not None:
-            self._popover.close_popover()
-        menu = C.PopoverMenu(self.t, self, actions, note)
-        anchor.setCheckable(True)
-        anchor.setChecked(True)
+    def _open_more(self) -> None:
+        menu = C.PopoverMenu(
+            self.t, self.parent.window(), [self.act_save, self.act_load, None, self.act_reset], SETTINGS_NOTE
+        )
+        self.more.setCheckable(True)
+        self.more.setChecked(True)
 
         def closed() -> None:
-            anchor.setChecked(False)
-            anchor.setCheckable(False)
-            self._popover = None
+            self.more.setChecked(False)
+            self.more.setCheckable(False)
 
         menu.closed.connect(closed)
-        self._popover = menu
-        menu.popup(anchor, right)
+        menu.popup(self.more, True)
 
     # ------------------------------------------------------------------
     # Editing
     # ------------------------------------------------------------------
 
-    def edit(self, change, rebuild: bool = False) -> None:
-        """Apply *change* to the form and draw again; a setting the form refuses is said on the status bar."""
-        try:
-            change(self.form)
-        except SimulationProblem as problem:
-            self._say(str(problem))
-            self._sync()
-            return
-        self._say(None)
-        if rebuild:
-            self._rebuild()
-        else:
-            self._sync()
+    def edit(self, change) -> None:
+        """Apply *change* to the session's simulation (:meth:`SessionModel.edit_simulation`)."""
+        self.model.edit_simulation(change)
 
     def _edit_even(self) -> None:
         self.edit(lambda f: f.set_even(self.start.editor.text(), self.stop.editor.text(), self.n_points.editor.text()))
 
-    def _say(self, message: str | None) -> None:
-        self._problem = message
-        self.dot.set_tone('warning' if message else 'text-tertiary')
-        self.status.set_full_text(message or 'Ready')
-        self.status.setToolTip(message or '')
-
-    def _read_noise(self) -> None:
-        try:
-            self.form.read_noise()
-        except SimulationProblem as problem:
-            QMessageBox.warning(self, 'Noise Not Read', str(problem))
-            return
-        self._sync()
-
     # ------------------------------------------------------------------
-    # Drawing from the form
+    # Drawing from the model
     # ------------------------------------------------------------------
+
+    def _on_changed(self, what: Change) -> None:
+        if Change.APPEARANCE in what:
+            self._restyle()
+        if what & (Change.SIMULATION | Change.DATA):
+            if self._built_for is not self.form.assay_type:
+                self._rebuild()
+            else:
+                self._sync()
 
     def _rebuild(self) -> None:
         """Build the knob rows of the model chosen, then draw everything."""
-        self.rows: dict[str, _KnobRow] = {}
+        self._built_for = self.form.assay_type
+        self.rows = {}
         for kind, box in self.knob_boxes.items():
             lay = box.layout()
             while lay.count():
@@ -832,14 +721,15 @@ class SimulationWindow(QMainWindow):
             box.toggled.connect(lambda on, key=knob.key: self.edit(lambda f: f.set_contains(key, on)))
             self.contains_box.addWidget(box)
             self._contains[knob.key] = box
-        has = {kind: bool(self.form.section(kind)) for kind in self.knob_boxes}
-        for kind, on in has.items():
-            self.sections[kind].setVisible(on)
+        for kind in self.knob_boxes:
+            self.sections[kind].setVisible(bool(self.form.section(kind)))
         self._sync()
 
     def _sync(self) -> None:
         """Show every setting of the form and draw the simulation."""
-        form = self.form
+        form, model = self.form, self.model
+        problem = model.simulation_problem
+        self.problem.show_problems([problem] if problem else [])
         models = CATEGORIES[form.category]
         self.category.set_current(list(CATEGORIES).index(form.category))
         self.model_menu.set_options([ASSAY_REGISTRY[a].subtype_label for a in models], models.index(form.assay_type))
@@ -858,6 +748,14 @@ class SimulationWindow(QMainWindow):
         self.sections['signal'].header.set_trailing(f'{n_signal} coefficient{"s" if n_signal != 1 else ""}')
         self.formula.setText(form.signal_formula())
         # Concentrations
+        has_data = model.measurement_set is not None
+        self.overlay.set_checked(form.overlay is not None)
+        self.overlay.setEnabled(has_data)
+        self.overlay.setToolTip(
+            'Draw this session’s replicates in use over the simulation, and simulate at their concentrations'
+            if has_data
+            else 'Load data into this session to draw them over the simulation.'
+        )
         g = form.grid
         custom = g.mode == 'custom'
         self.grid_mode.set_current(int(custom))
@@ -885,35 +783,29 @@ class SimulationWindow(QMainWindow):
         self.seed.set_text(str(n.seed))
         for control in (self.floor, self.proportional, self.replicates, self.seed, self.new_draw):
             control.setEnabled(n.on)
-        refusal = form.read_noise_refusal()
+        refusal = model.noise_refusal()
         self.read_noise.setEnabled(refusal is None)
-        self.read_noise.setToolTip(refusal or 'Take the floor and the proportional part from the overlaid replicates')
+        self.read_noise.setToolTip(refusal or 'Take the floor and the proportional part from this session’s replicates')
         r = form.replicates()
         self.sections['noise'].header.set_trailing(f'{r} replicate{"s" if r != 1 else ""}')
-        self._simulate()
+        self._draw()
 
-    def _simulate(self) -> None:
+    def _draw(self) -> None:
         form = self.form
-        try:
-            self.sim = form.simulate()
-        except SimulationProblem as problem:
-            self.sim = None
-            self._say(str(problem))
+        self.sim = self.model.simulated
         self.legend.set_items(_legend_items(form))
         self.plots.show(self.sim, form.overlay, form.grid.unit, form.x_name)
-        self.badge.setText(form.badge())
-        self.model_line.setText('  ·  '.join(form.model_line()))
 
     def _restyle(self) -> None:
-        """Draw the plots again in the theme as it is now: a theme styles their axes and grid once."""
-        old, new = self.plots, SimulationPlots(self.t, self.text_step)
+        """Draw the plots again in the theme and at the plot text as they are now: both style the axes once."""
+        old, new = self.plots, SimulationPlots(self.t, self.model.plot_appearance.text_step)
         new.index = old.index
         new.pointed.connect(self._show_readout)
         for a, b in ((old.signal_pw, new.signal_pw), (old.species_pw, new.species_pw)):
             self.canvas.layout().replaceWidget(a, b)
             C.drop(a)
         self.plots = new
-        self._simulate()
+        self._draw()
 
     def _show_readout(self, index: int) -> None:
         sim, unit = self.sim, self.form.grid.unit
@@ -929,65 +821,30 @@ class SimulationWindow(QMainWindow):
     # Commands
     # ------------------------------------------------------------------
 
-    def fit_in_new_session(self) -> None:
-        if self.sim is None:
-            QMessageBox.warning(
-                self,
-                'Nothing to Fit',
-                f'{self._problem or "The model cannot be computed with these settings."} Change the settings, '
-                'then fit again.',
-            )
-            return
-        self.fit_requested.emit(self.form, self.sim)
+    def export_image(self, path: str) -> None:
+        """Save the titration above the species on their shared titrant axis to *path*, as one PNG or SVG.
 
-    def overlay_data(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, 'Overlay data', '', 'Data files (*.txt *.csv *.xlsx);;All files (*)'
-        )
-        if not path:
-            return
-        try:
-            ms = Dataset.open([path]).ms
-        except InvalidData as exc:  # written for the user: it names the file and the fix
-            QMessageBox.warning(self, 'Data Not Overlaid', str(exc))
-            return
-        overlay = Overlay(
-            Path(path).name, np.asarray(ms.concentrations, dtype=float), np.asarray(ms.signals, dtype=float)
-        )
-        self.edit(lambda f: f.set_overlay(overlay))
-
-    def export_image(self) -> None:
-        """Save the titration above the species on their shared titrant axis, as one PNG or SVG.
-
-        Drawn again in the light theme on white, each plot under its title and caption with
-        its legend: the titration's entries, and the species' names and line styles.
+        Drawn again in the light theme on white at the session's plot text, each plot under its
+        title and caption with its legend: the titration's entries, and the species' names and
+        line styles.
         """
-        if self.sim is None:
-            QMessageBox.warning(self, 'Nothing to Save', self._problem or 'There is no simulation to save.')
-            return
-        name = f'simulation_{self.form.assay_type.name}.png'
-        path, _ = QFileDialog.getSaveFileName(self, 'Save curve image', name, 'PNG image (*.png);;SVG drawing (*.svg)')
-        if not path:
-            return
+        sim, form, step = self.sim, self.form, self.model.plot_appearance.text_step
         light = Theme(dark=False)
-        figure = SimulationPlots(light, self.text_step)
+        figure = SimulationPlots(light, step)
         for pw, height in zip((figure.signal_pw, figure.species_pw), EXPORT_HEIGHTS, strict=True):
             pw.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
             pw.resize(EXPORT_SIZE[0], height)
             pw.show()
-        figure.show(self.sim, self.form.overlay, self.form.grid.unit, self.form.x_name)
+        figure.show(sim, form.overlay, form.grid.unit, form.x_name)
         figure.set_pointer_visible(False)
         species, width = _Readout(light), EXPORT_SIZE[0]
-        species.set_values('', '', [(word, [(k, '') for k in keys]) for word, keys in species_groups(self.sim.species)])
+        species.set_values('', '', [(word, [(k, '') for k in keys]) for word, keys in species_groups(sim.species)])
+        species.setFixedSize(species.sizeHint())
         heads = [
             figure_head(
-                light,
-                *TITRATION_HEAD,
-                C.LegendRow(light, _legend_items(self.form), removable=False),
-                width,
-                text=self.text_step,
+                light, *TITRATION_HEAD, C.LegendRow(light, _legend_items(form), removable=False), width, text=step
             ),
-            figure_head(light, *SPECIES_HEAD, species, width, text=self.text_step),
+            figure_head(light, *SPECIES_HEAD, species, width, text=step),
         ]
         for head in heads:
             head.show()
@@ -998,27 +855,25 @@ class SimulationWindow(QMainWindow):
                 path,
                 width_px=2 * EXPORT_SIZE[0],
             )
-        except ExportRefused as exc:
-            QMessageBox.warning(self, 'Image Not Saved', str(exc))
-        except Exception:
-            logger.exception('Could not save the curve image to %s', path)
-            QMessageBox.warning(self, 'Image Not Saved', f'Could not save the image to {Path(path).name}. {WRITE_HINT}')
-        else:
-            self._say(None)
-            self.status.set_full_text(f'Ready  ·  Curve image saved to {Path(path).name}')
         finally:
             for w in (figure.signal_pw, figure.species_pw, *heads):
                 w.close()
                 w.deleteLater()
 
+    def _save_path(self, suffix: str) -> str:
+        """Where a save of the simulation starts: ``simulation_IDA<suffix>`` in the folder the session offers."""
+        return str(self.model.save_folder() / f'simulation_{self.form.assay_type.name}{suffix}')
+
     def export_data(self) -> None:
+        """Save the simulated replicates exactly as drawn, as a TXT or CSV measurement file."""
         from core.io.formats.measurement_writer import write_measurements_csv, write_measurements_txt
 
         if self.sim is None:
-            QMessageBox.warning(self, 'Nothing to Save', self._problem or 'There is no simulation to save.')
+            QMessageBox.warning(self.parent, 'Nothing to Save', self.model.fit_refusal().message)
             return
-        name = f'simulation_{self.form.assay_type.name}.txt'
-        path, _ = QFileDialog.getSaveFileName(self, 'Save data file', name, 'Text file (*.txt);;CSV file (*.csv)')
+        path, _ = QFileDialog.getSaveFileName(
+            self.parent, 'Save data file', self._save_path('.txt'), 'Text file (*.txt);;CSV file (*.csv)'
+        )
         if not path:
             return
         ms = self.form.measurement_set(self.sim)
@@ -1030,45 +885,51 @@ class SimulationWindow(QMainWindow):
                 write_measurements_txt(ms, path)
         except Exception:
             logger.exception('Could not save the simulated data to %s', path)
-            QMessageBox.warning(self, 'Data Not Saved', f'Could not save the data to {Path(path).name}. {WRITE_HINT}')
+            QMessageBox.warning(
+                self.parent, 'Data Not Saved', f'Could not save the data to {Path(path).name}. {WRITE_HINT}'
+            )
             return
-        self.status.set_full_text(f'Ready  ·  Data saved to {Path(path).name}')
+        self.model.show_status(f'Simulated data saved to {Path(path).name}')
 
     def save_settings(self) -> None:
-        name = f'simulation_{self.form.assay_type.name}.json'
-        path, _ = QFileDialog.getSaveFileName(self, 'Save settings', name, 'Settings (*.json)')
+        path, _ = QFileDialog.getSaveFileName(
+            self.parent, 'Save settings', self._save_path('.json'), 'Settings (*.json)'
+        )
         if not path:
             return
         try:
             Path(path).write_text(json.dumps(self.form.to_dict(), indent=2), encoding='utf-8')
         except OSError:
             QMessageBox.warning(
-                self, 'Settings Not Saved', f'Could not save the settings to {Path(path).name}. {WRITE_HINT}'
+                self.parent, 'Settings Not Saved', f'Could not save the settings to {Path(path).name}. {WRITE_HINT}'
             )
             return
-        self.status.set_full_text(f'Ready  ·  Settings saved to {Path(path).name}')
+        self.model.show_status(f'Simulation settings saved to {Path(path).name}')
 
     def load_settings(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, 'Load settings', '', 'Settings (*.json);;All files (*)')
+        path, _ = QFileDialog.getOpenFileName(
+            self.parent, 'Load settings', str(self.model.save_folder()), 'Settings (*.json);;All files (*)'
+        )
         if not path:
             return
         try:
             data = json.loads(Path(path).read_text(encoding='utf-8'))
-            self.form.load_dict(data)
+            SimulationForm().load_dict(data)
         except (OSError, ValueError, AttributeError, TypeError):
             QMessageBox.warning(
-                self,
+                self.parent,
                 'Settings Not Loaded',
                 f'Could not read simulation settings from {Path(path).name}. Choose a file written with Save '
-                'settings… in this window.',
+                'settings… in Simulation.',
             )
             return
-        self._say(None)
-        self._rebuild()
-        self.status.set_full_text(f'Ready  ·  Settings loaded from {Path(path).name}')
+        self.edit(lambda f: f.load_dict(data))
+        self.model.show_status(f'Simulation settings loaded from {Path(path).name}')
 
     def load_vector(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, 'Load vector', '', 'Concentrations (*.json);;All files (*)')
+        path, _ = QFileDialog.getOpenFileName(
+            self.parent, 'Load vector', str(self.model.save_folder()), 'Concentrations (*.json);;All files (*)'
+        )
         if not path:
             return
         try:
@@ -1076,7 +937,7 @@ class SimulationWindow(QMainWindow):
         except Exception:
             logger.exception('Could not read concentrations from %s', path)
             QMessageBox.warning(
-                self,
+                self.parent,
                 'Concentrations Not Loaded',
                 f'Could not read {Path(path).name}. Make sure it is a concentration file (.json) saved by SupraSimFit.',
             )
@@ -1084,14 +945,19 @@ class SimulationWindow(QMainWindow):
         self.edit(lambda f: f.set_custom(list(np.atleast_1d(values))))
 
     def save_vector(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, 'Save vector', 'concentrations.json', 'Concentrations (*.json)')
+        path, _ = QFileDialog.getSaveFileName(
+            self.parent,
+            'Save vector',
+            str(self.model.save_folder() / 'concentrations.json'),
+            'Concentrations (*.json)',
+        )
         if not path:
             return
         try:
             save_concentration_vector(np.asarray(self.form.grid.values), path, unit='M')
         except OSError:
             QMessageBox.warning(
-                self,
+                self.parent,
                 'Concentrations Not Saved',
                 f'Could not save the concentrations to {Path(path).name}. {WRITE_HINT}',
             )

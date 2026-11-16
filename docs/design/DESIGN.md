@@ -10,9 +10,8 @@ silently, and the answer becomes part of this document and the tokens.
   document says how to use them.
 - **Reference screens.** `docs/design/screens/<name>_<light|dark>.jpg` show the approved
   look of the running app with Demo IDA, its fit and its sensitivity analysis, at 1.5×
-  scale (the main window is 1440 × 900, the Simulation window 1280 × 800, the Settings
-  window its own size): every view, an empty session, and the menus and the readout the
-  pointer opens. `uv run python -m docs.design.render --all docs/design/screens` renders
+  scale (the main window is 1440 × 900, the Settings and Help windows their own size):
+  every view, an empty session, and the menus and the readout the pointer opens. `uv run python -m docs.design.render --all docs/design/screens` renders
   them all from the real windows (`SCREENS` in `docs/design/render.py`), so they show
   what ships; each sensitivity analysis runs at Fixed seed 0 on two processor cores, so a
   render of the same build draws the same samples. A change to a view is finished when its render (`docs/design/render.py`,
@@ -77,10 +76,10 @@ stylesheet template.
 | `on-accent` | Text and icons on accent |
 | `success`, `warning`, `danger` with `-bg` (and `warning-border`) | A result's passed test, warning or error: diagnostic marks, callouts, messages |
 | `replicate-1` … `replicate-12` | The replicates of the titration plot, one colour each: replicate *n* in the order the data name them A, B, … takes `replicate-n`, in every view and whether or not others are switched off; past twelve the colours repeat with the next mark. The same hue in both themes, lighter in dark |
-| `replicate` | Every replicate's points when Plot appearance (§8) chooses *Grey*; the simulated replicates of the Simulation window |
+| `replicate` | Every replicate's points when Plot appearance (§8) chooses *Grey*; the simulated replicates of Simulation |
 | `replicate-off` | The × of a replicate chip switched off |
 | `series-1`, `series-2` | The two series of the Sobol' chart: S₁ (solid) and S_T (outlined) |
-| `species-dye`, `species-guest`, `species-host`, `species-step2` | The species of the Simulation window, one hue per partner: the dye and its complex with the host, the guest and its first complex, the free host, the second-step complex (HG₂, H₂G); solid in a complex, dashed when free |
+| `species-dye`, `species-guest`, `species-host`, `species-step2` | The species of Simulation, one hue per partner: the dye and its complex with the host, the guest and its first complex, the free host, the second-step complex (HG₂, H₂G); solid in a complex, dashed when free |
 | `heat-0` … `heat-8` | The heat scale of the sensitivity heatmap, low to high: perceptual and multi-hue (viridis), each stop lighter than the one below |
 | `traffic` | Window controls of an inactive window |
 | `shadow` | Shadows under what floats (popovers, menus, the Settings window) and under a toggle's knob, always at low opacity |
@@ -124,8 +123,8 @@ The platform UI font (SF Pro on macOS, Segoe UI on Windows), four sizes on any s
 
 **Plot text** (`PLOT_TEXT`, `plot_font()`) is a scale of its own: the text of every plot —
 the titration, Ka confidence's profiles, strips and joint region, Sensitivity's sample
-histogram, heatmap and plots against each source, the Simulation window's titration and
-species — and the heads of their saved figures, in the three sizes Plot appearance offers
+histogram, heatmap and plots against each source, Simulation's titration and species —
+and the heads of their saved figures, in the three sizes Plot appearance offers
 (§8). Each step is 2 px up and about one ratio from the last, and the weight is the same
 at every step, so a larger size changes the size of the text and nothing else.
 
@@ -221,6 +220,8 @@ without them gets no styling.
 │ ● ● ●  ▯ │ Title  [summary badge]   Load data ▾  Export ▾ │ ? ▯  [Run] │ toolbar 52
 │ Session ⇅│──────────────────────────────────────────────┬───────────────│
 │          │ Headline                       Detail link → │ Side panel  × │
+│ Design   │                                              │ ▾ Section     │
+│  items   │                                              │               │
 │ Experiment                                              │ ▾ Section     │
 │  items  ✓│ Callout                                      │ ▾ Section     │
 │ Analysis │                                              │ ▸ Section     │
@@ -237,9 +238,10 @@ without them gets no styling.
 - **Sidebar** (`bg-sidebar`): a 52-px top row with the sidebar toggle — on macOS the
   sidebar reaches up under a transparent title bar and the row also holds the native
   window controls; Windows and Linux keep the system's own title bar above the window — the **session
-  switcher**; the navigation in three groups — *Experiment* (Measurements, Binding model,
-  Input uncertainty), *Analysis* (Fit results, Ka confidence, Sensitivity),
-  *Presentation* (Plot appearance); and the **file card** at its foot.
+  switcher**; the navigation in four groups, in the order of the work — *Design*
+  (Simulation), *Experiment* (Measurements, Binding model, Input uncertainty), *Analysis*
+  (Fit results, Ka confidence, Sensitivity), *Presentation* (Plot appearance); and the
+  **file card** at its foot.
 - **Navigation marks** at the right of an item: ✓ done; amber dot — the result carries a
   warning, read from the very callouts the view shows (a callout in `warning` tone marks
   its view, and a view with none is never marked amber); hollow ring — out of date, its
@@ -247,20 +249,22 @@ without them gets no styling.
 - **File card**: the data behind the session on screen — the file name (`GDA_run1.txt
   + 2 more` for several) and `<assay> · <n> replicates × <m> points`. Clicking it opens
   Measurements.
-- **Toolbar** (`bg-surface`): the view title in `title` and its summary badge; at the
-  right *Load data ▾*, *Export ▾*, a divider, Help (the Help window at the view on screen), the side-panel toggle and the
-  **primary button** — *Run fit* (⌘R), or *Run analysis* in Sensitivity — at one fixed
-  width in every view, so the toolbar never shifts. It belongs to the session on screen:
-  while that session runs it reads *Stop* (⌘R stops too). *Export ▾* holds: Results file… (⌘S,
-  re-opens with its fit), Report (TXT)…, Table (CSV)…, Raw data…, Plot image…, and
-  Export several… (⇧⌘E).
+- **Toolbar** (`bg-surface`): it follows the view on screen — the view title in `title`
+  and its summary badge; at the right *Load data ▾*, *Export ▾*, a divider, Help (the
+  Help window at the view on screen), the side-panel toggle and the **primary button** —
+  *Run fit* (⌘R), *Run analysis* in Sensitivity, *Fit the data* in Simulation — at one
+  fixed width in every view, the width of its widest label, so the toolbar never shifts. It
+  belongs to the session on screen: while that session runs it reads *Stop* (⌘R stops
+  too). *Export ▾* holds: Results file… (⌘S, re-opens with its fit), Report (TXT)…, Table
+  (CSV)…, Raw data…, Plot image…, and Export several… (⇧⌘E); in Simulation it holds
+  Curve image… and Data file….
 - **Canvas** (`bg-surface`): headline first — its row may end in one detail link at the
   right (*All results and diagnostics →*) — then any callout, then the plot or table.
   Content left edges share one column.
 - **Side panel** (`bg-surface`, hairline on its left): the view's settings and details in
   collapsible sections. Its header names it (*Fit details*, *Measurement settings*,
   *Analysis settings*, *Notes*, *Effect on the fit*, *Simulation settings*), may hold one
-  link (*Reading this plot →*), and closes it. Fit results and Ka confidence keep fit
+  link (*Reading this plot →*) or menu (Simulation's ⋯), and closes it. Fit results and Ka confidence keep fit
   quality, diagnostics and notes in the side panel.
 - **Status bar** (`bg-sidebar`): left, a dot — accent while work runs, `text-tertiary`
   when idle — and a summary of all running work (`2 running · IDA_system fitting ·
@@ -268,7 +272,8 @@ without them gets no styling.
   clicking it opens the session switcher; right, the model line in `text-tertiary` (`Indicator displacement
   · 1 binding constant · Profile likelihood, 95 % · Weighted by noise law`).
 - **Menu bar**: *File* (New session ⌘T, Load data…, Open results file…, the export
-  commands, Settings… on Windows and Linux, Quit), *Tools* (Simulate…, Open demo data (IDA)), *View*,
+  commands, Settings… on Windows and Linux, Quit), *Tools* (Simulate…, which shows Simulation; Open demo
+  data (IDA)), *View* (the side panels and every view),
   *Help* (SupraSimFit help, at the view on screen, with the platform's help key; Check for
   updates…). On macOS *Settings…* ⌘, is in the app
   menu.
@@ -493,7 +498,8 @@ sample histogram and the Sobol' bars are painted components. Both read the same 
   one line cannot hold them all whole, the legend takes a line of its own under the title
   line, at the right, as a saved figure's head puts it on a line of its own; the
   description is cut short, its whole text on hover, only where even the title line
-  cannot hold it.
+  cannot hold it. A legend that breaks — Simulation's species readout — breaks there onto
+  further lines between its entries, so no header needs the width of its whole legend.
 - **Interactive plots** — the titration plot of Measurements, Fit results and Plot
   appearance, and the plots of *Plot against each source* — zoom and pan
   (`PlotNavigation`); every other plot is static. A drag pans; ⌘-wheel (Ctrl on other
@@ -684,8 +690,7 @@ chart's notes under them; for a heatmap, each map under its head with its colour
 The appearance of the session's **titration plot**: the plot in Measurements and in Fit
 results, and the figure saved from it (also in a batch export); and the size of the text
 of **every plot** of the session — Ka confidence and Sensitivity too — and of the figures
-saved from them. The Simulation window, part of no session, draws at the text size stored
-for new sessions. Canvas: a sentence saying what the settings style, then the **Titration**
+saved from them, and of Simulation's titration and species. Canvas: a sentence saying what the settings style, then the **Titration**
 plot as Fit results draws it — the fit where there is one, else the data, in the
 session's replicate display — with its
 legend and the image export; with nothing loaded, the empty state. Every
@@ -718,63 +723,79 @@ session starts from the built-in appearance. A stored appearance this version ca
 is never passed over in silence: each new session opens with a warning saying so, starts
 from the built-in appearance.
 
-### Simulation window — `simulation_*.jpg`, `simulation_scrolled_*.jpg`, `simulation_overlay_*.jpg`
-A separate window (1280 × 800), part of no session, opened with *Tools ▸ Simulate…*. The
-main window's toolbar, side panel and status bar, without the sidebar. Toolbar:
-*Simulation* and its summary badge, *Overlay data…*, *Export ▾* (Curve image…, which
-saves the titration above the species on their shared axis as one PNG or SVG in the light
-theme on white, each plot under its title with its legend — the titration's entries and the
-species' names and line styles as the window shows them; Data file…), Help, the side-panel toggle, and the primary *Fit in new session*. Canvas:
-**Titration** (simulated replicates at the measurement points, the model drawn
-continuously) above **Species** on the same x axis, with the readout at the pointer. Both
-plots, and the curve image saved from them, draw at the plot text size stored for new
-sessions (§8, Plot appearance); a stored appearance that cannot be read is said in a
-warning, and the plots take the built-in size. Each
-species takes the colour of its partner — `species-dye`, `species-guest`, `species-host`,
-`species-step2` (§2) — solid in a complex and dashed when free; the reported-result accent
-and the Sobol' series colours are not used for species.
-Side panel *Simulation settings*, its ⋯ menu holding *Save settings…* ⌘S, *Load
-settings…* and *Reset to defaults*: Binding model (category and model menus), Binding
-constants (log sliders, M⁻¹), Fixed totals (sliders, unit menus; then *Totals during the
-titration* — *Stay constant* / *Are diluted*, as in Binding model), Concentrations (*Even
-steps* or *Custom list*), Noise, Signal (coefficient sliders). Each slider's end values
-are edited in place.
+### Simulation — `simulation_*.jpg`, `simulation_scrolled_*.jpg`, `simulation_overlay_*.jpg`
+The first view of every session, alone in the sidebar group *Design*: the titration a
+binding model predicts, for designing an experiment before it is measured. It keeps a copy
+of a binding model of its own — the session's `SimulationForm`, saved with its ⋯ menu,
+copied by *Duplicate <session>* — so exploring "what if Kₐ were 10× larger" never changes
+what the fit uses: the first time Simulation is shown it takes the binding model, its
+conditions in their units and the titrant stock the session states in Binding model, and
+*Use this session's model* takes them again. The toolbar reads *Simulation* with its
+summary badge (`IDA · 24 points · 3 replicates`), *Export ▾* holds Curve image… (the
+titration above the species on their shared axis as one PNG or SVG in the light theme on
+white, each plot under its title with its legend — the titration's entries and the
+species' names and line styles as the view shows them) and Data file…, and the primary
+button reads *Fit the data*. Canvas: **Titration** (simulated replicates at the
+measurement points, the model drawn continuously, the session's data as rings where they
+are laid over it, its legend entry's × taking them off) above **Species** on the same x
+axis, with the readout at the pointer, whose row breaks onto further lines where the
+canvas is narrow. Both plots, and the curve image saved from them, draw at the session's
+plot text (§8, Plot appearance). Each species takes the colour of its partner —
+`species-dye`, `species-guest`, `species-host`, `species-step2` (§2) — solid in a complex
+and dashed when free; the reported-result accent and the Sobol' series colours are not
+used for species.
+Side panel *Simulation settings*, its ⋯ menu holding *Save settings…*, *Load settings…*
+and *Reset to defaults* (no shortcut: ⌘S is the main window's *Results file…*). A setting
+it cannot take, or a model it cannot compute, is said at its top with the amber mark, and
+the field keeps its value. Model (category and model menus, *Use this session's model*),
+Binding constants (log sliders, M⁻¹), Fixed totals (sliders, unit menus; then *Totals
+during the titration* — *Stay constant* / *Are diluted*, as in Binding model),
+Concentrations (*Overlay this session's data*; *Even steps* or *Custom list*), Noise,
+Signal (coefficient sliders). Each slider's end values are edited in place. The settings
+feed no fit or analysis, so they stay open while one runs.
 
 **Titrant stock.** The totals stay constant until the user chooses *Are diluted*; that
 choice shows the stock concentration with its unit menu (it starts at 10 × the highest
 titrant concentration of the grid as it is then, in the largest unit that keeps it at 1 or
-more), and, where the model has two or
-more fixed totals, *Stock also contains* with one box per total the stock holds at the
-sample's own concentration. The simulation then dilutes through the assay's own
-`fixed_total()`, the forward model the fit uses. A stock no more concentrated than the
-highest titrant concentration, or one holding every total, is refused in plain words on
-the status bar. Choosing a model goes back to constant totals. *Overlay data…* draws a measurement file over the model and takes
-its concentrations as the grid.
+more), and, where the model has two or more fixed totals, *Stock also contains* with one
+box per total the stock holds at the sample's own concentration. The simulation then
+dilutes through the assay's own `fixed_total()`, the forward model the fit uses. A stock
+no more concentrated than the highest titrant concentration, or one holding every total,
+is refused in plain words at the top of the side panel. Choosing a model goes back to
+constant totals.
+
+**The session's data.** *Overlay this session's data* — disabled, its tooltip saying why,
+while the session holds none — draws the session's replicates in use over the model, named
+as the file card names them, and takes their concentrations as the grid; it follows the
+data as they change (a replicate switched off, a file added) and goes when they are
+cleared.
 
 **Noise** is the two-part law the fit reads off replicates, `var(y) = floor² +
 (proportional · y)²`: *Add measurement noise*, the floor σ in a.u. and the proportional
 part in %, either of which may be 0, the replicates, the seed and *New draw*. *Read from
-overlaid data* fills the floor and the proportional part from the noise law the fitter
-reads off the overlaid replicates; without an overlay of two or more replicates it is
-disabled and its tooltip says why, and where the replicates show no law a message says
-why in plain words. Choosing a model opens it with a floor of 0.5 % of its default
-curve's range. Without noise one noise-free replicate is simulated.
+session data* fills the floor and the proportional part from the noise law the fitter
+reads off the session's replicates in use; without two or more it is disabled and its
+tooltip says why, and where the replicates show no law the side panel says why in plain
+words. Choosing a model opens it with a floor of 0.5 % of its default curve's range.
+Without noise one noise-free replicate is simulated.
 
-**Fit in new session** opens a new session named after the simulation (*Simulated IDA*,
-the model's short name), with no file row, holding the simulated data exactly as shown —
-noisy or noise-free — and the binding model with its conditions: the fixed totals and the
-binding constants the model takes as entered (Kₐ,dye of an IDA or GDA), each in the unit
-shown, and the totals constant or diluted by the titrant stock as stated here, the stock in
-its unit with the totals it holds. The values of what the fit searches for — the binding
-constants it fits and the signal coefficients — do not travel, as starting values or as
-bounds: the fit searches as it does on measured data. The session shows Fit results and
-the fit runs.
+**Fit the data** fits the data exactly as shown — noisy or noise-free — with the binding
+model and its conditions: the fixed totals and the binding constants the model takes as
+entered (Kₐ,dye of an IDA or GDA), each in the unit shown, and the totals constant or
+diluted by the titrant stock as stated here, the stock in its unit with the totals it
+holds. In a session that holds nothing they become its data and its binding model, and
+the session is named after the simulation (*Simulated IDA*, the model's short name); a
+session with data keeps them — measured data are never replaced — and a new session,
+*Simulated IDA*, opens with the simulated data. Neither has a file row. The values of what
+the fit searches for — the binding constants it fits and the signal coefficients — do not
+travel, as starting values or as bounds: the fit searches as it does on measured data.
+The session that fits shows Fit results, and the fit runs.
 
 ### Help window — `help_*.jpg`
 The app's one help, a non-modal window of its own beside the main window, one per main
 window: a second request raises it at the section asked for. Sidebar surface: one
 navigation item per section, with the icon of its view — the main window's views in
-sidebar order, then *Simulation*. Canvas surface: the section's name in `title`, its text
+sidebar order. Canvas surface: the section's name in `title`, its text
 in `body` at the reading measure (`measure`), selectable. Each section says what its view
 shows and how to read it, then what each group of its side panel does, under the group's
 name as the panel shows it; a section with a plot Demo IDA fills ends on an example that
@@ -783,8 +804,7 @@ the model, its conditions, the titrant stock, the bounds, each parameter, the re
 and follows a change of model or of session while it is open. A topic of a section is set
 in `body-strong` with a step of room above it, a sub-head in bold. It opens from the
 toolbar's Help and Help ▸ *SupraSimFit help* at the view on screen, from *About this
-model*, *About input uncertainty* and *Reading this plot →* at their views, and from the
-Simulation window's Help at *Simulation*. It has no buttons; it closes as any window does.
+model*, *About input uncertainty* and *Reading this plot →* at their views. It has no buttons; it closes as any window does.
 
 ### Settings window — `preferences_*.jpg`
 Opened with ⌘, (*Settings…* in the app menu on macOS; *File ▸ Settings…* on Windows and

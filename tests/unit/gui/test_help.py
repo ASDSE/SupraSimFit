@@ -49,11 +49,11 @@ def _plain(html: str) -> str:
     return re.sub(r'\s+', ' ', html)
 
 
-def test_the_help_has_a_section_for_each_view_and_the_simulation_window():
+def test_the_help_has_a_section_for_each_view_in_sidebar_order():
     from gui.fitting_session import VIEWS
     from gui.help import SECTIONS
 
-    assert list(SECTIONS) == [*VIEWS, 'Simulation']
+    assert list(SECTIONS) == list(VIEWS)
 
 
 def test_toolbar_help_opens_one_non_modal_window_at_the_section_of_each_view(qapp, window, help_off_screen):
@@ -87,28 +87,22 @@ def test_the_help_menu_raises_the_same_window_at_the_view_on_screen(qapp, window
 
 
 def test_every_link_to_the_help_raises_the_one_window_at_its_section(qapp, window, help_off_screen):
-    """*About this model*, *About input uncertainty*, *Reading this plot →* and the Simulation window's Help."""
-    from PyQt6.QtCore import Qt
-
+    """*About this model*, *About input uncertainty* and *Reading this plot →*."""
     session = window.active_session()
     window.show_view('Measurements')
     window._toolbar.help.click()
     (first,) = window.findChildren(help_off_screen)
 
-    simulation = window._simulation_window()
-    simulation.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     links = {
         'Binding model': session._binding.help_link,
         'Input uncertainty': session._uncertainty.help_link,
         'Ka confidence': session._confidence.guide_link,
-        'Simulation': simulation.help_button,
     }
     for section, link in links.items():
         link.click()
         qapp.processEvents()
         assert window.findChildren(help_off_screen) == [first], section
         assert first.current_section() == section
-    simulation.close()
 
 
 def test_the_binding_model_section_follows_the_model_chosen(qapp, window, help_off_screen):
@@ -165,19 +159,15 @@ def test_each_settings_side_panel_is_explained_in_its_section(qapp, window):
 
 
 def test_the_simulation_section_explains_every_group_of_its_settings(qapp, window):
-    from PyQt6.QtCore import Qt
-
     from gui.design import components as C
     from gui.help import section_html
 
-    simulation = window._simulation_window()
-    simulation.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-    text = _plain(section_html('Simulation', window.active_session().model.binding.assay_type))
-    groups = [h.accessibleName() for h in simulation.findChildren(C.SectionHeader)]
+    session = window.active_session()
+    text = _plain(section_html('Simulation', session.model.binding.assay_type))
+    groups = [h.accessibleName() for h in session._views['Simulation'].side.findChildren(C.SectionHeader)]
     assert '<i>Simulation settings</i>' in text and groups
     for group in groups:
         assert f'<b>{group}</b>' in text, group
-    simulation.close()
 
 
 def test_the_measurements_section_explains_outlier_removal_as_the_panel_offers_it():

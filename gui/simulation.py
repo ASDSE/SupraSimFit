@@ -1,16 +1,18 @@
-"""What the Simulation window states and draws, with no widget (DESIGN.md §8, Simulation window).
+"""What the Simulation view states and draws, with no widget (DESIGN.md §8, Simulation).
 
-:class:`SimulationForm` holds the settings of the window — the binding model chosen in two
+:class:`SimulationForm` holds the settings of the view — the binding model chosen in two
 steps, one :class:`Knob` per input of that model (its binding constants, fixed totals and
 signal coefficients, each a value between two slider ends), the titrant concentrations
 (*Even steps* or a *Custom list*), whether the additions dilute the fixed totals (the
 titrant stock, as Binding model states it), the noise (the two-part law ``var(y) = floor² +
 (proportional·y)²`` of :data:`core.simulation.NOISE_MODELS`, the replicates and the seed)
-and a measurement file laid over the model — and :meth:`SimulationForm.simulate` turns them
+and the session's data laid over the model — and :meth:`SimulationForm.simulate` turns them
 into a :class:`Simulation`: the model drawn continuously, its species, and the simulated
 replicates at the measurement points. Every number comes from the fitter's own forward model
 (:mod:`core.simulation`), the dilution by a stated stock included (``BaseAssay.fixed_total``).
 
+The form is a session's own copy of a binding model: :meth:`SimulationForm.take_binding`
+takes the model, conditions and titrant stock a :class:`~gui.binding.BindingForm` states, and
 :meth:`SimulationForm.carry_to` hands a session the simulated data exactly as shown, named
 after the simulation, and the conditions of the model with the titrant stock; the values of
 what a fit searches for (the binding constants and signal coefficients it fits) stay here, so
@@ -31,7 +33,7 @@ from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.noise import MIN_REPLICATES, noise_law
 from core.simulation import build_concentration_vector, simulate_signal, simulate_species, two_part_sd
 from core.units import Q_
-from gui.binding import CATEGORIES
+from gui.binding import CATEGORIES, BindingForm
 from gui.plotting.labels import field_text, fmt_param, fmt_species, fmt_value, parse_number, plain_label, superscript
 from gui.widgets.assay_conditions import ASSAY_NAMES, DBA_MODES, UNIT_CHOICES, assay_class, condition_fields
 
@@ -44,7 +46,7 @@ CONCENTRATION_UNITS = UNIT_CHOICES['concentration'][0]
 #: Points of the continuous model curve and its species.
 DENSE_POINTS = 361
 
-#: The noise model the window states: the two-part law the fitter reads off replicates.
+#: The noise model the view states: the two-part law the fitter reads off replicates.
 NOISE_MODEL = 'two-part'
 
 #: The titrant stock offered when dilution is chosen, as a multiple of the highest titrant
@@ -100,7 +102,7 @@ PARAM_DEFAULTS: dict[str, _ParamDefault] = {
 }
 
 #: Where a model's own values differ from :data:`PARAM_DEFAULTS`: the IDA demo's fit, so the
-#: window opens on the curve of a real titration.
+#: view opens on the curve of a real titration.
 MODEL_DEFAULTS: dict[AssayType, dict[str, _ParamDefault]] = {
     AssayType.IDA: {
         'Ka_dye': _ParamDefault(1.68e7, 1e4, 1e10),
@@ -124,7 +126,7 @@ TITRANT_STOP: dict[AssayType, float] = {
 
 
 class SimulationProblem(ValueError):
-    """A setting the window cannot take, with a sentence written for the user."""
+    """A setting the view cannot take, with a sentence written for the user."""
 
 
 def end_text(value: float) -> str:
@@ -142,7 +144,7 @@ def _three_figures(value: float) -> float:
 
 
 def unit_text(unit: str) -> str:
-    """A base unit as the window writes it."""
+    """A base unit as the view writes it."""
     return {'1/M': 'M⁻¹', 'M⁻¹': 'M⁻¹', 'au': 'a.u.', 'au/M': 'a.u./M', 'M': 'M'}[unit]
 
 
@@ -240,12 +242,12 @@ def _knobs(assay_type: AssayType) -> dict[str, Knob]:
     return knobs
 
 
-# ── What the window draws ───────────────────────────────────────────────────────────
+# ── What the view draws ───────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class Overlay:
-    """A measurement file laid over the model: its name, concentrations (M) and replicates."""
+    """The session's data laid over the model: its name, concentrations (M) and the replicates in use."""
 
     name: str
     x: np.ndarray
@@ -254,7 +256,7 @@ class Overlay:
 
 @dataclass(frozen=True)
 class Simulation:
-    """What the window draws: the replicates at the measurement points, the model, its species."""
+    """What the view draws: the replicates at the measurement points, the model, its species."""
 
     x: np.ndarray
     signals: np.ndarray
@@ -273,7 +275,7 @@ class Grid:
     points: int = 24
     unit: str = 'µM'
     values: list[float] = field(default_factory=list)
-    source: str = ''  # the overlaid file the custom list was taken from
+    source: str = ''  # the overlaid data the custom list was taken from
 
 
 @dataclass
@@ -288,7 +290,7 @@ class Noise:
 
 
 class SimulationForm:
-    """The settings of the Simulation window and the rules of stating them; see the module docstring."""
+    """The settings of the Simulation view and the rules of stating them; see the module docstring."""
 
     def __init__(self, assay_type: AssayType = AssayType.IDA) -> None:
         self.overlay: Overlay | None = None
@@ -309,10 +311,62 @@ class SimulationForm:
         self.diluted = False
         self.stock, self.stock_unit = STOCK_FACTOR * stop, self.grid.unit
         self.contains: set[str] = set()
-        clean = simulate_signal(assay_class(assay_type), self.conditions(), self.parameters(), self.points())
-        self.noise = Noise(floor=float(f'{NOISE_FLOOR_SHARE * float(np.ptp(clean)):.2g}'))
+        self._open_noise()
         if self.overlay is not None:
             self.take_overlay_grid()
+
+    def _open_noise(self) -> None:
+        """The noise a model opens with: a floor of :data:`NOISE_FLOOR_SHARE` of its curve's range, to two figures."""
+        clean = simulate_signal(assay_class(self.assay_type), self.conditions(), self.parameters(), self.points())
+        self.noise = Noise(floor=float(f'{NOISE_FLOOR_SHARE * float(np.ptp(clean)):.2g}'))
+
+    def take_binding(self, binding: BindingForm) -> None:
+        """Take the binding model *binding* states: its model, each condition in the unit it is shown in, and
+        whether the additions dilute the totals, with the stock and the totals it holds.
+
+        Another model opens fresh first (:meth:`set_assay`), with the noise of its curve at the
+        conditions taken; the same model keeps the slider ends of the inputs a fit searches
+        for, the concentrations and the noise.
+
+        Raises
+        ------
+        SimulationProblem
+            Once every other value is taken, naming each condition *binding* states no usable number
+            for, which keeps the value it had here.
+        """
+        fresh = binding.assay_type is not self.assay_type
+        if fresh:
+            self.set_assay(binding.assay_type)
+        kept = []
+        for key, knob in self.knobs.items():
+            if not knob.condition:
+                continue
+            entry = binding.entry(key)
+            if knob.kind == 'concentration':
+                knob.unit = entry.unit
+            value = entry.value()
+            try:
+                self._set(knob, math.nan if value is None else value)
+            except SimulationProblem:
+                kept.append(knob.name())
+        self.diluted = binding.diluted and self.offers_dilution
+        if self.diluted:
+            self.stock_unit = binding.stock.unit
+            stock = binding.stock.value()
+            if stock is not None and math.isfinite(stock) and stock > 0:
+                self.stock = stock
+            else:
+                kept.append('the titrant stock')
+            self.contains = set(binding.contains) & {k.key for k in self.section('concentration')}
+        if fresh:
+            self._open_noise()
+        if kept:
+            names = ', '.join(kept)
+            raise SimulationProblem(
+                f'The session’s binding model states no usable number for {names}, so the simulation keeps its own '
+                f'value{"s" if len(kept) > 1 else ""}. Correct {"them" if len(kept) > 1 else "it"} in Binding model, '
+                'then use the session’s model again.'
+            )
 
     @property
     def category(self) -> str:
@@ -343,7 +397,13 @@ class SimulationForm:
         shown = parse_number(text)
         if shown is None:
             raise SimulationProblem(f'{knob.name()} needs a number. It keeps {knob.value_text()} {knob.shown_unit}.')
-        value = shown * knob.scale
+        self._set(knob, shown * knob.scale)
+
+    @staticmethod
+    def _set(knob: Knob, value: float) -> None:
+        """Set *knob* to *value* in its base unit; a value past an end moves that end to it."""
+        if not math.isfinite(value):
+            raise SimulationProblem(f'{knob.name()} needs a number. It keeps {knob.value_text()} {knob.shown_unit}.')
         if knob.log and value <= 0:
             raise SimulationProblem(f'{knob.name()} must be above 0 M⁻¹. It keeps {knob.value_text()} M⁻¹.')
         if knob.kind == 'concentration' and value < 0:
@@ -580,27 +640,29 @@ class SimulationForm:
     def take_overlay_grid(self) -> None:
         self.grid.mode, self.grid.values, self.grid.source = 'custom', self.overlay.x.tolist(), self.overlay.name
 
-    def read_noise_refusal(self) -> str | None:
-        """Why *Read from overlaid data* cannot be used now; ``None`` when it can."""
-        if self.overlay is None:
-            return 'Overlay a measurement file with two or more replicates to read its noise.'
-        if len(self.overlay.signals) < MIN_REPLICATES:
-            return f'{self.overlay.name} has one replicate; its noise can be read from two or more.'
+    @staticmethod
+    def read_noise_refusal(name: str, signals: np.ndarray | None) -> str | None:
+        """Why the noise cannot be read from *signals*, the replicates in use of the data *name*; ``None`` when it can."""
+        if signals is None:
+            return 'Load data with two or more replicates into this session to read their noise.'
+        if len(signals) < MIN_REPLICATES:
+            return f'{name} has one replicate in use; the noise can be read from two or more.'
         return None
 
-    def read_noise(self) -> None:
-        """Take the floor and the proportional part from the noise law the fitter reads off the overlay.
+    def read_noise(self, name: str, signals: np.ndarray) -> None:
+        """Take the floor and the proportional part from the noise law the fitter reads off *signals*, the
+        replicates in use of the data *name*.
 
         Raises
         ------
         SimulationProblem
-            When no law can be read from the overlaid replicates, saying why.
+            When no law can be read from the replicates, saying why.
         """
-        law = noise_law(self.overlay.signals)
+        law = noise_law(signals)
         if not law.estimated:
             reason = law.describe().split('—', 1)[-1].strip().rstrip('.')
             raise SimulationProblem(
-                f'No noise law could be read from {self.overlay.name}: {reason}. The noise settings are unchanged.'
+                f'No noise law could be read from {name}: {reason}. The noise settings are unchanged.'
             )
         self.set_noise(on=True, floor=float(f'{law.floor:.2g}'), proportional=float(f'{law.proportional:.2g}'))
 
@@ -697,30 +759,11 @@ class SimulationForm:
         model.load(self.measurement_set(sim), None)
         model.set_custom_name(f'Simulated {ASSAY_NAMES[self.assay_type][0]}')
 
-    # What the window says ----------------------------------------------------------
-    def binding_constants(self) -> int:
-        return len(self.section('binding'))
-
+    # What the view says ------------------------------------------------------------
     def badge(self) -> str:
         """``IDA · 24 points · 3 replicates``."""
         n, r = len(self.points()), self.replicates()
         return f'{ASSAY_NAMES[self.assay_type][0]} · {n} points · {r} replicate{"s" if r != 1 else ""}'
-
-    def noise_text(self) -> str:
-        """The noise in a few words: ``Noise 0.5 % + 1 200 a.u.``, ``No noise``."""
-        if not self.noise_drawn():
-            return 'No noise'
-        parts = []
-        if self.noise.proportional > 0:
-            parts.append(f'{field_text(100 * self.noise.proportional)} %')
-        if self.noise.floor > 0:
-            parts.append(f'{field_text(self.noise.floor)} a.u.')
-        return 'Noise ' + ' + '.join(parts)
-
-    def model_line(self) -> list[str]:
-        """What the status bar says is simulated."""
-        n = self.binding_constants()
-        return [ASSAY_NAMES[self.assay_type][1], f'{n} binding constant{"s" if n != 1 else ""}', self.noise_text()]
 
     def signal_formula(self) -> str:
         """``Signal = I₀ + I_dye,free·[D] + I_dye,bound·[HD]`` in rich text, from the registry."""
@@ -812,7 +855,7 @@ class SimulationForm:
             if stock_unit not in CONCENTRATION_UNITS or not stock > 0 or not held <= fixed or (held and held == fixed):
                 raise ValueError
         except (KeyError, TypeError, ValueError) as exc:
-            raise SimulationProblem('not settings saved by this window') from exc
+            raise SimulationProblem('not settings saved by this view') from exc
         self.assay_type, self.knobs, self.grid, self.noise = assay_type, knobs, grid, noise
         self.diluted, self.stock, self.stock_unit, self.contains = diluted and bool(fixed), stock, stock_unit, held
 

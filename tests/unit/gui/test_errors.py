@@ -157,12 +157,12 @@ def _export_plot(monkeypatch, tmp_path):
 
 
 def _load_vector(monkeypatch, tmp_path):
-    from gui.views.simulation import SimulationWindow
+    from gui.fitting_session import FittingSession
 
-    window = SimulationWindow()
+    session = FittingSession()
     monkeypatch.setattr('gui.views.simulation.QFileDialog.getOpenFileName', lambda *a: (str(tmp_path / 'c.json'), ''))
     monkeypatch.setattr('gui.views.simulation.read_raw_concentrations', _broken)
-    return window, window.load_vector
+    return session, session._simulation.load_vector
 
 
 def _export_batch(monkeypatch, tmp_path):

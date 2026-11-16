@@ -52,7 +52,7 @@ SIZE = {
     'settings-window': 640,
     # The one column of controls on the right of the Settings window: its segmented controls and menu.
     'settings-control': 216,
-    # The knob grid of the Simulation window: a value field, its unit, and a slider end's text column.
+    # The knob grid of Simulation's side panel: a value field, its unit, and a slider end's text column.
     'knob-value': 112,
     'knob-unit': 76,
     'slider-end': 36,
@@ -69,7 +69,7 @@ SIZE = {
     'pointer-dot': 9,
     'whisker': 1.25,
     'whisker-cap': 6,
-    # The Simulation window's marks where the pointer meets the signal and each species.
+    # Simulation's marks where the pointer meets the signal and each species.
     'pointer-signal': 10,
     'pointer-species': 8,
     # A saved figure: the white margin round everything in it, its width inside that margin, and the height of each plot in it — a Ka profile or the
@@ -141,7 +141,7 @@ LIGHT = {
     # The two series of the Sobol' chart: S₁ and S_T.
     'series-1': '#2C6FB0',
     'series-2': '#B04F8E',
-    # The species of the Simulation window, one hue per partner: the dye and its complex with the
+    # The species of Simulation, one hue per partner: the dye and its complex with the
     # host, the guest and its first complex, the free host, and the second-step complex (HG₂, H₂G).
     'species-dye': '#7048C8',
     'species-guest': '#B8580F',

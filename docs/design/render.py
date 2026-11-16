@@ -12,13 +12,13 @@ Run from the repository root::
     uv run python -m docs.design.render "Fit results" out.png --theme dark --state demo-loaded
     uv run python -m docs.design.render Measurements out.png --menu "Display unit of the titration plot"
     uv run python -m docs.design.render "Ka confidence" out.png --pointer 0.65,0.5
-    uv run python -m docs.design.render Simulation out.png
+    uv run python -m docs.design.render Simulation out.png --state demo-loaded
     uv run python -m docs.design.render Help out.png --section "Binding model"
     uv run python -m docs.design.render --all docs/design/screens
     uv run python -m docs.design.render --all docs/design/screens --only switcher --theme dark
 
 *view* is a view of the main window, or one of the windows it opens (``Settings``,
-``Simulation``, ``Help``), drawn at its own size; *section* is the Help window's section
+``Help``), drawn at its own size; *section* is the Help window's section
 on show, by default the one of the view on screen. ``--all`` writes the reference screens of the
 design (:data:`SCREENS`) as ``<name>_<light|dark>.jpg`` at :data:`SCALE` × the window's
 size, each in a process of its own; ``--only`` and ``--theme`` narrow it.
@@ -60,11 +60,10 @@ import pyqtgraph as pg
 from PyQt6.QtCore import QCoreApplication, QEvent, QEventLoop, QPoint, QPointF, QSettings, Qt, QThread
 from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QMessageBox, QScrollArea, QWidget
+from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from core.pipeline.sensitivity import SensitivityMode
 from gui import preferences
-from gui.dataset import DEMO_IDA
 from gui.design import components as C
 from gui.design.appearance import appearance
 from gui.fitting_session import VIEWS
@@ -72,7 +71,7 @@ from gui.help import SECTIONS
 from gui.main_window import FittingMainWindow, start_application
 
 #: The windows the main window opens, drawn at their own size.
-WINDOWS = ('Settings', 'Simulation', 'Help')
+WINDOWS = ('Settings', 'Help')
 STATES = ('empty', 'demo-loaded', 'demo-fitted', 'demo-sensitivity', 'demo-heatmap')
 THEMES = ('light', 'dark')
 #: The longest a render waits for the demo's fit, its Ka profile and a sensitivity analysis, in seconds.
@@ -176,7 +175,7 @@ def render(
             check()
             return _snapshot(target, scale)
         finally:
-            for other in (window._settings_window, window._sim_window, window._help):
+            for other in (window._settings_window, window._help):
                 if other is not None:
                     other.close()
             window.close()
@@ -193,9 +192,6 @@ def _open_window(window: FittingMainWindow, name: str, section: str | None = Non
     if name == 'Settings':
         window._settings_window = other = SettingsWindow(window._act_check_updates, window)
         command = window._act_settings
-    elif name == 'Simulation':
-        other = window._simulation_window()
-        command = window._act_simulate
     else:
         other = window._help_window()
         command = window._act_help
@@ -281,20 +277,20 @@ def _more_sessions(window: FittingMainWindow) -> None:
     window._switch_to(window.sessions()[0])
 
 
-def _overlay_demo(simulation: QWidget) -> None:
-    """Lay Demo IDA's file over the simulation through *Overlay data…*, its file dialog answered with that file."""
-    with mock.patch('gui.views.simulation.QFileDialog.getOpenFileName', return_value=(str(DEMO_IDA), '')):
-        simulation.overlay_data()
+def _overlay_data(window: FittingMainWindow) -> None:
+    """Lay the session's data over the simulation with *Overlay this session's data*."""
+    window.active_session()._simulation.overlay.toggled.emit(True)
 
 
-def _settings_at_end(window: QWidget) -> None:
-    """Open every section of the side panel and scroll it to its end."""
-    for header in window.findChildren(C.SectionHeader):
+def _settings_at_end(window: FittingMainWindow) -> None:
+    """Open every section of the side panel on screen and scroll it to its end."""
+    side = window.active_session()._views[window.current_view()].side
+    for header in side.findChildren(C.SectionHeader):
         if header.isVisible():
             header.set_open(True)
     QApplication.processEvents()
-    for area in window.findChildren(QScrollArea, 'InspectorScroll'):
-        area.verticalScrollBar().setValue(area.verticalScrollBar().maximum())
+    bar = side.scroll.verticalScrollBar()
+    bar.setValue(bar.maximum())
 
 
 @dataclass(frozen=True)
@@ -327,9 +323,11 @@ SCREENS: dict[str, Screen] = {
     'sensitivity_heatmap': Screen('Sensitivity', state='demo-heatmap', pointer=(0.3, 0.7)),
     'appearance': Screen('Plot appearance'),
     'appearance_colour': Screen('Plot appearance', open_menu='Colour of the replicate points'),
-    'simulation': Screen('Simulation', state='empty'),
-    'simulation_scrolled': Screen('Simulation', state='empty', open_menu='Settings menu', prepare=_settings_at_end),
-    'simulation_overlay': Screen('Simulation', state='empty', prepare=_overlay_demo),
+    'simulation': Screen('Simulation', state='demo-loaded'),
+    'simulation_scrolled': Screen(
+        'Simulation', state='demo-loaded', open_menu='Simulation settings menu', prepare=_settings_at_end
+    ),
+    'simulation_overlay': Screen('Simulation', state='demo-loaded', prepare=_overlay_data),
     'preferences': Screen('Settings', state='empty'),
     'help': Screen('Help', state='empty', section='Measurements'),
 }

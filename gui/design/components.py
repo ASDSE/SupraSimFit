@@ -2946,10 +2946,12 @@ class PlotHeader(QWidget):
     One line where it holds them all whole. Where it does not, the legend takes a line of its own
     under it, at the right, and the title line keeps its room for the description, which is
     cut short only where even that line cannot hold it, its whole text on hover. The legend is
-    the view's :class:`LegendRow`; the header follows the width its entries take.
+    the view's :class:`LegendRow`, as wide as its entries, or a legend that breaks onto further
+    lines (Simulation's species readout), whose size hint is its one line and whose minimum size
+    hint its widest piece; the header follows the width either takes.
     """
 
-    def __init__(self, t: Theme, title: str, legend: LegendRow, tools: tuple | list = (), description: str = ''):
+    def __init__(self, t: Theme, title: str, legend: QWidget, tools: tuple | list = (), description: str = ''):
         super().__init__()
         self.legend = legend
         self.title = label(title, 'body-strong')
@@ -2985,9 +2987,14 @@ class PlotHeader(QWidget):
             + self.tools.sizeHint().width()
         )
 
+    def _legend_width(self, least: bool = False) -> int:
+        """The legend's width on one line, or (*least*) the least it takes."""
+        hint = self.legend.minimumSizeHint() if least else self.legend.sizeHint()
+        return max(self.legend.minimumWidth(), hint.width())
+
     def _one_line_width(self) -> int:
         """The width one line takes with the legend on it."""
-        return self._line_width() + space(4) + self.legend.minimumWidth()
+        return self._line_width() + space(4) + self._legend_width()
 
     def _place(self) -> None:
         """Put the legend on the title line where one line holds it all, else under it."""
@@ -3003,7 +3010,7 @@ class PlotHeader(QWidget):
     def minimumSizeHint(self) -> QSize:
         # The legend under the title line, the description cut to an ellipsis.
         least = self.title.sizeHint().width() + self.tools.minimumSize().width()
-        return QSize(max(least, self.legend.minimumWidth()), super().minimumSizeHint().height())
+        return QSize(max(least, self._legend_width(least=True)), super().minimumSizeHint().height())
 
     def sizeHint(self) -> QSize:
         return QSize(self._one_line_width(), super().sizeHint().height())

@@ -1,7 +1,7 @@
 """Every saved figure stands on white with one margin around it, its head laid out as the screen lays it (DESIGN.md §7).
 
 A figure is written by :func:`~gui.plotting.export.export_stacked` (the titration, the
-Simulation window) or :func:`~gui.plotting.export.export_widget` (Ka confidence,
+Simulation) or :func:`~gui.plotting.export.export_widget` (Ka confidence,
 Sensitivity), and each puts the one margin of ``SIZE['figure-margin']`` round what it is
 given: no ink reaches into it, and the head and legend stand at it, left and right.
 """
@@ -64,10 +64,6 @@ def margins(path) -> dict[str, float]:
 
 def _figures(qapp, session, demo, tmp_path, monkeypatch) -> dict[str, object]:
     """Each kind of saved figure of the app, written to *tmp_path*, by name."""
-    from PyQt6.QtWidgets import QFileDialog
-
-    from gui.views.simulation import SimulationWindow
-
     paths = {}
     assert session.set_up_demo_ida()
     paths['measurements'] = tmp_path / 'measurements.png'
@@ -80,13 +76,9 @@ def _figures(qapp, session, demo, tmp_path, monkeypatch) -> dict[str, object]:
         _hold(session, result)
         paths[name] = tmp_path / f'{name}.png'
         session._sensitivity.export_image(str(paths[name]))
-    window = SimulationWindow()
-    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-    window.show()
+    session.show_view('Simulation')
     paths['simulation'] = tmp_path / 'simulation.png'
-    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a: (str(paths['simulation']), ''))
-    window.export_image()
-    window.close()
+    session._simulation.export_image(str(paths['simulation']))
     return paths
 
 

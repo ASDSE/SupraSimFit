@@ -3,7 +3,8 @@
 The user's settings live in two widget-free forms the model owns — the binding
 model (:class:`~gui.binding.BindingForm`) and the input uncertainties
 (:class:`~gui.uncertainty.UncertaintyForm`) — beside the appearance of its titration
-plot (:class:`~gui.plot_appearance.PlotAppearance`). A view edits a form, tells the model
+plot (:class:`~gui.plot_appearance.PlotAppearance`) and the session's own copy of a
+binding model to simulate (:class:`~gui.simulation.SimulationForm`). A view edits a form, tells the model
 (:meth:`SessionModel.binding_edited`, :meth:`SessionModel.uncertainty_edited`),
 and draws what the model's signals say changed. Every rule a session follows reads the model: whether a held result
 still describes the loaded data and settings (and the note that says why not),
@@ -71,6 +72,7 @@ from gui.plotting.labels import (
 from gui.results import REPLICATE_DISPLAYS, RUN_FIT_KEY, CalloutSpec, Place
 from gui.sensitivity import NO_KA as NO_KA_TO_FOLLOW
 from gui.sensitivity import NOTHING_VARIES, RUN_ANALYSIS_KEY, AnalysisForm
+from gui.simulation import Overlay, Simulation, SimulationForm, SimulationProblem
 from gui.uncertainty import UncertaintyForm
 from gui.widgets.assay_conditions import (
     ASSAY_NAMES,
@@ -100,6 +102,7 @@ class Change(Flag):
     ANALYSIS = auto()  # the settings of the next sensitivity run
     DISPLAY = auto()  # how the titration plots are drawn: the concentration unit and the replicate display
     APPEARANCE = auto()  # the appearance of the titration plot
+    SIMULATION = auto()  # the simulation's settings, what they simulate, and the data laid over it
     NAME = auto()  # the session's name
     STATUS = auto()  # the status message
 
@@ -526,6 +529,12 @@ class SessionModel(QObject):
                 'sessions, choose it in Plot appearance and click Use for new sessions.',
             )
         self._plot_appearance = appearance
+        #: The session's own copy of a binding model to simulate, seeded from :attr:`binding` when Simulation is
+        #: first shown (:meth:`open_simulation`); :meth:`edit_simulation` for every change.
+        self.simulation = SimulationForm()
+        self._simulation_open = False
+        self._simulated: Simulation | None = None
+        self._simulation_problem: str | None = None
         self._dataset: Dataset | None = None
         self._custom_name: str | None = None
         self._progress: tuple[int, int] | None = None  # the running analysis's count, done of total
@@ -763,8 +772,11 @@ class SessionModel(QObject):
         self.show_status(f'{message} — the running {stopped} was stopped' if stopped else message)
 
     def _data_changed(self) -> None:
-        """The data or the replicates in use changed; the held results are checked against them again."""
+        """The data or the replicates in use changed; the held results are checked against them again, and the data
+        laid over the simulation follow them."""
         self._note(Change.NAME | Change.DATA)
+        if self.simulation.overlay is not None:
+            self.edit_simulation(lambda f: f.set_overlay(self._data_overlay()))
         self.check_results()
 
     def dataset_file(self) -> str | None:
@@ -894,6 +906,82 @@ class SessionModel(QObject):
             self._plot_appearance = appearance
             self._note(Change.APPEARANCE)
 
+    # ------------------------------------------------------------------
+    # Simulation
+    # ------------------------------------------------------------------
+
+    @property
+    def simulated(self) -> Simulation | None:
+        """What :attr:`simulation` simulates, or ``None`` before Simulation is first shown or where it cannot
+        be computed (:attr:`simulation_problem` says why)."""
+        return self._simulated
+
+    @property
+    def simulation_problem(self) -> str | None:
+        """Why the last change of the simulation was refused, or why it cannot be computed; ``None`` when neither."""
+        return self._simulation_problem
+
+    @_edit
+    def open_simulation(self) -> None:
+        """Simulation is on screen: the first time, its copy takes the binding model this session states."""
+        if not self._simulation_open:
+            self._simulation_open = True
+            self.use_session_model()
+
+    @_edit
+    def use_session_model(self) -> None:
+        """Simulate the binding model this session states (:meth:`SimulationForm.take_binding`)."""
+        self.edit_simulation(lambda f: f.take_binding(self.binding))
+
+    @_edit
+    def edit_simulation(self, change) -> None:
+        """Apply *change* to :attr:`simulation` and simulate again; a change the form refuses is
+        :attr:`simulation_problem`."""
+        refused = None
+        try:
+            change(self.simulation)
+        except SimulationProblem as problem:
+            refused = str(problem)
+        try:
+            self._simulated = self.simulation.simulate()
+        except SimulationProblem as problem:
+            self._simulated = None
+            refused = refused or str(problem)
+        self._simulation_problem = refused
+        self._note(Change.SIMULATION)
+
+    def _data_overlay(self) -> Overlay | None:
+        """The session's data as laid over the simulation: its replicates in use, named as the file card names them."""
+        ms = self.measurement_set
+        if ms is None:
+            return None
+        signals = np.array([signal for _rid, signal in ms.iter_replicas()])
+        return Overlay(self.file_card()[0], np.asarray(ms.concentrations, dtype=float), signals)
+
+    def overlay_data(self, on: bool) -> None:
+        """Lay this session's data over the simulation and simulate at its concentrations (*on*), or take it off."""
+        self.edit_simulation(lambda f: f.set_overlay(self._data_overlay() if on else None))
+
+    def noise_refusal(self) -> str | None:
+        """Why the simulation cannot read its noise from this session's replicates; ``None`` when it can."""
+        overlay = self._data_overlay()
+        return SimulationForm.read_noise_refusal(self.file_card()[0], None if overlay is None else overlay.signals)
+
+    def read_noise(self) -> None:
+        """Take the simulation's noise from the noise law of this session's replicates in use."""
+        overlay = self._data_overlay()
+        self.edit_simulation(lambda f: f.read_noise(overlay.name, overlay.signals))
+
+    def fit_refusal(self) -> Refusal | None:
+        """Why the simulated data cannot be fitted now; ``None`` when they can."""
+        if self._simulated is not None:
+            return None
+        return Refusal(
+            'Nothing to Fit',
+            f'{self._simulation_problem or "The model cannot be computed with these settings."} Change the '
+            'settings in Simulation, then fit again.',
+        )
+
     @_edit
     def edit_finished(self) -> None:
         """Once an edit of the conditions is finished, make the conversions waiting for them and check the results."""
@@ -954,7 +1042,7 @@ class SessionModel(QObject):
 
         Its data — the files, the concentrations as stated, which replicates are
         used — its binding model, input uncertainties, display unit, replicate
-        display and plot appearance. The copy is named after *other*, so the two
+        display, plot appearance and simulation settings. The copy is named after *other*, so the two
         read apart in the switcher.
         """
         self.shutdown()
@@ -962,6 +1050,9 @@ class SessionModel(QObject):
         self.binding = copy.deepcopy(other.binding)
         self.uncertainty = copy.deepcopy(other.uncertainty)
         self.analysis = copy.deepcopy(other.analysis)
+        self.simulation = copy.deepcopy(other.simulation)
+        self._simulation_open = other._simulation_open
+        self._simulated, self._simulation_problem = other.simulated, other.simulation_problem
         self._settings = other.settings
         self._plot_appearance = other.plot_appearance
         self._custom_name = f'{other.name()} copy'
@@ -976,6 +1067,7 @@ class SessionModel(QObject):
             | Change.ANALYSIS
             | Change.DISPLAY
             | Change.APPEARANCE
+            | Change.SIMULATION
         )
         self.check_results()
 

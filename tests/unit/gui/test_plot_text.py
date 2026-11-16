@@ -1,10 +1,9 @@
 """Every plot draws its text at the session's plot text step and keeps it whole (DESIGN.md §2, §7, §8).
 
 The titration, Ka confidence's profiles, strips and joint region, Sensitivity's sample
-histogram, heatmap and plots against each source, and the Simulation window's titration
-and species share one scale of plot text, :data:`~gui.design.tokens.PLOT_TEXT`: a session's
-Plot appearance chooses its step, on screen and in the figures saved from it, and the
-Simulation window reads the step stored for new sessions. The axes grow with the text, so
+histogram, heatmap and plots against each source, and Simulation's titration and species
+share one scale of plot text, :data:`~gui.design.tokens.PLOT_TEXT`: a session's Plot
+appearance chooses its step, on screen and in the figures saved from it. The axes grow with the text, so
 at every step an axis title stands whole inside its plot, clear of the tick labels.
 """
 
@@ -122,19 +121,12 @@ def test_sensitivity_draws_its_samples_heatmap_and_source_plots_at_the_session_s
         assert _drawn_at(figure.main, step) and figure.bar.tick_font.pixelSize() == plot_font(step, 'tick').pixelSize()
 
 
-def test_the_simulation_window_draws_at_the_text_size_stored_for_new_sessions(qapp, monkeypatch):
-    from gui import preferences
-    from gui.views.simulation import SimulationWindow
-
+def test_simulation_draws_at_the_sessions_plot_text(qapp, session):
+    session.show_view('Simulation')
+    view = session._simulation
     for step in STEPS:
-        monkeypatch.setattr(preferences, 'plot_appearance_default', lambda step=step: PlotAppearance(text_size=step))
-        window = SimulationWindow()
-        window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-        window.show()
-        try:
-            assert _drawn_at(window.plots.signal_pw, step) and _drawn_at(window.plots.species_pw, step), step
-        finally:
-            window.close()
+        session.model.set_plot_appearance(PlotAppearance(text_size=step))
+        assert _drawn_at(view.plots.signal_pw, step) and _drawn_at(view.plots.species_pw, step), step
 
 
 # ── Whole at every step ──────────────────────────────────────────────────────────
@@ -143,9 +135,6 @@ def test_the_simulation_window_draws_at_the_text_size_stored_for_new_sessions(qa
 @pytest.mark.parametrize('step', STEPS)
 def test_every_axis_title_is_whole_and_clear_of_the_tick_labels_at_every_step(qapp, session, monkeypatch, step):
     """The rule of :func:`layout_rules.cut_axis_text`, held by each kind of plot of the app at each step."""
-    from gui import preferences
-    from gui.views.simulation import SimulationWindow
-
     session.model.set_plot_appearance(PlotAppearance(text_size=step))
     found = {}
     _two_constants(session)
@@ -160,14 +149,9 @@ def test_every_axis_title_is_whole_and_clear_of_the_tick_labels_at_every_step(qa
     session.show_view('Measurements')
     qapp.processEvents()
     found['Measurements'] = layout_rules.cut_axis_text(session)
-
-    monkeypatch.setattr(preferences, 'plot_appearance_default', lambda: PlotAppearance(text_size=step))
-    window = SimulationWindow()
-    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-    window.show()
+    session.show_view('Simulation')
     qapp.processEvents()
-    found['Simulation'] = layout_rules.cut_axis_text(window)
-    window.close()
+    found['Simulation'] = layout_rules.cut_axis_text(session)
 
     assert {where: cut for where, cut in found.items() if cut} == {}
 
@@ -258,7 +242,7 @@ def test_a_painted_axis_gives_each_tick_label_a_line_of_its_text(qapp, step):
 
 @pytest.mark.parametrize('step', STEPS)
 def test_an_axis_title_set_after_the_plot_is_laid_out_stands_whole_and_centred(qapp, step):
-    """A saved figure sets its titles once its plots are sized (the Simulation window's does): each is placed again
+    """A saved figure sets its titles once its plots are sized (Simulation's does): each is placed again
     as it is set, whole inside the plot and centred on its axis, not where the last title put it."""
     import pyqtgraph as pg
 

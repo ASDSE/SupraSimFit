@@ -1,4 +1,4 @@
-"""The Help window: one non-modal window per main window, a section per view and one for the Simulation window.
+"""The Help window: one non-modal window per main window, a section per view.
 
 The sections are listed as navigation items on the sidebar surface, each with the icon of
 its view; the section chosen is shown on the canvas surface, its title in ``title`` and its
@@ -18,9 +18,6 @@ from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE, TYPE, space
 from gui.help import SECTIONS, section_html
-
-#: The icon of the Simulation window's section; the session's views take their sidebar icons.
-SIMULATION_ICON = 'scatter'
 
 
 def _topic_style() -> str:
@@ -50,7 +47,7 @@ class HelpWindow(QDialog):
         group.setExclusive(True)
         nav = C.vbox(spacing=1, margins=(4, 5, 4, 4))
         for title in SECTIONS:
-            item = C.NavItem(t, title, view_icons.get(title, SIMULATION_ICON))
+            item = C.NavItem(t, title, view_icons[title])
             item.clicked.connect(lambda _checked=False, key=title: self.show_section(key))
             group.addButton(item)
             nav.addWidget(item)

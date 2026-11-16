@@ -2,7 +2,7 @@
 
 :func:`check` looks at one window as it stands, and :func:`tests.unit.gui.menus.sweep`
 with it walks every view of the main window, every section open, and the Settings and
-Simulation windows:
+Help windows:
 
 - every painted component on screen — a class of the app that paints itself — reports the
   size its content needs, as a minimum size hint or a size it fixes, and its layout gives it
@@ -12,13 +12,16 @@ Simulation windows:
 - every axis title of a plot on screen stands whole inside its plot, clear of the tick labels;
 - no two interactive controls on screen share an accessible name, which is all a screen
   reader says of a control.
+
+:func:`cut_sideways` finds a scroll area that never scrolls sideways yet holds content wider
+than its viewport, which it cuts at the right; the views it holds to it are named by their tests.
 """
 
 from __future__ import annotations
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtWidgets import QAbstractScrollArea, QApplication, QLabel, QWidget
+from PyQt6.QtWidgets import QAbstractScrollArea, QApplication, QLabel, QScrollArea, QWidget
 
 from gui.design import components as C
 
@@ -153,6 +156,24 @@ def clashing_names(window: QWidget) -> list[str]:
     return [
         f'{name!r} names {len(kinds)} controls: {", ".join(kinds)}' for name, kinds in named.items() if len(kinds) > 1
     ]
+
+
+def cut_sideways(window: QWidget) -> list[str]:
+    """The scroll areas on screen in *window* that never scroll sideways yet hold content wider than their viewport."""
+    found = []
+    for area in window.findChildren(QScrollArea):
+        content = area.widget()
+        if (
+            not area.isVisible()
+            or area.window() is not window
+            or content is None
+            or area.horizontalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        ):
+            continue
+        need, room = content.minimumSizeHint().width(), area.viewport().width()
+        if need > room:
+            found.append(f'{_name(area.parentWidget())}: its content needs {need} px, its scroll area shows {room}')
+    return found
 
 
 def check(_app: QApplication, window: QWidget, where: str, seen: dict[str, list[str]]) -> None:
