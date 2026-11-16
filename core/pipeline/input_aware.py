@@ -73,15 +73,27 @@ from the objective: a point of the penalised profile is a bounded optimisation
 over the inputs, so the search-grid nodes are traced outward from the estimate
 rather than all solved, and each point is solved from its neighbours.
 
+That inner optimisation can have more than one basin, whose order changes along
+Ka, and a solution continued from one side stays in the basin it came from. The
+drawn curve is therefore continued from both sides: every point it adds is
+solved from the points on either side of it, where the two land in different
+basins the lower is carried on until it stops bringing points lower, and the
+points are added by the rule of the fixed-input curve
+(:func:`core.pipeline.varpro._follow_curves`) until straight lines between them
+follow the profile. Where that brings a point lower than the interval was cut
+from, the interval is cut again with it known.
+
 Every profile value is a pure function of the Ka it is asked at and of the
-start points it is solved from, and the start points come only from the table
-of solved search-grid nodes, the estimate and, with two free Ka, where the other
-one minimises the fixed-input objective — never from the previous evaluation —
-so root finding cannot change a value by the order it asks in.
+start points it is solved from, and while an interval is cut the start points
+come only from the table of solved search-grid nodes, the points drawn before
+the cut began, the estimate and, with two free Ka, where the other one
+minimises the fixed-input objective — never from the previous evaluation — so
+root finding cannot change a value by the order it asks in.
 """
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Callable, Mapping, Sequence
@@ -92,8 +104,8 @@ from scipy.optimize import least_squares
 from core.pipeline.diagnostics import Conflict, InputShift, conflict_added, conflict_reference, conflict_test
 from core.pipeline.inputs import InputConstraint
 from core.pipeline.varpro import (
+    _CURVE_MIN_STEP,
     _INNER_PER_DECADE,
-    _PROFILE_PER_DECADE,
     _R2_RESOLUTION,
     _SEARCH_PER_DECADE,
     LEVEL,
@@ -105,7 +117,7 @@ from core.pipeline.varpro import (
     Projection,
     _allowed_rise,
     _cut_interval,
-    _ka_grid,
+    _follow_curves,
     _refine_at,
     _require_dof,
     _require_inflation,
@@ -131,13 +143,13 @@ __all__ = [
 # Cost, one process per core with the default Ka bounds: a residual evaluation
 # is one moved copy of the assay (30 us), one species solve (65 us) and one
 # bounded linear solve (16 to 400 us), and an interval takes thousands of them.
-# Over 60 random titrations with every input at 3 %, the input-aware part takes
-# median / 90th percentile / maximum 0.8 / 1.5 / 1.8 s with one Ka (20
-# titrations) and 5.2 / 7.4 / 24 s with two Ka and two inputs (40), beside 0.05 s
-# and 3 to 5 s for the fixed-input fit and intervals. By assay, the one-Ka median
-# is about 2.5 s for IDA (four inputs), 1.3 s for GDA (four) and 0.6 to 0.7 s for
-# DBA (two); the hardest designs with few points take about 25 s with one Ka and
-# 50 s with two.
+# Over the 288 one-Ka titrations of the input-aware-coverage check at two seeds
+# per case (GDA, IDA and both DBA directions, 8 to 30 points, every input stated
+# at 3 to 10 %), run twelve at a time on sixteen cores, a whole fit takes median
+# / 90th percentile / maximum 6.3 / 30 / 62 s, of which drawing the curve
+# (_Trace._draw) takes 3.7 s at the median; the demo IDA titration takes 12.3 s,
+# 6.3 of them for its curve, and an HG2 titration of 30 points with two inputs
+# at 3 % takes 34 s, 12 of them for its two curves.
 # The slowest fits are those whose profile edge lies where a signal parameter
 # reaches its bound: the objective has a kink there, along which the
 # least-squares solver creeps to a value good to 1e-4 instead of 1e-9.
@@ -189,21 +201,39 @@ _EDGE_TOL = 1e-6
 # 1e-9, so a point lower than the optimum by less than that is the same optimum.
 _P_RESOLUTION = 1e-9
 
-# Distances, in decades of Ka, of the points the drawn curve adds on either side
-# of each closed edge. The fill through an edge's search cell is 0.05 decade
-# apart, about 70 px at the width Ka confidence draws a 0.8-decade view in, and
-# the scaled-drop axis there magnifies a straight run between two points into a
-# kink the profile does not have. With these the curve is read within 0.004
-# decade (about 6 px) of the edge on both sides, where it crosses the cut-off
-# line. Six solves per edge, from the edge's own solution: on the demo IDA
-# titration (four inputs) they take the fit and its Ka profile from 6.2 to 6.5 s.
-_EDGE_DRAWN = (0.004, 0.01, 0.02)
+# Extra points the drawn curve may add to the points the interval was cut from,
+# by the rule of the fixed-input curve (varpro._follow_curves). Each costs a
+# solve, two where its neighbours lie in different basins. It is a bound on the
+# work, not a limit the curves meet: the demo IDA titration (four inputs) adds
+# about 140 and an HG2 titration of 30 points (two inputs) about 280 per curve,
+# which takes their fits from 6.0 to 12.3 s and from 22 to 34 s.
+_CURVE_MAX_EXTRA = 400
+
+# Slack, in units of an input's standard deviation (or half range), beside a
+# quarter of the distance between the solutions at the two ends of a stretch,
+# within which the solution at its midpoint counts as lying on one path with
+# both (_on_one_path): a thousandth of a standard deviation is far below any
+# shift of an input the app reports.
+_PATH_TOL = 1e-3
 
 # Passes over the edges and the drawn curve. A pass that finds a point below
 # the optimum moves the estimate there and lowers the threshold, so the edges
-# are closed again; every value is a pure function of its Ka and the node
-# table, so the pass after that finds nothing new.
+# are closed again; one whose drawing brings a point lower than the interval
+# was cut from cuts it again with that point known. Every value is a pure
+# function of its Ka and its start, and no Ka is solved twice from one start,
+# so the pass after that finds nothing new.
 _MAX_PASSES = 4
+# Share of the acceptance excess by which drawing must bring a point the interval
+# was cut from lower for the interval to be cut again: a thousandth of the
+# cut-off on the scaled-drop axis, below anything a plot or an edge shows, and
+# well above the 1e-4 of the objective to which the inner solve converges along
+# a kink (the excess is n log(1 + kappa m F / nu) >= 3.8).
+_FALL = 1e-3
+
+_UNSETTLED = (
+    'The interval did not settle: every attempt to close it found a better fit somewhere else. '
+    'Narrow the bounds of the binding constants under Binding model and fit again.'
+)
 
 
 @dataclass(frozen=True)
@@ -272,8 +302,9 @@ class AwareProfile:
     grid : np.ndarray
         Ka in 1/M, ascending: the solved search-grid nodes, the points read at
         ``_PROFILE_PER_DECADE`` where the verdict of the test turns, the
-        estimate, the closed edges and a fill at that density through the
-        search cells of the estimate and of each closed edge.
+        estimate, the closed edges, and the points added between them until
+        straight lines between neighbours follow the profile, by the rule of
+        the fixed-input curve (:func:`~core.pipeline.varpro._follow_curves`).
     objective : np.ndarray
         ``P`` on *grid*; infinite where the model has no solution.
     r2 : np.ndarray
@@ -596,6 +627,10 @@ class _Trace:
         self.nodes = projection._grid()[0][projection.free_ka.index(ka_key)]
         self.two_ka = len(projection.free_ka) == 2
         self.table: dict[int, _Point] = {}
+        # The lowest solution found at every other Ka the curve was drawn through, and the solve
+        # of every (Ka, start) the drawing made: a pure function of the two, so none is repeated.
+        self.solved: dict[float, _Point] = {}
+        self._tried: dict[tuple[float, tuple[float, ...], bytes], _Point] = {}
         self._consider = consider
 
     def at(self, ka: float, starts: Sequence[_Point]) -> _Point:
@@ -713,51 +748,151 @@ class _Trace:
         the cut-off steps, the step itself — and a closed edge of a two-Ka
         interval that only the bound of the other Ka produces opens that side
         (:meth:`~core.pipeline.varpro.Projection._bound_behind`), the rise
-        inside that bound minimised over the inputs. A solved node keeps the
-        value it was solved to; every other point is solved from the nearest
-        solved node or estimate on each side and, with two free Ka, also where
+        inside that bound minimised over the inputs. A Ka solved before keeps
+        the lowest value it was solved to; every other point is solved from the
+        nearest solved points on each side and, with two free Ka, also where
         the other Ka minimises the fixed-input objective there, as a node is.
+
         The curve runs through the points the interval was cut from, the
-        estimate *hat*, the closed edges, and at ``_PROFILE_PER_DECADE``
-        through the search-grid cell of the estimate and of each closed edge,
-        where the curve turns; each of those last points is solved from the
-        nearest of the others. Beside each closed edge it runs through the
-        points ``_EDGE_DRAWN`` away on either side, solved from the edge, so a
-        plot of it crosses the cut-off where the edge is. Between those cells
-        the minimum over the inputs leaves a smooth curve, which the nodes
-        carry.
+        estimate *hat* and the closed edges, and is then drawn
+        (:meth:`_draw`): every point continued from both its neighbours, and
+        points added wherever a straight line between two of them misses the
+        profile. The inner problem can have two basins of the inputs whose
+        order changes along Ka, and a solve continued from one side stays in
+        the basin it came from. Where drawing brings a point lower, the
+        interval is cut again with the lower points known, so the edges and
+        the curve rest on the same profile.
         """
         for d in (-1, 1):
             self._close(hat, cut, d)
-        while True:
-            interval, grid, value, edges = self._cut(hat, cut, floor, level, dof, inflation)
-            if not (interval.split and self._fill_gaps(interval, grid, value, cut)):
-                break
         key = self.key
-        drawn = {**{ka: value(ka) for ka in grid.tolist()}, hat.ka[key]: hat, **edges}
-        anchors = list(drawn.values())
-        anchor_logs = np.log10([point.ka[key] for point in anchors])
-        for at in [hat.ka[key], *edges]:
-            cell = self.nodes[self.nodes <= at][-1:].tolist() + self.nodes[self.nodes >= at][:1].tolist()
-            for ka in _ka_grid(min(cell), max(cell), _PROFILE_PER_DECADE * (len(cell) > 1)).tolist():
-                if ka not in drawn:
-                    drawn[ka] = self.at(ka, [anchors[int(np.argmin(np.abs(anchor_logs - np.log10(ka))))]])
-        low, high = self.problem.projection.ka_bounds[key]
-        for edge, point in edges.items():
-            for ka in (edge * 10.0 ** (sign * step) for step in _EDGE_DRAWN for sign in (-1, 1)):
-                if low <= ka <= high and ka not in drawn:
-                    drawn[ka] = self.at(ka, [point])
-        return interval, [drawn[ka] for ka in sorted(drawn)]
+        for _ in range(_MAX_PASSES):
+            while True:
+                interval, grid, value, edges = self._cut(hat, cut, floor, level, dof, inflation)
+                if not (interval.split and self._fill_gaps(interval, grid, value, cut)):
+                    break
+            drawn = {**{ka: value(ka) for ka in grid.tolist()}, hat.ka[key]: hat, **edges}
+            if not self._draw(drawn, floor, _FALL * (cut(hat.rank) - floor)):
+                return interval, [drawn[ka] for ka in sorted(drawn)]
+        raise FitRefused(_UNSETTLED)
+
+    def _draw(self, drawn: dict[float, _Point], floor: float, fall: float) -> bool:
+        """Draw the curve through the points of *drawn*, adding to it in place; whether one of them fell by *fall*.
+
+        Each stretch between neighbouring points is first halved, and each
+        half again down to ``_CURVE_MIN_STEP``, wherever the solution at its
+        midpoint leaves the path between its ends, which finds where two
+        basins cross. Points are then added by the rule of the fixed-input curve
+        (:func:`~core.pipeline.varpro._follow_curves`) on
+        ``exp(floor / n) (1 + (P - floor) / n)``, the tangent at the optimum's
+        objective *floor* of the residual ``exp(P / n)`` behind the R² the
+        curve records — that residual where the curve is near its optimum, and
+        affine in ``P``, the axis the curve is plotted on: every stretch
+        between neighbouring points is read at its midpoint and halved wherever
+        the midpoint misses the straight line between its ends, which refines
+        the curve where it bends and where two basins of the inputs cross.
+        Every new point is solved from the lower of the two points beside it,
+        and from the other as well unless that solution lies on one path with
+        both (:func:`_on_one_path`). Where the two solves land apart, the lower one is
+        continued towards the end the other came from, point by point, for as
+        long as it brings the points there lower: the inner problem can have
+        two basins whose order changes along Ka, and a solve continued from one
+        side stays in the basin it came from. A solve replaces a point where it
+        is lower by more than ``_P_RESOLUTION``, and no Ka is solved twice from
+        the same start. Every point drawn is kept in :attr:`solved`, where the
+        next cut of the interval and the next drawing read it. What is returned
+        is whether a point *drawn* came with fell by more than *fall*.
+        """
+        key, n = self.key, self.problem.n
+        given = set(drawn)
+        fell = False
+
+        def solve(ka: float, start: _Point) -> _Point:
+            tried = (ka, tuple(start.ka.values()), start.coords.tobytes())
+            if tried not in self._tried:
+                self._tried[tried] = self.at(ka, [start])
+            return self._tried[tried]
+
+        def lower(ka: float, point: _Point) -> bool:
+            """Keep *point* at *ka* where it is lower than what is drawn there; whether that brought a point lower."""
+            nonlocal fell
+            held = drawn.get(ka)
+            if held is not None and point.value >= held.value - _P_RESOLUTION:
+                return False
+            drawn[ka] = point
+            fell = fell or (ka in given and held.value - point.value > fall)
+            return held is not None
+
+        def spread(ka: float, d: int) -> None:
+            """Continue the solution at *ka* to the points on side *d* while it brings them lower."""
+            while np.isfinite(drawn[ka].value):
+                kas = sorted(drawn)
+                i = kas.index(ka) + d
+                if not 0 <= i < len(kas) or not lower(kas[i], solve(kas[i], drawn[ka])):
+                    return
+                ka = kas[i]
+
+        def place(ka: float) -> bool:
+            """Solve at *ka* between the points beside it; whether the solution lies on one path with both."""
+            if ka in self.solved:
+                drawn[ka] = self.solved[ka]
+                return True
+            kas = sorted(drawn)
+            i = bisect.bisect(kas, ka)
+            ends = [drawn[k] for k in kas[max(i - 1, 0) : i + 1]]
+            ends = sorted([end for end in ends if np.isfinite(end.value)] or ends[:1], key=lambda end: end.value)
+            drawn[ka] = point = solve(ka, ends[0])
+            if len(ends) < 2 or _on_one_path(point, *ends, key):
+                return True
+            other = solve(ka, ends[1])
+            lower(ka, other)
+            if abs(other.value - point.value) > _P_RESOLUTION:
+                behind = ends[0] if other.value < point.value else ends[1]
+                spread(ka, 1 if behind.ka[key] > ka else -1)
+            return False
+
+        def split(a: float, b: float) -> None:
+            """Halve the stretch from *a* to *b*, and each half again while its midpoint leaves the path."""
+            if np.log10(b) - np.log10(a) > _CURVE_MIN_STEP:
+                middle = float(10.0 ** (0.5 * (np.log10(a) + np.log10(b))))
+                if not place(middle):
+                    split(a, middle)
+                    split(middle, b)
+
+        def residual(ka: float) -> np.ndarray:
+            if ka not in drawn:
+                place(ka)
+            value = drawn[ka].value
+            return np.array([np.exp(floor / n) * (1.0 + (value - floor) / n) if np.isfinite(value) else np.inf])
+
+        kas = sorted(drawn)
+        for a, b in zip(kas[:-1], kas[1:]):
+            split(a, b)
+        grid = np.array(kas)
+        _follow_curves(
+            residual,
+            self.problem.projection.ss_tot,
+            grid,
+            np.array([residual(ka) for ka in grid.tolist()]),
+            _CURVE_MAX_EXTRA,
+        )
+        for ka, point in drawn.items():
+            if ka not in self.solved or point.value < self.solved[ka].value:
+                self.solved[ka] = point
+        return fell
 
     def _cut(
         self, hat: _Point, cut: Callable[[int], float], floor: float, level: float, dof: float, inflation: float
     ) -> tuple[KaInterval, np.ndarray, Callable[[float], _Point], dict[float, _Point]]:
         """The interval cut from the table as it stands, the Ka it was cut from, the profile there and its closed edges."""
         key, projection = self.key, self.problem.projection
-        anchors = sorted([*self.table.values(), hat], key=lambda point: point.ka[key])
+        anchors = sorted([*self.table.values(), hat, *self.solved.values()], key=lambda point: point.ka[key])
         anchors = [point for point in anchors if np.isfinite(point.value)]
         anchor_ka = np.array([point.ka[key] for point in anchors])
         known = {point.ka[key]: point for point in [*self.table.values(), hat]}
+        for ka, point in self.solved.items():
+            if ka not in known or point.value < known[ka].value:
+                known[ka] = point
         read: dict[float, _Point] = {}
 
         def value(ka: float) -> _Point:
@@ -790,7 +925,10 @@ class _Trace:
 
         interval, grid = _cut_interval(
             lambda ka: judged(value(ka)),
-            {point.ka[key]: judged(point) for point in self.table.values()},
+            {
+                point.ka[key]: judged(min(point, self.solved.get(point.ka[key], point), key=lambda p: p.value))
+                for point in self.table.values()
+            },
             hat.ka[key],
             cut,
             level,
@@ -825,6 +963,27 @@ class _Trace:
             if again.value < point.value - _P_RESOLUTION:
                 self.table[i], fell = again, True
         return fell
+
+
+def _on_one_path(point: _Point, a: _Point, b: _Point, key: str) -> bool:
+    """Whether *point*, solved between *a* and *b* on *key*'s profile, lies on one path of solutions with both.
+
+    It does where its inputs (in units of their standard deviation or half
+    range) and, with two free Ka, the other one (in units of ``_KA_XSCALE``)
+    lie within a quarter of the distance between those of *a* and *b*, plus
+    ``_PATH_TOL``, of their mean. Where the inner problem has one basin over
+    the stretch, its solution moves smoothly from one end to the other and
+    halfway in Ka lies near halfway between them; a solution that stays in the
+    basin of one end lies about half their distance from the mean.
+    """
+
+    def where(at: _Point) -> np.ndarray:
+        other = [np.log10(value) / _KA_XSCALE for k, value in at.ka.items() if k != key]
+        return np.concatenate([at.coords, other])
+
+    ends = where(a), where(b)
+    off = np.max(np.abs(where(point) - 0.5 * (ends[0] + ends[1])), initial=0.0)
+    return bool(off <= 0.25 * np.max(np.abs(ends[0] - ends[1]), initial=0.0) + _PATH_TOL)
 
 
 @lru_cache(maxsize=None)
@@ -1085,10 +1244,7 @@ def input_aware(
         if best[0] is found:
             break
     else:
-        raise FitRefused(
-            'The interval did not settle: every attempt to close it found a better fit somewhere else. '
-            'Narrow the bounds of the binding constants under Binding model and fit again.'
-        )
+        raise FitRefused(_UNSETTLED)
 
     if projection.second_step in traces:
         key = projection.second_step

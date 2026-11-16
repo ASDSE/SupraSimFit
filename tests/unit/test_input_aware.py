@@ -1163,17 +1163,18 @@ def test_the_scaled_drop_of_the_penalised_profile_is_one_at_its_edges_and_its_te
         assert drop[profile.grid == edge] == pytest.approx(1.0, abs=1e-6)
 
 
-def test_the_drawn_penalised_profile_is_read_close_beside_each_closed_edge(ida_case):
-    """A plot crosses the cut-off where the edge is only if the curve is read next to it on both sides.
+def test_the_drawn_penalised_profile_crosses_the_cut_off_at_each_closed_edge(ida_case):
+    """A plot crosses the cut-off where the edge is only if the curve is read close to it on both sides.
 
-    Points 0.004, 0.01 and 0.02 decade from each closed edge, each a solve of
-    its own that lies on the side of the cut-off its side of the edge does.
+    The drawn points next to each closed edge lie within 0.02 decade of it, each
+    on the side of the cut-off its side of the edge is.
     """
     _assay, _projection, _fit, result = ida_case
     profile = result.profiles['Ka_guest']
     logs, drop = np.log10(profile.grid), profile.scaled_drop()
     for edge, outward in ((profile.interval.low, -1), (profile.interval.high, 1)):
-        for step in (0.004, 0.01, 0.02):
-            for side in (-1, 1):
-                (at,) = np.flatnonzero(np.isclose(logs, np.log10(edge) + side * step, rtol=0, atol=1e-12))
-                assert (drop[at] > 1.0) == (side == outward)
+        (at,) = np.flatnonzero(profile.grid == edge)
+        for side in (-1, 1):
+            beside = at + side
+            assert 0 < side * (logs[beside] - logs[at]) <= 0.02
+            assert (drop[beside] > 1.0) == (side == outward)
