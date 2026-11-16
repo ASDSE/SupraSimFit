@@ -256,7 +256,10 @@ class MeasurementsView(QObject):
             return
         stem = Path(dataset.files[0].path).stem if dataset.files else 'concentrations'
         path, _ = QFileDialog.getSaveFileName(
-            self.parent, 'Save concentrations', f'{stem}_concentrations.json', 'Concentration file (*.json)'
+            self.parent,
+            'Save concentrations',
+            str(self.model.save_folder() / f'{stem}_concentrations.json'),
+            'Concentration file (*.json)',
         )
         if path:
             self._say(self.model.save_concentrations(path))

@@ -221,3 +221,39 @@ def test_before_an_analysis_sensitivity_names_only_the_steps_still_to_take(qapp)
     model.uncertainty.set_spec('h0', InputSpec.sigma_pct(5.0))
     model.uncertainty_edited()
     assert model.empty_view('Sensitivity').sentence == f'Choose Run analysis ({key}).'
+
+
+def _offered_folders(session, monkeypatch) -> list[Path]:
+    """The folder each single-file save of *session* offers first: raw data, the titration plot, the concentrations."""
+    offered: list[Path] = []
+
+    def ask(_parent, _title, start, _filters):
+        offered.append(Path(start).parent.resolve())
+        return '', ''
+
+    monkeypatch.setattr('gui.fitting_session.QFileDialog.getSaveFileName', ask)
+    monkeypatch.setattr('gui.views.measurements.QFileDialog.getSaveFileName', ask)
+    session.export_raw_data()
+    session.export_plot('Measurements')
+    session._measurements._save_vector()
+    return offered
+
+
+def test_no_save_after_the_demo_offers_a_folder_inside_the_app(qapp, window, monkeypatch):
+    session = window.active_session()
+    assert session.set_up_demo_ida()
+
+    offered = _offered_folders(session, monkeypatch)
+
+    assert len(offered) == 3
+    assert [f for f in offered if not f.is_dir() or f.is_relative_to(_REPO)] == [], offered
+
+
+def test_a_save_offers_the_folder_of_the_data_it_was_made_from(qapp, window, monkeypatch, tmp_path):
+    import shutil
+
+    data = Path(shutil.copy(_IDA_DATA, tmp_path / 'titration.txt'))
+    session = window.active_session()
+    assert session.model.load_files([str(data)]) is None
+
+    assert _offered_folders(session, monkeypatch) == [tmp_path.resolve()] * 3

@@ -305,8 +305,10 @@ session, reached through the session switcher.
   shows), fitted as it loads. It is where data are loaded: *Load data ▾* and *Tools ▸ Open
   demo data (IDA)* fill the session on screen where it holds nothing, else a new one; the
   empty state of every view of an empty session — a new session opens on it — fills that
-  session. Its file is a bundled example, inside the app, so a save offers the folder last
-  used or Documents, never the example's own folder (`SessionModel.save_folder()`).
+  session. Its file is a bundled example, inside the app, so no save offers a folder inside
+  the app: every save starts in the data file's own folder, or in Documents where the data
+  are a bundled example or come from no file (`SessionModel.save_folder()`); *Export
+  several…* starts in the folder it last wrote to where that still exists.
 - **Edits of the data in place keep every result.** Adding or removing a file, stating the
   concentrations in another unit, typing or loading concentrations, and switching the
   channel of a plate export hide a result made on other data (*Results hidden*) and show

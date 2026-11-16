@@ -303,13 +303,12 @@ class FittingSession(QWidget):
             QMessageBox.warning(self, refusal.title, refusal.message)
         return refusal is None
 
-    def _default_save_name(self, suffix: str, tag: str = '') -> str:
-        """A default save filename from the stem of the session's data file (:meth:`SessionModel.dataset_file`)."""
+    def _default_save_path(self, suffix: str, tag: str = '') -> str:
+        """Where a save starts: a name from the stem of the session's data file (:meth:`SessionModel.dataset_file`)
+        in the folder :meth:`SessionModel.save_folder` offers."""
         src = self.model.dataset_file()
-        if not src:
-            return f'{tag or "output"}{suffix}'
-        stem = Path(src).stem
-        return f'{stem}{("_" + tag) if tag else ""}{suffix}'
+        name = f'{tag or "output"}{suffix}' if not src else f'{Path(src).stem}{("_" + tag) if tag else ""}{suffix}'
+        return str(self.model.save_folder() / name)
 
     def _finish_edits(self) -> None:
         """Check the results against the settings as they read now, a condition still being typed included.
@@ -340,7 +339,7 @@ class FittingSession(QWidget):
         if not self._can_export_results():
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Fit Results', self._default_save_name('.json', 'results'), 'JSON (*.json)'
+            self, 'Export Fit Results', self._default_save_path('.json', 'results'), 'JSON (*.json)'
         )
         if not path:
             return
@@ -354,7 +353,7 @@ class FittingSession(QWidget):
         if not self._can_export_results():
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Results (TXT)', self._default_save_name('.txt', 'results'), 'Text files (*.txt)'
+            self, 'Export Results (TXT)', self._default_save_path('.txt', 'results'), 'Text files (*.txt)'
         )
         if not path:
             return
@@ -368,7 +367,7 @@ class FittingSession(QWidget):
         if not self._can_export_results():
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Results (CSV)', self._default_save_name('.csv', 'results'), 'CSV files (*.csv)'
+            self, 'Export Results (CSV)', self._default_save_path('.csv', 'results'), 'CSV files (*.csv)'
         )
         if not path:
             return
@@ -390,7 +389,7 @@ class FittingSession(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Export Raw Data',
-            self._default_save_name('.txt'),
+            self._default_save_path('.txt'),
             'Text file (*.txt);;CSV file (*.csv)',
         )
         if not path:
@@ -501,7 +500,7 @@ class FittingSession(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Save Plot',
-            self._default_save_name('.png', tag),
+            self._default_save_path('.png', tag),
             formats,
         )
         if not path:
