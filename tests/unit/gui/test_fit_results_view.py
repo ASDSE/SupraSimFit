@@ -722,3 +722,22 @@ def test_the_single_replicate_line_of_two_binding_constants_takes_at_most_two_li
     assert line.height() < 3 * line.fontMetrics().lineSpacing()
     assert 'can fall outside it' in line.toolTip()
     window.close()
+
+
+def test_each_view_is_marked_in_the_navigation_by_the_callouts_it_shows(session):
+    """A view whose callouts carry a warning is marked with one, and a view with none is not."""
+    model = session.model
+    views = {'Fit results': session._results, 'Ka confidence': session._confidence, 'Sensitivity': session._sensitivity}
+    _show(session, aware_result(shifts=_SHIFTS, diagnostics=_CONFLICT))
+    model._sensitivity_error = 'The analysis could not be completed.'
+    model.changed.emit(Change.SENSITIVITY)
+
+    for name, view in views.items():
+        assert any(spec.tone == 'warning' for spec in view.callouts), name
+        assert model.view_status(name)[0] == 'warning', name
+
+    model._sensitivity_error = None
+    _show(session, aware_result())
+    for name, view in views.items():
+        assert not any(spec.tone == 'warning' for spec in view.callouts), name
+        assert model.view_status(name)[0] != 'warning', name

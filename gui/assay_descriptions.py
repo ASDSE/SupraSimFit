@@ -19,7 +19,7 @@ guest. The added dye competes with the guest for the host, so the observed
 fluorescence (or absorbance) signal follows how much of it binds. By fitting
 that curve you can extract the host&ndash;guest association constant
 <i>K<sub>a</sub> guest</i>, provided the host&ndash;dye association constant
-<i>K<sub>a,dye</sub></i> is known from a separate direct binding
+<i>K<sub>a</sub>,dye</i> is known from a separate direct binding
 experiment.</p>
 
 <p><b>The model</b></p>
@@ -27,7 +27,7 @@ experiment.</p>
 and guest <i>[G]</i> are obtained by solving the coupled mass-balance /
 equilibrium equations:</p>
 <p align="center">
-  H + D &#x21CC; HD &nbsp;&nbsp;(K<sub>a,dye</sub> known)<br>
+  H + D &#x21CC; HD &nbsp;&nbsp;(K<sub>a</sub>,dye known)<br>
   H + G &#x21CC; HG &nbsp;&nbsp;(K<sub>a</sub> guest fitted)
 </p>
 <p>with total conservation
@@ -52,10 +52,10 @@ The signal is the 4-parameter linear combination:</p>
 </ul>
 
 <p><b>Known conditions</b></p>
-<p>[H]<sub>0</sub>, [G]<sub>0</sub>, and K<sub>a,dye</sub> must be supplied;
+<p>[H]<sub>0</sub>, [G]<sub>0</sub>, and K<sub>a</sub>,dye must be supplied;
 the dye concentrations are the titrant series read from the data file.
 GDA will only give a meaningful K<sub>a</sub> guest if these inputs are
-accurate &mdash; errors in K<sub>a,dye</sub> propagate directly into the
+accurate &mdash; errors in K<sub>a</sub>,dye propagate directly into the
 fitted K<sub>a</sub> guest. How well each of them, and the titrant series, is
 known belongs under <b>Input uncertainty</b>: state it and the fit may move that
 input within what you stated, so the reported confidence interval covers the
@@ -100,8 +100,8 @@ and host&ndash;guest equilibria at each guest concentration
 </ul>
 
 <p><b>Known conditions</b></p>
-<p>You must know [H]<sub>0</sub>, [D]<sub>0</sub>, and K<sub>a,dye</sub>.
-K<sub>a,dye</sub> is typically obtained from a prior DBA fit of the same
+<p>You must know [H]<sub>0</sub>, [D]<sub>0</sub>, and K<sub>a</sub>,dye.
+K<sub>a</sub>,dye is typically obtained from a prior DBA fit of the same
 host&ndash;dye pair &mdash; which gives it a confidence interval of its own.
 Enter that interval, and the uncertainty of the concentrations and of the
 titrant series, under <b>Input uncertainty</b>: the fit may then move each input
@@ -112,7 +112,7 @@ that freedom instead of assuming the numbers are exact.</p>
 <p>IDA is the standard &ldquo;workhorse&rdquo; assay for measuring
 binding constants of non-absorbing guests using a known indicator. If
 your fit for K<sub>a</sub> guest is poor, first check that the IDA
-operating window is appropriate: K<sub>a,dye</sub> &middot; [H]<sub>0</sub>
+operating window is appropriate: K<sub>a</sub>,dye &middot; [H]<sub>0</sub>
 should be of order 1&ndash;10 so the dye is neither fully free nor fully
 bound at the start of the titration.</p>
 """
@@ -124,14 +124,14 @@ _DBA_HtoD_HTML = """
 <p>A fixed concentration of dye is held in the cuvette while host is
 progressively added. The signal changes as more dye converts to the
 host&ndash;dye complex. Fitting the titration curve yields the
-host&ndash;dye association constant <i>K<sub>a,dye</sub></i>.</p>
+host&ndash;dye association constant <i>K<sub>a</sub>,dye</i>.</p>
 
 <p><b>The model (1:1 host&ndash;dye binding)</b></p>
 <p>At each point the free dye <i>[D]</i> and the complex <i>[HD]</i> are
 obtained analytically from the quadratic arising from:</p>
 <p align="center">
   H + D &#x21CC; HD, &nbsp;&nbsp;
-  K<sub>a,dye</sub> = [HD] / ([H] [D])
+  K<sub>a</sub>,dye = [HD] / ([H] [D])
 </p>
 <p>with conservation
 <i>[H]<sub>0</sub> = [H] + [HD]</i> and
@@ -146,13 +146,13 @@ obtained analytically from the quadratic arising from:</p>
 <p>In DBA H&rarr;D, the three signal coefficients
 (I<sub>0</sub>, I<sub>D</sub>, I<sub>HD</sub>) are not all
 independently identifiable because [D]<sub>0</sub> is constant along the
-titration. Only <i>K<sub>a,dye</sub></i> and the overall signal change
+titration. Only <i>K<sub>a</sub>,dye</i> and the overall signal change
 (saturation minus baseline) are reliably recovered. This is a property
 of the experiment, not of the fitter.</p>
 
 <p><b>Fitted parameters</b></p>
 <ul>
-  <li><b>K<sub>a,dye</sub></b> &mdash; the quantity of interest. Determines
+  <li><b>K<sub>a</sub>,dye</b> &mdash; the quantity of interest. Determines
       the curvature of the titration.</li>
   <li><b>I<sub>0</sub>, I<sub>D</sub>, I<sub>HD</sub></b>
       &mdash; signal coefficients. Useful for reconstructing the fit curve
@@ -164,7 +164,7 @@ of the experiment, not of the fitter.</p>
 <p>The fixed dye concentration [D]<sub>0</sub> is the one condition you supply,
 and the host concentrations are the titrant series. Both come from a weighing
 and a dilution: state how well you know them under <b>Input uncertainty</b> and
-the reported interval for K<sub>a,dye</sub> covers that error too.</p>
+the reported interval for K<sub>a</sub>,dye covers that error too.</p>
 
 <p><b>When to use it</b></p>
 <p>Use this mode when it is experimentally easier to titrate the host
@@ -180,7 +180,7 @@ _DBA_DtoH_HTML = """
 <p>A fixed concentration of host is kept in the cuvette and dye is
 titrated in. The signal changes as the added dye finds binding sites on
 the host. Fitting yields the host&ndash;dye association constant
-<i>K<sub>a,dye</sub></i>.</p>
+<i>K<sub>a</sub>,dye</i>.</p>
 
 <p><b>The model</b></p>
 <p>Same 1:1 equilibrium as the H&rarr;D mode, but with
@@ -195,14 +195,14 @@ linear combination.</p>
 <p><b>Signal coefficients</b></p>
 <p>Unlike DBA H&rarr;D, the dye concentration changes along the titration,
 so the data can determine each signal coefficient as well as
-<i>K<sub>a,dye</sub></i>. Where a design still fixes only a combination of
+<i>K<sub>a</sub>,dye</i>. Where a design still fixes only a combination of
 them, the summary marks those coefficients with *.</p>
 
 <p><b>Known conditions</b></p>
 <p>The fixed host concentration [H]<sub>0</sub> is the one condition you supply,
 and the dye concentrations are the titrant series. State how well you know them
 under <b>Input uncertainty</b> and the reported interval for
-K<sub>a,dye</sub> covers that error as well as the scatter of the data.</p>
+K<sub>a</sub>,dye covers that error as well as the scatter of the data.</p>
 
 <p><b>When to use it</b></p>
 <p>Use this mode when the host is the limiting / expensive reagent.

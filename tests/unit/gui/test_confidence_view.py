@@ -146,9 +146,11 @@ def assert_card_fits(figure) -> None:
     across, down = 2 * space(4), 2 * space(3)
     line = max(small.height(), value_font.height())
     assert card.width() >= across + title.horizontalAdvance(card.title)
+    # A stroke and its gap stand before the names only where a row marks a series.
+    mark = space(4) + space(3) if any(color is not None for color, *_ in card.rows) else 0
     for _color, name, value, verdict, _quiet in card.rows:
-        row = space(4) + small.horizontalAdvance(name) + value_font.horizontalAdvance(value)
-        row += small.horizontalAdvance(verdict) + (3 if verdict else 2) * space(3)
+        row = mark + small.horizontalAdvance(name) + value_font.horizontalAdvance(value)
+        row += small.horizontalAdvance(verdict) + (2 if verdict else 1) * space(3)
         assert card.width() >= across + row, f'{name} {value} {verdict} does not fit'
     assert card.height() >= down + title.height() + len(card.rows) * line
     assert card.size() == card.sizeHint(), 'the card is the size its content asks for'
@@ -375,3 +377,20 @@ def test_each_saved_plot_title_sits_closer_to_its_own_plot_than_to_the_one_above
         assert below < above
     finally:
         figure.close()
+
+
+def test_both_readings_write_their_value_in_tabular_figures(session, monkeypatch):
+    """One number, one look: each reading's value is set in a numeric type role, so ``1.59 × 10⁸`` and
+    ``2.81 × 10⁸`` read alike at their two sizes (DESIGN.md §2, numbers use tabular figures)."""
+    from PyQt6.QtGui import QFont
+    from PyQt6.QtWidgets import QLabel
+
+    fit = aware_result()
+    monkeypatch.setattr(session.model, 'mismatch_note', lambda *args, **kwargs: None)
+    session.model.show_imported([fit], 'stored.json')
+    values = [reading.value for header in CF.headers(fit) for reading in header.readings]
+    shown = [lbl for lbl in session._confidence.header_host.findChildren(QLabel) if lbl.text() in values]
+
+    tabular = QFont.Tag('tnum')
+    assert len(values) == 2 and len(shown) == 2
+    assert all(lbl.font().isFeatureSet(tabular) and lbl.font().featureValue(tabular) == 1 for lbl in shown)

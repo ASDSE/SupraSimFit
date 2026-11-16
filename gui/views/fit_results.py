@@ -232,27 +232,17 @@ class FitResultsView(QObject):
         model = self.model
         fit, note = model.fit_view()
         shown = fit if note is None else None
-        ms = model.measurement_set
         empty = model.empty_view('Fit results')
         self.empty_state.show_empty(empty)
         self._refresh_headline(shown)
-        titration = self._refresh_plot()
+        self._refresh_plot()
         # With nothing to show, the empty state takes the plot's room.
         self.header.setVisible(empty is None)
         self.plot.setVisible(empty is None)
-        self._refresh_callouts(
-            R.callouts(
-                shown,
-                note,
-                unchecked=shown is not None and ms is None,
-                others_hidden=model.other_hidden_note(),
-                replicates_note=titration.replicates_note,
-                others_note=titration.others_note,
-            )
-        )
+        self._refresh_callouts(model.callouts('Fit results'))
         self._refresh_side(shown, note, empty)
 
-    def _refresh_plot(self) -> R.Titration:
+    def _refresh_plot(self) -> None:
         model = self.model
         shown = model.fit_results
         assay_type = AssayType[shown[-1].assay_type] if shown else model.settings.assay_type
@@ -264,7 +254,6 @@ class FitResultsView(QObject):
         # Nothing to display differently or to save until there is something on the plot.
         for tool in (self.display_tool, self.save_plot):
             tool.setEnabled(titration.data is not None)
-        return titration
 
     def _refresh_headline(self, fit) -> None:
         _clear(self.headline_box)

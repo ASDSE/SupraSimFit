@@ -51,7 +51,7 @@ from gui.design.plot_theme import REPLICATE_ALPHA, apply_plot_theme, fit_line, p
 from gui.design.tokens import SIZE, Theme, font, plot_font, space
 from gui.plot_appearance import BUILT_IN
 from gui.plotting.export import ExportRefused, export_stacked, figure_head
-from gui.plotting.labels import fmt_species, superscript
+from gui.plotting.labels import field_text, fmt_species, superscript
 from gui.simulation import (
     COMPLEXES,
     CONCENTRATION_UNITS,
@@ -64,7 +64,6 @@ from gui.simulation import (
     readout_value,
     species_groups,
     tag_text,
-    value_text,
 )
 from gui.views.titration import EXPORT_SIZE, power_of_ten
 
@@ -573,7 +572,7 @@ class SimulationWindow(QMainWindow):
             lambda i: self.edit(lambda f: f.choose_category(list(CATEGORIES)[i]), rebuild=True)
         )
         self.model_menu = C.Dropdown(t, width=VALUE_W)
-        self.model_menu.setAccessibleName('Binding model')
+        self.model_menu.setAccessibleName('Model in the category')
         self.model_menu.chosen.connect(
             lambda i: self.edit(lambda f: f.choose_model(CATEGORIES[f.category][i]), rebuild=True)
         )
@@ -865,23 +864,23 @@ class SimulationWindow(QMainWindow):
         self.even.setVisible(not custom)
         self.custom.setVisible(custom)
         scale = float(Q_(1.0, 'M').to(g.unit).magnitude)
-        self.start.set_text(value_text(g.start * scale))
-        self.stop.set_text(value_text(g.stop * scale))
+        self.start.set_text(field_text(g.start * scale))
+        self.stop.set_text(field_text(g.stop * scale))
         self.n_points.set_text(str(g.points))
         self.grid_unit.set_current(CONCENTRATION_UNITS.index(g.unit))
-        self.step.setText(f'Step {value_text(float(f"{(g.stop - g.start) / (g.points - 1) * scale:.2g}"))} {g.unit}')
+        self.step.setText(f'Step {field_text(float(f"{(g.stop - g.start) / (g.points - 1) * scale:.2g}"))} {g.unit}')
         self.custom_note.setText(
             f'Taken from {escape(g.source)}, so the model is computed where the data were measured.'
             if g.source
             else 'Double-click a value to change it.'
         )
-        self.custom_grid.set_values([value_text(v) for v in g.values], f'{form.x_name} (M)')
+        self.custom_grid.set_values([field_text(v) for v in g.values], f'{form.x_name} (M)')
         self.sections['grid'].header.set_trailing(f'{len(form.points())} points')
         # Noise
         n = form.noise
         self.noise_on.set_checked(n.on)
-        self.floor.set_text(value_text(n.floor))
-        self.proportional.set_text(value_text(100 * n.proportional))
+        self.floor.set_text(field_text(n.floor))
+        self.proportional.set_text(field_text(100 * n.proportional))
         self.replicates.set_text(str(n.replicates))
         self.seed.set_text(str(n.seed))
         for control in (self.floor, self.proportional, self.replicates, self.seed, self.new_draw):

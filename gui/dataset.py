@@ -27,6 +27,7 @@ from core.io.formats.ensight_reader import ENSIGHT_CHANNEL_COLUMN, ENSIGHT_METAD
 from core.io.formats.jasco_reader import JASCO_METADATA_KEY
 from core.io.registry import READERS, get_reader
 from core.units import Q_
+from gui.plotting.labels import parse_number
 
 logger = logging.getLogger(__name__)
 
@@ -287,10 +288,9 @@ class Dataset:
         InvalidData
             When *text* is not a concentration of zero or more.
         """
-        try:
-            value = float(text)
-        except ValueError:
-            raise InvalidData(f'“{text}” is not a number. Enter a concentration such as 2.5e-6.') from None
+        value = parse_number(text)
+        if value is None:
+            raise InvalidData(f'“{text}” is not a number. Enter a concentration such as 2.5e-6.')
         values = self.face_values.copy()
         values[index] = value
         problem = concentration_problem(Q_(values, self.imported_unit))

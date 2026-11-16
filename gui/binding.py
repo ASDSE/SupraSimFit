@@ -32,8 +32,8 @@ from core.pipeline.varpro import projectable
 from core.units import Q_, Quantity
 from gui.assay_descriptions import ASSAY_DESCRIPTIONS
 from gui.parameter_descriptions import PARAMETER_DESCRIPTIONS, SCI_NOTE_HTML
-from gui.plotting.labels import and_join, fmt_param_plain
-from gui.uncertainty import amount_text, parse_amount, shifted_text
+from gui.plotting.labels import FIELD_FIGURES, and_join, field_text, fmt_param_plain, parse_number
+from gui.uncertainty import shifted_text
 from gui.widgets.assay_conditions import (
     ASSAY_NAMES,
     DBA_MODES,
@@ -269,7 +269,7 @@ class Amount:
 
     def value(self) -> float | None:
         """The exact value the text was written from, else the number the text states."""
-        return self.exact if self.exact is not None else parse_amount(self.text)
+        return self.exact if self.exact is not None else parse_number(self.text)
 
 
 @dataclass
@@ -295,7 +295,7 @@ class ConditionEntry:
         """The value entered, in the base unit; ``None`` when it cannot be read."""
         if self.amount.exact is not None:
             return self.amount.exact
-        shown = parse_amount(self.amount.text)
+        shown = parse_number(self.amount.text)
         return None if shown is None else shown * self.scale()
 
 
@@ -312,21 +312,16 @@ def _entry(field: ConditionField, base_value: float | None, concentration_unit: 
 
 def _write(entry: ConditionEntry, base_value: float) -> None:
     """Show *base_value* in the entry's unit, keeping the very number."""
-    entry.amount = Amount(amount_text(base_value / entry.scale(), False), base_value)
+    entry.amount = Amount(field_text(base_value / entry.scale()), base_value)
 
 
 def _bound_text(value: float) -> str:
     """What a bound field shows: the number with every figure it has, or nothing for no limit."""
     if not math.isfinite(value):
         return ''
-    text = amount_text(value, False)
-    if parse_amount(text) != value:
-        text = repr(value)  # the fewest figures that read back as this very number
-        if 'e' in text:
-            mantissa, exponent = text.split('e')
-            text = f'{mantissa.removesuffix(".0")}e{int(exponent)}'
-        text = text.removesuffix('.0').replace('-', '−')
-    return text
+    # The fewest figures from a field's own that read back as this very number.
+    figures = next(n for n in range(FIELD_FIGURES, 18) if parse_number(field_text(value, n)) == value)
+    return field_text(value, figures)
 
 
 @dataclass
@@ -480,7 +475,7 @@ class BindingForm:
         entry.unit = unit
         if value is not None:
             text = shifted_text(entry.amount.text, factor) if entry.amount.exact is None else None
-            entry.amount = Amount(text or amount_text(value / entry.scale(), False), value)
+            entry.amount = Amount(text or field_text(value / entry.scale()), value)
 
     def set_diluted(self, diluted: bool) -> None:
         """State that the additions dilute the sample (*diluted*), or that the totals stay constant."""
@@ -615,7 +610,7 @@ class BindingForm:
         for key in self.dye_alone_keys():
             if key in bounds:
                 entry = self.bound_entries[key]
-                lo, hi = (parse_amount(amount_text(float(Q_(v).to(entry.unit).magnitude), False)) for v in bounds[key])
+                lo, hi = (parse_number(field_text(float(Q_(v).to(entry.unit).magnitude))) for v in bounds[key])
                 entry.set(lo, hi)
 
     # ------------------------------------------------------------------

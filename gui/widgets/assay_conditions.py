@@ -17,6 +17,7 @@ from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY
 from core.pipeline.inputs import TITRANT, ErrorModel, shared_key
 from core.units import Q_, Quantity
+from gui.plotting.labels import PARAM_LABELS, field_text, plain_label
 
 #: Each assay's names in the window: short, where a session is named beside its data
 #: (session switcher, file card), and in words, where the model is stated (status bar).
@@ -40,7 +41,7 @@ class ConditionField:
     key : str
         Dict key passed to the assay constructor (e.g. ``"Ka_dye"``).
     label : str
-        HTML display label shown in the form (e.g. ``"K<sub>a,dye</sub>"``).
+        HTML display label shown in the form (e.g. ``"K<sub>a</sub>,dye"``).
     tooltip : str
         Longer scientific description shown as a tooltip.
     default : float
@@ -79,7 +80,7 @@ ASSAY_CONDITIONS: dict[AssayType, tuple[ConditionField, ...]] = {
     AssayType.GDA: (
         ConditionField(
             'Ka_dye',
-            'K<sub>a,dye</sub>',
+            PARAM_LABELS['Ka_dye'],
             'Known host–dye association constant',
             33e3,
             'M⁻¹',
@@ -105,7 +106,7 @@ ASSAY_CONDITIONS: dict[AssayType, tuple[ConditionField, ...]] = {
     AssayType.IDA: (
         ConditionField(
             'Ka_dye',
-            'K<sub>a,dye</sub>',
+            PARAM_LABELS['Ka_dye'],
             'Known host–dye association constant',
             16800000,
             'M⁻¹',
@@ -209,23 +210,19 @@ def condition_field(assay_type: AssayType, key: str) -> ConditionField | None:
 
 def condition_name(field: ConditionField) -> str:
     """*field*'s label in plain text: ``[Host]₀``."""
-    # Imported here for the reason given in result_input_labels.
-    from gui.plotting.labels import plain_label
-
     return plain_label(field.label)
 
 
 def format_condition(field: ConditionField, value: Quantity, unit: str) -> str:
     """*value* of *field* in plain text in *unit*, one of the units its form offers: ``4.3 µM``.
 
-    *unit* is ignored for a field without a unit, whose value is written bare.
+    *unit* is ignored for a field without a unit, whose value is written bare. The number is
+    written as the field writes it.
     """
-    from gui.plotting.labels import plain_number
-
     if not field.unit:
-        return plain_number(float(value.magnitude))
+        return field_text(float(value.magnitude))
     scale = float(Q_(1, unit).to(field.unit).magnitude)
-    return f'{plain_number(value.to(field.unit).magnitude / scale)} {unit}'.rstrip()
+    return f'{field_text(value.to(field.unit).magnitude / scale)} {unit}'.rstrip()
 
 
 def same_inputs(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -281,11 +278,6 @@ def result_input_labels(assay_type_name: str, fit_config: Optional[Mapping[str, 
         Source key → plain display name. Empty for an assay type this version
         does not know, where a report falls back on the source's key.
     """
-    # Imported here, not at module scope: gui.plotting's package __init__ pulls
-    # in the widgets that read this registry, so a module-level import of
-    # anything under gui.plotting would close a cycle through it.
-    from gui.plotting.labels import plain_label
-
     try:
         assay_type = AssayType[assay_type_name]
     except KeyError:

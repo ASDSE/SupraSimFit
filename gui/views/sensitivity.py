@@ -37,7 +37,7 @@ from gui.design.appearance import appearance, theme
 from gui.design.plot_theme import apply_plot_theme, axis_box, least_height, px, scatter
 from gui.design.tokens import HEAT_STOPS, RADIUS, SIZE, Theme, font, plot_font, space
 from gui.plotting.export import export_widget, figure_head
-from gui.plotting.labels import plain_label
+from gui.plotting.labels import fmt_param_plain, plain_label
 from gui.results import Place
 from gui.session_model import Change, SessionModel
 from gui.widgets.assay_conditions import condition_field
@@ -493,7 +493,7 @@ class HeatmapFigure(QWidget):
     def show_cell(self, ix: int, iy: int, pointer: bool = True) -> None:
         """Read cell (*ix*, *iy*) in the card; with *pointer* outline it as well."""
         title, rows = S.heatmap_readout(self.hm, ix, iy)
-        self.card.set_values(title, [('text-tertiary', name, value, '', False) for name, value in rows])
+        self.card.set_values(title, [(None, name, value, '', False) for name, value in rows])
         self.cell.setVisible(pointer)
         if pointer:
             self.cell.setRect(
@@ -885,7 +885,7 @@ class SensitivityView(QObject):
             self.t,
             plots,
             note,
-            plain_label(S.ka_name(ka_key)),
+            fmt_param_plain(ka_key),
             self.model.analysis.log_axis,
             self.model.plot_appearance.text_step,
             self.parent,
@@ -997,19 +997,13 @@ class SensitivityView(QObject):
         settings = model.settings
         result = model.sensitivity_result
         note = model.sensitivity_note
-        running = model.sensitivity_running()
         has_ka = projectable(settings.assay_type)
-        has_data = model.measurement_set is not None
         shown = result if note is None else None
         empty = model.empty_view('Sensitivity')
         self.empty_state.show_empty(empty)
         # The empty state takes the canvas's spare height, else it goes below the last part shown.
         self.canvas_box.setStretch(self.canvas_box.count() - 1, 0 if empty is not None else 1)
-        nothing = has_ka and has_data and not settings.errors.varies
-        specs = S.callouts(
-            result, self._fit(), note, running=running, error=model.sensitivity_error, nothing_varies=nothing
-        )
-        self._refresh_callouts(specs if has_ka else [])
+        self._refresh_callouts(model.callouts('Sensitivity'))
         self._refresh_blocks(shown if has_ka else None)
         self._refresh_side(has_ka)
 
@@ -1142,7 +1136,7 @@ class SensitivityView(QObject):
         t, spread = self.t, block.spread
         sec = t['text-secondary']
         title = C.label(spread.title, 'label', 'secondary', rich=True)
-        factor = C.copyable(C.label(spread.factor, 'title'))
+        factor = C.copyable(C.label(spread.factor, 'title-number'))
         decades = C.copyable(C.label(spread.decades, 'body', 'secondary'))
         value_row = C.hbox(factor, decades, None, spacing=3)
         value_row.setAlignment(factor, Qt.AlignmentFlag.AlignBottom)

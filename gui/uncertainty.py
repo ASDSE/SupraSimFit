@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
@@ -36,13 +35,13 @@ from core.pipeline.inputs import (
 )
 from core.pipeline.varpro import projectable
 from core.units import Q_, Quantity
-from gui.plotting.labels import plain_label
+from gui.plotting.labels import decimal_text, field_text, parse_decimal, parse_number, plain_label
 from gui.widgets.assay_conditions import ASSAY_CONDITIONS, UNIT_CHOICES, ConditionField, input_labels
 
 HELP_HTML = """
 <p>How far each input may be off: the titrant concentrations and the fixed
 conditions (<i>[Host]<sub>0</sub></i>, <i>[Dye]<sub>0</sub></i>,
-<i>K<sub>a,dye</sub></i>, …). Each carries pipetting, weighing or calibration error,
+<i>K<sub>a</sub>,dye</i>, …). Each carries pipetting, weighing or calibration error,
 and the fit absorbs it by shifting the K<sub>a</sub> it reports.</p>
 <p>What you state here feeds two things:</p>
 <ul>
@@ -89,7 +88,7 @@ above 0 under <b>Binding model</b>, nor a range that reaches down to zero. The i
 neither a fit nor an analysis starts until you change the value or choose
 <b>Fixed</b>.</p>
 <p>Use realistic numbers: pipetting error is often a few percent, a stated
-literature K<sub>a,dye</sub> may be uncertain by 10–20%.</p>
+literature K<sub>a</sub>,dye may be uncertain by 10–20%.</p>
 <p class="topic">Shared error sources</p>
 <p>The entry on an input above is the error <b>only that input</b> has. An error several
 inputs have in common — their solutions come from one stock, were weighed on one balance
@@ -97,7 +96,7 @@ or pipetted with one pipette — is a <b>shared error source</b>: name it, state
 percent, and tick every input it moves. The sources are independent and multiply, so an
 input with an entry of its own and a shared source carries both. A shared source moves
 every concentration made from that stock by the same percentage, and a binding constant
-measured with it (such as a K<sub>a,dye</sub> fitted with the same stock) by the same
+measured with it (such as a K<sub>a</sub>,dye fitted with the same stock) by the same
 percentage the other way.</p>
 <p>Both the interval of every fit and the K<sub>a</sub> Sensitivity analysis use exactly
 this model. The analysis reports a shared source as one item, which is what you can act
@@ -135,8 +134,6 @@ stated; <i>Review in Ka confidence</i> shows where the fit put them. <b>Also use
 names the Sensitivity analysis, which draws the inputs from the same statement.</p>
 """
 
-#: Significant figures an amount is written with when the form writes it.
-SIGFIGS = 5
 #: The σ an input, a shared source and the additions entry offer when first stated. Every
 #: input opens *Fixed*, no source is stated and the additions read *None*, so this number
 #: reaches a fit only once the user states something.
@@ -150,26 +147,6 @@ REPLICATE_KINDS = ('Separate titrations', 'Repeated reads')
 _DEFAULT_SPEC = InputSpec.sigma_pct(DEFAULT_SIGMA_PCT)
 
 
-def parse_amount(text: str) -> float | None:
-    """The number *text* states, a real minus sign accepted; ``None`` when it states none."""
-    try:
-        value = float(text.strip().replace('−', '-'))
-    except ValueError:
-        return None
-    return value if math.isfinite(value) else None
-
-
-def amount_text(value: float, relative: bool) -> str:
-    """*value* as an amount field shows it: ``5.0`` in percent, ``0.215`` or ``1.596e7`` in a unit."""
-    text = f'{value:.{SIGFIGS}g}'
-    if 'e' in text:
-        mantissa, exponent = text.split('e')
-        text = f'{mantissa}e{int(exponent)}'
-    if relative and '.' not in text and 'e' not in text:
-        text += '.0'
-    return text.replace('-', '−')
-
-
 def shifted_text(text: str, factor: float) -> str:
     """The amount *text* states, multiplied by *factor*, with every figure typed kept: ``0.215`` × 1000 is ``215``.
 
@@ -178,20 +155,10 @@ def shifted_text(text: str, factor: float) -> str:
     writes an amount.
     """
     exponent = round(math.log10(factor))
-    try:
-        if not math.isclose(factor, 10.0**exponent, rel_tol=1e-12):
-            raise InvalidOperation
-        value = Decimal(text.strip().replace('−', '-')).scaleb(exponent)
-    except InvalidOperation:
-        return amount_text(parse_amount(text) * factor, False)
-    if value == 0 or 1e-4 <= abs(value) < 1e7:
-        written = format(value, 'f')
-        if '.' in written:
-            written = written.rstrip('0').rstrip('.')
-    else:
-        mantissa, power = format(value.normalize(), 'e').split('e')
-        written = f'{mantissa}e{int(power)}'
-    return written.replace('-', '−')
+    value = parse_decimal(text)
+    if value is not None and math.isclose(factor, 10.0**exponent, rel_tol=1e-12):
+        return decimal_text(value.scaleb(exponent))
+    return field_text(parse_number(text) * factor)
 
 
 def _kind_name(kind: SpecKind) -> str:
@@ -275,7 +242,7 @@ class SourceEntry:
     """One shared error source as stated: its name, its σ in percent as shown, and the inputs it moves."""
 
     name: str
-    sigma_text: str = amount_text(DEFAULT_SIGMA_PCT, True)
+    sigma_text: str = field_text(DEFAULT_SIGMA_PCT, point=True)
     inputs: set[str] = field(default_factory=set)
 
 
@@ -284,7 +251,7 @@ class AdditionsEntry:
     """The random error of each addition as stated: the mode (an index of :data:`ADDITION_MODES`), σ and replicates."""
 
     mode: int = 0
-    sigma_text: str = amount_text(DEFAULT_SIGMA_PCT, True)
+    sigma_text: str = field_text(DEFAULT_SIGMA_PCT, point=True)
     separate: bool = True
 
 
@@ -489,7 +456,7 @@ class UncertaintyForm:
         for text in entry.texts:
             if not text.strip():
                 return f'{name} has no amount{refused}: enter a number, or choose “Fixed”.'
-            if parse_amount(text) is None:
+            if parse_number(text) is None:
                 over = f', so it cannot be carried over to {entry.refused}' if entry.refused else ''
                 return f'{name}: “{text}” is not a number{over}. Enter a number, or choose “Fixed”.'
         nominal = self.nominal(key)
@@ -532,7 +499,7 @@ class UncertaintyForm:
     def add_source(self, source: SharedSource | None = None) -> None:
         """State one more shared source: *source*, or one under a name no other source has, with a σ to edit."""
         if source is not None:
-            self.sources.append(SourceEntry(source.name, amount_text(source.sigma_pct, True), set(source.inputs)))
+            self.sources.append(SourceEntry(source.name, field_text(source.sigma_pct, point=True), set(source.inputs)))
             return
         taken = {source.name for source in self.sources}
         number = 1
@@ -563,7 +530,7 @@ class UncertaintyForm:
         With *readable*, a σ that is not a number is read as 1 %, for the checks that do not
         concern the σ.
         """
-        sigma = parse_amount(source.sigma_text)
+        sigma = parse_number(source.sigma_text)
         if sigma is None:
             sigma = 1.0 if readable else math.nan
         return SharedSource(source.name.strip(), sigma, tuple(key for key in self.keys if key in source.inputs))
@@ -583,7 +550,7 @@ class UncertaintyForm:
             every = source_problems(ErrorModel(shared=tuple(stated)), self._base, self.input_labels())
             own = every[len(reported) :]
             reported = every
-            if parse_amount(source.sigma_text) is None:
+            if parse_number(source.sigma_text) is None:
                 own.insert(
                     0,
                     f"The uncertainty of the shared error source '{source.name.strip()}': “{source.sigma_text}” "
@@ -615,7 +582,7 @@ class UncertaintyForm:
         entry = self.additions_entry
         if entry.mode == 0:
             return None
-        sigma = parse_amount(entry.sigma_text)
+        sigma = parse_number(entry.sigma_text)
         return AdditionError(
             sigma_pct=math.nan if sigma is None else sigma,
             sequential=entry.mode == 1,
@@ -627,7 +594,7 @@ class UncertaintyForm:
         entry = self.additions_entry
         if entry.mode == 0:
             return None
-        if parse_amount(entry.sigma_text) is None:
+        if parse_number(entry.sigma_text) is None:
             return (
                 f'The random error of each addition: “{entry.sigma_text}” is not a number. '
                 "Enter it in percent, or set it to 'None'."
@@ -718,7 +685,7 @@ class UncertaintyForm:
         """
         if not entry.relative and entry.exact is not None and entry.exact[0] == entry.texts:
             return list(entry.exact[1])
-        values = [parse_amount(text) for text in entry.texts]
+        values = [parse_number(text) for text in entry.texts]
         if any(v is None for v in values):
             return None
         if entry.relative:
@@ -729,7 +696,7 @@ class UncertaintyForm:
     @staticmethod
     def _unreadable(entry: InputEntry) -> bool:
         """Whether an amount the entry shows, or keeps while *Fixed*, is not a number."""
-        return entry.pending is None and any(parse_amount(text) is None for text in entry.texts)
+        return entry.pending is None and any(parse_number(text) is None for text in entry.texts)
 
     def _carry(self, entry: InputEntry) -> None:
         """Keep what the entry states as the uncertainty the next kind starts from.
@@ -756,10 +723,10 @@ class UncertaintyForm:
         entry.pending = None
         values = [restated.sigma] if kind is SpecKind.SIGMA else [restated.lo, restated.hi]
         if entry.relative:
-            entry.texts = tuple(amount_text(v, True) for v in values)
+            entry.texts = tuple(field_text(v, point=True) for v in values)
         else:
             entry.unit = self._unit(entry)
-            entry.texts = tuple(amount_text(v / self._scale(entry, entry.unit), False) for v in values)
+            entry.texts = tuple(field_text(v / self._scale(entry, entry.unit)) for v in values)
 
 
 def _count(kind: SpecKind) -> int:

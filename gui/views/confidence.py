@@ -552,15 +552,7 @@ class ConfidenceView(QObject):
         pending = ours and model.profile_running()
         self.empty_state.show_empty(empty)
         self._refresh_headers(shown if has_ka else None, drawn=profile is not None)
-        self._refresh_callouts(
-            CF.callouts(
-                shown if has_ka or note else None,
-                note,
-                pending=pending,
-                unchecked=has_ka and model.measurement_set is None,
-                others_hidden=model.other_hidden_note() if has_ka else None,
-            )
-        )
+        self._refresh_callouts(model.callouts('Ka confidence'))
         message = ''
         if has_ka and profile is None and not pending:
             error = model.profile_error if ours else None
@@ -612,7 +604,7 @@ class ConfidenceView(QObject):
 
     def _reading(self, header: CF.Header, reading: CF.Reading, drawn: bool) -> list[QWidget]:
         """The rows of one reading: name and badge, value, interval (with *Split*), and its reach."""
-        role = 'metric' if reading.reported else 'title'
+        role = 'metric' if reading.reported else 'title-number'
         name = C.hbox(C.label(header.name, 'label', 'secondary', rich=True), C.badge(reading.label, reading.tone), None)
         head = QWidget()
         head.setLayout(name)

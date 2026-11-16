@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import math
 import re
+from decimal import Decimal, InvalidOperation
 from html import escape, unescape
 from typing import Iterable, Sequence
 
@@ -50,20 +51,73 @@ def superscript(n: int) -> str:
     return str(n).translate(_SUPERSCRIPT_DIGITS)
 
 
-def spaced(text: str) -> str:
-    """``1.59×10⁸`` as the design writes it in prose and headlines: ``1.59 × 10⁸``, unbreakable."""
-    return text.replace('×', f'{THIN}×{THIN}')
-
-
 def times_ten(e: int) -> str:
     """The `` × 10ⁿ`` a mantissa is followed by; nothing for ``n = 0``."""
     return '' if e == 0 else f'{THIN}×{THIN}10{superscript(e)}'
 
 
+# ── A number in a field ─────────────────────────────────────────────────────────────
+
+#: Significant figures a field writes a number to.
+FIELD_FIGURES = 6
+
+_FROM_SUPERSCRIPT = str.maketrans('⁰¹²³⁴⁵⁶⁷⁸⁹⁻', '0123456789-')
+_DECADE_RE = re.compile(r'^(-?)10([⁰¹²³⁴⁵⁶⁷⁸⁹⁻]+)$')
+
+
+def parse_decimal(text: str) -> Decimal | None:
+    """The number *text* states, every figure kept, as typed or as a field writes it; ``None`` where it states none.
+
+    Both ways a number is written read alike — ``1.68e7``, ``1.68 × 10⁷``, ``10⁷``, ``9 510``,
+    a real minus sign — so what a field shows reads back as the number it shows.
+    """
+    t = re.sub(r'[\s\u00a0\u2009\u202f]', '', text).replace('−', '-')
+    decade = _DECADE_RE.match(t)
+    if decade:
+        t = f'{decade.group(1)}1e{decade.group(2)}'
+    t = t.replace('×10', 'e').translate(_FROM_SUPERSCRIPT)
+    try:
+        value = Decimal(t)
+    except InvalidOperation:
+        return None
+    return value if value.is_finite() else None
+
+
+def parse_number(text: str) -> float | None:
+    """The number *text* states (:func:`parse_decimal`) as a float; ``None`` where it states none."""
+    value = parse_decimal(text)
+    return None if value is None else float(value)
+
+
+def decimal_text(value: Decimal, *, point: bool = False) -> str:
+    """*value* as a field shows it, with every figure it holds: ``9 510``, ``4.3``, ``0.0215``, ``1.68 × 10⁷``.
+
+    Plain from 0.01 to below 10⁵, its thousands set apart by thin spaces, else as a mantissa
+    and a power of ten. *point* writes a whole number with one decimal, ``5.0``, as a field
+    in percent shows it.
+    """
+    if value == 0:
+        return '0.0' if point else '0'
+    if Decimal('1e-2') <= abs(value) < Decimal('1e5'):
+        whole, _, frac = format(value.normalize(), 'f').partition('.')
+        digits = whole.lstrip('-')
+        groups = [digits[max(0, i - 3) : i] for i in range(len(digits), 0, -3)][::-1]
+        text = THIN.join(groups)
+        text = f'{text}.{frac}' if frac else (f'{text}.0' if point else text)
+        return ('−' if value < 0 else '') + text
+    mantissa, exponent = format(value.normalize(), 'e').split('e')
+    return f'{mantissa.replace("-", "−")}{times_ten(int(exponent))}'
+
+
+def field_text(value: float, figures: int = FIELD_FIGURES, *, point: bool = False) -> str:
+    """*value* as every field shows it (:func:`decimal_text`), to *figures* significant figures."""
+    return decimal_text(Decimal(f'{value:.{figures}g}'), point=point)
+
+
 _SUB_TAG_RE = re.compile(r'<sub>(.*?)</sub>')
 _SUP_TAG_RE = re.compile(r'<sup>(.*?)</sup>')
 _ANY_TAG_RE = re.compile(r'<[^>]+>')
-# The *a* that opens the subscript of an association constant: K<sub>a</sub>, K<sub>a,dye</sub>, K<sub>a(G)</sub>.
+# The *a* that opens the subscript of an association constant: K<sub>a</sub>, K<sub>a</sub>,dye, K<sub>a(G)</sub>.
 _KA_SUBSCRIPT_RE = re.compile(r'^a(?=$|[,(])')
 
 #: What the status bar says while a sensitivity run stops, in place of the counts of the fits still finishing.
@@ -77,11 +131,6 @@ _R2_MAX_DECIMALS = 17
 _LOG10_DECIMALS = (2, 6)
 
 
-def _format_exponent_unicode(exp: int) -> str:
-    """Convert an integer exponent to Unicode superscript, e.g. 5 → '⁵', -3 → '⁻³'."""
-    return str(exp).translate(_SUPERSCRIPT_DIGITS)
-
-
 def and_join(items) -> str:
     """Names as a sentence lists them: ``a``, ``a and b``, ``a, b and c``; ``''`` for none."""
     items = list(items)
@@ -91,12 +140,16 @@ def and_join(items) -> str:
 
 
 def _subscript(text: str) -> str:
-    """The text of a ``<sub>`` in plain text: its digits subscripted, and the *a* of an association constant too.
+    """The text of a ``<sub>`` in plain text: digits subscripted, the *a* of an association constant too, letters after ``_``.
 
-    ``K<sub>a,dye</sub>`` reads ``Kₐ,dye`` and ``K<sub>a(G)</sub>`` reads ``Kₐ(G)``, as the
-    glossary writes Kₐ (DESIGN.md §9); a word such as ``max`` keeps its letters.
+    ``K<sub>a</sub>`` reads ``Kₐ`` and ``K<sub>a</sub>,dye`` ``Kₐ,dye``, as the glossary writes
+    Kₐ (DESIGN.md §9); ``[Host]<sub>0</sub>`` reads ``[Host]₀``; a subscript of letters has no
+    Unicode form, so ``I<sub>HD</sub>`` reads ``I_HD``.
     """
-    return _KA_SUBSCRIPT_RE.sub('ₐ', text).translate(_SUBSCRIPT_DIGITS)
+    if _KA_SUBSCRIPT_RE.match(text):
+        return _KA_SUBSCRIPT_RE.sub('ₐ', text).translate(_SUBSCRIPT_DIGITS)
+    flat = text.translate(_SUBSCRIPT_DIGITS)
+    return flat if all(ch in '₀₁₂₃₄₅₆₇₈₉' for ch in flat) else f'_{flat}'
 
 
 def plain_label(html: str) -> str:
@@ -104,7 +157,7 @@ def plain_label(html: str) -> str:
 
     Digits inside ``<sub>`` and ``<sup>`` become their Unicode sub- and
     superscripts, as does the *a* of an association constant's subscript
-    (``K<sub>a,dye</sub>`` → ``Kₐ,dye``); every remaining tag is dropped and the entities left behind
+    (``K<sub>a</sub>,dye`` → ``Kₐ,dye``); every remaining tag is dropped and the entities left behind
     become the characters they stand for, so the label reads in widgets that
     paint plain text — pyqtgraph axis ticks, combo box entries, check box
     labels. A name the user typed reaches a label escaped, and an ampersand in
@@ -258,9 +311,11 @@ def fmt_log10(value: float, stats: dict | None) -> str:
 
 
 def fmt_sci(value: float, digits: int = 2) -> str:
-    """*value* to *digits* significant figures: plain from 0.01 to 999, else as ``1.7×10⁸``.
+    """*value* to *digits* significant figures: plain from 0.01 to 999, else as ``1.7 × 10⁸`` (DESIGN.md §2).
 
-    Examples: ``150``, ``0.012``, ``3.22×10³`` (``digits=3``), ``5.7×10⁴``.
+    Examples: ``150``, ``0.012``, ``3.22 × 10³`` (``digits=3``), ``5.7 × 10⁴``. Every number a
+    view, a saved figure or a report shows is written through this, so it reads the same
+    wherever it stands.
     """
     if value == 0 or not math.isfinite(value):
         return f'{value:g}'
@@ -268,7 +323,7 @@ def fmt_sci(value: float, digits: int = 2) -> str:
     exp = math.floor(math.log10(abs(rounded)))
     if -2 <= exp <= 2:
         return f'{rounded:.{max(digits - 1 - exp, 0)}f}'
-    return f'{rounded / 10.0**exp:.{digits - 1}f}×10{_format_exponent_unicode(exp)}'
+    return f'{rounded / 10.0**exp:.{digits - 1}f}{times_ten(exp)}'
 
 
 #: Significant figures of every fitted value and interval edge a view shows.
@@ -276,7 +331,7 @@ _VALUE_DIGITS = 3
 
 
 def fmt_value(value: float) -> str:
-    """A fitted value or an interval edge as every view writes it: ``8.00×10⁴``, ``2.41×10³``, ``150``, ``0.0120``.
+    """A fitted value or an interval edge as every view writes it: ``8.00 × 10⁴``, ``2.41 × 10³``, ``150``, ``0.0120``.
 
     Three significant figures with the trailing zeros kept, so the digits
     shown are the digits meant. Fit results, Ka confidence and the
@@ -284,6 +339,11 @@ def fmt_value(value: float) -> str:
     interval reads the same wherever it stands.
     """
     return fmt_sci(value, _VALUE_DIGITS)
+
+
+def fmt_rmse(rmse: float) -> str:
+    """A fit's RMSE in its signal unit, as Fit details, the status bar and the report write it: ``2.36 a.u.``."""
+    return f'{fmt_value(rmse)} {fmt_unit_pretty("au")}'
 
 
 def fmt_bound_estimate(
@@ -432,71 +492,39 @@ def _canonical_unit(unit_str: str) -> str:
     return 'au' if unit_str.strip() in ('a.u.', 'a.u') else unit_str
 
 
+#: Each parameter as every view, saved figure and report names it, in HTML: a binding constant
+#: by its glossary name (DESIGN.md §9), its subscript and its name, ``K<sub>a</sub> guest``, and a
+#: signal coefficient by its symbol, ``I<sub>D</sub>``. The one label of each: its plain form
+#: (:func:`fmt_param_plain`) is this flattened by :func:`plain_label`, and a condition that is a
+#: parameter of another model (Kₐ,dye of an IDA) takes its label from here.
 PARAM_LABELS: dict[str, str] = {
-    'Ka_guest': '<b>K<sub>a(G)</sub></b>',
-    'Ka_dye': '<b>K<sub>a(D)</sub></b>',
-    'I0': '<b>I<sub>0</sub></b>',
-    'I_dye_free': '<b>I<sub>D</sub></b>',
-    'I_dye_bound': '<b>I<sub>HD</sub></b>',
-    'slope': '<b>slope</b>',
-    'intercept': '<b>intercept</b>',
+    'Ka_guest': 'K<sub>a</sub> guest',
+    'Ka_dye': 'K<sub>a</sub>,dye',
+    'I0': 'I<sub>0</sub>',
+    'I_dye_free': 'I<sub>D</sub>',
+    'I_dye_bound': 'I<sub>HD</sub>',
+    'slope': 'slope',
+    'intercept': 'intercept',
     # Stepwise 1:2 / 2:1 host–guest parameters
-    'Ka_HG': '<b>K<sub>a(HG)</sub></b>',
-    'Ka_HG2': '<b>K<sub>a(HG₂)</sub></b>',
-    'Ka_H2G': '<b>K<sub>a(H₂G)</sub></b>',
-    'I_G': '<b>I<sub>G</sub></b>',
-    'I_H': '<b>I<sub>H</sub></b>',
-    'I_HG': '<b>I<sub>HG</sub></b>',
-    'I_HG2': '<b>I<sub>HG₂</sub></b>',
-    'I_H2G': '<b>I<sub>H₂G</sub></b>',
+    'Ka_HG': 'K<sub>a</sub> HG',
+    'Ka_HG2': 'K<sub>a</sub> HG₂',
+    'Ka_H2G': 'K<sub>a</sub> H₂G',
+    'I_G': 'I<sub>G</sub>',
+    'I_H': 'I<sub>H</sub>',
+    'I_HG': 'I<sub>HG</sub>',
+    'I_HG2': 'I<sub>HG₂</sub>',
+    'I_H2G': 'I<sub>H₂G</sub>',
 }
 
 
 def fmt_param(name: str) -> str:
-    """Return HTML display label for a parameter name, fallback to raw name."""
+    """Parameter *name* in HTML (:data:`PARAM_LABELS`): ``K<sub>a</sub> guest``, ``I<sub>D</sub>``; *name* if unknown."""
     return PARAM_LABELS.get(name, name)
 
 
-#: Each parameter in plain text, for accessible names, sentences and widgets that paint
-#: plain text: a binding constant by its glossary name (DESIGN.md §9), ``Kₐ guest``, and a
-#: signal coefficient as its HTML label writes it, a letter subscript after ``_``: ``I_D``.
-PARAM_LABELS_PLAIN: dict[str, str] = {
-    'Ka_guest': 'Kₐ guest',
-    'Ka_dye': 'Kₐ,dye',
-    'I0': 'I₀',
-    'I_dye_free': 'I_D',
-    'I_dye_bound': 'I_HD',
-    'slope': 'slope',
-    'intercept': 'intercept',
-    'Ka_HG': 'Kₐ HG',
-    'Ka_HG2': 'Kₐ HG₂',
-    'Ka_H2G': 'Kₐ H₂G',
-    'I_G': 'I_G',
-    'I_H': 'I_H',
-    'I_HG': 'I_HG',
-    'I_HG2': 'I_HG₂',
-    'I_H2G': 'I_H₂G',
-}
-
-
-#: A binding constant as the interface names it (DESIGN.md §9): its subscript and its name.
-CONSTANT_NAMES: dict[str, str] = {
-    'Ka_guest': 'K<sub>a</sub> guest',
-    'Ka_dye': 'K<sub>a,dye</sub>',
-    'Ka_HG': 'K<sub>a</sub> HG',
-    'Ka_HG2': 'K<sub>a</sub> HG₂',
-    'Ka_H2G': 'K<sub>a</sub> H₂G',
-}
-
-
-def fmt_constant(key: str) -> str:
-    """Binding constant *key* as the glossary names it, in HTML: ``K<sub>a</sub> guest``; *key* itself if unknown."""
-    return CONSTANT_NAMES.get(key, key)
-
-
 def fmt_param_plain(name: str) -> str:
-    """Parameter *name* in plain text (:data:`PARAM_LABELS_PLAIN`): ``Kₐ guest``, ``I_D``; *name* itself if unknown."""
-    return PARAM_LABELS_PLAIN.get(name, name)
+    """Parameter *name* in plain text, its label flattened (:func:`plain_label`): ``Kₐ guest``, ``I_D``."""
+    return plain_label(fmt_param(name))
 
 
 # Bracketed concentration labels for equilibrium species, keyed by the species
@@ -1345,12 +1373,6 @@ def shift_order(shift) -> tuple:
     if shift.z is None:
         return (1, -abs(shift.fraction), shift.key)
     return (0, -abs(shift.z), shift.key)
-
-
-def plain_number(value: float) -> str:
-    """Up to four significant figures, with a power of ten written as ``1.68×10⁷``."""
-    mantissa, _, exponent = f'{value:.4g}'.partition('e')
-    return f'{mantissa}×10{str(int(exponent)).translate(_SUPERSCRIPT_DIGITS)}' if exponent else mantissa
 
 
 def _display_label(index: int) -> str:

@@ -40,6 +40,7 @@ from core.io import load_measurements  # noqa: E402
 from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set, fit_view  # noqa: E402
 from core.pipeline.varpro import FitCancelled, FitRefused  # noqa: E402
 from core.units import Q_  # noqa: E402
+from gui.plotting.labels import THIN  # noqa: E402
 from tests.conftest import GDA_IDA_RECOVERY_BOUNDS, IDA_TRUE, _make_ida_data  # noqa: E402
 from tests.unit.gui.sensitivity_results import made_on as _made_on  # noqa: E402
 from tests.unit.gui.sensitivity_results import sobol_result as _sobol_result  # noqa: E402
@@ -405,7 +406,7 @@ def test_changing_the_titrant_stock_hides_the_fit_and_names_it(qapp, make_sessio
     _assert_hidden(
         session,
         'This fit was made on replicates A and B with Titrant stock concentration = 500 µM. Titrant stock '
-        'concentration is now 1000 µM. Set it back to 500 µM, or run the fit again.',
+        f'concentration is now 1{THIN}000 µM. Set it back to 500 µM, or run the fit again.',
     )
 
 
@@ -579,8 +580,8 @@ def test_editing_a_bound_hides_the_fit_and_the_bound_it_was_made_under_restores_
 
     _assert_hidden(
         session,
-        'This fit was made on replicates A and B. The Kₐ guest bounds are now 1×10⁻⁸ to 1×10⁶ M⁻¹. Set them back to '
-        '1×10⁻⁸ to 1×10¹² M⁻¹, or run the fit again.',
+        f'This fit was made on replicates A and B. The Kₐ guest bounds are now 1{THIN}×{THIN}10⁻⁸ to 1{THIN}×{THIN}10⁶ M⁻¹. Set them back to '
+        f'1{THIN}×{THIN}10⁻⁸ to 1{THIN}×{THIN}10¹² M⁻¹, or run the fit again.',
     )
 
     _type_bound(session, 'Ka_guest', 1, '1e12')
@@ -641,8 +642,8 @@ def test_a_sensitivity_run_is_hidden_by_a_bound_or_the_replicate_mode_its_baseli
     _type_bound(session, 'Ka_guest', 1, '1e6')
 
     assert session.model.sensitivity_note == (
-        'This sensitivity analysis was made on replicates A–C. The Kₐ guest bounds are now 1×10⁻⁸ to 1×10⁶ M⁻¹. Set '
-        'them back to 1×10⁻⁸ to 1×10¹² M⁻¹, or run the analysis again.'
+        f'This sensitivity analysis was made on replicates A–C. The Kₐ guest bounds are now 1{THIN}×{THIN}10⁻⁸ to 1{THIN}×{THIN}10⁶ M⁻¹. Set '
+        f'them back to 1{THIN}×{THIN}10⁻⁸ to 1{THIN}×{THIN}10¹² M⁻¹, or run the analysis again.'
     )
     assert session._sensitivity.callouts[0].body == session.model.sensitivity_note
 
@@ -1397,3 +1398,18 @@ def test_an_edit_in_place_stops_the_running_fit_and_keeps_the_fit_held(qapp, mak
     assert session.model.held_fit_results == [fit]
     assert session.model.status == 'Concentrations now stated in mM — the running fit was stopped'
     assert dialogs['warning'] == []
+
+
+def test_the_status_bar_states_the_fit_quality_as_fit_details_writes_it(qapp, make_session, fit, dialogs):
+    """One writer for each number: R² and RMSE read in the status bar as in Fit details, the RMSE with its unit."""
+    from gui.results import quality
+
+    session = make_session(_data())
+    said = status_messages(session.model)
+    _deliver(session, fit)
+    _wait_until(qapp, lambda: session.model.profile is not None)
+
+    stated = quality(fit, session.model.measurement_set)
+    (message,) = [text for text in said if text.startswith('Fit complete')]
+    assert message.startswith(f'Fit complete — R² {stated.r2}, RMSE {stated.rmse}, ')
+    assert stated.rmse.endswith(' a.u.')

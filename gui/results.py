@@ -30,7 +30,6 @@ from core.data_processing.plotting import prepare_plot_data
 from core.pipeline.fit_pipeline import FitResult
 from core.pipeline.inputs import ErrorModel, input_name
 from core.pipeline.reporting import (
-    ParameterSummary,
     fit_replica_ids,
     input_replica_ids,
     parameters_on_bound,
@@ -53,7 +52,6 @@ from gui.plotting.labels import (
     describe_replicates,
     fmt_against,
     fmt_bound_note,
-    fmt_constant,
     fmt_estimate,
     fmt_interval_plain,
     fmt_misfit,
@@ -62,6 +60,7 @@ from gui.plotting.labels import (
     fmt_param_plain,
     fmt_percent,
     fmt_r2,
+    fmt_rmse,
     fmt_sci,
     fmt_shifts,
     fmt_stat,
@@ -74,7 +73,6 @@ from gui.plotting.labels import (
     one_step_sentence,
     own_estimates,
     shift_order,
-    spaced,
     superscript,
     times_ten,
     widening_sentences,
@@ -180,15 +178,14 @@ def shared_power(values: Sequence[float]) -> int | None:
 
 
 def tick_label(value: float, e: int | None) -> str:
-    """A tick of an axis whose numbers share the power *e*: its mantissa; with ``None``, the value in full (``2×10⁴``)."""
+    """A tick of an axis whose numbers share the power *e*: its mantissa; with ``None``, the value in full (``2 × 10⁴``)."""
     if e is not None:
         return f'{value / 10.0**e:g}'
     power = math.floor(math.log10(value))
     if -2 <= power <= 2:
         return f'{value:g}'
     mantissa = float(f'{value / 10.0**power:.6g}')
-    head = '' if mantissa == 1 else f'{mantissa:g}×'
-    return f'{head}10{superscript(power)}'
+    return f'10{superscript(power)}' if mantissa == 1 else f'{mantissa:g}{times_ten(power)}'
 
 
 def accepted_stretches(grid, r2, r2_cut, low: float, high: float) -> list[tuple[float, float]]:
@@ -233,7 +230,7 @@ def headline_interval(low: float, high: float, open_low: bool, open_high: bool, 
     e = shared_power(closed)
 
     def number(v: float) -> str:
-        return spaced(fmt_value(v)) if e is None else fmt_value(v / 10.0**e)
+        return fmt_value(v) if e is None else fmt_value(v / 10.0**e)
 
     tail = f'{times_ten(e or 0)} {unit}'.rstrip()
     if open_low:
@@ -251,8 +248,8 @@ def headline_value(estimate: float, at_bound: str, interval, open_) -> tuple[str
     bounds it (``2.41 × 10³``), or ``''`` where the data close neither.
     """
     if not at_bound:
-        return spaced(fmt_value(estimate)), ''
-    words = spaced(fmt_estimate(estimate, at_bound, interval, open_, html=False))
+        return fmt_value(estimate), ''
+    words = fmt_estimate(estimate, at_bound, interval, open_, html=False)
     # 'not limited below 2.41 × 10³': the words, then the bound the data do set, if any.
     for phrase in ('not limited below', 'not limited above'):
         if words.startswith(phrase):
@@ -360,7 +357,7 @@ def ka_blocks(fit: FitResult, profile=None, profile_running: bool = False) -> li
             why = 'not recorded in this result' if legacy else 'fixed, not fitted'
             blocks.append(
                 KaBlock(
-                    key, fmt_constant(key), value, unit, level, why, LEGACY_NOTE if legacy else '', qualifier=qualifier
+                    key, fmt_param(key), value, unit, level, why, LEGACY_NOTE if legacy else '', qualifier=qualifier
                 )
             )
             continue
@@ -427,7 +424,7 @@ def ka_blocks(fit: FitResult, profile=None, profile_running: bool = False) -> li
             return [(max(a, lo_axis), min(b, hi_axis)) for a, b in segments if b >= lo_axis and a <= hi_axis]
 
         def fmt(v: float) -> str:
-            return spaced(fmt_value(v)) if e is None else fmt_value(v / 10.0**e)
+            return fmt_value(v) if e is None else fmt_value(v / 10.0**e)
 
         chart_rows = []
         for label, color, est, at_bound, (lo, hi), open_, split, reading_curve in readings:
@@ -460,7 +457,7 @@ def ka_blocks(fit: FitResult, profile=None, profile_running: bool = False) -> li
         blocks.append(
             KaBlock(
                 key,
-                fmt_constant(key),
+                fmt_param(key),
                 value,
                 unit,
                 level,
@@ -533,7 +530,7 @@ def replicate_line(fit: FitResult) -> tuple[str, str]:
         stats, count = spec.replicates, spec.replicates_at_bound
         if stats is None and not count:
             continue
-        text = fmt_constant(spec.key)
+        text = fmt_param(spec.key)
         if stats is not None:
             figures = True
             span = f'[{fmt_value(stats["min"])}, {fmt_value(stats["max"])}]'
@@ -557,7 +554,7 @@ def replicate_line(fit: FitResult) -> tuple[str, str]:
                 'is shown.',
             }[summarised, unsummarised]
         )
-    return spaced(line), ' '.join(tip)
+    return line, ' '.join(tip)
 
 
 # ---------------------------------------------------------------------------
@@ -626,12 +623,12 @@ def callouts(
     fit: FitResult | None,
     note: str | None,
     *,
+    others: Sequence[FitResult] = (),
+    order: Sequence[str] | None = None,
     unchecked: bool = False,
     others_hidden: str | None = None,
-    replicates_note: str | None = None,
-    others_note: str | None = None,
 ) -> list[CalloutSpec]:
-    """The callouts of the fit on view.
+    """The callouts of the fit on view, *fit*, drawn beside the fits *others*.
 
     *note* hides the fit (:meth:`~gui.session_model.SessionModel.mismatch_note`), and is
     then the only thing said about it. Otherwise: a conflict of the inputs, as one
@@ -639,9 +636,9 @@ def callouts(
     allows, at the fit reported or — where the inputs do not conflict, which says it
     already — only at the inputs as entered, as
     :func:`~core.pipeline.diagnostics.rejections` judges them; *unchecked* for numbers that
-    could not be checked against data; *others_hidden* for held fits not drawn;
-    *replicates_note* where the fits drawn used different replicates; and *others_note*
-    with the numbers of the fits drawn beside the reported one.
+    could not be checked against data; *others_hidden* for held fits not drawn; the numbers
+    of the *others* (:func:`other_fits_note`); and, with *order* the loaded data's replicates,
+    where the fits drawn used different replicates (:func:`differing_replicates_note`).
     """
     if note is not None:
         return [CalloutSpec('neutral', 'Results hidden', note)]
@@ -684,8 +681,11 @@ def callouts(
         out.append(CalloutSpec('neutral', 'Not checked', UNCHECKED_NOTE))
     if others_hidden:
         out.append(CalloutSpec('neutral', 'Fits hidden', others_hidden))
+    drawn = [*others, fit] if fit is not None else []
+    others_note = other_fits_note(drawn)
     if others_note:
         out.append(CalloutSpec('neutral', 'Other fits shown', others_note))
+    replicates_note = None if order is None else differing_replicates_note(drawn, order)
     if replicates_note:
         out.append(CalloutSpec('neutral', 'Different replicates', replicates_note))
     return out
@@ -696,15 +696,16 @@ def callouts(
 # ---------------------------------------------------------------------------
 
 
-def differing_replicates_note(fits: Sequence[dict], order: Sequence[str]) -> str | None:
+def differing_replicates_note(fits: Sequence[FitResult], order: Sequence[str]) -> str | None:
     """A plain note when overlaid fits used different replicates, naming each set; otherwise ``None``.
 
     The mean and SD follow the last fit, the one the headline reports.
     """
     if len(fits) < 2:
         return None
-    reported = fits[-1]['replica_ids']
-    others = [fit['replica_ids'] for fit in fits[:-1] if set(fit['replica_ids']) != set(reported)]
+    reported = fit_replica_ids(fits[-1]) or []
+    used = [fit_replica_ids(fit) or [] for fit in fits[:-1]]
+    others = [ids for ids in used if set(ids) != set(reported)]
     if not others:
         return None
     other_names = '; '.join(describe_replicates(ids, order) for ids in others)
@@ -785,9 +786,7 @@ class Titration:
     """What the titration plot of Fit results shows: its data, legend row and description, and what its saved figure adds.
 
     The legend names each replicate drawn by its letter, ``(kind, text, index)`` with its
-    place in the data's order, so it is marked in the replicate's own colour.
-    *replicates_note* says the fits drawn used different replicates; *others_note* gives
-    the numbers of the fits drawn beside the reported one. *summary* is what a saved figure
+    place in the data's order, so it is marked in the replicate's own colour. *summary* is what a saved figure
     states under its head, where the view on screen has the headline and Fit details
     (:func:`figure_summary`).
     """
@@ -795,8 +794,6 @@ class Titration:
     data: TitrationData | None
     legend: list[tuple]
     description: str = ''
-    replicates_note: str | None = None
-    others_note: str | None = None
     summary: list[str] = field(default_factory=list)
 
 
@@ -818,15 +815,14 @@ def titration(ms, shown: Sequence[FitResult], assay_type: AssayType, display: in
     itself, are drawn as ×. Each replicate is drawn and named in the legend by its place in
     the order the app names them A, B, … (:func:`~core.pipeline.reporting.replica_order`),
     which with the data loaded is the data's own. The reported fit's curve is drawn solid, any other shown
-    fit's dashed, with its numbers in :attr:`Titration.others_note` and every fit's in
-    the saved figure's :attr:`Titration.summary`. With no fit shown every active replicate is drawn and
+    fit's dashed, with every fit's numbers in the saved figure's :attr:`Titration.summary`
+    and the others' in the callouts (:func:`callouts`). With no fit shown every active replicate is drawn and
     averaged. Without data, the shown curves alone. *display* is the index of
     :data:`REPLICATE_DISPLAYS`.
     """
     x_name = ASSAY_REGISTRY[assay_type].x_label
     replicates, mean = display in (0, 2), display in (0, 1)
     shifted = SHIFTED_CURVE_NOTE if shown and shown[-1].input_shifts else ''
-    others_note = other_fits_note(shown)
     summary = figure_summary(shown, ms)
     if ms is None:
         if not shown:
@@ -834,7 +830,7 @@ def titration(ms, shown: Sequence[FitResult], assay_type: AssayType, display: in
         x = np.asarray(shown[-1].x_fit.magnitude, dtype=float)
         curves = [(np.asarray(r.x_fit.magnitude, float), np.asarray(r.y_fit.magnitude, float)) for r in shown]
         data = TitrationData(x, np.empty((0, x.size)), [], x_name, curves=curves[-1:], other_curves=curves[:-1])
-        return Titration(data, _curve_legend(len(curves)), shifted, others_note=others_note, summary=summary)
+        return Titration(data, _curve_legend(len(curves)), shifted, summary=summary)
     plot = prepare_plot_data(ms, list(shown), show_dropped=True)
     order = list(ms.replica_ids)
     used = {rid for rid, _ in plot['active_replicas']}
@@ -865,7 +861,7 @@ def titration(ms, shown: Sequence[FitResult], assay_type: AssayType, display: in
     if mean and used:
         legend.append(('mean', 'Mean ± SD'))
     legend += _curve_legend(len(curves))
-    return Titration(data, legend, shifted, differing_replicates_note(plot['fits'], order), others_note, summary)
+    return Titration(data, legend, shifted, summary)
 
 
 # ---------------------------------------------------------------------------
@@ -910,7 +906,7 @@ def noise_stat(law) -> tuple[str, str, str]:
     if not law.estimated:
         why = 'one titration' if law.basis is NoiseBasis.SINGLE_TITRATION else 'too few scattered points'
         return 'Not estimated', why, tooltip
-    floor = f'{spaced(fmt_sci(law.floor, 2))} {fmt_unit_pretty("au")}'
+    floor = f'{fmt_sci(law.floor, 2)} {fmt_unit_pretty("au")}'
     percent = f'{100.0 * law.proportional:.1f} %'
     value = {0.0: floor, 1.0: percent}.get(law.share, f'{percent} + {floor}')
     return value, 'from replicate scatter', tooltip
@@ -948,8 +944,7 @@ def quality(fit: FitResult, ms) -> Quality:
         failures = fit.metadata.get('replica_failures') or {}
         left = ' '.join(f'{_replica_name(rid, order)} — {failures.get(rid, "left out of the fit.")}' for rid in out)
     noise = (None, '', '') if fit.assay_type == AssayType.DYE_ALONE.name else noise_stat(fit.noise)
-    rmse = f'{spaced(fmt_value(fit.rmse))} {fmt_unit_pretty("au")}'
-    return Quality(fmt_r2(fit.r_squared), rmse, counted, note, left, *noise)
+    return Quality(fmt_r2(fit.r_squared), fmt_rmse(fit.rmse), counted, note, left, *noise)
 
 
 def column_power(values: Sequence[float]) -> int | None:
@@ -1014,7 +1009,7 @@ def replicate_rows(fit: FitResult, ms) -> tuple[list[str], list[list[str]], list
         for key in keys:
             e = powers[key]
             fmt = fmt_value if e is None else (lambda v, e=e: fmt_value(v / 10.0**e))
-            cells += [spaced(text) for text in own_estimates(rf, [key], html=True, fmt=fmt)]
+            cells += [text for text in own_estimates(rf, [key], html=True, fmt=fmt)]
         rows.append([name if rid in used else f'{name}<br>left out', *cells, _p_cell(p_values.get(rid))])
         tip = f'R² of its own fit {fmt_r2(rf.r_squared)}.'
         tips.append(tip if rid in used else f'{failures.get(rid, "Left out of the fit.")} {tip}')
@@ -1118,7 +1113,7 @@ def test_rows(fit: FitResult) -> list[TestRow]:
             p = fmt_test_p(test)
             tooltip = f'{which}: {fmt_misfit(test)}.'
         tone = ('alert-circle', 'warning', failed) if name in rejected else ('check-circle', 'success', passed)
-        out.append(TestRow(name, *tone, p, spaced(tooltip)))
+        out.append(TestRow(name, *tone, p, tooltip))
     return out
 
 
@@ -1140,13 +1135,6 @@ def _inputs_line(diagnostics, shifts: dict, labels: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 # Fit details: Parameters and Input shifts
 # ---------------------------------------------------------------------------
-
-
-def _name(spec: ParameterSummary, ka_keys: set[str]) -> str:
-    """A parameter as Fit details names it: a binding constant by its glossary name, a coefficient by its symbol."""
-    if spec.key in ka_keys:
-        return fmt_constant(spec.key)
-    return fmt_param(spec.key).replace('<b>', '').replace('</b>', '')
 
 
 #: The total each model holds fixed whose mass balance can tie its signal parameters, and the
@@ -1188,17 +1176,15 @@ def parameter_rows(fit: FitResult) -> tuple[list[list[str]], list[str], str]:
     each starred name's tooltip says what that means. The
     footnote is ``''`` where nothing is starred.
     """
-    rows = summarize_parameters(fit)
-    ka_keys = {s.key for s in rows if s.is_log}
-    specs = [s for s in rows if not s.is_log]
+    specs = [s for s in summarize_parameters(fit) if not s.is_log]
     starred = [s for s in specs if s.degenerate]
-    note = degenerate_note([_name(s, ka_keys) for s in starred], _FIT_DEGENERATE_TAIL) if starred else ''
+    note = degenerate_note([fmt_param(s.key) for s in starred], _FIT_DEGENERATE_TAIL) if starred else ''
     cells, tips = [], []
     for s in specs:
-        estimate = spaced(fmt_estimate(s.estimate, s.estimate_at_bound, s.interval, s.interval_open, html=True))
+        estimate = fmt_estimate(s.estimate, s.estimate_at_bound, s.interval, s.interval_open, html=True)
         # The words of an estimate on its search bound stand on a line above the number, which keeps its line.
         estimate = estimate.replace('</i> ', '</i><br>')
-        name = _name(s, ka_keys) + (' *' if s.degenerate else '')
+        name = fmt_param(s.key) + (' *' if s.degenerate else '')
         cells.append([name, estimate, fmt_unit_html(s.unit) if s.unit else _NO_VALUE])
         tips.append(note if s.degenerate else '')
     if not starred:

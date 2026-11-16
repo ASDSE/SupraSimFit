@@ -24,7 +24,7 @@ from core.units import Q_
 from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE, space
-from gui.plotting.labels import THIN, times_ten, verdict_headline
+from gui.plotting.labels import field_text, times_ten, verdict_headline
 from gui.results import Place, interval_caption, ka_blocks, test_rows
 from gui.session_model import Change, SessionModel
 from gui.uncertainty import ADDITION_MODES, REPLICATE_KINDS, InputEntry, spread_pct
@@ -35,14 +35,10 @@ _KINDS = (None, SpecKind.SIGMA, SpecKind.INTERVAL)
 #: Column grid of the inputs table; the span column takes the rest.
 COL_NAME, COL_KIND, COL_UNIT, COL_BAR = SIZE['input-name'], SIZE['input-kind'], SIZE['stated-in'], SIZE['spread-bar']
 GUTTER = 4  # a step of the spacing scale
-#: The widest amount a field must show: a sign, five figures and an exponent.
-_WIDEST_AMOUNT = '−1.2345e7'
+#: The widest amount a field must show, as a field writes it: a sign, every figure and an exponent.
+_WIDEST_AMOUNT = field_text(-1.23457e7)
 #: What each amount field of an input holds, as its accessible name says.
 _AMOUNTS = ('σ', 'Lower end', 'Upper end')
-
-
-def _num(v: float) -> str:
-    return f'{v:.3g}'.replace('-', '−')
 
 
 def _pct(v: float) -> str:
@@ -60,13 +56,13 @@ def span_text(entry: InputEntry, span: tuple[float, float] | None, nominal: floa
     symmetric = math.isclose(-lo, hi)
     if entry.key == TITRANT or nominal is None or not nominal > 0:
         head = 'every point ' if entry.key == TITRANT else ''
-        return f'{head}±{_num(hi)} %' if symmetric else f'{head}{_pct(lo)} to {_pct(hi)} %'
+        return f'{head}±{field_text(hi, 3)} %' if symmetric else f'{head}{_pct(lo)} to {_pct(hi)} %'
     scale = float(Q_(1, unit).to(entry.field.unit).magnitude)
     a, b = nominal * (1 + lo / 100) / scale, nominal * (1 + hi / 100) / scale
     if abs(b) >= 1e4:  # one shared power of ten: 1.34 – 2.02 × 10⁷ M⁻¹
         e = math.floor(math.log10(abs(b)))
         return f'{a / 10**e:.2f} – {b / 10**e:.2f}{times_ten(e)} {unit}'.replace('-', '−')
-    return f'{_num(a)} – {_num(b)} {unit}'
+    return f'{field_text(a, 3)} – {field_text(b, 3)} {unit}'
 
 
 class _InputRow:
@@ -451,12 +447,12 @@ class UncertaintyView(QObject):
             if key == TITRANT:
                 if ms is not None:
                     x = np.asarray(ms.concentrations, dtype=float) * Q_(1.0, 'M').to(x_unit).magnitude
-                    row.entered.setText(f'Whole series, {x.min():.3g} – {x.max():.3g} {x_unit}')
+                    row.entered.setText(f'Whole series, {field_text(x.min(), 3)} – {field_text(x.max(), 3)} {x_unit}')
                 else:
                     row.entered.setText('Whole series')
             elif nominal is not None:
                 value = format_condition(entry.field, Q_(nominal, entry.field.unit), unit)
-                row.entered.setText(f'Entered {value}'.replace('×', f'{THIN}×{THIN}'))
+                row.entered.setText(f'Entered {value}')
             else:
                 row.entered.setText('')
             fixed = entry.kind is None

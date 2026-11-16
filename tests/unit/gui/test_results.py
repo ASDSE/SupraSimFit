@@ -415,7 +415,7 @@ def test_a_fit_that_ended_on_an_entered_bound_says_so():
     notes = ' '.join(R.parameter_notes(result(fit_config=config)))
 
     assert 'ended on a bound entered under Binding model (' in notes
-    assert '8.0×10⁴' in notes
+    assert f'8.0{THIN}×{THIN}10⁴' in notes
 
 
 def _verdict(verdict, reference='F'):
@@ -597,14 +597,14 @@ def test_replicates_used_counts_against_every_loaded_one_and_says_what_happened_
 def test_the_rmse_reads_as_the_report_writes_it(tmp_path):
     """Three significant figures with the trailing zero kept and ``×10ⁿ``, on screen and in the file.
 
-    1 204 000 to three figures is 1.20×10⁶ and 299.8 is 300: worked out by hand. The screen
-    sets the × between thin spaces, as the design writes every number (DESIGN.md §2).
+    1 204 000 to three figures is 1.20 × 10⁶ and 299.8 is 300: worked out by hand, the × between
+    thin spaces, as the design writes every number on screen and in a report (DESIGN.md §2).
     """
     from gui.session import export_results_txt
 
-    for rmse, shown in ((1.204e6, '1.20×10⁶ a.u.'), (299.8, '300 a.u.')):
+    for rmse, shown in ((1.204e6, f'1.20{THIN}×{THIN}10⁶ a.u.'), (299.8, '300 a.u.')):
         fit = result(rmse=rmse)
-        assert R.quality(fit, None).rmse == shown.replace('×', f'{THIN}×{THIN}')
+        assert R.quality(fit, None).rmse == shown
         path = tmp_path / 'report.txt'
         export_results_txt([fit], path)
         (line,) = [ln for ln in path.read_text(encoding='utf-8').splitlines() if ln.strip().startswith('RMSE:')]
@@ -860,10 +860,12 @@ def test_overlaid_fits_on_different_replicates_are_noted():
     ms = four_replicates()
     every, some = fit_on(ms), fit_on(ms, left_out=('0',))
 
-    assert R.titration(ms, [every, some], AssayType.GDA).replicates_note == (
+    order = ms.replica_ids
+    (note,) = [c for c in R.callouts(some, None, others=[every], order=order) if c.title == 'Different replicates']
+    assert note.body == (
         'Mean ± SD is over replicates B–D, the ones the reported fit used. Another fit shown used replicates A–D.'
     )
-    assert R.titration(ms, [some, some], AssayType.GDA).replicates_note is None
+    assert 'Different replicates' not in [c.title for c in R.callouts(some, None, others=[some], order=order)]
 
 
 def test_a_curve_drawn_at_moved_inputs_says_so_and_one_at_the_entered_inputs_does_not():
@@ -1036,13 +1038,14 @@ def test_every_fit_drawn_is_told_apart_and_each_one_s_numbers_are_given():
 
     assert len(plot.data.curves) == 1 and len(plot.data.other_curves) == 1
     assert ('line', 'Reported fit') in plot.legend and ('line-other', 'Other fit') in plot.legend
-    assert f'3.30{THIN}×{THIN}10⁵' in plot.others_note and 'R² 0.9871' in plot.others_note
-    assert [c.title for c in R.callouts(reported, None, others_note=plot.others_note)] == ['Other fits shown']
+    (others,) = R.callouts(reported, None, others=[other], order=ms.replica_ids)
+    assert others.title == 'Other fits shown'
+    assert f'3.30{THIN}×{THIN}10⁵' in others.body and 'R² 0.9871' in others.body
     reported_ka, reported_quality, other_line = plot.summary
     assert reported_ka.startswith('Reported fit: Kₐ guest 1.24') and reported_quality.startswith('R² 0.9980')
     assert other_line.startswith('Other fit 1 (dashed): Kₐ guest 3.30') and 'R² 0.9871' in other_line
     single = R.titration(ms, [reported], AssayType.GDA)
-    assert single.others_note is None and single.legend[-1] == ('line', 'Fit')
+    assert R.callouts(reported, None, order=ms.replica_ids) == [] and single.legend[-1] == ('line', 'Fit')
 
 
 def test_the_summary_of_a_saved_figure_states_the_reading_the_interval_r2_and_the_replicates_used():

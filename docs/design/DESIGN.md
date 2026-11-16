@@ -116,6 +116,7 @@ The platform UI font (SF Pro on macOS, Segoe UI on Windows), four sizes on any s
 |---|---|---|
 | `metric` | 28 px DemiBold, tabular | The headline value of a view (the reported Ka) |
 | `title` | 20 px DemiBold | Toolbar title |
+| `title-number` | 20 px DemiBold, tabular | A value beside a headline: the second reading of Ka confidence, the spread of Sensitivity |
 | `body`, `body-strong` | 13 px Normal / DemiBold | Text, controls, section titles, selected segments |
 | `number`, `number-strong` | 13 px, tabular | Values in rows and tables |
 | `label`, `small`, `small-number` | 12 px Medium / Normal / tabular | Captions, axis titles, ticks, hints |
@@ -138,7 +139,12 @@ The rows and values of Sensitivity's index chart stay in the window's type: its 
 line up with the variance budget's table beneath it.
 
 Numbers use tabular figures so columns align. Scientific notation is `1.59 × 10⁸`, thin
-spaces around `×`, superscript exponent. Where a view states an interval in prose or a
+spaces around `×`, superscript exponent — wherever a number stands: views, saved figures,
+the status bar and the reports, every value with its unit (`RMSE 2.36 a.u.`). A field
+writes a number the same way, with every figure it holds (`9 510`, `4.3`, `1.68 × 10⁷`),
+and reads back what it writes as well as what is typed (`1.68e7`); the binding constants,
+inputs and signal parameters each carry one label, written alike in rich and in plain text
+(`Kₐ guest`, `Kₐ,dye`, `I_HD` where a subscript of letters has no plain form). Where a view states an interval in prose or a
 headline it shares one power of ten — `1.14 – 2.08 × 10⁸ M⁻¹`; interval-chart rows and
 the TXT/CSV reports use `estimate [low, high]`.
 
@@ -235,8 +241,9 @@ without them gets no styling.
   Input uncertainty), *Analysis* (Fit results, Ka confidence, Sensitivity),
   *Presentation* (Plot appearance); and the **file card** at its foot.
 - **Navigation marks** at the right of an item: ✓ done; amber dot — the result carries a
-  warning; hollow ring — out of date, its data or settings changed since it ran; none —
-  not run. The selected item has the `bg-selected` fill and a 3-px accent bar at its left.
+  warning, read from the very callouts the view shows (a callout in `warning` tone marks
+  its view, and a view with none is never marked amber); hollow ring — out of date, its
+  data or settings changed since it ran; none — not run. The selected item has the `bg-selected` fill and a 3-px accent bar at its left.
 - **File card**: the data behind the session on screen — the file name (`GDA_run1.txt
   + 2 more` for several) and `<assay> · <n> replicates × <m> points`. Clicking it opens
   Measurements.
@@ -292,7 +299,8 @@ session, reached through the session switcher.
   reported Ka and any warning (`Ka 1.59 × 10⁸ M⁻¹ · 1 warning`, amber dot; a session with
   two binding constants gives their count, `2 binding constants · 1 warning`), its progress
   while running (`Fitting · 62 %`, accent ring), or `Needs refit · data changed` (hollow
-  ring) — the session on screen marked with ✓; then the commands *New session* ⌘T, *Load
+  ring) — the session on screen marked with ✓, each session's tile in the icon column of the
+  commands below so names and command labels start on one line; then the commands *New session* ⌘T, *Load
   data into a new session…* ⇧⌘O, *Open results file…*, *Duplicate <session>*, *Close
   <session>* ⌘W.
 - **Load data ▾** has four commands: *Add files to this session…* ⌘O, *Replace data…*,
@@ -379,7 +387,7 @@ the same tokens.
 | **Toggle** | Pill switch for on/off settings in the Settings window; accent when on |
 | **Slider** | Track in accent up to the knob, ticks, and its two end values at either side, each edited in place |
 | **Badge** | Pill, 18 px; tones `neutral` and `accent` (§5) |
-| **Menu** | Popover on `bg-raised`: check mark, icon, label, right-aligned shortcut in `text-tertiary`, separators, optional footer note. Its rows share one column layout measured from what they hold — a check column where a row can be checked, an icon column where a row has an icon, a label column as wide as the widest label, a shortcut column where a row has a shortcut — so the card is as wide as its widest row and every label is shown whole. It opens below its anchor, or above it where the window has more room there; a menu taller than the room is cut to it and scrolls (wheel, arrow keys). It stays inside the window it opens in |
+| **Menu** | Popover on `bg-raised`: check mark, icon, label, right-aligned shortcut in `text-tertiary`, separators, optional footer note. Its rows share one column layout measured from what they hold — a check column where a row can be checked, an icon column where a row has an icon, a label column as wide as the widest label, a shortcut column where a row has a shortcut — so the card is as wide as its widest row and every label is shown whole. It opens below its anchor, or above it where the window has more room there; a menu taller than the room is cut to it and scrolls (wheel, arrow keys), and at each edge past which rows are hidden the rows fade into `bg-raised` over 24 px under a 14-px chevron in `text-secondary` pointing to them; the row it opens on, or the keys move to, is scrolled clear of that band. It stays inside the window it opens in |
 | **Choice menu** | The menu of a dropdown, or of a tool whose rows are mutually exclusive choices (the replicate display): every row a choice, the current one marked with an accent check and the menu opened on it, at least as wide as its dropdown. Choosing a row closes it and sets the choice |
 | **Navigation item** | Icon, label, status mark; hover and selected fills (§3) |
 | **Session switcher and popover** | §4; the popover is `bg-raised`, 10-px radius, `border` outline, floating shadow |
@@ -392,7 +400,7 @@ the same tokens.
 | **Shift bar** | An input's shift in σ against a ±1 σ band. In Fit details the % stands beside it, σ on hover; in the Ka confidence notes both % and σ |
 | **Replicate chip** | Replicate letter with ✓ when used or × when switched off, `z` when the outlier filter switched it off; click toggles |
 | **Legend row** | Above a plot, right-aligned, each entry drawn with the series' own mark |
-| **Readout** | The values under the pointer: a dotted vertical hairline through the plot(s) with a value tag, and the values in a row above the plot or a card at its top-right corner; in Simulation the species readout row is also the legend. The card is painted: one pass over its fonts' metrics sizes and draws it, so it is always as large as what it reads and the same reading takes the same room; it lets the pointer through to the plot beneath |
+| **Readout** | The values under the pointer: a dotted vertical hairline through the plot(s) with a value tag, and the values in a row above the plot or a card at its top-right corner; in Simulation the species readout row is also the legend. The card is painted: one pass over its fonts' metrics sizes and draws it, so it is always as large as what it reads and the same reading takes the same room; it lets the pointer through to the plot beneath. A row's stroke is the key of a series drawn in the plot; a reading of no series — a heatmap cell's Kₐ, its change and R² — has none, and the card then keeps no room for one |
 | **Table** | Header row in `text-tertiary`, rows separated by hairlines, numbers right-aligned in tabular figures |
 | **Help window** | The app's one help: §8, *Help window* |
 
@@ -400,7 +408,9 @@ Every component meets these rules:
 
 - **Accessible names.** Every control carries an accessible name that says which input
   it sets, unit included (`Lower bound of Kₐ guest (M⁻¹)`), also where its visible label
-  is a separate rich-text label.
+  is a separate rich-text label. No two controls on screen in one window share a name: the
+  model menu of Binding model is *Model in the category*, beside the *Binding model* item
+  of the sidebar.
 - **Fields fit their content.** A numeric field is as wide as the widest value it must
   show — sign, mantissa and a three-digit exponent, or a ten-digit seed — measured from
   its font and re-measured when the font changes.
@@ -588,7 +598,7 @@ bound); Input shifts.
 
 ### Ka confidence — `confidence_*.jpg`, `confidence_readout_*.jpg`
 Canvas: the two readings side by side (Input-aware in `metric`; Inputs as entered in
-`title`, with *Split* where the interval has a gap; each with its 95 % interval and how far
+`title-number`, with *Split* where the interval has a gap; each with its 95 % interval and how far
 each end lies from the estimate) — the one reading, Inputs as entered, where every input is
 exact — any callout (*Inputs conflict*, whose *Show the input shifts* reveals the shifts in
 Notes; a neutral notice while the Ka profile is still being worked out, the readings shown
@@ -619,7 +629,7 @@ results; a fit of a model with no binding constant says there is no Kₐ to prof
 ### Sensitivity — `sensitivity_*.jpg`, `sensitivity_whatif_*.jpg`, `sensitivity_heatmap_*.jpg`
 Canvas, for sensitivity indices: one block per binding constant, named by the glossary
 where there are two (Kₐ HG, Kₐ HG₂). Its headline is the spread of Kₐ from the stated
-inputs (×/÷ factor in `title`, 1 SD in decades, the value it is centred on — the fit at the
+inputs (×/÷ factor in `title-number`, 1 SD in decades, the value it is centred on — the fit at the
 inputs as entered — with the spread's sampling interval on hover) beside the sample
 histogram, both readings of the fit marked on it (Input-aware: accent line and band;
 Inputs as entered: dashed line and bracket), and *Plot against each source →*. Then any

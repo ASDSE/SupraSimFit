@@ -20,7 +20,6 @@ the fit searches as it does with measured data.
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -33,7 +32,7 @@ from core.pipeline.noise import MIN_REPLICATES, noise_law
 from core.simulation import build_concentration_vector, simulate_signal, simulate_species, two_part_sd
 from core.units import Q_
 from gui.binding import CATEGORIES
-from gui.plotting.labels import THIN, fmt_species, fmt_value, plain_label, superscript
+from gui.plotting.labels import field_text, fmt_param, fmt_species, fmt_value, parse_number, plain_label, superscript
 from gui.widgets.assay_conditions import ASSAY_NAMES, DBA_MODES, UNIT_CHOICES, assay_class, condition_fields
 
 if TYPE_CHECKING:
@@ -76,7 +75,6 @@ COMPLEXES = ('HD', 'HG', 'HG2', 'H2G')
 
 @dataclass(frozen=True)
 class _ParamDefault:
-    label: str
     default: float
     lo: float
     hi: float
@@ -84,32 +82,32 @@ class _ParamDefault:
 
 #: Each fitted parameter's value and slider ends when a model is chosen, in its base unit.
 PARAM_DEFAULTS: dict[str, _ParamDefault] = {
-    'Ka_guest': _ParamDefault('K<sub>a,guest</sub>', 1e6, 1e3, 1e9),
-    'Ka_dye': _ParamDefault('K<sub>a,dye</sub>', 5e5, 1e3, 1e9),
-    'Ka_HG': _ParamDefault('K<sub>a,HG</sub>', 1e6, 1e3, 1e9),
-    'Ka_HG2': _ParamDefault('K<sub>a,HG₂</sub>', 2e5, 1e3, 1e9),
-    'Ka_H2G': _ParamDefault('K<sub>a,H₂G</sub>', 2e5, 1e3, 1e9),
-    'I0': _ParamDefault('I<sub>0</sub>', 0.0, -1e3, 1e3),
-    'I_dye_free': _ParamDefault('I<sub>dye,free</sub>', 5e7, 0.0, 5e8),
-    'I_dye_bound': _ParamDefault('I<sub>dye,bound</sub>', 3e8, 0.0, 1e9),
-    'I_G': _ParamDefault('I<sub>G</sub>', 1e6, 0.0, 1e8),
-    'I_H': _ParamDefault('I<sub>H</sub>', 0.0, 0.0, 1e8),
-    'I_HG': _ParamDefault('I<sub>HG</sub>', 1e7, 0.0, 1e8),
-    'I_HG2': _ParamDefault('I<sub>HG₂</sub>', 5e6, 0.0, 1e8),
-    'I_H2G': _ParamDefault('I<sub>H₂G</sub>', 5e6, 0.0, 1e8),
-    'slope': _ParamDefault('slope', 5e10, 0.0, 1e11),
-    'intercept': _ParamDefault('intercept', 100.0, -1e4, 1e4),
+    'Ka_guest': _ParamDefault(1e6, 1e3, 1e9),
+    'Ka_dye': _ParamDefault(5e5, 1e3, 1e9),
+    'Ka_HG': _ParamDefault(1e6, 1e3, 1e9),
+    'Ka_HG2': _ParamDefault(2e5, 1e3, 1e9),
+    'Ka_H2G': _ParamDefault(2e5, 1e3, 1e9),
+    'I0': _ParamDefault(0.0, -1e3, 1e3),
+    'I_dye_free': _ParamDefault(5e7, 0.0, 5e8),
+    'I_dye_bound': _ParamDefault(3e8, 0.0, 1e9),
+    'I_G': _ParamDefault(1e6, 0.0, 1e8),
+    'I_H': _ParamDefault(0.0, 0.0, 1e8),
+    'I_HG': _ParamDefault(1e7, 0.0, 1e8),
+    'I_HG2': _ParamDefault(5e6, 0.0, 1e8),
+    'I_H2G': _ParamDefault(5e6, 0.0, 1e8),
+    'slope': _ParamDefault(5e10, 0.0, 1e11),
+    'intercept': _ParamDefault(100.0, -1e4, 1e4),
 }
 
 #: Where a model's own values differ from :data:`PARAM_DEFAULTS`: the IDA demo's fit, so the
 #: window opens on the curve of a real titration.
 MODEL_DEFAULTS: dict[AssayType, dict[str, _ParamDefault]] = {
     AssayType.IDA: {
-        'Ka_dye': _ParamDefault('K<sub>a,dye</sub>', 1.68e7, 1e4, 1e10),
-        'Ka_guest': _ParamDefault('K<sub>a,guest</sub>', 2.81e8, 1e5, 1e11),
-        'I0': _ParamDefault('I<sub>0</sub>', 9510.0, 0.0, 1e4),
-        'I_dye_free': _ParamDefault('I<sub>dye,free</sub>', 5.09e8, 0.0, 1e9),
-        'I_dye_bound': _ParamDefault('I<sub>dye,bound</sub>', 6.09e10, 0.0, 1e11),
+        'Ka_dye': _ParamDefault(1.68e7, 1e4, 1e10),
+        'Ka_guest': _ParamDefault(2.81e8, 1e5, 1e11),
+        'I0': _ParamDefault(9510.0, 0.0, 1e4),
+        'I_dye_free': _ParamDefault(5.09e8, 0.0, 1e9),
+        'I_dye_bound': _ParamDefault(6.09e10, 0.0, 1e11),
     },
 }
 
@@ -124,54 +122,9 @@ TITRANT_STOP: dict[AssayType, float] = {
     AssayType.DBA_H2G: 6e-4,
 }
 
-_SUPER_DIGITS = '⁰¹²³⁴⁵⁶⁷⁸⁹⁻'
-_FROM_SUPER = str.maketrans(_SUPER_DIGITS, '0123456789-')
-_DECADE = re.compile(rf'^10([{_SUPER_DIGITS}]+)$')
 
-
-#: The help the toolbar's Help button opens.
 class SimulationProblem(ValueError):
     """A setting the window cannot take, with a sentence written for the user."""
-
-
-# ── Numbers as the window writes and reads them ─────────────────────────────────────
-
-
-def parse_number(text: str) -> float | None:
-    """The number *text* states as typed or as shown — ``1.68e7``, ``1.68 × 10⁷``, ``10¹¹``, ``9 510`` —
-    or ``None``."""
-    t = re.sub(r'[\s  ]', '', text).replace('−', '-')
-    decade = _DECADE.match(t)
-    if decade:
-        t = '1e' + decade.group(1).translate(_FROM_SUPER)
-    t = t.replace('×10', 'e').translate(_FROM_SUPER)
-    try:
-        value = float(t)
-    except ValueError:
-        return None
-    return value if math.isfinite(value) else None
-
-
-def value_text(value: float) -> str:
-    """A value as a field shows it: ``9 510``, ``4.3``, ``1.68 × 10⁷``, with every figure it holds up to six."""
-    if value == 0:
-        return '0'
-    a = abs(value)
-    if 1e-2 <= a < 1e5:
-        text = f'{value:.6g}'
-        if 'e' not in text and a >= 1000:
-            whole, _, frac = text.partition('.')
-            sign = '−' if whole.startswith('-') else ''
-            digits = whole.lstrip('-')
-            groups = []
-            while digits:
-                groups.insert(0, digits[-3:])
-                digits = digits[:-3]
-            text = sign + THIN.join(groups) + (f'.{frac}' if frac else '')
-        return text.replace('-', '−')
-    e = math.floor(math.log10(a))
-    mantissa = f'{value / 10.0**e:.6g}'.replace('-', '−')
-    return f'{mantissa}{THIN}×{THIN}10{superscript(e)}'
 
 
 def end_text(value: float) -> str:
@@ -180,7 +133,7 @@ def end_text(value: float) -> str:
         e = math.log10(value)
         if abs(e - round(e)) < 1e-12 and round(e) >= 4:
             return f'10{superscript(round(e))}'
-    return value_text(value)
+    return field_text(value)
 
 
 def _three_figures(value: float) -> float:
@@ -255,7 +208,7 @@ class Knob:
         return min(max(_three_figures(raw) if raw else 0.0, self.lo), self.hi)
 
     def value_text(self) -> str:
-        return value_text(self.value / self.scale)
+        return field_text(self.value / self.scale)
 
     def end_texts(self) -> tuple[str, str]:
         return end_text(self.lo / self.scale), end_text(self.hi / self.scale)
@@ -273,7 +226,7 @@ def _knobs(assay_type: AssayType) -> dict[str, Knob]:
     unit = UNIT_CHOICES['concentration'][1]
     for f in condition_fields(assay_type):
         if f.unit_type == 'binding_constant':
-            d = own.get(f.key, _ParamDefault(f.label, f.default, f.default / 1e3, f.default * 1e3))
+            d = own.get(f.key, _ParamDefault(f.default, f.default / 1e3, f.default * 1e3))
             knobs[f.key] = Knob(f.key, f.label, 'binding', '1/M', d.default, d.lo, d.hi, True)
         else:
             knobs[f.key] = Knob(f.key, f.label, 'concentration', 'M', f.default, 0.0, 5 * f.default, True, unit)
@@ -281,9 +234,9 @@ def _knobs(assay_type: AssayType) -> dict[str, Knob]:
         d = own.get(key, PARAM_DEFAULTS[key])
         kind = meta.param_kinds[key]
         if kind is ParamKind.BINDING_CONSTANT:
-            knobs[key] = Knob(key, d.label, 'binding', '1/M', d.default, d.lo, d.hi, False)
+            knobs[key] = Knob(key, fmt_param(key), 'binding', '1/M', d.default, d.lo, d.hi, False)
         else:
-            knobs[key] = Knob(key, d.label, 'signal', KIND_UNIT[kind], d.default, d.lo, d.hi, False)
+            knobs[key] = Knob(key, fmt_param(key), 'signal', KIND_UNIT[kind], d.default, d.lo, d.hi, False)
     return knobs
 
 
@@ -465,7 +418,7 @@ class SimulationForm:
         return float(Q_(1.0, self.stock_unit).to('M').magnitude)
 
     def stock_text(self) -> str:
-        return value_text(self.stock / self.stock_scale)
+        return field_text(self.stock / self.stock_scale)
 
     def set_stock(self, text: str) -> None:
         """Take *text* as the titrant stock concentration in the unit shown.
@@ -681,7 +634,7 @@ class SimulationForm:
         cls, cond, par = assay_class(self.assay_type), self.conditions(), self.parameters()
         x = self.points()
         if self.diluted and float(x.max()) >= self.stock:
-            highest = value_text(float(x.max()) / self.stock_scale)
+            highest = field_text(float(x.max()) / self.stock_scale)
             raise SimulationProblem(
                 f'The titrant stock ({self.stock_text()} {self.stock_unit}) must be more concentrated than the '
                 f'highest titrant concentration ({highest} {self.stock_unit}): a sample cannot hold more titrant '
@@ -759,9 +712,9 @@ class SimulationForm:
             return 'No noise'
         parts = []
         if self.noise.proportional > 0:
-            parts.append(f'{value_text(100 * self.noise.proportional)} %')
+            parts.append(f'{field_text(100 * self.noise.proportional)} %')
         if self.noise.floor > 0:
-            parts.append(f'{value_text(self.noise.floor)} a.u.')
+            parts.append(f'{field_text(self.noise.floor)} a.u.')
         return 'Noise ' + ' + '.join(parts)
 
     def model_line(self) -> list[str]:
@@ -879,4 +832,4 @@ def readout_value(value: float) -> str:
 
 def tag_text(signal: float) -> str:
     """The signal at the pointer: ``1.14 × 10⁵ a.u.``."""
-    return f'{fmt_value(signal).replace("×", f"{THIN}×{THIN}")} a.u.'
+    return f'{fmt_value(signal)} a.u.'

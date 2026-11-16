@@ -19,18 +19,18 @@ exponents are small values: <code>1e-6</code> is 0.000 001.</p>
 
 
 _KA_DYE_HTML = """
-<p class="topic">K<sub>a,dye</sub> &mdash; host&ndash;dye association constant</p>
+<p class="topic">K<sub>a</sub>,dye &mdash; host&ndash;dye association constant</p>
 
 <p><b>What it means physically</b></p>
 <p>Equilibrium constant for the reaction
 <i>H + D &#x21CC; HD</i>, in units of M<sup>&minus;1</sup>. A larger
-K<sub>a,dye</sub> means the host binds the dye more tightly. Typical
+K<sub>a</sub>,dye means the host binds the dye more tightly. Typical
 supramolecular host&ndash;dye pairs range from
 10<sup>3</sup>&nbsp;M<sup>&minus;1</sup> (weak) to
 10<sup>8</sup>&nbsp;M<sup>&minus;1</sup> (very tight).</p>
 
 <p><b>Where it is fit</b></p>
-<p>K<sub>a,dye</sub> is a free parameter <b>only in the Direct Binding
+<p>K<sub>a</sub>,dye is a free parameter <b>only in the Direct Binding
 Assays</b> (DBA Host&rarr;Dye and DBA Dye&rarr;Host). In IDA and GDA it
 is a <i>known</i> input that you supply under Binding model
 &mdash; those assays fit K<sub>a</sub> guest instead. A value taken
@@ -53,7 +53,7 @@ the dye is fully complexed from the first point.</p>
   <li>If the fitted value sits on a bound, or the confidence interval
       reaches one and is reported as open on that side, widen that side
       rather than clamping it: a bound is not a measurement.</li>
-  <li>If you already know K<sub>a,dye</sub> within an order of
+  <li>If you already know K<sub>a</sub>,dye within an order of
       magnitude, tighten the bounds to that window. The interval is read
       inside the bounds in force, so prior knowledge stated here is
       carried into it.</li>
@@ -90,7 +90,7 @@ curve to lower guest concentrations.</p>
   <li>The interval reported covers whatever uncertainty you state for the
       entered inputs under <b>Input uncertainty</b>, with the interval
       conditional on those inputs shown beside it. If stating a few percent
-      on K<sub>a,dye</sub> or [Host]<sub>0</sub> widens it sharply, your
+      on K<sub>a</sub>,dye or [Host]<sub>0</sub> widens it sharply, your
       K<sub>a</sub> guest is limited by those numbers rather than by the
       titration &mdash; <i>Sensitivity</i> says which of them it is.</li>
 </ul>

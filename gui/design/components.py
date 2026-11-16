@@ -37,6 +37,7 @@ from PyQt6.QtGui import (
     QFontMetrics,
     QFontMetricsF,
     QKeySequence,
+    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
@@ -863,50 +864,70 @@ class MenuColumns:
     """The columns of a menu's rows — check mark, icon, label, shortcut — measured from what the rows hold.
 
     A column no row uses takes no room: the check column only where a row can be checked,
-    the icon column only where a row has an icon (``design_icon``), the shortcut column
+    the icon column only where a row has an icon (``design_icon``) or the menu has rows of
+    its own that lead with a wider mark (*lead*, a session's tile), the shortcut column
     only where a row has a shortcut. The label column is as wide as the widest label in
-    type role *role*. Sizing a menu (:attr:`width`) and painting its rows (:meth:`row`)
-    read the same columns, so every label gets the room its text takes.
+    type role *role*. Sizing a menu (:attr:`width`) and laying out its rows (:meth:`cells`,
+    :meth:`row`) read the same columns, so every label gets the room its text takes and
+    every row's label starts on one line.
     """
 
     role: str
     check: float
-    icon: float
+    #: The icon column's mark: an icon's size, or the *lead* mark where that is wider; 0 for no column.
+    mark: float
     label: float
     key: float
 
     @classmethod
-    def of(cls, actions: list, role: str = 'body') -> MenuColumns:
-        """The columns of the rows of *actions* (``None`` a separator), labels in type role *role*."""
+    def of(cls, actions: list, role: str = 'body', lead: float = 0) -> MenuColumns:
+        """The columns of the rows of *actions* (``None`` a separator), labels in type role *role*.
+
+        *lead* is the width of a mark that rows of the menu's own put in the icon column.
+        """
         rows = [a for a in actions if a is not None]
         keys = QFontMetricsF(font('small'))
+        icon = SIZE['menu-icon'] if any(a.property('design_icon') for a in rows) else 0
         return cls(
             role=role,
             check=SIZE['menu-check'] + space(2) if any(a.isCheckable() for a in rows) else 0,
-            icon=SIZE['menu-icon'] + space(3) if any(a.property('design_icon') for a in rows) else 0,
+            mark=max(icon, lead),
             label=math.ceil(max((rich_width(menu_html(a), role) for a in rows), default=0)),
             key=math.ceil(max((keys.horizontalAdvance(shortcut_text(a)) for a in rows), default=0)),
         )
+
+    @property
+    def icon(self) -> float:
+        """The icon column's width, its gap to the label included; 0 where no row has a mark."""
+        return self.mark + space(3) if self.mark else 0
 
     @property
     def width(self) -> float:
         """The width of a row that shows every column in full."""
         return space(3) + self.check + self.icon + self.label + (space(5) + self.key if self.key else 0) + space(3)
 
-    def row(self, rect: QRectF, action: QAction) -> MenuRow:
-        """The columns of *action*'s row *rect*; the label takes what the row has beside the others."""
+    def cells(self, rect: QRectF) -> tuple[QRectF, QRectF, QRectF, QRectF]:
+        """The check, mark, label and shortcut cells of row *rect*; the label takes what the row has beside the others.
+
+        The check and the mark are squares centred on the row's height.
+        """
         x, h = rect.left() + space(3), rect.height()
         label_x = x + self.check + self.icon
         key_x = rect.right() - space(3) - self.key
         label_right = key_x - space(5) if self.key else rect.right() - space(3)
-        return MenuRow(
-            rect,
+        return (
             QRectF(x, rect.top() + (h - SIZE['menu-check']) / 2, SIZE['menu-check'], SIZE['menu-check']),
-            QRectF(x + self.check, rect.top() + (h - SIZE['menu-icon']) / 2, SIZE['menu-icon'], SIZE['menu-icon']),
+            QRectF(x + self.check, rect.top() + (h - self.mark) / 2, self.mark, self.mark),
             QRectF(label_x, rect.top(), label_right - label_x, h),
             QRectF(key_x, rect.top(), self.key, h),
-            action,
         )
+
+    def row(self, rect: QRectF, action: QAction) -> MenuRow:
+        """The columns of *action*'s row *rect*, its icon centred in the mark's cell."""
+        check, mark, label, key = self.cells(rect)
+        icon = QRectF(0, 0, SIZE['menu-icon'], SIZE['menu-icon'])
+        icon.moveCenter(mark.center())
+        return MenuRow(rect, check, icon, label, key, action)
 
 
 def _menu_command(p: QPainter, t: Theme, row: MenuRow, role: str) -> None:
@@ -943,7 +964,7 @@ class _Popover(QWidget):
     rectangle. A subclass sizes it to its whole card with :meth:`_size_card`; :meth:`popup`
     shows it below an anchor, or above it where the window has more room there, its card
     cut to the room the window has and scrolled (wheel, arrow keys) where its rows need
-    more. A press outside it, Escape, or the window losing focus or changing size closes
+    more, a cue at each edge past which rows are hidden (:meth:`_paint_scroll_cues`). A press outside it, Escape, or the window losing focus or changing size closes
     it, and :attr:`closed` says so. Subclasses lay out their rows from :meth:`_top`, where
     the card's content starts as scrolled, in :meth:`_rows` — ``(rect, enabled)`` per row
     that can be chosen — and act on one in :meth:`_activate`. *hover* draws a row as under
@@ -954,6 +975,8 @@ class _Popover(QWidget):
 
     #: The room between a popover's card and the window's edges.
     GAP = space(1)
+    #: The band at an edge of a scrolled card where its rows fade under the scroll cue.
+    CUE = space(6)
     #: The room between a popover's card and its anchor: the widget starts 2 px past the anchor, its card the
     #: shadow's room (less the shadow's 4-px drop) further in.
     ANCHOR_GAP = 2 + SHADOW - 4
@@ -999,13 +1022,36 @@ class _Popover(QWidget):
         self._scroll = max(0.0, min(offset, self._card_h - self._card().height()))
         self.update()
 
+    def hidden_edges(self) -> tuple[bool, bool]:
+        """Whether rows are scrolled out of the card above it and below it."""
+        room = self._card_h - self._card().height()
+        return self._scroll > 0.5, self._scroll < room - 0.5
+
+    def _paint_scroll_cues(self, p: QPainter) -> None:
+        """At each edge of the card past which rows are hidden, fade the rows into the card and point a chevron there.
+
+        The convention of the platform's own menus: a scrolled menu says where more of it lies.
+        """
+        card, band, size = self._card(), self.CUE, SIZE['menu-check']
+        above, below = self.hidden_edges()
+        for hidden, top, name in ((above, True, 'chevron-up'), (below, False, 'chevron-down')):
+            if not hidden:
+                continue
+            rect = QRectF(card.left(), card.top() if top else card.bottom() - band, card.width(), band)
+            fade = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            fade.setColorAt(0.0 if top else 1.0, self.t.q('bg-raised'))
+            fade.setColorAt(1.0 if top else 0.0, self.t.q('bg-raised', 0.0))
+            p.fillRect(rect, fade)
+            y = rect.top() + space(1) if top else rect.bottom() - space(1) - size
+            icons.paint(p, name, self.t.q('text-secondary'), rect.center().x() - size / 2, y, size)
+
     def _reveal(self, index: int) -> None:
-        """Scroll row *index* fully into the card."""
+        """Scroll row *index* fully into the card, clear of the scroll cue at either edge (:data:`CUE`)."""
         rect, card = self._rows()[index][0], self._card()
-        if rect.top() < card.top():
-            self._scroll_to(self._scroll - (card.top() - rect.top()))
-        elif rect.bottom() > card.bottom():
-            self._scroll_to(self._scroll + (rect.bottom() - card.bottom()))
+        if rect.top() < card.top() + self.CUE:
+            self._scroll_to(self._scroll - (card.top() + self.CUE - rect.top()))
+        elif rect.bottom() > card.bottom() - self.CUE:
+            self._scroll_to(self._scroll + (rect.bottom() - card.bottom() + self.CUE))
 
     # Showing and closing -------------------------------------------------------
     def popup(self, anchor: QWidget, right: bool = False) -> None:
@@ -1197,6 +1243,7 @@ class PopoverMenu(_Popover):
                 Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft,
                 self.note,
             )
+        self._paint_scroll_cues(p)
         p.end()
 
 
@@ -1206,8 +1253,10 @@ class SessionPopover(_Popover):
     *sessions* are dicts with ``name``, ``detail``, ``state`` (``warning``, ``running``,
     ``stale``, ``done`` or ``''``), ``status`` (the state in words, right of the name)
     and, while running, ``progress`` (0–1); *current* is the index of the session on
-    screen. *commands* are actions, ``None`` a separator, laid out on the :class:`MenuColumns`
-    of every menu; the card is *width* wide, or wider where a command needs it. Choosing a session emits
+    screen. *commands* are actions, ``None`` a separator. Sessions and commands share the
+    :class:`MenuColumns` of every menu, a session's tile in the icon column, so every name and
+    every command label starts on one line; the card is *width* wide, or wider where a
+    command or a session's name line needs it, as far as its window lets it. Choosing a session emits
     :attr:`session_chosen`; double-clicking its name edits it in place, and Return
     emits :attr:`renamed` with the new name.
     """
@@ -1235,8 +1284,24 @@ class SessionPopover(_Popover):
         self.sessions, self.commands, self.current = sessions, commands, current
         self.title, self.title_hint = title, title_hint
         self._editor: QLineEdit | None = None
-        self.columns = MenuColumns.of(commands)
-        self.card_w = max(width, self.columns.width + 2 * self.PAD)
+        self.columns = MenuColumns.of(commands, lead=SIZE['control'])
+        # A session's name line holds its name and its state in words, the glyph between them; the card
+        # widens to the longest, as far as its window lets it, past which a name gives way to an ellipsis.
+        # Measured in the whole pixels the row is painted and elided in.
+        name, words = QFontMetrics(font('body-strong')), QFontMetrics(font('small'))
+        line = max(
+            (
+                name.horizontalAdvance(s['name'])
+                + space(3)
+                + words.horizontalAdvance(s['status'])
+                + (20 if s['state'] else 0)
+                for s in sessions
+            ),
+            default=0,
+        )
+        columns = self.columns.width - self.columns.label - (space(5) + self.columns.key if self.columns.key else 0)
+        room = parent.width() - 2 * (self.GAP + SHADOW)
+        self.card_w = max(width, self.columns.width + 2 * self.PAD, min(columns + line + 2 * self.PAD, room))
         h = self.PAD + self.HEAD_H + len(sessions) * self.ROW_H + 9
         h += sum(9 if c is None else SIZE['menu-item'] for c in commands) + self.PAD + space(3)
         self._size_card(self.card_w, h)
@@ -1280,8 +1345,15 @@ class SessionPopover(_Popover):
         self.close_popover()
         action.trigger()
 
+    def _text_rect(self, row: QRectF) -> QRectF:
+        """Where session row *row* writes: from the label column to the row's right, no shortcut beside it."""
+        left = self.columns.cells(row)[2].left()
+        return QRectF(left, row.top(), row.right() - space(3) - left, row.height())
+
     def _name_rect(self, row: QRectF) -> QRectF:
-        return QRectF(row.left() + 46, row.top() + 8, row.width() - 120, 18)
+        """Where session row *row* writes its name line, at the top of the row."""
+        text = self._text_rect(row)
+        return QRectF(text.left(), row.top() + space(2), text.width(), 18)
 
     def mouseDoubleClickEvent(self, event) -> None:
         sessions = self._layout()[0]
@@ -1340,20 +1412,28 @@ class SessionPopover(_Popover):
         p.drawText(head, Qt.AlignmentFlag.AlignVCenter, self.title)
         p.setFont(font('small'))
         p.drawText(head, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, self.title_hint)
-        tile = SIZE['control']
+        icon = SIZE['menu-icon']
         for i, (s, r) in enumerate(zip(self.sessions, sessions)):
             current = i == self.current
             if current:
                 p.fillPath(_rounded(r, RADIUS['control']), t.q('bg-selected'))
             elif i == self.hover:
                 p.fillPath(_rounded(r, RADIUS['control']), t.q('bg-hover'))
-            tile_rect = QRectF(r.left() + 8, r.top() + 12, tile, tile)
+            tile_rect, label = self.columns.cells(r)[1], self._text_rect(r)
             p.fillPath(_rounded(tile_rect, RADIUS['control']), t.q('accent-subtle' if current else 'bg-subtle'))
-            icons.paint(p, 'fit', t.q('accent' if current else 'text-secondary'), r.left() + 14, r.top() + 18, 16)
+            middle = tile_rect.center()
+            icons.paint(
+                p,
+                'fit',
+                t.q('accent' if current else 'text-secondary'),
+                middle.x() - icon / 2,
+                middle.y() - icon / 2,
+                icon,
+            )
             # The state in words at the right of the name line, its glyph before it.
-            state_rect = QRectF(r.left() + 46, r.top() + 8, w - 46 - 10, 18)
+            state_rect = self._name_rect(r)
             p.setFont(font('small'))
-            status_w = p.fontMetrics().horizontalAdvance(s['status'])
+            status_w = QFontMetrics(font('small')).horizontalAdvance(s['status'])  # as the card was sized
             p.setPen(t.q('text-tertiary' if s['state'] == 'stale' else 'text-secondary'))
             right = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
             p.drawText(state_rect, right, s['status'])
@@ -1364,19 +1444,23 @@ class SessionPopover(_Popover):
             name_w = state_rect.width() - status_w - space(3)
             p.setFont(font('body-strong'))
             p.setPen(t.q('text-primary'))
-            name = p.fontMetrics().elidedText(s['name'], Qt.TextElideMode.ElideRight, int(name_w))
-            p.drawText(QRectF(r.left() + 46, r.top() + 8, name_w, 18), Qt.AlignmentFlag.AlignVCenter, name)
+            name = QFontMetrics(font('body-strong')).elidedText(s['name'], Qt.TextElideMode.ElideRight, int(name_w))
+            p.drawText(QRectF(state_rect.left(), state_rect.top(), name_w, 18), Qt.AlignmentFlag.AlignVCenter, name)
+            # The detail line beneath, clear of the check mark the session on screen carries at the right.
+            check = SIZE['menu-check']
+            detail = QRectF(label.left(), r.top() + 27, label.width() - check - space(2), 16)
             p.setFont(font('small'))
             p.setPen(t.q('text-secondary'))
-            p.drawText(QRectF(r.left() + 46, r.top() + 27, w - 80, 16), Qt.AlignmentFlag.AlignVCenter, s['detail'])
+            p.drawText(detail, Qt.AlignmentFlag.AlignVCenter, s['detail'])
             if current:
-                icons.paint(p, 'check', t.q('accent'), r.right() - 26, r.top() + 27, 14, 2)
+                icons.paint(p, 'check', t.q('accent'), label.right() - check, detail.top(), check, 2)
         for sy in separators:
             _menu_separator(p, t, x0, sy, w)
         for k, row in enumerate(commands):
             if k + len(sessions) == self.hover and row.action.isEnabled():
                 p.fillPath(_rounded(row.rect, RADIUS['control']), t.q('bg-hover'))
             _menu_command(p, t, row, self.columns.role)
+        self._paint_scroll_cues(p)
         p.end()
 
 
@@ -2935,8 +3019,9 @@ class ReadoutCard(QWidget):
 
     A title in ``label`` ``text-secondary``, then one row per series: a 12-px stroke in its
     colour, its name, its value — right-aligned in tabular figures, so the decimal points
-    line up — and a verdict, quieter where it is the negative one. The verdict column is
-    left out where no row has one. :meth:`set_values` fills it; one pass over the fonts'
+    line up — and a verdict, quieter where it is the negative one. A row of a value that is
+    no series (colour ``None``) draws no stroke; the stroke column is left out where no row
+    has one, and the verdict column where no row has one. :meth:`set_values` fills it; one pass over the fonts'
     metrics both sizes and paints it, so its size is always that of what it reads. It lets
     the pointer through to the plot, whose values it reads; its accessible name carries
     the reading.
@@ -2945,12 +3030,12 @@ class ReadoutCard(QWidget):
     def __init__(self, t: Theme, parent: QWidget | None = None):
         super().__init__(parent)
         self.t, self.title = t, ''
-        self.rows: list[tuple[str, str, str, str, bool]] = []
+        self.rows: list[tuple[str | None, str, str, str, bool]] = []
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.set_values('', [])
 
-    def set_values(self, title: str, rows: list[tuple[str, str, str, str, bool]]) -> None:
-        """Show *title* over *rows*, each ``(colour token, name, value, verdict, quiet)``."""
+    def set_values(self, title: str, rows: list[tuple[str | None, str, str, str, bool]]) -> None:
+        """Show *title* over *rows*, each ``(colour token or None, name, value, verdict, quiet)``."""
         self.title, self.rows = title, rows
         self.setAccessibleName(f'{title}: ' + '; '.join(f'{n} {v}, {d}'.removesuffix(', ') for _c, n, v, d, _q in rows))
         self.setFixedSize(self.sizeHint())
@@ -2967,13 +3052,15 @@ class ReadoutCard(QWidget):
         t = self.t
         title_fm, name_fm, value_fm = (QFontMetrics(font(role)) for role in ('label', 'small', 'small-number'))
         left, top, gap, swatch = space(4), space(3), space(3), space(4)
+        # The stroke's column, with its gap, only where a row marks a series.
+        mark = swatch + gap if any(color is not None for color, *_ in self.rows) else 0
         line = max(space(5), name_fm.height(), value_fm.height())
         name_w = max((name_fm.horizontalAdvance(n) for _c, n, *_ in self.rows), default=0)
         value_w = max(
             [value_fm.horizontalAdvance('00.00')] + [value_fm.horizontalAdvance(v) for _c, _n, v, *_ in self.rows]
         )
         verdict_w = max((name_fm.horizontalAdvance(d) for *_, d, _q in self.rows), default=0)
-        body = swatch + gap + name_w + gap + value_w + (gap + verdict_w if verdict_w else 0)
+        body = mark + name_w + gap + value_w + (gap + verdict_w if verdict_w else 0)
         title_w = title_fm.horizontalAdvance(self.title)
         name_w += max(0, title_w - body)  # the names take the room a longer title leaves
         width = 2 * left + max(body, title_w)
@@ -2988,11 +3075,12 @@ class ReadoutCard(QWidget):
             for color, name, value, verdict, quiet in self.rows:
                 y += space(1)
                 cy = y + line / 2
-                pen = QPen(t.q(color), 2)
-                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                p.setPen(pen)
-                p.drawLine(QPointF(left + 1, cy), QPointF(left + swatch - 1, cy))
-                x = left + swatch + gap
+                if color is not None:
+                    pen = QPen(t.q(color), 2)
+                    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                    p.setPen(pen)
+                    p.drawLine(QPointF(left + 1, cy), QPointF(left + swatch - 1, cy))
+                x = left + mark
                 p.setFont(font('small'))
                 p.setPen(t.q('text-primary'))
                 p.drawText(QRectF(x, y, name_w, line), flags, name)

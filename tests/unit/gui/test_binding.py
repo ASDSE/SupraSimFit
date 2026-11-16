@@ -18,7 +18,7 @@ from core.assays.registry import ASSAY_REGISTRY
 from core.pipeline.varpro import REPLICATE_TEST_LEVEL
 from core.units import Q_, Quantity
 from gui.binding import CATEGORIES, REPLICATES_HELP_HTML, BindingForm, help_html
-from gui.uncertainty import parse_amount
+from gui.plotting.labels import THIN, parse_number
 from gui.widgets.assay_conditions import ASSAY_CONDITIONS, assay_class
 
 
@@ -103,7 +103,7 @@ def test_switching_the_unit_keeps_the_concentration(base_value):
         entry = form.entry('h0')
         assert form.conditions()['h0'].to('M').magnitude == pytest.approx(base_value, rel=1e-12), unit
         # What the field shows is that concentration too: a keystroke in it reads the text, not the value kept.
-        assert parse_amount(entry.amount.text) * entry.scale() == pytest.approx(base_value, rel=1e-12), unit
+        assert parse_number(entry.amount.text) * entry.scale() == pytest.approx(base_value, rel=1e-12), unit
 
 
 def test_a_typed_value_is_read_in_the_unit_shown_and_a_unit_switch_keeps_every_figure():
@@ -114,7 +114,7 @@ def test_a_typed_value_is_read_in_the_unit_shown_and_a_unit_switch_keeps_every_f
 
     form.set_unit('h0', 'mM')
 
-    assert form.entry('h0').amount.text == '0.00430025'
+    assert form.entry('h0').amount.text == f'4.30025{THIN}×{THIN}10⁻³'
     assert form.conditions()['h0'].to('M').magnitude == pytest.approx(4.30025e-6, rel=1e-12)
 
 
@@ -334,7 +334,7 @@ def test_a_bound_set_from_code_is_the_very_number_it_was_written_from():
     lo, hi = form.custom_bounds()['Ka_guest']
     assert (lo.magnitude, hi.magnitude) == (1.2345678901234e3, 9.87654321e9)
     # and it is the number shown: the text reads back as that very number
-    assert [parse_amount(a.text) for a in form.bound_entries['Ka_guest'].amounts] == [lo.magnitude, hi.magnitude]
+    assert [parse_number(a.text) for a in form.bound_entries['Ka_guest'].amounts] == [lo.magnitude, hi.magnitude]
 
 
 def test_a_dye_alone_bound_is_used_as_shown_so_retyping_it_changes_nothing():
@@ -345,7 +345,7 @@ def test_a_dye_alone_bound_is_used_as_shown_so_retyping_it_changes_nothing():
     shown = [a.text for a in entry.amounts]
     before = form.custom_bounds()['I0']
 
-    assert [b.magnitude for b in before] == [parse_amount(text) for text in shown]
+    assert [b.magnitude for b in before] == [parse_number(text) for text in shown]
     for index, text in enumerate(shown):
         form.edit_bound('I0', index, text)
     assert form.custom_bounds()['I0'] == before

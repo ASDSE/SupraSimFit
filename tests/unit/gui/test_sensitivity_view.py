@@ -733,3 +733,30 @@ def test_a_seed_typed_and_run_at_once_is_the_seed_the_run_uses(qapp, monkeypatch
     demo_session.run_primary('Sensitivity')
     _wait_for_worker(demo_session, qapp)
     assert seen['config'].seed == int(view.seed.editor.text())
+
+
+def test_the_heatmap_card_draws_no_series_mark_for_rows_that_mark_no_series(qapp, session):
+    """A heatmap cell has no curves: its readout rows are values, so no stroke stands before them as a key."""
+    from PyQt6.QtGui import QImage, QPainter
+
+    from gui.design import components as C
+    from gui.design.appearance import theme
+    from gui.design.tokens import space
+
+    _hold(session, F.heatmap_result())
+    (figure,) = session._sensitivity.heatmap_figures
+    figure.show_cell(2, 0)
+    assert figure.card.rows and all(color is None for color, *_ in figure.card.rows)
+
+    # A card whose rows mark no series and say nothing paints its rows' band as bare card.
+    card = C.ReadoutCard(theme())
+    card.set_values('', [(None, '', '', '', False)] * 2)
+    image = QImage(card.size(), QImage.Format.Format_ARGB32)
+    image.fill(0)
+    painter = QPainter(image)
+    card.render(painter)
+    painter.end()
+    middle = image.pixel(card.width() // 2, card.height() // 2)
+    inside = range(space(3), card.width() - space(3)), range(space(3), card.height() - space(3))
+    band = [image.pixel(x, y) for x in inside[0] for y in inside[1]]
+    assert set(band) == {middle}

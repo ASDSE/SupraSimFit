@@ -41,8 +41,10 @@ from gui.plotting.labels import (
     fmt_log10,
     fmt_misfit,
     fmt_p,
+    fmt_param_plain,
     fmt_percent,
     fmt_r2,
+    fmt_rmse,
     fmt_sci,
     fmt_stat,
     fmt_unit_pretty,
@@ -184,8 +186,16 @@ def _replicate_names(result: FitResult, replica_ids: Sequence[str] | None) -> di
 
 
 def _row_label(spec: ParameterSummary) -> str:
-    """Plain-text row label; log twins are named ``log10(<key>)``."""
+    """The CSV's ``parameter`` cell: the parameter's key, the on-disk identifier of the file format; log twins
+    ``log10(<key>)``."""
     return f'log10({spec.key})' if spec.is_log else spec.key
+
+
+def _report_label(spec: ParameterSummary) -> str:
+    """A row of the text report: the parameter by its one label in plain text (``Kₐ guest``), log twins
+    ``log10(Kₐ guest)``."""
+    name = fmt_param_plain(spec.key)
+    return f'log10({name})' if spec.is_log else name
 
 
 def _row_unit(spec: ParameterSummary) -> str:
@@ -743,7 +753,7 @@ def _replicates_block(result: FitResult, replica_ids: Sequence[str] | None) -> l
     p_values = test.get('p_values') or {}
     ka_keys = [spec.key for spec in summarize_parameters(result) if spec.is_log]
 
-    headers = ('Replicate', *(f'own {key}' for key in ka_keys), 'own R²', 'p-value', 'In the fit')
+    headers = ('Replicate', *(f'own {fmt_param_plain(key)}' for key in ka_keys), 'own R²', 'p-value', 'In the fit')
     rows: list[tuple[str, ...]] = []
     for rid in given:
         own = fits.get(rid)
@@ -857,7 +867,7 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 ('Parameter', 'Estimate', heading, 'Units'),
                 [
                     (
-                        f'{_row_label(spec)}{" *" if spec.degenerate else ""}',
+                        f'{_report_label(spec)}{" *" if spec.degenerate else ""}',
                         _estimate_text(spec, spec.estimate, spec.interval, spec.interval_open, spec.estimate_at_bound),
                         _interval_cell(spec, result, ka_keys),
                         _row_unit(spec),
@@ -881,14 +891,16 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                     spec.conditional_at_bound,
                 )
                 lines.append(
-                    f'  Conditional on the entered inputs: {spec.key} = {estimate} {bracket} {_row_unit(spec)}'.rstrip()
+                    f'  Conditional on the entered inputs: {fmt_param_plain(spec.key)} = {estimate} {bracket} {_row_unit(spec)}'.rstrip()
                 )
                 if spec.conditional_split:
-                    lines.extend(_wrapped(f'{spec.key} conditional on the entered inputs: {SPLIT_NOTE}'))
+                    lines.extend(
+                        _wrapped(f'{fmt_param_plain(spec.key)} conditional on the entered inputs: {SPLIT_NOTE}')
+                    )
         replicates = replicate_summary(
             [spec for spec in specs if spec.key in ka_keys and not spec.is_log],
             len(fit_replica_ids(result) or ()),
-            lambda spec: spec.key,
+            lambda spec: fmt_param_plain(spec.key),
             lambda spec: fmt_unit_pretty(spec.unit),
         )
         if replicates:
@@ -902,7 +914,7 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 continue
             if spec.interval_split:
                 lines.append('')
-                lines.extend(_wrapped(f'{spec.key}: {SPLIT_NOTE}'))
+                lines.extend(_wrapped(f'{fmt_param_plain(spec.key)}: {SPLIT_NOTE}'))
             # A lower side the one-step test opened is said by its sentence below.
             step_unshown = spec.one_step_p is not None and spec.one_step_p > SECOND_STEP_LEVEL
             sides = zip(
@@ -914,14 +926,14 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 lines.append('')
                 if limited_by:
                     note = _LIMITED_BY_NOTE.format(
-                        edge=f'{_fmt_report(spec, edge)} {_row_unit(spec)}'.strip(), other=limited_by
+                        edge=f'{_fmt_report(spec, edge)} {_row_unit(spec)}'.strip(), other=fmt_param_plain(limited_by)
                     )
                 else:
                     note = _UNSOLVABLE_NOTE if unsolvable else _OPEN_ADVICE[side]
-                lines.extend(_wrapped(f'{spec.key}: open at the {side} end — {note}'))
+                lines.extend(_wrapped(f'{fmt_param_plain(spec.key)}: open at the {side} end — {note}'))
             if spec.one_step_p is not None:
                 lines.append('')
-                lines.extend(_wrapped(one_step_sentence(spec.key, spec.one_step_p)))
+                lines.extend(_wrapped(one_step_sentence(fmt_param_plain(spec.key), spec.one_step_p)))
         region = region_sentence(result)
         for sentence in [*widening_sentences(specs, result, lambda key: key), *([region] if region else [])]:
             lines.append('')
@@ -941,7 +953,7 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
         # Fit quality
         lines.append('FIT QUALITY')
         lines.append('-' * 60)
-        lines.append(f'  RMSE:          {fmt_value(result.rmse)} {fmt_unit_pretty("au")}')
+        lines.append(f'  RMSE:          {fmt_rmse(result.rmse)}')
         lines.append(f'  R²:            {fmt_r2(result.r_squared)}')
         # A dye-alone calibration is a line fitted by fit_linear_assay, which
         # reads no noise law and needs none.

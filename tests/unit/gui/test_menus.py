@@ -28,14 +28,14 @@ NAMED = (
     'Measurements: Export',
     'Measurements: Open sessions',
     'Binding model: Category of the binding model',
-    'Binding model: Binding model',
+    'Binding model: Model in the category',
     'Binding model: Unit of the titrant stock concentration',
     'Plot appearance: Colour of the replicate points',
     'Plot appearance: Colour of the fitted curve',
     'Sensitivity: X axis of the heatmap',
     'Sensitivity: Grid of the heatmap, cells per axis',
     'Settings: Processor cores',
-    'Simulation: Binding model',
+    'Simulation: Model in the category',
     'Simulation: Unit of the concentrations',
 )
 
@@ -159,4 +159,68 @@ def test_a_dropdown_shows_its_current_option_on_its_face_and_offers_it_in_its_me
 
     menu._activate(0)
     assert chosen == [0]
+    host.close()
+
+
+def test_the_session_switcher_puts_each_session_name_on_the_label_column_of_its_commands(qapp):
+    from PyQt6.QtGui import QAction
+
+    host = _host(qapp, 600)
+    anchor = C.Button(theme(), 'ghost', 'Sessions', menu=True)
+    anchor.setParent(host)
+    anchor.show()
+    sessions = [
+        {'name': 'IDA_system', 'detail': 'IDA · 8 replicates', 'state': 'done', 'status': 'Ka 1.59 × 10⁸ M⁻¹'},
+        {'name': 'Session 2', 'detail': 'No data', 'state': '', 'status': ''},
+    ]
+    new = QAction('New session', host)
+    new.setProperty('design_icon', 'plus')
+    commands = [new, QAction('Close session', host)]
+
+    menu = C.SessionPopover(theme(), host, sessions, commands)
+    menu.popup(anchor)
+    names = [menu._name_rect(row).left() for row in menu._layout()[0]]
+    labels = {row.label.left() for row in menu.menu_rows()}
+
+    assert labels == set(names) and len(labels) == 1
+    # Each name line holds its name whole beside its state: the name, a gap, the state's glyph and its words.
+    from PyQt6.QtGui import QFontMetrics
+
+    from gui.design.tokens import font, space
+
+    name, words = QFontMetrics(font('body-strong')), QFontMetrics(font('small'))
+    for row, session in zip(menu._layout()[0], sessions):
+        need = name.horizontalAdvance(session['name']) + space(3) + words.horizontalAdvance(session['status'])
+        assert menu._name_rect(row).width() >= need + (20 if session['state'] else 0), session['name']
+    menu.close_popover()
+    host.close()
+
+
+def test_a_scrolled_menu_shows_a_cue_at_each_edge_past_which_rows_are_hidden(qapp):
+    from PyQt6.QtGui import QColor
+
+    host = _host(qapp, 300)
+    dropdown = C.Dropdown(theme(), [f'C{i}' for i in range(40)], current=0)
+    dropdown.setParent(host)
+    dropdown.setFixedWidth(240)  # a card wider than its labels, so nothing but the cue reaches its middle
+    dropdown.move(16, 16)
+    dropdown.show()
+    menu = open_menu(qapp, dropdown)
+    cue = menu.t.q('text-secondary')
+
+    def marks(edge: str) -> int:
+        """Pixels of the cue's colour at the middle of the card's top or bottom edge, where no row label reaches."""
+        image, card = menu.grab().toImage(), menu._card()
+        top, bottom = int(card.top()), int(card.bottom())
+        band = range(top, top + 16) if edge == 'top' else range(bottom - 16, bottom)
+        middle = range(int(card.center().x()) - 8, int(card.center().x()) + 8)
+        close = 24
+        return sum(
+            max(abs(c.red() - cue.red()), abs(c.green() - cue.green()), abs(c.blue() - cue.blue())) < close
+            for c in (QColor(image.pixel(x, y)) for x in middle for y in band)
+        )
+
+    assert marks('top') == 0 and marks('bottom') > 0
+    menu._scroll_to(menu._card_h)
+    assert marks('top') > 0 and marks('bottom') == 0
     host.close()

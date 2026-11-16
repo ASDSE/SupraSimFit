@@ -22,7 +22,7 @@ from core.pipeline.profile import JointRegion, ProfileResult  # noqa: E402
 from core.pipeline.varpro import KaInterval  # noqa: E402
 from gui import confidence as CF  # noqa: E402
 from gui import results as R  # noqa: E402
-from gui.plotting.labels import THIN, spaced  # noqa: E402
+from gui.plotting.labels import THIN  # noqa: E402
 from tests.unit.gui.test_results import _CONFLICT, _stepwise, aware_result, per_replica_result, result  # noqa: E402
 
 #: Width of a profile plot's data area in the default 1440 × 900 window, in px.
@@ -300,7 +300,7 @@ def test_a_split_interval_names_the_ka_it_rejects_between_its_stretches(demo):
 
     split = _titles(fit, profile)['Split interval']
 
-    gap = f'from {spaced(R.fmt_value(first[1]))} to {spaced(R.fmt_value(second[0]))} M⁻¹ is rejected.'
+    gap = f'from {R.fmt_value(first[1])} to {R.fmt_value(second[0])} M⁻¹ is rejected.'
     assert split[0].startswith('Inputs as entered: the range 1.52') and split[0].endswith(gap)
     assert split[-1] == CF.split_explained(drawn=True) and 'strip under the plot' in split[-1]
 

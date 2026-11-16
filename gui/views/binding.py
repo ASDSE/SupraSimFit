@@ -22,13 +22,13 @@ from gui.dataset import file_filter
 from gui.design import components as C
 from gui.design.appearance import theme
 from gui.design.tokens import SIZE, space
-from gui.plotting.labels import CONSTANT_NAMES, and_join, fmt_constant, fmt_param, fmt_param_plain, fmt_unit_pretty
+from gui.plotting.labels import and_join, field_text, fmt_param, fmt_param_plain, fmt_unit_pretty
 from gui.session_model import Change, SessionModel
 from gui.views.uncertainty import COL_KIND, COL_NAME, COL_UNIT, GUTTER
 from gui.widgets.assay_conditions import ASSAY_NAMES, TITRANT_STOCK_FIELD, UNIT_CHOICES
 
-#: The widest value a field must show: a sign, five figures and an exponent.
-_WIDEST_VALUE = '−1.2345e−12'
+#: The widest value a field must show, as a field writes it: a sign, every figure and an exponent.
+_WIDEST_VALUE = field_text(-1.23457e-12)
 #: The concentration units a condition is entered in.
 _UNITS = list(UNIT_CHOICES['concentration'][0])
 #: Pause in typing after which an edit of a condition counts as finished, in ms.
@@ -79,7 +79,7 @@ def _model_summary(form) -> str:
         return f'Fits a straight line: its {and_join(fmt_param_plain(key) for key in fitted)}'
     n = len(fitted) - len(constants)
     terms = [
-        *(fmt_constant(key) for key in constants),
+        *(fmt_param(key) for key in constants),
         *([f'{n} signal parameter{"" if n == 1 else "s"}'] if n else []),
     ]
     return f'Fits {and_join(terms)}' if terms else 'Fits no parameter: the bounds of each one meet'
@@ -89,11 +89,6 @@ def _held(entry) -> bool:
     """Whether a parameter's bounds meet, so the fit holds it there."""
     values = entry.values()
     return values is not None and values[0] == values[1]
-
-
-def _parameter_name(key: str) -> str:
-    """A fitted parameter's name in HTML: a binding constant by its glossary name, a signal by its symbol."""
-    return fmt_constant(key) if key in CONSTANT_NAMES else fmt_param(key)
 
 
 class _ConditionRow:
@@ -149,7 +144,7 @@ class _BoundRow:
         self.unit = C.label(unit, 'body', 'secondary')
         self.unit.setFixedWidth(COL_UNIT)
         self.problem = C.Problem(t)
-        for c, widget in enumerate((_name(_parameter_name(key)), *self.fields, self.unit)):
+        for c, widget in enumerate((_name(fmt_param(key)), *self.fields, self.unit)):
             grid.addWidget(widget, r, c, Qt.AlignmentFlag.AlignVCenter)
         grid.addWidget(self.problem, r + 1, 1, 1, 4)
 
@@ -231,7 +226,7 @@ class BindingView(QObject):
         self.category.setAccessibleName('Category of the binding model')
         self.category.chosen.connect(lambda i: self._edit(lambda f: f.choose_category(options[i])))
         self.assay = C.Dropdown(t, width=self.form_w)
-        self.assay.setAccessibleName('Binding model')
+        self.assay.setAccessibleName('Model in the category')
         self.assay.chosen.connect(lambda i: self._edit(lambda f: f.choose_model(CATEGORIES[f.category][i])))
         self.summary = C.label('', 'small', 'tertiary', rich=True)
         model = QWidget()

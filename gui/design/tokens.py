@@ -223,6 +223,7 @@ TYPE = {
     #  role:          (px, weight, tabular figures)
     'metric': (28, QFont.Weight.DemiBold, True),
     'title': (20, QFont.Weight.DemiBold, False),
+    'title-number': (20, QFont.Weight.DemiBold, True),
     'body': (13, QFont.Weight.Normal, False),
     'body-strong': (13, QFont.Weight.DemiBold, False),
     'number': (13, QFont.Weight.Normal, True),

@@ -41,7 +41,7 @@ DEMO: dict[str, str] = {
     'spread': '×/÷\u00a01.19',
     'decades': '1 SD · 0.077 decades',
     'centre': '2.81\u202f×\u202f10⁸ M⁻¹',
-    'shares': 'Guest (titrant) 0.45, K<sub>a,dye</sub> 0.30, [Host]<sub>0</sub> 0.22, [Dye]<sub>0</sub> 0.036',
+    'shares': 'Guest (titrant) 0.45, K<sub>a</sub>,dye 0.30, [Host]<sub>0</sub> 0.22, [Dye]<sub>0</sub> 0.036',
     'top': 'Guest (titrant)',
     'exact': '0.0573',
     'sim_x': 'Guest 3.00 µM',

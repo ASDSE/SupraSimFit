@@ -67,7 +67,11 @@ def test_an_edit_that_is_not_a_concentration_is_refused_and_changes_nothing(thre
     np.testing.assert_allclose(three_points.ms.concentrations, [1e-6, 2e-6, 3e-6])
     np.testing.assert_allclose(three_points.face_values, [1e-6, 2e-6, 3e-6])
     text = str(refused.value)
-    assert 'is not a number' in text if typed == 'abc' else ('point 2 of 3' in text and 'zero or more' in text)
+    assert (
+        'is not a number' in text
+        if typed in ('abc', 'nan', 'inf')
+        else ('point 2 of 3' in text and 'zero or more' in text)
+    )
 
 
 def test_a_vector_keeps_its_own_unit_and_one_outside_the_list_is_converted_to_molar(three_points, tmp_path):

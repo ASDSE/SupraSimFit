@@ -29,7 +29,7 @@ from gui.design import components as C
 from gui.design import icons
 from gui.design.appearance import theme
 from gui.design.tokens import Theme, font, space
-from gui.plotting.labels import _display_label, and_join, times_ten
+from gui.plotting.labels import _display_label, and_join, field_text
 from gui.session_model import Change, SessionModel
 from gui.views.titration import TitrationPlot, legend_marks
 
@@ -37,17 +37,6 @@ NEW_SESSION = 'Load data into a new session…'
 
 #: What the titration's header and its saved figure say of the plot beside its title.
 RAW_DESCRIPTION = 'raw signal, as loaded'
-
-
-def molar(value: float) -> str:
-    """A concentration as the list shows it: 0, or the mantissa with the digits entered × 10ⁿ."""
-    if value == 0:
-        return '0'
-    e = math.floor(math.log10(abs(value)))
-    mantissa = f'{value / 10**e:.5f}'.rstrip('0').rstrip('.')
-    if e == 0:
-        return mantissa
-    return f'{mantissa}{times_ten(e)}'
 
 
 class FilesTable(QWidget):
@@ -555,11 +544,11 @@ class MeasurementsView(QObject):
         n_files = len(dataset.files)
         self.files_summary.setText(
             f'{n_files} file{"" if n_files == 1 else "s"} · {ms.n_replicas} replicate{"" if ms.n_replicas == 1 else "s"}'
-            f' · one grid of {ms.n_points} points, {x_disp.min():.3g} – {x_disp.max():.3g} {unit}'
+            f' · one grid of {ms.n_points} points, {field_text(x_disp.min(), 3)} – {field_text(x_disp.max(), 3)} {unit}'
         )
         # Concentrations
         self.imported_unit.set_current(UNITS.index(dataset.imported_unit))
-        self.grid.set_values([molar(v) for v in dataset.face_values], f'{x_name} ({dataset.imported_unit})')
+        self.grid.set_values([field_text(v) for v in dataset.face_values], f'{x_name} ({dataset.imported_unit})')
         self.conc_section.header.set_trailing(f'{ms.n_points} points')
         self.channel_row.setVisible(len(dataset.channels) > 1)
         if dataset.channels:

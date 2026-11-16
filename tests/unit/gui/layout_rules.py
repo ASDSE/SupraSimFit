@@ -9,14 +9,16 @@ Simulation windows:
   at least that;
 - no plot header cuts its text short;
 - no plain one-line label is narrower than its text, which it would cut with no ellipsis;
-- every axis title of a plot on screen stands whole inside its plot, clear of the tick labels.
+- every axis title of a plot on screen stands whole inside its plot, clear of the tick labels;
+- no two interactive controls on screen share an accessible name, which is all a screen
+  reader says of a control.
 """
 
 from __future__ import annotations
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtWidgets import QApplication, QLabel, QWidget
+from PyQt6.QtWidgets import QAbstractScrollArea, QApplication, QLabel, QWidget
 
 from gui.design import components as C
 
@@ -128,6 +130,33 @@ def cut_axis_text(window: QWidget) -> list[str]:
     return found
 
 
+def interactive(window: QWidget) -> list[QWidget]:
+    """Every control on screen in *window*: a widget that takes focus, scroll areas and selectable text aside."""
+    return [
+        w
+        for w in window.findChildren(QWidget)
+        if w.isVisible()
+        and w.window() is window
+        and w.focusPolicy() != Qt.FocusPolicy.NoFocus
+        and not isinstance(w, (QAbstractScrollArea, pg.GraphicsView, QLabel))
+        and not isinstance(w.parentWidget(), QAbstractScrollArea)
+    ]
+
+
+def clashing_names(window: QWidget) -> list[str]:
+    """The accessible names two or more interactive controls on screen in *window* share."""
+    named: dict[str, list[str]] = {}
+    for w in interactive(window):
+        text = getattr(w, 'text', '')
+        name = w.accessibleName() or (text() if callable(text) else text)
+        named.setdefault(name, []).append(f'{type(w).__name__} in {type(w.parentWidget()).__name__}')
+    return [
+        f'{name!r} names {len(kinds)} controls: {", ".join(kinds)}' for name, kinds in named.items() if len(kinds) > 1
+    ]
+
+
 def check(_app: QApplication, window: QWidget, where: str, seen: dict[str, list[str]]) -> None:
     """Record under *where* in *seen* what in *window* breaks the rules of this module."""
-    seen[where] = undersized(window) + cut_headers(window) + cut_labels(window) + cut_axis_text(window)
+    seen[where] = (
+        undersized(window) + cut_headers(window) + cut_labels(window) + cut_axis_text(window) + clashing_names(window)
+    )

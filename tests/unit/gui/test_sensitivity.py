@@ -357,11 +357,17 @@ def test_the_budget_shows_the_numbers_of_the_result_it_was_given():
     for Kₐ,dye is 0.35 at ×10⁻³, the interactions 0.15 × 0.007056 = 1.06×10⁻³."""
     table = S.budget_table(F.sobol_result(), 'Ka_guest')
 
-    assert table.headers == ('Source', 'Stated', 'Elasticity', 'Variance (×10⁻³ decades²)', 'Spread if exact (decades)')
+    assert table.headers == (
+        'Source',
+        'Stated',
+        'Elasticity',
+        f'Variance (×{THIN}10⁻³ decades²)',
+        'Spread if exact (decades)',
+    )
     rows = {c[0].value: c for c in table.rows}
-    assert list(rows) == ['Guest (titrant)', '[Host]<sub>0</sub>', 'K<sub>a,dye</sub>', 'Interactions']
-    dye = rows['K<sub>a,dye</sub>']
-    assert [_plain(c.value) for c in dye] == ['K<sub>a,dye</sub>', 'σ 5 %', '+0.31', '0.35', '0.082']
+    assert list(rows) == ['Guest (titrant)', '[Host]<sub>0</sub>', 'K<sub>a</sub>,dye', 'Interactions']
+    dye = rows['K<sub>a</sub>,dye']
+    assert [_plain(c.value) for c in dye] == ['K<sub>a</sub>,dye', 'σ 5 %', '+0.31', '0.35', '0.082']
     assert [c.interval for c in dye[3:]] == ['[0.20, 0.50]', '[0.079, 0.084]']
     assert rows['[Host]<sub>0</sub>'][2].value == '−1.20', 'an input that moves Ka the other way keeps its sign'
     assert rows['Interactions'][3].value == '1.06'
@@ -385,7 +391,7 @@ def test_an_interval_is_printed_to_the_figures_that_tell_it_from_its_estimate():
 
     rows = {c[0].value: c for c in S.budget_table(result, 'Ka_guest').rows}
 
-    assert (rows['K<sub>a,dye</sub>'][4].value, rows['K<sub>a,dye</sub>'][4].interval) == (
+    assert (rows['K<sub>a</sub>,dye'][4].value, rows['K<sub>a</sub>,dye'][4].interval) == (
         '0.05000',
         '[0.04999, 0.05001]',
     )
@@ -402,13 +408,13 @@ def test_the_spread_column_never_shows_a_negative_standard_deviation():
 
     rows = {c[0].value: c for c in S.budget_table(result, 'Ka_guest').rows}
 
-    assert rows['K<sub>a,dye</sub>'][4].interval == '[0.000, 0.012]'
+    assert rows['K<sub>a</sub>,dye'][4].interval == '[0.000, 0.012]'
 
 
 def test_the_budget_states_a_range_by_its_two_ends_in_percent_of_the_entered_value():
     rows = {c[0].value: c for c in S.budget_table(F.ranged_result(), 'Ka_guest').rows}
 
-    assert _plain(rows['K<sub>a,dye</sub>'][1].value) == '−6 % to +4 %'
+    assert _plain(rows['K<sub>a</sub>,dye'][1].value) == '−6 % to +4 %'
     # [Host]₀ is entered as 4.1–4.4 µM of 4.3 µM: −4.65 % to +2.33 % of it.
     low, high = (f'{value:+.3g}'.replace('-', '−') for value in F.H0_RANGE_PCT)
     assert _plain(rows['[Host]<sub>0</sub>'][1].value) == f'{low} % to {high} %'

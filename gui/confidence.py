@@ -44,7 +44,6 @@ from gui.plotting.labels import (
     not_run_reason,
     one_step_sentence,
     region_sentence,
-    spaced,
     superscript,
     times_ten,
     widening_sentences,
@@ -326,13 +325,13 @@ class ProfilePlot:
         """``Scaled drop at 1.70 × 10⁸ M⁻¹``: what the readout card at *x* (log₁₀ Ka) reads."""
         ka = 10.0**x
         e = self.exponent
-        number = spaced(fmt_value(ka)) if e is None else f'{fmt_value(ka / 10.0**e)}{times_ten(e)}'
+        number = fmt_value(ka) if e is None else f'{fmt_value(ka / 10.0**e)}{times_ten(e)}'
         return f'{Y_TITLE} at {number} {self.unit}'
 
     def chip(self, x: float) -> str:
         """The pointer's Ka at the top of its hairline, in the axis's own power of ten."""
         ka = 10.0**x
-        return spaced(fmt_value(ka)) if self.exponent is None else fmt_value(ka / 10.0**self.exponent)
+        return fmt_value(ka) if self.exponent is None else fmt_value(ka / 10.0**self.exponent)
 
 
 def _breaks(x: np.ndarray, y: np.ndarray, cut: np.ndarray) -> tuple[np.ndarray, np.ndarray, list]:
@@ -560,7 +559,7 @@ def _open_sentences(label: str, interval: KaInterval, unit: str) -> list[str]:
     ):
         if not is_open or (side == 'lower' and shown):
             continue
-        where = f'{spaced(fmt_value(edge))} {unit}'.strip()
+        where = f'{fmt_value(edge)} {unit}'.strip()
         if limited_by:
             other = fmt_param_plain(limited_by)
             tail = (
@@ -658,7 +657,7 @@ def notes(fit: FitResult, profile_set=None, replica_order: Sequence[str] | None 
             drawn = None if plot is None else next((c for c in plot.curves if c.label == r.label), None)
             stretches = [] if drawn is None else drawn.stretches
             gaps = [(stretches[i][1], stretches[i + 1][0]) for i in range(len(stretches) - 1)]
-            rejected = ', '.join(f'from {spaced(fmt_value(a))} to {spaced(fmt_value(b))} {r.unit}' for a, b in gaps)
+            rejected = ', '.join(f'from {fmt_value(a)} to {fmt_value(b)} {r.unit}' for a, b in gaps)
             name = fmt_param_plain(header.key)
             text = f'{r.label}: the range {r.interval} of {name} has a gap'
             split.append(f'{text}; {name} {rejected} is rejected.' if rejected else f'{text}.')

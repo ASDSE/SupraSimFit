@@ -26,6 +26,7 @@ import pytest
 from core.assays.registry import AssayType
 from core.pipeline.inputs import TITRANT, AdditionError, ErrorModel, InputSpec, SharedSource, SpecKind
 from core.units import Q_
+from gui.plotting.labels import THIN
 from gui.uncertainty import HELP_HTML, UncertaintyForm
 
 _KA_DYE = 16.8e6  # M⁻¹, the Kₐ,dye set in the conditions form
@@ -119,14 +120,14 @@ def test_choosing_another_kind_or_unit_carries_the_numbers_over(start, kind, rel
 
 
 def test_the_number_used_is_the_number_shown():
-    """A conversion is written to five figures, and the uncertainty used is read back from what is written."""
+    """A conversion is written to a field's six figures, and the uncertainty used is read back from what is written."""
     form = _ida()
     form.set_spec('h0', InputSpec.sigma_abs(2e-9))  # 0.002 µM
 
     form.state_in('h0', True)
 
-    assert form.entry('h0').texts == ('0.046512',)  # 2e-9 / 4.3e-6, to five figures
-    assert form.spec('h0') == InputSpec.sigma_pct(0.046512)
+    assert form.entry('h0').texts == ('0.0465116',)  # 2e-9 / 4.3e-6, to six figures
+    assert form.spec('h0') == InputSpec.sigma_pct(0.0465116)
 
 
 def test_the_titrant_is_stated_in_percent_only():
@@ -261,7 +262,7 @@ def test_a_condition_shown_in_another_unit_leaves_the_stated_uncertainty_exactly
     form.set_conditions(_conditions(), _UNITS)
     assert form.entry('h0').texts == ('0.123456',)
     form.set_conditions(_conditions(), {**_UNITS, 'h0': 'M'})
-    assert form.entry('h0').texts == ('1.23456e−7',)
+    assert form.entry('h0').texts == (f'1.23456{THIN}×{THIN}10⁻⁷',)
     form.set_conditions(_conditions(), {**_UNITS, 'h0': 'nM'})
     assert form.entry('h0').texts == ('123.456',)
     assert form.errors() == before

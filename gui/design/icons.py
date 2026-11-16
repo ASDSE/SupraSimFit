@@ -26,6 +26,7 @@ PATHS: dict[str, str] = {
     'check-circle': '<circle cx="12" cy="12" r="10"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
     'chevron-down': '<path d="m6 9 6 6 6-6"/>',
     'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+    'chevron-up': '<path d="m18 15-6-6-6 6"/>',
     'copy': (
         '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10'
         'a2 2 0 0 1 2 2"/>'

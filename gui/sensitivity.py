@@ -53,11 +53,11 @@ from gui.plotting.labels import (
     NO_LOWER,
     NO_UPPER,
     THIN,
-    fmt_constant,
+    fmt_param,
+    fmt_param_plain,
     fmt_r2,
     fmt_value,
     plain_label,
-    spaced,
     superscript,
 )
 from gui.widgets.assay_conditions import condition_field, input_labels
@@ -119,11 +119,6 @@ def _pct(value: float) -> str:
 def _signed_pct(value: float) -> str:
     sign = '+' if value > 0 else '−' if value < 0 else ''
     return f'{sign}{_pct(abs(value))}'
-
-
-def ka_name(key: str) -> str:
-    """A binding constant as the glossary names it, in HTML: ``K<sub>a</sub> guest``, ``K<sub>a</sub> HG₂``."""
-    return fmt_constant(key)
 
 
 def _assay(result: SensitivityResult) -> AssayType | None:
@@ -403,7 +398,7 @@ def callouts(
         return out
     if note is not None:
         return [*out, R.CalloutSpec('neutral', 'Results hidden', note)]
-    names = ', '.join(plain_label(ka_name(k)) for k in result.ka_keys)
+    names = ', '.join(fmt_param_plain(k) for k in result.ka_keys)
     conflict = False
     diagnostics = None if fit is None else fit.diagnostics
     if diagnostics is not None:
@@ -458,7 +453,7 @@ def stopped_sentence(result: SensitivityResult) -> str:
 def withheld_note(result: SensitivityResult, ka_key: str) -> str | None:
     """Why *ka_key*'s shares, spread and elasticities are not given, in plain words; ``None`` when they are."""
     reason = (result.withheld or {}).get(ka_key, '')
-    name = plain_label(ka_name(ka_key))
+    name = fmt_param_plain(ka_key)
     withheld = f'so no share, spread or elasticity is given for {name}. Ka confidence shows what the data say of it.'
     if reason == 'baseline_on_bound':
         return (
@@ -491,7 +486,7 @@ def withheld_note(result: SensitivityResult, ka_key: str) -> str | None:
 def withheld_title(result: SensitivityResult, ka_key: str) -> str:
     """The title of a withheld constant's callout: what is not given, in a few words."""
     reason = (result.withheld or {}).get(ka_key, '')
-    return f'No shares for {plain_label(ka_name(ka_key))}' if reason else ''
+    return f'No shares for {fmt_param_plain(ka_key)}' if reason else ''
 
 
 def _design_fits(result: SensitivityResult) -> int:
@@ -508,7 +503,7 @@ def on_bound_note(result: SensitivityResult, ka_key: str) -> str | None:
     total = _design_fits(result)
     if not n or not total:
         return None
-    name = plain_label(ka_name(ka_key))
+    name = fmt_param_plain(ka_key)
     return (
         f'In {n:,} of {total:,} {"fit" if total == 1 else "fits"} ({_pct(100.0 * n / total)}) {name} ran to the edge '
         f'of its bounds; {"that fit jumps" if n == 1 else "those fits jump"} by many decades and '
@@ -541,8 +536,8 @@ class Spread:
 
 def spread(result: SensitivityResult, ka_key: str) -> Spread:
     """The spread of *ka_key* from :attr:`~core.pipeline.budget.Budget.sd`, around the fit at the inputs as entered."""
-    centre = f'{spaced(fmt_value(result.baseline_ka[ka_key]))} M⁻¹'
-    title = f'Spread of {ka_name(ka_key)} from the stated inputs'
+    centre = f'{fmt_value(result.baseline_ka[ka_key])} M⁻¹'
+    title = f'Spread of {fmt_param(ka_key)} from the stated inputs'
     budget = (result.budget or {}).get(ka_key)
     if (result.withheld or {}).get(ka_key):
         return Spread(title, '', '', centre, missing='Not given: the callout below says why.')
@@ -657,7 +652,7 @@ def _reading_marker(kind: str, name: str, row, conditional: bool, x_of, x_range,
         interval, open_ = row.interval, row.interval_open
 
     def number(v: float) -> str:
-        return f'{v / 10.0**e:.2f}' if e else spaced(fmt_value(v))
+        return f'{v / 10.0**e:.2f}' if e else fmt_value(v)
 
     label = name if at_bound else f'{name} {number(estimate)}'
     span = None
@@ -940,7 +935,7 @@ def budget_table(result: SensitivityResult, ka_key: str) -> BudgetTable | None:
     by_source = {row.source: row for row in budget.rows}
     e = math.floor(math.log10(budget.variance)) if math.isfinite(budget.variance) and budget.variance > 0 else 0
     scale = 10.0**e
-    power = f'×10{superscript(e)} ' if e else ''
+    power = f'×{THIN}10{superscript(e)} ' if e else ''
     headers = (*BUDGET_COLUMNS[:3], f'Variance ({power}decades²)', BUDGET_COLUMNS[4])
     rows = []
     for key in ordered_sources(result, ka_key):
@@ -976,7 +971,7 @@ def budget_table(result: SensitivityResult, ka_key: str) -> BudgetTable | None:
         _with_interval(budget.variance, budget.variance_ci, 2, scale),
         Cell(NONE, quiet=True),
     ]
-    caption = f'log₁₀ {plain_label(ka_name(ka_key))} · [95{THIN}% sampling interval]'
+    caption = f'log₁₀ {fmt_param_plain(ka_key)} · [95{THIN}% sampling interval]'
     notes = [ADDITIONS_NOTE] if ADDITIONS in by_source else []
     return BudgetTable(caption, headers, rows, total, notes)
 
@@ -1016,7 +1011,7 @@ def what_if_answer(result: SensitivityResult, ka_key: str, source: str, ratio: f
     the answer and the line says why.
     """
     assay = _assay(result)
-    name = ka_name(ka_key)
+    name = fmt_param(ka_key)
     label = source_label(assay, source)
     before = result.budget[ka_key].sd
     answer = what_if(result, ka_key, source, ratio)
@@ -1073,7 +1068,7 @@ def ka_blocks(result: SensitivityResult, fit: FitResult | None, log: bool = True
         blocks.append(
             KaBlock(
                 key,
-                ka_name(key),
+                fmt_param(key),
                 spread(result, key),
                 histogram(result, fit, key, log),
                 notes,
@@ -1359,7 +1354,7 @@ def heatmaps(result: SensitivityResult, units: Mapping[str, str] | None = None, 
     for key in result.ka_keys:
         ka = np.asarray(result.ka_grid[key], dtype=float)
         finite = ka[np.isfinite(ka) & (ka > 0)]
-        name = plain_label(ka_name(key))
+        name = fmt_param_plain(key)
         if log:
             values = np.where(np.isfinite(ka) & (ka > 0), np.log10(np.where(ka > 0, ka, 1.0)), np.nan)
             lo, hi = (float(np.log10(finite.min())), float(np.log10(finite.max()))) if finite.size else (0.0, 1.0)
@@ -1409,7 +1404,7 @@ def heatmaps(result: SensitivityResult, units: Mapping[str, str] | None = None, 
 def _axis_value(value: float, unit: str, e: int) -> str:
     if unit == '%':
         return _signed_pct(value)
-    return f'{spaced(fmt_value(value * 10.0**e))} {unit}'
+    return f'{fmt_value(value * 10.0**e)} {unit}'
 
 
 def heatmap_readout(hm: Heatmap, ix: int, iy: int) -> tuple[str, list[tuple[str, str]]]:
@@ -1419,7 +1414,7 @@ def heatmap_readout(hm: Heatmap, ix: int, iy: int) -> tuple[str, list[tuple[str,
     if not math.isfinite(ka):
         return title, [(hm.name, 'no fit')]
     rows = [
-        (hm.name, f'{spaced(fmt_value(ka))} M⁻¹'),
+        (hm.name, f'{fmt_value(ka)} M⁻¹'),
         ('Change from entered', _signed_pct(100.0 * (ka / hm.baseline - 1.0))),
     ]
     if hm.r2 is not None and math.isfinite(hm.r2[iy, ix]):
@@ -1472,7 +1467,7 @@ def budget_csv_rows(result: SensitivityResult) -> list[dict]:
 
     def row(ka_key: str, kind: str, item: str, **values) -> dict:
         return {
-            'Ka': plain_label(ka_name(ka_key)),
+            'Ka': fmt_param_plain(ka_key),
             'Kind': kind,
             'Item': item,
             **dict.fromkeys(BUDGET_CSV_COLUMNS, ''),

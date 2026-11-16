@@ -30,7 +30,6 @@ from PyQt6.QtGui import QKeySequence
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import InvalidData, MeasurementSet
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
-from core.pipeline.diagnostics import Verdict
 from core.pipeline.fit_pipeline import FitConfig, FitResult
 from core.pipeline.inputs import TITRANT, TITRANT_STOCK, ErrorModel, InputSpec, source_name
 from core.pipeline.profile import ProfileSet
@@ -47,7 +46,10 @@ from core.pipeline.sensitivity import (
 )
 from core.pipeline.varpro import REPLICATE_TEST_MIN, projectable
 from core.units import Q_, Quantity
+from gui import confidence as CF
 from gui import preferences
+from gui import results as R
+from gui import sensitivity as S
 from gui.binding import BindingForm, binding_constants
 from gui.confidence import NO_KA as NO_KA_TO_PROFILE
 from gui.dataset import DEMO_IDA, OUTLIER_DEFAULTS, Dataset, bundled
@@ -56,17 +58,17 @@ from gui.plotting.labels import (
     STOPPING_TEXT,
     and_join,
     describe_replicates,
+    field_text,
     fmt_bound_note,
     fmt_param_plain,
     fmt_r2,
-    fmt_sci,
+    fmt_rmse,
     fmt_unit_pretty,
     fmt_value,
-    plain_number,
     stated_uncertainty,
     verdict_headline,
 )
-from gui.results import REPLICATE_DISPLAYS, RUN_FIT_KEY, Place
+from gui.results import REPLICATE_DISPLAYS, RUN_FIT_KEY, CalloutSpec, Place
 from gui.sensitivity import NO_KA as NO_KA_TO_FOLLOW
 from gui.sensitivity import NOTHING_VARIES, RUN_ANALYSIS_KEY, AnalysisForm
 from gui.uncertainty import UncertaintyForm
@@ -426,12 +428,13 @@ def _open_note(result: FitResult) -> str:
 
 
 def _bounds_text(lo: float, hi: float, unit: str) -> str:
-    """A parameter's bounds in plain text: ``1×10⁻⁸ to 1×10¹² M⁻¹``, or ``from 0 a.u. with no upper limit``."""
+    """A parameter's bounds in plain text, written as their fields write them: ``1 × 10⁻⁸ to 1 × 10¹² M⁻¹``, or
+    ``from 0 a.u. with no upper limit``."""
     shown_unit = fmt_unit_pretty(unit)
-    low, high = (plain_number(value).replace('-', '−') for value in (lo, hi))
+    low = field_text(lo)
     if math.isinf(hi):
         return f'from {low}{f" {shown_unit}" if shown_unit else ""} with no upper limit'
-    return f'{low} to {high} {shown_unit}'.rstrip()
+    return f'{low} to {field_text(hi)} {shown_unit}'.rstrip()
 
 
 def _left_out_text(result: FitResult, replica_ids: Sequence[str]) -> str:
@@ -616,15 +619,16 @@ class SessionModel(QObject):
         """Add *paths* to the session's data as further replicates, keeping every result; say why when they cannot be.
 
         A result made without the new replicates is then hidden like one made
-        before a replicate was switched on, and comes back if they are removed.
+        before a replicate was switched on, and comes back if they are removed. A
+        session with no data takes the files as its data, keeping the results it holds
+        as well: they are shown wherever they were made on these data.
         """
-        if self._dataset is None or self._dataset.ms is None:
-            return self.load_files(paths)
+        empty = self._dataset is None or self._dataset.ms is None
         try:
-            dataset = self._dataset.added(list(paths))
+            dataset = Dataset.open(list(paths)) if empty else self._dataset.added(list(paths))
         except InvalidData as exc:
             return Refusal('Files Not Added', str(exc))
-        added = len(dataset.files) - len(self._dataset.files)
+        added = len(dataset.files) - (0 if empty else len(self._dataset.files))
         self._dataset = dataset
         self._data_edited(f'Added {added} file{"s" if added != 1 else ""} — {self._loaded_text()}')
         return None
@@ -1507,15 +1511,55 @@ class SessionModel(QObject):
         return name, f'{short} · {_count(ms.n_replicas, "replicate")} × {ms.n_points} points'
 
     def warnings(self) -> int:
-        """How many warnings the fit on show carries: a model the data reject, inputs that conflict."""
-        fit = self.fit_results[-1] if self.fit_results else None
-        diagnostics = None if fit is None else fit.diagnostics
-        if diagnostics is None:
-            return 0
-        verdict = diagnostics.verdict
-        conflict = verdict in (Verdict.INPUTS_CONFLICT, Verdict.MODEL_AND_INPUTS)
-        misfit = verdict in (Verdict.MODEL_INADEQUATE, Verdict.MODEL_AND_INPUTS)
-        return int(conflict) + int(misfit)
+        """How many warnings the fit on show carries: the warning callouts of Fit results."""
+        return sum(spec.tone == 'warning' for spec in self.callouts('Fit results'))
+
+    def callouts(self, view: str) -> list[CalloutSpec]:
+        """The callouts *view* shows above its content: the one list the view draws and its navigation mark reads.
+
+        Fit results speaks of the fit on view and the fits drawn beside it; Ka confidence of
+        that fit, while it has a binding constant to profile; Sensitivity of the run on
+        show, or of why the last one failed. Every other view shows none.
+        """
+        fit, note = self.fit_view()
+        shown = fit if note is None else None
+        ms = self.measurement_set
+        if view == 'Fit results':
+            return R.callouts(
+                shown,
+                note,
+                others=self.fit_results[:-1],
+                order=None if ms is None else ms.replica_ids,
+                unchecked=shown is not None and ms is None,
+                others_hidden=self.other_hidden_note(),
+            )
+        if view == 'Ka confidence':
+            has_ka = shown is not None and self.empty_view(view) is None
+            ours = shown is not None and self.profiled_fit is shown
+            return CF.callouts(
+                shown if has_ka or note else None,
+                note,
+                pending=ours and self.profile_running(),
+                unchecked=has_ka and ms is None,
+                others_hidden=self.other_hidden_note() if has_ka else None,
+            )
+        if view == 'Sensitivity':
+            settings = self.settings
+            if not projectable(settings.assay_type):
+                return []
+            return S.callouts(
+                self.sensitivity_result,
+                shown,
+                self.sensitivity_note,
+                running=self.sensitivity_running(),
+                error=self.sensitivity_error,
+                nothing_varies=ms is not None and not settings.errors.varies,
+            )
+        return []
+
+    def _warns(self, view: str) -> bool:
+        """Whether a callout *view* shows carries a warning."""
+        return any(spec.tone == 'warning' for spec in self.callouts(view))
 
     def summary(self) -> tuple[str, str, float]:
         """The session's state for the switcher: (glyph state, state in words, progress 0–1).
@@ -1540,7 +1584,7 @@ class SessionModel(QObject):
         if len(rows) == 1:
             row = rows[0]
             side = {'low': 'below', 'high': 'above'}.get(row.estimate_at_bound)
-            value = fmt_value(row.estimate).replace('×', '\u202f×\u202f')
+            value = fmt_value(row.estimate)
             words = f'Ka not limited {side}' if side else f'Ka {value} {fmt_unit_pretty(row.unit)}'
         else:
             words = f'{len(rows)} binding constants'
@@ -1636,17 +1680,23 @@ class SessionModel(QObject):
                 return 'stale', 0.0
             if fit is None:
                 return '', 0.0
-            return ('warning' if self.warnings() else 'done'), 0.0
+            return ('warning' if self._warns(view) else 'done'), 0.0
         if view == 'Ka confidence':
             if self.profile_running():
                 return 'running', 0.0
             held = self.held_fit_results
-            if self.profile is None or not held:
+            if not held:
                 return '', 0.0
-            return ('stale' if held[-1].id in self.hidden_fit_notes else 'done'), 0.0
+            if held[-1].id in self.hidden_fit_notes:
+                return ('stale' if self.profile is not None else ''), 0.0
+            if self._warns(view):
+                return 'warning', 0.0
+            return ('done' if self.profile is not None else ''), 0.0
         if view == 'Sensitivity':
             if self.sensitivity_running():
                 return 'running', self.progress_fraction() or 0.0
+            if self._warns(view):
+                return 'warning', 0.0
             if self.sensitivity_result is None:
                 return '', 0.0
             return ('stale' if self.sensitivity_note is not None else 'done'), 0.0
@@ -1821,7 +1871,7 @@ class SessionModel(QObject):
         open_ka = _open_note(result)
         verdict = _verdict_note(result)
         self.show_status(
-            f'Fit complete — R²={fmt_r2(result.r_squared)}, RMSE={fmt_sci(result.rmse)}{counted}'
+            f'Fit complete — R² {fmt_r2(result.r_squared)}, RMSE {fmt_rmse(result.rmse)}{counted}'
             f'{f" ({left_out})" if left_out else ""}{f" — {open_ka}" if open_ka else ""}'
             f'{f" — {on_bound}" if on_bound else ""}{f" — {verdict}" if verdict else ""}'
         )

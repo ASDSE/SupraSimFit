@@ -17,7 +17,8 @@ from core.assays.registry import AssayType  # noqa: E402
 from core.pipeline.noise import noise_law  # noqa: E402
 from core.simulation import simulate_signal  # noqa: E402
 from core.units import Q_  # noqa: E402
-from gui.simulation import SPECIES_TOKENS, Overlay, SimulationForm, SimulationProblem, value_text  # noqa: E402
+from gui.plotting.labels import field_text  # noqa: E402
+from gui.simulation import SPECIES_TOKENS, Overlay, SimulationForm, SimulationProblem  # noqa: E402
 from gui.widgets.assay_conditions import assay_class  # noqa: E402
 
 
@@ -190,8 +191,8 @@ def test_the_window_draws_reads_noise_and_asks_for_a_new_session(qapp, tmp_path,
     noise = window.form.noise
     assert noise.proportional > 0  # the default states none
     assert (window.floor.text, window.proportional.text) == (
-        value_text(noise.floor),
-        value_text(100 * noise.proportional),
+        field_text(noise.floor),
+        field_text(100 * noise.proportional),
     )
     # The stock: its row shows once dilution is chosen, with one box per fixed total the stock may hold.
     assert window.stock_row.isHidden()

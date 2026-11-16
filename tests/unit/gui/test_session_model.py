@@ -220,10 +220,11 @@ def test_a_fit_that_cannot_start_says_why(make_model):
     assert f'in the data ({top})' in refusal.message
 
 
-def test_the_switcher_line_reports_the_shown_ka_and_counts_the_warnings_of_its_verdict(make_model, fitted):
+def test_the_switcher_line_reports_the_shown_ka_and_counts_the_warnings_of_fit_results(make_model, fitted):
+    """The warnings counted are the warning callouts Fit results shows: one list for the view, its mark and the switcher."""
     from dataclasses import replace
 
-    from core.pipeline.diagnostics import FitDiagnostics, Verdict
+    from core.pipeline.diagnostics import Conflict, FitDiagnostics, MisfitTest, Verdict
 
     ka = fitted.parameters['Ka_guest'].magnitude
     mantissa, exponent = f'{ka:.2e}'.split('e')
@@ -232,12 +233,14 @@ def test_the_switcher_line_reports_the_shown_ka_and_counts_the_warnings_of_its_v
     assert words.startswith(f'Ka {mantissa}') and words.endswith('M⁻¹')
     assert str(int(exponent)).translate(str.maketrans('0123456789', '⁰¹²³⁴⁵⁶⁷⁸⁹')) in words
 
-    for verdict, expected in (
-        (Verdict.CONSISTENT, ('done', '')),
-        (Verdict.INPUTS_CONFLICT, ('warning', ' · 1 warning')),
-        (Verdict.MODEL_AND_INPUTS, ('warning', ' · 2 warnings')),
+    conflict = Conflict(q=24.2, k=2, p_value=1e-5, weights=(0.3, 0.9))
+    misfit = MisfitTest('lack_of_fit', 200.0, 1e-9, dof=(9, 72))
+    for verdict, tests, expected in (
+        (Verdict.CONSISTENT, (None, None), ('done', '')),
+        (Verdict.INPUTS_CONFLICT, (None, conflict), ('warning', ' · 1 warning')),
+        (Verdict.MODEL_AND_INPUTS, (misfit, conflict), ('warning', ' · 2 warnings')),
     ):
-        diagnostics = FitDiagnostics(conditional_misfit=None, misfit=None, conflict=None, verdict=verdict)
+        diagnostics = FitDiagnostics(conditional_misfit=None, misfit=tests[0], conflict=tests[1], verdict=verdict)
         model = _holding(make_model, replace(fitted, diagnostics=diagnostics))
         state, words, _ = model.summary()
         assert (state, words[len(words.split(' · ')[0]) :]) == expected
@@ -317,3 +320,16 @@ def test_a_waiting_conversion_is_made_against_the_condition_once_its_edit_is_fin
     assert spec.sigma == pytest.approx(0.05 * 45e-6, rel=1e-12)
     assert model.settings.input_problems == ()
     assert model.settings.errors.specs['h0'] == spec
+
+
+def test_adding_files_to_a_session_with_no_data_keeps_the_results_it_holds(make_model, fitted):
+    """Adding data is an edit in place: only data loaded in place of the session's own, or cleared, drop its results."""
+    import pathlib
+
+    model = make_model()
+    model.show_imported([fitted], 'results.json')
+    demo = pathlib.Path(__file__).resolve().parents[3] / 'data' / 'IDA_system.txt'
+
+    assert model.add_files([str(demo)]) is None
+    assert model.measurement_set is not None
+    assert model.held_fit_results == [fitted]
