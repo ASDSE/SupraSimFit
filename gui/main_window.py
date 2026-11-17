@@ -400,9 +400,8 @@ class FittingMainWindow(QMainWindow):
     # Sessions
     # ------------------------------------------------------------------
 
-    def _new_session(self, *, warn: bool = True) -> FittingSession:
-        """Open a new session and put it on screen; with *warn*, say when it could not take the
-        plot appearance stored for new sessions."""
+    def _new_session(self) -> FittingSession:
+        """Open a new session and put it on screen."""
         session = FittingSession()
         session.changed.connect(self._refresh)
         session.side_panel_closed.connect(lambda: self._set_side_visible(False))
@@ -414,9 +413,6 @@ class FittingMainWindow(QMainWindow):
         self._sessions.append(session)
         self._stack.addWidget(session)
         self._switch_to(session)
-        refusal = session.model.appearance_refusal
-        if warn and refusal is not None:
-            QMessageBox.warning(self, refusal.title, refusal.message)
         return session
 
     def _switch_to(self, session: FittingSession) -> None:
@@ -440,7 +436,7 @@ class FittingMainWindow(QMainWindow):
         source = self.active_session()
         if source is not None:
             # The copy takes the appearance of the session it copies, so a stored one is not read.
-            self._new_session(warn=False).copy_from(source)
+            self._new_session().copy_from(source)
 
     def _close_current(self) -> None:
         session = self.active_session()
@@ -824,11 +820,7 @@ def launch() -> None:
     install_exception_hook(window, log_dir())
     window.show()
     if reset:
-        QMessageBox.warning(
-            window,
-            'Settings Reset',
-            ' '.join([*reset, f'You can change {"it" if len(reset) == 1 else "them"} in Settings.']),
-        )
+        QMessageBox.warning(window, 'Settings reset', ' '.join(reset))
     sys.exit(app.exec())
 
 

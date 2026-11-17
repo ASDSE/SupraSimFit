@@ -200,16 +200,6 @@ def test_the_stored_appearance_is_read_back_and_a_reset_gives_the_built_in_one_a
     assert plot_appearance_default() == BUILT_IN
 
 
-@pytest.mark.parametrize('stored', ['{not json', json.dumps({'replicate_colour': 'gold'})])
-def test_a_stored_appearance_that_cannot_be_read_is_said_to_be_so(store, stored):
-    from gui.preferences import PLOT_APPEARANCE_KEY, plot_appearance_default
-
-    store.setValue(PLOT_APPEARANCE_KEY, stored)
-
-    with pytest.raises(ValueError, match='stored for new sessions'):
-        plot_appearance_default()
-
-
 # ── A session's appearance ─────────────────────────────────────────────────────────
 
 
@@ -234,22 +224,17 @@ def test_a_new_session_starts_from_the_stored_appearance_and_else_from_the_built
     assert make_model().plot_appearance == BUILT_IN
     set_plot_appearance_default(CHANGED)
     made = make_model()
-    assert made.plot_appearance == CHANGED and made.appearance_refusal is None
+    assert made.plot_appearance == CHANGED
 
 
-def test_a_stored_appearance_that_cannot_be_read_is_a_refusal_the_new_session_carries(make_model):
-    """No silent fallback: the session starts from the built-in look and holds the warning that says so."""
+def test_a_stored_choice_this_version_does_not_offer_is_the_built_in_one_and_the_rest_are_kept(make_model):
     from PyQt6.QtCore import QSettings
 
     from gui.preferences import PLOT_APPEARANCE_KEY
 
-    QSettings().setValue(PLOT_APPEARANCE_KEY, json.dumps({'replicate_size': 'Small'}))
-    model = make_model()
+    QSettings().setValue(PLOT_APPEARANCE_KEY, json.dumps({'replicate_colour': 'blue', 'replicate_size': 'large'}))
 
-    assert model.plot_appearance == BUILT_IN
-    refusal = model.appearance_refusal
-    assert 'stored for new sessions' in refusal.message and '“Small”' in refusal.message
-    assert 'built-in' in refusal.message and 'Use for new sessions' in refusal.message
+    assert make_model().plot_appearance == PlotAppearance(replicate_size='large')
 
 
 def test_setting_an_appearance_says_so_once_and_setting_it_again_says_nothing(make_model):

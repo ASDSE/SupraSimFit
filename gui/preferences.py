@@ -85,14 +85,25 @@ def _choice(key: str) -> str:
 
 
 def reset_unreadable() -> list[str]:
-    """Reset each stored choice this version cannot read to its default, and say so, one sentence each."""
+    """Reset each stored choice this version cannot read to its default, and say so, one sentence each.
+
+    Run once as the app starts, so a choice stored by another version is said once
+    and never again, and every session after it starts from what is stored.
+    """
     said = []
     for key, (_choices, _default, shown, name) in _CHOICES.items():
         try:
             _choice(key)
         except ValueError:
             _settings().remove(key)
-            said.append(f'The stored {name} could not be read and was reset to {shown}.')
+            said.append(f'The saved {name} is not available in this version and is now {shown}.')
+    appearance, repaired = _stored_plot_appearance()
+    if repaired:
+        if appearance == BUILT_IN:
+            reset_plot_appearance_default()
+        else:
+            set_plot_appearance_default(appearance)
+        said += repaired
     return said
 
 
@@ -170,18 +181,29 @@ PLOT_APPEARANCE_KEY = 'new_sessions/plot_appearance'
 def plot_appearance_default() -> PlotAppearance:
     """The plot appearance new sessions start from: the one stored, else the built-in one.
 
-    Raises ``ValueError``, in words for the user, when the stored record cannot be read.
+    A choice this version does not offer is the built-in one; :func:`reset_unreadable`
+    stores that repair and says so as the app starts.
     """
+    return _stored_plot_appearance()[0]
+
+
+def _stored_plot_appearance() -> tuple[PlotAppearance, list[str]]:
+    """The stored plot appearance, each choice this version does not offer put back to the built-in
+    one, and one sentence for the user per choice put back."""
     stored = _settings().value(PLOT_APPEARANCE_KEY, None)
     if stored is None:
-        return BUILT_IN
-    unreadable = 'The plot appearance stored for new sessions cannot be read.'
+        return BUILT_IN, []
     try:
-        return PlotAppearance.from_dict(json.loads(str(stored)))
+        record = json.loads(str(stored))
     except json.JSONDecodeError:
-        raise ValueError(unreadable) from None
-    except ValueError as exc:
-        raise ValueError(f'{unreadable} {exc}') from None
+        record = None
+    if not isinstance(record, dict):
+        return BUILT_IN, ['The saved plot appearance for new sessions could not be read and is now the built-in one.']
+    appearance, put_back = PlotAppearance.salvage(record)
+    return appearance, [
+        f'The {what.removeprefix("the ")} saved for new sessions is not available in this version and is now {shown}.'
+        for what, shown in put_back
+    ]
 
 
 def set_plot_appearance_default(appearance: PlotAppearance) -> None:

@@ -557,8 +557,8 @@ def test_import_results_says_so_when_the_file_s_appearance_cannot_be_read(sessio
     assert session.model.plot_appearance == BUILT_IN and session.model.held_fit_results  # the results still came in
 
 
-def test_a_new_session_says_when_the_stored_appearance_cannot_be_read(qapp, monkeypatch):
-    """No silent fallback: the New session command, from an unreadable stored appearance, warns."""
+def test_a_new_session_says_nothing_of_a_stored_choice_the_launch_already_reset(qapp, monkeypatch):
+    """A stored choice this version does not offer is said once, as the app starts, never per session."""
     import json
 
     from PyQt6.QtCore import QCoreApplication, QSettings
@@ -574,14 +574,12 @@ def test_a_new_session_says_when_the_stored_appearance_cannot_be_read(qapp, monk
     window = FittingMainWindow()
     try:
         assert shown == []
-        QSettings().setValue(PLOT_APPEARANCE_KEY, json.dumps({'replicate_size': 'Small'}))
+        QSettings().setValue(PLOT_APPEARANCE_KEY, json.dumps({'replicate_colour': 'blue', 'replicate_size': 'large'}))
         # The New session command (menu, shortcut, switcher) passes QAction.triggered's checked flag.
         window._act_new.trigger()
-        ((title, message),) = shown
-        assert 'built-in' in message and 'Use for new sessions' in message
-        # A duplicate takes the appearance of the session it copies, so it says nothing.
-        window._duplicate_current()
-        assert len(shown) == 1
+        window._act_new.trigger()
+        assert shown == []
+        assert window._sessions[-1].model.plot_appearance.replicate_size == 'large'
     finally:
         window.close()
         QSettings().clear()

@@ -195,6 +195,24 @@ class PlotAppearance:
             raise ValueError(f'The plot appearance names settings this version does not have: {", ".join(unknown)}.')
         return cls(**{k: str(v) for k, v in d.items()})
 
+    @classmethod
+    def salvage(cls, d: dict) -> tuple[PlotAppearance, list[tuple[str, str]]]:
+        """The appearance *d* records, each choice its menu does not offer put back to the
+        built-in one, and what each choice put back is and the built-in label it now has.
+
+        A field this version has not got draws nothing, so it is left out.
+        """
+        kept, put_back = {}, []
+        for f in fields(cls):
+            if f.name not in d:
+                continue
+            value, (options, what) = str(d[f.name]), _MENUS[f.name]
+            if value in options:
+                kept[f.name] = value
+            else:
+                put_back.append((what, options[f.default][0]))
+        return cls(**kept), put_back
+
 
 #: The appearance a session starts from when no other is stored.
 BUILT_IN = PlotAppearance()

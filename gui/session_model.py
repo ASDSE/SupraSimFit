@@ -54,7 +54,7 @@ from gui import sensitivity as S
 from gui.binding import BindingForm, binding_constants
 from gui.confidence import NO_KA as NO_KA_TO_PROFILE
 from gui.dataset import DEMO_IDA, OUTLIER_DEFAULTS, Dataset, bundled
-from gui.plot_appearance import BUILT_IN, PlotAppearance
+from gui.plot_appearance import PlotAppearance
 from gui.plotting.labels import (
     STOPPING_TEXT,
     and_join,
@@ -516,19 +516,7 @@ class SessionModel(QObject):
         #: The settings of the next sensitivity run; :meth:`analysis_edited` after every change.
         self.analysis = AnalysisForm()
         self.analysis.set_inputs(list(self._settings.input_labels))
-        #: Why the session starts from the built-in plot appearance in place of the one stored
-        #: for new sessions — which cannot be read — or ``None``; the window shows it.
-        self.appearance_refusal: Refusal | None = None
-        try:
-            appearance = preferences.plot_appearance_default()
-        except ValueError as exc:
-            appearance = BUILT_IN
-            self.appearance_refusal = Refusal(
-                'Plot Appearance Not Read',
-                f'{exc} This session starts from the built-in plot appearance. To store another for new '
-                'sessions, choose it in Plot appearance and click Use for new sessions.',
-            )
-        self._plot_appearance = appearance
+        self._plot_appearance = preferences.plot_appearance_default()
         #: The session's own copy of a binding model to simulate, seeded from :attr:`binding` when Simulation is
         #: first shown (:meth:`open_simulation`); :meth:`edit_simulation` for every change.
         self.simulation = SimulationForm()

@@ -28,10 +28,7 @@ MODE_LABELS = {'system': 'System', 'light': 'Light', 'dark': 'Dark'}
 
 def plot_appearance_note() -> tuple[str, bool]:
     """What the plot appearance row says new sessions start from, and whether the built-in one can be restored."""
-    try:
-        stored = preferences.plot_appearance_default()
-    except ValueError:
-        return 'The stored appearance cannot be read; new sessions start from the built-in appearance.', True
+    stored = preferences.plot_appearance_default()
     if stored == BUILT_IN:
         return 'Built-in appearance.', False
     return 'Stored with Use for new sessions.', True

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytest.importorskip('PyQt6')
@@ -11,6 +13,7 @@ from PyQt6.QtGui import QAction  # noqa: E402
 
 from gui import preferences  # noqa: E402
 from gui.design.appearance import appearance  # noqa: E402
+from gui.plot_appearance import PlotAppearance  # noqa: E402
 
 
 @pytest.fixture
@@ -78,14 +81,14 @@ def test_use_built_in_style_clears_the_stored_plot_appearance(window):
     assert not w.use_built_in.isEnabled()
 
 
-def test_an_unreadable_stored_appearance_can_be_cleared(window):
-    w, _ = window
+def test_a_stored_plot_appearance_that_cannot_be_read_is_cleared_and_said_once(qapp):
+    QSettings().clear()
     QSettings().setValue(preferences.PLOT_APPEARANCE_KEY, '{not json')
-    w.hide()
-    w.show()
-    assert 'cannot be read' in w.appearance_note.text()
-    w.use_built_in.click()
+    assert preferences.reset_unreadable() == [
+        'The saved plot appearance for new sessions could not be read and is now the built-in one.'
+    ]
     assert QSettings().value(preferences.PLOT_APPEARANCE_KEY) is None
+    assert preferences.reset_unreadable() == []
 
 
 def test_check_now_runs_the_apps_update_check_and_follows_it(window):
@@ -126,13 +129,23 @@ def test_a_stored_choice_this_version_cannot_read_is_reset_and_said(qapp):
     QSettings().clear()
     QSettings().setValue(preferences.APPEARANCE_KEY, 'sepia')
     QSettings().setValue(preferences.CONCENTRATION_UNIT_KEY, 'pM')
+    QSettings().setValue(
+        preferences.PLOT_APPEARANCE_KEY, json.dumps({'replicate_colour': 'blue', 'replicate_size': 'large'})
+    )
     with pytest.raises(ValueError, match='appearance'):
         preferences.appearance_mode()
     said = preferences.reset_unreadable()
     assert said == [
-        'The stored appearance could not be read and was reset to System.',
-        'The stored concentration unit for new sessions could not be read and was reset to µM.',
+        'The saved appearance is not available in this version and is now System.',
+        'The saved concentration unit for new sessions is not available in this version and is now µM.',
+        'The colour of the replicate points saved for new sessions is not available in this version '
+        'and is now By replicate.',
     ]
     assert (preferences.appearance_mode(), preferences.concentration_unit()) == ('system', 'µM')
+    # The repair is stored: the choices this version offers are kept, so nothing is said again.
+    assert (
+        json.loads(QSettings().value(preferences.PLOT_APPEARANCE_KEY))
+        == PlotAppearance(replicate_size='large').to_dict()
+    )
     assert preferences.reset_unreadable() == []
     QSettings().clear()

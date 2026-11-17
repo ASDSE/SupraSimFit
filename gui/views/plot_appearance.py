@@ -216,10 +216,7 @@ class PlotAppearanceView(QObject):
 
     def refresh_buttons(self) -> None:
         """Enable *Use for new sessions* where another appearance is stored, and *Reset* off the built-in one."""
-        try:
-            stored = preferences.plot_appearance_default()
-        except ValueError:
-            stored = None
+        stored = preferences.plot_appearance_default()
         current = self.model.plot_appearance
         self.use_for_new.setEnabled(stored != current)
         self.reset.setEnabled(current != BUILT_IN)
