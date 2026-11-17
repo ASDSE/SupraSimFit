@@ -395,7 +395,7 @@ class MeasurementsView(QObject):
         self.chip_row.setContentsMargins(QMargins())
         self.chip_row.setColumnStretch(4, 1)
         self.reset_all = C.link_button('Reset all')
-        self.reset_all.clicked.connect(self.model.reset_replicates)
+        self.reset_all.clicked.connect(lambda: self.model.reset_replicates())
         self.replicate_note = C.label('', 'small', 'tertiary')
         self.replicate_note.setWordWrap(True)
         chips = QWidget()
@@ -417,7 +417,7 @@ class MeasurementsView(QObject):
         apply.clicked.connect(self._apply_outliers)
         reset = C.tool_button(t, 'Reset', 'rotate')
         reset.setToolTip('Use every replicate again')
-        reset.clicked.connect(self.model.reset_replicates)
+        reset.clicked.connect(lambda: self.model.reset_replicates())
 
         def field(name: str, widget: QWidget) -> QWidget:
             box = QWidget()

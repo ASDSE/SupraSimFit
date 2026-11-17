@@ -244,3 +244,27 @@ def test_no_view_raises_and_each_draws_once(make_session, fits, monkeypatch, nam
 
     assert raised == []
     assert {name: n for name, n in draws.items() if n > 1} == {}
+
+
+def test_no_signal_reaches_an_edit_that_takes_no_argument_directly():
+    """PyQt drops a signal's extra arguments only for a slot whose own parameters it can count;
+    an edit's wrapper takes ``*args``, so ``clicked(bool)`` connected straight to an edit of no
+    argument passes ``checked`` into it and the click fails. Such an edit is connected through a lambda."""
+    import ast
+    import inspect
+
+    from gui.session_model import SessionModel
+
+    root = Path(__file__).resolve().parents[3] / 'gui'
+    direct = []
+    for path in root.rglob('*.py'):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not (isinstance(node, ast.Call) and getattr(node.func, 'attr', None) == 'connect' and node.args):
+                continue
+            target = node.args[0]
+            if isinstance(target, ast.Attribute) and getattr(target.value, 'attr', None) == 'model':
+                method = getattr(SessionModel, target.attr, None)
+                wrapped = getattr(method, '__wrapped__', None)
+                if wrapped is not None and len(inspect.signature(wrapped).parameters) == 1:
+                    direct.append(f'{path.relative_to(root.parent)}:{node.lineno} {target.attr}')
+    assert direct == []
