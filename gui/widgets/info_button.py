@@ -133,6 +133,10 @@ class InfoGroupBox(QGroupBox):
     def set_info(self, info_title: str, info_html: str) -> None:
         self._info_btn.set_content(info_title, info_html)
 
+    def setTitle(self, title: str) -> None:  # Qt override
+        super().setTitle(title)
+        self._place_info_button()
+
     def resizeEvent(self, event) -> None:  # Qt override
         super().resizeEvent(event)
         self._place_info_button()

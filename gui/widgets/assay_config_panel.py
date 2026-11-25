@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt6.QtCore import QLocale, Qt, pyqtSignal
+from PyQt6.QtCore import QLocale, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from core.assays.base import BaseAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.units import Q_, Quantity
 from gui.assay_descriptions import ASSAY_DESCRIPTIONS
+from gui.plotting.labels import plain_label
 from gui.widgets.assay_conditions import ConditionField, assay_class, condition_fields
 from gui.widgets.info_button import InfoButton, InfoGroupBox
 from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, decimals_for_scale
@@ -22,6 +23,17 @@ _UNIT_TYPE_CHOICES: dict[str, tuple[tuple[str, ...], str]] = {
 }
 
 _LOCALE_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
+
+# Pause in typing or stepping after which a conditions edit counts as finished.
+_EDIT_SETTLE_MS = 600
+
+_SUPERSCRIPT = str.maketrans('-0123456789', '⁻⁰¹²³⁴⁵⁶⁷⁸⁹')
+
+
+def _plain_number(value: float) -> str:
+    """Up to four significant figures, with a power of ten written as ``1.68×10⁷``."""
+    mantissa, _, exponent = f'{value:.4g}'.partition('e')
+    return f'{mantissa}×10{str(int(exponent)).translate(_SUPERSCRIPT)}' if exponent else mantissa
 
 
 class _UnitWidget(QWidget):
@@ -38,12 +50,16 @@ class _UnitWidget(QWidget):
     -------
     value_changed()
         Emitted when the numeric value (in base units) changes.
+    edit_finished()
+        Emitted when Return is pressed or focus leaves the spinbox, and when the unit is switched.
     """
 
     value_changed = pyqtSignal()
+    edit_finished = pyqtSignal()
 
     def __init__(self, field: ConditionField, parent=None):
         super().__init__(parent)
+        self._label = field.label
         self._base_unit: str = field.unit or ''
         entry = _UNIT_TYPE_CHOICES.get(field.unit_type)
         choices = entry[0] if entry else ()
@@ -86,10 +102,21 @@ class _UnitWidget(QWidget):
         self._spinbox.setValue(displayed)
 
         self._spinbox.valueChanged.connect(self._on_spinbox_changed)
+        self._spinbox.editingFinished.connect(self.edit_finished)
 
     def value(self) -> Quantity:
         """Return value as a Quantity in the base unit (M or M⁻¹)."""
         return Q_(self._spinbox.value() * self._current_scale, self._base_unit)
+
+    def name(self) -> str:
+        """This field's label in plain text: ``[Host]₀``."""
+        return plain_label(self._label)
+
+    def format(self, value: Quantity) -> str:
+        """*value* in plain text in the unit this field shows now: ``4.3 µM``."""
+        magnitude = value.to(self._base_unit).magnitude if self._base_unit else float(value.magnitude)
+        unit = self._combo.currentText() if self._combo is not None else self._base_unit
+        return f'{_plain_number(magnitude / self._current_scale)} {unit}'.rstrip()
 
     def setValue(self, base_value: float) -> None:
         """Set widget from a base-unit value."""
@@ -121,6 +148,7 @@ class _UnitWidget(QWidget):
         self._spinbox.setValue(old_base / self._current_scale)
         self._spinbox.blockSignals(False)
         self.value_changed.emit()
+        self.edit_finished.emit()
 
     def _on_spinbox_changed(self) -> None:
         self.value_changed.emit()
@@ -150,11 +178,16 @@ class AssayConfigPanel(InfoGroupBox):
     assay_type_changed(AssayType)
         Emitted when the user selects a different assay type.
     conditions_changed()
-        Emitted when any condition field value changes.
+        Emitted when any condition field value changes, keystroke by keystroke.
+    conditions_edited()
+        Emitted once an edit is finished: Return or focus leaving a field, a
+        unit or assay switch, or a pause in typing or stepping. Typing a value
+        emits it once, not per keystroke.
     """
 
     assay_type_changed = pyqtSignal(object)  # AssayType
     conditions_changed = pyqtSignal()
+    conditions_edited = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__('Assay Configuration', 'Assay Configuration', _SECTION_HELP_HTML, parent)
@@ -164,6 +197,10 @@ class AssayConfigPanel(InfoGroupBox):
         self._groups: dict[str, list[AssayType]] = {}
         for at, meta in ASSAY_REGISTRY.items():
             self._groups.setdefault(meta.category, []).append(at)
+        self._settle_timer = QTimer(self)
+        self._settle_timer.setSingleShot(True)
+        self._settle_timer.setInterval(_EDIT_SETTLE_MS)
+        self._settle_timer.timeout.connect(self.conditions_edited)
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -184,6 +221,15 @@ class AssayConfigPanel(InfoGroupBox):
 
     def get_assay_class(self) -> type[BaseAssay]:
         return assay_class(self._current_type)
+
+    def condition_name(self, key: str) -> str | None:
+        """Plain-text label of condition *key* (``[Host]₀``), or ``None`` when the form has no such field."""
+        widget = self._field_widgets.get(key)
+        return None if widget is None else widget.name()
+
+    def format_condition(self, key: str, value: Quantity) -> str:
+        """*value* of condition *key* in plain text, in the unit its field shows now: ``4.3 µM``."""
+        return self._field_widgets[key].format(value)
 
     def set_assay_type(self, assay_type: AssayType) -> None:
         """Programmatically select an assay (demo loader, tests).
@@ -283,6 +329,8 @@ class AssayConfigPanel(InfoGroupBox):
             unit_widget = _UnitWidget(f)
             unit_widget.setToolTip(f.tooltip)
             unit_widget.value_changed.connect(self.conditions_changed)
+            unit_widget.value_changed.connect(self._settle_timer.start)
+            unit_widget.edit_finished.connect(self._finish_edit)
 
             lbl = QLabel(f.label)
             lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -301,6 +349,11 @@ class AssayConfigPanel(InfoGroupBox):
         self._refresh_assay_info(assay_type)
         self.assay_type_changed.emit(assay_type)
         self.conditions_changed.emit()
+        self._finish_edit()
+
+    def _finish_edit(self) -> None:
+        self._settle_timer.stop()
+        self.conditions_edited.emit()
 
     def _on_main_changed(self, idx: int) -> None:
         # Repopulate the subtype combo (signals blocked), then apply its first

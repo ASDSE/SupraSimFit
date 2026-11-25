@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Iterable, Sequence
+
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -31,12 +33,42 @@ def _display_label(index: int) -> str:
     return chr(65 + index // 26 - 1) + chr(65 + index % 26)
 
 
+def describe_replicates(replica_ids: Iterable[str], order: Sequence[str] | None = None) -> str:
+    """Name *replica_ids* as the Replicates panel does: ``replicate B``, ``replicates B–H``, ``replicates A, C and E``.
+
+    A replicate is named by its display label, from its position in *order*
+    (the loaded data's replicate ids), with three or more neighbours joined
+    into a span. When *order* is missing or lacks one of them, the ids are
+    named as they are.
+    """
+    ids = list(replica_ids)
+    noun = 'replicate' if len(ids) == 1 else 'replicates'
+    order = list(order or ())
+    if all(rid in order for rid in ids):
+        runs: list[list[int]] = []
+        for pos in sorted(order.index(rid) for rid in ids):
+            if runs and pos == runs[-1][-1] + 1:
+                runs[-1].append(pos)
+            else:
+                runs.append([pos])
+        names = []
+        for run in runs:
+            if len(run) >= 3:
+                names.append(f'{_display_label(run[0])}–{_display_label(run[-1])}')
+            else:
+                names.extend(_display_label(pos) for pos in run)
+    else:
+        names = ids
+    joined = names[0] if len(names) == 1 else f'{", ".join(names[:-1])} and {names[-1]}'
+    return f'{noun} {joined}'
+
+
 _SECTION_HELP_HTML = """
-<h3>Replicas</h3>
-<p>Each checkbox represents one replica trace. Unchecked replicas
-are excluded from averaging and fitting. Replicas marked
-<i>(z-score)</i> were deactivated automatically by the outlier removal
-step &mdash; you can re-activate them manually here.</p>
+<h3>Replicates</h3>
+<p>Each checkbox represents one replicate trace. Unchecked replicates
+are excluded from averaging and fitting. Replicates marked
+<i>(z)</i> were switched off automatically by the outlier removal
+step &mdash; you can switch them back on here.</p>
 """
 
 
@@ -55,7 +87,7 @@ class ReplicaPanel(InfoGroupBox):
     replicas_changed = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__('Replicas', 'Replicates', _SECTION_HELP_HTML, parent)
+        super().__init__('Replicates', 'Replicates', _SECTION_HELP_HTML, parent)
         self._ms: MeasurementSet | None = None
         self._checkboxes: dict[str, QCheckBox] = {}
         self._auto_dropped: set[str] = set()  # dropped by preprocessing
@@ -150,7 +182,7 @@ class ReplicaPanel(InfoGroupBox):
             cb.setChecked(active)
             if rid in self._auto_dropped:
                 cb.setStyleSheet('color: #888;')
-            cb.setToolTip(f'Replica {rid}')
+            cb.setToolTip(f'Replicate {rid}')
             # Capture rid in closure
             cb.toggled.connect(lambda checked, r=rid: self._on_toggled(r, checked))
             self._checkboxes[rid] = cb

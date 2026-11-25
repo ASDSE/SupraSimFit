@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -20,7 +21,7 @@ from PyQt6.QtWidgets import (
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.units import Q_, Quantity
 from gui.parameter_descriptions import PARAMETER_DESCRIPTIONS
-from gui.plotting.labels import fmt_param
+from gui.plotting.labels import fmt_param, plain_label
 from gui.widgets.info_button import InfoButton, InfoGroupBox
 
 _DYE_ALONE_PRIOR_HTML = """
@@ -79,17 +80,21 @@ def _parse_sci(text: str) -> float | None:
 
 
 class _BoundRow(QWidget):
-    """A single row: lower QLineEdit | '—' | upper QLineEdit | info ⓘ."""
+    """A single row: lower QLineEdit | '—' | upper QLineEdit | info ⓘ.
+
+    Both boxes take a number in plain or scientific notation and nothing else.
+    :meth:`problem` says in one sentence why what they hold cannot be used, naming
+    the parameter and the box, so no entry is quietly replaced by a default.
+    """
 
     def __init__(self, key: str, lo: float, hi: float, parent=None):
         super().__init__(parent)
         self.key = key
+        self.name = plain_label(fmt_param(key))
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
-        self._lo = QLineEdit(f'{lo:.3e}')
-        self._lo.setFixedWidth(90)
-        self._hi = QLineEdit(f'{hi:.3e}')
-        self._hi.setFixedWidth(90)
+        self._lo = self._edit(lo)
+        self._hi = self._edit(hi)
         row.addWidget(self._lo)
         row.addWidget(QLabel('—'))
         row.addWidget(self._hi)
@@ -101,6 +106,16 @@ class _BoundRow(QWidget):
         )
         row.addWidget(InfoButton(title, body))
 
+    @staticmethod
+    def _edit(value: float) -> QLineEdit:
+        """A bound box showing *value*, accepting only a number as it is typed."""
+        edit = QLineEdit(f'{value:.3e}')
+        edit.setFixedWidth(90)
+        validator = QDoubleValidator(edit)
+        validator.setNotation(QDoubleValidator.Notation.ScientificNotation)
+        edit.setValidator(validator)
+        return edit
+
     def values(self) -> tuple[float, float] | None:
         lo = _parse_sci(self._lo.text())
         hi = _parse_sci(self._hi.text())
@@ -108,15 +123,23 @@ class _BoundRow(QWidget):
             return None
         return lo, hi
 
+    def problem(self) -> str | None:
+        """Why this row's bounds cannot be used, naming the parameter; ``None`` when they can."""
+        for box, edge in ((self._lo, 'lower'), (self._hi, 'upper')):
+            if _parse_sci(box.text()) is None:
+                shown = box.text().strip()
+                says = f'“{shown}” is not a number' if shown else 'is empty'
+                return f'{self.name}: the {edge} bound {says}. Enter a number, such as 1e3.'
+        lo, hi = self.values()
+        # Equal bounds are a deliberate pin: the parameter is held at that value
+        # and not fitted, which the Identifiability tab reports for Ka.
+        if lo > hi:
+            return f'{self.name}: the lower bound must not be above the upper bound.'
+        return None
+
     def set_values(self, lo: float, hi: float) -> None:
         self._lo.setText(f'{lo:.3e}')
         self._hi.setText(f'{hi:.3e}')
-
-    def default_lo(self) -> float:
-        return _parse_sci(self._lo.text()) or 0.0
-
-    def default_hi(self) -> float:
-        return _parse_sci(self._hi.text()) or 1.0
 
 
 _BOUNDS_SECTION_HELP_HTML = """
@@ -129,6 +152,10 @@ knowledge.</p>
 See the <i>i</i> next to &ldquo;Use dye-alone priors&rdquo; for how
 calibration data can tighten signal-coefficient bounds
 automatically.</p>
+<p>These bounds also limit the confidence interval on the Identifiability tab,
+which is searched inside them. That interval holds if the model is right, the
+conditions you entered are right, and the scatter is independent from point to point
+and of the same size at every point; it says nothing about an error in any of those.</p>
 """
 
 
@@ -137,7 +164,8 @@ class BoundsPanel(InfoGroupBox):
 
     Auto-populates from ``ASSAY_REGISTRY[assay_type].default_bounds`` when the
     assay type changes.  Supports loading dye-alone priors to constrain the
-    signal coefficient parameters.
+    signal coefficient parameters. A bound that cannot be used is named under the
+    rows and reported by :meth:`problems`.
 
     Signals
     -------
@@ -172,12 +200,24 @@ class BoundsPanel(InfoGroupBox):
             self._defaults[key] = (lo_f, hi_f)
         self._rebuild_form(self._defaults)
 
+    def problems(self) -> list[str]:
+        """Why the bounds shown cannot be used, one sentence per row naming the parameter; empty when they can.
+
+        The same sentences are shown in the panel as the user types. Check this
+        before running a fit: a row with a problem carries no bounds into
+        :meth:`current_bounds`, so the fit would search the registry defaults there.
+        """
+        return [problem for row in self._rows.values() if (problem := row.problem())]
+
     def current_bounds(self) -> dict[str, tuple[Quantity, Quantity]] | None:
-        """Return custom Quantity bounds or None if all match defaults."""
+        """Return custom Quantity bounds or None if all match defaults.
+
+        A row :meth:`problems` names is left out; the panel shows why.
+        """
         result_floats = {}
         for key, row in self._rows.items():
             vals = row.values()
-            if vals is None:
+            if vals is None or row.problem() is not None:
                 continue
             result_floats[key] = vals
         # If all values equal defaults, return None (use registry defaults)
@@ -219,6 +259,14 @@ class BoundsPanel(InfoGroupBox):
         self._form_layout = QFormLayout(self._form_widget)
         self._form_layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._form_widget)
+
+        # Names every bound that cannot be used, as it is typed.
+        self._warning = QLabel()
+        self._warning.setWordWrap(True)
+        self._warning.setStyleSheet('color: #b42318;')
+        self._warning.hide()
+        layout.addWidget(self._warning)
+        self.bounds_changed.connect(self._refresh_warning)
 
         # Reset defaults button — compact, centred
         reset_row = QHBoxLayout()
@@ -262,6 +310,13 @@ class BoundsPanel(InfoGroupBox):
             row._hi.textChanged.connect(self.bounds_changed)
             self._form_layout.addRow(fmt_param(key) + ':', row)
             self._rows[key] = row
+        self._refresh_warning()
+
+    def _refresh_warning(self) -> None:
+        """Show every problem the rows report, or nothing when there are none."""
+        text = '\n'.join(self.problems())
+        self._warning.setText(text)
+        self._warning.setVisible(bool(text))
 
     # ------------------------------------------------------------------
     # Slots

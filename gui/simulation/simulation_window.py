@@ -268,7 +268,7 @@ class SimulationWindow(QMainWindow):
         )
         # Evaluate the model at the imported grid so the comparison lines up.
         self._panel.set_concentration_explicit(ms.concentrations)
-        self.statusBar().showMessage(f'Imported {ms.n_replicas} replica(s) from {Path(path).name}')
+        self.statusBar().showMessage(f'Imported {ms.n_replicas} replicate(s) from {Path(path).name}')
 
     # -- helpers -------------------------------------------------------------
 

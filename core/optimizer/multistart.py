@@ -14,6 +14,14 @@ from scipy.optimize import minimize
 from core.optimizer.scaling import ParamScaler
 
 
+class FitCancelled(Exception):
+    """Raised when a fit stops because its caller asked it to.
+
+    Carried up from :func:`multistart_minimize` through every pipeline entry
+    point, so the caller that owns the cancellation flag decides what to show.
+    """
+
+
 @dataclass
 class FitAttempt:
     """Result from a single optimization attempt.
@@ -43,6 +51,7 @@ def generate_initial_guesses(
     n_trials: int,
     bounds: List[Tuple[float, float]],
     log_scale_params: Optional[List[int]] = None,
+    rng: Optional[np.random.Generator] = None,
 ) -> List[np.ndarray]:
     """Generate random initial parameter guesses within bounds.
 
@@ -55,26 +64,44 @@ def generate_initial_guesses(
     log_scale_params : List[int], optional
         Indices of parameters that should be sampled in log space.
         This is useful for parameters like Ka that span many orders of magnitude.
+    rng : numpy.random.Generator, optional
+        Generator to draw the starting points from. Supply one to make a fit
+        reproducible; when omitted the draws come from the global NumPy
+        random state.
 
     Returns
     -------
     List[np.ndarray]
         List of initial parameter arrays.
+
+    Raises
+    ------
+    ValueError
+        If a log-scale parameter's bounds are not both above zero, which log
+        space cannot hold.
     """
     if log_scale_params is None:
         log_scale_params = []
+
+    for i in log_scale_params:
+        lower, upper = bounds[i]
+        if lower <= 0 or upper <= 0:
+            raise ValueError(
+                f'Parameter {i} is sampled across orders of magnitude, so both its bounds must be '
+                f'above zero; they are ({lower:g}, {upper:g}).'
+            )
+
+    uniform = np.random.uniform if rng is None else rng.uniform
 
     initial_guesses = []
     for _ in range(n_trials):
         guess = np.empty(len(bounds))
         for i, (lower, upper) in enumerate(bounds):
-            if i in log_scale_params and lower > 0 and upper > 0:
+            if i in log_scale_params:
                 # Sample in log space for parameters spanning orders of magnitude
-                log_lower = np.log10(lower)
-                log_upper = np.log10(upper)
-                guess[i] = 10 ** np.random.uniform(log_lower, log_upper)
+                guess[i] = 10 ** uniform(np.log10(lower), np.log10(upper))
             else:
-                guess[i] = np.random.uniform(lower, upper)
+                guess[i] = uniform(lower, upper)
         initial_guesses.append(guess)
 
     return initial_guesses
@@ -88,6 +115,8 @@ def multistart_minimize(
     log_scale_params: Optional[List[int]] = None,
     compute_metrics: Optional[Callable[[np.ndarray], Tuple[float, float]]] = None,
     scaler: Optional[ParamScaler] = None,
+    rng: Optional[np.random.Generator] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> List[FitAttempt]:
     """Run L-BFGS-B optimizer from multiple starting points.
 
@@ -109,14 +138,25 @@ def multistart_minimize(
     scaler : ParamScaler, optional
         If provided, optimizer runs in the scaler's internal (tilded) space;
         callers still pass and receive raw parameters.
+    rng : numpy.random.Generator, optional
+        Generator for the random starting points. Supply one to make the
+        multi-start pool reproducible; ignored when *initial_guesses* is given.
+    should_cancel : Callable[[], bool], optional
+        Asked before each optimizer run whether to stop. The run in progress
+        finishes first, so a cancellation takes at most one run to take effect.
 
     Returns
     -------
     List[FitAttempt]
         Raw-space attempts sorted by raw cost (ascending).
+
+    Raises
+    ------
+    FitCancelled
+        If *should_cancel* returns True.
     """
     if initial_guesses is None:
-        initial_guesses = generate_initial_guesses(n_trials, bounds, log_scale_params)
+        initial_guesses = generate_initial_guesses(n_trials, bounds, log_scale_params, rng=rng)
 
     opt_bounds, opt_objective, opt_initial = bounds, objective, initial_guesses
     if scaler is not None:
@@ -126,6 +166,8 @@ def multistart_minimize(
 
     results = []
     for opt_guess in opt_initial:
+        if should_cancel is not None and should_cancel():
+            raise FitCancelled('The fit was cancelled.')
         try:
             result = minimize(opt_objective, opt_guess, method='L-BFGS-B', bounds=opt_bounds)
 

@@ -34,8 +34,8 @@ import pint
 # Single shared UnitRegistry
 # ---------------------------------------------------------------------------
 ureg = pint.UnitRegistry()
-Q_ = ureg.Quantity
-Quantity = pint.Quantity
+Q_ = ureg.Quantity  # type: ignore[reportInvalidTypeForm]
+Quantity = pint.Quantity  # type: ignore[reportInvalidTypeForm]
 Unit = pint.Unit
 
 # Custom unit definitions

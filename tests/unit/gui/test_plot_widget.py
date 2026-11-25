@@ -1,9 +1,46 @@
 """Widget tests for PlotWidget — requires a QApplication."""
 
+from dataclasses import replace
+
 import pytest
 
 pytest.importorskip('PyQt6')
 pytest.importorskip('pyqtgraph')
+
+
+def test_building_the_fit_curve_plot_leaves_the_library_defaults_alone(qapp):
+    """The Fit Curve tab styles its own view, never pyqtgraph's process-wide defaults.
+
+    Those defaults reach every plot the application builds afterwards. With
+    antialiasing switched on for the whole process, the one-pixel stroke that
+    keeps a histogram bin of a single fit visible on the Distributions tab is
+    drawn blended into the background and vanishes.
+    """
+    import pyqtgraph as pg
+
+    from gui.plotting.plot_widget import PlotWidget
+
+    keys = ('background', 'foreground', 'antialias')
+    before = {key: pg.getConfigOption(key) for key in keys}
+
+    PlotWidget()
+
+    assert {key: pg.getConfigOption(key) for key in keys} == before
+
+
+def test_the_fit_curve_plot_draws_every_curve_antialiased(qapp, minimal_plot_data):
+    """Each curve carries its own antialiasing setting and paints by that, never by the view's.
+
+    A curve left at the library's default is drawn in hard stair-steps, on
+    screen and in every picture saved from the tab.
+    """
+    from gui.plotting.plot_widget import PlotWidget
+
+    pw = PlotWidget()
+    pw.update_plot(minimal_plot_data)
+
+    curves = [pw._average_item, *pw._fit_items, *pw._error_cap_items]
+    assert curves and all(item.opts['antialias'] for item in curves)
 
 
 def test_update_plot_clears_on_second_call(qapp, minimal_plot_data):
@@ -282,6 +319,62 @@ def _ka_line(text):
     return next(line for line in text.split('\n') if line.startswith('Ka'))
 
 
+def _with_attempts(result, shown, *, per_replicate=True, replica_fits=True):
+    """*result* with a 60-attempt pool, showing attempt *shown*.
+
+    Attempt 0 has the pool's highest R². As a per-replicate fit its replicates
+    hold attempts 0-29 and 30-59, led by attempts 7 and 30; attempt 7 fits the
+    averaged signal better, so the fit chose attempt 7.
+    """
+    import numpy as np
+
+    r2 = np.linspace(0.99, 0.98, 60)
+    r2[0], r2[7] = 0.999, 0.995
+    replicas = [
+        replace(
+            result, parameter_samples={k: v[s] for k, v in result.parameter_samples.items()}, representative_index=i
+        )
+        for s, i in ((slice(0, 30), 7), (slice(30, 60), 0))
+    ]
+    return replace(
+        result,
+        uncertainty_source='replicate' if per_replicate else 'optimizer',
+        quality_samples={'r_squared': r2, 'rmse': 1.0 - r2},
+        replica_fits=replicas if per_replicate and replica_fits else None,
+        representative_index=shown,
+    )
+
+
+@pytest.mark.parametrize(
+    ('make', 'heading'),
+    [
+        (lambda r: _with_attempts(r, 7), "one replicate's best fit (range over 60"),
+        (lambda r: _with_attempts(r, 40), 'picked fit (range over 60'),
+        (lambda r: _with_attempts(r, 7, per_replicate=False), 'picked fit (range over 60'),
+        (lambda r: _with_attempts(r, 7, replica_fits=False), 'shown fit (range over 60'),
+        (
+            lambda r: replace(r, representative_index=7, metadata={'fitted_representative_index': 3}),
+            'picked fit (range over 60',
+        ),
+    ],
+    ids=['per-replicate-choice', 'per-replicate-pick', 'single-fit-pick', 'choice-unknown', 'recorded-pick'],
+)
+def test_annotation_names_a_fit_that_is_not_the_pool_best(qapp, make, heading):
+    pw = _binding_plot(qapp)
+    pw.set_fit_results([make(pw._fit_results[0])])
+    text = pw._annotation_item.textItem.toPlainText()
+
+    assert heading in text
+    assert '— best fit' not in text
+
+
+def test_annotation_calls_a_single_fit_s_own_choice_the_best_fit(qapp):
+    pw = _binding_plot(qapp)
+    pw.set_fit_results([_with_attempts(pw._fit_results[0], 0, per_replicate=False)])
+
+    assert '— best fit (range over 60' in pw._annotation_item.textItem.toPlainText()
+
+
 def test_annotation_reports_estimate_and_range(qapp):
     """Each parameter reads 'Estimate (min, max)' over the accepted pool."""
     import re
@@ -302,6 +395,20 @@ def test_annotation_reports_estimate_and_range(qapp):
     lo, hi = re.search(r'\(([\d.]+)×10(\d+), ([\d.]+)×10(\d+)\)', _ka_line(text)).group(1, 3)
     assert float(lo) == pytest.approx(np.min(pool) / 1e6, abs=0.01)
     assert float(hi) == pytest.approx(np.max(pool) / 1e6, abs=0.01)
+
+
+def test_annotation_r2_never_reads_as_meeting_the_floor_it_misses(qapp):
+    """A fit a hair below its own Min R² reads below it, from the one shared R² formatter."""
+    from dataclasses import replace
+
+    from gui.plotting.labels import fmt_r2
+
+    pw = _binding_plot(qapp)
+    below = replace(pw._fit_results[0], r_squared=0.98999, fit_config={'min_r_squared': 0.99})
+    pw.set_fit_results([below])
+    text = pw._annotation_item.textItem.toPlainText()
+    assert f'R²: {fmt_r2(0.98999, 0.99)}' in text
+    assert 'R²: 0.9900' not in text
 
 
 def test_annotation_without_pool_states_no_range(qapp):
@@ -504,3 +611,159 @@ def test_placement_avoids_a_blocked_rect(qapp):
 
     blocked = pw._best_overlay_slot(size, blocked=(free_rect,))[1]
     assert not blocked.intersects(free_rect)
+
+
+# ---------------------------------------------------------------------------
+# Replicates a fit left out, replicate colours, and hiding a fit (G7)
+# ---------------------------------------------------------------------------
+
+
+def _four_replicates():
+    """Four replicates A–D whose levels differ, so a mean over a subset is distinguishable."""
+    import numpy as np
+
+    from core.data_processing.measurement_set import MeasurementSet
+
+    rng = np.random.default_rng(5)
+    conc = np.linspace(1e-6, 1e-5, 8)
+    signals = np.stack([1e4 * (1 + 0.2 * i) * conc / (conc + 3e-6) + rng.normal(0, 30, conc.size) for i in range(4)])
+    return MeasurementSet(concentrations=conc, signals=signals, replica_ids=('0', '1', '2', '3'))
+
+
+def _fit_leaving_out(ms, left_out):
+    """A per-replicate fit given the active replicates of *ms* that left out *left_out*."""
+    import numpy as np
+
+    from core.pipeline.fit_pipeline import FitResult
+    from core.units import Q_
+
+    given = ms.active_replica_ids
+    used = [rid for rid in given if rid not in left_out]
+    x = np.linspace(ms.concentrations[0], ms.concentrations[-1], 60)
+    rows = [ms.replica_ids.index(rid) for rid in used]
+    return FitResult(
+        parameters={'Ka_guest': Q_(3.1e5, '1/M'), 'I_0': Q_(100.0, 'au')},
+        rmse=41.0,
+        r_squared=0.9921,
+        n_passing=1,
+        n_total=1,
+        x_fit=Q_(x, 'M'),
+        y_fit=Q_(np.interp(x, ms.concentrations, ms.signals[rows].mean(axis=0)), 'au'),
+        assay_type='IDA',
+        model_name='equilibrium_4param',
+        metadata={
+            'active_replica_ids': given,
+            'replica_ids_fit': used,
+            'replica_failures': {rid: 'None of its fit attempts reached the minimum R².' for rid in left_out},
+        },
+    )
+
+
+def _replicate_colours(pw):
+    """RGB of each replicate drawn in its own colour, by replicate id."""
+    return {rid: item.opts['brush'].color().getRgb()[:3] for item, rid in zip(pw._replica_items, pw._replica_ids)}
+
+
+def _legend_labels(pw):
+    return [label.text for _, label in pw._legend.items]
+
+
+@pytest.mark.parametrize('switched_off', [(), ('1',)], ids=['all-on', 'B-off-before-the-fit'])
+def test_replicate_colours_and_labels_stay_when_a_fit_appears(qapp, switched_off):
+    """Catches colours taken from a replicate's place among the drawn ones, which shift once B is off or A left out."""
+    from core.data_processing.plotting import prepare_plot_data
+    from gui.plotting.colors import REPLICA_PALETTE
+    from gui.plotting.plot_widget import PlotWidget
+
+    ms = _four_replicates()
+    for rid in switched_off:
+        ms.set_active(rid, False)
+    pw = PlotWidget()
+    pw.update_plot(prepare_plot_data(ms, show_dropped=True))
+    before = _replicate_colours(pw)
+    before_labels = _legend_labels(pw)
+
+    fit = _fit_leaving_out(ms, ['0'])
+    pw.update_plot(prepare_plot_data(ms, [fit], show_dropped=True))
+    pw.set_fit_results([fit])
+    after = _replicate_colours(pw)
+
+    assert before == {rid: REPLICA_PALETTE[int(rid)] for rid in ms.active_replica_ids}
+    assert after == {rid: before[rid] for rid in fit.metadata['replica_ids_fit']}
+    labels = _legend_labels(pw)
+    assert 'A (left out of fit)' in labels
+    assert [text for text in labels if len(text) == 1] == [text for text in before_labels if len(text) == 1][1:]
+    assert ('B (dropped)' in labels) == bool(switched_off) == ('B (dropped)' in before_labels)
+
+
+def test_mean_and_sd_cover_only_the_replicates_the_fit_used(qapp):
+    """Catches Mean ± SD over every active replicate while the fit's R² is measured on fewer."""
+    import numpy as np
+
+    from core.data_processing.plotting import prepare_plot_data
+    from gui.plotting.plot_widget import PlotWidget
+
+    ms = _four_replicates()
+    fit = _fit_leaving_out(ms, ['0'])
+    pw = PlotWidget()
+    pw.update_plot(prepare_plot_data(ms, [fit], show_dropped=True))
+
+    _, mean = pw._average_item.getData()
+    _, _, sd = pw._last_error_bar_data
+    np.testing.assert_allclose(mean, ms.signals[1:].mean(axis=0), rtol=1e-15)
+    np.testing.assert_allclose(sd, ms.signals[1:].std(axis=0), rtol=1e-12)
+    assert pw._left_out_replica_ids == ['0']
+    assert pw._note.isHidden()
+
+
+def test_show_mismatch_hides_the_fit_until_it_matches_again(qapp):
+    """A hidden fit draws no curve or annotation through later redraws, and comes back exactly as it was."""
+    import numpy as np
+
+    from core.data_processing.plotting import prepare_plot_data
+    from gui.plotting.plot_style import DEFAULT_STYLE
+    from gui.plotting.plot_widget import PlotWidget
+
+    ms = _four_replicates()
+    fit = _fit_leaving_out(ms, ['0'])
+    pw = PlotWidget()
+    pw.update_plot(prepare_plot_data(ms, [fit], show_dropped=True))
+    pw.set_fit_results([fit])
+    shown_text = pw._annotation_item.textItem.toPlainText()
+
+    note = 'This fit was made on replicates B–D. Replicate B is now off.'
+    pw.show_mismatch(note)
+    assert pw._fit_items == [] and pw._annotation_item is None
+    assert pw._note.text() == note and not pw._note.isHidden()
+    assert pw._replica_ids == ['0', '1', '2', '3'] and pw._left_out_replica_ids == []
+    np.testing.assert_allclose(pw._average_item.getData()[1], ms.signals.mean(axis=0), rtol=1e-15)
+
+    # Later calls with the fit do not bring it back while it is hidden.
+    pw.update_plot(prepare_plot_data(ms, [fit], show_dropped=True))
+    pw.set_fit_results([fit])
+    style = {**DEFAULT_STYLE, 'axes': {**DEFAULT_STYLE['axes'], 'x_unit': 'nM'}}
+    pw.apply_style(style)
+    assert pw._fit_items == [] and pw._annotation_item is None
+    assert pw._note.text() == note
+
+    pw.show_mismatch(None)
+    assert len(pw._fit_items) == 1
+    assert pw._annotation_item.textItem.toPlainText() == shown_text
+    assert pw._left_out_replica_ids == ['0'] and pw._note.isHidden()
+
+
+def test_overlaid_fits_on_different_replicates_are_noted(qapp):
+    from core.data_processing.plotting import prepare_plot_data
+    from gui.plotting.plot_widget import PlotWidget
+
+    ms = _four_replicates()
+    every, some = _fit_leaving_out(ms, []), _fit_leaving_out(ms, ['0'])
+    pw = PlotWidget()
+
+    pw.update_plot(prepare_plot_data(ms, [every, some], show_dropped=True))
+    assert pw._note.text() == (
+        'Mean ± SD is over replicates B–D, the ones the fit in the summary used. Another fit shown used replicates A–D.'
+    )
+
+    pw.update_plot(prepare_plot_data(ms, [some, some], show_dropped=True))
+    assert pw._note.isHidden()

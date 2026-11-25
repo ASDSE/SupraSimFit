@@ -46,6 +46,11 @@ from tests.conftest import (
 
 CLEAN_TOL = 0.10
 NOISY_TOL = 0.25
+
+# 5% Gaussian noise caps the achievable R² near 0.98, under the app's default
+# quality floor. A recovery test pins a floor its own noise level can reach, so
+# it measures Ka recovery rather than the default acceptance policy.
+NOISY_R2_FLOOR = 0.90
 N_TRIALS_CLEAN = 100
 N_TRIALS_NOISY = 120
 
@@ -233,7 +238,14 @@ class TestIDAEndToEnd:
 
     def test_noisy_round_trip(self, ida_noisy):
         assay, true = _ida_assay(ida_noisy)
-        result = fit_assay(assay, FitConfig(n_trials=N_TRIALS_NOISY, custom_bounds=GDA_IDA_RECOVERY_BOUNDS))
+        result = fit_assay(
+            assay,
+            FitConfig(
+                n_trials=N_TRIALS_NOISY,
+                custom_bounds=GDA_IDA_RECOVERY_BOUNDS,
+                min_r_squared=NOISY_R2_FLOOR,
+            ),
+        )
 
         assert result.success
         assert_within_tolerance(result.parameters['Ka_guest'], true['Ka_guest'], NOISY_TOL, 'Ka_guest')

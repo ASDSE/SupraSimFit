@@ -77,7 +77,21 @@ class SciLineEdit(QLineEdit):
         self.setText(format_number(self._value, self._sigfigs))
 
     def value(self) -> float:
+        """The number on screen, including an edit not yet confirmed with Return or by leaving the box.
+
+        A control that does not take focus (a toolbar button on macOS) acts before
+        ``editingFinished`` fires, so the typed number is what counts. Text that is not a
+        number leaves the last accepted value; :meth:`has_unreadable_edit` reports it.
+        """
+        if self.isModified():
+            typed = _as_number(self.text())
+            if typed is not None:
+                return typed
         return self._value
+
+    def has_unreadable_edit(self) -> bool:
+        """Whether the user typed text that is not a number."""
+        return self.isModified() and _as_number(self.text()) is None
 
     def setValue(self, value: float) -> None:
         """Set the shown value from code without emitting ``value_changed``."""
@@ -93,6 +107,15 @@ class SciLineEdit(QLineEdit):
         self._value = parsed
         self.setText(format_number(parsed, self._sigfigs))
         self.value_changed.emit(parsed)
+
+
+def _as_number(text: str) -> float | None:
+    """*text* as a finite float, or ``None`` when it is not one."""
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
 
 
 def decimals_for_scale(scale: float, min_scale: float, base_decimals: int = 3) -> int:

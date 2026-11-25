@@ -66,7 +66,7 @@ file. Supported: {ext_list} &mdash; including JASCO and PerkinElmer EnSight
 CSVs and BMG plate exports.</p>
 
 <p><b>Multiple replicates:</b> select several files in the import dialog to load
-them as replicas in one session (e.g. repeated JASCO titrations). They must
+them as replicates in one session (e.g. repeated JASCO titrations). They must
 share the same concentration grid; a file whose grid differs is rejected with
 an explanation.</p>
 
@@ -76,9 +76,9 @@ concentration in the first column and signal in the second:</p>
 0,1024
 1e-6,2890
 2e-6,4210</pre>
-<p>For replicates in a CSV, add one signal column per replica
+<p>For replicates in a CSV, add one signal column per replicate
 (<code>concentration,rep1,rep2,rep3</code>). A tab-separated <code>.txt</code>
-takes the same two columns and appends each extra replica as a repeated
+takes the same two columns and appends each extra replicate as a repeated
 header+data block. Headers are matched loosely
 (<code>conc</code>/<code>x</code>/<code>titrant</code>,
 <code>signal</code>/<code>intensity</code>/<code>fluorescence</code>) and
@@ -578,7 +578,7 @@ class DataPanel(InfoGroupBox):
         self._populate_table()
         self._push_buffer_to_ms()
         self._info_label.setText(
-            f'{self._ms.n_points} points × {self._ms.n_replicas} replicas — loaded from {Path(path).name}'
+            f'{self._ms.n_points} points × {self._ms.n_replicas} replicates — loaded from {Path(path).name}'
         )
 
     def _on_save_concentrations(self) -> None:
@@ -606,7 +606,7 @@ class DataPanel(InfoGroupBox):
             )
             return
         self._info_label.setText(
-            f'{self._ms.n_points} points × {self._ms.n_replicas} replicas — saved to {Path(path).name}'
+            f'{self._ms.n_points} points × {self._ms.n_replicas} replicates — saved to {Path(path).name}'
         )
 
     # ------------------------------------------------------------------
@@ -636,12 +636,12 @@ class DataPanel(InfoGroupBox):
             return
         if len(self._source_paths) > 1:
             names = [Path(p).name for p in self._source_paths]
-            self._file_label.setText(f'{len(names)} files → {self._ms.n_replicas} replicas')
+            self._file_label.setText(f'{len(names)} files → {self._ms.n_replicas} replicates')
             self._file_label.setToolTip('\n'.join(names))
         else:
             self._file_label.setText(Path(self._source_path).name if self._source_path else '?')
             self._file_label.setToolTip('')
-        self._info_label.setText(f'{self._ms.n_points} points × {self._ms.n_replicas} replicas')
+        self._info_label.setText(f'{self._ms.n_points} points × {self._ms.n_replicas} replicates')
 
     def _set_concentration_controls_enabled(self, enabled: bool) -> None:
         self._imported_unit_combo.setEnabled(enabled)

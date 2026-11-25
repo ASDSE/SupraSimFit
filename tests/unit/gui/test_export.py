@@ -95,7 +95,7 @@ def test_plot_widget_svg_writes_vector_file(simple_plot_widget, tmp_path):
 
 
 def test_plot_widget_rejects_unknown_extension(simple_plot_widget, tmp_path):
-    with pytest.raises(ValueError, match='Unsupported export format'):
+    with pytest.raises(ValueError, match='cannot be written'):
         simple_plot_widget.export_image(str(tmp_path / 'x.bmp'))
 
 
@@ -174,7 +174,7 @@ def test_distribution_svg_writes_vector_file(fitted_dist_widget, tmp_path):
 
 
 def test_save_plot_rejects_unknown_format(fitted_dist_widget, tmp_path):
-    with pytest.raises(ValueError, match='Unsupported format'):
+    with pytest.raises(ValueError, match='cannot be written'):
         fitted_dist_widget.save_plot(
             keys=['Ka_guest'],
             rows=1,

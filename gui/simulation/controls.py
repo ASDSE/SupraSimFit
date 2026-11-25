@@ -439,7 +439,7 @@ class NoiseControl(QWidget):
         self._replicas.setRange(1, 50)
         self._replicas.setValue(3)
         self._replicas.valueChanged.connect(self.changed)
-        form.addRow('Replicas', self._replicas)
+        form.addRow('Replicates', self._replicas)
 
         self._seed = NoScrollSpinBox()
         self._seed.setRange(0, 1_000_000)

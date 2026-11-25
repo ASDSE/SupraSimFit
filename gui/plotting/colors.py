@@ -96,6 +96,27 @@ ERROR_BAR_COLOR: tuple[int, int, int] = (80, 80, 80)
 BACKGROUND_COLOR = 'w'
 FOREGROUND_COLOR = 'k'
 
+# Ink palette — the warm off-white surface and the tones that sit on it, shared
+# by the analysis charts and the help dialogs so they read as one sheet.
+#: The chart and dialog background.
+SURFACE = '#fcfcfb'
+#: Body text, axis labels, chart titles.
+INK = '#0b0b0b'
+#: Secondary text: captions, tick labels, legend entries.
+INK_2 = '#52514e'
+#: Muted text and chart furniture: axis lines, hints, disabled entries.
+INK_3 = '#898781'
+#: Hairline separators between panes.
+HAIRLINE = '#e4e3de'
+#: Samples and fits that fall short of the Min R², drawn behind the rest.
+BELOW_FLOOR = '#c3c2b7'
+#: The primary data series: histogram bars, sample dots, first-order indices.
+SERIES = '#2a78d6'
+#: The second series alongside :data:`SERIES`, e.g. the total-order index.
+SERIES_TOTAL = '#eb6834'
+#: The tinted strip a short note sits on, above a plot.
+NOTE_SURFACE = '#f3f1ea'
+
 
 def rgba(rgb: tuple[int, int, int], alpha: int = 255) -> tuple[int, int, int, int]:
     """Return an RGBA tuple from an RGB tuple and optional alpha.

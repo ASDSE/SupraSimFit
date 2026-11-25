@@ -64,13 +64,13 @@ For competitive assays (GDA/IDA), the free host concentration cannot be isolated
 - **Role:** The software employs **Brent’s Method** (a robust root-finding algorithm combining bisection, secant, and inverse quadratic interpolation) to numerically solve the mass balance equation for every single data point during the fitting process.
 - **Why this algorithm:** It guarantees convergence to a root within a bracketed interval, ensuring that the calculated concentrations are always physically meaningful (i.e., between zero and the total concentration).
 
-### 4.3. Ensemble Statistics and Robustness
+### 4.3. The Multi-Start Ensemble and What It Measures
 
-To address the inherent uncertainty in experimental data and the potential for local minima in non-linear fitting:
-- **Ensemble Fitting:** The software employs a "multi-start" or bootstrap-like strategy, running the optimization multiple times from different initial guesses or on resampled data.
-- **Robust Aggregation:** When combining results from multiple fitting attempts, the software uses **median-based statistics** (Median and Median Absolute Deviation) instead of traditional averages (Mean and Standard Deviation).
-  - **Why:** Optimization algorithms can occasionally converge to incorrect solutions ("local minima") or be skewed by noisy data points. These "bad" fits act as outliers that would significantly distort a simple average.
-  - **Benefit:** The median effectively ignores these outliers, ensuring that the reported binding constants represent the most consistent and reliable solution found across the ensemble of attempts.
+The optimizer is launched many times (default 100) from different random starting points, **always on the same measured data**. Every attempt that clears the R² floor — and the optional RMSE trim — enters the accepted pool.
+
+- **What the pool is for:** it maps how reproducibly the optimizer converges on this data set. A tight pool means the search lands on the same solution from wherever it starts; a split pool means the residual surface has more than one basin and the reported value depends on which one was found.
+- **What is reported:** the estimate is the **representative fit** — an actual member of the accepted pool, so it lies on the model's degenerate manifold and reproduces the plotted curve exactly. Beside it the app quotes the range (minimum, maximum) that the accepted pool spans; the summary table adds the median ± MAD, the mean ± SD and the central-68 % interval of the same pool. Median-based figures are robust to an attempt that converged poorly, which is why they appear next to the mean-based ones.
+- **What the pool is not:** it is not the experimental uncertainty of $K_a$. It carries no information the single data set does not already contain, because no attempt resamples or perturbs the measurements. The two questions it cannot answer are answered separately: how precisely the data determine $K_a$ (Section 6) and how much the entered conditions determine it (Section 7).
 
 ### 4.4. Physical Constraints: Non-Negative Signal Intensities
 
@@ -147,6 +147,93 @@ To systematically demonstrate and inspect this degeneracy:
 - **Set $I_0 = 0$** in synthetic test scenarios to reduce the parameter-space dimension and simplify optimizer convergence diagnostics.
 - **Report the effective offset and contrast** rather than (or in addition to) the individual coefficients, since these are the physically identifiable quantities.
 
-## 6. General Theoretical Workflow Diagram
+## 6. Confidence Interval for $K_a$: The Exact Profile
+
+### 6.1. Separating the Linear Parameters
+
+Every assay with a single association constant (GDA, IDA, both DBA modes) has a signal that is *linear* in all of its remaining parameters:
+
+$$I(K_a, \boldsymbol{\beta}) = X(K_a)\,\boldsymbol{\beta}, \qquad \boldsymbol{\beta} = (I_0, I_{\text{dye,free}}, I_{\text{dye,bound}})^{\mathsf{T}}$$
+
+The design matrix $X(K_a)$ holds one column per coefficient, obtained by evaluating the forward model with that coefficient set to one and the others to zero — so the equilibrium solve, and only it, depends on $K_a$.
+
+With $K_a$ held fixed, the best $\boldsymbol{\beta}$ is therefore a **bounded linear least-squares** solve, not a search. This is the variable-projection idea of Golub and Pereyra (1973, 2003): the nonlinear parameter is profiled and the linear ones are projected out. Sweeping $K_a$ over its bounds gives
+
+$$\mathrm{SSR}(K_a) = \min_{\mathbf{lb} \le \boldsymbol{\beta} \le \mathbf{ub}} \lVert \mathbf{y} - X(K_a)\boldsymbol{\beta} \rVert^2$$
+
+exactly at every point, with three consequences: the curve upper-bounds the $R^2$ of every fit the multi-start optimizer can find, its peak is located by a grid search along the curve with a bounded refinement, not by a multi-start search, and its shape is the profile likelihood of $K_a$ under Gaussian errors.
+
+Columns are norm-scaled before the solve, which keeps coefficients spanning many orders of magnitude well conditioned, and a coefficient pinned by equal bounds leaves the solve and contributes a fixed signal.
+
+### 6.2. The F-Test Interval
+
+The interval keeps every $K_a$ whose residual sum of squares is not significantly above the minimum (Bates & Watts 1988; Seber & Wild 1989; Venzon & Moolgavkar 1988):
+
+$$\mathrm{SSR}(K_a) \;\le\; \mathrm{SSR}_{\min}\left(1 + \frac{F(\alpha;\, 1,\, n - p)}{n - p}\right)$$
+
+- $n$ — points in the profiled signal.
+- $p = 1 + \operatorname{rank} X(K_{a,\text{best}})$ — one for $K_a$ plus the **numerical rank** of the free coefficient columns, unless equal bounds pin $K_a$, in which case $K_a$ is not fitted and $p$ is the rank alone. Counting the nominal number of coefficients would be wrong here: the signal coefficients are structurally degenerate (Section 5), so two columns the data cannot separate must contribute one degree of freedom, not two. The rank is taken from the singular values of the norm-scaled design, whose exact dependencies sit near $10^{-11}$ because the equilibrium solve is iterative, while independent columns stay above $10^{-6}$.
+
+The edges are located by root-finding on the exact curve. An edge that reaches a $K_a$ bound without crossing the threshold is reported as **open**: the measurement places no limit on $K_a$ on that side, and the result is a limit rather than an interval. This is the practical-identifiability reading of a profile likelihood in the sense of Raue et al. (2009).
+
+### 6.3. Replicates Are Averaged, Not Pooled
+
+The profile, the best fit and the interval describe the **average of the active replicates**. Replicates of one titration share their systematic departure from the model: if the model misses a point, it misses that point in every replicate. Treating $m$ replicates as $m \times n$ independent observations counts one shared miss $m$ times as independent evidence: the interval narrows — by up to about $\sqrt{m}$ where that miss dominates the scatter — while the miss itself, the dominant error, stays exactly where it was.
+
+`scripts/profile_interval_coverage.py` measures the interval on synthetic IDA data, 200 designs per scenario, nominal 95 %:
+
+| Scenario | Coverage of the true $K_a$ |
+|---|---|
+| Independent noise of constant size | 0.96 |
+| Noise proportional to the signal | 0.91 |
+| Four replicates sharing a smooth 2 % misfit | 0.77 |
+| The same, with the replicates' points pooled as independent | 0.67 |
+
+Constant-variance scatter is the assumption the F test is built on, and it is met. Proportional noise breaks it mildly and costs a few points of coverage. A shared systematic misfit breaks it badly — and the last row is why the app averages: pooling would make the same data look more informative while being less accurate.
+
+## 7. Input Sensitivity: Sobol' Variance Decomposition
+
+The interval of Section 6 conditions on the entered experimental conditions being correct. The sensitivity analysis removes that condition: each input is given a stated uncertainty, and the fit is repeated over the resulting input distribution.
+
+### 7.1. Inputs and Their Distributions
+
+The perturbable inputs are the fixed conditions ($h_0$, $d_0$, $K_{a,\text{dye}}$, …) and the titrant concentration vector. Each is drawn independently, through its inverse CDF, so the same definition of an input's distribution serves plain random draws and a low-discrepancy sequence alike:
+
+- a $\sigma$ spec (in percent of nominal, or in the input's own unit) draws from a normal distribution truncated at zero, so a concentration never goes negative;
+- an interval spec draws uniformly between its ends, the form in which a $K_a$ carried over from an earlier fit naturally arrives.
+
+The titrant enters as **one common factor**: a single draw scales the whole concentration vector, which is how a mis-calibrated stock solution acts — it displaces every titration point together, not each one independently.
+
+### 7.2. Estimators
+
+For output $Y = \log_{10} K_a$ and inputs $X_1 \dots X_k$, the first-order and total-order Sobol' indices (Sobol' 2001) are
+
+$$S_i = \frac{\operatorname{Var}_{X_i}\!\big(E[Y \mid X_i]\big)}{\operatorname{Var}(Y)}, \qquad S_{T_i} = \frac{E\!\big[\operatorname{Var}(Y \mid X_{\sim i})\big]}{\operatorname{Var}(Y)}$$
+
+They are estimated on a Saltelli design: two independent sample matrices $A$ and $B$ and the $k$ matrices $AB_i$ that take column $i$ from $B$ — $N \times (k + 2)$ fits in total. First order uses the Saltelli et al. (2010) estimator and total order the Jansen (1999) estimator:
+
+$$\hat{S}_i = \frac{\frac{1}{N}\sum_j f(B)_j\big(f(AB_i)_j - f(A)_j\big)}{\hat{V}}, \qquad \hat{S}_{T_i} = \frac{\frac{1}{2N}\sum_j \big(f(A)_j - f(AB_i)_j\big)^2}{\hat{V}}$$
+
+The outputs are centred on the mean of $A$ and $B$ before either estimator is applied. Neither expectation changes under a constant shift, but the variance of the first-order estimator grows with the square of the output mean, and $\log_{10} K_a$ sits near 8 with a spread of a few tenths — uncentred, the first-order indices would be buried in that offset.
+
+$\log_{10} K_a$ rather than $K_a$ is decomposed because an association constant varies multiplicatively over orders of magnitude; a variance decomposition of $K_a$ itself would be dominated by whichever input happens to push it highest.
+
+### 7.3. Sampling Error of an Index
+
+The design is built from $B = 8$ **independently scrambled** Sobol' blocks (Owen 1997; L'Ecuyer & Lemieux 2002), each the first $N/B$ points of its own scrambled sequence. The indices come from all usable rows pooled; leaving each block out in turn gives a delete-one-block jackknife standard error (Archer, Saltelli & Sobol' 1997),
+
+$$\mathrm{SE} = \sqrt{\frac{B-1}{B}\sum_j \big(\hat{\theta}_{(j)} - \bar{\hat{\theta}}\big)^2}, \qquad \text{CI} = \hat{\theta} \pm t_{B-1,\,0.975}\,\mathrm{SE}$$
+
+The blocks are independent replicates of one design; the rows *inside* a scrambled block are not independent draws and cannot stand in for them. The interval covers the Monte Carlo sampling error of one index at a time — not error in the stated input uncertainties, and not model error. It is symmetric and is not clipped to $[0, 1]$, so a small index can show a negative lower end.
+
+`scripts/sobol_interval_coverage.py` reproduces the calibration, and `scripts/README.md` carries the table it prints. Over 1000 designs each of the Ishigami function and of a six-input g-function at $N = 1024$, the nominal 95 % intervals covered the analytically known index in 94.2–97.1 % of designs, and the estimator's bias stayed within 0.07 standard deviations. The same script measures the price of blocking: at a fixed budget, eight blocks raise the root-mean-square error of an index by up to a factor of about five, index by index — a few indices are barely affected — over a single undivided scramble, which is the cost of having an error bar at all.
+
+### 7.4. Fits Below the $R^2$ Floor Are Kept
+
+Each sample is fitted through the exact profile of Section 6, so its $K_a$ is the best point of that profile for its perturbed inputs, located by a grid search along it with a bounded refinement. The fit is kept whatever its $R^2$; the ones below the floor are flagged and drawn in grey. Dropping them would remove precisely the input combinations the data disagree with, which would bias the sampled distribution back towards the inputs as entered and make the analysis look more reassuring than the evidence allows.
+
+The analysis therefore covers the assays with a single association constant. For a model with two binding constants the projection of Section 6.1 does not apply, and the tab reports the analysis as unavailable rather than substituting a search whose spread would mix input error with optimizer scatter.
+
+## 8. General Theoretical Workflow Diagram
 
 ![Workflow Diagram](fitting_workflow.jpg)

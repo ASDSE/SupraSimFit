@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.assays import AssayType, DBAAssay, DyeAloneAssay, GDAAssay, H2GAssay, HG2Assay, IDAAssay
+from core.assays import ASSAY_CLASSES, AssayType
 from core.assays.base import BaseAssay
 
 
@@ -45,121 +45,100 @@ class ConditionField:
     unit_type: str = ''
 
 
-# Maps AssayType → (assay_class, tuple of ConditionField)
+# Maps AssayType → the condition fields its form shows, in the order they appear.
 # AssayConfigPanel reads this to build the dynamic conditions form.
-ASSAY_CONDITIONS: dict[AssayType, tuple[type[BaseAssay], tuple[ConditionField, ...]]] = {
+ASSAY_CONDITIONS: dict[AssayType, tuple[ConditionField, ...]] = {
     AssayType.GDA: (
-        GDAAssay,
-        (
-            ConditionField(
-                'Ka_dye',
-                'K<sub>a,dye</sub>',
-                'Known host–dye association constant (M⁻¹)',
-                33e3,
-                'M⁻¹',
-                'binding_constant',
-            ),
-            ConditionField(
-                'h0',
-                '[Host]<sub>0</sub>',
-                'Total host concentration in the cuvette',
-                50e-6,
-                'M',
-                'concentration',
-            ),
-            ConditionField(
-                'g0',
-                '[Guest]<sub>0</sub>',
-                'Total guest concentration in the cuvette',
-                292e-6,
-                'M',
-                'concentration',
-            ),
+        ConditionField(
+            'Ka_dye',
+            'K<sub>a,dye</sub>',
+            'Known host–dye association constant (M⁻¹)',
+            33e3,
+            'M⁻¹',
+            'binding_constant',
+        ),
+        ConditionField(
+            'h0',
+            '[Host]<sub>0</sub>',
+            'Total host concentration in the cuvette',
+            50e-6,
+            'M',
+            'concentration',
+        ),
+        ConditionField(
+            'g0',
+            '[Guest]<sub>0</sub>',
+            'Total guest concentration in the cuvette',
+            292e-6,
+            'M',
+            'concentration',
         ),
     ),
     AssayType.IDA: (
-        IDAAssay,
-        (
-            ConditionField(
-                'Ka_dye',
-                'K<sub>a,dye</sub>',
-                'Known host–dye association constant (M⁻¹)',
-                16800000,
-                'M⁻¹',
-                'binding_constant',
-            ),
-            ConditionField(
-                'h0',
-                '[Host]<sub>0</sub>',
-                'Total host concentration in the cuvette',
-                4.3e-6,
-                'M',
-                'concentration',
-            ),
-            ConditionField(
-                'd0',
-                '[Dye]<sub>0</sub>',
-                'Total dye concentration in the cuvette',
-                6e-6,
-                'M',
-                'concentration',
-            ),
+        ConditionField(
+            'Ka_dye',
+            'K<sub>a,dye</sub>',
+            'Known host–dye association constant (M⁻¹)',
+            16800000,
+            'M⁻¹',
+            'binding_constant',
+        ),
+        ConditionField(
+            'h0',
+            '[Host]<sub>0</sub>',
+            'Total host concentration in the cuvette',
+            4.3e-6,
+            'M',
+            'concentration',
+        ),
+        ConditionField(
+            'd0',
+            '[Dye]<sub>0</sub>',
+            'Total dye concentration in the cuvette',
+            6e-6,
+            'M',
+            'concentration',
         ),
     ),
     AssayType.DBA_HtoD: (
-        DBAAssay,
-        (
-            ConditionField(
-                'fixed_conc',
-                '[Dye]<sub>0</sub>',
-                'Fixed dye concentration (host is titrated)',
-                151e-6,
-                'M',
-                'concentration',
-            ),
+        ConditionField(
+            'fixed_conc',
+            '[Dye]<sub>0</sub>',
+            'Fixed dye concentration (host is titrated)',
+            151e-6,
+            'M',
+            'concentration',
         ),
     ),
     AssayType.DBA_DtoH: (
-        DBAAssay,
-        (
-            ConditionField(
-                'fixed_conc',
-                '[Host]<sub>0</sub>',
-                'Fixed host concentration (dye is titrated)',
-                10e-6,
-                'M',
-                'concentration',
-            ),
+        ConditionField(
+            'fixed_conc',
+            '[Host]<sub>0</sub>',
+            'Fixed host concentration (dye is titrated)',
+            10e-6,
+            'M',
+            'concentration',
         ),
     ),
-    AssayType.DYE_ALONE: (
-        DyeAloneAssay,
-        (),  # no conditions needed
-    ),
+    AssayType.DYE_ALONE: (),  # no conditions needed
     AssayType.DBA_HG2: (
-        HG2Assay,
-        (
-            ConditionField(
-                'h0',
-                '[Host]<sub>0</sub>',
-                'Total host concentration in the cuvette (fixed; guest is titrated)',
-                3e-4,
-                'M',
-                'concentration',
-            ),
+        ConditionField(
+            'h0',
+            '[Host]<sub>0</sub>',
+            'Total host concentration in the cuvette (fixed; guest is titrated)',
+            3e-4,
+            'M',
+            'concentration',
         ),
     ),
     AssayType.DBA_H2G: (
-        H2GAssay,
-        (
-            ConditionField(
-                'h0',
-                '[Host]<sub>0</sub>',
-                'Total host concentration in the cuvette (fixed; guest is titrated)',
-                3e-4,
-                'M',
-                'concentration',
-            ),
+        ConditionField(
+            'h0',
+            '[Host]<sub>0</sub>',
+            'Total host concentration in the cuvette (fixed; guest is titrated)',
+            3e-4,
+            'M',
+            'concentration',
         ),
     ),
 }
@@ -167,9 +146,9 @@ ASSAY_CONDITIONS: dict[AssayType, tuple[type[BaseAssay], tuple[ConditionField, .
 
 def assay_class(assay_type: AssayType) -> type[BaseAssay]:
     """Return the assay class for the given type."""
-    return ASSAY_CONDITIONS[assay_type][0]
+    return ASSAY_CLASSES[assay_type]
 
 
 def condition_fields(assay_type: AssayType) -> tuple[ConditionField, ...]:
     """Return the condition field schemas for the given assay type."""
-    return ASSAY_CONDITIONS[assay_type][1]
+    return ASSAY_CONDITIONS[assay_type]

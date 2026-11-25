@@ -16,10 +16,11 @@ Typical construction::
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, Optional, Tuple, Type
+from typing import Any, Dict, Iterable, Iterator, Optional, Tuple, Type
 
 import numpy as np
 import pandas as pd
@@ -234,6 +235,57 @@ class MeasurementSet:
     def reset_active(self) -> None:
         """Mark all replicas active (undo all filtering)."""
         self._active_mask[:] = True
+
+    def with_active(self, replica_ids: Iterable[str]) -> 'MeasurementSet':
+        """Copy of this set with exactly *replica_ids* active.
+
+        The copy owns its arrays, mask, metadata and log, so a later change to
+        this set (a replicate switched off, a concentration edit) never reaches
+        it. It keeps ``id``: it holds the same measurement, and results made on
+        it name that measurement.
+
+        Parameters
+        ----------
+        replica_ids : iterable of str
+            Replicates to mark active; every other replicate is inactive.
+
+        Raises
+        ------
+        ValueError
+            If a replicate is not part of this set.
+        """
+        wanted = set(replica_ids)
+        unknown = sorted(wanted - set(self.replica_ids))
+        if unknown:
+            names = ', '.join(repr(rid) for rid in unknown)
+            raise ValueError(
+                f'This data has no replicate {names}. Its replicates are {", ".join(map(repr, self.replica_ids))}.'
+            )
+        copy = MeasurementSet(
+            concentrations=self.concentrations,
+            signals=self.signals,
+            replica_ids=self.replica_ids,
+            metadata=dict(self.metadata),
+            id=self.id,
+            processing_log=[dict(entry) for entry in self.processing_log],
+        )
+        copy._active_mask[:] = [rid in wanted for rid in self.replica_ids]
+        return copy
+
+    def fingerprint(self) -> str:
+        """Stable hash of the measured data: concentrations, every signal and the replicate ids.
+
+        It ignores which replicates are active and the set's ``id``, so the same
+        file loaded twice gives the same fingerprint while any change to a
+        concentration or signal value gives a different one. A fit stores it to
+        tell whether data loaded later is the data it was made on.
+        """
+        digest = hashlib.sha256()
+        for array in (self.concentrations, self.signals):
+            digest.update(repr(array.shape).encode())
+            digest.update(np.ascontiguousarray(array, dtype='<f8').tobytes())
+        digest.update('\x1f'.join(self.replica_ids).encode())
+        return digest.hexdigest()
 
     # ------------------------------------------------------------------
     # Data access

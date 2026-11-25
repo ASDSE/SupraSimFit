@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 from core.assays.registry import AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.pipeline.fit_pipeline import FitConfig, FitResult
+from core.pipeline.profile import ProfileResult
+from core.pipeline.sensitivity import SensitivityResult
 from core.units import Quantity
 
 
@@ -25,7 +27,6 @@ class SessionState:
 
     # Assay configuration
     assay_type: AssayType = AssayType.GDA
-    conditions: dict[str, Any] = field(default_factory=dict)
 
     # Fit configuration
     fit_config: FitConfig = field(default_factory=FitConfig)
@@ -34,9 +35,16 @@ class SessionState:
     # Preprocessing steps spec — passed to apply_preprocessing()
     preprocessing_steps: list[dict] = field(default_factory=list)
 
-    # Results
-    fit_results: list[FitResult] = field(default_factory=list)
+    # Results. A result is held until the data change or a new result replaces
+    # it. It is shown while the loaded selection (data, active replicates,
+    # conditions, assay type) matches its record, and hidden otherwise, with a
+    # note saying why; a hidden result comes back unchanged once they match.
+    held_fit_results: list[FitResult] = field(default_factory=list)
+    hidden_fit_notes: dict[str, str] = field(default_factory=dict)  # FitResult.id -> why it is hidden
     dye_alone_result: Optional[FitResult] = None
+    profile_result: Optional[ProfileResult] = None  # Ka profile of the fit run in this session
+    sensitivity_result: Optional[SensitivityResult] = None
+    sensitivity_note: Optional[str] = None  # why the sensitivity result is hidden, None while it is shown
 
     # Plot display unit (concentration unit used for the x-axis). Lives in
     # session state so it survives style-widget reconstructions and is the
@@ -46,6 +54,7 @@ class SessionState:
     def has_data(self) -> bool:
         return self.measurement_set is not None
 
-    def clear_results(self) -> None:
-        self.fit_results.clear()
-        self.dye_alone_result = None
+    @property
+    def fit_results(self) -> list[FitResult]:
+        """The held fit results that are shown: every number, curve and export uses these."""
+        return [result for result in self.held_fit_results if result.id not in self.hidden_fit_notes]

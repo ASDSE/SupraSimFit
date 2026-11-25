@@ -1,4 +1,4 @@
-"""FitConfigPanel — optimizer configuration (n_trials, RMSE factor, min R²)."""
+"""FitConfigPanel — optimizer configuration (trials, RMSE factor, min R², per-replicate fitting, seed)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.pipeline.fit_pipeline import FitConfig
+from core.pipeline.fit_pipeline import MAX_SEED, FitConfig
 from gui.widgets.info_button import InfoButton, InfoGroupBox
 from gui.widgets.numeric_inputs import NoScrollDoubleSpinBox, NoScrollSpinBox
 
@@ -40,6 +40,9 @@ lands in the basin of the true minimum.</p>
   <li><b>&gt; 1000</b> &mdash; diminishing returns; prefer tightening
       bounds or supplying dye-alone priors instead.</li>
 </ul>
+<p>The reported <i>(min, max)</i> range spans the trials that pass the acceptance
+filter, so with very few trials it says little: a handful of starting points can all
+land in the same spot and show a range far narrower than the data support.</p>
 
 <p><b>When to Increase</b></p>
 <p>If repeated runs give noticeably different K<sub>a</sub> values, or
@@ -67,10 +70,10 @@ have a specific reason to prune.</p>
 """
 
 _PER_REPLICA_HELP_HTML = """
-<h3>Fit per replica &mdash; pooled passing trials</h3>
+<h3>Fit per replicate &mdash; pooled passing trials</h3>
 
 <p><b>Average mode (off)</b></p>
-<p>All active replicas are averaged into a single curve, then the
+<p>All active replicates are averaged into a single curve, then the
 fitter runs one multi-start optimisation on that average. Every
 starting point that produces an acceptable fit (low RMSE, high
 R<sup>2</sup>) is kept. The reported value is the <i>best</i> of those
@@ -78,54 +81,58 @@ acceptable fits and the &plusmn; value is the spread of the pool (MAD by
 default). This tells you how tight the optimiser landscape is &mdash;
 <b>not</b> how reproducible your experiment is.</p>
 
-<p><b>Per-replica mode (default, on)</b></p>
-<p>Every active replica is fit on its own with a full multi-start
-run. From each replica, every trial that passes the acceptance
+<p><b>Per-replicate mode (default, on)</b></p>
+<p>Every active replicate is fit on its own with a full multi-start
+run. From each replicate, every trial that passes the acceptance
 filter (R<sup>2</sup>, RMSE) is retained. All those passing trials from
-all replicas are then <b>pooled into one flat collection</b>. The
-reported value is the best fit in that pool and the &plusmn; value is the
-pool's spread (MAD by default). This captures both the optimiser spread
-<i>and</i> the experimental spread across replicas in one honest
+all replicates are then <b>pooled into one flat collection</b>. The
+reported value is one replicate's best fit &mdash; of each replicate's best
+fit, the one with the highest R&sup2; against the average of the replicates it
+used &mdash; and the &plusmn; value is the pool's spread (MAD by default). A
+replicate with no acceptable fit is left out, and its signal plays no part in
+the reported R&sup2; or RMSE. This captures both the optimiser spread
+<i>and</i> the experimental spread across replicates in one honest
 distribution &mdash; the kind you can quote in a paper or draw
 box-and-whisker plots from.</p>
 
 <p><b>What this means in practice</b></p>
 <ul>
-  <li>A replica with many acceptable fits contributes proportionally
+  <li>A replicate with many acceptable fits contributes proportionally
       more samples to the pool. This is the intended behaviour: a
-      well-converging replica carries more information than a barely
+      well-converging replicate carries more information than a barely
       converging one.</li>
-  <li>The pool contains every passing trial, not per-replica
+  <li>The pool contains every passing trial, not per-replicate
       summaries &mdash; so box-whiskers, histograms, and confidence
       intervals drawn from it are statistically meaningful rather than
-      based on just N&nbsp;= (number of replicas) points.</li>
-  <li>The plot curve labelled <i>Best Fit</i> is the forward model
-      evaluated at the representative (best) pooled fit.</li>
+      based on just N&nbsp;= (number of replicates) points.</li>
+  <li>The plot curve labelled <i>Fit</i> is the forward model evaluated
+      at the representative fit shown in the Representative selector.</li>
 </ul>
 
-<p><b>When to use per-replica mode</b></p>
+<p><b>When to use per-replicate mode</b></p>
 <ul>
   <li>You want a defensible uncertainty estimate on K<sub>a</sub> and
       the signal coefficients.</li>
-  <li>You suspect one replica may disagree with the rest &mdash;
-      per-replica fitting exposes this (the disagreeing replica
+  <li>You suspect one replicate may disagree with the rest &mdash;
+      per-replicate fitting exposes this (the disagreeing replicate
       shows up as a cluster in the pool), while averaging hides it.</li>
   <li>You will produce per-parameter distribution plots downstream.</li>
 </ul>
 
 <p><b>What to watch out for</b></p>
 <ul>
-  <li><b>Few replicas</b>: the pool is built from N replicas. With
+  <li><b>Few replicates</b>: the pool is built from N replicates. With
       only one or two, the pool reflects mostly optimiser spread on
-      each individual trace. Three replicas is a good minimum; four
+      each individual trace. Three replicates is a good minimum; four
       or more is better.</li>
-  <li><b>Noisy individual traces</b>: a very noisy single replica may
-      fail to converge. Those replicas are skipped and listed in a
-      warning so you know exactly which ones dropped out.</li>
-  <li><b>Slower</b>: each replica runs its own multi-start, so the
+  <li><b>Noisy individual traces</b>: a very noisy single replicate may
+      fail to converge or miss the Min R&sup2; floor. Those replicates are left
+      out of the fit and of its R&sup2; and RMSE, and listed in a warning so
+      you know exactly which ones dropped out.</li>
+  <li><b>Slower</b>: each replicate runs its own multi-start, so the
       fit takes roughly <i>N</i> times longer. Usually still seconds.</li>
-  <li><b>Fit curve looks the same</b>: when your replicas agree well,
-      the representative fit in per-replica mode is very close to the
+  <li><b>Fit curve looks the same</b>: when your replicates agree well,
+      the representative fit in per-replicate mode is very close to the
       average-mode one, so the plotted curve may look unchanged. The real
       difference shows up in the reported range and spread, not in the
       curve shape.</li>
@@ -184,13 +191,19 @@ is no better than a flat line through the mean.</p>
 
 <p><b>Practical Values</b></p>
 <ul>
-  <li><b>0.90</b> (default) &mdash; sensible baseline for clean
-      fluorescence titrations.</li>
-  <li><b>0.95+</b> &mdash; high-quality data; rejects anything that
-      visibly misses points.</li>
-  <li><b>0.70&ndash;0.85</b> &mdash; noisy data or small dynamic range.
-      Loosen if the fitter reports &ldquo;no trials accepted&rdquo;.</li>
+  <li><b>0.99</b> (default) &mdash; clean fluorescence titrations, where a
+      trial that misses a point visibly falls below it.</li>
+  <li><b>0.999+</b> &mdash; very clean data with a large dynamic range;
+      keeps only the trials that track every point.</li>
+  <li><b>0.90&ndash;0.95</b> &mdash; noisy data or a small dynamic range.
+      Loosen to here if the fitter reports &ldquo;no trials accepted&rdquo;.</li>
 </ul>
+
+<p><b>Per-replicate fits</b></p>
+<p>With <i>Fit per replicate</i> on, each trial is judged on the signal of the
+replicate it was fitted to, so this floor applies replicate by replicate. The
+R<sup>2</sup> reported afterwards is measured on the average of the replicates the
+fit used, and can differ from any single replicate&rsquo;s.</p>
 
 <p><b>When to Change It</b></p>
 <p>If the aggregator keeps rejecting every trial, lower this threshold
@@ -201,11 +214,25 @@ in the measurement).</p>
 """
 
 
+_SEED_HELP_HTML = """
+<h3>Fixed seed</h3>
+
+<p>Every fit records the seed of the random starting points it used, and an
+exported result carries it, so the fit can be repeated exactly.</p>
+
+<p>Leave the box unticked to draw a fresh seed for each fit: repeating one then
+shows how much the starting points move the result. Tick it and enter a seed to
+repeat the same fit &mdash; the same data and settings with that seed give the
+same accepted trials and the same reported range.</p>
+"""
+
+
 _SECTION_HELP_HTML = """
 <h3>Fit Configuration</h3>
 <p>Controls for the multi-start optimiser: how many trials to run, how
-strictly to filter them, and whether to fit each replica
-independently. See the <i>i</i> next to each setting for details.</p>
+strictly to filter them, whether to fit each replicate independently, and
+which random starting points it uses. See the <i>i</i> next to each setting
+for details.</p>
 """
 
 
@@ -229,12 +256,18 @@ class FitConfigPanel(InfoGroupBox):
     # ------------------------------------------------------------------
 
     def current_config(self) -> FitConfig:
+        """The configuration the panel describes.
+
+        ``seed`` is the fixed seed when the box is ticked, and ``None`` otherwise,
+        which leaves the session to draw one and record it with the fit.
+        """
         return FitConfig(
             n_trials=self._trials_spin.value(),
             rmse_threshold_factor=(self._rmse_spin.value() if self._rmse_check.isChecked() else None),
             min_r_squared=self._r2_spin.value(),
             rescale_parameters=self._rescale_check.isChecked(),
             per_replica=self._per_replica_check.isChecked(),
+            seed=int(self._seed_spin.value()) if self._seed_check.isChecked() else None,
         )
 
     def set_config(self, config: FitConfig) -> None:
@@ -247,6 +280,10 @@ class FitConfigPanel(InfoGroupBox):
         self._r2_spin.setValue(config.min_r_squared)
         self._rescale_check.setChecked(config.rescale_parameters)
         self._per_replica_check.setChecked(config.per_replica)
+        self._seed_check.setChecked(config.seed is not None)
+        self._seed_spin.setEnabled(config.seed is not None)
+        if config.seed is not None:
+            self._seed_spin.setValue(int(config.seed))
 
     # ------------------------------------------------------------------
     # UI
@@ -256,7 +293,7 @@ class FitConfigPanel(InfoGroupBox):
         form = QFormLayout(self)
 
         self._trials_spin = NoScrollSpinBox()
-        self._trials_spin.setRange(10, 10_000)
+        self._trials_spin.setRange(1, 10_000)
         self._trials_spin.setSingleStep(10)
         self._trials_spin.setValue(100)
         self._trials_spin.setToolTip('Number of multi-start L-BFGS-B optimization trials.')
@@ -283,7 +320,7 @@ class FitConfigPanel(InfoGroupBox):
         self._r2_spin.setRange(0.0, 1.0)
         self._r2_spin.setSingleStep(0.01)
         self._r2_spin.setDecimals(2)
-        self._r2_spin.setValue(0.90)
+        self._r2_spin.setValue(0.99)
         self._r2_spin.setToolTip('Minimum R² for a trial to pass the acceptance filter.')
         self._r2_spin.valueChanged.connect(self.config_changed)
         form.addRow('Min R²:', self._with_info(self._r2_spin, 'Min R²', _R2_HELP_HTML))
@@ -302,13 +339,39 @@ class FitConfigPanel(InfoGroupBox):
         self._per_replica_check = QCheckBox()
         self._per_replica_check.setChecked(FitConfig().per_replica)
         self._per_replica_check.setToolTip(
-            'Fit each replica independently; uncertainties reflect replica-to-replica spread.'
+            'Fit each replicate independently; uncertainties reflect replicate-to-replicate spread.'
         )
         self._per_replica_check.toggled.connect(self.config_changed)
         form.addRow(
-            'Fit per replica:',
-            self._with_info(self._per_replica_check, 'Fit per replica', _PER_REPLICA_HELP_HTML),
+            'Fit per replicate:',
+            self._with_info(self._per_replica_check, 'Fit per replicate', _PER_REPLICA_HELP_HTML),
         )
+
+        # Fixed seed — unticked, the session draws a seed per fit and records it.
+        self._seed_check = QCheckBox()
+        self._seed_check.setToolTip('Repeat the same fit: the same seed gives the same starting points.')
+        self._seed_spin = NoScrollSpinBox()
+        self._seed_spin.setRange(0, MAX_SEED)
+        self._seed_spin.setValue(0)
+        self._seed_spin.setEnabled(False)
+        self._seed_spin.setToolTip('The seed to repeat. Every fit records the seed it used.')
+        self._seed_check.toggled.connect(self._seed_spin.setEnabled)
+        self._seed_check.toggled.connect(self.config_changed)
+        self._seed_spin.valueChanged.connect(self.config_changed)
+        form.addRow('Fixed seed:', self._seed_row())
+
+    def _seed_row(self) -> QWidget:
+        """Row: [enable checkbox] [seed spinbox] [info] for the optional fixed seed."""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(15)
+        lay.addWidget(self._seed_check)
+        self._seed_spin.setFixedWidth(120)
+        lay.addWidget(self._seed_spin)
+        lay.addWidget(InfoButton('Fixed seed', _SEED_HELP_HTML))
+        lay.addStretch(1)
+        return row
 
     def _rmse_trim_row(self) -> QWidget:
         """Row: [enable checkbox] [factor spinbox] [info] for the optional trim."""
