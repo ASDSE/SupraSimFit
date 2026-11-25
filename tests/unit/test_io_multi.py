@@ -14,7 +14,7 @@ import pytest
 
 import core.io as io
 from core.data_processing.measurement_set import MeasurementSet
-from core.io import load_measurements_multi
+from core.io import InvalidData, load_measurements_multi
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 
 
@@ -94,7 +94,7 @@ def test_mismatched_point_counts_rejected(tmp_path):
     file-named message — not a raw numpy broadcast error (issue: batch import)."""
     a = _write(tmp_path / 'run_a.csv', [0.0, 1.0, 2.0], [10.0, 20.0, 30.0])  # 3 points
     b = _write(tmp_path / 'run_b.csv', [0.0, 1.0, 2.0, 3.0], [10.0, 20.0, 30.0, 40.0])  # 4 points
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(InvalidData) as excinfo:
         load_measurements_multi([a, b])
     msg = str(excinfo.value)
     assert 'titration points' in msg
@@ -107,8 +107,8 @@ def test_duplicate_stems_disambiguated(tmp_path):
     """Same file name in different folders → distinct replica IDs, no collision."""
     (tmp_path / 'one').mkdir()
     (tmp_path / 'two').mkdir()
-    p1 = _write(tmp_path / 'one' / 'rep.csv', [0.0, 1.0], [1.0, 2.0])
-    p2 = _write(tmp_path / 'two' / 'rep.csv', [0.0, 1.0], [3.0, 4.0])
+    p1 = _write(tmp_path / 'one' / 'rep.csv', [0.0, 1.0, 2.0], [1.0, 2.0, 3.0])
+    p2 = _write(tmp_path / 'two' / 'rep.csv', [0.0, 1.0, 2.0], [3.0, 4.0, 5.0])
 
     ms = MeasurementSet.from_dataframe(load_measurements_multi([p1, p2]))
     assert ms.n_replicas == 2
@@ -131,7 +131,7 @@ def test_channel_file_rejected(tmp_path, monkeypatch):
         }
     )
     monkeypatch.setattr(io, 'load_measurements', lambda _p: channel_df)
-    with pytest.raises(ValueError, match='channel'):
+    with pytest.raises(InvalidData, match='channel'):
         load_measurements_multi([tmp_path / 'x.csv'])
 
 
@@ -140,5 +140,5 @@ def test_placeholder_concentration_file_rejected(tmp_path, monkeypatch):
     placeholder_df = pd.DataFrame({'concentration': [1.0, 2.0], 'signal': [1.0, 2.0], 'replica': [0, 0]})
     placeholder_df.attrs[BMG_PLACEHOLDER_KEY] = True
     monkeypatch.setattr(io, 'load_measurements', lambda _p: placeholder_df)
-    with pytest.raises(ValueError, match='placeholder concentrations'):
+    with pytest.raises(InvalidData, match='placeholder concentrations'):
         load_measurements_multi([tmp_path / 'plate.xlsx'])

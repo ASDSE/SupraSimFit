@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +26,7 @@ from core.data_processing.concentration import (
     read_raw_concentrations,
     save_concentration_vector,
 )
-from core.data_processing.measurement_set import MeasurementSet
+from core.data_processing.measurement_set import MIN_POINTS, InvalidData, MeasurementSet, concentration_problem
 from core.io import load_measurements, load_measurements_multi
 from core.io.formats.bmg_reader import BMG_METADATA_KEY, BMG_PLACEHOLDER_KEY
 from core.io.formats.ensight_reader import (
@@ -38,9 +39,25 @@ from core.io.registry import READERS
 from core.units import Q_
 from gui.widgets.info_button import InfoGroupBox
 
+logger = logging.getLogger(__name__)
+
 UNITS: tuple[str, ...] = ('nM', 'µM', 'mM', 'M')
 DEFAULT_IMPORTED_UNIT = 'M'
 DEFAULT_DISPLAY_UNIT = 'µM'
+
+
+def _unreadable(paths: list[str]) -> str:
+    """Why *paths* did not load, in plain words that name them: for an error no reader wrote for the user."""
+    names = ', '.join(Path(p).name for p in paths)
+    if len(paths) == 1:
+        return (
+            f'Could not read the measurements in {names}. Check that it is a measurement file in one of the '
+            "formats the Data panel's help lists, then load it again."
+        )
+    return (
+        f'Could not load {names} as replicates of one measurement. Check that each is a measurement file in one '
+        "of the formats the Data panel's help lists and that all come from the same titration, then load them again."
+    )
 
 
 def _build_file_filter() -> str:
@@ -83,6 +100,12 @@ header+data block. Headers are matched loosely
 (<code>conc</code>/<code>x</code>/<code>titrant</code>,
 <code>signal</code>/<code>intensity</code>/<code>fluorescence</code>) and
 European <code>;</code>/<code>,</code> files are read automatically.</p>
+
+<p><b>What a fit can use:</b> every concentration is a number of zero or more,
+every replicate has a signal at every concentration (the replicates are averaged
+point by point), and the titration has at least {MIN_POINTS} points. Data that
+break one of these are refused when they are loaded or typed in, with a message
+naming the file, the replicate and the point.</p>
 
 <p><b>Units:</b> <b>Imported Unit</b> declares what unit the loaded numbers
 are in (it reinterprets them, it does not convert). <b>Display Unit</b> only
@@ -259,17 +282,17 @@ class DataPanel(InfoGroupBox):
         """
         try:
             df = load_measurements(path)
-        except Exception as exc:
-            QMessageBox.warning(self, 'Load Error', f'Could not load file:\n{exc}')
-            return
-
-        has_channels = ENSIGHT_CHANNEL_COLUMN in df.columns
-        channels = list(df[ENSIGHT_CHANNEL_COLUMN].unique()) if has_channels else []
-        try:
+            has_channels = ENSIGHT_CHANNEL_COLUMN in df.columns
+            channels = list(df[ENSIGHT_CHANNEL_COLUMN].unique()) if has_channels else []
             df_used = self._slice_channel(df, channels[0]) if channels else df
             ms = self._make_ms(df_used, str(path))
-        except Exception as exc:
-            QMessageBox.warning(self, 'Load Error', f'Could not load file:\n{exc}')
+        except InvalidData as exc:
+            # Written for the user: it names the file, the replicate and the point, and the fix.
+            QMessageBox.warning(self, 'Load Error', str(exc))
+            return
+        except Exception:
+            logger.exception('Could not load %s', path)
+            QMessageBox.warning(self, 'Load Error', _unreadable([str(path)]))
             return
 
         # Commit state only after a successful parse + build.
@@ -311,8 +334,12 @@ class DataPanel(InfoGroupBox):
                 source_file=str(paths[0]),
                 source_files=[str(p) for p in paths],
             )
-        except Exception as exc:
+        except InvalidData as exc:
             QMessageBox.warning(self, 'Load Error', str(exc))
+            return
+        except Exception:
+            logger.exception('Could not load %s as replicates', paths)
+            QMessageBox.warning(self, 'Load Error', _unreadable([str(p) for p in paths]))
             return
 
         self._multi_channel_df = None
@@ -393,6 +420,9 @@ class DataPanel(InfoGroupBox):
                 self._slice_channel(self._multi_channel_df, channel),
                 self._source_path or '',
             )
+        except InvalidData as exc:
+            QMessageBox.warning(self, 'Channel Error', str(exc))
+            return
         except Exception:
             QMessageBox.warning(
                 self,
@@ -490,12 +520,7 @@ class DataPanel(InfoGroupBox):
         try:
             value = float(text)
         except ValueError:
-            # Revert the cell to the last good value and warn.
-            self._suppress_cell_signal = True
-            try:
-                item.setText(_fmt_cell(self._face_values[row]))
-            finally:
-                self._suppress_cell_signal = False
+            self._revert_cell(row)
             QMessageBox.warning(
                 self,
                 'Invalid Number',
@@ -504,8 +529,23 @@ class DataPanel(InfoGroupBox):
             return
         if value == self._face_values[row]:
             return
-        self._face_values[row] = value
+        edited = self._face_values.copy()
+        edited[row] = value
+        problem = concentration_problem(Q_(edited, self._imported_unit))
+        if problem:
+            self._revert_cell(row)
+            QMessageBox.warning(self, 'Invalid Concentration', f'{problem} Reverted to previous value.')
+            return
+        self._face_values = edited
         self._push_buffer_to_ms()
+
+    def _revert_cell(self, row: int) -> None:
+        """Show the last committed value of *row* again, without treating it as an edit."""
+        self._suppress_cell_signal = True
+        try:
+            self._conc_table.item(row, 0).setText(_fmt_cell(self._face_values[row]))
+        finally:
+            self._suppress_cell_signal = False
 
     def _push_buffer_to_ms(self) -> None:
         """Write the face-value buffer into the current MeasurementSet and announce it."""
@@ -552,6 +592,10 @@ class DataPanel(InfoGroupBox):
                 'Mismatch',
                 f'Loaded vector has {values.size} points but the dataset has {self._ms.n_points}. They must match.',
             )
+            return
+        problem = concentration_problem(q, f' in {Path(path).name}')
+        if problem:
+            QMessageBox.warning(self, 'Invalid Concentration', f'{problem} Correct it in the file and load it again.')
             return
         # The Quantity carries its unit. Show its face numbers under that unit
         # when it is a selectable display unit (matched by pint identity so 'µM'

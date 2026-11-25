@@ -363,3 +363,228 @@ class TestSetConcentrations:
         ms.set_concentrations(Q_(np.array([1, 2, 3]), 'µM'))
         with pytest.raises(ValueError, match='read-only'):
             ms.concentrations[0] = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Data no fit can use are refused where they enter
+# ---------------------------------------------------------------------------
+
+
+def _grid(n: int = 6) -> np.ndarray:
+    """Titrant series 0, 2, ..., 2(n-1) µM, written out in M."""
+    return np.arange(n) * 2e-6
+
+
+class TestRefusedData:
+    """Non-finite or negative concentrations, missing or infinite signals and too-short titrations.
+
+    Each is refused with an :class:`InvalidData` whose message names the point
+    (by its position and concentration), the replicate and the file, so that a
+    fit is never run on them.
+    """
+
+    @pytest.mark.parametrize(
+        'value, shown',
+        [(-1e-6, '-1 µM'), (np.nan, 'no concentration'), (np.inf, 'infinite')],
+    )
+    def test_a_concentration_that_is_not_zero_or_more_names_its_point(self, value, shown):
+        from core.data_processing.measurement_set import InvalidData
+
+        x = _grid()
+        x[3] = value
+        with pytest.raises(InvalidData) as excinfo:
+            MeasurementSet(
+                concentrations=x,
+                signals=np.ones((1, x.size)),
+                replica_ids=('r0',),
+                metadata={'source_file': '/some/where/run1.csv'},
+            )
+        message = str(excinfo.value)
+        assert 'point 4 of 6' in message
+        assert shown in message
+        assert 'run1.csv' in message and '/some/where' not in message
+
+    def test_zero_concentrations_and_negative_signals_are_data(self):
+        """A blank at zero titrant and a blank-subtracted (negative) signal are ordinary measurements."""
+        ms = MeasurementSet(
+            concentrations=_grid(),
+            signals=-np.arange(6.0).reshape(1, -1),
+            replica_ids=('r0',),
+        )
+        assert ms.concentrations[0] == 0.0
+
+    @pytest.mark.parametrize('value, shown', [(np.nan, 'no signal'), (np.inf, 'an infinite signal')])
+    def test_a_bad_signal_of_a_single_titration_names_its_point(self, value, shown):
+        from core.data_processing.measurement_set import InvalidData
+
+        y = np.arange(6.0)
+        y[2] = value
+        with pytest.raises(InvalidData) as excinfo:
+            MeasurementSet(concentrations=_grid(), signals=y.reshape(1, -1), replica_ids=('r0',))
+        message = str(excinfo.value)
+        assert shown in message
+        assert '4 µM (point 3 of 6)' in message
+
+    def test_a_missing_value_in_one_replicate_names_the_replicate_and_suggests_removing_it(self):
+        from core.data_processing.measurement_set import InvalidData
+
+        signals = np.tile(np.arange(6.0), (3, 1))
+        signals[1, 4] = np.nan
+        with pytest.raises(InvalidData) as excinfo:
+            MeasurementSet(
+                concentrations=_grid(),
+                signals=signals,
+                replica_ids=('a', 'b', 'c'),
+                metadata={'source_file': 'plate.csv'},
+            )
+        message = str(excinfo.value)
+        assert "replicate 'b'" in message
+        assert '8 µM (point 5 of 6)' in message
+        assert 'plate.csv' in message
+        assert "remove replicate 'b'" in message
+
+    def test_a_point_no_replicate_has_is_to_be_deleted_not_a_replicate(self):
+        """Removing a replicate only moves the refusal to the next one, so the advice is to delete the point."""
+        from core.data_processing.measurement_set import InvalidData
+
+        signals = np.tile(np.arange(6.0), (2, 1))
+        signals[:, 5] = np.nan
+        with pytest.raises(InvalidData) as excinfo:
+            MeasurementSet(concentrations=_grid(), signals=signals, replica_ids=('a', 'b'))
+        message = str(excinfo.value)
+        assert message.startswith('No replicate has a signal at')
+        assert 'delete that titration point' in message and 'remove replicate' not in message
+
+    def test_a_titration_shorter_than_any_model_needs_is_refused(self):
+        from core.assays.registry import ASSAY_REGISTRY
+        from core.data_processing.measurement_set import InvalidData
+
+        # The smallest model of the registry fits two parameters; a fit of it needs a third point.
+        fewest = min(len(meta.parameter_keys) for meta in ASSAY_REGISTRY.values())
+        assert fewest == 2
+        with pytest.raises(InvalidData, match='only 2 titration points'):
+            MeasurementSet(concentrations=_grid(2), signals=np.ones((1, 2)), replica_ids=('r0',))
+        assert MeasurementSet(concentrations=_grid(3), signals=np.ones((1, 3)), replica_ids=('r0',)).n_points == 3
+
+    def test_data_with_no_measurement_are_refused(self):
+        from core.data_processing.measurement_set import InvalidData
+
+        with pytest.raises(InvalidData, match='no measurements'):
+            MeasurementSet(concentrations=_grid(), signals=np.ones((0, 6)), replica_ids=())
+        empty = pd.DataFrame({'concentration': [], 'signal': [], 'replica': []})
+        with pytest.raises(InvalidData, match='empty.csv contain no measurements'):
+            MeasurementSet.from_dataframe(empty, source_file='empty.csv')
+
+    def test_a_replicate_missing_a_point_is_named_with_the_concentration_it_lacks(self):
+        """The readers drop a blank cell, so a replicate with a missing value arrives one point short."""
+        from core.data_processing.measurement_set import InvalidData
+
+        rows = [
+            {'concentration': c, 'signal': 10.0 + r, 'replica': r}
+            for r in range(3)
+            for c in _grid()
+            if not (r == 2 and c == _grid()[1])
+        ]
+        with pytest.raises(InvalidData) as excinfo:
+            MeasurementSet.from_dataframe(pd.DataFrame(rows), source_file='titration.csv')
+        message = str(excinfo.value)
+        assert "replicate '2'" in message
+        assert 'no signal at 2 µM' in message
+        assert 'titration.csv' in message
+        assert "remove replicate '2'" in message
+
+    def test_a_missing_well_of_a_plate_is_named_by_its_column(self):
+        rows = [
+            {'concentration': float(col), 'signal': 5.0, 'replica': r}
+            for r in range(2)
+            for col in range(1, 7)
+            if not (r == 0 and col == 4)
+        ]
+        df = pd.DataFrame(rows)
+        df.attrs['bmg_placeholder_concentrations'] = True
+        with pytest.raises(ValueError, match="Replicate '0' .*plate column 4"):
+            MeasurementSet.from_dataframe(df)
+
+    def test_a_row_with_no_concentration_is_refused_as_such(self):
+        """Not as two replicates on different grids, which is what the comparison alone would say."""
+        from core.data_processing.measurement_set import InvalidData
+
+        conc = list(_grid())
+        rows = [{'concentration': c, 'signal': 1.0, 'replica': r} for r in range(2) for c in conc]
+        rows[8]['concentration'] = np.nan
+        with pytest.raises(InvalidData, match="Replicate '1' .*no concentration.*signal is 1"):
+            MeasurementSet.from_dataframe(pd.DataFrame(rows))
+
+    def test_a_negative_concentration_in_a_file_is_refused_at_load(self, tmp_path):
+        from core.data_processing.measurement_set import InvalidData
+        from core.io import load_measurements
+
+        path = tmp_path / 'negative.csv'
+        path.write_text('concentration,signal\n0,10\n1e-6,12\n-2e-6,14\n3e-6,15\n4e-6,16\n')
+        with pytest.raises(InvalidData) as excinfo:
+            MeasurementSet.from_dataframe(load_measurements(path), source_file=str(path))
+        assert '-2 µM' in str(excinfo.value)
+        assert 'negative.csv' in str(excinfo.value)
+
+    def test_a_blank_cell_in_one_replicate_column_is_refused_at_load(self, tmp_path):
+        from core.data_processing.measurement_set import InvalidData
+        from core.io import load_measurements
+
+        path = tmp_path / 'blank.csv'
+        path.write_text('concentration,rep1,rep2\n0,10,11\n1e-6,12,\n2e-6,14,15\n3e-6,15,16\n4e-6,16,17\n')
+        with pytest.raises(InvalidData) as excinfo:
+            MeasurementSet.from_dataframe(load_measurements(path), source_file=str(path))
+        message = str(excinfo.value)
+        assert 'no signal at 1 µM' in message
+        assert 'blank.csv' in message
+
+    @pytest.mark.parametrize(
+        'name, text',
+        [
+            ('single.csv', 'concentration,signal\n0,10\n1e-6,12\n2e-6,\n3e-6,15\n4e-6,16\n'),
+            ('single.txt', 'var\tsignal\n0\t10\n1e-6\t12\n2e-6\t\n3e-6\t15\n4e-6\t16\n'),
+        ],
+    )
+    def test_a_blank_signal_in_a_single_titration_is_refused_not_dropped(self, tmp_path, name, text):
+        """One titration has no other replicate to compare with, so a dropped cell would go unnoticed."""
+        from core.data_processing.measurement_set import InvalidData
+        from core.io import load_measurements
+
+        path = tmp_path / name
+        path.write_text(text)
+        with pytest.raises(InvalidData) as excinfo:
+            MeasurementSet.from_dataframe(load_measurements(path), source_file=str(path))
+        message = str(excinfo.value)
+        assert '2 µM' in message and 'point 3 of 5' in message
+        assert name in message
+
+    def test_rows_with_neither_number_are_not_measurements(self, tmp_path):
+        """A trailing empty row is skipped; only a half-filled row is a titration point."""
+        from core.io import load_measurements
+
+        path = tmp_path / 'trailing.csv'
+        path.write_text('concentration,signal\n0,10\n1e-6,12\n2e-6,14\n3e-6,15\n,\n')
+        ms = MeasurementSet.from_dataframe(load_measurements(path), source_file=str(path))
+        assert ms.signals.shape == (1, 4)
+
+    def test_set_concentrations_refuses_a_negative_value_and_keeps_the_grid(self):
+        from core.data_processing.measurement_set import InvalidData
+
+        ms = _sample_measurement_set(n_replicas=2, n_points=4)
+        before = ms.concentrations.copy()
+        with pytest.raises(InvalidData, match='point 2 of 4 .*-3 µM'):
+            ms.set_concentrations(Q_(np.array([1.0, -3.0, 5.0, 7.0]), 'µM'))
+        np.testing.assert_array_equal(ms.concentrations, before)
+
+    def test_replicates_loaded_from_several_files_name_every_file(self):
+        from core.data_processing.measurement_set import InvalidData
+
+        signals = np.ones((2, 6))
+        signals[1, 0] = np.inf
+        with pytest.raises(InvalidData, match="Replicate 'run_b' in run_a.csv, run_b.csv has an infinite signal"):
+            MeasurementSet(
+                concentrations=_grid(),
+                signals=signals,
+                replica_ids=('run_a', 'run_b'),
+                metadata={'source_file': 'x/run_a.csv', 'source_files': ['x/run_a.csv', 'x/run_b.csv']},
+            )

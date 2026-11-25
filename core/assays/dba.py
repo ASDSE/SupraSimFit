@@ -71,6 +71,8 @@ class DBAAssay(BaseAssay):
         else:
             raise ValueError(f"mode must be 'HtoD' or 'DtoH', got '{self.mode}'")
 
+        self._check_dilution()
+
     def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
@@ -78,7 +80,7 @@ class DBAAssay(BaseAssay):
         ----------
         params : np.ndarray
             [Ka_dye, I0, I_dye_free, I_dye_bound] as bare floats
-            from the optimizer, in canonical units.
+            in canonical units, in ``parameter_keys`` order.
 
         Returns
         -------
@@ -94,7 +96,7 @@ class DBAAssay(BaseAssay):
             I_dye_free=I_dye_free,
             I_dye_bound=I_dye_bound,
             x_titrant=xx,
-            y_fixed=self.fixed_conc.magnitude,
+            y_fixed=self.fixed_total('fixed_conc', xx),
             mode=self.mode,
         )
         return Q_(result, 'au')
@@ -102,7 +104,8 @@ class DBAAssay(BaseAssay):
     def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
         """Free host, free dye and host-dye complex (M) across the titration."""
         Ka_dye = params[0]
-        return dba_species(Ka_dye, self.x_data.magnitude, self.fixed_conc.magnitude, mode=self.mode)
+        x = self.x_data.magnitude
+        return dba_species(Ka_dye, x, self.fixed_total('fixed_conc', x), mode=self.mode)
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.
@@ -110,11 +113,13 @@ class DBAAssay(BaseAssay):
         Returns
         -------
         Dict[str, Any]
-            {'fixed_conc': ..., 'mode': ...}
+            {'fixed_conc': ..., 'mode': ...}, and the two dilution conditions
+            when a titrant stock is declared.
         """
         return {
             'fixed_conc': self.fixed_conc,
             'mode': self.mode,
+            **self.dilution_conditions(),
         }
 
 

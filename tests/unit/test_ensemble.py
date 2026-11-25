@@ -1,7 +1,7 @@
-"""Unit tests for the ensemble-collapse module.
+"""Statistics of a set of values in a parameter's own scale and in log₁₀.
 
-Pins the single-source collapse behaviour: representative selection and the
-per-parameter summary every reported number is derived from.
+The replicate columns of a per-replicate fit report these, so what they mean
+is pinned here directly.
 """
 
 import numpy as np
@@ -10,57 +10,7 @@ import pytest
 from core.optimizer import ensemble
 
 # ---------------------------------------------------------------------------
-# Representative selection
-# ---------------------------------------------------------------------------
-
-
-class TestSelectRepresentativeIndex:
-    def test_picks_highest_r_squared(self):
-        quality = {'rmse': np.array([0.03, 0.01, 0.02]), 'r_squared': np.array([0.98, 0.999, 0.99])}
-        assert ensemble.select_representative_index(quality) == 1
-
-    def test_highest_r_squared_is_lowest_rmse(self):
-        """On a fixed dataset the two criteria agree by construction."""
-        quality = {'rmse': np.array([0.5, 0.1, 0.3]), 'r_squared': np.array([0.90, 0.999, 0.95])}
-        idx = ensemble.select_representative_index(quality)
-        assert idx == int(np.argmin(quality['rmse']))
-
-    def test_r_squared_ties_broken_by_lowest_rmse(self):
-        """When R² ties (e.g. all 0 for constant y, ss_tot==0), pick lowest RMSE."""
-        quality = {'rmse': np.array([0.9, 0.4, 0.7]), 'r_squared': np.array([0.0, 0.0, 0.0])}
-        assert ensemble.select_representative_index(quality) == 1
-
-
-# ---------------------------------------------------------------------------
-# collapse
-# ---------------------------------------------------------------------------
-
-
-class TestCollapse:
-    def test_pools_and_aligns_by_index(self):
-        pm = np.array([[10.0, 100.0], [20.0, 50.0], [30.0, 75.0]])
-        rmse = np.array([0.02, 0.01, 0.03])
-        r2 = np.array([0.99, 0.999, 0.98])
-        res = ensemble.collapse(pm, rmse, r2, ['Ka', 'I0'])
-
-        np.testing.assert_array_equal(res.parameter_samples['Ka'], [10.0, 20.0, 30.0])
-        np.testing.assert_array_equal(res.parameter_samples['I0'], [100.0, 50.0, 75.0])
-        np.testing.assert_array_equal(res.quality_samples['rmse'], rmse)
-        np.testing.assert_array_equal(res.quality_samples['r_squared'], r2)
-
-    def test_representative_is_the_best_real_row(self):
-        pm = np.array([[10.0, 100.0], [20.0, 50.0], [30.0, 75.0]])
-        rmse = np.array([0.02, 0.01, 0.03])
-        r2 = np.array([0.99, 0.999, 0.98])
-        res = ensemble.collapse(pm, rmse, r2, ['Ka', 'I0'])
-
-        assert res.representative_index == 1
-        # Representative is an actual row of the pool, not a per-column aggregate.
-        np.testing.assert_array_equal(res.representative_params, [20.0, 50.0])
-
-
-# ---------------------------------------------------------------------------
-# describe / describe_log10 (Ka-space vs log-space statistics)
+# describe / describe_log10 (a parameter's own scale vs log space)
 # ---------------------------------------------------------------------------
 
 

@@ -29,7 +29,7 @@ _CONC_UNIT_COMMENT_RE = re.compile(r'concentration\s*=\s*([^\s,;]+)', re.IGNOREC
 
 
 def _as_float(text: str) -> float:
-    """Return one field as a float, or NaN when it is not a number, so its row is dropped.
+    """Return one field as a float, or NaN when it is missing or not a number.
 
     ``float`` recovers exactly the value a shortest round-tripping decimal
     stands for, which the pandas parser does not: it reads the
@@ -38,7 +38,7 @@ def _as_float(text: str) -> float:
     """
     try:
         return float(text)
-    except ValueError:
+    except (TypeError, ValueError):
         return float('nan')
 
 
@@ -117,7 +117,9 @@ class TxtReader:
         if not dfs:
             raise ValueError(f'No data found in {path}')
 
-        result = pd.concat(dfs, ignore_index=True).dropna()
+        # A row with neither number is not a measurement; one with a single number is, and is
+        # kept with the other blank so the measurement set names the point that lacks it.
+        result = pd.concat(dfs, ignore_index=True).dropna(subset=['concentration', 'signal'], how='all')
         # Propagate a declared non-M concentration unit so MeasurementSet
         # converts to molar; absent header means M by contract.
         if declared_conc_unit:

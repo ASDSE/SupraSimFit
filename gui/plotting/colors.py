@@ -108,8 +108,6 @@ INK_2 = '#52514e'
 INK_3 = '#898781'
 #: Hairline separators between panes.
 HAIRLINE = '#e4e3de'
-#: Samples and fits that fall short of the Min R², drawn behind the rest.
-BELOW_FLOOR = '#c3c2b7'
 #: The primary data series: histogram bars, sample dots, first-order indices.
 SERIES = '#2a78d6'
 #: The second series alongside :data:`SERIES`, e.g. the total-order index.

@@ -303,3 +303,126 @@ def test_window_updates_species_and_notes_dye_alone(qapp):
     assert set(w._species_plot._series) == {'H', 'G', 'HG', 'HG2'}
     w._selector.set_assay_type(AssayType.DYE_ALONE)
     assert w._species_plot._series == {}  # no speciation for a linear calibration
+
+
+@pytest.fixture
+def sim_warnings(monkeypatch):
+    """Every warning the simulation window shows, as (title, text)."""
+    from gui.simulation import simulation_window
+
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        simulation_window.QMessageBox, 'warning', lambda _parent, title, text: shown.append((title, text))
+    )
+    return shown
+
+
+def _choose(monkeypatch, path):
+    """Answer the window's next open or save dialog with *path*."""
+    from gui.simulation import simulation_window
+
+    monkeypatch.setattr(simulation_window.QFileDialog, 'getOpenFileName', lambda *a, **k: (str(path), ''))
+    monkeypatch.setattr(simulation_window.QFileDialog, 'getSaveFileName', lambda *a, **k: (str(path), ''))
+
+
+def test_importing_an_unreadable_file_names_it_without_the_reader_error(qapp, sim_warnings, tmp_path, monkeypatch):
+    from core.io import load_measurements
+    from gui.simulation.simulation_window import SimulationWindow
+
+    path = tmp_path / 'garbled.csv'
+    path.write_text('this is not;a titration\n\x00\x01 at all\n')
+    with pytest.raises(Exception) as caught:
+        load_measurements(str(path))
+    w = SimulationWindow()
+    _choose(monkeypatch, path)
+
+    w._on_import_data()
+
+    assert w._imported is None
+    assert len(sim_warnings) == 1
+    assert 'garbled.csv' in sim_warnings[0][1]
+    assert str(caught.value) not in sim_warnings[0][1]
+
+
+def test_importing_data_refused_for_the_user_shows_that_refusal(qapp, sim_warnings, tmp_path, monkeypatch):
+    from core.data_processing.measurement_set import InvalidData, MeasurementSet
+    from core.io import load_measurements
+    from gui.simulation.simulation_window import SimulationWindow
+
+    path = tmp_path / 'negative.csv'
+    path.write_text('concentration,signal\n0,10\n1e-6,12\n-2e-6,14\n3e-6,15\n4e-6,16\n')
+    with pytest.raises(InvalidData) as refused:
+        MeasurementSet.from_dataframe(load_measurements(str(path)), source_file=str(path))
+    w = SimulationWindow()
+    _choose(monkeypatch, path)
+
+    w._on_import_data()
+
+    assert w._imported is None
+    assert sim_warnings == [('Import Error', str(refused.value))]
+
+
+def test_loading_a_file_that_is_not_saved_settings_names_it_without_the_parser_error(
+    qapp, sim_warnings, tmp_path, monkeypatch
+):
+    import json
+
+    from gui.simulation.simulation_window import SimulationWindow
+
+    path = tmp_path / 'notes.json'
+    path.write_text('{"assay_type": ')
+    with pytest.raises(json.JSONDecodeError) as caught:
+        json.loads(path.read_text())
+    w = SimulationWindow()
+    before = w._panel.state()
+    _choose(monkeypatch, path)
+
+    w._on_load_settings()
+
+    assert w._panel.state() == before
+    assert len(sim_warnings) == 1
+    assert 'notes.json' in sim_warnings[0][1]
+    assert str(caught.value) not in sim_warnings[0][1]
+
+
+def test_saving_settings_where_nothing_can_be_written_names_the_file(qapp, sim_warnings, tmp_path, monkeypatch):
+    from gui.simulation.simulation_window import SimulationWindow
+
+    path = tmp_path / 'no_such_folder' / 'settings.json'
+    w = SimulationWindow()
+    _choose(monkeypatch, path)
+
+    w._on_save_settings()
+
+    assert len(sim_warnings) == 1
+    assert 'settings.json' in sim_warnings[0][1]
+    assert 'Errno' not in sim_warnings[0][1] and str(tmp_path) not in sim_warnings[0][1]
+
+
+def test_a_model_that_cannot_be_computed_is_reported_without_the_library_error(qapp, monkeypatch):
+    from gui.simulation import simulation_window
+    from gui.simulation.simulation_window import SimulationWindow
+
+    w = SimulationWindow()
+    raw = 'operands could not be broadcast together with shapes (12,) (3,)'
+
+    def broken(*_a, **_k):
+        raise ValueError(raw)
+
+    monkeypatch.setattr(simulation_window, 'simulate_signal', broken)
+    w._recompute()
+
+    message = w.statusBar().currentMessage()
+    assert message and raw not in message
+
+
+def test_a_custom_vector_entry_that_is_not_a_number_is_named(qapp):
+    from gui.simulation.simulation_window import SimulationWindow
+
+    w = SimulationWindow()
+    w._panel._titrant.set_explicit([1e-6, 2e-6, 5e-6])
+    w._panel._titrant._vector.setText('1, 2,5 abc')
+    w._recompute()
+
+    message = w.statusBar().currentMessage()
+    assert "'abc' is not a number" in message

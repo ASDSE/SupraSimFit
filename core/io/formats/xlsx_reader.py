@@ -99,7 +99,7 @@ class XlsxReader:
                     'replica': i,
                 }
             )
-            frames.append(frame.dropna(subset=['concentration', 'signal']))
+            frames.append(frame.dropna(subset=['concentration', 'signal'], how='all'))
         if not frames:
             raise ValueError('No readable replica sheets found in Excel file.')
         return pd.concat(frames, ignore_index=True)
@@ -118,7 +118,7 @@ class XlsxReader:
                     'replica': df[replica_col].astype(int) if replica_col else 0,
                 }
             )
-            return result.dropna(subset=['concentration', 'signal']).reset_index(drop=True)
+            return result.dropna(subset=['concentration', 'signal'], how='all').reset_index(drop=True)
 
         if conc_col and len(df.columns) >= 2:
             return self._parse_wide(df, conc_col)
@@ -138,7 +138,7 @@ class XlsxReader:
             )
             frames.append(frame)
         result = pd.concat(frames, ignore_index=True)
-        return result.dropna(subset=['concentration', 'signal']).reset_index(drop=True)
+        return result.dropna(subset=['concentration', 'signal'], how='all').reset_index(drop=True)
 
     def _find_col(self, cols_lower: dict, names: set) -> str | None:
         for name in names:

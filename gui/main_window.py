@@ -91,6 +91,13 @@ QGroupBox::title {
 """
 
 
+#: The two states of the one fit action: it starts the active session's fit,
+#: and stops that fit while it runs, as the sensitivity panel's own button does.
+_RUN_FIT = 'Run Fit'
+_CANCEL_FIT = 'Cancel Fit'
+_CANCEL_FIT_TIP = 'Stop the fit running in this session (Ctrl+R)'
+
+
 class FittingMainWindow(QMainWindow):
     """Main application window: tab management + toolbar + menu routing.
 
@@ -185,7 +192,9 @@ class FittingMainWindow(QMainWindow):
         tb.addWidget(self._import_btn)
 
         self._act_demo = QAction('Demo IDA', self)
-        self._act_demo.setToolTip('Load bundled IDA demo data and run a fit with default settings')
+        self._act_demo.setToolTip(
+            'Load the bundled IDA demo data and fit it with typical input uncertainties (the status bar lists them)'
+        )
         self._act_demo.triggered.connect(self._on_load_demo)
         tb.addAction(self._act_demo)
 
@@ -196,10 +205,10 @@ class FittingMainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        self._act_fit = QAction('Run Fit', self)
+        self._act_fit = QAction(_RUN_FIT, self)
         self._act_fit.setShortcut(QKeySequence('Ctrl+R'))
-        self._act_fit.setToolTip('Run multi-start fitting in the active session (Ctrl+R)')
-        self._act_fit.triggered.connect(self._on_run_fit)
+        self._act_fit.setToolTip('Fit the active session\u2019s data (Ctrl+R)')
+        self._act_fit.triggered.connect(self._on_fit_action)
         tb.addAction(self._act_fit)
 
         tb.addSeparator()
@@ -224,14 +233,10 @@ class FittingMainWindow(QMainWindow):
 
         self._act_save_plot = QAction('Save Plot', self)
         self._act_save_plot.setToolTip(
-            'Save the plot on the tab that is showing — the Fit Curve and Distributions tabs as PNG or SVG, '
+            'Save the plot on the tab that is showing — the Fit Curve tab as PNG or SVG, '
             'the Identifiability and Ka Sensitivity tabs as PNG'
         )
         self._act_save_plot.triggered.connect(self._on_save_plot)
-
-        self._act_export_dists = QAction('Save Distributions Plot\u2026', self)
-        self._act_export_dists.setToolTip('Save the distributions plot (with layout + size options) as PNG')
-        self._act_export_dists.triggered.connect(self._on_save_distributions_plot)
 
         self._act_save_style = QAction('Save Style Template', self)
         self._act_save_style.setToolTip('Save current plot style settings to a JSON file')
@@ -242,8 +247,8 @@ class FittingMainWindow(QMainWindow):
         self._act_export_all.setToolTip('Export selected artefacts (raw data, results, plots, style) into one folder')
         self._act_export_all.triggered.connect(self._on_export_all)
 
-        # Run Fit and the result exports follow the active session (_sync_actions);
-        # their own tooltips are shown whenever they are available.
+        # The fit action and the result exports follow the active session
+        # (_sync_actions); their own tooltips are shown whenever they are available.
         self._action_tips: dict[QAction, str] = {
             action: action.toolTip()
             for action in (
@@ -251,7 +256,6 @@ class FittingMainWindow(QMainWindow):
                 self._act_export,
                 self._act_export_txt,
                 self._act_export_csv,
-                self._act_export_dists,
                 self._act_save_plot,
             )
         }
@@ -266,7 +270,6 @@ class FittingMainWindow(QMainWindow):
         export_menu.addAction(self._act_export_raw)
         export_menu.addSeparator()
         export_menu.addAction(self._act_save_plot)
-        export_menu.addAction(self._act_export_dists)
         export_menu.addSeparator()
         export_menu.addAction(self._act_save_style)
 
@@ -322,7 +325,6 @@ class FittingMainWindow(QMainWindow):
         file_menu.addAction(self._act_export_raw)
         file_menu.addAction(self._act_import)
         file_menu.addAction(self._act_save_plot)
-        file_menu.addAction(self._act_export_dists)
         file_menu.addSeparator()
         file_menu.addAction(self._act_save_style)
         file_menu.addAction(self._act_load_style)
@@ -376,38 +378,51 @@ class FittingMainWindow(QMainWindow):
         self._sync_actions()
 
     def _sync_actions(self) -> None:
-        """Enable Run Fit, Save Plot and the result exports for what the active session can do now.
+        """Set the fit action, Save Plot and the result exports to what the active session can do now.
 
-        Run Fit is unavailable while a fit or a sensitivity analysis is running
-        there, Save Plot while the plot tab on screen has nothing to save, and
-        the result exports while every fit the session holds is hidden; each
-        tooltip then says why.
+        The fit action stops the fit of the tab on screen while one runs there
+        and starts a fit otherwise, unavailable while that session's
+        sensitivity analysis is running. Save Plot follows what the plot tab on
+        screen has to save, and the result exports are unavailable while every
+        fit the session holds is hidden; each tooltip then says why. Every one
+        of these belongs to the tab on screen, so switching tabs runs this
+        again.
         """
         session = self.active_session()
         busy = None if session is None else session.busy_note()
-        self._act_fit.setEnabled(busy is None)
-        self._act_fit.setToolTip(busy or self._action_tips[self._act_fit])
+        fitting = session is not None and session.fit_running()
+        self._act_fit.setText(_CANCEL_FIT if fitting else _RUN_FIT)
+        self._act_fit.setEnabled(fitting or busy is None)
+        self._act_fit.setToolTip(_CANCEL_FIT_TIP if fitting else (busy or self._action_tips[self._act_fit]))
 
         plot_note = None if session is None else session.plot_export_note()
         self._act_save_plot.setEnabled(plot_note is None)
         self._act_save_plot.setToolTip(plot_note or self._action_tips[self._act_save_plot])
 
         note = None if session is None else session.hidden_results_note()
-        for action in (self._act_export, self._act_export_txt, self._act_export_csv, self._act_export_dists):
+        for action in (self._act_export, self._act_export_txt, self._act_export_csv):
             action.setEnabled(note is None)
             action.setToolTip(note or self._action_tips[action])
 
     def _close_tab(self, idx: int) -> None:
-        """Close one session tab, stopping the work it started before its widgets go."""
+        """Close one session tab, stopping the work it started before its widgets go, and say so on the status bar."""
         if self._tabs.count() == 1:
             # Keep at least one tab
             QMessageBox.information(self, 'Cannot Close', 'At least one session must remain open.')
             return
         session = self._tabs.widget(idx)
+        name = self._tabs.tabText(idx)
         self._tabs.removeTab(idx)
         if session is not None:
             if isinstance(session, FittingSession):
+                stopped = session.running_work()
                 session.shutdown()
+                # The line on the status bar is the closed session's last word.
+                # Left standing, its progress count reads as a run still going
+                # in a window where nothing is running any more.
+                self._statusbar.showMessage(
+                    f'Closed {name} — the running {stopped} was stopped' if stopped else 'Ready'
+                )
             session.deleteLater()
 
     def _rename_tab(self, session: FittingSession, title: str) -> None:
@@ -444,9 +459,14 @@ class FittingMainWindow(QMainWindow):
         self._sim_window.raise_()
         self._sim_window.activateWindow()
 
-    def _on_run_fit(self) -> None:
+    def _on_fit_action(self) -> None:
+        """Run the active session's fit, or stop the fit it is running."""
         session = self.active_session()
-        if session:
+        if session is None:
+            return
+        if session.fit_running():
+            session.cancel_fit()
+        else:
             session.run_fit()
 
     def _on_export(self) -> None:
@@ -478,11 +498,6 @@ class FittingMainWindow(QMainWindow):
         session = self.active_session()
         if session:
             session.export_plot()
-
-    def _on_save_distributions_plot(self) -> None:
-        session = self.active_session()
-        if session:
-            session.save_distributions_plot()
 
     def _on_export_all(self) -> None:
         session = self.active_session()
@@ -562,12 +577,15 @@ class FittingMainWindow(QMainWindow):
     def _discard_update_worker(self, worker: UpdateCheckWorker) -> None:
         """Let go of the check that just reported, and clear the reference when it is the one held.
 
-        A check whose thread has ended reports on the interface thread, which
-        can be busy long enough for the user to start a second check first.
-        Only the check that reported is deleted; a newer one has the reference
-        by then and runs on.
+        A check reports from inside its thread's ``run()``, so the thread may
+        still be ending when the report arrives; :func:`~gui.workers.retire`
+        deletes the worker only once it has, since destroying a running
+        ``QThread`` aborts the app. The interface thread can be busy long
+        enough for the user to start a second check first. Only the check that
+        reported is let go of; a newer one has the reference by then and runs
+        on.
         """
-        worker.deleteLater()
+        retire(worker)
         if self._update_worker is worker:
             self._update_worker = None
 
@@ -632,6 +650,10 @@ def launch() -> None:
             pass
 
     app = QApplication.instance() or QApplication(sys.argv)
+    # The stylesheet paints light toolbar buttons and navy group titles on the
+    # window colour, which a dark scheme would make unreadable: the app is drawn
+    # in the light scheme whatever the system uses.
+    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
     app.setStyleSheet(_APP_QSS)
 
     icon_path = _app_icon_path()

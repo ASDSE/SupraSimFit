@@ -209,6 +209,7 @@ AGENTS.md
 scratch/*
 app/*
 data/results/*
+validation/results/
 *.xlsx
 
 graphify-out/cost.json

@@ -13,6 +13,9 @@ load_measurements_multi(paths) -> pd.DataFrame
 save_results(results, path) -> None
     Save fit results dict to file.
 
+InvalidData
+    Raised for data no fit can use, with a message written for the user.
+
 Supported formats: .txt (tab-separated, multi-replica)
 """
 
@@ -35,6 +38,7 @@ from core.io.formats import csv_reader  # noqa: F401
 from core.io.formats import xlsx_reader  # noqa: F401
 
 # isort: on
+from core.io.base import InvalidData
 from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.io.formats.ensight_reader import ENSIGHT_CHANNEL_COLUMN
 from core.io.registry import get_reader, get_writer
@@ -101,9 +105,11 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
     Raises
     ------
     ValueError
-        If *paths* is empty; a file carries a ``channel`` column or placeholder
-        concentrations; or the files do not all have the same number of
-        titration points.
+        If *paths* is empty.
+    InvalidData
+        If a file cannot be read (naming that file), carries a ``channel``
+        column or placeholder concentrations, or the files do not all have the
+        same number of titration points.
     """
     if not paths:
         raise ValueError('No files provided')
@@ -113,14 +119,23 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
     point_counts: list[tuple[str, int]] = []
     for raw in paths:
         path = Path(raw)
-        df = load_measurements(path)
+        try:
+            df = load_measurements(path)
+        except InvalidData:
+            raise
+        except ValueError as exc:
+            raise InvalidData(
+                f'Could not read the measurements in {path.name}, so the files could not be loaded as replicates. '
+                "Check that it is a measurement file in one of the formats the Data panel's help lists, then load "
+                'the files again.'
+            ) from exc
         if ENSIGHT_CHANNEL_COLUMN in df.columns:
-            raise ValueError(
+            raise InvalidData(
                 f"'{path.name}' carries multiple channels; batch import handles "
                 'single-curve files only. Import multi-channel files individually.'
             )
         if df.attrs.get(BMG_PLACEHOLDER_KEY):
-            raise ValueError(
+            raise InvalidData(
                 f"'{path.name}' has placeholder concentrations (no real concentration "
                 'column); batch replica import expects files that carry their own '
                 'concentrations. Import it individually and enter concentrations.'
@@ -154,7 +169,7 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
     # array-shape mismatch surface from downstream numpy code.
     if len({n for _, n in point_counts}) > 1:
         listing = '\n'.join(f'• {name} — {n} points' for name, n in point_counts)
-        raise ValueError(
+        raise InvalidData(
             'These files have different numbers of titration points, so they '
             f'cannot be loaded as replicates of one measurement:\n\n{listing}\n\n'
             'Replicates must share the same titration points. Select files from '

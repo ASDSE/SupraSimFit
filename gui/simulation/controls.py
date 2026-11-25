@@ -496,9 +496,12 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 def _parse_floats(text: str) -> list[float]:
     """Parse a comma/space-separated list of floats; raise ValueError if any token is bad."""
     tokens = [t for t in text.replace(',', ' ').split() if t]
-    if not tokens:
-        return []
-    try:
-        return [float(t) for t in tokens]
-    except ValueError as exc:
-        raise ValueError(f'Invalid concentration value in: {text!r}') from exc
+    values = []
+    for token in tokens:
+        try:
+            values.append(float(token))
+        except ValueError:
+            raise ValueError(
+                f"'{token}' is not a number. Enter the concentrations as numbers separated by commas or spaces."
+            ) from None
+    return values

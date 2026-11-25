@@ -126,3 +126,29 @@ def test_quitting_does_not_wait_on_the_check_without_a_limit(qapp, monkeypatch, 
     check.wait()
     _settle(qapp)
     assert check not in workers._RUNNING_ON
+
+
+class _SlowToEnd(_ScriptedCheck):
+    """A check whose thread runs on for a moment after its report, as a real one does while ``run()`` returns."""
+
+    def run(self) -> None:
+        super().run()
+        time.sleep(0.3)
+
+
+def test_a_check_that_reported_is_deleted_only_once_its_thread_has_ended(qapp, monkeypatch, dialogs):
+    """The report is sent from inside ``run()``: deleting the worker on it destroys a running ``QThread``, which aborts the app."""
+    _ScriptedCheck.made = []
+    monkeypatch.setattr('gui.main_window.UpdateCheckWorker', _SlowToEnd)
+    window = _window()
+    startup = _ScriptedCheck.made[0]
+    startup.released = True
+    while window._update_worker is startup:  # the report arrives while the thread still sleeps
+        qapp.processEvents()
+
+    ended = startup.isFinished()
+    startup.wait()  # keep a failing run from aborting the suite in the deletion below
+    _settle(qapp)
+    assert ended
+    window.close()
+    _settle(qapp)

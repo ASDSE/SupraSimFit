@@ -308,3 +308,182 @@ class TestLoadConcentrationVectorUnits:
         assert loaded_panel._imported_unit == 'M'
         np.testing.assert_allclose(loaded_panel.measurement_set().concentrations, [1e-9, 2e-9, 5e-9])
         assert infos, 'expected an information dialog explaining the unit conversion'
+
+
+@pytest.fixture
+def warnings(monkeypatch):
+    """Every warning the panel shows, as (title, text)."""
+    from gui.widgets import data_panel
+
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(data_panel.QMessageBox, 'warning', lambda _parent, title, text: shown.append((title, text)))
+    return shown
+
+
+class TestRefusedConcentrations:
+    """A value that is not a concentration never reaches the MeasurementSet; the user is told which and why."""
+
+    @pytest.mark.parametrize('typed', ['nan', '-1e-6', 'inf'])
+    def test_a_cell_edit_that_is_not_a_concentration_is_reverted(self, loaded_panel, warnings, typed):
+        emissions = []
+        loaded_panel.data_loaded.connect(emissions.append)
+
+        loaded_panel._conc_table.item(1, 0).setText(typed)
+
+        assert emissions == []
+        np.testing.assert_allclose(loaded_panel.measurement_set().concentrations, [1e-6, 2e-6, 3e-6])
+        assert loaded_panel._conc_table.item(1, 0).text() == '2e-06'
+        assert len(warnings) == 1
+        assert 'point 2 of 3' in warnings[0][1]
+        assert 'zero or more' in warnings[0][1]
+
+    def test_a_loaded_vector_with_a_negative_value_is_refused_whole(
+        self, loaded_panel, warnings, tmp_path, monkeypatch
+    ):
+        import json
+
+        from gui.widgets import data_panel
+
+        p = tmp_path / 'bad.json'
+        p.write_text(json.dumps({'concentrations': [1.0, -2.0, 3.0], 'unit': 'µM'}))
+        monkeypatch.setattr(data_panel.QFileDialog, 'getOpenFileName', lambda *a, **k: (str(p), ''))
+
+        loaded_panel._on_load_concentrations()
+
+        np.testing.assert_allclose(loaded_panel.measurement_set().concentrations, [1e-6, 2e-6, 3e-6])
+        assert loaded_panel._imported_unit == 'M'
+        assert [loaded_panel._conc_table.item(r, 0).text() for r in range(3)] == ['1e-06', '2e-06', '3e-06']
+        assert len(warnings) == 1
+        assert 'point 2 of 3 in bad.json' in warnings[0][1]
+        assert '-2 µM' in warnings[0][1]
+
+    def test_a_file_with_a_negative_concentration_is_refused_by_name(self, qapp, warnings, tmp_path):
+        from gui.widgets.data_panel import DataPanel
+
+        path = tmp_path / 'negative.csv'
+        path.write_text('concentration,signal\n0,10\n1e-6,12\n-2e-6,14\n3e-6,15\n4e-6,16\n')
+        panel = DataPanel()
+        emissions = []
+        panel.data_loaded.connect(emissions.append)
+
+        panel.load_file(str(path))
+
+        assert panel.measurement_set() is None
+        assert emissions == []
+        assert len(warnings) == 1
+        assert 'negative.csv' in warnings[0][1] and '-2 µM' in warnings[0][1]
+
+    def test_switching_to_a_channel_with_a_missing_well_says_which(self, multi_channel_panel, warnings):
+        df = multi_channel_panel._multi_channel_df
+        gap = (df['channel'] == 'chB') & (df['replica'] == 1) & (df['concentration'] == 2.0)
+        multi_channel_panel._multi_channel_df = df[~gap].copy()
+        multi_channel_panel._multi_channel_df.attrs.update(df.attrs)
+        before = multi_channel_panel.measurement_set()
+
+        multi_channel_panel._channel_combo.setCurrentIndex(1)
+
+        assert multi_channel_panel.measurement_set() is before
+        assert len(warnings) == 1
+        assert "Replicate '1'" in warnings[0][1] and 'plate column 2' in warnings[0][1]
+
+
+def _reader_error(path) -> str:
+    """The text the file readers raise for *path*: library or programmer wording, never shown to the user."""
+    from core.io import load_measurements
+
+    with pytest.raises(Exception) as caught:
+        load_measurements(str(path))
+    return str(caught.value)
+
+
+class TestLoadErrorsInPlainWords:
+    """A file the app cannot read is named in a plain sentence; a refusal written for the user is shown as it is."""
+
+    def test_an_unreadable_file_is_named_without_the_reader_error(self, qapp, warnings, tmp_path):
+        from gui.widgets.data_panel import DataPanel
+
+        path = tmp_path / 'garbled.csv'
+        path.write_text('this is not;a titration\n\x00\x01 at all\n')
+        raw = _reader_error(path)
+        panel = DataPanel()
+
+        panel.load_file(str(path))
+
+        assert panel.measurement_set() is None
+        assert len(warnings) == 1
+        text = warnings[0][1]
+        assert 'garbled.csv' in text
+        assert raw not in text
+        assert 'Traceback' not in text and 'Error' not in text
+
+    def test_a_refusal_written_for_the_user_is_shown_as_it_is(self, qapp, warnings, tmp_path):
+        from core.data_processing.measurement_set import InvalidData, MeasurementSet
+        from core.io import load_measurements
+        from gui.widgets.data_panel import DataPanel
+
+        path = tmp_path / 'negative.csv'
+        path.write_text('concentration,signal\n0,10\n1e-6,12\n-2e-6,14\n3e-6,15\n4e-6,16\n')
+        with pytest.raises(InvalidData) as refused:
+            MeasurementSet.from_dataframe(load_measurements(str(path)), source_file=str(path))
+
+        DataPanel().load_file(str(path))
+
+        assert warnings == [('Load Error', str(refused.value))]
+
+    def test_of_several_files_the_one_that_cannot_be_read_is_named_alone(self, qapp, warnings, tmp_path, monkeypatch):
+        from gui.widgets import data_panel
+        from gui.widgets.data_panel import DataPanel
+
+        good = tmp_path / 'good.csv'
+        good.write_text('concentration,signal\n0,10\n1e-6,12\n2e-6,14\n3e-6,15\n4e-6,16\n')
+        bad = tmp_path / 'garbled.csv'
+        bad.write_text('this is not;a titration\n\x00\x01 at all\n')
+        raw = _reader_error(bad)
+        monkeypatch.setattr(data_panel.QFileDialog, 'getOpenFileNames', lambda *a, **k: ([str(good), str(bad)], ''))
+        panel = DataPanel()
+
+        panel.load_file()
+
+        assert panel.measurement_set() is None
+        assert len(warnings) == 1
+        text = warnings[0][1]
+        assert 'garbled.csv' in text and 'good.csv' not in text
+        assert raw not in text
+
+    def test_a_concentration_unit_the_reader_cannot_use_is_named_with_the_units_it_takes(
+        self, qapp, warnings, tmp_path
+    ):
+        from gui.widgets.data_panel import DataPanel
+
+        path = tmp_path / 'titration.csv'
+        path.write_text('ORIGIN,JASCO\nXUNITS,Concentration [floops]\nNPOINTS,2\nXYDATA\n0,10\n1,12\n')
+
+        DataPanel().load_file(str(path))
+
+        ((title, text),) = warnings
+        assert 'titration.csv' in text and '"floops"' in text
+        assert 'umol/L' in text and 'mmol/L' in text
+        assert 'Traceback' not in text and 'Error' not in text
+
+    def test_files_of_different_lengths_are_refused_in_the_loaders_own_words(
+        self, qapp, warnings, tmp_path, monkeypatch
+    ):
+        from core.io import InvalidData, load_measurements_multi
+        from gui.widgets import data_panel
+        from gui.widgets.data_panel import DataPanel
+
+        short = tmp_path / 'short.csv'
+        short.write_text('concentration,signal\n0,10\n1e-6,12\n2e-6,14\n3e-6,15\n')
+        long = tmp_path / 'long.csv'
+        long.write_text('concentration,signal\n0,10\n1e-6,12\n2e-6,14\n3e-6,15\n4e-6,16\n')
+        paths = [str(short), str(long)]
+        with pytest.raises(InvalidData) as refused:
+            load_measurements_multi(paths)
+        monkeypatch.setattr(data_panel.QFileDialog, 'getOpenFileNames', lambda *a, **k: (paths, ''))
+        panel = DataPanel()
+
+        panel.load_file()
+
+        assert panel.measurement_set() is None
+        assert warnings == [('Load Error', str(refused.value))]
+        assert 'different numbers of titration points' in warnings[0][1]

@@ -11,7 +11,9 @@ Target:  Ka_HG, Ka_H2G (stepwise association constants)
 
 This is the 2:1 mirror of :class:`~core.assays.hg2.HG2Assay` and shares its
 mass-balance solver.  Like the 1:2 case, the two stepwise constants are not
-generally identifiable independently; the fit reports their spread honestly.
+generally identifiable independently; what the data fix is reported as a
+confidence interval per constant, each with the other refitted, together with
+the joint confidence region of the pair.
 """
 
 from dataclasses import dataclass, field
@@ -59,6 +61,8 @@ class H2GAssay(BaseAssay):
         if self.h0.magnitude <= 0:
             raise ValueError('h0 must be positive')
 
+        self._check_dilution()
+
     def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
@@ -66,7 +70,7 @@ class H2GAssay(BaseAssay):
         ----------
         params : np.ndarray
             ``[Ka_HG, Ka_H2G, I0, I_G, I_H, I_HG, I_H2G]`` as bare floats
-            from the optimizer, in canonical units.
+            in canonical units, in ``parameter_keys`` order.
 
         Returns
         -------
@@ -84,7 +88,7 @@ class H2GAssay(BaseAssay):
             I_H=I_H,
             I_HG=I_HG,
             I_H2G=I_H2G,
-            h0=self.h0.magnitude,
+            h0=self.fixed_total('h0', xx),
             g0_values=xx,
         )
         return Q_(result, 'au')
@@ -92,7 +96,8 @@ class H2GAssay(BaseAssay):
     def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
         """Free host, guest, HG and H2G complexes (M) across the guest titration."""
         Ka_HG, Ka_H2G = params[0], params[1]
-        return h2g_species(Ka_HG, Ka_H2G, self.h0.magnitude, self.x_data.magnitude)
+        x = self.x_data.magnitude
+        return h2g_species(Ka_HG, Ka_H2G, self.fixed_total('h0', x), x)
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.
@@ -100,6 +105,7 @@ class H2GAssay(BaseAssay):
         Returns
         -------
         Dict[str, Any]
-            ``{'h0': ...}``
+            ``{'h0': ...}``, and the two dilution conditions when a titrant
+            stock is declared.
         """
-        return {'h0': self.h0}
+        return {'h0': self.h0, **self.dilution_conditions()}

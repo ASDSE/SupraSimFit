@@ -8,6 +8,7 @@ non-modally so the main fitting window stays usable alongside it.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -26,14 +27,21 @@ from PyQt6.QtWidgets import (
 )
 
 from core.assays.registry import ASSAY_REGISTRY, AssayType
+from core.data_processing.measurement_set import InvalidData, MeasurementSet
+from core.io import load_measurements
 from core.simulation import build_concentration_vector, simulate_dataset, simulate_signal, simulate_species
+from gui.plotting.export import ExportRefused
 from gui.plotting.plot_widget import PlotWidget
 from gui.simulation.settings_io import load_simulation_settings, save_simulation_settings
 from gui.simulation.simulation_panel import SimulationPanel
 from gui.simulation.species_plot import SpeciesPlotWidget
 from gui.widgets.assay_type_selector import AssayTypeSelector
 
+logger = logging.getLogger(__name__)
+
 _INITIAL_ASSAY = AssayType.IDA
+#: What to check when a file cannot be written, after the sentence naming it.
+_WRITE_HINT = 'Check that the folder exists and that you may write there.'
 
 
 class SimulationWindow(QMainWindow):
@@ -116,13 +124,26 @@ class SimulationWindow(QMainWindow):
         self._panel.set_assay_type(assay_type)  # emits changed → _recompute
 
     def _recompute(self) -> None:
-        """Re-evaluate the forward model and redraw.  Errors surface in the status bar."""
+        """Re-evaluate the forward model and redraw.  Errors surface in the status bar.
+
+        A titrant entry the vector cannot be built from is refused with the builder's
+        own sentence, which is written for the user; a model that cannot be evaluated
+        at these settings gets a sentence of this window's.
+        """
         try:
             spec = self._panel.spec()
             x = build_concentration_vector(spec.conc_mode, **spec.conc_kwargs)
-            y = simulate_signal(spec.assay_cls, spec.conditions, spec.parameters, x)
-        except Exception as exc:  # invalid range / non-physical params / solver failure
+        except ValueError as exc:
             self.statusBar().showMessage(f'⚠ {exc}')
+            return
+        try:
+            y = simulate_signal(spec.assay_cls, spec.conditions, spec.parameters, x)
+        except Exception:
+            logger.exception('Could not evaluate the %s model', spec.assay_type.name)
+            self.statusBar().showMessage(
+                '⚠ The model cannot be computed with these settings. Check that the concentrations and '
+                'binding constants are above zero.'
+            )
             return
 
         scatter: list[tuple[str, np.ndarray]] = []
@@ -183,15 +204,20 @@ class SimulationWindow(QMainWindow):
             return
         try:
             self._plot.export_image(path)
-            self.statusBar().showMessage(f'Curve saved to {path}')
-        except Exception as exc:
+        except ExportRefused as exc:
             QMessageBox.warning(self, 'Export Error', str(exc))
+            return
+        except Exception:
+            logger.exception('Could not export the curve to %s', path)
+            QMessageBox.warning(self, 'Export Error', f'Could not save the curve to {Path(path).name}. {_WRITE_HINT}')
+            return
+        self.statusBar().showMessage(f'Curve saved to {path}')
 
     def _on_export_data(self) -> None:
         try:
             spec = self._panel.spec()
             x = build_concentration_vector(spec.conc_mode, **spec.conc_kwargs)
-        except Exception as exc:
+        except ValueError as exc:  # the vector builder's own sentence, written for the user
             QMessageBox.warning(self, 'Cannot Export', str(exc))
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -221,8 +247,11 @@ class SimulationWindow(QMainWindow):
                 if Path(path).suffix.lower() != '.txt':
                     path = str(Path(path).with_suffix('.txt'))
                 write_measurements_txt(ms, path)
-        except Exception as exc:
-            QMessageBox.warning(self, 'Export Error', str(exc))
+        except Exception:
+            logger.exception('Could not export the simulated data to %s', path)
+            QMessageBox.warning(
+                self, 'Export Error', f'Could not save the simulated data to {Path(path).name}. {_WRITE_HINT}'
+            )
             return
         self.statusBar().showMessage(f'Simulated data exported to {path}')
 
@@ -232,9 +261,11 @@ class SimulationWindow(QMainWindow):
             return
         try:
             save_simulation_settings(self._panel.state(), path)
-            self.statusBar().showMessage(f'Settings saved to {path}')
-        except Exception as exc:
-            QMessageBox.warning(self, 'Save Error', str(exc))
+        except Exception:
+            logger.exception('Could not save the simulation settings to %s', path)
+            QMessageBox.warning(self, 'Save Error', f'Could not save the settings to {Path(path).name}. {_WRITE_HINT}')
+            return
+        self.statusBar().showMessage(f'Settings saved to {path}')
 
     def _on_load_settings(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, 'Load Settings', '', 'JSON (*.json);;All files (*)')
@@ -244,9 +275,16 @@ class SimulationWindow(QMainWindow):
             state = load_simulation_settings(path)
             self._selector.set_assay_type(AssayType[state['assay_type']])
             self._panel.load_state(state)
-            self.statusBar().showMessage(f'Settings loaded from {path}')
-        except Exception as exc:
-            QMessageBox.warning(self, 'Load Error', str(exc))
+        except Exception:
+            logger.exception('Could not load simulation settings from %s', path)
+            QMessageBox.warning(
+                self,
+                'Load Error',
+                f'Could not read simulation settings from {Path(path).name}. Choose a file written with '
+                'Save Settings… in this window.',
+            )
+            return
+        self.statusBar().showMessage(f'Settings loaded from {path}')
 
     def _on_import_data(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -255,12 +293,19 @@ class SimulationWindow(QMainWindow):
         if not path:
             return
         try:
-            from core.data_processing.measurement_set import MeasurementSet
-            from core.io import load_measurements
-
-            ms = MeasurementSet.from_dataframe(load_measurements(path))
-        except Exception as exc:
-            QMessageBox.warning(self, 'Import Error', f'Could not load data:\n{exc}')
+            ms = MeasurementSet.from_dataframe(load_measurements(path), source_file=path)
+        except InvalidData as exc:
+            # Written for the user: it names the file, the replicate and the point, and the fix.
+            QMessageBox.warning(self, 'Import Error', str(exc))
+            return
+        except Exception:
+            logger.exception('Could not import %s', path)
+            QMessageBox.warning(
+                self,
+                'Import Error',
+                f'Could not read the measurements in {Path(path).name}. Check that it is a measurement file '
+                '(.txt, .csv or .xlsx) with a concentration and a signal for each point, then import it again.',
+            )
             return
         self._imported = (
             np.asarray(ms.concentrations, dtype=float),

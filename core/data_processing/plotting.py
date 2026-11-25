@@ -19,7 +19,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from core.data_processing.measurement_set import MeasurementSet
-from core.pipeline.fit_pipeline import FitResult, fit_replica_ids
+from core.pipeline.fit_pipeline import FitResult
+from core.pipeline.reporting import fit_replica_ids
 
 
 def prepare_plot_data(

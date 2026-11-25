@@ -6,16 +6,14 @@ import logging
 import time
 from typing import Any
 
-from numpy.linalg import LinAlgError
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.assays.base import BaseAssay
 from core.data_processing.measurement_set import MeasurementSet
-from core.optimizer.multistart import FitCancelled
-from core.pipeline.fit_pipeline import FitConfig, PerReplicaFitError, fit_measurement_set
+from core.pipeline.fit_pipeline import FitConfig, FitResult, fit_measurement_set
 from core.pipeline.profile import fit_profile
 from core.pipeline.sensitivity import SensitivityConfig, SensitivityRunError, run_sensitivity
-from gui.widgets.replica_panel import describe_replicates
+from core.pipeline.varpro import FitCancelled, FitRefused
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +21,12 @@ logger = logging.getLogger(__name__)
 # hundreds of fits a second, and each signal repaints the progress bar and the
 # status bar on the interface thread.
 _PROGRESS_INTERVAL = 0.1
+
+#: Shown when the fit fails for a reason the pipeline does not state itself.
+_FIT_FAILED = (
+    'The fit could not be completed. Check the assay conditions, the parameter bounds and the '
+    'input uncertainties, then run it again.'
+)
 
 #: Shown when the Ka profile fails for a reason the pipeline does not state itself.
 _PROFILE_FAILED = 'The range of Kₐ your data support could not be worked out for this fit.'
@@ -88,23 +92,17 @@ def retire(worker: QThread | None) -> None:
         _release(worker)
 
 
-def _per_replicate_failure_text(exc: PerReplicaFitError, replica_ids) -> str:
-    """The exception's own sentence, each replicate's reason under it, and what to change."""
-    names = {rid: describe_replicates([rid], replica_ids) for rid in exc.failures}
-    details = '\n'.join(
-        f'  • {names[rid][0].upper()}{names[rid][1:]}: {reason}' for rid, reason in exc.failures.items()
-    )
-    return f'{exc}\n\n{details}\n\nTry lowering Min R², increasing Trials, or widening the parameter bounds.'
-
-
 class FitWorker(QThread):
     """Run :func:`fit_measurement_set` in a background thread.
 
-    Prevents the GUI from freezing during multi-start L-BFGS-B optimization.
-    The inputs stay readable as ``ms``, ``assay_cls``, ``conditions`` and
-    ``config``, so the fit's Ka profile can be computed on the same inputs.
-    :meth:`cancel` stops the fit between optimizer runs; a cancelled fit ends
-    quietly, emitting neither signal, because it has no result to report.
+    Keeps the interface responsive while the fit searches the Ka bounds and,
+    where an input may move within a stated uncertainty, works out the interval
+    that lets it (seconds on most data, longer on a model with two binding
+    constants). The inputs stay readable as ``ms``, ``assay_cls``,
+    ``conditions`` and ``config``, so the fit's Ka profiles can be computed on
+    the same inputs. :meth:`cancel` stops the fit at its next equilibrium
+    solve, which every part of it asks before; a cancelled fit ends quietly,
+    emitting neither signal, because it has no result to report.
 
     Parameters
     ----------
@@ -115,7 +113,7 @@ class FitWorker(QThread):
     conditions : dict
         Assay conditions (Ka_dye, h0, etc.).
     config : FitConfig
-        Optimizer configuration.
+        Fitting configuration.
     source_file : str, optional
         Original filename, stored in FitResult metadata.
 
@@ -124,7 +122,9 @@ class FitWorker(QThread):
     finished(FitResult)
         Emitted on successful completion.
     error(str)
-        Emitted if an exception is raised.
+        Emitted when the fit cannot be made: the pipeline's own message for a
+        reason it states itself, and one plain sentence for anything else,
+        which is logged with its traceback.
     """
 
     finished = pyqtSignal(object)  # FitResult
@@ -148,7 +148,7 @@ class FitWorker(QThread):
         self._cancelled = False
 
     def cancel(self) -> None:
-        """Ask the fit to stop at the next optimizer run."""
+        """Ask the fit to stop at the next equilibrium solve."""
         self._cancelled = True
 
     @property
@@ -164,13 +164,15 @@ class FitWorker(QThread):
             self.finished.emit(result)
         except FitCancelled:
             return
-        except PerReplicaFitError as exc:
-            self.error.emit(_per_replicate_failure_text(exc, self.ms.replica_ids))
+        except FitRefused as exc:
+            # The pipeline refuses a fit it cannot make in words the user can
+            # act on — which replicate, which bound, what to change.
+            self.error.emit(str(exc))
         except Exception:
+            # Anything else, a library's own ValueError included, carries text
+            # written for a developer: it is logged and reported in one sentence.
             logger.exception('Fit failed')
-            self.error.emit(
-                'The fit could not be completed. Check the assay conditions and the parameter bounds, then run it again.'
-            )
+            self.error.emit(_FIT_FAILED)
 
 
 class ProfileWorker(QThread):
@@ -186,11 +188,19 @@ class ProfileWorker(QThread):
         Assay conditions the fit used.
     config : FitConfig
         Configuration the fit used; its replicate handling and bounds apply.
+    fit : FitResult or None
+        The fit being profiled (:meth:`~core.pipeline.fit_pipeline.FitResult.profile_arguments`):
+        its penalised profiles are passed straight through, so the tab draws
+        the fit's own curves and interval rather than a second computation of
+        them, and the profile runs with the point weights the fit ran with and
+        the design effects of its conditional intervals and joint region.
+        ``None`` profiles the data afresh, with weights of one.
 
     Signals
     -------
-    finished(ProfileResult)
-        Emitted on successful completion.
+    finished(ProfileSet)
+        Emitted on successful completion: one profile per binding constant and,
+        for a model with two free ones, their joint region.
     error(str)
         Emitted if the profile cannot be computed: the pipeline's own message
         for a reason it states itself, and one plain sentence for anything
@@ -201,7 +211,7 @@ class ProfileWorker(QThread):
     report.
     """
 
-    finished = pyqtSignal(object)  # ProfileResult
+    finished = pyqtSignal(object)  # ProfileSet
     error = pyqtSignal(str)
 
     def __init__(
@@ -210,6 +220,7 @@ class ProfileWorker(QThread):
         assay_cls: type[BaseAssay],
         conditions: dict[str, Any],
         config: FitConfig,
+        fit: FitResult | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -217,6 +228,7 @@ class ProfileWorker(QThread):
         self._assay_cls = assay_cls
         self._conditions = conditions
         self._config = config
+        self._fit = fit
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -237,16 +249,12 @@ class ProfileWorker(QThread):
                     self._conditions,
                     self._config,
                     should_cancel=lambda: self._cancelled,
+                    **({} if self._fit is None else self._fit.profile_arguments()),
                 )
             )
         except FitCancelled:
             return
-        except LinAlgError:
-            # A linear-algebra failure is a ValueError, but its text is library
-            # jargon: it is reported like any other unexpected failure.
-            logger.exception('Ka profile failed')
-            self.error.emit(_PROFILE_FAILED)
-        except ValueError as exc:
+        except FitRefused as exc:
             self.error.emit(f'The range of Kₐ your data support could not be worked out:\n{exc}')
         except Exception:
             logger.exception('Ka profile failed')
@@ -268,7 +276,7 @@ class SensitivityWorker(QThread):
     conditions : dict
         Baseline assay conditions (Ka_dye, h0, etc.) as pint Quantities.
     fit_config : FitConfig
-        Per-fit optimizer configuration.
+        Configuration every re-fit runs with.
     sens_config : SensitivityConfig
         What to perturb and how.
     max_workers : int, optional
@@ -377,21 +385,12 @@ class SensitivityWorker(QThread):
             # result to show: the run reports only that it stopped.
             self._flush_progress()
             self.stopped.emit()
-        except PerReplicaFitError as exc:
-            # The baseline fit is an ordinary fit, and its per-replicate reasons
-            # are reported here exactly as the Fit Curve tab reports them.
-            self.error.emit(_per_replicate_failure_text(exc, self._ms.replica_ids))
         except SensitivityRunError as exc:
             # The analysis stopped on a re-fit it could not work around and says
             # so in words the user can act on.
             logger.exception('Sensitivity analysis stopped on a failed re-fit')
             self.error.emit(str(exc))
-        except LinAlgError:
-            # A linear-algebra failure is a ValueError, but its text is library
-            # jargon: it is reported like any other unexpected failure.
-            logger.exception('Sensitivity analysis failed')
-            self.error.emit(_SENSITIVITY_FAILED)
-        except ValueError as exc:
+        except FitRefused as exc:
             self.error.emit(f'The sensitivity analysis could not run:\n{exc}')
         except Exception:
             logger.exception('Sensitivity analysis failed')

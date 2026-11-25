@@ -76,6 +76,8 @@ class IDAAssay(BaseAssay):
         if self.d0.magnitude <= 0:
             raise ValueError('d0 must be positive')
 
+        self._check_dilution()
+
     def forward_model(self, params: np.ndarray, x: np.ndarray | None = None) -> Quantity:
         """Compute predicted signal from parameters.
 
@@ -83,7 +85,7 @@ class IDAAssay(BaseAssay):
         ----------
         params : np.ndarray
             [Ka_guest, I0, I_dye_free, I_dye_bound] as bare floats
-            from the optimizer, in canonical units.
+            in canonical units, in ``parameter_keys`` order.
 
         Returns
         -------
@@ -99,8 +101,8 @@ class IDAAssay(BaseAssay):
             I_dye_free=I_dye_free,
             I_dye_bound=I_dye_bound,
             Ka_dye=self.Ka_dye.magnitude,
-            h0=self.h0.magnitude,
-            d0=self.d0.magnitude,
+            h0=self.fixed_total('h0', xx),
+            d0=self.fixed_total('d0', xx),
             g0_values=xx,
         )
         return Q_(result, 'au')
@@ -108,7 +110,8 @@ class IDAAssay(BaseAssay):
     def species(self, params: np.ndarray) -> Dict[str, np.ndarray]:
         """Free host, dye, guest and both complexes (M) across the guest titration."""
         Ka_guest = params[0]
-        return ida_species(Ka_guest, self.Ka_dye.magnitude, self.h0.magnitude, self.d0.magnitude, self.x_data.magnitude)
+        x = self.x_data.magnitude
+        return ida_species(Ka_guest, self.Ka_dye.magnitude, self.fixed_total('h0', x), self.fixed_total('d0', x), x)
 
     def get_conditions(self) -> Dict[str, Any]:
         """Return experimental conditions.
@@ -116,10 +119,12 @@ class IDAAssay(BaseAssay):
         Returns
         -------
         Dict[str, Any]
-            {'Ka_dye': ..., 'h0': ..., 'd0': ...}
+            {'Ka_dye': ..., 'h0': ..., 'd0': ...}, and the two dilution
+            conditions when a titrant stock is declared.
         """
         return {
             'Ka_dye': self.Ka_dye,
             'h0': self.h0,
             'd0': self.d0,
+            **self.dilution_conditions(),
         }

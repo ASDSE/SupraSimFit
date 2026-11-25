@@ -25,8 +25,6 @@ def _simple_fit_result(metadata=None):
         parameters={'slope': Q_(1.0, 'au/M')},
         rmse=0.01,
         r_squared=0.99,
-        n_passing=1,
-        n_total=1,
         x_fit=Q_(x, 'M'),
         y_fit=Q_(x * 1.05, 'au'),
         assay_type='DYE_ALONE',
@@ -41,7 +39,9 @@ def _per_replicate_record(given, used):
         'active_replica_ids': list(given),
         'replica_ids_fit': list(used),
         'replica_failures': {
-            rid: 'None of its fit attempts reached the minimum R².' for rid in given if rid not in used
+            rid: 'Its own best fit needs a different Ka than the other replicates share.'
+            for rid in given
+            if rid not in used
         },
     }
 

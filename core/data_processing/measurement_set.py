@@ -20,15 +20,88 @@ import hashlib
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Iterator, Optional, Tuple, Type
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Tuple, Type
 
 import numpy as np
 import pandas as pd
 
 from core.assays.base import BaseAssay
+from core.assays.registry import ASSAY_REGISTRY
+from core.io import InvalidData
+from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
 from core.units import Q_, Quantity
 
 logger = logging.getLogger(__name__)
+
+
+#: Fewest titration points a fit can use: one more than the fewest parameters
+#: any model of the registry has, so every fit keeps a residual degree of freedom.
+MIN_POINTS = 1 + min(len(meta.parameter_keys) for meta in ASSAY_REGISTRY.values())
+
+#: Relative tolerance within which two replicates' concentrations are the same point.
+_GRID_RTOL = 1e-9
+
+#: The concentration units the Data panel offers, largest first.
+_UNIT_SCALES = (('M', 1.0), ('mM', 1e-3), ('µM', 1e-6), ('nM', 1e-9))
+
+
+def _molar_text(value: float) -> str:
+    """A concentration given in M, written in the largest Data-panel unit it reaches: '4 µM', '-3.2 nM', '0 M'."""
+    unit, scale = next(((u, s) for u, s in _UNIT_SCALES if abs(value) >= s), ('M', 1.0) if value == 0 else ('nM', 1e-9))
+    return f'{value / scale:.4g} {unit}'
+
+
+def _no_measurements(where: str) -> InvalidData:
+    return InvalidData(
+        f'The data{where} contain no measurements. Check that the file holds a concentration '
+        'and a signal for each titration point, and load it again.'
+    )
+
+
+def _in_file(metadata: Mapping[str, Any]) -> str:
+    """' in <file names>' for data read from files, '' otherwise."""
+    sources = metadata.get('source_files') or [metadata.get('source_file')]
+    names = [Path(source).name for source in sources if source]
+    return f' in {", ".join(names)}' if names else ''
+
+
+def _whose(replica_id: str, n_replicas: int) -> str:
+    """Who holds a value: 'replicate <id>' among several, 'the titration' for a single one."""
+    return f"replicate '{replica_id}'" if n_replicas > 1 else 'the titration'
+
+
+def concentration_problem(values: Quantity, where: str = '') -> Optional[str]:
+    """One sentence naming the first concentration that is not a finite number of zero or more.
+
+    Parameters
+    ----------
+    values : pint.Quantity
+        Concentration vector, in any concentration unit.
+    where : str
+        Where the values come from, as ``' in <file name>'``; empty when entered.
+
+    Returns
+    -------
+    str or None
+        The sentence, or ``None`` when every value is a concentration.
+    """
+    magnitudes = np.asarray(values.magnitude, dtype=np.float64).reshape(-1)
+    bad = np.flatnonzero(~(np.isfinite(magnitudes) & (magnitudes >= 0)))
+    if bad.size == 0:
+        return None
+    i = int(bad[0])
+    value = magnitudes[i]
+    if np.isnan(value):
+        stated = 'no concentration'
+    elif np.isinf(value):
+        stated = 'an infinite concentration'
+    else:
+        stated = f'the concentration {_molar_text(Q_(value, values.units).to("M").magnitude)}'
+    return (
+        f'Titration point {i + 1} of {magnitudes.size}{where} has {stated}; '
+        'a concentration must be a number of zero or more.'
+    )
 
 
 @dataclass
@@ -86,6 +159,8 @@ class MeasurementSet:
                 f'replica_ids length ({len(self.replica_ids)}) must match signals rows ({self.signals.shape[0]})'
             )
 
+        self._check_values()
+
         # Freeze raw data
         self.concentrations.flags.writeable = False
         self.signals.flags.writeable = False
@@ -93,6 +168,55 @@ class MeasurementSet:
 
         # All replicas start active
         self._active_mask = np.ones(self.signals.shape[0], dtype=bool)
+
+    def _check_values(self) -> None:
+        """Refuse data no fit can use: too few points, a concentration below zero or not finite, a signal not finite.
+
+        Raises
+        ------
+        InvalidData
+            Naming the file, the replicate and the point, and what to do.
+        """
+        where = _in_file(self.metadata)
+        n_points = self.concentrations.size
+        if n_points == 0 or self.signals.shape[0] == 0:
+            raise _no_measurements(where)
+        if n_points < MIN_POINTS:
+            raise InvalidData(
+                f'The data{where} have only {n_points} titration points; no binding model can be fitted '
+                f'to fewer than {MIN_POINTS}. Load a titration with more points.'
+            )
+        problem = concentration_problem(Q_(self.concentrations, 'M'), where)
+        if problem:
+            fix = 'Correct it in the file and load it again.' if where else 'Correct it and try again.'
+            raise InvalidData(f'{problem} {fix}')
+        bad = np.argwhere(~np.isfinite(self.signals))
+        if bad.size == 0:
+            return
+        row, i = (int(k) for k in bad[0])
+        rid = self.replica_ids[row]
+        stated = 'no signal' if np.isnan(self.signals[row, i]) else 'an infinite signal'
+        if self.metadata.get(BMG_PLACEHOLDER_KEY):
+            at = f'plate column {self.concentrations[i]:g}'
+        else:
+            at = f'{_molar_text(self.concentrations[i])} (point {i + 1} of {n_points})'
+        column = self.signals[:, i]
+        if self.n_replicas > 1 and not np.isfinite(column).any():
+            # Removing a replicate would only move the refusal to the next one.
+            usable = 'a signal' if np.isnan(column).all() else 'a finite signal'
+            raise InvalidData(
+                f'No replicate{where} has {usable} at {at}. Fill in the values, or delete that titration point, '
+                'and load the data again.'
+            )
+        message = f'{_whose(rid, self.n_replicas).capitalize()}{where} has {stated} at {at}.'
+        if self.n_replicas > 1:
+            message += (
+                ' The replicates are averaged point by point, so each needs a signal at every concentration. '
+                f"Fill in the value, or remove replicate '{rid}' from the data, and load it again."
+            )
+        else:
+            message += ' Fill in the value, or delete that titration point, and load the data again.'
+        raise InvalidData(message)
 
     @classmethod
     def from_dataframe(
@@ -125,7 +249,11 @@ class MeasurementSet:
         Raises
         ------
         ValueError
-            If required columns are missing or replicas have mismatched grids.
+            If a required column is missing.
+        InvalidData
+            If the frame holds no measurement, a titration point has no
+            concentration, or the replicates do not share one concentration
+            grid; and whatever the constructor refuses.
         """
         for col in (replica_col, concentration_col, signal_col):
             if col not in df.columns:
@@ -136,27 +264,52 @@ class MeasurementSet:
         # CSV, via ``df.attrs['concentration_unit']``; absent means M).
         declared_conc_unit = df.attrs.get('concentration_unit')
 
+        where = _in_file(metadata)
+        if df.empty:
+            raise _no_measurements(where)
+        unnamed = np.flatnonzero(df[concentration_col].isna().to_numpy())
+        if unnamed.size:
+            i = int(unnamed[0])
+            whose = _whose(str(df[replica_col].iloc[i]), df[replica_col].nunique())
+            raise InvalidData(
+                f'{whose.capitalize()}{where} has a titration point with no concentration '
+                f'(its signal is {df[signal_col].iloc[i]:.6g}). Enter its concentration, or delete that '
+                'titration point, and load the file again.'
+            )
+
         # Sort for deterministic order
         df = df.sort_values([replica_col, concentration_col]).reset_index(drop=True)
 
         replica_labels = df[replica_col].unique()
         groups = {label: grp.sort_values(concentration_col) for label, grp in df.groupby(replica_col)}
+        grids = {label: grp[concentration_col].to_numpy(dtype=np.float64) for label, grp in groups.items()}
 
-        # Extract and validate shared concentration grid
-        reference_conc = groups[replica_labels[0]][concentration_col].values
-        for label, grp in groups.items():
-            conc = grp[concentration_col].values
-            # Check length first: np.allclose on unequal-length arrays raises a
-            # cryptic "operands could not be broadcast together" error.
-            if len(conc) != len(reference_conc):
-                raise ValueError(
-                    f"Replica '{label}' has {len(conc)} concentration points but replica "
-                    f"'{replica_labels[0]}' has {len(reference_conc)} — all replicas must share "
-                    'the same concentration grid.'
-                )
-            if not np.allclose(conc, reference_conc, rtol=1e-12):
-                raise ValueError(
-                    f"Replica '{label}' has a different concentration grid than replica '{replica_labels[0]}'"
+        def at(c: float) -> str:
+            if df.attrs.get(BMG_PLACEHOLDER_KEY):
+                return f'plate column {c:g}'
+            return _molar_text(Q_(c, declared_conc_unit or 'M').to('M').magnitude)
+
+        # Every replicate shares the grid of the longest one: the replicates are
+        # averaged point by point. Readers drop a blank cell, so a replicate with
+        # a missing value arrives short of exactly the concentrations it lacks.
+        reference = max(replica_labels, key=lambda label: grids[label].size)
+        reference_conc = grids[reference]
+        for label in replica_labels:
+            conc = grids[label]
+            if conc.size < reference_conc.size:
+                lacking = [c for c in reference_conc if not np.isclose(conc, c, rtol=_GRID_RTOL, atol=0).any()]
+                if len(lacking) == reference_conc.size - conc.size:
+                    raise InvalidData(
+                        f"Replicate '{label}'{where} has no signal at {', '.join(at(c) for c in lacking)}, "
+                        f"where replicate '{reference}' has one. The replicates are averaged point by point, "
+                        'so each needs a signal at every concentration. Fill in the missing value, or remove '
+                        f"replicate '{label}' from the data, and load it again."
+                    )
+            if conc.size != reference_conc.size or not np.allclose(conc, reference_conc, rtol=_GRID_RTOL, atol=0):
+                raise InvalidData(
+                    f"Replicate '{label}'{where} was measured on a different concentration grid from replicate "
+                    f"'{reference}', so the two cannot be averaged point by point. Correct the concentrations "
+                    'in the file, or load the replicates as separate data sets.'
                 )
 
         # Build 2-D signals array
@@ -429,6 +582,12 @@ class MeasurementSet:
         drop_metadata_keys : tuple of str, optional
             Metadata keys to drop after the update (e.g. the BMG
             placeholder flag once real concentrations are supplied).
+
+        Raises
+        ------
+        InvalidData
+            If a value is not a finite concentration of zero or more; the grid
+            is left as it was.
         """
         if not isinstance(new_conc, Quantity):
             raise TypeError(f'new_conc must be a pint Quantity, got {type(new_conc).__name__}')
@@ -437,6 +596,9 @@ class MeasurementSet:
         molar_values = np.asarray(new_conc.to('M').magnitude, dtype=np.float64)
         if molar_values.shape != (self.n_points,):
             raise ValueError(f'new_conc length {molar_values.shape} does not match n_points ({self.n_points},)')
+        problem = concentration_problem(new_conc)
+        if problem:
+            raise InvalidData(f'{problem} Correct it and try again.')
 
         self.concentrations.flags.writeable = True
         try:

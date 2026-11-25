@@ -36,7 +36,11 @@ supramolecular host&ndash;dye pairs range from
 <p>K<sub>a,dye</sub> is a free parameter <b>only in the Direct Binding
 Assays</b> (DBA Host&rarr;Dye and DBA Dye&rarr;Host). In IDA and GDA it
 is a <i>known</i> input that you supply in the Assay Configuration
-panel &mdash; those assays fit K<sub>a,guest</sub> instead.</p>
+panel &mdash; those assays fit K<sub>a,guest</sub> instead. A value taken
+from an earlier DBA fit is known to within that fit&rsquo;s own interval:
+state it under <b>Input Uncertainty</b>, as a &sigma; or as
+the range itself, and the K<sub>a,guest</sub> interval reported covers that
+uncertainty rather than assuming the number exact.</p>
 
 <p><b>What It Controls in the Fit</b></p>
 <p>Sets the curvature and midpoint of the DBA titration curve. Too
@@ -46,16 +50,19 @@ the dye is fully complexed from the first point.</p>
 <p><b>Bounds Guidance</b></p>
 <ul>
   <li>Defaults cover roughly 10<sup>&minus;8</sup>&ndash;10<sup>12</sup>
-      M<sup>&minus;1</sup> in log space &mdash; wide enough for any
-      realistic host&ndash;dye system.</li>
-  <li>If the optimiser consistently hits a bound, widen that side;
-      don&rsquo;t clamp it artificially.</li>
+      M<sup>&minus;1</sup> &mdash; wide enough for any realistic
+      host&ndash;dye system, and searched on a log grid, so their width
+      costs little.</li>
+  <li>If the fitted value sits on a bound, or the confidence interval
+      reaches one and is reported as open on that side, widen that side
+      rather than clamping it: a bound is not a measurement.</li>
   <li>If you already know K<sub>a,dye</sub> within an order of
-      magnitude, tighten the bounds to that window &mdash; this often
-      fixes convergence in noisy DBA data.</li>
-  <li>Fits &ldquo;walking away&rdquo; to implausibly large values
-      usually indicate a saturation plateau shorter than expected;
-      re-examine [H]<sub>0</sub> and [D]<sub>0</sub>.</li>
+      magnitude, tighten the bounds to that window. The interval is read
+      inside the bounds in force, so prior knowledge stated here is
+      carried into it.</li>
+  <li>An implausibly large value with the interval open above it
+      usually means the titration never reached saturation; re-examine
+      [H]<sub>0</sub> and [D]<sub>0</sub>.</li>
 </ul>
 """)
 
@@ -73,17 +80,23 @@ curve to lower guest concentrations.</p>
 
 <p><b>Bounds Guidance</b></p>
 <ul>
-  <li>Sampled in log space, so even the default
+  <li>Searched on a log grid, so even the default
       10<sup>&minus;8</sup>&ndash;10<sup>12</sup>&nbsp;M<sup>&minus;1</sup>
-      range is cheap to search.</li>
-  <li>If the fit fails to converge, check first that
+      range is cheap to cover.</li>
+  <li>If the confidence interval spans decades, check first that
       K<sub>a,guest</sub> &sdot; [H]<sub>0</sub> is of order 1 at the
       titration midpoint; otherwise the displacement window is too
-      narrow for meaningful discrimination.</li>
-  <li>A flat residual with K<sub>a,guest</sub> pinned at the lower
-      bound means guest is too weak to displace the dye under your
-      conditions &mdash; decrease [H]<sub>0</sub> or use a weaker
-      indicator.</li>
+      narrow for the data to discriminate.</li>
+  <li>A value at the lower bound with the interval open below it means
+      guest is too weak to displace the dye under your conditions
+      &mdash; decrease [H]<sub>0</sub> or use a weaker indicator.</li>
+  <li>The interval reported covers whatever uncertainty you state for the
+      entered inputs under <b>Input Uncertainty</b>, with the interval
+      conditional on those inputs shown beside it. If stating a few percent
+      on K<sub>a,dye</sub> or [Host]<sub>0</sub> widens it sharply, your
+      K<sub>a,guest</sub> is limited by those numbers rather than by the
+      titration &mdash; the <i>K<sub>a</sub> Sensitivity</i> tab says which
+      of them it is.</li>
 </ul>
 """)
 
@@ -98,7 +111,8 @@ a.u. (arbitrary signal units).</p>
 <p><b>What It Controls in the Fit</b></p>
 <p>Shifts the whole fitted curve vertically. Because I<sub>0</sub>
 enters additively, it is <b>structurally degenerate</b> with
-I<sub>dye,free</sub>&sdot;[D] when [D]<sub>0</sub> is fixed (DBA). Only
+I<sub>dye,free</sub>&sdot;[D] when [D]<sub>0</sub> is fixed (IDA and DBA
+host-to-dye). Only
 the combination I<sub>0</sub> + I<sub>dye,free</sub>&sdot;[D]<sub>0</sub>
 is physically identifiable in that case.</p>
 
@@ -106,14 +120,17 @@ is physically identifiable in that case.</p>
 <ul>
   <li>Use the dye-alone calibration intercept as a prior if available
       (&ldquo;Load Dye-Alone&rdquo; in this panel).</li>
-  <li>Default bounds are
-      0&ndash;10<sup>8</sup>&nbsp;a.u. &mdash; the lower bound is
-      strictly non-negative. If your raw signal has been
+  <li>By default I<sub>0</sub> cannot be negative and has no upper
+      limit (its upper box is empty). If your raw signal has been
       background-subtracted and can legitimately go below zero, lower
-      the bound manually.</li>
-  <li>Don&rsquo;t over-tighten I<sub>0</sub> on its own &mdash; pinning
-      it can force the optimiser to compensate through the other
-      signal coefficients and give a deceptive fit.</li>
+      the bound manually. Where the fit holds I<sub>0</sub> at zero and the
+      curve misses the data, the summary says so.</li>
+  <li>Bounds on a signal parameter are constraints of an exact solve:
+      the value reported is the best one they allow, and equal bounds
+      pin the parameter and take it out of the fit entirely.</li>
+  <li>Don&rsquo;t over-tighten I<sub>0</sub> on its own &mdash; the
+      other signal coefficients then compensate for it, and the curve
+      still fits while none of the three means what it says.</li>
 </ul>
 """)
 
@@ -135,10 +152,11 @@ titration.</p>
   <li>The best prior is a dye-alone fit &mdash; use the
       &ldquo;Load Dye-Alone&rdquo; button to constrain this parameter
       automatically.</li>
-  <li>If you suspect the fit is collapsing into a degenerate solution
-      (very large I<sub>dye,bound</sub>, near-zero
-      I<sub>dye,free</sub>), tightening this bound is the single most
-      effective intervention.</li>
+  <li>The summary stars every parameter the data fix only in
+      combination with others. When this one is starred, only the
+      combination is a result; tightening this bound from a dye-alone
+      calibration is the most effective way to make it one on its
+      own.</li>
   <li>Must stay &ge;&nbsp;0 for any physically meaningful instrument.</li>
 </ul>
 """)
@@ -162,11 +180,12 @@ parameter to recover reliably.</p>
   <li>If your signal <i>decreases</i> upon binding (turn-off sensor),
       remember this coefficient can legitimately be smaller than
       I<sub>dye,free</sub>.</li>
-  <li>When a fit returns a plateau that doesn&rsquo;t match the data,
-      the problem is usually I<sub>dye,bound</sub> hitting an upper
-      bound &mdash; widen it before blaming K<sub>a</sub>.</li>
-  <li>In DBA, its absolute value is under-determined; trust the
-      difference (I<sub>dye,bound</sub>&nbsp;&minus;&nbsp;I<sub>dye,free</sub>)
+  <li>It has no upper limit unless you enter one. When a fit returns
+      a plateau that doesn&rsquo;t match the data and the summary says
+      I<sub>dye,bound</sub> ended on a bound you entered, widen that
+      bound before blaming K<sub>a</sub>.</li>
+  <li>Where the dye concentration is held fixed (IDA, DBA host-to-dye), its
+      absolute value is under-determined; trust the difference (I<sub>dye,bound</sub>&nbsp;&minus;&nbsp;I<sub>dye,free</sub>)
       rather than either coefficient alone.</li>
 </ul>
 """)
@@ -222,9 +241,12 @@ _KA_HG_HTML = _with_sci_note("""
 (M<sup>&minus;1</sup>). Shared by the 1:2 (HG<sub>2</sub>) and 2:1
 (H<sub>2</sub>G) models as the first host&ndash;guest contact.</p>
 <p><b>Identifiability</b></p>
-<p>Sampled on a log scale over a wide range. It trades off with the
-second-step constant &mdash; judge confidence from the reported range across
-the accepted fits, not the estimate alone.</p>
+<p>Searched on a log grid over a wide range. It trades off with the
+second-step constant, so judge it from its confidence interval and from the
+joint region of the pair on the <i>Identifiability</i> tab, not from the
+estimate alone. Its interval covers the uncertainty you state for the entered
+inputs under <b>Input Uncertainty</b>; the region of the pair holds them at the
+values you entered.</p>
 """)
 
 _KA_HG2_HTML = _with_sci_note("""
@@ -232,16 +254,18 @@ _KA_HG2_HTML = _with_sci_note("""
 <p>Association constant for <i>HG + G &#x21CC; HG<sub>2</sub></i>
 (M<sup>&minus;1</sup>), the binding of a second guest. The ratio
 K<sub>a(HG&#x2082;)</sub>/K<sub>a(HG)</sub> reports cooperativity relative to
-the statistical expectation. Strongly correlated with K<sub>a(HG)</sub>
-&mdash; read the pair's spread.</p>
+the statistical expectation. Strongly correlated with K<sub>a(HG)</sub>, so a
+statement about the two together belongs to the joint region on the
+<i>Identifiability</i> tab, not to the two intervals read side by side.</p>
 """)
 
 _KA_H2G_HTML = _with_sci_note("""
 <h3>K<sub>a(H&#x2082;G)</sub> &mdash; Second Stepwise Constant (2:1)</h3>
 <p>Association constant for <i>HG + H &#x21CC; H<sub>2</sub>G</i>
 (M<sup>&minus;1</sup>), the binding of a second host to the same guest.
-Strongly correlated with K<sub>a(HG)</sub> &mdash; read the reported range
-rather than the point value.</p>
+Strongly correlated with K<sub>a(HG)</sub>, so a statement about the two
+together belongs to the joint region on the <i>Identifiability</i> tab, not to
+the two intervals read side by side.</p>
 """)
 
 _I_G_HTML = _with_sci_note("""

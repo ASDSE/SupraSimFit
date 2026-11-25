@@ -20,7 +20,8 @@ files with different ``NPOINTS`` or stage counts parse the same way.
 
 Concentrations are converted to the app's base unit (M) via Pint, using
 the unit token written by JASCO inside ``XUNITS`` (e.g.
-``Concentration [umol/L]``). Unrecognised units raise ``ValueError``.
+``Concentration [umol/L]``). A missing or unrecognised unit raises
+:class:`~core.io.base.InvalidData`, which names the units the reader takes.
 
 Extended-info metadata (instrument, Ex/Em wavelengths, syringe stocks,
 …) lands on ``df.attrs['jasco_metadata']`` for downstream GUI use.
@@ -36,6 +37,7 @@ import numpy as np
 import pandas as pd
 import pint
 
+from core.io.base import InvalidData
 from core.io.registry import register_reader
 from core.units import Q_
 
@@ -46,6 +48,7 @@ JASCO_METADATA_KEY = 'jasco_metadata'
 _SIGNATURE_PROBE_LINES = 30
 _XYDATA_MARKER = 'XYDATA'
 _UNIT_BRACKET_RE = re.compile(r'\[([^\]]+)\]')
+_SUPPORTED_UNITS = 'The concentrations can be in nmol/L, umol/L (or µmol/L), mmol/L or mol/L.'
 _SECTION_RE = re.compile(r'^\[(?P<name>[^\]]+)\]\s*$')
 
 
@@ -215,7 +218,11 @@ class JascoReader:
         """
         xunits = header.get('XUNITS', '').strip()
         if not xunits:
-            raise ValueError(f'{path.name}: JASCO header has no XUNITS entry — cannot determine concentration unit.')
+            raise InvalidData(
+                f'{path.name} has no XUNITS line, so the unit of its concentrations is unknown. '
+                f'{_SUPPORTED_UNITS} Add an XUNITS line such as "XUNITS,Concentration [umol/L]" or export the '
+                'titration again, then load it.'
+            )
         match = _UNIT_BRACKET_RE.search(xunits)
         token = match.group(1).strip() if match else xunits
         try:
@@ -224,11 +231,9 @@ class JascoReader:
             pint.errors.UndefinedUnitError,
             pint.errors.DimensionalityError,
         ) as exc:
-            raise ValueError(
-                f'{path.name}: cannot interpret JASCO XUNITS {xunits!r} '
-                f'(token {token!r}) as a concentration: {exc}. '
-                "Supported tokens include 'umol/L', 'µmol/L', 'mmol/L', "
-                "'mol/L', 'nmol/L'."
+            raise InvalidData(
+                f'{path.name} gives its concentrations in "{token}", which is not a concentration unit. '
+                f'{_SUPPORTED_UNITS} Correct the XUNITS line or export the titration again, then load it.'
             ) from exc
 
 

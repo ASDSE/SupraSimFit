@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui.plotting.export import ExportRefused
 from gui.preferences import _settings
 from gui.session import ExportableArtefact, build_artefacts, export_batch
 
@@ -122,12 +123,6 @@ class ExportMultipleDialog(QDialog):
         target_form.addRow('Filename base', self._base_edit)
         root.addWidget(target_box)
 
-        # --- distributions config summary --------------------------------
-        self._dist_summary = QLabel('')
-        self._dist_summary.setStyleSheet('color: #444;')
-        self._dist_summary.setWordWrap(True)
-        root.addWidget(self._dist_summary)
-
         # --- buttons -----------------------------------------------------
         self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self._export_btn = QPushButton('Export')
@@ -164,18 +159,6 @@ class ExportMultipleDialog(QDialog):
         base = self._base_edit.text().strip() or 'output'
         for row in self._rows:
             row.filename_label.setText(f'→ {base}{row.art.suffix}')
-        # Refresh distributions summary if that artefact is checked.
-        dist_checked = any(r.checkbox.isChecked() and r.art.key == 'distributions_png' for r in self._rows)
-        if dist_checked:
-            cfg = self._session._distributions_export_config()
-            self._dist_summary.setText(
-                f'Distributions layout: {cfg.rows}×{cfg.cols}, '
-                f'{cfg.width_in:.1f}×{cfg.height_in:.1f} in @ {cfg.dpi} DPI '
-                f'(change via "Save Distributions Plot…")'
-            )
-            self._dist_summary.setVisible(True)
-        else:
-            self._dist_summary.setVisible(False)
 
     # ------------------------------------------------------------------
     # Persistence
@@ -255,18 +238,37 @@ class ExportMultipleDialog(QDialog):
         folder = Path(folder_text)
         base = self._base_edit.text().strip() or 'output'
 
-        outcomes = export_batch(selected, folder, base)
+        try:
+            outcomes = export_batch(selected, folder, base)
+        except OSError:
+            QMessageBox.warning(
+                self,
+                'Export Error',
+                f'Could not create the folder {folder}. Check the folder name and that you may write there, '
+                'then export again.',
+            )
+            return
         self._save_settings()
 
         successes = [o for o in outcomes if o[2] is None]
         failures = [o for o in outcomes if o[2] is not None]
 
         if failures:
-            details = '\n'.join(f'  • {label}: {exc}' for label, _path, exc in failures)
+            # An ExportRefused carries a sentence the app wrote for the user; anything
+            # else carries a library's or a programmer's text, which is not shown.
+            details = '\n'.join(
+                f'  • {label}: {exc if isinstance(exc, ExportRefused) else "could not be written."}'
+                for label, _path, exc in failures
+            )
+            advice = (
+                ''
+                if all(isinstance(exc, ExportRefused) for _label, _path, exc in failures)
+                else '\n\nCheck that the folder exists and that you may write there.'
+            )
             QMessageBox.warning(
                 self,
                 'Export — some artefacts failed',
-                (f'Wrote {len(successes)}/{len(outcomes)} artefacts to:\n{folder}\n\nFailures:\n{details}'),
+                f'Wrote {len(successes)}/{len(outcomes)} artefacts to:\n{folder}\n\nFailures:\n{details}{advice}',
             )
         # Even on partial failure we close — the user has the message.
         self.accept()

@@ -7,102 +7,122 @@ implementation:
   the baseline Ka);
 - larger Δ produces strictly larger Ka spread;
 - the titrant and the non-fitted ``Ka_dye`` are both genuinely perturbable;
-- the ``seed`` knob makes a whole run reproducible, optimiser included, and a
-  run given no seed draws and reports one that repeats it;
+- the Sobol' scramble is the only random part of a run, so its ``seed`` makes a
+  whole run repeat, and a run given no seed draws and reports one that repeats it;
 - the heatmap axes perturb the inputs they name, and its centre cell (0 %, 0 %)
   is the baseline fit itself;
-- ``estimated_fit_count`` matches the driver's actual per-mode workload;
+- a model with two binding constants is analysed like any other, reporting a
+  surface per binding constant;
+- ``estimated_fit_count`` matches the driver's actual per-mode workload, and
+  ``estimated_model_solves`` sizes it by the Ka box the fits search;
 - invalid configs fail fast with ``ValueError``, in words that name inputs the
   way the interface does;
-- an assay without an exact Ka profile is refused, and a single perturbation
-  that cannot be solved is one missing sample rather than a dead run;
-- a perturbed fit below the R² floor is kept and flagged, never dropped;
-- every sample keeps the whole fit behind its Ka, so the Fit Summary
-  statistics can run over the samples, and the signal coefficients the data fix
-  only in combination are named;
+- a perturbation that cannot be solved is one missing sample rather than a dead
+  run;
+- every sample keeps the whole fit behind its Ka, and the signal coefficients
+  the data fix only in combination are named;
+- the fits that ran to the edge of the Ka box are counted — the baseline's own
+  and the design's or the grid's, and nothing else — so what the spread beside
+  them describes can be read off the result;
 - the Sobol' design is made of independent scrambles, and the t-intervals the
   delete-one-block jackknife over them gives cover the analytic Ishigami
-  indices at close to their stated 95 %.
+  indices at close to their stated 95 %;
+- the estimator's variance, explained variances and spreads-if-exact are the
+  sums of squares of a linear-additive Gaussian function, and a group of
+  columns (Ishigami inputs 1 and 3) is reported as one item whose first-order
+  and total index are both ``1 - S_2``;
+- the Saltelli design of the stated sources (``sobol_jobs``): own sources
+  reproduce ``spec_fraction`` column by column, a shared source moves every
+  input it loads, and the additions add one column per titration point,
+  reported as one item and sampled at ``sigma / sqrt(replicates)``;
+- a stopped run keeps the sample blocks all of whose fits finished, and its
+  indices are those of the design over exactly those blocks;
+- the indices, budget and elasticities of a constant are flagged as withheld
+  when the fit at the entered inputs rests on its bound, when its conditional
+  interval is open, or when the homogeneity identity its elasticities obey
+  misses −1 — and not otherwise.
 
-Fits run on synthetic IDA data with the tight recovery bounds from ``conftest``
-and a small ``n_trials`` — enough to converge reliably while keeping the
-many-fit loops fast. A run carrying a ``seed`` repeats on its own; helpers that
-compare *unseeded* runs pin the global RNG before each one so any difference is
-attributable to the sensitivity ``seed`` alone. Runs that fit for real accept a
-design of a few scrambles of two rows each, so they stay small; the accepted
-sizes themselves are tested with the module's own values. Runs that need real
-worker processes live in ``tests/integration/test_sensitivity_workers.py``.
+Fits run on synthetic data with the recovery bounds from ``conftest``; each is
+one deterministic projected fit, so the many-fit loops stay fast. Runs that fit
+for real accept a design of a few scrambles of two rows each, so they stay
+small; the accepted sizes themselves are tested with the module's own values.
+Runs that need real worker processes live in
+``tests/integration/test_sensitivity_workers.py``.
 """
 
 import ast
+import dataclasses
+import math
 import os
 import pathlib
 import threading
-from dataclasses import replace
+from itertools import count
 
 import numpy as np
 import pytest
+from scipy.stats import norm
 from scipy.stats import t as student_t
 
 import core.pipeline.sensitivity as sens
 from core.assays.dba import DBAAssay
 from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
-from core.assays.h2g import H2GAssay
 from core.assays.hg2 import HG2Assay
 from core.assays.ida import IDAAssay
 from core.assays.registry import ASSAY_REGISTRY, AssayType
 from core.data_processing.measurement_set import MeasurementSet
 from core.optimizer.filters import calculate_fit_metrics
-from core.optimizer.multistart import FitCancelled
-from core.pipeline.fit_pipeline import (
-    FitConfig,
-    PerReplicaFitError,
-    _resolve_bounds,
-    fit_measurement_set,
-    summarize_parameters,
-)
-from core.pipeline.profile import _design_rank, best_fit_by_profile
-from core.pipeline.sensitivity import (
+from core.pipeline.budget import homogeneity_sum
+from core.pipeline.fit_pipeline import FitConfig, _resolve_bounds, fit_measurement_set
+from core.pipeline.inputs import (
+    ADDITIONS,
     TITRANT,
+    AdditionError,
+    ErrorModel,
     InputSpec,
-    ReplicateMode,
+    SharedSource,
+    input_name,
+    nominal_value,
+    perturbable_inputs,
+    shared_key,
+    spec_bounds,
+    spec_fraction,
+)
+from core.pipeline.profile import fit_profile
+from core.pipeline.reporting import fit_replica_ids
+from core.pipeline.sensitivity import (
+    LONG_RUN_SOLVES,
     SensitivityConfig,
     SensitivityMode,
     default_worker_count,
     estimated_fit_count,
-    estimated_optimizer_runs,
-    input_name,
-    nominal_value,
-    perturbable_inputs,
+    estimated_model_solves,
     run_sensitivity,
     sobol_design,
     sobol_indices_from_outputs,
     sobol_indices_with_ci,
-    spec_bounds,
-    spec_fraction,
+    sobol_jobs,
 )
+from core.pipeline.varpro import FitCancelled, FitRefused, Projection
 from core.units import Q_
 from tests.conftest import (
     DBA_RECOVERY_BOUNDS,
     DBA_TRUE,
     GDA_IDA_RECOVERY_BOUNDS,
     GDA_TRUE,
-    H2G_TRUE,
+    HG2_RECOVERY_BOUNDS,
     HG2_TRUE,
     IDA_TRUE,
     _make_dba_data,
     _make_dye_alone_data,
     _make_gda_data,
-    _make_h2g_data,
     _make_hg2_data,
     _make_ida_data,
 )
 
-# Small but reliable: tight recovery bounds mean clean IDA data converges with
-# few trials, so the sensitivity loops stay fast.
-_N_TRIALS = 12
 _N_POINTS = 20
+_BLOCKS = sens._SOBOL_BLOCKS
+_N = 2048
 
 
 @pytest.fixture
@@ -110,13 +130,7 @@ def ida_setup():
     """(ms, assay_cls, conditions, fit_config) for a clean IDA sensitivity run."""
     x, y = _make_ida_data(IDA_TRUE, n_points=_N_POINTS)
     ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
-    conditions = {
-        'Ka_dye': Q_(IDA_TRUE['Ka_dye'], '1/M'),
-        'h0': Q_(IDA_TRUE['h0'], 'M'),
-        'd0': Q_(IDA_TRUE['d0'], 'M'),
-    }
-    fit_config = FitConfig(n_trials=_N_TRIALS, custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
-    return ms, IDAAssay, conditions, fit_config
+    return ms, IDAAssay, dict(_IDA_CONDITIONS), FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
 
 
 _IDA_CONDITIONS = {
@@ -124,26 +138,29 @@ _IDA_CONDITIONS = {
     'h0': Q_(IDA_TRUE['h0'], 'M'),
     'd0': Q_(IDA_TRUE['d0'], 'M'),
 }
+_STOCK = SharedSource('Host and dye stock', 4.0, ('h0', 'd0'))
 
 
-def _noisy_ida_setup(n_replicas: int, *, per_replica: bool, noise_frac: float = 0.02):
+def _noisy_ida_setup(n_replicas: int, *, per_replica: bool, noise_frac: float = 0.02, proportional: bool = False):
     """(ms, assay_cls, conditions, fit_config) whose replicates carry independent noise.
 
     The noise has a constant sigma, *noise_frac* of the signal range, so the
-    best fit stays well below R² = 1 and moves with every input.
+    best fit stays well below R² = 1 and moves with every input. With
+    *proportional* its sigma is that fraction of the signal itself, which is
+    what several replicates can show, and the fit of them is then weighted.
     """
     x, y = _make_ida_data(IDA_TRUE, n_points=_N_POINTS)
     rng = np.random.default_rng(4)
-    signals = np.vstack([y + rng.normal(0.0, noise_frac * np.ptp(y), y.size) for _ in range(n_replicas)])
+    scale = np.abs(y) if proportional else np.full(y.size, np.ptp(y))
+    signals = np.vstack([y + rng.normal(0.0, 1.0, y.size) * noise_frac * scale for _ in range(n_replicas)])
     ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=tuple(f'r{i}' for i in range(n_replicas)))
-    fit_config = FitConfig(n_trials=20, custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=per_replica)
+    fit_config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=per_replica)
     return ms, IDAAssay, dict(_IDA_CONDITIONS), fit_config
 
 
-def _run(ida_setup, sens_config, *, global_seed=0, max_workers=1):
-    """Run a sensitivity analysis after pinning the global (optimiser) RNG."""
-    ms, assay_cls, conditions, fit_config = ida_setup
-    np.random.seed(global_seed)
+def _run(setup, sens_config, *, max_workers=1):
+    """Run a sensitivity analysis on a ``(ms, assay_cls, conditions, fit_config)`` setup."""
+    ms, assay_cls, conditions, fit_config = setup
     return run_sensitivity(ms, assay_cls, conditions, fit_config, sens_config, max_workers=max_workers)
 
 
@@ -164,7 +181,7 @@ def _heatmap(n_steps: int, sigma_pct: float = 10.0) -> SensitivityConfig:
     return SensitivityConfig(
         mode=SensitivityMode.HEATMAP,
         n_samples=1,
-        input_specs={'h0': InputSpec.sigma_pct(sigma_pct), 'd0': InputSpec.sigma_pct(sigma_pct)},
+        errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(sigma_pct), 'd0': InputSpec.sigma_pct(sigma_pct)}),
         seed=2,
         x_key='h0',
         y_key='d0',
@@ -185,7 +202,7 @@ def test_negligible_delta_collapses_onto_baseline(ida_setup, monkeypatch):
     """
     _use_small_design(monkeypatch, 4)
     cfg = SensitivityConfig(
-        mode=SensitivityMode.SOBOL, n_samples=8, input_specs={TITRANT: InputSpec.sigma_pct(1e-3)}, seed=1
+        mode=SensitivityMode.SOBOL, n_samples=8, errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(1e-3)}), seed=1
     )
     result = _run(ida_setup, cfg)
 
@@ -203,8 +220,14 @@ def test_spread_grows_with_delta(ida_setup, monkeypatch):
     Same seed for both runs so the only difference is the perturbation width.
     """
     _use_small_design(monkeypatch, 4)
-    small = _run(ida_setup, SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(2.0)}, seed=7))
-    big = _run(ida_setup, SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(10.0)}, seed=7))
+    small = _run(
+        ida_setup,
+        SensitivityConfig(SensitivityMode.SOBOL, 8, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=7),
+    )
+    big = _run(
+        ida_setup,
+        SensitivityConfig(SensitivityMode.SOBOL, 8, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(10.0)}), seed=7),
+    )
 
     std_small = float(np.std(_samples(small)))
     std_big = float(np.std(_samples(big)))
@@ -224,7 +247,7 @@ def test_titrant_alone_produces_spread(ida_setup, monkeypatch):
     """
     _use_small_design(monkeypatch, 4)
     cfg = SensitivityConfig(
-        mode=SensitivityMode.SOBOL, n_samples=8, input_specs={TITRANT: InputSpec.sigma_pct(8.0)}, seed=3
+        mode=SensitivityMode.SOBOL, n_samples=8, errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(8.0)}), seed=3
     )
     result = _run(ida_setup, cfg)
 
@@ -242,7 +265,7 @@ def test_ka_dye_alone_shifts_ka(ida_setup, monkeypatch):
     """
     _use_small_design(monkeypatch, 4)
     cfg = SensitivityConfig(
-        mode=SensitivityMode.SOBOL, n_samples=8, input_specs={'Ka_dye': InputSpec.sigma_pct(15.0)}, seed=5
+        mode=SensitivityMode.SOBOL, n_samples=8, errors=ErrorModel(specs={'Ka_dye': InputSpec.sigma_pct(15.0)}), seed=5
     )
     result = _run(ida_setup, cfg)
 
@@ -255,6 +278,232 @@ def test_ka_dye_alone_shifts_ka(ida_setup, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Fits that run to the edge of the Ka box
+# ---------------------------------------------------------------------------
+
+
+_CAPPED_BOUNDS = {**GDA_IDA_RECOVERY_BOUNDS, 'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e5, '1/M'))}
+
+
+def _ka_by_call(values: dict[int, float], otherwise: float):
+    """A refit that reports *values* by the order it is called in, and *otherwise* for every other call.
+
+    The batch runs its perturbations in order: the two refits per input behind
+    the elasticities first, then the design sample block by sample block, each
+    block's rows of ``A``, then of ``B``, then of every mixed matrix.
+    """
+    calls = count()
+
+    def fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
+        ka = values.get(next(calls), otherwise)
+        return {'Ka_guest': ka, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
+
+    return fit
+
+
+def test_the_design_fits_that_ran_to_a_ka_bound_are_counted_and_nothing_else_is(ida_setup, monkeypatch):
+    """The count is over the whole Saltelli design, and over nothing beside it.
+
+    A fit on a bound is the edge of the box rather than a value the data chose,
+    and it sits decades from the rest, so what the spread and the budget mean
+    depends on how many of them there are. The refits behind the elasticities
+    are steps of a thousandth taken to measure a slope, not samples of the
+    stated uncertainties, and a perturbation with no fit is already counted as
+    one that produced none.
+    """
+    _use_small_design(monkeypatch, 2)
+    upper = float(_CAPPED_BOUNDS['Ka_guest'][1].magnitude)
+    # Two refits per input (calls 0-7), then 4 rows per matrix in two blocks of
+    # two, three matrices for one source: block 0 is A rows 0-1, B rows 0-1 and
+    # mixed rows 0-1 (calls 8-13), block 1 the rows 2-3 of each (calls 14-19).
+    # Every elasticity refit stops at the bound; of the twelve design fits, A
+    # row 0 (call 8), B row 1 (call 11) and mixed row 3 (call 19) do, and B row
+    # 3 (call 17) has no fit at all.
+    on_bound = {8: upper, 11: upper, 19: upper, 17: float('nan'), **{i: upper for i in range(8)}}
+    monkeypatch.setattr(sens, '_fit_perturbed', _ka_by_call(on_bound, otherwise=1e3))
+    ms, assay_cls, conditions, _ = ida_setup
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=1)
+
+    result = run_sensitivity(ms, assay_cls, conditions, FitConfig(custom_bounds=_CAPPED_BOUNDS), cfg, max_workers=1)
+
+    assert result.n_on_bound == {'Ka_guest': 3}
+
+
+def test_a_ka_box_the_data_ask_past_puts_the_baseline_and_every_sample_on_its_bound(ida_setup, monkeypatch):
+    """Bounds that stop an order of magnitude below the truth are reported, not fitted around.
+
+    Every fit of the run is the upper bound itself, the baseline included: the
+    box, not the data, is what the analysis would otherwise be describing.
+    """
+    _use_small_design(monkeypatch, 2)
+    ms, assay_cls, conditions, _ = ida_setup
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=1)
+
+    result = run_sensitivity(ms, assay_cls, conditions, FitConfig(custom_bounds=_CAPPED_BOUNDS), cfg, max_workers=1)
+
+    assert result.baseline_on_bound == {'Ka_guest': True}
+    assert result.baseline_ka['Ka_guest'] == pytest.approx(1e5)
+    assert result.n_on_bound == {'Ka_guest': 4 * (1 + 2)}
+    assert result.withheld == {'Ka_guest': 'baseline_on_bound'}
+
+
+def test_a_run_inside_its_ka_box_counts_no_fit_on_a_bound(ida_setup, monkeypatch):
+    """The bounds a fit of these data is made under leave every one of them room, and the counts say so."""
+    _use_small_design(monkeypatch, 2)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=1)
+
+    result = _run(ida_setup, cfg)
+
+    assert result.baseline_on_bound == {'Ka_guest': False}
+    assert result.n_on_bound == {'Ka_guest': 0}
+
+
+def test_the_heatmap_counts_its_grid_fits_the_same_way(ida_setup):
+    """A heatmap fits a grid instead of a design; a cell on the bound is the same thing as a sample on it."""
+    ms, assay_cls, conditions, _ = ida_setup
+    cfg = _heatmap(3)
+
+    inside = _run(ida_setup, cfg)
+    capped = run_sensitivity(ms, assay_cls, conditions, FitConfig(custom_bounds=_CAPPED_BOUNDS), cfg, max_workers=1)
+
+    assert inside.n_on_bound == {'Ka_guest': 0} and inside.baseline_on_bound == {'Ka_guest': False}
+    assert capped.n_on_bound == {'Ka_guest': 9} and capped.baseline_on_bound == {'Ka_guest': True}
+
+
+def test_a_binding_constant_pinned_to_one_value_is_not_reported_as_on_its_bound(ida_setup, monkeypatch):
+    """A pinned constant rests on its bounds by construction, which says nothing about what the data limit."""
+    _use_small_design(monkeypatch, 2)
+    pinned = {**GDA_IDA_RECOVERY_BOUNDS, 'Ka_guest': (Q_(2e6, '1/M'), Q_(2e6, '1/M'))}
+    ms, assay_cls, conditions, _ = ida_setup
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=1)
+
+    result = run_sensitivity(ms, assay_cls, conditions, FitConfig(custom_bounds=pinned), cfg, max_workers=1)
+
+    assert result.baseline_on_bound == {} and result.n_on_bound == {}
+    # A pinned constant cannot follow a change of the concentration unit, so the identity is not checked.
+    assert np.isnan(result.homogeneity['Ka_guest']) and result.withheld == {'Ka_guest': ''}
+
+
+# ---------------------------------------------------------------------------
+# What is withheld
+# ---------------------------------------------------------------------------
+
+
+def _default_box_setup():
+    """A noisy IDA titration fitted under the registry's own bounds.
+
+    Their signal coefficients are bounded by zero and infinity only, which read
+    the same in any concentration unit, so the identity applies to every fit.
+    """
+    ms, assay_cls, conditions, _ = _noisy_ida_setup(1, per_replica=False)
+    return ms, assay_cls, conditions, FitConfig()
+
+
+def _power_law(powers: dict[str, float]):
+    """A refit ``Ka = 1e6 x prod (1 + offset_j)^p_j``, whose elasticities are the powers exactly."""
+
+    def fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
+        ka = 1e6 * np.prod([(1 + offsets.get(key, 0.0)) ** p for key, p in powers.items()])
+        return {'Ka_guest': float(ka), **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
+
+    return fit
+
+
+@pytest.mark.parametrize(
+    'powers, withheld',
+    [
+        # s_h0 + s_d0 + s_titrant - s_Kadye = 3 + 1 - 4.5 - 0.5 = -1: a model that obeys the identity.
+        ({'Ka_dye': 0.5, 'h0': 3.0, 'd0': 1.0, TITRANT: -4.5}, ''),
+        # The same with the titrant's slope off by 0.1: a refit that does not respond smoothly.
+        ({'Ka_dye': 0.5, 'h0': 3.0, 'd0': 1.0, TITRANT: -4.4}, 'homogeneity'),
+    ],
+    ids=['identity-holds', 'identity-fails'],
+)
+def test_elasticities_that_break_the_homogeneity_identity_are_withheld(monkeypatch, powers, withheld):
+    """Scaling every concentration by c and the entered constants by 1/c divides a fitted Ka by c.
+
+    Differentiated, the elasticities over the concentrations minus those over
+    the entered binding constants are exactly -1 for these models, whatever
+    the data. Refits whose elasticities add up to anything else are not
+    responding to the inputs smoothly, and the run says so for that constant.
+    """
+    _use_small_design(monkeypatch, 2)
+    setup = _default_box_setup()
+    monkeypatch.setattr(sens, '_fit_perturbed', _power_law(powers))
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1)
+
+    result = _run(setup, cfg)
+
+    expected_sum = sum(-p if key == 'Ka_dye' else p for key, p in powers.items())
+    assert result.homogeneity['Ka_guest'] == pytest.approx(expected_sum, abs=1e-6)
+    assert result.withheld == {'Ka_guest': withheld}
+
+
+def test_a_signal_coefficient_held_by_a_finite_bound_takes_the_identity_out_of_play(monkeypatch):
+    """A coefficient on a bound a change of unit would move keeps the refits from following the scaling.
+
+    The recovery bounds hold the IDA coefficients within ±20 % of the truth,
+    and the fit of these data puts one of them on such a bound: the identity
+    does not constrain those refits, so it is not checked and not held against
+    the constant.
+    """
+    _use_small_design(monkeypatch, 2)
+    setup = _noisy_ida_setup(1, per_replica=False)
+    held = _resolve_bounds(setup[0].to_assay(IDAAssay, conditions=setup[2]), setup[3].custom_bounds)
+    baseline = fit_measurement_set(*setup)
+    assert any(
+        baseline.parameters[key].to(held[key][0].units).magnitude in (end.magnitude for end in held[key])
+        for key in ('I_dye_free', 'I_dye_bound')
+    )
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1)
+
+    result = _run(setup, cfg)
+
+    assert np.isnan(result.homogeneity['Ka_guest']) and result.withheld == {'Ka_guest': ''}
+
+
+def test_a_constant_with_an_open_conditional_interval_is_withheld(monkeypatch):
+    """Where the data leave Ka without a limit on a side, refits land wherever the flat profile lets them.
+
+    The run reads the interval of its own baseline — the fit at the inputs as
+    entered — so a constant whose interval is open there is flagged, even with
+    the estimate inside its box.
+    """
+    _use_small_design(monkeypatch, 2)
+    setup = _default_box_setup()
+    real = sens.fit_measurement_set
+
+    def with_open_upper_end(*args, **kwargs):
+        fit = real(*args, **kwargs)
+        interval = fit.intervals['Ka_guest']
+        return dataclasses.replace(fit, intervals={'Ka_guest': dataclasses.replace(interval, open_high=True)})
+
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1)
+    closed = _run(setup, cfg)
+    monkeypatch.setattr(sens, 'fit_measurement_set', with_open_upper_end)
+    opened = _run(setup, cfg)
+
+    assert closed.withheld == {'Ka_guest': ''} and closed.baseline_on_bound == {'Ka_guest': False}
+    assert opened.withheld == {'Ka_guest': 'open_interval'} and opened.baseline_on_bound == {'Ka_guest': False}
+
+
+def test_an_identified_fit_obeys_the_identity_through_the_run(monkeypatch):
+    """Real refits of a well-determined titration: the run's own elasticities add up to -1 to their resolution."""
+    _use_small_design(monkeypatch, 2)
+    setup = _default_box_setup()
+
+    result = _run(
+        setup,
+        SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1),
+    )
+
+    kinds = dict(perturbable_inputs(setup[2]))
+    assert result.homogeneity['Ka_guest'] == pytest.approx(homogeneity_sum(result.elasticity['Ka_guest'], kinds))
+    assert abs(result.homogeneity['Ka_guest'] + 1) < 1e-3
+    assert result.withheld == {'Ka_guest': ''}
+
+
+# ---------------------------------------------------------------------------
 # Determinism
 # ---------------------------------------------------------------------------
 
@@ -262,13 +511,12 @@ def test_ka_dye_alone_shifts_ka(ida_setup, monkeypatch):
 def test_seed_makes_draws_reproducible(ida_setup, monkeypatch):
     """Identical sensitivity seed → identical samples; a different seed differs.
 
-    The global optimiser RNG is pinned the same for all three runs, so only the
-    sensitivity ``seed`` (which drives the perturbation draws) can change the
-    result.
+    The seed fixes the Sobol' scrambles, and every fit of a run is one
+    deterministic projected fit, so nothing else can move a sample.
     """
     _use_small_design(monkeypatch, 4)
-    cfg_a = SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(5.0)}, seed=123)
-    cfg_b = SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(5.0)}, seed=456)
+    cfg_a = SensitivityConfig(SensitivityMode.SOBOL, 8, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=123)
+    cfg_b = SensitivityConfig(SensitivityMode.SOBOL, 8, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=456)
 
     r1 = _run(ida_setup, cfg_a)
     r2 = _run(ida_setup, cfg_a)
@@ -290,10 +538,10 @@ def test_a_run_given_no_seed_reports_the_seed_that_repeats_it(ida_setup, monkeyp
     say why.
     """
     _use_small_design(monkeypatch, 2)
-    unseeded = SensitivityConfig(SensitivityMode.SOBOL, 4, {TITRANT: InputSpec.sigma_pct(5.0)})
+    unseeded = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}))
 
     first = _run(ida_setup, unseeded)
-    again = _run(ida_setup, replace(unseeded, seed=first.seed_used))
+    again = _run(ida_setup, SensitivityConfig(SensitivityMode.SOBOL, 4, unseeded.errors, seed=first.seed_used))
     another = _run(ida_setup, unseeded)
 
     assert isinstance(first.seed_used, int)
@@ -305,7 +553,7 @@ def test_a_run_given_no_seed_reports_the_seed_that_repeats_it(ida_setup, monkeyp
 def test_a_seeded_run_reports_the_seed_it_was_given(ida_setup, monkeypatch):
     """With a seed set, that seed is what the result records."""
     _use_small_design(monkeypatch, 2)
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, {TITRANT: InputSpec.sigma_pct(5.0)}, seed=77)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}), seed=77)
 
     assert _run(ida_setup, cfg).seed_used == 77
 
@@ -319,12 +567,12 @@ def test_heatmap_center_matches_baseline_and_shape(ida_setup):
     """The (0 %, 0 %) centre cell reproduces the baseline; grid is n_steps².
 
     Uses a titrant × h0 axis pair to exercise one axis from each perturbation
-    path. On clean data every cell converges, so no NaNs appear.
+    path. On clean data every cell is solvable, so no NaNs appear.
     """
     cfg = SensitivityConfig(
         mode=SensitivityMode.HEATMAP,
         n_samples=1,
-        input_specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)},
+        errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)}),
         seed=0,
         x_key=TITRANT,
         y_key='h0',
@@ -350,15 +598,15 @@ def test_heatmap_axes_perturb_the_inputs_they_name(ida_setup, monkeypatch):
     the two axis keys, or transposing the grid, moves the variation.
     """
 
-    def ka_from_h0_alone(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
+    def ka_from_h0_alone(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
         signal = dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)
-        return {'Ka_guest': 1e8 * (1 + 3 * offsets.get('h0', 0.0)), **signal}, 1.0
+        return {'Ka_guest': 1e8 * (1 + 3 * offsets.get('h0', 0.0)), **signal}, 1.0, 1.0
 
     monkeypatch.setattr(sens, '_fit_perturbed', ka_from_h0_alone)
     cfg = SensitivityConfig(
         mode=SensitivityMode.HEATMAP,
         n_samples=1,
-        input_specs={'h0': InputSpec.sigma_pct(4.0), 'd0': InputSpec.sigma_pct(10.0)},
+        errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(4.0), 'd0': InputSpec.sigma_pct(10.0)}),
         seed=0,
         x_key='h0',
         y_key='d0',
@@ -374,39 +622,170 @@ def test_heatmap_axes_perturb_the_inputs_they_name(ida_setup, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# estimated_fit_count — matches the driver's per-mode workload
+# Two binding constants
+# ---------------------------------------------------------------------------
+
+
+def _hg2_setup():
+    """(ms, assay_cls, conditions, fit_config) for the stepwise 1:2 model on a narrow Ka box.
+
+    Both stepwise constants are searched over two decades around the truth,
+    which keeps a two-dimensional search small enough for the fast layer; the
+    engine itself is tested over the whole default box.
+    """
+    x, y = _make_hg2_data(HG2_TRUE, n_points=_N_POINTS)
+    ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
+    bounds = {
+        **HG2_RECOVERY_BOUNDS,
+        'Ka_HG': (Q_(1e5, '1/M'), Q_(1e7, '1/M')),
+        'Ka_HG2': (Q_(1e4, '1/M'), Q_(1e6, '1/M')),
+    }
+    return ms, HG2Assay, {'h0': Q_(HG2_TRUE['h0'], 'M')}, FitConfig(custom_bounds=bounds)
+
+
+def test_a_model_with_two_binding_constants_is_analysed_like_any_other():
+    """A 1:2 model gets a surface per binding constant, every cell fitted, and repeats exactly.
+
+    Two binding constants mean a two-dimensional search for every cell rather
+    than a one-dimensional one; the search is deterministic all the same, so the
+    spread the run reports is still the inputs' own.
+    """
+    setup = _hg2_setup()
+    cfg = SensitivityConfig(
+        mode=SensitivityMode.HEATMAP,
+        n_samples=1,
+        errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(5.0), TITRANT: InputSpec.sigma_pct(5.0)}),
+        seed=4,
+        x_key='h0',
+        y_key=TITRANT,
+        n_steps=3,
+    )
+
+    result = _run(setup, cfg)
+    again = _run(setup, cfg)
+
+    assert set(result.ka_grid) == {'Ka_HG', 'Ka_HG2'}
+    for key, grid in result.ka_grid.items():
+        assert grid.shape == (3, 3)
+        assert np.all(np.isfinite(grid))
+        np.testing.assert_array_equal(grid, again.ka_grid[key])
+    assert (result.n_success, result.n_total) == (9, 9)
+    assert result.ka_grid['Ka_HG'][1, 1] == result.baseline_ka['Ka_HG']
+    assert result.ka_grid['Ka_HG2'][1, 1] == result.baseline_ka['Ka_HG2']
+
+
+# ---------------------------------------------------------------------------
+# Sizing a run — fits and the model solves they cost
 # ---------------------------------------------------------------------------
 
 
 def test_estimated_fit_count_scales_with_inputs():
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(5.0)})
-    assert estimated_fit_count(cfg) == 1024 * (1 + 2)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}))
+    assert estimated_fit_count(cfg, 4) == 1024 * (1 + 2) + 2 * 4
 
 
 def test_estimated_fit_count_counts_only_varying_inputs():
-    """Sobol' costs N x (k + 2); an input held fixed is not one of the k."""
+    """Sobol' costs N x (k + 2) plus two elasticity refits per input; an input held fixed is not one of the k."""
     cfg = SensitivityConfig(
         SensitivityMode.SOBOL,
         2048,
-        {
-            TITRANT: InputSpec.sigma_pct(5.0),
-            'h0': InputSpec.sigma_pct(5.0),
-            'd0': InputSpec.sigma_pct(0.0),
-        },
+        ErrorModel(
+            specs={
+                TITRANT: InputSpec.sigma_pct(5.0),
+                'h0': InputSpec.sigma_pct(5.0),
+                'd0': InputSpec.sigma_pct(0.0),
+            }
+        ),
     )
-    assert estimated_fit_count(cfg) == 2048 * (2 + 2)
+    assert estimated_fit_count(cfg, 4) == 2048 * (2 + 2) + 2 * 4
 
 
 def test_estimated_fit_count_heatmap_is_grid_squared():
     cfg = SensitivityConfig(
         SensitivityMode.HEATMAP,
         200,
-        {TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)},
+        ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)}),
         x_key=TITRANT,
         y_key='h0',
         n_steps=7,
     )
-    assert estimated_fit_count(cfg) == 49
+    assert estimated_fit_count(cfg, 4) == 49
+
+
+def test_fit_count_is_one_matrix_per_reported_item_plus_the_elasticity_refits():
+    """Three single sources and the additions are four items whatever the number of points: N (4 + 2) + 2 x 4."""
+    errors = ErrorModel(
+        specs={'h0': InputSpec.sigma_pct(3.0), 'd0': InputSpec.sigma_pct(0.0), TITRANT: InputSpec.sigma_pct(2.0)},
+        shared=(_STOCK,),
+        additions=AdditionError(1.0, sequential=True),
+    )
+    assert estimated_fit_count(SensitivityConfig(SensitivityMode.SOBOL, 1024, errors), 4) == 1024 * 6 + 8
+
+
+_SIZING_CONFIG = SensitivityConfig(
+    SensitivityMode.HEATMAP,
+    1,
+    ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)}),
+    x_key=TITRANT,
+    y_key='h0',
+    n_steps=10,
+)
+
+
+@pytest.mark.parametrize(
+    ('assay_type', 'bounds', 'nodes'),
+    [
+        # Four nodes per decade plus the one that closes the span: two decades
+        # of one binding constant are nine nodes, and two such constants are
+        # searched on their 9 x 9 product.
+        (AssayType.IDA, {'Ka_guest': (Q_(1e5, '1/M'), Q_(1e7, '1/M'))}, 9),
+        (AssayType.IDA, {'Ka_guest': (Q_(1e5, '1/M'), Q_(1e9, '1/M'))}, 17),
+        (
+            AssayType.DBA_HG2,
+            {'Ka_HG': (Q_(1e5, '1/M'), Q_(1e7, '1/M')), 'Ka_HG2': (Q_(1e5, '1/M'), Q_(1e7, '1/M'))},
+            81,
+        ),
+        # A binding constant held at one value is not searched at all.
+        (AssayType.DBA_HG2, {'Ka_HG': (Q_(1e5, '1/M'), Q_(1e7, '1/M')), 'Ka_HG2': (Q_(1e5, '1/M'), Q_(1e5, '1/M'))}, 9),
+    ],
+    ids=['two-decades', 'four-decades', 'two-constants', 'one-pinned'],
+)
+def test_model_solves_scale_with_the_ka_box_the_fits_search(assay_type, bounds, nodes):
+    """Sizing a run means counting the Ka grid every fit sweeps, the baseline's included."""
+    solves = estimated_model_solves(_SIZING_CONFIG, FitConfig(custom_bounds=bounds), assay_type, 4)
+
+    assert solves == (100 + 1) * nodes
+
+
+def test_the_long_run_threshold_is_the_solves_of_about_two_minutes():
+    """The warning threshold is a time, expressed in the solves that fill it.
+
+    One solve of thirty titration points — the species of one design, then the
+    bounded linear least squares on them — takes about 0.2 ms, so a run worth
+    warning about is a couple of minutes of one core.
+    """
+    assert LONG_RUN_SOLVES * 0.2e-3 == pytest.approx(140.0)
+
+
+def test_a_run_solves_the_model_at_least_as_often_as_it_was_sized_for(ida_setup, monkeypatch):
+    """Every fit sweeps the whole Ka grid, so the estimate is what a run costs at a minimum.
+
+    The refinement of the best grid node adds to it, which is why the estimate
+    is a floor rather than a prediction.
+    """
+    ms, assay_cls, conditions, fit_config = ida_setup
+    cfg = _heatmap(3)
+    solves = []
+    real_species = IDAAssay.species
+
+    def counting_species(self, params):
+        solves.append(1)
+        return real_species(self, params)
+
+    monkeypatch.setattr(IDAAssay, 'species', counting_species)
+    run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
+
+    assert len(solves) >= estimated_model_solves(cfg, fit_config, AssayType.IDA, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +800,7 @@ def test_sample_size_outside_the_checked_range_raises(ida_setup, n_samples):
     Coverage passed at 1024 and 4096; 2048 lies between them. Smaller sizes failed the check.
     """
     ms, assay_cls, conditions, fit_config = ida_setup
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, n_samples, {TITRANT: InputSpec.sigma_pct(5.0)})
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, n_samples, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}))
     with pytest.raises(ValueError, match=f'must be 1024, 2048 or 4096; {n_samples} was chosen'):
         run_sensitivity(ms, assay_cls, conditions, fit_config, cfg)
 
@@ -437,7 +816,7 @@ def test_every_accepted_sample_size_is_a_whole_design():
 
 def test_negative_percent_raises(ida_setup):
     ms, assay_cls, conditions, fit_config = ida_setup
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(-5.0)})
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(-5.0)}))
     with pytest.raises(ValueError, match='negative'):
         run_sensitivity(ms, assay_cls, conditions, fit_config, cfg)
 
@@ -449,7 +828,7 @@ def test_negative_percent_raises(ida_setup):
 )
 def test_range_reaching_below_zero_raises(ida_setup, key, spec):
     """A concentration cannot go negative, so a range that takes it there is refused before any fit."""
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {key: spec}, seed=3)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={key: spec}), seed=3)
 
     with pytest.raises(ValueError, match='below zero'):
         _run(ida_setup, cfg)
@@ -457,7 +836,7 @@ def test_range_reaching_below_zero_raises(ida_setup, key, spec):
 
 def test_all_zero_percent_raises(ida_setup):
     ms, assay_cls, conditions, fit_config = ida_setup
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(0.0)})
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(0.0)}))
     with pytest.raises(ValueError, match='vary'):
         run_sensitivity(ms, assay_cls, conditions, fit_config, cfg)
 
@@ -467,7 +846,7 @@ def test_heatmap_same_axis_twice_raises(ida_setup):
     cfg = SensitivityConfig(
         SensitivityMode.HEATMAP,
         6,
-        {TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)},
+        ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)}),
         x_key=TITRANT,
         y_key=TITRANT,
     )
@@ -489,7 +868,12 @@ def test_heatmap_axis_reaching_zero_raises_before_any_fit(ida_setup, monkeypatch
     monkeypatch.setattr(sens, '_fit_perturbed', lambda *a, **k: pytest.fail('no fit may run'))
     other = 'd0'
     cfg = SensitivityConfig(
-        SensitivityMode.HEATMAP, 6, {key: spec, other: InputSpec.sigma_pct(5.0)}, x_key=key, y_key=other, n_steps=3
+        SensitivityMode.HEATMAP,
+        6,
+        ErrorModel(specs={key: spec, other: InputSpec.sigma_pct(5.0)}),
+        x_key=key,
+        y_key=other,
+        n_steps=3,
     )
     with pytest.raises(ValueError, match='reaches zero or below'):
         _run(ida_setup, cfg)
@@ -497,7 +881,7 @@ def test_heatmap_axis_reaching_zero_raises_before_any_fit(ida_setup, monkeypatch
 
 def test_unknown_input_key_raises(ida_setup):
     ms, assay_cls, conditions, fit_config = ida_setup
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {'not_an_input': InputSpec.sigma_pct(5.0)})
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={'not_an_input': InputSpec.sigma_pct(5.0)}))
     with pytest.raises(ValueError, match='an input this assay does not have'):
         run_sensitivity(ms, assay_cls, conditions, fit_config, cfg)
 
@@ -506,51 +890,55 @@ def test_dye_alone_has_no_ka_to_analyse():
     """DYE_ALONE has no association constant, so sensitivity does not apply."""
     x, y = _make_dye_alone_data({'slope': 5e7, 'intercept': 0.0})
     ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(5.0)})
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}))
     with pytest.raises(ValueError, match='association constant'):
-        run_sensitivity(ms, DyeAloneAssay, {}, FitConfig(n_trials=5), cfg)
+        run_sensitivity(ms, DyeAloneAssay, {}, FitConfig(), cfg)
 
 
-@pytest.mark.parametrize(
-    ('assay_cls', 'true', 'maker', 'name'),
-    [
-        (HG2Assay, HG2_TRUE, _make_hg2_data, 'DBA 1:2'),
-        (H2GAssay, H2G_TRUE, _make_h2g_data, 'DBA 2:1'),
-    ],
-    ids=['HG2', 'H2G'],
-)
-def test_an_assay_without_an_exact_ka_profile_is_refused(monkeypatch, assay_cls, true, maker, name):
-    """Two binding constants leave no exact profile, so the analysis refuses the assay before fitting anything.
+def test_sequential_additions_on_a_falling_series_are_refused_before_any_fit(ida_setup, monkeypatch):
+    ms, assay_cls, conditions, fit_config = ida_setup
+    x = np.array(ms.concentrations)
+    x[[4, 5]] = x[[5, 4]]
+    falling = MeasurementSet(concentrations=x, signals=ms.signals, replica_ids=ms.replica_ids)
+    monkeypatch.setattr(sens, 'fit_measurement_set', lambda *a, **k: pytest.fail('no fit may run'))
+    errors = ErrorModel(additions=AdditionError(1.0, sequential=True))
 
-    Each perturbation would have to be refitted by a multi-start search that
-    lands on a different optimum from one seed to the next; its scatter would be
-    read as input sensitivity, which is the one thing the analysis claims to
-    separate out.
-    """
-    monkeypatch.setattr(sens, '_fit_perturbed', lambda *a, **k: pytest.fail('no fit may run'))
-    x, y = maker(true, n_points=_N_POINTS)
-    ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_pct(5.0)})
+    with pytest.raises(FitRefused, match='falls at point 6'):
+        run_sensitivity(
+            falling, assay_cls, conditions, fit_config, SensitivityConfig(SensitivityMode.SOBOL, 1024, errors)
+        )
 
-    with pytest.raises(ValueError, match='not available') as raised:
-        run_sensitivity(ms, assay_cls, {'h0': Q_(true['h0'], 'M')}, FitConfig(n_trials=5), cfg)
 
-    assert name in str(raised.value)
+def test_a_heatmap_needs_an_input_with_an_uncertainty_of_its_own(ida_setup):
+    """Shared sources and the additions are sampled by the Sobol analysis only; a heatmap of them alone sweeps nothing."""
+    ms, assay_cls, conditions, fit_config = ida_setup
+    cfg = SensitivityConfig(SensitivityMode.HEATMAP, 1, ErrorModel(shared=(_STOCK,)), x_key='h0', y_key='d0', n_steps=3)
+
+    with pytest.raises(FitRefused, match='uncertainty of its own'):
+        run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
 
 
 _MESSAGE_CONFIGS = {
-    'negative-sigma': SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.sigma_pct(-5.0)}),
-    'upside-down-range': SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.interval_pct(5.0, -5.0)}),
-    'range-below-zero': SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.interval_pct(-200.0, 0.0)}),
+    'negative-sigma': SensitivityConfig(
+        SensitivityMode.SOBOL, 1024, ErrorModel(specs={'h0': InputSpec.sigma_pct(-5.0)})
+    ),
+    'upside-down-range': SensitivityConfig(
+        SensitivityMode.SOBOL, 1024, ErrorModel(specs={'h0': InputSpec.interval_pct(5.0, -5.0)})
+    ),
+    'range-below-zero': SensitivityConfig(
+        SensitivityMode.SOBOL, 1024, ErrorModel(specs={'h0': InputSpec.interval_pct(-200.0, 0.0)})
+    ),
     'axis-to-zero': SensitivityConfig(
         SensitivityMode.HEATMAP,
         1,
-        {'h0': InputSpec.sigma_pct(50.0), 'd0': InputSpec.sigma_pct(5.0)},
+        ErrorModel(specs={'h0': InputSpec.sigma_pct(50.0), 'd0': InputSpec.sigma_pct(5.0)}),
         x_key='h0',
         y_key='d0',
         n_steps=3,
     ),
-    'absolute-titrant': SensitivityConfig(SensitivityMode.SOBOL, 1024, {TITRANT: InputSpec.sigma_abs(1e-6)}),
+    'absolute-titrant': SensitivityConfig(
+        SensitivityMode.SOBOL, 1024, ErrorModel(specs={TITRANT: InputSpec.sigma_abs(1e-6)})
+    ),
 }
 
 
@@ -591,32 +979,8 @@ def test_an_input_with_no_label_is_named_in_plain_words():
 
 
 # ---------------------------------------------------------------------------
-# Reproducibility and cost
+# The fits a run actually runs
 # ---------------------------------------------------------------------------
-
-
-def test_seeded_run_repeats_regardless_of_global_rng(ida_setup, monkeypatch):
-    """A seeded run reproduces exactly without pinning the global RNG.
-
-    The multi-start optimiser is the other random component of a fit, so a seed
-    covering only the perturbation draws would still let each pool wander and
-    give a different answer on every run.
-    """
-    _use_small_design(monkeypatch, 2)
-    ms, assay_cls, conditions, fit_config = ida_setup
-    cfg = SensitivityConfig(
-        mode=SensitivityMode.SOBOL,
-        n_samples=4,
-        input_specs={TITRANT: InputSpec.sigma_pct(5.0), 'h0': InputSpec.sigma_pct(5.0)},
-        seed=11,
-    )
-
-    np.random.seed(1)
-    first = _samples(run_sensitivity(ms, assay_cls, conditions, fit_config, cfg))
-    np.random.seed(999)
-    second = _samples(run_sensitivity(ms, assay_cls, conditions, fit_config, cfg))
-
-    assert np.array_equal(first, second)
 
 
 def _cost_config() -> SensitivityConfig:
@@ -625,7 +989,7 @@ def _cost_config() -> SensitivityConfig:
         mode=SensitivityMode.HEATMAP,
         n_samples=1,  # unused by HEATMAP; the grid sets the workload
         n_steps=3,
-        input_specs={TITRANT: InputSpec.sigma_pct(4.0), 'h0': InputSpec.sigma_pct(4.0)},
+        errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(4.0), 'h0': InputSpec.sigma_pct(4.0)}),
         x_key=TITRANT,
         y_key='h0',
         seed=5,
@@ -654,42 +1018,9 @@ def test_estimated_fit_count_matches_the_fits_actually_run(ida_setup, max_worker
         max_workers=max_workers,
     )
 
-    expected = estimated_fit_count(cfg) + 1  # perturbations + the baseline
+    expected = estimated_fit_count(cfg, len(perturbable_inputs(conditions))) + 1  # perturbations + the baseline
     assert len(reports) == expected
     assert reports[-1] == (expected, expected)
-
-
-def test_a_run_costs_one_multistart_baseline_and_one_profile_fit_per_fitted_signal(ida_replicas_setup, monkeypatch):
-    """A run does one multi-start baseline, and one profile fit per signal for it and each perturbation.
-
-    Checked per replicate, where each perturbation fits every active
-    replicate, so the estimate's replicate multiplier is exercised too. The
-    fit calls are inspected here, so the run is serial: a worker process
-    imports its own copy of the module, where a patch made here does not
-    exist. Both dispatches call the same per-fit function.
-    """
-    ms, assay_cls, conditions, fit_config = ida_replicas_setup
-    cfg = _cost_config()
-    runs: list[int] = []
-    profile_fits: list[int] = []
-    real_fit, real_profile = sens.fit_measurement_set, sens.best_params_by_profile
-
-    def counting_fit(perturbed_ms, assay, conds, config, **kwargs):
-        runs.append(config.n_trials * (perturbed_ms.n_active if config.per_replica else 1))
-        return real_fit(perturbed_ms, assay, conds, config, **kwargs)
-
-    def counting_profile(assay, bounds):
-        profile_fits.append(1)
-        return real_profile(assay, bounds)
-
-    monkeypatch.setattr(sens, 'fit_measurement_set', counting_fit)
-    monkeypatch.setattr(sens, 'best_params_by_profile', counting_profile)
-    run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
-
-    assert len(profile_fits) == (estimated_fit_count(cfg) + 1) * ms.n_active  # the baseline reports one too
-    assert sum(runs) + len(profile_fits) * sens._PROFILE_FIT_RUNS == estimated_optimizer_runs(
-        cfg, fit_config, ms.n_active
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -697,101 +1028,35 @@ def test_a_run_costs_one_multistart_baseline_and_one_profile_fit_per_fitted_sign
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def ida_replicas_setup():
-    """(ms, assay_cls, conditions, fit_config) with three near-clean replicas."""
+def test_a_deactivated_replicate_enters_no_fit_of_the_run():
+    """A replicate switched off in the interface is not in the data any perturbation is fitted on.
+
+    Checked against the run of a measurement set that never held it: every cell
+    has to come out identical, so a deactivated replicate cannot be leaking into
+    the average a perturbation is fitted to.
+    """
     x, y = _make_ida_data(IDA_TRUE, n_points=_N_POINTS)
-    rng = np.random.default_rng(0)
-    signals = np.vstack([y * (1 + rng.normal(0.0, 0.002, y.size)) for _ in range(3)])
-    ms = MeasurementSet(concentrations=x, signals=signals, replica_ids=('r0', 'r1', 'r2'))
-    conditions = {
-        'Ka_dye': Q_(IDA_TRUE['Ka_dye'], '1/M'),
-        'h0': Q_(IDA_TRUE['h0'], 'M'),
-        'd0': Q_(IDA_TRUE['d0'], 'M'),
-    }
-    fit_config = FitConfig(n_trials=_N_TRIALS, custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=True)
-    return ms, IDAAssay, conditions, fit_config
+    rng = np.random.default_rng(7)
+    noise = [rng.normal(0.0, 0.01 * np.ptp(y), y.size) for _ in range(3)]
+    ids = ('r0', 'r1', 'r2')
+    # The middle replicate is far off the others, so leaving it in the average
+    # would move every cell well past any rounding.
+    signals = np.vstack([y + noise[0], 1.3 * y + noise[1], y + noise[2]])
+    with_all = MeasurementSet(concentrations=x, signals=signals, replica_ids=ids)
+    with_all.set_active('r1', False)
+    without = MeasurementSet(concentrations=x, signals=signals[[0, 2]], replica_ids=('r0', 'r2'))
+    all_three = MeasurementSet(concentrations=x, signals=signals, replica_ids=ids)
+    # Averaging mode, so the comparison is about which replicates are in the
+    # data rather than about which ones a shared-Ka test keeps.
+    fit_config = FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=False)
+    cfg = _heatmap(2)
 
+    deactivated = _run((with_all, IDAAssay, dict(_IDA_CONDITIONS), fit_config), cfg)
+    absent = _run((without, IDAAssay, dict(_IDA_CONDITIONS), fit_config), cfg)
+    kept_in = _run((all_three, IDAAssay, dict(_IDA_CONDITIONS), fit_config), cfg)
 
-def _signal_name(ms, y) -> str:
-    """Which of *ms*'s signals *y* is: ``'average'`` or a replica id."""
-    if np.array_equal(y, ms.average_signal(active_only=True)):
-        return 'average'
-    return next(rid for rid in ms.replica_ids if np.array_equal(y, ms.get_replica_signal(rid)))
-
-
-def _fitted_signals(setup, replicate_mode, monkeypatch) -> list[list[str]]:
-    """Run a one-sample analysis; list, per fit, the signals it fitted.
-
-    Each entry holds the ids of the replicates one fit used separately, or
-    ``['average']`` when it fitted the averaged signal.
-    """
-    ms, assay_cls, conditions, fit_config = setup
-    _use_small_design(monkeypatch, 1)
-    cfg = SensitivityConfig(
-        mode=SensitivityMode.SOBOL,
-        n_samples=2,
-        input_specs={'h0': InputSpec.sigma_pct(3.0)},
-        seed=3,
-        replicate_mode=replicate_mode,
-    )
-    seen: list[list[str]] = []
-    real_fit, real_params = sens._fit_by_profile, sens.best_params_by_profile
-
-    def fit_spy(*args):
-        seen.append([])
-        return real_fit(*args)
-
-    def params_spy(assay, bounds):
-        seen[-1].append(_signal_name(ms, assay.y_data.magnitude))
-        return real_params(assay, bounds)
-
-    monkeypatch.setattr(sens, '_fit_by_profile', fit_spy)
-    monkeypatch.setattr(sens, 'best_params_by_profile', params_spy)
-
-    run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
-    return seen
-
-
-def test_follow_mode_keeps_the_configured_replicate_handling(ida_replicas_setup, monkeypatch):
-    """A per-replica fit stays per-replica inside the sensitivity run.
-
-    Replicates are the measured signal scatter; collapsing them to an average
-    would drop that uncertainty from an analysis whose whole subject is
-    uncertainty.
-    """
-    seen = _fitted_signals(ida_replicas_setup, ReplicateMode.FOLLOW, monkeypatch)
-
-    assert seen
-    assert all(signals == ['r0', 'r1', 'r2'] for signals in seen)
-
-
-def test_average_mode_collapses_the_replicates(ida_replicas_setup, monkeypatch):
-    """Averaging is available, but only when it is asked for."""
-    seen = _fitted_signals(ida_replicas_setup, ReplicateMode.AVERAGE, monkeypatch)
-
-    assert seen
-    assert all(signals == ['average'] for signals in seen)
-
-
-def test_per_replica_mode_overrides_the_fit_setting(ida_replicas_setup, monkeypatch):
-    ms, assay_cls, conditions, fit_config = ida_replicas_setup
-    averaging = replace(fit_config, per_replica=False)
-    seen = _fitted_signals((ms, assay_cls, conditions, averaging), ReplicateMode.PER_REPLICA, monkeypatch)
-
-    assert seen
-    assert all(signals == ['r0', 'r1', 'r2'] for signals in seen)
-
-
-def test_deactivated_replicas_stay_out_of_every_perturbed_fit(ida_replicas_setup, monkeypatch):
-    """A replica switched off in the GUI must not reappear under perturbation."""
-    ms, assay_cls, conditions, fit_config = ida_replicas_setup
-    ms.set_active('r1', False)
-
-    seen = _fitted_signals((ms, assay_cls, conditions, fit_config), ReplicateMode.FOLLOW, monkeypatch)
-
-    assert seen
-    assert all(signals == ['r0', 'r2'] for signals in seen)
+    np.testing.assert_array_equal(deactivated.ka_grid['Ka_guest'], absent.ka_grid['Ka_guest'])
+    assert np.all(np.abs(kept_in.ka_grid['Ka_guest'] / absent.ka_grid['Ka_guest'] - 1) > 1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -806,7 +1071,7 @@ def test_inputs_are_ordered_with_the_titrant_last():
         'h0': Q_(IDA_TRUE['h0'], 'M'),
         'd0': Q_(IDA_TRUE['d0'], 'M'),
     }
-    keys = [key for key, _kind in perturbable_inputs(AssayType.IDA, conditions)]
+    keys = [key for key, _kind in perturbable_inputs(conditions)]
 
     assert keys == ['Ka_dye', 'h0', 'd0', TITRANT]
 
@@ -936,11 +1201,10 @@ def test_sobol_design_a_and_b_are_uncorrelated():
 def test_sobol_run_reports_an_index_per_varied_input(ida_setup, monkeypatch):
     """A real run attributes Ka spread across exactly the inputs that varied."""
     _use_small_design(monkeypatch, 4)
-    ms, assay_cls, conditions, fit_config = ida_setup
     cfg = SensitivityConfig(
         mode=SensitivityMode.SOBOL,
         n_samples=8,
-        input_specs={TITRANT: InputSpec.sigma_pct(4.0), 'h0': InputSpec.sigma_pct(4.0)},
+        errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(4.0), 'h0': InputSpec.sigma_pct(4.0)}),
         seed=9,
     )
 
@@ -949,7 +1213,170 @@ def test_sobol_run_reports_an_index_per_varied_input(ida_setup, monkeypatch):
     assert set(result.sobol_s1) == set(result.ka_keys)
     assert set(result.sobol_s1['Ka_guest']) == {TITRANT, 'h0'}
     assert set(result.sobol_st['Ka_guest']) == {TITRANT, 'h0'}
-    assert result.n_total == estimated_fit_count(cfg)
+    assert result.sources == (TITRANT, 'h0')
+    assert result.source_inputs == {TITRANT: (TITRANT,), 'h0': ('h0',)}
+    assert result.n_total == result.n_planned == estimated_fit_count(cfg, 4)
+
+
+def _outputs(function, n_columns: int, groups: list[list[int]], seed: int):
+    """``(f_A, f_B, [f_AB_g])`` of *function* on a design, ``AB_g`` being A with the columns of g from B."""
+    a_points, b_points = sobol_design(_N, n_columns, _BLOCKS, seed)
+    mixed = []
+    for group in groups:
+        points = a_points.copy()
+        points[:, group] = b_points[:, group]
+        mixed.append(function(points))
+    return function(a_points), function(b_points), mixed
+
+
+def test_budget_of_a_linear_gaussian_function_is_its_sum_of_squares():
+    """``Y = sum a_i z_i`` with standard normal ``z``: V = sum a_i², V_i = a_i², SD without i = sqrt(V - a_i²)."""
+    a = np.array([0.08, 0.05, 0.02])
+    estimate = sobol_indices_with_ci(
+        *_outputs(lambda points: 3.0 + norm.ppf(points) @ a, 3, [[0], [1], [2]], seed=11), _BLOCKS
+    )
+
+    variance = float(np.sum(a**2))
+    assert estimate.variance == pytest.approx(variance, rel=0.03)
+    np.testing.assert_allclose(estimate.source_variance, a**2, rtol=0.05, atol=0.02 * variance)
+    np.testing.assert_allclose(estimate.sd_if_exact, np.sqrt(variance - a**2), rtol=0.03)
+    np.testing.assert_allclose(estimate.s1, a**2 / variance, atol=0.02)
+    np.testing.assert_allclose(estimate.st, a**2 / variance, atol=0.02)
+    # Every interval is around its own estimate and no wider than the quantity is known to a tenth of the variance.
+    for value, interval in (
+        (estimate.variance, np.array([estimate.variance_ci])),
+        (estimate.source_variance, estimate.source_variance_ci),
+        (estimate.sd_if_exact, estimate.sd_if_exact_ci),
+    ):
+        assert np.all(interval[:, 0] < value) and np.all(value < interval[:, 1])
+    assert np.all(np.diff(estimate.source_variance_ci, axis=1) < 0.1 * variance)
+
+
+def test_a_group_of_columns_is_reported_as_one_item():
+    """Ishigami inputs 1 and 3 interact with each other and not with input 2.
+
+    The closed first-order index of the group {1, 3} is everything input 2 does
+    not explain alone, and so is its total index: both are ``1 - S_2``, while
+    the single first-order indices of 1 and 3 add up to less (their interaction
+    is inside the group). ``S_2 = (a²/8) / V`` in closed form.
+    """
+    a, b = 7.0, 0.1
+
+    def ishigami(points):
+        x = np.pi * (2.0 * points - 1.0)
+        return np.sin(x[:, 0]) + a * np.sin(x[:, 1]) ** 2 + b * x[:, 2] ** 4 * np.sin(x[:, 0])
+
+    variance = a**2 / 8 + b * np.pi**4 / 5 + b**2 * np.pi**8 / 18 + 0.5
+    s2 = (a**2 / 8) / variance
+    estimate = sobol_indices_with_ci(*_outputs(ishigami, 3, [[1], [0, 2]], seed=5), _BLOCKS)
+
+    assert estimate.variance == pytest.approx(variance, rel=0.03)
+    np.testing.assert_allclose(estimate.s1, [s2, 1 - s2], atol=0.03)
+    np.testing.assert_allclose(estimate.st, [s2, 1 - s2], atol=0.03)
+    assert estimate.source_variance[1] == pytest.approx((1 - s2) * variance, rel=0.05)
+
+
+# ---------------------------------------------------------------------------
+# The Saltelli design of the stated sources
+# ---------------------------------------------------------------------------
+
+
+def _quantiles(points: np.ndarray) -> np.ndarray:
+    return np.clip(points, sens._QUANTILE_EPS, 1 - sens._QUANTILE_EPS)
+
+
+def test_own_sources_are_mapped_column_by_column_in_the_order_stated():
+    """Without a shared source a job is ``spec_fraction`` of its design row, float for float, and carries no deltas."""
+    specs = {
+        'h0': InputSpec.sigma_pct(5.0),
+        'Ka_dye': InputSpec.sigma_pct(0.0),  # stated, does not vary: no column
+        TITRANT: InputSpec.interval_pct(-8.0, 4.0),
+        'd0': InputSpec.sigma_abs(2e-7),
+    }
+    built = sobol_jobs(ErrorModel(specs=specs), _IDA_CONDITIONS, 16, 20, 1, seed=13)
+
+    varying = ['h0', TITRANT, 'd0']
+    a_points, b_points = sobol_design(16, 3, _BLOCKS, 13)
+    matrices = [a_points, b_points]
+    for column in range(3):
+        mixed = a_points.copy()
+        mixed[:, column] = b_points[:, column]
+        matrices.append(mixed)
+    expected = [
+        {
+            key: spec_fraction(specs[key], nominal_value(key, _IDA_CONDITIONS), key, float(q))
+            for key, q in zip(varying, row)
+        }
+        for row in _quantiles(np.vstack(matrices))
+    ]
+    assert built.sources == tuple(varying)
+    assert [offsets for offsets, _ in built.jobs] == expected
+    assert built.source_offsets == expected
+    assert all(deltas is None for _, deltas in built.jobs)
+
+
+def test_a_shared_source_moves_every_input_it_loads():
+    errors = ErrorModel(specs={'h0': InputSpec.sigma_pct(3.0), TITRANT: InputSpec.sigma_pct(2.0)}, shared=(_STOCK,))
+    built = sobol_jobs(errors, _IDA_CONDITIONS, 1024, 20, 1, seed=2)
+
+    stock = shared_key(_STOCK.name)
+    assert built.sources == ('h0', TITRANT, stock)
+    assert len(built.jobs) == 1024 * (3 + 2)
+    for e, (offsets, _) in zip(built.source_offsets, built.jobs):
+        assert set(e) == {'h0', TITRANT, stock} and set(offsets) == {'h0', 'd0', TITRANT}
+        # The perturbed inputs by hand: entered x prod(1 + e) over the sources that move each.
+        assert 1 + offsets['h0'] == pytest.approx((1 + e['h0']) * (1 + e[stock]), rel=1e-15)
+        assert offsets['d0'] == e[stock]
+        assert offsets[TITRANT] == e[TITRANT]
+    # The shared column is the 4 % normal it was stated as: the A and B rows have that spread.
+    shared = np.array([e[stock] for e in built.source_offsets[:2048]])
+    assert np.std(shared) == pytest.approx(0.04, rel=0.02)
+
+
+def test_a_shared_source_moves_a_binding_constant_measured_with_it_the_other_way():
+    """A stock ``1 + e`` times stronger than assumed: [Host]0 is ``1 + e`` times, and a Ka(dye) fitted with it ``1 / (1 + e)`` times, the entered value."""
+    stock = SharedSource('Host stock', 4.0, ('h0', 'Ka_dye'))
+    built = sobol_jobs(ErrorModel(shared=(stock,)), _IDA_CONDITIONS, 1024, 20, 1, seed=2)
+
+    key = shared_key(stock.name)
+    for e, (offsets, _) in zip(built.source_offsets, built.jobs):
+        assert offsets['h0'] == e[key]
+        assert (1 + offsets['Ka_dye']) * (1 + e[key]) == pytest.approx(1.0, rel=1e-14)
+
+
+@pytest.mark.parametrize('n_replicates', [1, 4])
+def test_the_additions_are_one_item_of_one_column_per_point(n_replicates):
+    """Sources + n_points columns; ``ADDITIONS`` last; deltas at sigma / sqrt(replicates).
+
+    In the matrix of the additions every delta comes from ``B`` and every
+    single source from ``A``; in a single source's matrix the deltas are A's.
+    """
+    n_points, n_base, sigma = 12, 1024, 2.0
+    errors = ErrorModel(specs={'h0': InputSpec.sigma_pct(3.0)}, additions=AdditionError(sigma, sequential=True))
+    designs = []
+    real = sens.sobol_design
+
+    def spy(*args, **kwargs):
+        designs.append(real(*args, **kwargs))
+        return designs[-1]
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sens, 'sobol_design', spy)
+        built = sobol_jobs(errors, _IDA_CONDITIONS, n_base, n_points, n_replicates, seed=3)
+
+    ((a_points, _),) = designs
+    assert a_points.shape == (n_base, 1 + n_points)
+    assert built.sources == ('h0', ADDITIONS)
+    assert len(built.jobs) == n_base * (2 + 2)
+    deltas = np.array([d for _, d in built.jobs])
+    assert deltas.shape == (4 * n_base, n_points)
+    assert np.std(deltas[: 2 * n_base]) == pytest.approx(sigma / 100 / math.sqrt(n_replicates), rel=0.02)
+    h0 = np.array([offsets['h0'] for offsets, _ in built.jobs])
+    in_a, in_b, in_ab_h0, in_ab_additions = (slice(i * n_base, (i + 1) * n_base) for i in range(4))
+    np.testing.assert_array_equal(h0[in_ab_h0], h0[in_b])
+    np.testing.assert_array_equal(deltas[in_ab_h0], deltas[in_a])
+    np.testing.assert_array_equal(h0[in_ab_additions], h0[in_a])
+    np.testing.assert_array_equal(deltas[in_ab_additions], deltas[in_b])
 
 
 # ---------------------------------------------------------------------------
@@ -971,7 +1398,7 @@ def _ida_setup_with_ka(scale: float):
     true = {**IDA_TRUE, 'Ka_guest': IDA_TRUE['Ka_guest'] * scale}
     x, y = _make_ida_data(true, n_points=_N_POINTS)
     ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
-    return ms, IDAAssay, dict(_IDA_CONDITIONS), FitConfig(n_trials=6, custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
+    return ms, IDAAssay, dict(_IDA_CONDITIONS), FitConfig(custom_bounds=GDA_IDA_RECOVERY_BOUNDS)
 
 
 def test_two_runs_at_once_in_one_process_keep_their_own_data():
@@ -1047,7 +1474,7 @@ def _assert_identical(a, b) -> None:
         assert np.array_equal(a.sample_offsets_pct[key], b.sample_offsets_pct[key])
     assert np.array_equal(a.sample_ka['Ka_guest'], b.sample_ka['Ka_guest'], equal_nan=True)
     assert np.array_equal(a.sample_r2, b.sample_r2, equal_nan=True)
-    assert (a.n_success, a.n_total, a.n_below_floor, a.floor) == (b.n_success, b.n_total, b.n_below_floor, b.floor)
+    assert (a.n_success, a.n_total) == (b.n_success, b.n_total)
     assert a.sample_params.keys() == b.sample_params.keys()
     for key in a.sample_params:
         assert np.array_equal(a.sample_params[key], b.sample_params[key], equal_nan=True)
@@ -1060,24 +1487,23 @@ def _assert_identical(a, b) -> None:
 def test_parallel_and_serial_produce_the_same_answer(ida_setup, monkeypatch):
     """Spreading the fits over processes must not change the result.
 
-    Each fit carries its own seed, so the outcome cannot depend on which worker
+    A perturbation has one fit, so the outcome cannot depend on which worker
     happened to run it or in what order the results came back. Twenty-four
     perturbations clear the minimum batch size, so the worker pool really runs,
     and four scrambles give every index a finite interval to compare.
     """
     _use_small_design(monkeypatch, 4)
     ms, assay_cls, conditions, fit_config = ida_setup
-    fast = replace(fit_config, n_trials=6)
     cfg = SensitivityConfig(
         mode=SensitivityMode.SOBOL,
         n_samples=8,
-        input_specs={TITRANT: InputSpec.sigma_pct(5.0)},
+        errors=ErrorModel(specs={TITRANT: InputSpec.sigma_pct(5.0)}),
         seed=21,
     )
-    assert estimated_fit_count(cfg) >= sens._PARALLEL_MIN_JOBS
+    assert estimated_fit_count(cfg, 4) >= sens._PARALLEL_MIN_JOBS
 
-    serial = run_sensitivity(ms, assay_cls, conditions, fast, cfg, max_workers=1)
-    parallel = run_sensitivity(ms, assay_cls, conditions, fast, cfg, max_workers=2)
+    serial = run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
+    parallel = run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=2)
 
     assert np.all(np.isfinite(list(serial.sobol_s1_ci['Ka_guest'][TITRANT])))
     _assert_identical(serial, parallel)
@@ -1104,62 +1530,67 @@ def test_entry_point_calls_freeze_support_before_importing_the_interface():
 
 
 # ---------------------------------------------------------------------------
-# The profile fit against a multi-start search of the same signal
+# The baseline and the replicates every sample is fitted on
 # ---------------------------------------------------------------------------
 
 
-_DEMO_PATH = pathlib.Path(__file__).resolve().parents[2] / 'data' / 'IDA_system.txt'
-
-
-@pytest.mark.parametrize('seed', [9, 13])
-def test_profile_path_reports_the_per_replicate_fit_on_the_demo_data(seed):
-    """The eight measured replicates of the IDA demo give the Ka the per-replicate fit reports.
-
-    Real replicates scatter far more than synthetic ones, so near-optimal
-    attempts of one replicate often fit the averaged signal a little better than
-    any replicate's best fit. The perturbations are ones where picking among
-    every pooled trial lands up to 1.5 % away from the best-fit rule.
-    """
-    from core.io import load_measurements
-
-    ms = MeasurementSet.from_dataframe(load_measurements(_DEMO_PATH))
-    rng = np.random.default_rng(500 + seed)
-    scale = [1 + rng.uniform(-0.1, 0.1) for _ in range(4)]
-    perturbed = MeasurementSet(
-        concentrations=ms.concentrations * scale[0], signals=ms.signals, replica_ids=ms.replica_ids
-    )
-    conditions = {
-        'Ka_dye': Q_(16.8e6 * scale[1], '1/M'),
-        'h0': Q_(4.3e-6 * scale[2], 'M'),
-        'd0': Q_(6e-6 * scale[3], 'M'),
-    }
-    config = FitConfig(per_replica=True, min_r_squared=-np.inf, n_trials=40, seed=seed)
-
-    fast, fast_r2 = sens._fit_by_profile(perturbed, IDAAssay, conditions, config)
-    multistart = fit_measurement_set(perturbed, IDAAssay, conditions, config)
-
-    assert fast['Ka_guest'] == pytest.approx(multistart.parameters['Ka_guest'].magnitude, rel=1e-3)
-    assert fast_r2 == pytest.approx(multistart.r_squared, abs=1e-6)
-
-
-@pytest.mark.parametrize(('n_replicas', 'per_replica'), [(1, False), (4, True)], ids=['average', 'per_replicate'])
-def test_baseline_is_the_unperturbed_sample(n_replicas, per_replica):
+@pytest.mark.parametrize(
+    ('n_replicas', 'per_replica', 'proportional'),
+    [(1, False, False), (4, True, False), (4, False, True)],
+    ids=['average', 'per_replicate', 'weighted'],
+)
+def test_baseline_is_the_unperturbed_sample(n_replicas, per_replica, proportional):
     """The baseline is the fit a sample with no input offset gets.
 
     The grid's centre cell holds the inputs as entered, so its Ka reads no
     change against the baseline, and the report's Estimate comes from the
-    fitting method its spread comes from.
+    fitting method its spread comes from. Where the replicates showed a noise
+    law, that means the samples carry the weights the baseline ran with: an
+    unweighted refit of the centre cell would land somewhere else.
     """
-    setup = _noisy_ida_setup(n_replicas, per_replica=per_replica)
+    setup = _noisy_ida_setup(n_replicas, per_replica=per_replica, proportional=proportional)
     result = _run(setup, _heatmap(3))
 
     assert (result.x_offsets_pct[1], result.y_offsets_pct[1]) == (0.0, 0.0)
     assert result.ka_grid['Ka_guest'][1, 1] == result.baseline_ka['Ka_guest']
     assert result.r2_grid[1, 1] == pytest.approx(result.baseline_fit.r_squared, abs=1e-12)
     ms, assay_cls, conditions, fit_config = setup
-    unperturbed, _ = sens._fit_by_profile(ms, assay_cls, conditions, fit_config)
+    used = ms.with_active(fit_replica_ids(result.baseline_fit))
+    weights = result.baseline_fit.point_weights
+    assert proportional == (weights is not None), 'the weighted case has to weight the points differently'
+    unperturbed, r_squared, _ = sens._fit_perturbed(
+        used, assay_cls, np.asarray(ms.concentrations), conditions, {}, fit_config, point_weights=weights
+    )
     assert {key: value.magnitude for key, value in result.baseline_fit.parameters.items()} == unperturbed
-    assert result.baseline_fit.parameter_samples is None
+    assert r_squared == result.baseline_fit.r_squared
+    assert result.sample_profile_r2 is None, 'a heatmap reports cells, not samples'
+
+
+def test_a_samples_profile_r2_is_its_place_on_the_ka_profile():
+    """The Identifiability tab draws the samples against the Ka profile, so both are one number.
+
+    A sample's profile R² is the weighted objective its own fit minimised; the
+    sample that moves nothing minimises it at the peak of the fit's own
+    profile, and that is a different number from the R² the sample reports as
+    its quality, which counts every point equally.
+    """
+    ms, assay_cls, conditions, fit_config = _noisy_ida_setup(4, per_replica=False, proportional=True)
+    baseline = fit_measurement_set(ms, assay_cls, conditions, fit_config)
+
+    _, r_squared, profile_r2 = sens._fit_perturbed(
+        ms,
+        assay_cls,
+        np.asarray(ms.concentrations),
+        conditions,
+        {},
+        fit_config,
+        point_weights=baseline.point_weights,
+    )
+
+    profiles = fit_profile(ms, assay_cls, conditions, fit_config, **baseline.profile_arguments())
+    assert profiles.weighted
+    assert profile_r2 == pytest.approx(profiles.profiles['Ka_guest'].best_r2, abs=1e-12)
+    assert profile_r2 != pytest.approx(r_squared, abs=1e-9)
 
 
 @pytest.mark.parametrize('per_replica', [False, True], ids=['average', 'per_replicate'])
@@ -1175,86 +1606,27 @@ def test_baseline_and_normal_fit_record_the_replicates_they_used(per_replica):
     assert result.baseline_fit.metadata['active_replica_ids'] == ['r0', 'r2']
 
 
-def _noise_replicate_setup(*, per_replica: bool = True):
-    """(ms, assay_cls, conditions, fit_config) whose replicate 'r2' is pure noise.
-
-    'r0' and 'r1' carry slight noise and clear the R² floor; 'r2' holds no
-    titration curve, so a per-replicate fit leaves it out.
-    """
-    x, y = _make_ida_data(IDA_TRUE, n_points=_N_POINTS)
-    rng = np.random.default_rng(11)
-    good = [y + rng.normal(0.0, 0.002 * np.ptp(y), y.size) for _ in range(2)]
-    noise = rng.normal(float(np.mean(y)), 0.3 * np.ptp(y), y.size)
-    ms = MeasurementSet(concentrations=x, signals=np.vstack([*good, noise]), replica_ids=('r0', 'r1', 'r2'))
-    fit_config = FitConfig(n_trials=8, custom_bounds=GDA_IDA_RECOVERY_BOUNDS, per_replica=per_replica)
-    return ms, IDAAssay, dict(_IDA_CONDITIONS), fit_config
-
-
-def test_baseline_keeps_the_record_of_the_replicates_it_used_and_scores_on_them():
-    """The baseline names the replicate it left out, and its R² is measured on the average of the others.
-
-    The zero-offset sample is the baseline, so it too describes the used set.
-    """
-    ms, assay_cls, conditions, fit_config = setup = _noise_replicate_setup()
-    result = _run(setup, _heatmap(3))
-
-    baseline = result.baseline_fit
-    assert baseline.metadata['replica_ids_fit'] == ['r0', 'r1']
-    assert list(baseline.metadata['replica_failures']) == ['r2']
-    assay = ms.to_assay(assay_cls, conditions=conditions)
-    model = assay.forward_model(np.array([baseline.parameters[k].magnitude for k in assay.parameter_keys])).magnitude
-    _, used_r2 = calculate_fit_metrics(ms.signals[:2].mean(axis=0), model)
-    _, all_r2 = calculate_fit_metrics(ms.signals.mean(axis=0), model)
-    assert baseline.r_squared == pytest.approx(used_r2, abs=1e-12)
-    assert abs(all_r2 - used_r2) > 1e-3
-    assert result.ka_grid['Ka_guest'][1, 1] == result.baseline_ka['Ka_guest']
-    assert result.r2_grid[1, 1] == pytest.approx(baseline.r_squared, abs=1e-12)
-
-
-def test_samples_use_the_replicates_the_baseline_used(monkeypatch):
-    """A replicate the baseline fit left out enters no perturbed fit, so every sample describes the same data."""
-    ms, assay_cls, conditions, fit_config = setup = _noise_replicate_setup()
-    real = sens.best_params_by_profile
-    seen: list[str] = []
-
-    def spy(assay, bounds):
-        seen.append(_signal_name(ms, assay.y_data.magnitude))
-        return real(assay, bounds)
-
-    monkeypatch.setattr(sens, 'best_params_by_profile', spy)
-    result = _run(setup, _heatmap(2))
-
-    assert result.baseline_fit.metadata['replica_ids_fit'] == ['r0', 'r1']
-    assert len(seen) == 2 * 5  # the two replicates of the zero-offset baseline and of the four cells
-    assert set(seen) == {'r0', 'r1'}
-
-
-@pytest.mark.parametrize('unsolvable', ['raises', 'scores-nothing'], ids=['the-solve-raises', 'no-ka-is-solvable'])
-def test_a_perturbation_that_cannot_be_solved_is_one_missing_sample(monkeypatch, unsolvable):
+def test_a_perturbation_that_cannot_be_solved_is_one_missing_sample(monkeypatch):
     """A perturbed fit with no solution is NaN in the grid; the other cells are unaffected.
 
-    A perturbed set of inputs can produce a design the exact profile cannot
-    solve, and discarding thousands of finished fits over one of them would
-    leave the user with nothing. The profile reports that two ways: the solve
-    raises, or it returns its fallback — the coefficients at their lower bounds
-    at a Ka the model cannot be evaluated at, which scores nothing. Neither is a
-    fit, so neither may be counted as a sample.
+    A perturbed set of inputs can leave the binding model with no solution
+    anywhere in the Ka bounds, and discarding thousands of finished fits over
+    one of them would leave the user with nothing. Only that refusal is
+    survivable: it is the engine saying this perturbation has no answer, which
+    is a fact about the sample. Anything else a fit raises is a defect, and
+    reporting a spread over the samples that did work would hide it.
     """
     setup = _noisy_ida_setup(1, per_replica=False)
-    real = sens.best_params_by_profile
-    unsolvable_ka = 1e25  # above the range the equilibrium solver reaches
+    real = sens.Projection
 
-    def no_solution_for_a_shrunken_host(assay, bounds):
-        if assay.h0.magnitude >= IDA_TRUE['h0']:
-            return real(assay, bounds)
-        if unsolvable == 'raises':
-            raise np.linalg.LinAlgError('SVD did not converge in Linear Least Squares')
-        return np.array([unsolvable_ka, 0.0, 0.0, 0.0])
+    class NoSolutionForAShrunkenHost(real):
+        def fit(self, weights=None):
+            if self.assay.h0.magnitude < IDA_TRUE['h0']:
+                raise FitRefused('The binding model has no solution at any association constant in these bounds.')
+            return super().fit(weights)
 
-    monkeypatch.setattr(sens, 'best_params_by_profile', no_solution_for_a_shrunken_host)
+    monkeypatch.setattr(sens, 'Projection', NoSolutionForAShrunkenHost)
     result = _run(setup, _heatmap(3))
-
-    assert unsolvable_ka not in result.ka_grid['Ka_guest']  # no fabricated Ka reported as a fit
 
     lost = np.isnan(result.r2_grid)
     assert lost.tolist() == [[True, False, False]] * 3  # h0 is the x axis, so its lowest step is one column
@@ -1262,20 +1634,30 @@ def test_a_perturbation_that_cannot_be_solved_is_one_missing_sample(monkeypatch,
     assert (result.n_success, result.n_total, result.stopped) == (6, 9, False)
 
 
-def test_a_baseline_no_replicate_could_be_fitted_reports_each_replicate_s_reason():
-    """The analysis explains a failed baseline the way the ordinary fit does.
+def test_a_fit_that_fails_for_any_other_reason_stops_the_run_instead_of_thinning_the_samples(monkeypatch):
+    """A broken contract between two modules must not read as a handful of samples that had no answer.
 
-    The same data and settings must not say 'did not converge' here and name the
-    failing replicates in the Fit Curve tab: the reasons are what the user acts on.
+    A shape mismatch, a unit that does not convert, a helper handed the wrong
+    thing: these surface as a plain ``ValueError`` and mean the analysis is
+    wrong, not that these inputs have no fit. Counted as missing samples they
+    would leave a plausible-looking spread over whatever still worked.
     """
-    ms, assay_cls, conditions, fit_config = _noisy_ida_setup(2, per_replica=True)
-    unreachable_floor = replace(fit_config, min_r_squared=1.0)
+    setup = _noisy_ida_setup(1, per_replica=False)
+    real = sens.Projection
 
-    with pytest.raises(PerReplicaFitError) as raised:
-        run_sensitivity(ms, assay_cls, conditions, unreachable_floor, _heatmap(3), max_workers=1)
+    class BrokenForAShrunkenHost(real):
+        def fit(self, weights=None):
+            if self.assay.h0.magnitude < IDA_TRUE['h0']:
+                raise ValueError('operands could not be broadcast together with shapes (20,) (19,)')
+            return super().fit(weights)
 
-    assert set(raised.value.failures) == set(ms.active_replica_ids)
-    assert 'no reference Ka' in str(raised.value)
+    monkeypatch.setattr(sens, 'Projection', BrokenForAShrunkenHost)
+
+    with pytest.raises(sens.SensitivityRunError) as raised:
+        _run(setup, _heatmap(3))
+
+    assert 'broadcast' not in str(raised.value)  # the user reads plain words, not numpy's
+    assert isinstance(raised.value.__cause__, ValueError)  # the real failure is kept for the log
 
 
 @pytest.mark.parametrize('cancel_at', [0, 3], ids=['before-the-baseline', 'during-the-baseline'])
@@ -1283,11 +1665,10 @@ def test_a_run_stopped_before_it_has_a_baseline_ends_as_stopped(cancel_at):
     """Stopping during the reference fit ends the run rather than reporting a result without one.
 
     Every sample is compared against the baseline fit, so a run that never
-    finished one has nothing to show, and the multi-start baseline is long
-    enough on real data that a user can stop inside it.
+    finished one has nothing to show.
     """
     ms, assay_cls, conditions, fit_config = _noisy_ida_setup(1, per_replica=False)
-    checks = iter(range(100))
+    checks = iter(range(1000))
 
     with pytest.raises(FitCancelled):
         run_sensitivity(
@@ -1323,83 +1704,72 @@ def test_a_run_stopped_early_says_so():
     assert (full.stopped, full.n_total) == (False, 9)
 
 
-# ---------------------------------------------------------------------------
-# Perturbed fits below the floor are kept and flagged
-# ---------------------------------------------------------------------------
+def test_a_stopped_sobol_run_keeps_the_sample_blocks_that_finished(ida_setup, monkeypatch):
+    """A stop keeps whole blocks, and the indices are those of the design over exactly them.
 
-
-def _with_floor(setup, floor):
-    ms, assay_cls, conditions, fit_config = setup
-    return ms, assay_cls, conditions, replace(fit_config, min_r_squared=floor)
-
-
-def _floor_among(setup, r2: np.ndarray) -> float:
-    """A floor the baseline clears, with some of the fits in *r2* below it.
-
-    On noisy data a perturbation can fit better than the nominal inputs, so
-    the floor is the median of the fits worse than the unperturbed one.
+    The refits are ``log10 Ka = 8 + 40 x_h0 + 20 x_d0``. The run is stopped
+    part way through the fourth of eight blocks; the indices and their
+    jackknife intervals must be the estimators' over the rows of the first
+    three blocks of the run's own design, the other rows left out, and every
+    sample of a dropped block must read as having no fit.
     """
-    ms, assay_cls, conditions, fit_config = setup
-    baseline_r2 = fit_measurement_set(ms, assay_cls, conditions, fit_config).r_squared
-    worse = r2[r2 < baseline_r2]
-    assert worse.size >= 2
-    return float(np.median(worse))
+    designs = _record_designs(monkeypatch)
+    specs = {'h0': InputSpec.interval_pct(-10.0, 10.0), 'd0': InputSpec.interval_pct(-10.0, 10.0)}
 
+    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
+        log_ka = 8 + 40 * offsets.get('h0', 0.0) + 20 * offsets.get('d0', 0.0)
+        return {'Ka_guest': 10.0**log_ka, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
 
-def test_sobol_keeps_and_flags_fits_below_the_floor(monkeypatch):
-    """A floor between the perturbed fits flags some of them and drops none.
+    monkeypatch.setattr(sens, '_fit_perturbed', fake_fit)
+    n_base, n_blocks, n_matrices = 1024, sens._SOBOL_BLOCKS, 4
+    per_block = n_base // n_blocks
+    n_elastic = 2 * len(perturbable_inputs(ida_setup[2]))
+    stop_after = 1 + n_elastic + 3 * per_block * n_matrices + 10  # the baseline, the elasticities, 3 blocks and a bit
+    finished: list[int] = []
+    ms, assay_cls, conditions, fit_config = ida_setup
 
-    The floor sits among the R² values of a first run, so some samples fall
-    below it. The second run must return exactly the same fits and count those
-    below the floor, with every one of them still among the samples.
-    """
-    _use_small_design(monkeypatch, 2)
-    setup = _noisy_ida_setup(1, per_replica=False)
-    cfg = SensitivityConfig(
-        mode=SensitivityMode.SOBOL,
-        n_samples=4,
-        input_specs={'h0': InputSpec.sigma_pct(10.0), 'd0': InputSpec.sigma_pct(10.0)},
-        seed=5,
+    result = run_sensitivity(
+        ms,
+        assay_cls,
+        conditions,
+        fit_config,
+        SensitivityConfig(SensitivityMode.SOBOL, n_base, ErrorModel(specs=specs), seed=4),
+        max_workers=1,
+        progress=lambda done, total: finished.append(done),
+        should_cancel=lambda: len(finished) >= stop_after,
     )
-    probe = _run(_with_floor(setup, 0.5), cfg)
-    floor = _floor_among(setup, probe.sample_r2)
 
-    flagged = _run(_with_floor(setup, floor), cfg)
+    ((a_points, b_points),) = designs
+    eps = sens._QUANTILE_EPS
 
-    assert flagged.floor == floor
-    assert flagged.n_success == flagged.n_total == estimated_fit_count(cfg)
-    np.testing.assert_array_equal(flagged.sample_ka['Ka_guest'], probe.sample_ka['Ka_guest'])
-    np.testing.assert_array_equal(flagged.sample_r2, probe.sample_r2)
-    assert flagged.n_below_floor == int(np.sum(flagged.sample_r2 < floor))
-    assert 0 < flagged.n_below_floor < flagged.sample_r2.size
-    assert _samples(flagged).size == flagged.sample_r2.size
+    def outputs(points):
+        h0, d0 = (
+            np.array([spec_fraction(specs[key], None, key, float(np.clip(q, eps, 1 - eps))) for q in points[:, c]])
+            for c, key in enumerate(specs)
+        )
+        kept = np.arange(n_base) < 3 * per_block
+        return np.where(kept, 8 + 40 * h0 + 20 * d0, np.nan)
 
+    mixed = []
+    for column in range(2):
+        points = a_points.copy()
+        points[:, column] = b_points[:, column]
+        mixed.append(outputs(points))
+    estimate = sobol_indices_with_ci(outputs(a_points), outputs(b_points), mixed, n_blocks)
 
-def test_heatmap_keeps_and_flags_fits_below_the_floor():
-    """Every heatmap cell keeps its best fit and its R², flagged against the floor."""
-    setup = _noisy_ida_setup(1, per_replica=False)
-    cfg = _heatmap(3)
-    probe = _run(_with_floor(setup, 0.5), cfg)
-    floor = _floor_among(setup, probe.r2_grid.ravel())
-
-    flagged = _run(_with_floor(setup, floor), cfg)
-
-    assert flagged.r2_grid.shape == flagged.ka_grid['Ka_guest'].shape == (3, 3)
-    assert flagged.n_success == flagged.n_total == 9
-    assert np.all(np.isfinite(flagged.ka_grid['Ka_guest']))
-    np.testing.assert_array_equal(flagged.ka_grid['Ka_guest'], probe.ka_grid['Ka_guest'])
-    np.testing.assert_array_equal(flagged.r2_grid, probe.r2_grid)
-    assert flagged.n_below_floor == int(np.sum(flagged.r2_grid < floor))
-    assert 0 < flagged.n_below_floor < 9
-
-
-def test_baseline_below_the_floor_stops_the_run():
-    """The unperturbed fit keeps the floor: when it fails, the run fails as the user's fit would."""
-    setup = _with_floor(_noisy_ida_setup(1, per_replica=False), 0.999999)
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, {'h0': InputSpec.sigma_pct(5.0)}, seed=1)
-
-    with pytest.raises(ValueError, match='baseline'):
-        _run(setup, cfg)
+    assert result.stopped and result.n_blocks_finished == 3
+    assert result.n_total == stop_after - 1
+    assert result.sobol_rows_left_out == {'Ka_guest': n_base - 3 * per_block}
+    samples = result.sample_ka['Ka_guest'].reshape(2, n_base)
+    assert np.all(np.isfinite(samples[:, : 3 * per_block])) and np.all(np.isnan(samples[:, 3 * per_block :]))
+    assert np.all(np.isfinite(estimate.s1_ci))  # three blocks are enough for an interval
+    for column, key in enumerate(specs):
+        assert result.sobol_s1['Ka_guest'][key] == pytest.approx(estimate.s1[column], rel=1e-10)
+        assert result.sobol_st['Ka_guest'][key] == pytest.approx(estimate.st[column], rel=1e-10)
+        np.testing.assert_allclose(result.sobol_s1_ci['Ka_guest'][key], estimate.s1_ci[column], rtol=1e-10)
+    assert result.budget['Ka_guest'].variance == pytest.approx(estimate.variance, rel=1e-10)
+    # The elasticities are fitted first, so a stopped run still has them.
+    assert all(np.isfinite(value) for value in result.elasticity['Ka_guest'].values())
 
 
 # ---------------------------------------------------------------------------
@@ -1426,7 +1796,7 @@ def test_samples_are_aligned_with_the_sobol_points(ida_setup, monkeypatch):
     designs = _record_designs(monkeypatch)
     ms, assay_cls, conditions, fit_config = ida_setup
     specs = {'h0': InputSpec.sigma_pct(5.0), TITRANT: InputSpec.interval_pct(-8.0, 4.0)}
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, specs, seed=13)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 4, ErrorModel(specs=specs), seed=13)
 
     result = _run(ida_setup, cfg)
 
@@ -1437,7 +1807,7 @@ def test_samples_are_aligned_with_the_sobol_points(ida_setup, monkeypatch):
     for column, key in enumerate(specs):
         expected = [100 * spec_fraction(specs[key], nominal_value(key, conditions), key, q) for q in points[:, column]]
         np.testing.assert_allclose(result.sample_offsets_pct[key], expected, rtol=1e-12)
-    assert result.sample_ka['Ka_guest'].shape == result.sample_r2.shape == (8,)
+    assert result.sample_ka['Ka_guest'].shape == result.sample_r2.shape == result.sample_profile_r2.shape == (8,)
 
     for i in (0, 4):  # the first A row and the first B row
         h0_off = result.sample_offsets_pct['h0'][i] / 100
@@ -1446,14 +1816,16 @@ def test_samples_are_aligned_with_the_sobol_points(ida_setup, monkeypatch):
         assay = IDAAssay(
             x_data=Q_(ms.concentrations * (1 + titrant_off), 'M'), y_data=Q_(ms.signals[0], 'au'), **perturbed
         )
-        ka, r2 = best_fit_by_profile(assay, _resolve_bounds(assay, fit_config.custom_bounds))
-        assert result.sample_ka['Ka_guest'][i] == pytest.approx(ka, rel=1e-9)
+        projection = Projection(assay, _resolve_bounds(assay, fit_config.custom_bounds))
+        fit = projection.fit()
+        _, r2 = calculate_fit_metrics(assay.y_data.magnitude, assay.forward_model(projection.params(fit)).magnitude)
+        assert result.sample_ka['Ka_guest'][i] == pytest.approx(fit.ka['Ka_guest'], rel=1e-9)
         assert result.sample_r2[i] == pytest.approx(r2, abs=1e-12)
-
-
-# ---------------------------------------------------------------------------
-# Whole fits per sample, the summary across the samples and degenerate coefficients
-# ---------------------------------------------------------------------------
+        # The other R² of the same fit: the objective it minimised, as a
+        # fraction of the signal's total sum of squares — the axis the Ka
+        # profiles are drawn on.
+        profile_r2 = 1.0 - fit.objective / projection.ss_tot[0]
+        assert result.sample_profile_r2[i] == pytest.approx(profile_r2, abs=1e-12)
 
 
 def test_every_sample_keeps_the_whole_fit_behind_its_ka(monkeypatch):
@@ -1468,7 +1840,7 @@ def test_every_sample_keeps_the_whole_fit_behind_its_ka(monkeypatch):
     ms, _, conditions, _ = setup
     specs = {'h0': InputSpec.sigma_pct(5.0), TITRANT: InputSpec.sigma_pct(5.0)}
 
-    result = _run(setup, SensitivityConfig(SensitivityMode.SOBOL, 2, specs, seed=8))
+    result = _run(setup, SensitivityConfig(SensitivityMode.SOBOL, 2, ErrorModel(specs=specs), seed=8))
 
     assert tuple(result.sample_params) == ASSAY_REGISTRY[AssayType.IDA].parameter_keys
     np.testing.assert_array_equal(result.sample_params['Ka_guest'], result.sample_ka['Ka_guest'])
@@ -1485,21 +1857,9 @@ def test_every_sample_keeps_the_whole_fit_behind_its_ka(monkeypatch):
         assert r2 == pytest.approx(result.sample_r2[i], abs=1e-12)
 
 
-def test_fit_summary_statistics_run_over_the_samples(ida_setup, monkeypatch):
-    """The Fit Summary rows computed over the samples keep the baseline estimate and the samples' spread."""
-    _use_small_design(monkeypatch, 4)
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 8, {TITRANT: InputSpec.sigma_pct(5.0)}, seed=11)
-    result = _run(ida_setup, cfg)
-
-    rows = summarize_parameters(replace(result.baseline_fit, parameter_samples=result.sample_params))
-
-    assert {row.key for row in rows} == set(result.sample_params)
-    ka = result.sample_ka['Ka_guest']
-    linear, log = (next(r for r in rows if r.key == 'Ka_guest' and r.is_log is flag) for flag in (False, True))
-    assert linear.estimate == result.baseline_ka['Ka_guest']
-    assert (linear.stats['min'], linear.stats['max']) == (ka.min(), ka.max())
-    assert linear.stats['median'] == pytest.approx(np.median(ka), rel=1e-12)
-    assert log.stats['median'] == pytest.approx(np.median(np.log10(ka)), rel=1e-12)
+# ---------------------------------------------------------------------------
+# Coefficients the data fix only in combination
+# ---------------------------------------------------------------------------
 
 
 def _single_ka_setup(assay_type: AssayType):
@@ -1516,7 +1876,7 @@ def _single_ka_setup(assay_type: AssayType):
         assay_cls, conditions = DBAAssay, {'fixed_conc': Q_(DBA_TRUE['fixed_conc'], 'M'), 'mode': mode}
     bounds = DBA_RECOVERY_BOUNDS if assay_cls is DBAAssay else GDA_IDA_RECOVERY_BOUNDS
     ms = MeasurementSet(concentrations=x, signals=y.reshape(1, -1), replica_ids=('r0',))
-    return ms, assay_cls, conditions, FitConfig(n_trials=_N_TRIALS, custom_bounds=bounds)
+    return ms, assay_cls, conditions, FitConfig(custom_bounds=bounds)
 
 
 _DYE_SIGNAL = ('I0', 'I_dye_free', 'I_dye_bound')
@@ -1526,24 +1886,19 @@ _DYE_SIGNAL = ('I0', 'I_dye_free', 'I_dye_bound')
     ('assay_type', 'expected'),
     [(AssayType.IDA, _DYE_SIGNAL), (AssayType.DBA_HtoD, _DYE_SIGNAL), (AssayType.GDA, ()), (AssayType.DBA_DtoH, ())],
 )
-def test_degenerate_coefficients_are_those_the_design_rank_leaves_open(assay_type, expected, monkeypatch):
+def test_the_run_names_the_coefficients_its_baseline_fit_found_degenerate(assay_type, expected, monkeypatch):
     """A fixed dye total makes the offset and both dye coefficients trade off; a titrated dye does not.
 
-    Free plus bound dye add up to the dye total at every point, so when that
-    total is fixed (IDA, host into dye) the three signal columns are linearly
-    dependent: the design loses one rank and all three coefficients are named.
-    With the dye titrated (GDA, dye into host) the design has full rank.
+    The analysis reports the trade-offs of the fit it is an analysis of, so a
+    sample's coefficients are read with the same caveat as the baseline's.
     """
     _use_small_design(monkeypatch, 1)
     ms, assay_cls, conditions, fit_config = _single_ka_setup(assay_type)
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 2, {TITRANT: InputSpec.sigma_pct(2.0)}, seed=1)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 2, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1)
 
     result = run_sensitivity(ms, assay_cls, conditions, fit_config, cfg, max_workers=1)
 
-    assert result.degenerate_keys == expected
-    assay = ms.to_assay(assay_cls, conditions=conditions, use_average=True)
-    rank = _design_rank(assay, _resolve_bounds(assay, fit_config.custom_bounds), result.baseline_ka[result.ka_keys[0]])
-    assert len(_DYE_SIGNAL) - rank == (1 if expected else 0)
+    assert result.degenerate_keys == result.baseline_fit.degenerate_keys == expected
 
 
 def test_named_ida_coefficients_move_without_changing_the_signal(ida_setup, monkeypatch):
@@ -1554,7 +1909,7 @@ def test_named_ida_coefficients_move_without_changing_the_signal(ida_setup, monk
     """
     _use_small_design(monkeypatch, 1)
     ms, assay_cls, conditions, _ = ida_setup
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 2, {TITRANT: InputSpec.sigma_pct(2.0)}, seed=1)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 2, ErrorModel(specs={TITRANT: InputSpec.sigma_pct(2.0)}), seed=1)
     result = _run(ida_setup, cfg)
     assay = ms.to_assay(assay_cls, conditions=conditions, use_average=True)
     fit = np.array([result.baseline_fit.parameters[key].magnitude for key in assay.parameter_keys])
@@ -1563,24 +1918,6 @@ def test_named_ida_coefficients_move_without_changing_the_signal(ida_setup, monk
 
     assert result.degenerate_keys == _DYE_SIGNAL
     np.testing.assert_allclose(assay.forward_model(shifted).magnitude, assay.forward_model(fit).magnitude, rtol=1e-9)
-
-
-@pytest.mark.parametrize(
-    ('free_host_signal', 'expected'), [(False, ()), (True, ('I0', 'I_H', 'I_HG', 'I_HG2'))], ids=['pinned', 'free']
-)
-def test_hg2_degeneracy_holds_both_binding_constants_at_the_fit(free_host_signal, expected):
-    """Host is conserved (free + HG + HG2 = h0), so a fitted free-host signal trades off with the offset.
-
-    Pinned at zero, the registry default, it leaves every fitted coefficient
-    determined; once it is fitted, the offset and the three host coefficients
-    are known only in combination.
-    """
-    x, y = _make_hg2_data(HG2_TRUE, n_points=_N_POINTS)
-    assay = HG2Assay(x_data=Q_(x, 'M'), y_data=Q_(y, 'au'), h0=Q_(HG2_TRUE['h0'], 'M'))
-    custom = {'I_H': (Q_(0, 'au/M'), Q_(1e12, 'au/M'))} if free_host_signal else {}
-    binding = {key: HG2_TRUE[key] for key in ('Ka_HG', 'Ka_HG2')}
-
-    assert sens._degenerate_keys(assay, _resolve_bounds(assay, custom), binding) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1667,14 +2004,19 @@ def _toy_outputs():
 
 
 def _jackknife_by_loop(f_a, f_b, f_ab, rows_by_block, level=0.95):
-    """Pooled indices and their t-intervals, written out block by block.
+    """Every pooled quantity of the estimate and its t-interval, written out block by block.
 
-    Returns ``(S1 and S_total concatenated, their intervals)``.
+    Returns ``(quantities, their intervals)`` in the order S1, S_total, the
+    variance of the A and B outputs, the variance each input explains alone
+    (S1 x variance) and the standard deviation left without it.
     """
 
     def indices(rows):
         s1, st = sobol_indices_from_outputs(f_a[rows], f_b[rows], [ab[rows] for ab in f_ab])
-        return np.concatenate([s1, st])
+        both = np.concatenate([f_a[rows], f_b[rows]])
+        variance = np.mean((both - both.mean()) ** 2)
+        explained = s1 * variance
+        return np.concatenate([s1, st, [variance], explained, np.sqrt(np.clip(variance - explained, 0.0, None))])
 
     estimate = indices([row for rows in rows_by_block for row in rows])
     n = len(rows_by_block)
@@ -1687,11 +2029,18 @@ def _jackknife_by_loop(f_a, f_b, f_ab, rows_by_block, level=0.95):
     return estimate, np.column_stack([estimate - half, estimate + half])
 
 
+def _quantities(result) -> tuple[np.ndarray, np.ndarray]:
+    """A ``SobolEstimate`` as ``(quantities, intervals)`` in the order of :func:`_jackknife_by_loop`."""
+    values = [result.s1, result.st, [result.variance], result.source_variance, result.sd_if_exact]
+    intervals = [result.s1_ci, result.st_ci, [result.variance_ci], result.source_variance_ci, result.sd_if_exact_ci]
+    return np.concatenate(values), np.vstack(intervals)
+
+
 def _check_against_loop(result, expected) -> None:
-    s1, s1_ci, st, st_ci = result
+    values, intervals = _quantities(result)
     estimate, interval = expected
-    np.testing.assert_allclose(np.concatenate([s1, st]), estimate, rtol=1e-12, atol=1e-15)
-    np.testing.assert_allclose(np.vstack([s1_ci, st_ci]), interval, rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(values, estimate, rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(intervals, interval, rtol=1e-12, atol=1e-15)
 
 
 @pytest.mark.parametrize('level', [0.95, 0.9])
@@ -1706,7 +2055,7 @@ def test_jackknife_interval_matches_a_plain_loop(level):
 
     rows_by_block = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]]
     _check_against_loop(result, _jackknife_by_loop(f_a, f_b, f_ab, rows_by_block, level))
-    assert np.all(np.diff(np.vstack([result[1], result[3]]), axis=1) > 0)
+    assert np.all(np.diff(_quantities(result)[1], axis=1) > 0)
 
 
 def test_non_finite_rows_are_left_out_of_every_matrix():
@@ -1741,11 +2090,15 @@ def test_fewer_than_three_usable_blocks_give_no_interval():
     emptied[1:] = np.nan
     one_row = sobol_indices_with_ci(emptied, f_b, list(f_ab), 4)
 
-    for s1, s1_ci, st, st_ci in (two_blocks, two_left):
-        assert np.all(np.isfinite(s1)) and np.all(np.isfinite(st))
-        assert np.all(np.isnan(s1_ci)) and np.all(np.isnan(st_ci))
-    assert all(np.all(np.isnan(part)) for part in one_row)
-    assert one_row[1].shape == one_row[3].shape == (2, 2)
+    for result in (two_blocks, two_left):
+        values, intervals = _quantities(result)
+        assert np.all(np.isfinite(values))
+        assert np.all(np.isnan(intervals))
+    values, intervals = _quantities(one_row)
+    assert np.all(np.isnan(values)) and np.all(np.isnan(intervals))
+    for interval in (one_row.s1_ci, one_row.st_ci, one_row.source_variance_ci, one_row.sd_if_exact_ci):
+        assert interval.shape == (2, 2)
+    assert np.shape(one_row.variance_ci) == (2,)
 
 
 def test_interval_covers_the_ishigami_indices_at_its_stated_level():
@@ -1775,7 +2128,8 @@ def test_interval_covers_the_ishigami_indices_at_its_stated_level():
     s1_hits = np.zeros(3)
     st_hits = np.zeros(3)
     for design in range(n_designs):
-        _, s1_ci, _, st_ci = sobol_indices_with_ci(f_a[design], f_b[design], f_ab[design], sens._SOBOL_BLOCKS)
+        estimate = sobol_indices_with_ci(f_a[design], f_b[design], f_ab[design], sens._SOBOL_BLOCKS)
+        s1_ci, st_ci = estimate.s1_ci, estimate.st_ci
         s1_hits += (s1_ci[:, 0] <= s1_true) & (s1_true <= s1_ci[:, 1])
         st_hits += (st_ci[:, 0] <= st_true) & (st_true <= st_ci[:, 1])
 
@@ -1793,16 +2147,16 @@ def test_sobol_indices_split_the_variance_of_log_ka(ida_setup, monkeypatch):
     variance instead.
     """
 
-    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
+    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
         signal = dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)
         ka = 10.0 ** (8 + 40 * offsets.get('h0', 0.0) + 20 * offsets.get('d0', 0.0))  # no offset: the baseline
-        return {'Ka_guest': ka, **signal}, 1.0
+        return {'Ka_guest': ka, **signal}, 1.0, 1.0
 
     monkeypatch.setattr(sens, '_fit_perturbed', fake_fit)
     cfg = SensitivityConfig(
         SensitivityMode.SOBOL,
         1024,
-        {'h0': InputSpec.interval_pct(-10.0, 10.0), 'd0': InputSpec.interval_pct(-10.0, 10.0)},
+        ErrorModel(specs={'h0': InputSpec.interval_pct(-10.0, 10.0), 'd0': InputSpec.interval_pct(-10.0, 10.0)}),
         seed=4,
     )
 
@@ -1827,14 +2181,14 @@ def test_run_intervals_leave_out_rows_without_a_fit(ida_setup, monkeypatch):
     def log_ka(h0, d0):
         return 8 + 40 * h0 + 20 * d0
 
-    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config):
+    def fake_fit(ms, assay_cls, x_base, base_conditions, offsets, fit_config, *_):
         h0, d0 = offsets.get('h0', 0.0), offsets.get('d0', 0.0)
         if h0 > 0.08:
             return None
-        return {'Ka_guest': 10.0 ** log_ka(h0, d0), **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0
+        return {'Ka_guest': 10.0 ** log_ka(h0, d0), **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
 
     monkeypatch.setattr(sens, '_fit_perturbed', fake_fit)
-    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, specs, seed=4)
+    cfg = SensitivityConfig(SensitivityMode.SOBOL, 1024, ErrorModel(specs=specs), seed=4)
 
     result = _run(ida_setup, cfg)
 
@@ -1859,7 +2213,8 @@ def test_run_intervals_leave_out_rows_without_a_fit(ida_setup, monkeypatch):
         points = a_points.copy()
         points[:, column] = b_points[:, column]
         mixed.append(outputs(points))
-    s1, s1_ci, st, st_ci = sobol_indices_with_ci(outputs(a_points), outputs(b_points), mixed, sens._SOBOL_BLOCKS)
+    estimate = sobol_indices_with_ci(outputs(a_points), outputs(b_points), mixed, sens._SOBOL_BLOCKS)
+    s1, s1_ci, st, st_ci = estimate.s1, estimate.s1_ci, estimate.st, estimate.st_ci
     without_fit = ~np.all(np.isfinite([outputs(a_points), outputs(b_points), *mixed]), axis=0)
 
     assert 0 < result.n_success < result.n_total
@@ -1871,3 +2226,19 @@ def test_run_intervals_leave_out_rows_without_a_fit(ida_setup, monkeypatch):
         assert result.sobol_st['Ka_guest'][key] == pytest.approx(st[column], rel=1e-12)
         np.testing.assert_allclose(result.sobol_s1_ci['Ka_guest'][key], s1_ci[column], rtol=1e-12)
         np.testing.assert_allclose(result.sobol_st_ci['Ka_guest'][key], st_ci[column], rtol=1e-12)
+
+
+@pytest.mark.parametrize(('separate', 'divisor'), [(True, 4), (False, 1)], ids=['separate', 'repeated_reads'])
+def test_the_additions_of_an_average_are_drawn_at_what_its_replicates_share(separate, divisor):
+    """Four separate titrations average their addition errors to sigma / 2; four reads of one titration keep sigma."""
+    from core.pipeline.inputs import AdditionError
+
+    sigma = 0.02
+    errors = ErrorModel(additions=AdditionError(100 * sigma, sequential=True, separate_titrations=separate))
+    conditions = {'Ka_dye': Q_(5e5, '1/M'), 'h0': Q_(10e-6, 'M'), 'd0': Q_(5e-6, 'M')}
+
+    jobs = sens.sobol_jobs(errors, conditions, 256, 12, 4, seed=3)
+
+    deltas = np.array([row for _, row in jobs.jobs])
+    assert deltas.shape[1] == 12
+    assert np.std(deltas) == pytest.approx(sigma / np.sqrt(divisor), rel=0.03)

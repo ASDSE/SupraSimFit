@@ -25,7 +25,16 @@ from gui.plotting.colors import (
     REPLICA_PALETTE,
     rgba,
 )
-from gui.plotting.labels import _format_exponent_unicode, fmt_param, fmt_r2, fmt_unit_html
+from gui.plotting.labels import (
+    SHIFTED_CURVE_NOTE,
+    _format_exponent_unicode,
+    fmt_estimate,
+    fmt_interval_html,
+    fmt_param,
+    fmt_r2,
+    fmt_unit_html,
+    fmt_value,
+)
 from gui.plotting.plot_style import DEFAULT_STYLE, line_style_to_qt
 from gui.widgets.replica_panel import _display_label, describe_replicates
 
@@ -190,6 +199,11 @@ class ScientificAxisItem(pg.AxisItem):
     Values in [0.01, 10 000] are displayed as plain numbers with no
     exponent factored out.  SI prefix auto-scaling is disabled.
 
+    One exponent holds for every tick level of a draw, and it is read from the
+    major level: pyqtgraph formats each level on its own, and a minor tick past
+    10 000 under major ticks that end at 10 000 would otherwise set an exponent
+    the major labels, written plain, do not carry.
+
     Parameters
     ----------
     use_exponent : bool
@@ -205,6 +219,10 @@ class ScientificAxisItem(pg.AxisItem):
         self.exponent: int | None = None
         self._use_exponent = use_exponent
         self.on_exponent_changed: Callable[[int | None], None] | None = None
+        # The major tick values of the draw in progress, which every level's
+        # labels take their exponent from; None until the axis draws ticks of
+        # its own choosing.
+        self._major_values: list[float] | None = None
 
     def _set_exponent(self, exp: int | None) -> None:
         """Update exponent, firing callback only on change.
@@ -218,41 +236,43 @@ class ScientificAxisItem(pg.AxisItem):
             if self.on_exponent_changed is not None:
                 self.on_exponent_changed(exp)
 
+    def tickValues(self, minVal, maxVal, size):
+        """The ticks of one draw; the first level holding any is the major one, which sets the exponent."""
+        levels = super().tickValues(minVal, maxVal, size)
+        self._major_values = next((list(values) for _, values in levels if len(values)), [])
+        return levels
+
+    @staticmethod
+    def _exponent_of(values, scale) -> int | None:
+        """The exponent factored out of *values*: none where the largest lies in [0.01, 10 000] or all are 0."""
+        abs_vals = [abs(v * scale) for v in values if v * scale != 0]
+        if not abs_vals:
+            return None
+        max_abs = max(abs_vals)
+        if 1e-2 <= max_abs <= 1e4:
+            return None
+        return int(np.floor(np.log10(max_abs)))
+
     def tickStrings(self, values, scale, spacing):
         if not values:
-            self._set_exponent(None)
+            # An empty minor level leaves the major level's exponent standing;
+            # an axis with no tick at all has none.
+            if not self._major_values:
+                self._set_exponent(None)
             return []
 
         if not self._use_exponent:
             self._set_exponent(None)
             return [f'{v * scale:g}' for v in values]
 
-        # Compute common exponent from the maximum absolute value
-        abs_vals = [abs(v * scale) for v in values if v * scale != 0]
-        if not abs_vals:
-            self._set_exponent(None)
-            return ['0'] * len(values)
-
-        max_abs = max(abs_vals)
-
-        # Only factor out exponent for values outside the "plain" range
-        if 1e-2 <= max_abs <= 1e4:
-            self._set_exponent(None)
-            return [f'{v * scale:g}' for v in values]
-
-        exp = int(np.floor(np.log10(max_abs)))
+        # Every level of a draw takes the major level's exponent; values given
+        # outside a draw (no major level known) set their own.
+        exp = self._exponent_of(self._major_values or values, scale)
         self._set_exponent(exp)
+        if exp is None:
+            return [f'{v * scale:g}' for v in values]
         divisor = 10**exp
-
-        strings = []
-        for v in values:
-            v_scaled = v * scale
-            if v_scaled == 0:
-                strings.append('0')
-            else:
-                mantissa = v_scaled / divisor
-                strings.append(f'{mantissa:g}')
-        return strings
+        return ['0' if v * scale == 0 else f'{v * scale / divisor:g}' for v in values]
 
 
 class PlotWidget(QWidget):
@@ -1071,57 +1091,57 @@ class PlotWidget(QWidget):
         return QRectF(self._legend.pos(), rect.size())
 
     def _annotation_html(self) -> str:
-        """Body of the fit-summary overlay.
+        """Body of the fit-summary overlay — what an exported figure says about the fit.
 
-        Reports each parameter as ``Estimate (min, max)``: the representative
-        fit — one real fit from the accepted pool — followed by the full range
-        that pool spans. Rows come from
-        :func:`~core.pipeline.fit_pipeline.summarize_parameters`, so the plot,
-        the summary table and the exports quote the same numbers. RMSE is
-        omitted: it is already in the Fit Quality panel and is monotone in the
-        R² shown here. The log₁₀ twin rows stay in the table — repeating them
-        here would double the box height for no new information.
+        Each binding constant reads ``estimate unit, 95 % CI [low, high]``: the
+        fit the curve is drawn from and the confidence interval of that same
+        fit, labelled by its level as a table or caption would write it. An estimate
+        that sits on an end of its Ka search box reads in words, as the limit
+        the data set (``not limited below 2.41×10³``). Every other parameter is
+        its fitted value alone. Under R², where the fit moved an input, a line
+        says the curve is drawn at the inputs where it put them. Rows come from
+        :func:`~core.pipeline.reporting.summarize_parameters` and numbers from
+        :func:`~gui.plotting.labels.fmt_value`, so the plot, the summary table
+        and the exports quote the same numbers the same way. The verdict of the
+        diagnostics, the marks of degenerate coefficients and split intervals,
+        and the conditional fit beside an input-aware one are in the summary
+        table, not on the figure. RMSE is omitted: it is already in the Fit
+        Quality panel and is monotone in the R² shown here.
         """
-        from core.pipeline.fit_pipeline import fitted_representative_index, summarize_parameters
+        from core.pipeline.reporting import fit_replica_ids, summarize_parameters
 
         lines: list[str] = []
         for idx, result in enumerate(self._fit_results):
             rows = [spec for spec in summarize_parameters(result) if not spec.is_log]
-            pooled = any(spec.stats is not None for spec in rows)
 
             if len(self._fit_results) > 1:
                 title = self._fit_labels[idx] if idx < len(self._fit_labels) else f'fit {idx}'
             else:
                 title = 'Fit Summary'
-            # Name the fit the numbers come from: a picked attempt or one replicate's best fit is not the
-            # highest-R² fit of the pool, and a fit whose own choice cannot be told is named only as shown.
-            fitted = fitted_representative_index(result)
-            if fitted != result.representative_index:
-                shown = 'picked fit' if fitted is not None else 'shown fit'
-            elif result.uncertainty_source == 'replicate':
-                shown = "one replicate's best fit"
-            else:
-                shown = 'best fit'
-            if pooled:
-                lines.append(f'<b>{title}</b> — {shown} (range over {result.n_passing} accepted fits)')
-            else:
-                lines.append(f'<b>{title}</b> — {shown} (no fit pool stored, so no range)')
+            # A per-replicate fit is the fit of the average of the replicates it
+            # used, so the heading says how many signals that average holds.
+            used = fit_replica_ids(result) if result.per_replica else None
+            if used:
+                title += f' (average of {len(used)} replicate{"" if len(used) == 1 else "s"})'
+            lines.append(f'<b>{title}</b>')
 
             for spec in rows:
-                # Pint's HTML formatter gives proper superscripts; the unit is
-                # stripped from each number and appended once at the end.
-                def fmt(magnitude: float, unit: str = spec.unit) -> str:
-                    if unit:
-                        return f'{Q_(magnitude, unit):.3g~H}'.rsplit(' ', 1)[0]
-                    return f'{magnitude:.3g}'
-
+                # The unit follows the estimate; the interval is labelled by its level.
                 unit_html = f' {fmt_unit_html(spec.unit)}' if spec.unit else ''
-                text = f'{fmt_param(spec.key)} = {fmt(spec.estimate)}'
-                if spec.stats is not None:
-                    text += f' ({fmt(spec.stats["min"])}, {fmt(spec.stats["max"])})'
-                lines.append(f'{text}{unit_html}')
+                ends = None if spec.interval is None else tuple(map(fmt_value, spec.interval))
+                estimate = fmt_estimate(
+                    spec.estimate, spec.estimate_at_bound, spec.interval, spec.interval_open, html=True
+                )
+                # Words read as a statement about the constant, a number as its value.
+                text = f'{fmt_param(spec.key)}{": " if spec.estimate_at_bound else " = "}{estimate}{unit_html}'
+                if ends is not None:
+                    level = f'{100 * spec.level:g} % CI ' if spec.level is not None else ''
+                    text += f', {level}{fmt_interval_html(*ends, *spec.interval_open)}'
+                lines.append(text)
 
-            lines.append(f'<b>R\u00b2:</b> {fmt_r2(result.r_squared, result.fit_config.get("min_r_squared"))}')
+            lines.append(f'<b>R\u00b2:</b> {fmt_r2(result.r_squared)}')
+            if result.input_shifts:
+                lines.append(SHIFTED_CURVE_NOTE)
 
             if idx < len(self._fit_results) - 1:
                 lines.append('')

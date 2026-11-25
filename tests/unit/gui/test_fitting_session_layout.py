@@ -231,8 +231,8 @@ def test_a_hidden_tab_page_does_not_limit_the_sidebar_or_the_window(qapp, monkey
 
     wide = QWidget()
     wide.setMinimumWidth(900)
-    session._distribution_widget.layout().addWidget(wide)
-    tabs.setCurrentWidget(session._distribution_widget)
+    session._identifiability_widget.layout().addWidget(wide)
+    tabs.setCurrentWidget(session._identifiability_widget)
     _settle(qapp)
     _, widest_on_page = _drag_range(qapp, splitter, 0)
     tabs.setCurrentWidget(session._plot_widget)

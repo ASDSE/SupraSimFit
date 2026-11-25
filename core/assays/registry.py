@@ -27,6 +27,7 @@ Example
 ('Ka_guest', 'I0', 'I_dye_free', 'I_dye_bound')
 """
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, Tuple
@@ -86,9 +87,9 @@ class AssayMetadata:
     display_name : str
         Human-readable name for display in GUI and plots.
     parameter_keys : Tuple[str, ...]
-        Names of fitted parameters in order.  The optimizer receives
-        parameters in this order; ``params_to_dict`` / ``params_from_dict``
-        on :class:`BaseAssay` use this ordering.
+        Names of fitted parameters in order.  Parameter vectors are laid out
+        in this order; ``params_to_dict`` / ``params_from_dict`` on
+        :class:`BaseAssay` use it.
     x_label : str
         Default name portion of the x-axis label (e.g. ``"Guest"``).
         The unit suffix is appended at render time by ``PlotWidget`` from
@@ -108,23 +109,33 @@ class AssayMetadata:
         stays the long descriptive name used for the window title.
     y_unit : str
         Unit string appended to the y-axis label (e.g. ``"a.u."``).
-    default_bounds : Dict[str, Tuple[float, float]]
+    default_bounds : Dict[str, Tuple[Quantity, Quantity]]
         Default ``(lower, upper)`` bounds keyed by parameter name.
-        :meth:`BaseAssay.get_default_bounds` returns a copy of this dict.
-        ``_resolve_bounds`` in the pipeline converts to positional arrays
-        for the optimizer.
+        :meth:`BaseAssay.get_default_bounds` returns a copy of this dict;
+        the pipeline merges any custom bounds over it. A signal offset or
+        coefficient of a binding model is bounded below by zero, which is
+        physical, and has no default upper bound: its size follows the gain of
+        the instrument and the concentration scale, so any finite default would
+        make the fit and its interval depend on the units the same titration
+        happens to be recorded in. A finite bound on one is something the user
+        knows and enters.
     log_scale_keys : Tuple[str, ...]
-        Parameter names that should be sampled in log₁₀ space during
-        multi-start initialisation.  Typically association constants
-        that span many orders of magnitude (e.g. ``Ka_dye``, ``Ka_guest``).
-        Used as the *assay-level default* when the user does not override
-        ``FitConfig.log_scale_params``.
+        Parameter names searched on a log₁₀ scale: the association
+        constants, which span many orders of magnitude (e.g. ``Ka_dye``,
+        ``Ka_guest``).
     units : Dict[str, str]
         Unit strings for each parameter (for display/export).
     param_kinds : Dict[str, ParamKind]
         Semantic identity of each parameter (binding constant / signal
         offset / signal coefficient).  Cross-checked against ``units`` and
         ``log_scale_keys`` by the registry unit-lint test.
+    signal_species : Dict[str, str]
+        The species each ``SIGNAL_COEFFICIENT`` multiplies, named as
+        :meth:`BaseAssay.species` returns it (``I_dye_bound`` → ``'HD'``).
+        The fit engine builds its design matrix from one species solve per
+        set of binding constants: a column of ones for the offset and these
+        species for the coefficients. Empty for an assay without a binding
+        equilibrium (``DYE_ALONE``), which is fitted by linear regression.
     """
 
     display_name: str
@@ -136,6 +147,7 @@ class AssayMetadata:
     default_bounds: Dict[str, Tuple[Quantity, Quantity]] = field(default_factory=dict)
     log_scale_keys: Tuple[str, ...] = ()
     param_kinds: Dict[str, ParamKind] = field(default_factory=dict)
+    signal_species: Dict[str, str] = field(default_factory=dict)
     y_unit: str = 'a.u.'
 
     @property
@@ -155,9 +167,9 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         y_label='Signal',
         default_bounds={
             'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
-            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
-            'I_dye_free': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
-            'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I0': (Q_(0, 'au'), Q_(math.inf, 'au')),
+            'I_dye_free': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
+            'I_dye_bound': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
         },
         log_scale_keys=('Ka_guest',),
         param_kinds={
@@ -166,6 +178,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_dye_free': ParamKind.SIGNAL_COEFFICIENT,
             'I_dye_bound': ParamKind.SIGNAL_COEFFICIENT,
         },
+        signal_species={'I_dye_free': 'D', 'I_dye_bound': 'HD'},
     ),
     AssayType.IDA: AssayMetadata(
         display_name='IDA (Indicator Displacement Assay)',
@@ -176,9 +189,9 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         y_label='Signal',
         default_bounds={
             'Ka_guest': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
-            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
-            'I_dye_free': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
-            'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I0': (Q_(0, 'au'), Q_(math.inf, 'au')),
+            'I_dye_free': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
+            'I_dye_bound': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
         },
         log_scale_keys=('Ka_guest',),
         param_kinds={
@@ -187,6 +200,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_dye_free': ParamKind.SIGNAL_COEFFICIENT,
             'I_dye_bound': ParamKind.SIGNAL_COEFFICIENT,
         },
+        signal_species={'I_dye_free': 'D', 'I_dye_bound': 'HD'},
     ),
     AssayType.DBA_HtoD: AssayMetadata(
         display_name='DBA Host→Dye (Direct Binding Assay)',
@@ -197,9 +211,9 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         y_label='Signal',
         default_bounds={
             'Ka_dye': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
-            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
-            'I_dye_free': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
-            'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I0': (Q_(0, 'au'), Q_(math.inf, 'au')),
+            'I_dye_free': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
+            'I_dye_bound': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
         },
         log_scale_keys=('Ka_dye',),
         param_kinds={
@@ -208,6 +222,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_dye_free': ParamKind.SIGNAL_COEFFICIENT,
             'I_dye_bound': ParamKind.SIGNAL_COEFFICIENT,
         },
+        signal_species={'I_dye_free': 'D', 'I_dye_bound': 'HD'},
     ),
     AssayType.DBA_DtoH: AssayMetadata(
         display_name='DBA Dye→Host (Direct Binding Assay)',
@@ -218,9 +233,9 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         y_label='Signal',
         default_bounds={
             'Ka_dye': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
-            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
-            'I_dye_free': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
-            'I_dye_bound': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I0': (Q_(0, 'au'), Q_(math.inf, 'au')),
+            'I_dye_free': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
+            'I_dye_bound': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
         },
         log_scale_keys=('Ka_dye',),
         param_kinds={
@@ -229,6 +244,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_dye_free': ParamKind.SIGNAL_COEFFICIENT,
             'I_dye_bound': ParamKind.SIGNAL_COEFFICIENT,
         },
+        signal_species={'I_dye_free': 'D', 'I_dye_bound': 'HD'},
     ),
     AssayType.DYE_ALONE: AssayMetadata(
         display_name='Dye Alone (Linear Calibration)',
@@ -257,13 +273,13 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         default_bounds={
             'Ka_HG': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
             'Ka_HG2': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
-            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
-            'I_G': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I0': (Q_(0, 'au'), Q_(math.inf, 'au')),
+            'I_G': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
             # Free-host signal coefficient: pinned to zero by default
             # (no signal from free host); widen these bounds to fit it.
             'I_H': (Q_(0, 'au/M'), Q_(0, 'au/M')),
-            'I_HG': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
-            'I_HG2': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I_HG': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
+            'I_HG2': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
         },
         log_scale_keys=('Ka_HG', 'Ka_HG2'),
         param_kinds={
@@ -275,6 +291,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_HG': ParamKind.SIGNAL_COEFFICIENT,
             'I_HG2': ParamKind.SIGNAL_COEFFICIENT,
         },
+        signal_species={'I_G': 'G', 'I_H': 'H', 'I_HG': 'HG', 'I_HG2': 'HG2'},
     ),
     AssayType.DBA_H2G: AssayMetadata(
         display_name='DBA 2:1 (H2G, stepwise host–guest)',
@@ -286,13 +303,13 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
         default_bounds={
             'Ka_HG': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
             'Ka_H2G': (Q_(1e-8, '1/M'), Q_(1e12, '1/M')),
-            'I0': (Q_(0, 'au'), Q_(1e8, 'au')),
-            'I_G': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I0': (Q_(0, 'au'), Q_(math.inf, 'au')),
+            'I_G': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
             # Free-host signal coefficient: pinned to zero by default
             # (no signal from free host); widen these bounds to fit it.
             'I_H': (Q_(0, 'au/M'), Q_(0, 'au/M')),
-            'I_HG': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
-            'I_H2G': (Q_(0, 'au/M'), Q_(1e12, 'au/M')),
+            'I_HG': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
+            'I_H2G': (Q_(0, 'au/M'), Q_(math.inf, 'au/M')),
         },
         log_scale_keys=('Ka_HG', 'Ka_H2G'),
         param_kinds={
@@ -304,6 +321,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
             'I_HG': ParamKind.SIGNAL_COEFFICIENT,
             'I_H2G': ParamKind.SIGNAL_COEFFICIENT,
         },
+        signal_species={'I_G': 'G', 'I_H': 'H', 'I_HG': 'HG', 'I_H2G': 'H2G'},
     ),
 }
 

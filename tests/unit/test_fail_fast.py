@@ -1,7 +1,7 @@
-"""P3: Fail-fast contract tests.
+"""Fail-fast contract tests.
 
-Verify that assay constructors and core functions reject invalid inputs
-immediately with clear error messages, rather than silently corrupting.
+Verify that assay constructors and the fit reject invalid inputs immediately
+with clear error messages, rather than silently corrupting.
 """
 
 import numpy as np
@@ -11,7 +11,10 @@ from core.assays.dba import DBAAssay
 from core.assays.dye_alone import DyeAloneAssay
 from core.assays.gda import GDAAssay
 from core.assays.ida import IDAAssay
+from core.pipeline.fit_pipeline import FitConfig, fit_assay
+from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec
 from core.units import Q_
+from tests.conftest import IDA_TRUE, _make_ida_data
 
 
 class TestGDAFailFast:
@@ -219,3 +222,115 @@ class TestBaseAssayContracts:
         )
         params = np.array([1e8, 100.0])
         assert assay.sum_squared_residuals(params) == pytest.approx(200.0)
+
+
+class TestFitRefusals:
+    """The fit refuses what it cannot do, in words that name the input and the fix.
+
+    Each refusal replaces a number the app would otherwise have to invent: a
+    binding constant with no speciation, a confidence interval with no degrees
+    of freedom, a search range that is not a range of binding constants.
+    """
+
+    def _ida_assay(self, n_points: int = 15, cls=IDAAssay):
+        x = np.linspace(0, 50e-6, n_points)
+        return cls(
+            x_data=Q_(x, 'M'),
+            y_data=Q_(np.linspace(3000.0, 500.0, n_points), 'au'),
+            Ka_dye=Q_(5e5, '1/M'),
+            h0=Q_(10e-6, 'M'),
+            d0=Q_(5e-6, 'M'),
+        )
+
+    def test_a_model_with_no_solution_anywhere_in_the_bounds_is_refused(self):
+        """A binding constant the model returns no speciation for has no fit at all.
+
+        The speciation is stubbed out so the refusal is pinned on the sentinel
+        itself rather than on where one arithmetic happens to give out.
+        """
+
+        class UnsolvableIDA(IDAAssay):
+            def species(self, params):
+                return {k: np.full(self.n_points, np.nan) for k in ('H', 'D', 'G', 'HD', 'HG')}
+
+        with pytest.raises(ValueError, match='no solution at any association constant'):
+            fit_assay(self._ida_assay(cls=UnsolvableIDA))
+
+    def test_too_few_points_to_judge_the_fit_is_refused_with_the_counts(self):
+        """Three points and four parameters leave nothing to measure a confidence interval by."""
+        with pytest.raises(ValueError, match='too few to judge'):
+            fit_assay(self._ida_assay(n_points=3))
+
+    @pytest.mark.parametrize(
+        'bounds, says',
+        [
+            ((0.0, 1e12), 'lower bound 0 M⁻¹ under Parameter Bounds'),
+            ((-1e6, 1e12), 'lower bound -1e\\+06 M⁻¹ under Parameter Bounds'),
+            ((1e9, 1e6), 'lower bound of 1×10⁹ M⁻¹ above its upper bound of 1×10⁶ M⁻¹'),
+        ],
+        ids=['zero', 'negative', 'inverted'],
+    )
+    def test_ka_bounds_that_are_not_a_range_of_binding_constants_are_refused_by_the_value_entered(self, bounds, says):
+        """The refusal names the bound as the user entered it, in the panel's words and units."""
+        lo, hi = bounds
+        config = FitConfig(custom_bounds={'Ka_guest': (Q_(lo, '1/M'), Q_(hi, '1/M'))})
+
+        with pytest.raises(ValueError, match=says) as refused:
+            fit_assay(self._ida_assay(), config)
+        assert 'Ka_guest' not in str(refused.value)
+
+
+class TestInputsTooFreeForTheData:
+    """A fit that cannot be made with the inputs as free as they were stated to be is refused, not quietly narrowed."""
+
+    @staticmethod
+    def _assay(n_points: int = 6) -> IDAAssay:
+        """The IDA ground truth at few points: a signal the inputs really do act on."""
+        x, y = _make_ida_data(IDA_TRUE, n_points=n_points)
+        return IDAAssay(
+            x_data=Q_(x, 'M'),
+            y_data=Q_(y, 'au'),
+            Ka_dye=Q_(IDA_TRUE['Ka_dye'], '1/M'),
+            h0=Q_(IDA_TRUE['h0'], 'M'),
+            d0=Q_(IDA_TRUE['d0'], 'M'),
+        )
+
+    _LABELS = {'h0': '[Host]₀', 'd0': '[Dye]₀', TITRANT: 'Guest (titrant)'}
+
+    def test_too_few_points_for_the_model_and_the_ranges_is_refused_and_names_the_inputs(self):
+        """Six points, three parameters and three inputs free within a range leave nothing to judge Ka by."""
+        config = FitConfig(
+            per_replica=False,
+            errors=ErrorModel(
+                specs={
+                    'h0': InputSpec.interval_pct(-20, 20),
+                    'd0': InputSpec.interval_pct(-20, 20),
+                    TITRANT: InputSpec.interval_pct(-5, 5),
+                }
+            ),
+            input_labels=self._LABELS,
+        )
+
+        with pytest.raises(ValueError, match='too few to fit this model') as refused:
+            fit_assay(self._assay(), config)
+
+        message = str(refused.value)
+        assert '[Host]₀' in message and 'Guest (titrant)' in message
+        assert 'Input Uncertainty' in message, 'the message has to say where to change it'
+        assert 'h0' not in message, 'a message shows the labels the panel writes, never a dict key'
+
+    def test_inputs_the_data_determine_take_the_same_room_and_the_fit_is_refused(self):
+        """Falling back to the interval that holds the inputs exact would report a claim nobody asked for.
+
+        Four inputs stated to 50 % are free enough that the data, not the
+        stated uncertainty, decide where they go: they use up what the six
+        points had left to judge Ka by.
+        """
+        specs = {key: InputSpec.sigma_pct(50) for key in ('h0', 'd0', 'Ka_dye', TITRANT)}
+        config = FitConfig(per_replica=False, errors=ErrorModel(specs=specs), input_labels=self._LABELS)
+
+        with pytest.raises(ValueError, match='too few to fit this model'):
+            fit_assay(self._assay(), config)
+
+        # The same data fit once the inputs are held as entered, so the refusal is about them.
+        assert fit_assay(self._assay(), FitConfig(per_replica=False)).intervals['Ka_guest'] is not None
