@@ -258,7 +258,7 @@ considered and rejected on the way here.
   failed" is history.
 - **Exception — keep the contrast when the comparison *is* the information.** Two
   cases qualify: a genuine methodological trade-off between approaches a reader might
-  actually choose between (the Scatchard/Hill discussion in `Readme.md`), and a
+  actually choose between (the Scatchard/Hill discussion in `docs/scientific-summary.md`), and a
   non-obvious constraint they would otherwise violate. Write the second as a rule
   about the present — "statistics of log₁₀(Ka) must come from the per-fit log values,
   because log₁₀ of a Ka spread is meaningless" — never as a story about a past bug.
