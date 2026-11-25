@@ -19,5 +19,5 @@ A beta is a pre-release version in PEP 440 form, ``2.0.0b1`` tagged
 pre-release, which stable builds are never offered and beta builds are.
 """
 
-__version__ = '1.5.0'
+__version__ = '2.0.0b1'
 __github_repo__ = 'ASDSE/SupraSimFit'
