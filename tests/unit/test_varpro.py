@@ -418,8 +418,8 @@ def test_a_fit_asked_to_stop_stops_before_its_next_solve():
 @pytest.mark.parametrize(
     'bad, says',
     [
-        ((Q_(0, '1/M'), Q_(1e12, '1/M')), 'lower bound 0 M⁻¹ under Parameter Bounds.*above zero'),
-        ((Q_(-5, '1/M'), Q_(1e12, '1/M')), 'lower bound -5 M⁻¹ under Parameter Bounds.*above zero'),
+        ((Q_(0, '1/M'), Q_(1e12, '1/M')), 'lower bound 0 M⁻¹ under Binding model.*above zero'),
+        ((Q_(-5, '1/M'), Q_(1e12, '1/M')), 'lower bound -5 M⁻¹ under Binding model.*above zero'),
         ((Q_(1e8, '1/M'), Q_(1e6, '1/M')), 'lower bound of 1×10⁸ M⁻¹ above its upper bound of 1×10⁶ M⁻¹'),
     ],
     ids=['zero', 'negative', 'inverted'],
@@ -1147,6 +1147,32 @@ def test_an_accepted_stretch_that_begins_where_the_cut_off_steps_up_is_inside_th
     assert interval.split and not (interval.open_low or interval.open_high)
 
 
+@pytest.mark.parametrize('coarse', [False, True], ids=['profile-density', 'search-nodes'])
+def test_a_gap_between_two_accepted_points_where_the_cut_off_steps_makes_the_interval_split(coarse):
+    """A continuous profile ``(t - 3)²`` against a cut-off that steps up at t = 3.43, t = log10 Ka.
+
+    Below the step the cut-off is 0.41², so the profile crosses it at t = 3.41; from the step on it is 0.47², so the
+    test accepts again up to 3.47. Of the 20-per-decade profile, 3.40 lies under the first cut-off and 3.45 under the
+    second: both points read either side of the rejected stretch from 3.41 to 3.43 are accepted, and it is the step of
+    the cut-off between them that rejects it. The interval runs to 3.47 and is split.
+    """
+
+    step, cut = 3.43, {1: 0.41**2, 0: 0.47**2}
+
+    def judge(ka: float) -> tuple[float, int]:
+        t = np.log10(ka)
+        rank = 1 if t < step else 0
+        return (t - 3.0) ** 2 - cut[rank], rank
+
+    density = varpro._SEARCH_PER_DECADE if coarse else varpro._PROFILE_PER_DECADE
+    read = varpro._ka_grid(1.0, 1e6, density)
+    points = {float(ka): judge(ka) for ka in read.tolist()}
+    interval, _ = varpro._cut_interval(judge, points, 1e3, cut.get, LEVEL, 7, 1.0, nodes=read if coarse else None)
+    assert np.log10(interval.low) == pytest.approx(2.59, abs=2e-7)
+    assert np.log10(interval.high) == pytest.approx(3.47, abs=2e-7)
+    assert interval.split and not (interval.open_low or interval.open_high)
+
+
 def _independent_one_ka(projection: Projection, per_decade: int = 40) -> tuple[float, float, Callable[[float], bool]]:
     """The least-squares fit of a one-Ka titration and its F test, from this function's own solves.
 
@@ -1155,8 +1181,7 @@ def _independent_one_ka(projection: Projection, per_decade: int = 40) -> tuple[f
     zero), a coefficient fitted where it lies above 1e-8 of the signal's weighted variation in those units, the rank of
     the fitted columns by their singular values at 1e-8; the best fit from a *per_decade* scan of the whole box refined
     by bounded Brent; and ``verdict(t)`` whether ``log10 Ka = t`` lies at or under
-    ``S_min (1 + m F(0.95; m, n - p) / (n - p))``, ``m`` one plus the coefficients the best fit fits beyond the fit
-    at t.
+    ``S_min (1 + F(0.95; 1, n - p) / (n - p))``, the plain F test of a model with one binding constant.
     """
     assay, root = projection.assay, np.sqrt(projection.point_weights)
     y = projection.signals[0] * root
@@ -1187,19 +1212,17 @@ def _independent_one_ka(projection: Projection, per_decade: int = 40) -> tuple[f
     dof = y.size - 1 - r_best
 
     def verdict(t: float) -> bool:
-        ssr, rank = solve(t)
-        m = 1 + max(0, r_best - rank)
-        return ssr <= s_min * (1.0 + m * f_dist.ppf(LEVEL, m, dof) / dof)
+        return solve(t)[0] <= s_min * (1.0 + f_dist.ppf(LEVEL, 1, dof) / dof)
 
     return float(best), s_min, verdict
 
 
 @pytest.mark.parametrize(('case', 'seed'), [('DBA_DtoH,K=0.1,n=8,noise=0.01', 32), ('GDA,K=0.1,n=8,noise=0.01', 150)])
-def test_a_one_ka_interval_holds_every_ka_the_test_accepts_past_a_step_of_the_cut_off(case, seed):
-    """Past the upper edge of the stretch around the estimate the fit puts a signal parameter on its bound, the cut-off
-    steps up, and the test accepts a few hundredths of a decade again, 0.36 and 0.14 decade further out. An
-    independent F test, read every two-thousandth of a decade over half a decade beyond each edge, accepts nothing
-    outside the interval and accepts the Ka just inside each edge."""
+def test_a_one_ka_interval_is_one_range_where_the_fit_pins_a_signal_parameter_past_its_edge(case, seed):
+    """Past the upper edge the fit puts a signal parameter on its bound. A model with one binding constant counts
+    nothing for it, so the test accepts no stretch out there: an independent plain F test, read every
+    two-thousandth of a decade over half a decade beyond each edge, accepts nothing outside the interval and
+    accepts the Ka just inside each edge, and the interval is not split."""
     projection = _grid_projection(case, seed)
     (key,) = projection.ka_keys
     interval = projection.interval(key, projection.fit())
@@ -1209,7 +1232,11 @@ def test_a_one_ka_interval_holds_every_ka_the_test_accepts_past_a_step_of_the_cu
     assert accepts(low + 1e-6) and accepts(high - 1e-6)
     beyond = np.concatenate([np.arange(low - 0.5, low - 1e-6, 5e-4), np.arange(high + 1e-6, high + 0.5, 5e-4)])
     assert not any(accepts(t) for t in beyond)
-    assert interval.split
+    fitted = projection.fitted_parameters
+    assert fitted({key: 10.0 ** (high + 0.4)}).rank < fitted(projection.fit().ka).rank, (
+        'a coefficient is pinned out there'
+    )
+    assert not interval.split
 
 
 def _independent_two_ka(projection: Projection, fit, key: str, per_decade: int = 32) -> Callable[[float], bool]:

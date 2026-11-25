@@ -1,6 +1,6 @@
 """Tests for _display_label() base-26 replica labelling."""
 
-from gui.widgets.replica_panel import _display_label
+from gui.plotting.labels import _display_label
 
 
 class TestDisplayLabel:

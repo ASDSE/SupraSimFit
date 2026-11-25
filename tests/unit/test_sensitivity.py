@@ -81,6 +81,7 @@ from core.pipeline.inputs import (
     ErrorModel,
     InputSpec,
     SharedSource,
+    axis_reaches_zero,
     input_name,
     nominal_value,
     perturbable_inputs,
@@ -88,7 +89,6 @@ from core.pipeline.inputs import (
     spec_bounds,
     spec_fraction,
 )
-from core.pipeline.profile import fit_profile
 from core.pipeline.reporting import fit_replica_ids
 from core.pipeline.sensitivity import (
     LONG_RUN_SOLVES,
@@ -619,6 +619,60 @@ def test_heatmap_axes_perturb_the_inputs_they_name(ida_setup, monkeypatch):
     np.testing.assert_allclose(result.y_offsets_pct, [-20.0, 0.0, 20.0])  # ±2σ of the Y input, d0
     along_x = 1e8 * (1 + 3 * result.x_offsets_pct / 100)
     np.testing.assert_allclose(result.ka_grid['Ka_guest'], np.tile(along_x, (3, 1)), rtol=1e-12)
+
+
+def _flat_fit(*_args, **_kwargs):
+    """A perturbed fit that reports the same parameters at every offset: the grid's offsets are what is tested."""
+    return {'Ka_guest': 1e8, **dict.fromkeys(('I0', 'I_dye_free', 'I_dye_bound'), 0.0)}, 1.0, 1.0
+
+
+@pytest.mark.parametrize('span', [1.0, 3.0])
+def test_a_sigma_axis_sweeps_the_span_chosen_and_a_range_axis_its_own_ends(ida_setup, monkeypatch, span):
+    """The X axis, a σ of 4 %, runs to ±span·σ; the Y axis, a range, runs from its *from* to its *to* whatever the span."""
+    monkeypatch.setattr(sens, '_fit_perturbed', _flat_fit)
+    cfg = SensitivityConfig(
+        mode=SensitivityMode.HEATMAP,
+        n_samples=1,
+        errors=ErrorModel(specs={'h0': InputSpec.sigma_pct(4.0), 'd0': InputSpec.interval_pct(-6.0, 10.0)}),
+        x_key='h0',
+        y_key='d0',
+        n_steps=3,
+        x_span=span,
+        y_span=span,
+    )
+
+    result = _run(ida_setup, cfg)
+
+    np.testing.assert_allclose(result.x_offsets_pct, [-4.0 * span, 0.0, 4.0 * span])
+    np.testing.assert_allclose(result.y_offsets_pct, [-6.0, 2.0, 10.0])
+
+
+@pytest.mark.parametrize(('span', 'reaches'), [(2.0, False), (3.0, True)])
+def test_whether_a_sigma_axis_reaches_zero_depends_on_its_span(ida_setup, monkeypatch, span, reaches):
+    """σ 40 % stays above zero at ±2σ (−80 %) and reaches below it at ±3σ (−120 %), where the run is refused."""
+    assert axis_reaches_zero(InputSpec.sigma_pct(40.0), 1.0, 'h0', span) is reaches
+    monkeypatch.setattr(sens, '_fit_perturbed', _flat_fit)
+    cfg = SensitivityConfig(
+        SensitivityMode.HEATMAP,
+        1,
+        ErrorModel(specs={'h0': InputSpec.sigma_pct(40.0), 'd0': InputSpec.sigma_pct(5.0)}),
+        x_key='h0',
+        y_key='d0',
+        n_steps=3,
+        x_span=span,
+    )
+    if reaches:
+        with pytest.raises(ValueError, match=r'reaches zero or below at ±3σ.*σ below 33\.3 %'):
+            _run(ida_setup, cfg)
+    else:
+        assert _run(ida_setup, cfg).x_offsets_pct[0] == pytest.approx(-80.0)
+
+
+def test_a_range_axis_reaches_zero_whatever_its_span():
+    """A range states its own ends, so the span chosen for a σ never moves them."""
+    spec = InputSpec.interval_pct(-100.0, 10.0)
+    assert all(axis_reaches_zero(spec, 1.0, 'h0', span) for span in (1.0, 2.0, 3.0))
+    assert not any(axis_reaches_zero(InputSpec.interval_pct(-99.0, 10.0), 1.0, 'h0', span) for span in (1.0, 3.0))
 
 
 # ---------------------------------------------------------------------------
@@ -1558,39 +1612,12 @@ def test_baseline_is_the_unperturbed_sample(n_replicas, per_replica, proportiona
     used = ms.with_active(fit_replica_ids(result.baseline_fit))
     weights = result.baseline_fit.point_weights
     assert proportional == (weights is not None), 'the weighted case has to weight the points differently'
-    unperturbed, r_squared, _ = sens._fit_perturbed(
+    unperturbed, r_squared = sens._fit_perturbed(
         used, assay_cls, np.asarray(ms.concentrations), conditions, {}, fit_config, point_weights=weights
     )
     assert {key: value.magnitude for key, value in result.baseline_fit.parameters.items()} == unperturbed
     assert r_squared == result.baseline_fit.r_squared
-    assert result.sample_profile_r2 is None, 'a heatmap reports cells, not samples'
-
-
-def test_a_samples_profile_r2_is_its_place_on_the_ka_profile():
-    """The Identifiability tab draws the samples against the Ka profile, so both are one number.
-
-    A sample's profile R² is the weighted objective its own fit minimised; the
-    sample that moves nothing minimises it at the peak of the fit's own
-    profile, and that is a different number from the R² the sample reports as
-    its quality, which counts every point equally.
-    """
-    ms, assay_cls, conditions, fit_config = _noisy_ida_setup(4, per_replica=False, proportional=True)
-    baseline = fit_measurement_set(ms, assay_cls, conditions, fit_config)
-
-    _, r_squared, profile_r2 = sens._fit_perturbed(
-        ms,
-        assay_cls,
-        np.asarray(ms.concentrations),
-        conditions,
-        {},
-        fit_config,
-        point_weights=baseline.point_weights,
-    )
-
-    profiles = fit_profile(ms, assay_cls, conditions, fit_config, **baseline.profile_arguments())
-    assert profiles.weighted
-    assert profile_r2 == pytest.approx(profiles.profiles['Ka_guest'].best_r2, abs=1e-12)
-    assert profile_r2 != pytest.approx(r_squared, abs=1e-9)
+    assert result.sample_r2 is None, 'a heatmap reports cells, not samples'
 
 
 @pytest.mark.parametrize('per_replica', [False, True], ids=['average', 'per_replicate'])
@@ -1807,7 +1834,7 @@ def test_samples_are_aligned_with_the_sobol_points(ida_setup, monkeypatch):
     for column, key in enumerate(specs):
         expected = [100 * spec_fraction(specs[key], nominal_value(key, conditions), key, q) for q in points[:, column]]
         np.testing.assert_allclose(result.sample_offsets_pct[key], expected, rtol=1e-12)
-    assert result.sample_ka['Ka_guest'].shape == result.sample_r2.shape == result.sample_profile_r2.shape == (8,)
+    assert result.sample_ka['Ka_guest'].shape == result.sample_r2.shape == (8,)
 
     for i in (0, 4):  # the first A row and the first B row
         h0_off = result.sample_offsets_pct['h0'][i] / 100
@@ -1821,11 +1848,6 @@ def test_samples_are_aligned_with_the_sobol_points(ida_setup, monkeypatch):
         _, r2 = calculate_fit_metrics(assay.y_data.magnitude, assay.forward_model(projection.params(fit)).magnitude)
         assert result.sample_ka['Ka_guest'][i] == pytest.approx(fit.ka['Ka_guest'], rel=1e-9)
         assert result.sample_r2[i] == pytest.approx(r2, abs=1e-12)
-        # The other R² of the same fit: the objective it minimised, as a
-        # fraction of the signal's total sum of squares — the axis the Ka
-        # profiles are drawn on.
-        profile_r2 = 1.0 - fit.objective / projection.ss_tot[0]
-        assert result.sample_profile_r2[i] == pytest.approx(profile_r2, abs=1e-12)
 
 
 def test_every_sample_keeps_the_whole_fit_behind_its_ka(monkeypatch):

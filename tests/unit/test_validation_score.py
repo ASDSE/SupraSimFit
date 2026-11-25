@@ -2,7 +2,7 @@
 
 A coverage rate is a count of these two answers. Scoring a split interval on
 its outer edges would count a Ka the fit rejects as covered, and reading a
-joint region anywhere but off the surface the Identifiability tab draws would
+joint region anywhere but off the surface Ka confidence draws would
 let the tab go wrong while the check stayed green.
 """
 
@@ -26,7 +26,16 @@ from validation import checks, reference
 from validation.generate import dataset
 from validation.reference import agreement_row, pooling_row, reference_intervals
 from validation.scenarios import Scenario, SharedEntry, SpecEntry
-from validation.score import _profile_accepts, interval_facts, measurement_set, region_excess, score, score_replicates
+from validation.score import (
+    _entered_accepts,
+    _profile_accepts,
+    _reported_accepts,
+    interval_facts,
+    measurement_set,
+    region_excess,
+    score,
+    score_replicates,
+)
 
 
 def interval(low: float, high: float, split: bool = False) -> KaInterval:
@@ -72,10 +81,94 @@ def test_the_profile_decides_between_its_nodes_and_not_only_on_them():
     assert accepts(1e2) is False, 'a Ka past the grid is not something the profile accepted'
 
 
+def test_the_profile_judges_a_ka_against_the_cut_off_of_its_own_solution():
+    """Where the solution holds a parameter on a bound the optimum leaves free, its cut-off is higher than the
+    threshold of the optimum, and the interval was cut against that: a Ka over the threshold and under its own cut-off
+    is accepted, one over its own cut-off is not."""
+    profile = SimpleNamespace(
+        grid=np.array([1e4, 10**4.5, 10**4.5000001, 1e6, 1e8]),
+        objective=np.array([8.5, 7.0, 7.0, 0.0, 10.0]),
+        threshold=5.0,
+        cut=np.array([8.0, 8.0, 5.0, 5.0, 5.0]),
+    )
+    accepts = _profile_accepts(profile)
+    assert accepts(10**4.2) is True  # 7.9 on the line between the nodes: over the threshold, under the cut-off 8
+    assert accepts(10**4.4) is True
+    assert accepts(10**4.6) is False, 'past the step the cut-off is the threshold again, and the profile lies over it'
+    assert accepts(10**5.5) is True
+
+
 def test_a_ka_the_model_could_not_be_solved_at_is_not_accepted():
     """An infinite profile value is the model failing, which is no evidence that the Ka fits."""
     profile = SimpleNamespace(grid=np.array([1e4, 1e6]), objective=np.array([np.inf, 0.0]), threshold=5.0)
     assert _profile_accepts(profile)(10**5.0) is False
+
+
+#: A two-step titration whose conditional interval of the second binding
+#: constant is split: the fit at some Ka inside it holds a signal coefficient on
+#: its bound that the best fit leaves free, so the cut-off steps up there and the
+#: interval accepts Ka the flat cut-off of the best fit would reject. Only a model
+#: with two binding constants counts such a coefficient, so only its cut-off steps.
+SPLIT = Scenario(assay='DBA_H2G', regime=1000.0, n_points=12, noise=0.005)
+SPLIT_SEED = 6
+SPLIT_KEY = 'Ka_H2G'
+
+
+def test_a_split_conditional_interval_is_scored_against_the_cut_off_it_was_cut_with():
+    """A Ka inside a split interval is covered exactly where the engine's own test accepts it.
+
+    The engine judges each Ka against the cut-off of its own profile point's
+    fit, which in a model with two binding constants steps up wherever that
+    fit holds a coefficient on a bound the best fit leaves free. A
+    scorer judging every Ka against the best fit's flat cut-off would count a
+    truth the interval accepts as missed.
+    """
+    data = dataset(SPLIT, SPLIT_SEED)
+    result = fit_measurement_set(
+        measurement_set(data),
+        ASSAY_CLASSES[AssayType[SPLIT.assay]],
+        dict(data.conditions),
+        FitConfig(per_replica=False, errors=SPLIT.error_model),
+    )
+    interval = result.conditional.intervals[SPLIT_KEY]
+    assert interval.split, 'the case has to be split for this to say anything'
+    projection = Projection(data.assay, data.assay.get_default_bounds(), point_weights=result.point_weights)
+    fit = projection.fit()
+    cut = projection.cut_off(fit, inflation=interval.inflation)
+    flat = projection.threshold(fit, inflation=interval.inflation)
+    accepts = _entered_accepts(data, result)(SPLIT_KEY)
+    stepped = 0
+    for ka in np.geomspace(interval.low, interval.high, 60):
+        _, value, fitted = projection.profile_point(SPLIT_KEY, float(ka))
+        engine = bool(value <= cut(fitted))
+        stepped += engine and value > flat
+        assert accepts(float(ka)) is engine, ka
+    assert stepped, 'some Ka has to be accepted only past a step of the cut-off for this to say anything'
+
+
+def test_a_reported_interval_no_input_may_move_is_scored_by_the_test_it_was_cut_with():
+    """With nothing stated about the inputs the reported interval is the conditional one, so a Ka inside it is
+    covered exactly where the engine's conditional test accepts it — the profile the fit carries beside it has nothing
+    to say there."""
+    data = dataset(SPLIT, SPLIT_SEED)
+    result = fit_measurement_set(
+        measurement_set(data),
+        ASSAY_CLASSES[AssayType[SPLIT.assay]],
+        dict(data.conditions),
+        FitConfig(per_replica=False, errors=SPLIT.error_model),
+    )
+    interval = result.intervals[SPLIT_KEY]
+    assert interval.split, 'the case has to be split for this to say anything'
+    projection = Projection(data.assay, data.assay.get_default_bounds(), point_weights=result.point_weights)
+    cut = projection.cut_off(projection.fit(), inflation=interval.inflation)
+    accepts = _reported_accepts(data, result)[SPLIT_KEY]
+    verdicts = set()
+    for ka in np.geomspace(interval.low, interval.high, 25):
+        _, value, fitted = projection.profile_point(SPLIT_KEY, float(ka))
+        engine = bool(value <= cut(fitted))
+        verdicts.add(engine)
+        assert accepts(float(ka)) is engine, ka
+    assert verdicts == {True, False}, 'the Ka read have to hold both verdicts for this to say anything'
 
 
 def region(threshold: float) -> JointRegion:
@@ -266,9 +359,8 @@ def test_the_weighted_reference_places_the_weighted_engine_s_edges():
 
 
 #: A single GDA titration whose bounded solve gives one signal coefficient up
-#: above a Ka the interval still accepts: I_dye_bound reaches its lower bound of
-#: zero on the way to the high edge, and not on the way to the low one, so one
-#: dataset shows the reference's cut-off both stepped and flat.
+#: on the way to the high edge, and not on the way to the low one: I_dye_bound
+#: reaches its lower bound of zero there.
 STEPPED = Scenario(assay='GDA', regime=10.0, n_points=12, noise=0.01)
 STEPPED_SEED = 1
 
@@ -296,14 +388,12 @@ def _rank(columns: np.ndarray) -> int:
     return int(np.linalg.matrix_rank(columns / np.linalg.norm(columns, axis=0)))
 
 
-def test_the_reference_edge_sits_where_its_own_fitted_rank_says_it_should():
-    """Each edge is where the SSR crosses ``S_min (1 + m F(m, nu)/nu)`` for the ``m`` that edge earns.
+def test_the_reference_cuts_a_one_ka_profile_at_the_plain_f_test_where_its_fit_pins_a_coefficient():
+    """Both edges are where the SSR crosses ``S_min (1 + F(1, nu)/nu)``.
 
-    ``m`` counts the tested Ka plus the signal parameters the best fit fits and
-    the fit at the edge holds on a bound. The low edge gives none up and is the
-    plain F test; the high edge gives one up, and lands where the cut-off one
-    step higher puts it — a decade-wide difference in the threshold, so the two
-    readings cannot be confused.
+    The fit at the high edge holds a signal parameter the best fit fits on its
+    bound, and the low edge holds none; a model with one binding constant
+    counts neither, so both edges lie on the one cut-off of the plain F test.
     """
     data = dataset(STEPPED, STEPPED_SEED)
     y = data.signals[0]
@@ -313,15 +403,12 @@ def test_the_reference_edge_sits_where_its_own_fitted_rank_says_it_should():
     nu = y.size - 1 - at_best  # the free Ka and the rank of what the best fit fitted
 
     low, high = reference_intervals(data.assay, data.signals, STEPPED.error_model, STEPPED_SEED, STEPPED.id)['Ka_guest']
-    steps = {}
+    given_up = {}
     for edge in (low, high):
         ssr, columns, fitted = _bounded_solve(data.assay, y, edge)
-        m = 1 + max(0, at_best - _rank(columns[:, fitted]))
-        steps[edge] = m
-        assert ssr / ssr_min == pytest.approx(1 + m * f_dist.ppf(0.95, m, nu) / nu, rel=1e-9)
-    assert (steps[low], steps[high]) == (1, 2), 'the case has to show both readings for this to say anything'
-    # The flat cut-off would accept beyond the high edge, so the step is what placed it.
-    assert _bounded_solve(data.assay, y, high)[0] / ssr_min > 1 + f_dist.ppf(0.95, 1, nu) / nu
+        given_up[edge] = at_best - _rank(columns[:, fitted])
+        assert ssr / ssr_min == pytest.approx(1 + f_dist.ppf(0.95, 1, nu) / nu, rel=1e-9)
+    assert (given_up[low], given_up[high]) == (0, 1), 'the case has to pin a coefficient at one edge only'
 
 
 #: A GDA titration of the reference grid whose best fit holds the offset on its
@@ -349,10 +436,9 @@ def test_the_reference_counts_in_n_minus_p_only_what_its_best_fit_fitted():
 
     high = reference_intervals(data.assay, data.signals, HELD.error_model, HELD_SEED, HELD.id)['Ka_guest'][1]
     assert high < reference.float_bounds(data.assay)['Ka_guest'][1], 'the high edge has to be closed'
-    ssr, columns, fitted_here = _bounded_solve(data.assay, y, high)
-    m = 1 + max(0, at_best - _rank(columns[:, fitted_here]))
+    ssr = _bounded_solve(data.assay, y, high)[0]
     # Two minimisers of one SSR agree to about 1e-9; the two readings of nu are a third apart.
-    assert ssr / ssr_min == pytest.approx(1 + m * f_dist.ppf(0.95, m, nu) / nu, rel=1e-7)
+    assert ssr / ssr_min == pytest.approx(1 + f_dist.ppf(0.95, 1, nu) / nu, rel=1e-7)
 
 
 #: A GDA titration of the reference grid whose best fit runs to the lower bound
@@ -366,7 +452,7 @@ def test_the_reference_counts_no_binding_constant_its_best_fit_left_on_a_bound_o
 
     The fit does not place it, so ``nu = n - r(k_hat)`` with no binding
     constant in ``p``, while ``m`` still counts the tested one: the closed high
-    edge is where the SSR crosses ``S_min (1 + m F(m, nu) / nu)`` for that ``nu``.
+    edge is where the SSR crosses ``S_min (1 + F(1, nu) / nu)`` for that ``nu``.
     """
     data = dataset(AT_BOX, AT_BOX_SEED)
     y = data.signals[0]
@@ -377,10 +463,9 @@ def test_the_reference_counts_no_binding_constant_its_best_fit_left_on_a_bound_o
 
     low, high = reference_intervals(data.assay, data.signals, AT_BOX.error_model, AT_BOX_SEED, AT_BOX.id)['Ka_guest']
     assert low == box[0] and high < box[1], 'the case has to be open below and closed above for this to say anything'
-    ssr, columns, fitted_here = _bounded_solve(data.assay, y, high)
-    m = 1 + max(0, at_best - _rank(columns[:, fitted_here]))
+    ssr = _bounded_solve(data.assay, y, high)[0]
     # Two minimisers of one SSR agree to about 1e-9; the two readings of nu are a third apart.
-    assert ssr / ssr_min == pytest.approx(1 + m * f_dist.ppf(0.95, m, nu) / nu, rel=1e-7)
+    assert ssr / ssr_min == pytest.approx(1 + f_dist.ppf(0.95, 1, nu) / nu, rel=1e-7)
 
 
 def test_a_row_without_a_reference_carries_the_keys_of_the_question_it_was_asked(monkeypatch):

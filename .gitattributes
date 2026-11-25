@@ -4,13 +4,11 @@
 # and git then reports every line as changed — burying a small edit in a
 # whole-file diff. Normalising here makes that impossible to reintroduce.
 * text=auto eol=lf
-
 # Measurement fixtures are byte-exact records of what real instruments export,
 # CRLF included — that is the input shape the readers have to handle. Keeping
 # them unnormalised preserves that fidelity.
 data/*.txt      -text
 tests/data/**   -text
-
 # graphify-out/ holds a generated knowledge graph, committed on `main` only and
 # refreshed by the post-merge hook (feature branches never touch it). Mark the
 # artifacts as generated so GitHub collapses them in diffs/PRs; -diff also keeps
@@ -19,3 +17,4 @@ tests/data/**   -text
 graphify-out/**               -text
 graphify-out/graph.json       -diff linguist-generated
 graphify-out/GRAPH_REPORT.md  linguist-generated
+docs/design/screens/*.jpg filter=lfs diff=lfs merge=lfs -text

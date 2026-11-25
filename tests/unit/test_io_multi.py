@@ -80,6 +80,20 @@ def test_heterogeneous_declared_units_converted_before_stack(tmp_path):
     np.testing.assert_allclose(ms.concentrations, [1e-6, 2e-6, 5e-6])
 
 
+@pytest.mark.parametrize('unit', ['uM', None])
+def test_shared_declared_unit_matches_single_file_load(tmp_path, unit):
+    """Files that all declare the same unit (or none) land on the molar grid a
+    single-file load of either gives — converted once, not again downstream."""
+    concs = [0.0, 1.0, 2.0, 4.0]
+    a = _txt(tmp_path / 'a.txt', concs, [10, 20, 30, 40], unit=unit)
+    b = _txt(tmp_path / 'b.txt', concs, [11, 21, 31, 41], unit=unit)
+
+    single = MeasurementSet.from_dataframe(io.load_measurements(a))
+    ms = MeasurementSet.from_dataframe(load_measurements_multi([a, b]))
+
+    np.testing.assert_array_equal(ms.concentrations, single.concentrations)
+
+
 def test_mismatched_grid_rejected(tmp_path):
     """Files with different concentration grids must fail fast at build time."""
     a = _write(tmp_path / 'a.csv', [0.0, 1.0, 2.0], [1.0, 2.0, 3.0])

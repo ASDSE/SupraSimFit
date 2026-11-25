@@ -92,20 +92,18 @@ class AssayMetadata:
         :class:`BaseAssay` use it.
     x_label : str
         Default name portion of the x-axis label (e.g. ``"Guest"``).
-        The unit suffix is appended at render time by ``PlotWidget`` from
-        ``style['axes']['x_unit']``.
+        The plot appends the unit it shows the concentrations in at render time.
     y_label : str
         Default name portion of the y-axis label (e.g. ``"Signal"``).
-        The unit suffix is appended at render time by ``PlotWidget`` from
-        ``y_unit``.
+        The plot appends ``y_unit`` at render time.
     category : str
         Top-level grouping label for the GUI assay-type selector
-        (e.g. ``"Direct Binding"``).  Assays sharing a ``category`` populate
+        (e.g. ``"Direct binding"``).  Assays sharing a ``category`` populate
         the same main-dropdown group; the panel derives the two-level menu
         from these strings, so re-grouping is a data-only change.
     subtype_label : str
         Short label shown in the dependent subtype dropdown
-        (e.g. ``"Host → Dye (1:1)"``).  Distinct from ``display_name``, which
+        (e.g. ``"Host → dye (1:1)"``).  Distinct from ``display_name``, which
         stays the long descriptive name used for the window title.
     y_unit : str
         Unit string appended to the y-axis label (e.g. ``"a.u."``).
@@ -160,8 +158,8 @@ class AssayMetadata:
 ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
     AssayType.GDA: AssayMetadata(
         display_name='GDA (Guest Displacement Assay)',
-        category='Competitive Displacement',
-        subtype_label='GDA — Guest Displacement (1:1)',
+        category='Competitive displacement',
+        subtype_label='GDA — guest displacement (1:1)',
         parameter_keys=('Ka_guest', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='Dye',
         y_label='Signal',
@@ -182,8 +180,8 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
     ),
     AssayType.IDA: AssayMetadata(
         display_name='IDA (Indicator Displacement Assay)',
-        category='Competitive Displacement',
-        subtype_label='IDA — Indicator Displacement (1:1)',
+        category='Competitive displacement',
+        subtype_label='IDA — indicator displacement (1:1)',
         parameter_keys=('Ka_guest', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='Guest',
         y_label='Signal',
@@ -204,8 +202,8 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
     ),
     AssayType.DBA_HtoD: AssayMetadata(
         display_name='DBA Host→Dye (Direct Binding Assay)',
-        category='Direct Binding',
-        subtype_label='Host → Dye (1:1)',
+        category='Direct binding',
+        subtype_label='Host → dye (1:1)',
         parameter_keys=('Ka_dye', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='Host',
         y_label='Signal',
@@ -226,8 +224,8 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
     ),
     AssayType.DBA_DtoH: AssayMetadata(
         display_name='DBA Dye→Host (Direct Binding Assay)',
-        category='Direct Binding',
-        subtype_label='Dye → Host (1:1)',
+        category='Direct binding',
+        subtype_label='Dye → host (1:1)',
         parameter_keys=('Ka_dye', 'I0', 'I_dye_free', 'I_dye_bound'),
         x_label='Dye',
         y_label='Signal',
@@ -249,7 +247,7 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
     AssayType.DYE_ALONE: AssayMetadata(
         display_name='Dye Alone (Linear Calibration)',
         category='Calibration',
-        subtype_label='Dye Alone',
+        subtype_label='Dye alone',
         parameter_keys=('slope', 'intercept'),
         x_label='Dye',
         y_label='Signal',
@@ -265,8 +263,8 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
     ),
     AssayType.DBA_HG2: AssayMetadata(
         display_name='DBA 1:2 (HG2, stepwise host–guest)',
-        category='Direct Binding',
-        subtype_label='Host–Guest 1:2 (HG₂)',
+        category='Direct binding',
+        subtype_label='Host–guest 1:2 (HG₂)',
         parameter_keys=('Ka_HG', 'Ka_HG2', 'I0', 'I_G', 'I_H', 'I_HG', 'I_HG2'),
         x_label='Guest',
         y_label='Signal',
@@ -295,8 +293,8 @@ ASSAY_REGISTRY: Dict[AssayType, AssayMetadata] = {
     ),
     AssayType.DBA_H2G: AssayMetadata(
         display_name='DBA 2:1 (H2G, stepwise host–guest)',
-        category='Direct Binding',
-        subtype_label='Host–Guest 2:1 (H₂G)',
+        category='Direct binding',
+        subtype_label='Host–guest 2:1 (H₂G)',
         parameter_keys=('Ka_HG', 'Ka_H2G', 'I0', 'I_G', 'I_H', 'I_HG', 'I_H2G'),
         x_label='Guest',
         y_label='Signal',

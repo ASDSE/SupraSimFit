@@ -8,12 +8,12 @@ point counts, tolerable noise before bench time).
 
 All math is reused from :mod:`core.assays` / :mod:`core.models`; this module only
 builds the concentration grid, drives the assay's ``forward_model``, and optionally
-adds measurement noise.
+adds measurement noise drawn from one of :data:`NOISE_MODELS`.
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence, Type
+from typing import Any, Callable, Mapping, Sequence, Type
 
 import numpy as np
 
@@ -21,7 +21,14 @@ from core.assays.base import BaseAssay
 from core.data_processing.measurement_set import MeasurementSet
 from core.units import Q_
 
-__all__ = ['build_concentration_vector', 'simulate_signal', 'simulate_species', 'simulate_dataset']
+__all__ = [
+    'NOISE_MODELS',
+    'build_concentration_vector',
+    'simulate_dataset',
+    'simulate_signal',
+    'simulate_species',
+    'two_part_sd',
+]
 
 
 def _as_count(n: Any) -> int:
@@ -105,7 +112,7 @@ def _build_assay(
 
     Mirrors :meth:`MeasurementSet.to_assay`: the titrant grid is ``x_data`` and the
     (unused) ``y_data`` is a zero placeholder of matching shape.  ``conditions`` are
-    the same Quantity-valued kwargs ``AssayConfigPanel.current_conditions`` produces
+    the same Quantity-valued kwargs the binding model of a session states
     (plus ``mode`` for DBA).
     """
     x = np.asarray(x_vector, dtype=float)
@@ -133,7 +140,7 @@ def simulate_signal(
         Concrete assay class (e.g. ``GDAAssay``).
     conditions : Mapping[str, Any]
         Quantity-valued conditions (``Ka_dye``, ``h0``, ``fixed_conc``, …) plus
-        ``mode`` for DBA — as returned by ``AssayConfigPanel.current_conditions``.
+        ``mode`` for DBA — as a session's binding model states them.
     parameters : Mapping[str, float]
         Base-unit parameter values keyed by the assay's ``parameter_keys``.
     x_vector : np.ndarray
@@ -183,17 +190,20 @@ def simulate_species(
     return assay.species(assay.params_from_dict(dict(parameters)))
 
 
-def _signal_span(y: np.ndarray) -> float:
-    """Return a positive scale for noise: the signal's peak-to-peak range.
+def two_part_sd(signal: np.ndarray, *, floor: float = 0.0, proportional: float = 0.0) -> np.ndarray:
+    """The standard deviation of each point under ``var(y) = floor² + (proportional·y)²``.
 
-    Falls back to the peak magnitude (then to 1.0) for flat curves so the noise
-    scale is never zero.
+    The two-component law the fitter reads off replicates (:func:`core.pipeline.noise.noise_law`):
+    a constant *floor* in au and a part *proportional* to the signal, as a fraction of it.
+    Either may be zero.
     """
-    span = float(np.max(y) - np.min(y))
-    if span > 0:
-        return span
-    mag = float(np.max(np.abs(y)))
-    return mag if mag > 0 else 1.0
+    y = np.asarray(signal, dtype=float)
+    return np.sqrt(floor**2 + (proportional * y) ** 2)
+
+
+#: The noise a simulation can draw, by name: each maps the clean signal and its keyword
+#: settings to one standard deviation per point.
+NOISE_MODELS: dict[str, Callable[..., np.ndarray]] = {'two-part': two_part_sd}
 
 
 def simulate_dataset(
@@ -202,22 +212,25 @@ def simulate_dataset(
     parameters: Mapping[str, float],
     x_vector: np.ndarray,
     *,
-    noise_frac: float = 0.0,
+    noise: Mapping[str, float] | None = None,
+    noise_model: str = 'two-part',
     n_replicas: int = 1,
     rng: np.random.Generator | None = None,
 ) -> MeasurementSet:
     """Simulate a multi-replica :class:`MeasurementSet` from explicit parameters.
 
-    The clean signal is sampled at *x_vector*; when ``noise_frac > 0`` each replica
-    gets independent Gaussian noise with standard deviation
-    ``noise_frac × (signal peak-to-peak range)`` — a scale-invariant fraction, so
-    the same ``noise_frac`` is meaningful across assays with very different signal
-    magnitudes.
+    The clean signal is sampled at *x_vector*; with *noise* each replica gets
+    independent Gaussian noise of the standard deviation the named *noise_model*
+    gives each point (:data:`NOISE_MODELS`) — for ``'two-part'``, *noise* holds
+    ``floor`` (au) and ``proportional`` (a fraction of the signal).
 
     Parameters
     ----------
-    noise_frac : float
-        Noise standard deviation as a fraction of the signal range (0 = clean).
+    noise : Mapping[str, float] or None
+        The settings of *noise_model*; ``None``, or settings that give every point a
+        standard deviation of zero, draw nothing and every replica is the clean signal.
+    noise_model : str
+        A key of :data:`NOISE_MODELS`.
     n_replicas : int
         Number of replicate rows (>= 1).
     rng : np.random.Generator, optional
@@ -227,20 +240,30 @@ def simulate_dataset(
     -------
     MeasurementSet
         Loadable/fittable via the existing pipeline.  ``metadata`` records the
-        ground-truth parameters/conditions for provenance (note: the measurement
-        writers do not persist metadata — the settings JSON is the durable record).
+        ground-truth parameters, conditions and noise for provenance (the measurement
+        writers do not persist metadata).
+
+    Raises
+    ------
+    ValueError
+        On an unknown noise model or a negative noise setting.
     """
+    if noise_model not in NOISE_MODELS:
+        raise ValueError(f'Unknown noise model {noise_model!r}; choose one of {", ".join(NOISE_MODELS)}.')
+    settings = dict(noise or {})
+    if any(v < 0 for v in settings.values()):
+        raise ValueError('A noise setting cannot be negative.')
     assay = _build_assay(assay_cls, conditions, x_vector)
     y = assay.forward_model(assay.params_from_dict(dict(parameters)))
     y_clean = np.asarray(getattr(y, 'magnitude', y), dtype=float)
 
     n_replicas = max(1, int(n_replicas))
     x = np.asarray(x_vector, dtype=float)
-    if noise_frac and noise_frac > 0:
+    sd = NOISE_MODELS[noise_model](y_clean, **settings)
+    if np.any(sd > 0):
         if rng is None:
             rng = np.random.default_rng()
-        sd = float(noise_frac) * _signal_span(y_clean)
-        signals = y_clean[None, :] + rng.normal(0.0, sd, size=(n_replicas, x.size))
+        signals = y_clean[None, :] + rng.normal(0.0, 1.0, size=(n_replicas, x.size)) * sd[None, :]
     else:
         signals = np.tile(y_clean, (n_replicas, 1))
 
@@ -251,7 +274,7 @@ def simulate_dataset(
         'simulation': {
             'parameters': dict(parameters),
             'conditions': cond_plain,
-            'noise_frac': float(noise_frac),
+            'noise': {'model': noise_model, **settings},
         },
     }
     return MeasurementSet(

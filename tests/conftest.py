@@ -388,16 +388,3 @@ def assert_within_tolerance(fitted, true, tolerance, param_name='parameter'):
     assert rel_error <= tolerance, (
         f'{param_name}: fitted={fitted_val:.4e}, true={true_val:.4e}, rel_error={rel_error:.1%} > tolerance={tolerance:.0%}'
     )
-
-
-@pytest.fixture
-def minimal_plot_data():
-    """Minimal plot data dict matching ``prepare_plot_data()`` output shape."""
-    x = np.linspace(0, 1e-4, 20)
-    return {
-        'concentrations': x,
-        'active_replicas': [('r1', x * 1.1 + 0.01), ('r2', x * 0.9 + 0.02)],
-        'dropped_replicas': [('r3', x * 1.5)],
-        'average': x * 1.0 + 0.015,
-        'fits': [{'x': x, 'y': x * 1.05 + 0.012, 'label': 'GDA fit', 'id': 'abc123'}],
-    }

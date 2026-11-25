@@ -9,6 +9,10 @@ from PyInstaller.utils.hooks import collect_data_files
 # directory, injected by PyInstaller) before importing.
 sys.path.insert(0, SPECPATH)
 from _version import __version__
+from packaging.version import Version
+
+# macOS reads the bundle version as numbers only, so a pre-release such as
+# 2.0.0b1 states its release, 2.0.0; the window title carries the full version.
 
 sys.setrecursionlimit(sys.getrecursionlimit() * 5)
 
@@ -109,7 +113,7 @@ if sys.platform == 'darwin':
         info_plist={
             'NSHighResolutionCapable': True,
             'LSMinimumSystemVersion': '11.0',
-            'CFBundleShortVersionString': __version__,
-            'CFBundleVersion': __version__,
+            'CFBundleShortVersionString': Version(__version__).base_version,
+            'CFBundleVersion': Version(__version__).base_version,
         },
     )

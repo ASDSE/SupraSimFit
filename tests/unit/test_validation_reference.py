@@ -136,7 +136,7 @@ def test_an_input_known_to_a_vanishing_sigma_gives_the_interval_of_exact_inputs(
         ('GDA,K=1000,n=12,noise=0.01', 200, 'Ka_guest', 0, 7.0970200),
         ('DBA_HG2,K=10,n=8,noise=0.01', 357, 'Ka_HG', 0, 0.2929054),
         ('DBA_H2G,K=10,n=12,noise=0.01', 46, 'Ka_HG', 0, 4.8647116),
-        ('IDA,K=0.1,n=12,noise=0.01', 344, 'Ka_guest', 0, 3.09834),
+        ('DBA_HG2,K=0.1,n=8,noise=0.01', 20, 'Ka_HG', 0, -3.5616659),
         ('DBA_HG2,K=0.1,n=12,noise=0.01', 67, 'Ka_HG', 0, -4.92649),
         ('DBA_HG2,K=10,n=12,noise=0.02,prop,m=4', 186, 'Ka_HG', 0, 5.8109314),
     ],
@@ -167,8 +167,9 @@ def test_the_reference_edge_is_where_an_exhaustive_computation_puts_it(case_id, 
     - at a fixed first Ka the narrow valley of the other Ka is the lowest one
       but reads high at its nodes, and it carries another fitted rank, so a
       profile from the wrong valley moves the edge;
-    - the fitted rank drops at a step and the higher cut-off accepts a stretch
-      narrower than the dense reading of the cell;
+    - the fitted rank of a two-Ka profile drops at a step and the higher
+      cut-off accepts a stretch narrower than the dense reading of the cell
+      (here 0.008 decades wide, 0.15 decades below the next Ka accepted);
     - the rank dips between two nodes of the same rank, and the stretch it
       opens lies in a cell whose nodes differ in nothing;
     - next to a rank step the other Ka has two valleys a tenth of a decade

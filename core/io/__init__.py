@@ -126,7 +126,7 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
         except ValueError as exc:
             raise InvalidData(
                 f'Could not read the measurements in {path.name}, so the files could not be loaded as replicates. '
-                "Check that it is a measurement file in one of the formats the Data panel's help lists, then load "
+                'Check that it is a measurement file in one of the formats SupraSimFit reads, then load '
                 'the files again.'
             ) from exc
         if ENSIGHT_CHANNEL_COLUMN in df.columns:
@@ -148,10 +148,8 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
         label = path.stem if seen == 0 else f'{path.stem} ({seen + 1})'
 
         out = df[['concentration', 'signal']].copy()
-        # Convert this file's grid to molar using its own reader-declared unit
-        # BEFORE pd.concat drops per-file df.attrs. Otherwise a µM replicate is
-        # stacked as raw numbers and, since the combined frame carries no
-        # per-file unit, silently read as molar downstream (a 1e6 error). Files
+        # Convert this file's grid to molar using its own reader-declared unit,
+        # so files declaring different units stack on one molar grid. Files
         # with no declared unit keep the documented M default.
         conc_unit = df.attrs.get('concentration_unit')
         if conc_unit and conc_unit != 'M':
@@ -176,7 +174,12 @@ def load_measurements_multi(paths: Sequence[str | Path]) -> pd.DataFrame:
             'the same measurement, or files with matching point counts.'
         )
 
-    return pd.concat(frames, ignore_index=True)
+    combined = pd.concat(frames, ignore_index=True)
+    # The concentrations are molar now. pd.concat keeps attrs that every file
+    # shares, and a shared ``concentration_unit`` would have
+    # MeasurementSet.from_dataframe convert them a second time.
+    combined.attrs = {}
+    return combined
 
 
 def save_results(results: dict, path: str | Path) -> None:

@@ -221,21 +221,6 @@ def test_dataset_shapes_and_clean():
         np.testing.assert_allclose(row, np.asarray(expected, dtype=float), rtol=1e-9)
 
 
-def test_noise_is_seed_reproducible_and_scaled():
-    assay_cls, conditions, params, x, expected = ALL_CASES['IDA']
-    a = simulate_dataset(assay_cls, conditions, params, x, noise_frac=0.05, n_replicas=4, rng=np.random.default_rng(7))
-    b = simulate_dataset(assay_cls, conditions, params, x, noise_frac=0.05, n_replicas=4, rng=np.random.default_rng(7))
-    np.testing.assert_array_equal(a.signals, b.signals)
-    # Different seed → different draw.
-    c = simulate_dataset(assay_cls, conditions, params, x, noise_frac=0.05, n_replicas=4, rng=np.random.default_rng(8))
-    assert not np.array_equal(a.signals, c.signals)
-    # Residual scatter scales roughly with noise_frac * signal span.
-    clean = np.asarray(expected, dtype=float)
-    span = clean.max() - clean.min()
-    resid_sd = np.std(a.signals - clean)
-    assert 0.2 * 0.05 * span < resid_sd < 5 * 0.05 * span
-
-
 def test_dataset_roundtrips_through_writer(tmp_path):
     """Exported simulated data re-loads to a MeasurementSet of the same shape/values."""
     from core.data_processing.measurement_set import MeasurementSet
@@ -252,3 +237,62 @@ def test_dataset_roundtrips_through_writer(tmp_path):
     assert reloaded.signals.shape == ms.signals.shape
     np.testing.assert_allclose(reloaded.concentrations, ms.concentrations, rtol=1e-5)
     np.testing.assert_allclose(np.sort(reloaded.signals, axis=0), np.sort(ms.signals, axis=0), rtol=1e-5)
+
+
+def test_noise_is_seed_reproducible():
+    assay_cls, conditions, params, x, _ = ALL_CASES['IDA']
+    noise = {'floor': 10.0, 'proportional': 0.01}
+    a = simulate_dataset(assay_cls, conditions, params, x, noise=noise, n_replicas=4, rng=np.random.default_rng(7))
+    b = simulate_dataset(assay_cls, conditions, params, x, noise=noise, n_replicas=4, rng=np.random.default_rng(7))
+    c = simulate_dataset(assay_cls, conditions, params, x, noise=noise, n_replicas=4, rng=np.random.default_rng(8))
+    np.testing.assert_array_equal(a.signals, b.signals)
+    assert not np.array_equal(a.signals, c.signals)
+
+
+def test_a_negative_noise_setting_or_unknown_model_is_refused():
+    assay_cls, conditions, params, x, _ = ALL_CASES['IDA']
+    with pytest.raises(ValueError):
+        simulate_dataset(assay_cls, conditions, params, x, noise={'floor': -1.0})
+    with pytest.raises(ValueError):
+        simulate_dataset(assay_cls, conditions, params, x, noise={'floor': 1.0}, noise_model='poisson')
+
+
+@pytest.mark.parametrize(
+    ('floor_share', 'proportional'),
+    [(0.01, 0.0), (0.0, 0.02), (0.005, 0.01)],
+    ids=['constant', 'proportional', 'mixed'],
+)
+def test_the_fitter_reads_the_two_part_law_back_from_simulated_replicates(floor_share, proportional):
+    """Noise drawn with a known ``var(y) = floor² + (proportional·y)²`` is the noise ``noise_law()`` reads.
+
+    Compared as the standard deviation each point gets, which is what the weights of a fit
+    are made of; the floor and the proportional part alone trade off against each other on
+    a signal spanning only a factor of about four. Tolerance: with 8 replicates of 40
+    points the level rests on (m − 1)(n − 2) = 266 degrees of freedom (about 4 % on a
+    standard deviation), and the split between the two parts adds the rest; over 200
+    seeds the worst point's error has a 99th percentile of 0.21 to 0.32 across these three
+    laws, so 0.35 at every point of five fixed seeds catches a law read in the wrong units
+    or with its parts swapped, which are off by far more.
+    """
+    from core.pipeline.noise import noise_law
+    from core.simulation import two_part_sd
+
+    assay_cls, conditions, params, _, _ = ALL_CASES['IDA']
+    x = np.linspace(0, 50e-6, 40)
+    clean = simulate_signal(assay_cls, conditions, params, x)
+    floor = floor_share * float(np.ptp(clean))
+    true_sd = two_part_sd(clean, floor=floor, proportional=proportional)
+    for seed in range(5):
+        ms = simulate_dataset(
+            assay_cls,
+            conditions,
+            params,
+            x,
+            noise={'floor': floor, 'proportional': proportional},
+            n_replicas=8,
+            rng=np.random.default_rng(seed),
+        )
+        law = noise_law(ms.signals)
+        assert law.estimated
+        read_sd = two_part_sd(clean, floor=law.floor, proportional=law.proportional)
+        np.testing.assert_array_less(np.abs(read_sd / true_sd - 1), 0.35)

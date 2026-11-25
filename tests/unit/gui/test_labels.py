@@ -3,6 +3,7 @@
 import pytest
 
 from gui.plotting.labels import (
+    THIN,
     fmt_interval_html,
     fmt_interval_plain,
     fmt_param,
@@ -15,13 +16,14 @@ from gui.plotting.labels import (
 
 class TestFmtParam:
     def test_known_keys(self):
-        assert fmt_param('Ka_guest') == '<b>K<sub>a(G)</sub></b>'
-        assert fmt_param('Ka_dye') == '<b>K<sub>a(D)</sub></b>'
-        assert fmt_param('I0') == '<b>I<sub>0</sub></b>'
-        assert fmt_param('I_dye_free') == '<b>I<sub>D</sub></b>'
-        assert fmt_param('I_dye_bound') == '<b>I<sub>HD</sub></b>'
-        assert fmt_param('slope') == '<b>slope</b>'
-        assert fmt_param('intercept') == '<b>intercept</b>'
+        """A binding constant by its glossary name, its subscript and its name (DESIGN.md §9); a signal by its symbol."""
+        assert fmt_param('Ka_guest') == 'K<sub>a</sub> guest'
+        assert fmt_param('Ka_dye') == 'K<sub>a</sub>,dye'
+        assert fmt_param('I0') == 'I<sub>0</sub>'
+        assert fmt_param('I_dye_free') == 'I<sub>D</sub>'
+        assert fmt_param('I_dye_bound') == 'I<sub>HD</sub>'
+        assert fmt_param('slope') == 'slope'
+        assert fmt_param('intercept') == 'intercept'
 
     def test_unknown_falls_back(self):
         assert fmt_param('unknown_param') == 'unknown_param'
@@ -68,22 +70,22 @@ def test_fmt_sci_reads_plainly_at_every_magnitude():
     from gui.plotting.labels import fmt_sci
 
     assert fmt_sci(150) == '150'
-    assert fmt_sci(999) == '1.0×10³'
-    assert fmt_sci(3218.73, 3) == '3.22×10³'
-    assert fmt_sci(9999) == '1.0×10⁴'
-    assert fmt_sci(56800) == '5.7×10⁴'
+    assert fmt_sci(999) == f'1.0{THIN}×{THIN}10³'
+    assert fmt_sci(3218.73, 3) == f'3.22{THIN}×{THIN}10³'
+    assert fmt_sci(9999) == f'1.0{THIN}×{THIN}10⁴'
+    assert fmt_sci(56800) == f'5.7{THIN}×{THIN}10⁴'
     assert fmt_sci(0.0123) == '0.012'
-    assert fmt_sci(1.7e8) == '1.7×10⁸'
-    assert fmt_sci(3.3e-6) == '3.3×10⁻⁶'
+    assert fmt_sci(1.7e8) == f'1.7{THIN}×{THIN}10⁸'
+    assert fmt_sci(3.3e-6) == f'3.3{THIN}×{THIN}10⁻⁶'
 
 
 def test_every_fitted_value_reads_to_three_significant_figures_with_its_zeros():
     """One reading of a value and an edge in every view: 8×10⁴ and 8.0×10⁴ are the same edge written twice."""
     from gui.plotting.labels import fmt_value
 
-    assert fmt_value(8e4) == '8.00×10⁴'
-    assert fmt_value(6.6e4) == '6.60×10⁴'
-    assert fmt_value(2413.6) == '2.41×10³'
+    assert fmt_value(8e4) == f'8.00{THIN}×{THIN}10⁴'
+    assert fmt_value(6.6e4) == f'6.60{THIN}×{THIN}10⁴'
+    assert fmt_value(2413.6) == f'2.41{THIN}×{THIN}10³'
     assert fmt_value(150) == '150'
     assert fmt_value(0.012) == '0.0120'
 
@@ -94,16 +96,16 @@ class TestFmtBoundEstimate:
     def test_an_estimate_on_the_lower_bound_reads_as_the_limit_the_data_set_above_it(self):
         from gui.plotting.labels import fmt_bound_estimate
 
-        text = fmt_bound_estimate('low', '1.00×10⁻⁸', '2.41×10³', True, False, html=False)
-        assert text == 'not limited below 2.41×10³'
+        text = fmt_bound_estimate('low', f'1.00{THIN}×{THIN}10⁻⁸', f'2.41{THIN}×{THIN}10³', True, False, html=False)
+        assert text == f'not limited below 2.41{THIN}×{THIN}10³'
         assert '10⁻⁸' not in text
 
     def test_an_estimate_on_the_upper_bound_reads_as_the_limit_the_data_set_below_it(self):
         from gui.plotting.labels import fmt_bound_estimate
 
-        assert fmt_bound_estimate('high', '5.00×10⁴', '1.00×10¹²', False, True, html=False) == (
-            'not limited above 5.00×10⁴'
-        )
+        assert fmt_bound_estimate(
+            'high', f'5.00{THIN}×{THIN}10⁴', f'1.00{THIN}×{THIN}10¹²', False, True, html=False
+        ) == (f'not limited above 5.00{THIN}×{THIN}10⁴')
 
     def test_an_estimate_on_a_bound_of_an_interval_open_at_both_ends_says_nothing_is_limited(self):
         from gui.plotting.labels import fmt_bound_estimate
@@ -113,9 +115,9 @@ class TestFmtBoundEstimate:
     def test_the_rich_text_form_sets_the_words_as_prose(self):
         from gui.plotting.labels import fmt_bound_estimate, plain_label
 
-        html = fmt_bound_estimate('low', '1e-8', '2.41×10³', True, False, html=True)
-        assert html == '<i>not limited below</i> 2.41×10³'
-        assert plain_label(html) == 'not limited below 2.41×10³'
+        html = fmt_bound_estimate('low', '1e-8', f'2.41{THIN}×{THIN}10³', True, False, html=True)
+        assert html == f'<i>not limited below</i> 2.41{THIN}×{THIN}10³'
+        assert plain_label(html) == f'not limited below 2.41{THIN}×{THIN}10³'
 
     def test_an_estimate_on_a_bound_with_no_interval_says_where_it_stopped_and_no_number(self):
         from gui.plotting.labels import fmt_bound_estimate
@@ -133,14 +135,17 @@ class TestStatedUncertainty:
         from gui.plotting.labels import stated_uncertainty
 
         assert stated_uncertainty(InputSpec.sigma_pct(10.0), '') == 'σ 10 %'
-        assert stated_uncertainty(InputSpec.sigma_abs(2e-7), 'M') == 'σ 2.0×10⁻⁷ M'
+        assert stated_uncertainty(InputSpec.sigma_abs(2e-7), 'M') == f'σ 2.0{THIN}×{THIN}10⁻⁷ M'
 
     def test_a_range_reads_as_its_two_signed_ends(self):
         from core.pipeline.inputs import InputSpec
         from gui.plotting.labels import stated_uncertainty
 
         assert stated_uncertainty(InputSpec.interval_pct(-5.0, 5.0), '') == '−5 % to +5 %'
-        assert stated_uncertainty(InputSpec.interval_abs(1e-6, 2e-6), 'M') == '1.0×10⁻⁶ to 2.0×10⁻⁶ M'
+        assert (
+            stated_uncertainty(InputSpec.interval_abs(1e-6, 2e-6), 'M')
+            == f'1.0{THIN}×{THIN}10⁻⁶ to 2.0{THIN}×{THIN}10⁻⁶ M'
+        )
 
 
 class TestFmtR2:
@@ -162,17 +167,23 @@ class TestFmtInterval:
     """The one wording every reported interval uses: numbers where the data close a side, words where they do not."""
 
     def test_a_closed_interval_shows_both_endpoints(self):
-        assert fmt_interval_plain('1.3×10⁸', '1.9×10⁸', False, False) == '[1.3×10⁸, 1.9×10⁸]'
-        assert fmt_interval_html('1.3×10⁸', '1.9×10⁸', False, False) == '[1.3×10⁸, 1.9×10⁸]'
+        assert (
+            fmt_interval_plain(f'1.3{THIN}×{THIN}10⁸', f'1.9{THIN}×{THIN}10⁸', False, False)
+            == f'[1.3{THIN}×{THIN}10⁸, 1.9{THIN}×{THIN}10⁸]'
+        )
+        assert (
+            fmt_interval_html(f'1.3{THIN}×{THIN}10⁸', f'1.9{THIN}×{THIN}10⁸', False, False)
+            == f'[1.3{THIN}×{THIN}10⁸, 1.9{THIN}×{THIN}10⁸]'
+        )
 
     def test_an_open_side_says_so_in_words_and_shows_no_number_there(self):
         """The endpoint of an open side is where the profile stopped, not a limit — printing it would claim one."""
-        upper = fmt_interval_plain('1.3×10⁸', '1×10¹²', False, True)
-        assert upper == '[1.3×10⁸, no upper limit]'
+        upper = fmt_interval_plain(f'1.3{THIN}×{THIN}10⁸', f'1{THIN}×{THIN}10¹²', False, True)
+        assert upper == f'[1.3{THIN}×{THIN}10⁸, no upper limit]'
         assert '10¹²' not in upper
 
-        lower = fmt_interval_plain('1×10⁻⁸', '1.9×10⁸', True, False)
-        assert lower == '[no lower limit, 1.9×10⁸]'
+        lower = fmt_interval_plain(f'1{THIN}×{THIN}10⁻⁸', f'1.9{THIN}×{THIN}10⁸', True, False)
+        assert lower == f'[no lower limit, 1.9{THIN}×{THIN}10⁸]'
         assert '10⁻⁸' not in lower
 
     def test_neither_side_closed_reads_as_one_statement(self):
@@ -203,7 +214,15 @@ class TestPlainLabel:
     def test_real_labels(self):
         assert plain_label('[Host]<sub>0</sub>') == '[Host]₀'
         assert plain_label('[Dye]<sub>0</sub>') == '[Dye]₀'
-        assert plain_label('K<sub>a,dye</sub>') == 'Ka,dye'
+        assert plain_label('K<sub>a</sub>,dye') == 'Kₐ,dye'
+
+    def test_every_binding_constant_reads_with_the_subscript_a_of_the_glossary(self):
+        """DESIGN.md §9 writes Kₐ with its subscript; a subscript of letters, which has no plain form, follows ``_``."""
+        from gui.plotting.labels import PARAM_LABELS
+
+        ka_labels = [plain_label(html) for key, html in PARAM_LABELS.items() if key.startswith('Ka')]
+        assert ka_labels and all(text.startswith('Kₐ') for text in ka_labels)
+        assert plain_label('I<sub>max</sub>') == 'I_max'
 
     def test_superscript_units(self):
         assert plain_label('M<sup>−1</sup>') == 'M⁻¹'
@@ -504,14 +523,14 @@ class TestVerdictSentence:
             'The interval assumes a model the data reject; try another binding model or check the data.'
         )
 
-    def test_model_inadequate_with_nothing_varying_points_at_the_input_uncertainty_panel(self):
+    def test_model_inadequate_with_nothing_varying_points_at_input_uncertainty(self):
         from gui.plotting.labels import verdict_sentence
 
         d = _diagnostics('model_inadequate', conditional=_f_test(200.0, 1e-9), misfit=_f_test(200.0, 1e-9))
         assert verdict_sentence(d, {}, _LABELS, html=False) == (
             'The model does not describe the data at the entered inputs (F(9, 72) = 200, p < 0.001). '
             'The interval assumes a model the data reject; try another binding model or check the data. '
-            'Enter the uncertainty of the inputs under Input Uncertainty to test whether the inputs explain it.'
+            'Enter the uncertainty of the inputs under Input uncertainty to test whether the inputs explain it.'
         )
 
     def test_a_single_moved_input_is_not_named_as_the_cause(self):
@@ -744,49 +763,6 @@ class TestOneStepSentence:
         assert one_step_sentence('K', SECOND_STEP_LEVEL).endswith(f'p ≤ {SECOND_STEP_LEVEL:g}).')
 
 
-class TestFmtSpread:
-    """A spread of log₁₀(Ka) reads as decades and as the factor Ka spreads by."""
-
-    def test_decades_and_the_factor_they_mean(self):
-        """10**0.084 = 1.2131…, so a standard deviation of 0.084 decades is a factor of 1.21 either way."""
-        from gui.plotting.labels import fmt_spread
-
-        assert fmt_spread(0.084, html=False) == '0.084 decades (×/÷ 1.21)'
-
-    def test_the_rich_text_form_keeps_the_factor_on_one_line(self):
-        """Only the space before the factor differs, so both forms read the same."""
-        from gui.plotting.labels import fmt_spread
-
-        html = fmt_spread(0.084, html=True)
-        assert html == '0.084 decades (×/÷&nbsp;1.21)'
-        assert html.replace('&nbsp;', ' ') == fmt_spread(0.084, html=False)
-
-    def test_a_wide_spread_reads_in_plain_digits(self):
-        """10**1.5 = 31.62…: the factor is written out, never as an exponent of e."""
-        from gui.plotting.labels import fmt_spread
-
-        text = fmt_spread(1.5, html=False)
-        assert text == '1.5 decades (×/÷ 31.6)'
-        assert 'e+' not in text and 'E+' not in text
-
-    def test_no_spread_at_all_is_a_factor_of_one(self):
-        from gui.plotting.labels import fmt_spread
-
-        assert fmt_spread(0.0, html=False) == '0 decades (×/÷ 1.00)'
-
-    def test_what_is_not_a_standard_deviation_is_refused(self):
-        """A spread is finite and not negative; anything else is said in words by the caller, not written out."""
-        import math
-
-        import pytest
-
-        from gui.plotting.labels import fmt_spread
-
-        for value in (math.nan, math.inf, -0.1):
-            with pytest.raises(ValueError):
-                fmt_spread(value, html=False)
-
-
 def test_plain_label_gives_back_the_characters_html_escaped():
     """A source named by the user reaches a label escaped; flattening it has to undo that, not print '&amp;'."""
     assert plain_label('Host &amp; dye stock') == 'Host & dye stock'
@@ -844,7 +820,8 @@ class TestReplicateSummary:
         text = replicate_summary([self._row(stats)], 3, lambda spec: 'Ka(G)', lambda spec: 'M⁻¹')
 
         assert text.startswith(
-            'Single-replicate fits (inputs as entered): Ka(G) median 4.56×10⁴, range [4.49×10⁴, 8.16×10⁴] M⁻¹.'
+            f'Single-replicate fits (inputs as entered): Ka(G) median 4.56{THIN}×{THIN}10⁴, '
+            f'range [4.49{THIN}×{THIN}10⁴, 8.16{THIN}×{THIN}10⁴] M⁻¹.'
         )
         assert 'can fall outside it' in text
 
@@ -861,3 +838,102 @@ class TestReplicateSummary:
         from gui.plotting.labels import replicate_summary
 
         assert replicate_summary([self._row(None)], 1, lambda spec: 'Ka(G)', lambda spec: 'M⁻¹') == ''
+
+
+@pytest.mark.parametrize('spread', [0.2, 0.02, 0.002, 0.0004])
+def test_a_log10_reading_is_never_written_coarser_than_the_spread_beside_it(spread):
+    """8.99743 with replicates a few ten-thousandths apart must not read 8.997, let alone 9.
+
+    The rounding of the written value stays a tenth of the tightest spread the row
+    reports, so the value and its spread are read on the same scale.
+    """
+    import numpy as np
+
+    from core.optimizer.ensemble import describe
+    from gui.plotting.labels import fmt_log10
+
+    value = 8.99743
+    stats = describe(value + spread * np.array([-1.0, -0.4, 0.3, 1.0]))
+    written = fmt_log10(value, stats)
+
+    tightest = min(s for s in (stats['mad'], stats['std'], stats['p84'] - stats['p16'], stats['max'] - stats['min']))
+    assert abs(float(written) - value) <= tightest / 10, written
+
+
+def test_the_text_report_writes_a_log10_reading_to_the_spread_of_the_replicates(tmp_path):
+    """The report row of log₁₀ Ka keeps the digits the replicates' own fits resolve."""
+    from core.pipeline.varpro import KaInterval
+    from core.units import Q_
+    from gui.session import export_results_txt
+    from tests.unit.gui.test_results import per_replica_result
+
+    ka = {rid: float(10**v) for rid, v in zip('0123', (8.9940, 8.9974, 9.0008, 8.9960), strict=True)}
+    fit = per_replica_result(ka_by_replicate=ka)
+    fit.parameters['Ka_guest'] = Q_(10**8.9974, '1/M')
+    fit.intervals['Ka_guest'] = KaInterval(10**8.9900, 10**9.0050, False, False, 0.95, 16)  # around the estimate
+    path = tmp_path / 'report.txt'
+    export_results_txt([fit], path)
+    (line,) = [ln for ln in path.read_text(encoding='utf-8').splitlines() if ln.strip().startswith('log10(Kₐ guest)')]
+
+    assert '8.9974' in line and '[8.9900, 9.0050]' in line
+
+
+# ---------------------------------------------------------------------------
+# One way to write a number and a name
+# ---------------------------------------------------------------------------
+
+
+def test_every_number_shown_is_written_in_the_notation_of_the_design():
+    """``1.59 × 10⁸``, thin spaces round the ×, whatever view or report writes it (DESIGN.md §2)."""
+    from gui.plotting.labels import THIN, fmt_sci, fmt_value
+
+    assert fmt_value(1.59e8) == f'1.59{THIN}×{THIN}10⁸'
+    assert fmt_sci(5.7e4) == f'5.7{THIN}×{THIN}10⁴'
+    assert fmt_value(150.0) == '150'
+
+
+def test_every_field_shows_a_number_one_way_and_reads_back_both_ways_a_number_is_written():
+    """What a field writes it reads back, in every form: Binding model, Input uncertainty and Simulation alike."""
+    from core.assays import AssayType
+    from core.pipeline.inputs import SpecKind
+    from core.units import Q_
+    from gui.binding import BindingForm
+    from gui.plotting.labels import THIN
+    from gui.simulation import SimulationForm
+    from tests.unit.gui.test_uncertainty import _ida
+
+    form = BindingForm(AssayType.IDA)
+    form.set_value('Ka_dye', 1.68e7)
+    written = form.entry('Ka_dye').amount.text
+    assert written == f'1.68{THIN}×{THIN}10⁷' == SimulationForm(AssayType.IDA).knobs['Ka_dye'].value_text()
+    for text in (written, '1.68e7', '1.68E7', '16800000', '1.68 × 10⁷'):
+        form.edit('Ka_dye', text)
+        assert form.conditions()['Ka_dye'] == Q_(1.68e7, '1/M'), text
+
+    uncertainty = _ida()
+    uncertainty.choose_kind('Ka_dye', SpecKind.SIGMA)
+    uncertainty.state_in('Ka_dye', False)
+    uncertainty.edit('Ka_dye', 0, f'2{THIN}×{THIN}10⁵')
+    assert uncertainty.spec('Ka_dye').sigma == 2e5
+
+
+def test_every_parameter_and_input_is_named_from_one_label_in_every_view():
+    """A binding constant, an input or a signal coefficient reads the same in rich and in plain text, everywhere."""
+    from core.assays import AssayType
+    from gui.binding import BindingForm
+    from gui.plotting.labels import fmt_param, fmt_param_plain
+    from gui.simulation import SimulationForm
+    from gui.widgets.assay_conditions import ASSAY_CONDITIONS
+
+    for assay_type in AssayType:
+        for field in ASSAY_CONDITIONS[assay_type]:
+            if field.key == 'Ka_dye':
+                assert field.label == fmt_param('Ka_dye'), assay_type
+        for key, knob in SimulationForm(assay_type).knobs.items():
+            if not knob.condition:
+                assert knob.label == fmt_param(key), (assay_type, key)
+        for key, entry in BindingForm(assay_type).bound_entries.items():
+            assert entry.name == fmt_param_plain(key) == plain_label(fmt_param(key)), (assay_type, key)
+    # Rich text and plain text write the subscript alike: Kₐ and its name, a letter subscript after _.
+    assert plain_label(fmt_param('Ka_dye')) == 'Kₐ,dye' and plain_label(fmt_param('Ka_guest')) == 'Kₐ guest'
+    assert plain_label(fmt_param('I_dye_bound')) == 'I_HD'

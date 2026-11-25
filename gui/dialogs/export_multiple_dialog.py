@@ -1,34 +1,25 @@
-"""Consolidated multi-artefact export dialog.
+"""Export ▸ Export several…: write a chosen set of the session's files to one folder in one step.
 
-Lets the user pick which artefacts to export (raw data, fit results,
-plots, style template), choose a target folder + filename base, and
-write them all in a single click. Persists the last selection under
-``QSettings`` group ``export_multiple/*``.
+One page in two settings groups, in the look of the Settings window. **Files**: one row per
+artefact :func:`gui.session.build_artefacts` defines, a checkbox with the name the file
+will take; one that cannot be written now is disabled, its reason as its tooltip. Every
+available one starts ticked. **Destination**: the folder (*Choose…*) and the text every
+file name starts with. *Export* is the window's one primary button. The folder and the
+name are remembered under the ``QSettings`` group ``export_multiple``; the name only for
+the data file it was chosen for.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
-    QCheckBox,
-    QDialog,
-    QDialogButtonBox,
-    QFileDialog,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtGui import QPainter
+from PyQt6.QtWidgets import QDialog, QFileDialog, QLabel, QMessageBox, QWidget
 
+from gui.design import components as C
+from gui.design.appearance import appearance, theme
+from gui.design.tokens import SIZE
 from gui.plotting.export import ExportRefused
 from gui.preferences import _settings
 from gui.session import ExportableArtefact, build_artefacts, export_batch
@@ -38,185 +29,179 @@ if TYPE_CHECKING:
 
 
 SETTINGS_GROUP = 'export_multiple'
+#: What to check when a file or the folder cannot be written.
+WRITE_HINT = 'Check that the folder exists and that you may write there.'
 
 
-@dataclass
-class _Row:
-    art: ExportableArtefact
-    checkbox: QCheckBox
-    filename_label: QLabel
+def _row(*items) -> QWidget:
+    w = QWidget()
+    w.setLayout(C.hbox(*items, margins=(4, 2, 4, 2)))
+    return w
 
 
 class ExportMultipleDialog(QDialog):
-    """Pick artefacts, folder, and filename base; export in one click."""
+    """Pick the files, the folder and the start of their names; *Export* writes them all."""
 
-    def __init__(
-        self,
-        session: 'FittingSession',
-        select_all_default: bool = False,
-        parent: QWidget | None = None,
-    ) -> None:
+    def __init__(self, session: 'FittingSession', parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle('Export Multiple' if not select_all_default else 'Export All')
-        self.setMinimumWidth(560)
-
+        self.setWindowTitle('Export several')
+        self.setFixedWidth(SIZE['settings-window'])
         self._session = session
         self._artefacts = build_artefacts(session)
-        self._rows: list[_Row] = []
-
-        self._build_ui()
-        self._load_settings(select_all_default=select_all_default)
-        self._refresh_filenames()
+        self.outcomes: list[tuple[str, Path, Exception | None]] = []
+        self.setLayout(C.vbox(spacing=0))
+        self._body: QWidget | None = None
+        folder, base = self._remembered()
+        self._build({a.key for a in self._artefacts if a.available}, folder, base)
+        # The controls on a dark card are drawn in colours lifted for it, read once, so a
+        # change of theme draws the page again.
+        appearance().changed.connect(self._rebuild)
 
     # ------------------------------------------------------------------
-    # UI
+    # Drawing
     # ------------------------------------------------------------------
 
-    def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-
-        # --- artefacts box -----------------------------------------------
-        box = QGroupBox('Artefacts')
-        form = QFormLayout(box)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+    def _build(self, ticked: set[str], folder: str, base: str) -> None:
+        t = theme()
+        ct = C.on_card(t)
+        self.boxes: dict[str, C.Checkbox] = {}
+        self._names: dict[str, QLabel] = {}
+        rows = []
         for art in self._artefacts:
-            cb = QCheckBox(art.label)
-            fname = QLabel('')
-            fname.setStyleSheet('color: #555;')
+            box = C.Checkbox(ct, art.label, art.available and art.key in ticked)
+            box.setAccessibleName(f'Export {art.label}')
+            name = C.label('', 'small', 'tertiary')
             if not art.available:
-                cb.setEnabled(False)
-                cb.setChecked(False)
-                cb.setToolTip(art.unavailable_reason)
-                fname.setEnabled(False)
-            cb.toggled.connect(self._refresh_filenames)
-            row_layout = QHBoxLayout()
-            row_layout.addWidget(cb, stretch=0)
-            row_layout.addStretch(1)
-            row_layout.addWidget(fname, stretch=0)
-            form.addRow(row_layout)
-            self._rows.append(_Row(art=art, checkbox=cb, filename_label=fname))
+                box.setEnabled(False)
+                box.setToolTip(art.unavailable_reason)
+                name.setToolTip(art.unavailable_reason)
+            self.boxes[art.key] = box
+            self._names[art.key] = name
+            rows.append(_row(box, None, name))
+        select_all, select_none = C.link_button('Select all'), C.link_button('Select none')
+        select_all.clicked.connect(lambda: self._tick_all(True))
+        select_none.clicked.connect(lambda: self._tick_all(False))
+        links = QWidget()
+        links.setLayout(C.hbox(select_all, select_none, spacing=4))
 
-        btn_row = QHBoxLayout()
-        all_btn = QPushButton('Select all available')
-        none_btn = QPushButton('Select none')
-        all_btn.clicked.connect(self._select_all_available)
-        none_btn.clicked.connect(self._select_none)
-        btn_row.addWidget(all_btn)
-        btn_row.addWidget(none_btn)
-        btn_row.addStretch(1)
-        root.addWidget(box)
-        root.addLayout(btn_row)
+        self.folder = C.Field(ct, folder, kind='text', editable=True)
+        self.folder.setAccessibleName('Folder to export to')
+        choose = C.OutlineButton(ct, 'Choose…')
+        choose.setAccessibleName('Choose the folder to export to')
+        choose.clicked.connect(self._choose_folder)
+        self.base = C.Field(ct, base, kind='text', editable=True)
+        self.base.setAccessibleName('Start of every file name')
+        self.base.typed.connect(lambda _text: self._show_names())
+        label_width = SIZE['input-name']
 
-        # --- folder + base name ------------------------------------------
-        target_box = QGroupBox('Target')
-        target_form = QFormLayout(target_box)
-        folder_row = QHBoxLayout()
-        self._folder_edit = QLineEdit()
-        browse = QPushButton('Browse…')
-        browse.clicked.connect(self._on_browse)
-        folder_row.addWidget(self._folder_edit, stretch=1)
-        folder_row.addWidget(browse)
-        target_form.addRow('Folder', folder_row)
+        def named(text: str) -> QWidget:
+            lbl = C.label(text)
+            lbl.setFixedWidth(label_width)
+            return lbl
 
-        self._base_edit = QLineEdit()
-        self._base_edit.textChanged.connect(self._refresh_filenames)
-        target_form.addRow('Filename base', self._base_edit)
-        root.addWidget(target_box)
+        destination = C.SettingsCard(
+            t,
+            [
+                _row(named('Folder'), self.folder, choose),
+                _row(named('File names start with'), self.base),
+            ],
+        )
 
-        # --- buttons -----------------------------------------------------
-        self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self._export_btn = QPushButton('Export')
-        self._export_btn.setDefault(True)
-        self._buttons.addButton(self._export_btn, QDialogButtonBox.ButtonRole.AcceptRole)
-        self._buttons.rejected.connect(self.reject)
-        self._export_btn.clicked.connect(self._on_export)
-        root.addWidget(self._buttons)
+        cancel = C.OutlineButton(t, 'Cancel')
+        cancel.clicked.connect(self.reject)
+        export = C.primary_button(t, 'Export', 'export')
+        export.clicked.connect(self._on_export)
+
+        body = QWidget()
+        body.setLayout(
+            C.vbox(
+                C.settings_group('Files', C.SettingsCard(t, rows), links),
+                6,
+                C.settings_group('Destination', destination),
+                6,
+                C.hbox(None, cancel, export),
+                spacing=0,
+                margins=(6, 5, 6, 5),
+            )
+        )
+        if self._body is not None:
+            C.drop(self._body)
+        self.layout().addWidget(body)
+        body.show()  # a child added to a window already on screen is shown by hand
+        self._body = body
+        self._show_names()
+
+    def _rebuild(self) -> None:
+        ticked = {key for key, box in self.boxes.items() if box.checked}
+        self._build(ticked, self._folder_text(), self.base.editor.text())
+
+    def _show_names(self) -> None:
+        base = self._base_text()
+        for art in self._artefacts:
+            self._names[art.key].setText(f'{base}{art.suffix}')
+
+    def paintEvent(self, _) -> None:
+        t = theme()
+        p = QPainter(self)
+        p.fillRect(self.rect(), t.q('bg-raised' if t.dark else 'bg-window'))
+        p.end()
 
     # ------------------------------------------------------------------
-    # Behaviour
+    # Editing
     # ------------------------------------------------------------------
 
-    def _select_all_available(self) -> None:
-        for row in self._rows:
-            if row.art.available:
-                row.checkbox.setChecked(True)
+    def _tick_all(self, on: bool) -> None:
+        for art in self._artefacts:
+            if art.available:
+                self.boxes[art.key].set_checked(on)
 
-    def _select_none(self) -> None:
-        for row in self._rows:
-            row.checkbox.setChecked(False)
+    def _choose_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, 'Choose a folder', self._folder_text() or str(Path.home()))
+        if folder:
+            self.folder.set_text(folder)
+
+    def _folder_text(self) -> str:
+        return self.folder.editor.text().strip()
+
+    def _base_text(self) -> str:
+        return self.base.editor.text().strip() or self._default_base()
 
     def _selected_artefacts(self) -> list[ExportableArtefact]:
-        return [r.art for r in self._rows if r.checkbox.isChecked() and r.art.available]
-
-    def _on_browse(self) -> None:
-        folder = QFileDialog.getExistingDirectory(
-            self, 'Choose Export Folder', self._folder_edit.text() or str(Path.home())
-        )
-        if folder:
-            self._folder_edit.setText(folder)
-
-    def _refresh_filenames(self) -> None:
-        base = self._base_edit.text().strip() or 'output'
-        for row in self._rows:
-            row.filename_label.setText(f'→ {base}{row.art.suffix}')
+        return [a for a in self._artefacts if a.available and self.boxes[a.key].checked]
 
     # ------------------------------------------------------------------
-    # Persistence
+    # Remembered folder and name
     # ------------------------------------------------------------------
 
-    def _load_settings(self, *, select_all_default: bool) -> None:
+    def _remembered(self) -> tuple[str, str]:
+        """The folder and the start of the file names to open with: the ones last used, where they still apply."""
         s = _settings()
         s.beginGroup(SETTINGS_GROUP)
         try:
-            saved_sel = s.value('selected', None)
-            saved_folder = s.value('folder', '', type=str)
-            saved_base = s.value('filename_base', '', type=str)
+            folder = s.value('folder', '', type=str)
+            base = s.value('filename_base', '', type=str)
+            dataset = s.value('filename_dataset', '', type=str)
         finally:
             s.endGroup()
-
-        # Selection: Export All overrides with every available artefact.
-        if select_all_default:
-            keep = {r.art.key for r in self._rows if r.art.available}
-        elif isinstance(saved_sel, list) and saved_sel:
-            keep = set(saved_sel)
-        else:
-            keep = {r.art.key for r in self._rows if r.art.available}
-        for row in self._rows:
-            if row.art.available:
-                row.checkbox.setChecked(row.art.key in keep)
-
-        # Folder: prefer saved, else dataset's directory, else home.
-        if saved_folder and Path(saved_folder).exists():
-            self._folder_edit.setText(saved_folder)
-        else:
-            self._folder_edit.setText(self._default_folder())
-
-        # Base: prefer the saved value only if it's still relevant.
-        default_base = self._session._default_filename_base()
-        self._base_edit.setText(saved_base or default_base)
+        default_base = self._default_base()
+        if not (folder and Path(folder).is_dir()):
+            folder = str(self._session.model.save_folder())
+        return folder, base if base and dataset == default_base else default_base
 
     def _save_settings(self) -> None:
         s = _settings()
         s.beginGroup(SETTINGS_GROUP)
         try:
-            s.setValue(
-                'selected',
-                [r.art.key for r in self._rows if r.checkbox.isChecked()],
-            )
-            s.setValue('folder', self._folder_edit.text())
-            s.setValue('filename_base', self._base_edit.text())
+            s.setValue('folder', self._folder_text())
+            s.setValue('filename_base', self.base.editor.text().strip())
+            s.setValue('filename_dataset', self._default_base())
         finally:
             s.endGroup()
 
-    def _default_folder(self) -> str:
-        src = self._session._state.source_file
-        if not src and self._session._state.fit_results:
-            src = self._session._state.fit_results[-1].source_file
-        if src:
-            parent = Path(src).parent
-            if parent.exists():
-                return str(parent)
-        return str(Path.home())
+    def _default_base(self) -> str:
+        """The stem of the session's data file, which the file names start with unless changed."""
+        src = self._session.model.dataset_file()
+        return Path(src).stem if src else 'output'
 
     # ------------------------------------------------------------------
     # Export
@@ -225,59 +210,35 @@ class ExportMultipleDialog(QDialog):
     def _on_export(self) -> None:
         selected = self._selected_artefacts()
         if not selected:
-            QMessageBox.information(
-                self,
-                'Nothing Selected',
-                'Tick at least one artefact to export.',
-            )
+            QMessageBox.warning(self, 'Nothing to export', 'Tick at least one file to export.')
             return
-        folder_text = self._folder_edit.text().strip()
+        folder_text = self._folder_text()
         if not folder_text:
-            QMessageBox.warning(self, 'Missing Folder', 'Choose a target folder.')
+            QMessageBox.warning(self, 'No folder', 'Choose the folder to export to.')
             return
         folder = Path(folder_text)
-        base = self._base_edit.text().strip() or 'output'
-
         try:
-            outcomes = export_batch(selected, folder, base)
+            outcomes = export_batch(selected, folder, self._base_text())
         except OSError:
             QMessageBox.warning(
-                self,
-                'Export Error',
-                f'Could not create the folder {folder}. Check the folder name and that you may write there, '
-                'then export again.',
+                self, 'Folder not created', f'Could not create the folder {folder}. {WRITE_HINT} Then export again.'
             )
             return
         self._save_settings()
-
-        successes = [o for o in outcomes if o[2] is None]
-        failures = [o for o in outcomes if o[2] is not None]
-
+        self.outcomes = outcomes
+        failures = [(label, exc) for label, _path, exc in outcomes if exc is not None]
         if failures:
-            # An ExportRefused carries a sentence the app wrote for the user; anything
-            # else carries a library's or a programmer's text, which is not shown.
-            details = '\n'.join(
-                f'  • {label}: {exc if isinstance(exc, ExportRefused) else "could not be written."}'
-                for label, _path, exc in failures
+            # An ExportRefused carries a sentence the app wrote for the user; any other
+            # error carries a library's or a programmer's text, which is not shown.
+            lines = '\n'.join(
+                f'• {label}: {exc if isinstance(exc, ExportRefused) else "could not be written."}'
+                for label, exc in failures
             )
-            advice = (
-                ''
-                if all(isinstance(exc, ExportRefused) for _label, _path, exc in failures)
-                else '\n\nCheck that the folder exists and that you may write there.'
-            )
+            hint = '' if all(isinstance(exc, ExportRefused) for _label, exc in failures) else f'\n\n{WRITE_HINT}'
+            written = len(outcomes) - len(failures)
             QMessageBox.warning(
                 self,
-                'Export — some artefacts failed',
-                f'Wrote {len(successes)}/{len(outcomes)} artefacts to:\n{folder}\n\nFailures:\n{details}{advice}',
+                'Some files were not exported',
+                f'{written} of {len(outcomes)} files were written to {folder}.\n\n{lines}{hint}',
             )
-        # Even on partial failure we close — the user has the message.
         self.accept()
-        self._last_outcomes = outcomes  # exposed for callers / tests
-
-    # ------------------------------------------------------------------
-    # Public access for callers
-    # ------------------------------------------------------------------
-
-    @property
-    def outcomes(self) -> list[tuple[str, Path, Exception | None]]:
-        return getattr(self, '_last_outcomes', [])

@@ -23,6 +23,7 @@ shapes.
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from core.pipeline.fit_pipeline import ConditionalFit, FitResult
 from core.pipeline.inputs import TITRANT, ErrorModel, InputSpec, SharedSource, shared_key, specs_to_dict
 from core.pipeline.varpro import KaInterval
 from core.units import Q_
+from gui.plotting.labels import THIN
 from gui.session import export_results, export_results_csv, export_results_txt, import_results
 
 _X = np.linspace(1e-6, 5e-5, 10)
@@ -204,8 +206,11 @@ def _txt(tmp_path: Path, results: list[FitResult], **kwargs) -> str:
 
 
 def _prose(text: str) -> str:
-    """*text* with every run of whitespace collapsed, so a wrapped sentence reads as one."""
-    return ' '.join(text.split())
+    """*text* with every run of the spaces and line breaks a wrap makes collapsed, so a wrapped sentence reads as one.
+
+    The thin spaces of a number (``1.59 × 10⁸``) are no place to wrap, and stay.
+    """
+    return re.sub(r'[ \n]+', ' ', text).strip()
 
 
 def _table_rows(text: str, section: str) -> dict[str, str]:
@@ -228,10 +233,10 @@ def test_txt_report_puts_the_interval_beside_the_estimate(tmp_path: Path) -> Non
 
     for header in ('Parameter', 'Estimate', '95% interval', 'Units'):
         assert header in text
-    line = next(ln for ln in text.splitlines() if ln.strip().startswith('Ka_guest'))
-    # The numbers read as the summary table on screen writes them.
-    assert '1.24×10⁶' in line
-    assert '[1.10×10⁶, 1.40×10⁶]' in line
+    line = next(ln for ln in text.splitlines() if ln.strip().startswith('Kₐ guest'))
+    # The numbers are written in ×10ⁿ notation, as every report writes them.
+    assert f'1.24{THIN}×{THIN}10⁶' in line
+    assert f'[1.10{THIN}×{THIN}10⁶, 1.40{THIN}×{THIN}10⁶]' in line
     assert 'e+' not in text
 
 
@@ -240,8 +245,8 @@ def test_txt_report_writes_an_open_side_in_words_and_says_what_would_close_it(tm
     open_high = KaInterval(low=1.10e6, high=9.9e9, open_low=False, open_high=True, level=0.95, dof=7)
     text = _txt(tmp_path, [_result(interval=open_high)])
 
-    assert '[1.10×10⁶, no upper limit]' in text
-    assert '9.90×10⁹' not in text  # the bound the profile reached is not the interval's end
+    assert f'[1.10{THIN}×{THIN}10⁶, no upper limit]' in text
+    assert f'9.90{THIN}×{THIN}10⁹' not in text  # the bound the profile reached is not the interval's end
     assert 'the data cannot rule out a higher Ka' in text
     assert 'signal levels off' in text
 
@@ -265,8 +270,8 @@ def test_txt_report_names_the_bound_a_side_rests_on_instead_of_reporting_a_limit
     )
     text = _prose(_txt(tmp_path, [_result(interval=limited)]))
 
-    assert '[no lower limit, 1.40×10⁶]' in text
-    assert 'only because Ka_HG2 cannot go past its bound' in text
+    assert f'[no lower limit, 1.40{THIN}×{THIN}10⁶]' in text
+    assert 'only because Kₐ HG₂ cannot go past its bound' in text
     assert 'the data alone set no limit on this side' in text
     assert 'higher titrant concentration' not in text  # the advice for a side the data leave open does not apply
 
@@ -277,7 +282,7 @@ def test_txt_report_says_when_a_signal_parameter_ended_on_an_entered_bound(tmp_p
     held.fit_config['custom_bounds'] = {'I0': [0.0, 1000.0, 'au'], 'I_dye_free': [0.0, 1.0e9, 'au/M']}
     text = _prose(_txt(tmp_path, [held]))
 
-    assert 'The fit ended on a bound entered under Parameter Bounds (I₀ at 1.0×10³ a.u.)' in text
+    assert f'The fit ended on a bound entered under Binding model (I₀ at 1.0{THIN}×{THIN}10³ a.u.)' in text
     assert 'widen it and fit again' in text
     assert 'ended on a bound' not in _prose(_txt(tmp_path, [_result()]))
 
@@ -295,7 +300,7 @@ def test_txt_report_says_a_binding_constant_was_held_fixed(tmp_path: Path) -> No
     """A pinned Ka has no interval to report, and an em dash would read as one that is missing."""
     text = _txt(tmp_path, [_result(interval=None)])
 
-    line = next(ln for ln in text.splitlines() if ln.strip().startswith('Ka_guest'))
+    line = next(ln for ln in text.splitlines() if ln.strip().startswith('Kₐ guest'))
     assert 'fixed' in line
 
 
@@ -312,14 +317,14 @@ def test_txt_report_stars_the_parameters_the_data_fix_only_together(tmp_path: Pa
 
     rows = _table_rows(text, '  Parameter')
     starred = [name for name, line in rows.items() if ' *' in line]
-    assert starred == ['I0', 'I_dye_free']
+    assert starred == ['I₀', 'I_D']
     assert 'The data fix only a combination of the starred values' in _prose(text)
 
 
 def test_txt_report_log_row_is_the_interval_read_on_a_log_scale(tmp_path: Path) -> None:
     """log₁₀ endpoints are the parameter's endpoints transformed, which is exact for a monotone map."""
     text = _txt(tmp_path, [_result()])
-    line = next(ln for ln in text.splitlines() if ln.strip().startswith('log10(Ka_guest)'))
+    line = next(ln for ln in text.splitlines() if ln.strip().startswith('log10(Kₐ guest)'))
 
     lo, hi = np.log10([1.10e6, 1.40e6])
     assert f'{lo:.4g}' in line.replace('[', ' ').replace(',', ' ')
@@ -334,11 +339,23 @@ def test_txt_report_lists_every_replicate_with_its_own_fit_and_its_verdict(tmp_p
     assert 'REPLICATES' in text
     rows = _table_rows(text, '  Replicate ')
     assert set(rows) == {'A', 'B', 'C'}
-    assert '1.20×10⁶' in rows['A'] and rows['A'].endswith('used')
-    assert '4.00×10⁶' in rows['C'] and rows['C'].endswith('left out')
+    assert f'1.20{THIN}×{THIN}10⁶' in rows['A'] and rows['A'].endswith('used')
+    assert f'4.00{THIN}×{THIN}10⁶' in rows['C'] and rows['C'].endswith('left out')
     assert '0.0012' in rows['C']
     assert _EXCLUDED in _prose(text)
     assert 'Replicates used:      A, B' in text
+
+
+def test_the_replicate_table_writes_a_p_value_at_either_end_as_its_bound(tmp_path: Path) -> None:
+    """A p of 0.997 written '1' would read as a certain test; every report writes it 'p > 0.99', and Fit details
+    '> 0.99' in the same table."""
+    fit = _per_replicate_result()
+    fit.metadata['replicate_test'] = {'level': 0.01, 'p_values': {'a': 0.997, 'b': 0.44, 'c': 0.0004}}
+    rows = _table_rows(_txt(tmp_path, [fit], replica_ids=('a', 'b', 'c')), '  Replicate ')
+
+    assert '> 0.99' in rows['A'] and ' 1 ' not in rows['A']
+    assert '0.44' in rows['B']
+    assert '< 0.001' in rows['C']
 
 
 def test_the_report_wraps_to_one_width_and_gives_each_reason_once(tmp_path: Path) -> None:
@@ -535,6 +552,45 @@ def test_csv_names_the_replicates_by_id_without_the_loaded_order(tmp_path: Path)
     }
 
 
+def test_reports_of_an_imported_fit_name_its_replicates_as_fit_details_does(tmp_path: Path) -> None:
+    """Without the data, a fit that records the order its replicates were loaded in is read by their letters on
+    screen; the saved report of the same fit names them alike, and '0 left out' would read as none left out."""
+    from gui import results as R
+
+    fit = _per_replicate_result()
+    for rid, new in (('a', '0'), ('b', '1'), ('c', '2')):
+        fit = _renamed(fit, rid, new)
+    fit.metadata['loaded_replica_ids'] = ['0', '1', '2']
+    fit = FitResult.from_dict(fit.to_dict())
+
+    text = _txt(tmp_path, [fit])
+    path = tmp_path / 'r.csv'
+    export_results_csv([fit], path)
+    row = _csv_rows(path)[0]
+
+    assert R.quality(fit, None).used_note == 'C left out by the fit'
+    assert 'Replicates used:      A, B' in text and 'Left out of the fit:  C' in text
+    assert set(_table_rows(text, '  Replicate ')) == {'A', 'B', 'C'}
+    assert f'C left out: {_EXCLUDED}' in _prose(text)
+    assert (row['replicates_used'], row['replicates_left_out']) == ('A;B', 'C')
+
+
+def _renamed(fit: FitResult, old: str, new: str) -> FitResult:
+    """*fit* with replicate *old* recorded as *new* wherever the fit names it."""
+    meta = dict(fit.metadata)
+    for key in ('active_replica_ids', 'replica_ids_fit'):
+        meta[key] = [new if rid == old else rid for rid in meta[key]]
+    meta['replica_failures'] = {new if k == old else k: v for k, v in meta['replica_failures'].items()}
+    test = dict(meta['replicate_test'])
+    test['p_values'] = {new if k == old else k: v for k, v in test['p_values'].items()}
+    meta['replicate_test'] = test
+    fits = [
+        replace(rf, metadata={**rf.metadata, 'replica_id': new}) if rf.metadata.get('replica_id') == old else rf
+        for rf in fit.replica_fits
+    ]
+    return replace(fit, metadata=meta, replica_fits=fits)
+
+
 def test_exports_handle_an_empty_result_list(tmp_path: Path) -> None:
     """Both writers must produce a valid, readable file with nothing to report.
 
@@ -568,9 +624,14 @@ def test_txt_report_puts_the_conditional_interval_under_the_headline_one(tmp_pat
     """Two intervals answer two questions, so the report says which is which and never mixes their ends."""
     text = _txt(tmp_path, [_input_aware_result()])
 
-    headline = next(ln for ln in text.splitlines() if ln.strip().startswith('Ka_guest'))
-    assert '[9.00×10⁵, 1.80×10⁶]' in headline  # the interval that covers the stated uncertainties
-    assert 'Conditional on the entered inputs: Ka_guest = 1.24×10⁶ [1.10×10⁶, 1.40×10⁶] M⁻¹' in text
+    headline = next(ln for ln in text.splitlines() if ln.strip().startswith('Kₐ guest'))
+    assert (
+        f'[9.00{THIN}×{THIN}10⁵, 1.80{THIN}×{THIN}10⁶]' in headline
+    )  # the interval that covers the stated uncertainties
+    assert (
+        f'Conditional on the entered inputs: Kₐ guest = 1.24{THIN}×{THIN}10⁶ [1.10{THIN}×{THIN}10⁶, 1.40{THIN}×{THIN}10⁶] M⁻¹'
+        in text
+    )
     assert 'takes every input exactly as entered' in _prose(text)
 
 
@@ -603,7 +664,7 @@ def test_txt_report_writes_an_uncertainty_in_the_input_s_own_unit_the_way_it_wri
 
     rows = _table_rows(_txt(tmp_path, [result]), '  Source ')
 
-    assert 'σ 2.0×10⁻⁷ M' in rows['[Host]₀']
+    assert f'σ 2.0{THIN}×{THIN}10⁻⁷ M' in rows['[Host]₀']
     assert 'e-07' not in rows['[Host]₀']
 
 
@@ -733,7 +794,7 @@ def test_txt_report_says_the_model_is_rejected_even_with_the_inputs_free(tmp_pat
 
     assert 'does not describe the data even with the inputs free to move within their uncertainties' in text
     assert 'The interval assumes a model the data reject' in text
-    assert 'Ka_guest' in text  # the interval is still reported
+    assert 'Kₐ guest' in text  # the interval is still reported
 
 
 def test_txt_report_says_when_the_data_cannot_check_the_entered_inputs(tmp_path: Path) -> None:
@@ -795,7 +856,7 @@ def test_a_split_conditional_interval_is_marked_in_both_exports(tmp_path: Path) 
     result = replace(aware, conditional=replace(aware.conditional, intervals={'Ka_guest': split}))
 
     text = _prose(_txt(tmp_path, [result]))
-    assert 'Ka_guest conditional on the entered inputs' in text
+    assert 'Kₐ guest conditional on the entered inputs' in text
     assert 'separate stretches' in text
 
     path = tmp_path / 'r.csv'
@@ -913,10 +974,10 @@ def test_csv_counts_replicate_fits_that_ran_to_a_bound_and_leaves_them_out_of_th
 
 def test_txt_report_writes_an_estimate_on_its_search_bound_as_the_limit_the_data_set(tmp_path: Path) -> None:
     text = _txt(tmp_path, [_on_bound_result()])
-    line = next(ln for ln in text.splitlines() if ln.strip().startswith('Ka_guest'))
+    line = next(ln for ln in text.splitlines() if ln.strip().startswith('Kₐ guest'))
 
-    assert 'not limited below 2.41×10³' in line
-    assert '[no lower limit, 2.41×10³]' in line
+    assert f'not limited below 2.41{THIN}×{THIN}10³' in line
+    assert f'[no lower limit, 2.41{THIN}×{THIN}10³]' in line
     assert '10⁻⁸' not in line and 'e-08' not in line
 
 
@@ -927,7 +988,7 @@ def test_txt_report_gives_the_single_replicate_fits_their_own_line(tmp_path: Pat
     text = _prose(_txt(tmp_path, [result], replica_ids=('a', 'b', 'c')))
 
     assert (
-        'Single-replicate fits (inputs as entered): Ka_guest median 1.30×10⁶, range [1.20×10⁶, 4.00×10⁶] M⁻¹.'
+        f'Single-replicate fits (inputs as entered): Kₐ guest median 1.30{THIN}×{THIN}10⁶, range [1.20{THIN}×{THIN}10⁶, 4.00{THIN}×{THIN}10⁶] M⁻¹.'
     ) in text
     assert "a single replicate's value can fall outside it" in text
 
@@ -947,7 +1008,7 @@ def test_txt_report_names_the_conditions_as_the_panel_does_in_the_units_it_reads
     text = _txt(tmp_path, [result])
     block = text.split('CONDITIONS', 1)[1].split('\n\n', 1)[0]
 
-    assert '  Ka,dye: 1.680×10⁷ M⁻¹' in block
+    assert f'  Kₐ,dye: 1.680{THIN}×{THIN}10⁷ M⁻¹' in block
     assert '  [Host]₀: 4.3 µM' in block
     assert '  [Dye]₀: 6 µM' in block
     for raw in ('h0', 'd0', 'Ka_dye', '1/M'):
@@ -1012,10 +1073,10 @@ def test_txt_report_says_a_second_step_the_data_do_not_show_is_not_limited_below
     text = _prose(_txt(tmp_path, [_stepwise(_STEP_UNSHOWN)]))
 
     assert (
-        'Ka_HG2 not limited below: a model without the second binding step fits nearly as well '
+        'Kₐ HG₂ not limited below: a model without the second binding step fits nearly as well '
         '(one-step test p = 0.03).'
     ) in text
-    assert 'Ka_HG2: open at the low end' not in text
+    assert 'Kₐ HG₂: open at the low end' not in text
     assert 'no lower limit' in text
 
 
@@ -1023,9 +1084,9 @@ def test_txt_report_says_what_supports_a_closed_second_step_as_a_bound_that_hold
     """p = 0.0034 is reported as ≤ 0.004: one figure, rounded up so the bound is true."""
     text = _prose(_txt(tmp_path, [_stepwise(_STEP_SHOWN)]))
 
-    assert 'Ka_HG2: second binding step supported (one-step model rejected at p ≤ 0.004).' in text
+    assert 'Kₐ HG₂: second binding step supported (one-step model rejected at p ≤ 0.004).' in text
     # The first constant carries no test of its own.
-    assert 'Ka_HG:' not in text
+    assert 'Kₐ HG:' not in text
 
 
 def test_csv_carries_the_one_step_p_on_the_second_constant_and_the_reference_of_the_misfit_test(
@@ -1077,7 +1138,7 @@ _REJECTED = FitDiagnostics(
 
 _OFFSET_NOTE = (
     'The signal offset rests on its lower bound of 0. If the signals were blank-subtracted, allow a negative '
-    'offset under Parameter Bounds and fit again.'
+    'offset under Binding model and fit again.'
 )
 
 
@@ -1177,7 +1238,7 @@ def test_csv_carries_the_design_effect_of_each_interval_and_one_where_nothing_wi
             True,
             1.0,
             'Random error of each addition (1 %, sequential; σ/√3 for 3 replicates as separate titrations) widens '
-            'the interval of Ka_guest about 1.4-fold: it takes the variance of the estimate as 2.1 times what the '
+            'the interval of Ka_guest by about 45 %: it takes the variance of the estimate as 2.1 times what the '
             'scatter of the data alone implies.',
         ),
         (
@@ -1185,7 +1246,7 @@ def test_csv_carries_the_design_effect_of_each_interval_and_one_where_nothing_wi
             1.2,
             'Random error of each addition (1 %, sequential; σ itself for 3 repeated reads of one titration) and '
             'the noise law the replicates leave uncertain (share between 0.2 and 0.9) widen the interval of '
-            'Ka_guest about 1.4-fold: it takes the variance of the estimate as 2.1 times what the scatter of the '
+            'Ka_guest by about 45 %: it takes the variance of the estimate as 2.1 times what the scatter of the '
             'data alone implies.',
         ),
     ],
@@ -1208,7 +1269,7 @@ def test_txt_report_says_an_uncertain_noise_law_widened_the_interval_and_says_no
     law_only = _prose(_txt(tmp_path, [_widened(law_factor=1.25, reported_factor=1.25)]))
     assert (
         'The replicates leave the noise law uncertain (share between 0.2 and 0.9); the interval of Ka_guest is '
-        'widened about 1.1-fold to hold for every share they allow: it takes the variance of the estimate as 1.25 '
+        'widened by about 12 % to hold for every share they allow: it takes the variance of the estimate as 1.25 '
         'times what the scatter of the data alone implies.'
     ) in law_only
     assert 'Random error of each addition' not in law_only

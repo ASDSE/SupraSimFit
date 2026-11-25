@@ -103,7 +103,7 @@ core. The boundaries, in code:
 | Params → floats | `core/pipeline/fit_pipeline.py` `fit_assay` | bounds `.to(canonical).magnitude` per parameter, then scipy runs on floats |
 | Floats → result | `_wrap_params_as_quantities`, `FitResult` | floats re-wrapped as `Q_(value, registry_unit)` |
 | Result → disk | `FitResult.to_dict` | magnitude + `parameter_units`/`condition_units` tokens |
-| Result/label → display | `gui/session.py`, `gui/plotting/labels.py`, `fit_summary_widget.py` | Pint `~P`/`~H` formatting |
+| Result/label → display | `gui/session.py`, `gui/plotting/labels.py`, `gui/results.py` | Pint `~P`/`~H` formatting |
 
 **The rule:** cross a boundary → attach or validate the unit there. Inside the
 boundary (the fit loop, the model math) everything is a validated float.

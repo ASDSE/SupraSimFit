@@ -1051,6 +1051,30 @@ def verdict(
     5. ``CONSISTENT`` otherwise: no test that ran found evidence against the
        model or the inputs. A test that could not be run finds nothing.
     """
+    rejected = rejections(conditional_misfit, misfit, conflict, level)
+    if {'misfit', 'conflict'} <= rejected:
+        return Verdict.MODEL_AND_INPUTS
+    if 'conflict' in rejected:
+        return Verdict.INPUTS_CONFLICT
+    if 'misfit' in rejected:
+        return Verdict.MODEL_INADEQUATE
+    if 'conditional_misfit' in rejected:
+        return Verdict.INPUTS_EXPLAIN
+    return Verdict.CONSISTENT
+
+
+def rejections(
+    conditional_misfit: MisfitTest | None,
+    misfit: MisfitTest | None,
+    conflict: Conflict | None,
+    level: float = DIAGNOSTIC_LEVEL,
+) -> set[str]:
+    """The tests that reject under the procedure :func:`verdict` judges them by.
+
+    ``'misfit'`` and ``'conflict'`` by Holm's step-down procedure at *level*;
+    ``'conditional_misfit'`` where the misfit test at the inputs as entered fails at
+    the threshold the misfit test faced in that procedure.
+    """
     tests = {'misfit': misfit, 'conflict': conflict}
     ran = sorted((test.p_value, name) for name, test in tests.items() if test is not None)
     threshold = {name: level / (len(ran) - i) for i, (_, name) in enumerate(ran)}
@@ -1059,12 +1083,6 @@ def verdict(
         if p_value > threshold[name]:
             break
         rejected.add(name)
-    if rejected == {'misfit', 'conflict'}:
-        return Verdict.MODEL_AND_INPUTS
-    if 'conflict' in rejected:
-        return Verdict.INPUTS_CONFLICT
-    if 'misfit' in rejected:
-        return Verdict.MODEL_INADEQUATE
     if conditional_misfit is not None and conditional_misfit.p_value <= threshold.get('misfit', level):
-        return Verdict.INPUTS_EXPLAIN
-    return Verdict.CONSISTENT
+        rejected.add('conditional_misfit')
+    return rejected

@@ -287,18 +287,20 @@ def reference_intervals(
     Ka with ``P(k) - P_min <= N log(1 + kappa m F(0.95; m, nu) / nu)``,
     ``kappa`` the factor *inflation* names for that Ka.
 
-    The numerator counts the parameters the best fit has and the fit at ``k``
-    has not: the tested Ka, and every signal parameter the best fit fits while
-    the bounded solve at ``k`` holds it on a bound, since a coefficient on a
-    bound is not fitted. With ``r(k)`` the rank of the columns whose
-    coefficient the reference's own solve leaves strictly inside its bounds at
-    ``k``, and ``k_hat`` the best fit,
+    The numerator of a model with one binding constant is the tested Ka:
+    ``m = 1``, the plain F test. The numerator of a model with two counts the
+    parameters the best fit has and the fit at ``k`` has not: the tested Ka,
+    and every signal parameter the best fit fits while the bounded solve at
+    ``k`` holds it on a bound, since a coefficient on a bound is not fitted.
+    With ``r(k)`` the rank of the columns whose coefficient the reference's own
+    solve leaves strictly inside its bounds at ``k``, and ``k_hat`` the best
+    fit,
 
         m = 1 + max(0, r(k_hat) - r(k))
 
-    so the cut-off is a step function of ``k``: the constant cut-off of the
-    plain F test wherever the profile gives no signal parameter up, one step
-    higher wherever it gives one up. Every edge and every accepted point is
+    so the cut-off of a two-Ka profile is a step function of ``k``: the
+    constant cut-off of the plain F test wherever the profile gives no signal
+    parameter up, one step higher wherever it gives one up. Every edge and every accepted point is
     judged against the cut-off its own fitted rank names. The step can open a
     stretch the test accepts between two nodes it rejects, so every grid cell
     outside the accepted nodes is profiled again at ``_DENSE_PER_DECADE``
@@ -690,9 +692,13 @@ def reference_intervals(
     cuts: dict[tuple[str, int], float] = {}
     factors = dict(inflation or {})
 
+    def given_up(rank_here: int) -> int:
+        """Signal parameters a fit of fitted rank *rank_here* gives up: counted for a model with two Ka only."""
+        return max(0, best_fitted - rank_here) if len(ka_keys) == 2 else 0
+
     def cut_off(key: str, rank_here: int) -> float:
         """Objective a fit of fitted rank *rank_here* is accepted below on the profile of *key*."""
-        released = max(0, best_fitted - rank_here)
+        released = given_up(rank_here)
         if (key, released) not in cuts:
             # m: the tested Ka plus the signal parameters a fit of this rank gives up.
             tested = 1 + released
@@ -709,7 +715,7 @@ def reference_intervals(
     def one_step_rejected() -> bool:
         """Whether the data reject the model without the second binding step at ``SECOND_STEP_LEVEL``."""
         found, ka, coords = profile(second, 0.0)
-        tested = 1 + max(0, best_fitted - fitted_rank(ka, coords))
+        tested = 1 + given_up(fitted_rank(ka, coords))
         ratio = float(np.expm1((found - p_min) / n)) * dof / (factors.get(second, 1.0) * tested)
         return bool(f_dist.sf(ratio, tested, dof) <= SECOND_STEP_LEVEL)
 

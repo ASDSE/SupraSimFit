@@ -830,7 +830,7 @@ CHECKS: dict[str, Check] = {
         name='joint-region',
         claim=(
             'The joint confidence region of a two-constant model holds the true pair as often as its '
-            'level says — the reading the Identifiability tab offers where the two constants trade off '
+            'level says — the reading Ka confidence offers where the two constants trade off '
             'against each other and neither interval alone settles the pair.'
         ),
         metrics=joint_region,

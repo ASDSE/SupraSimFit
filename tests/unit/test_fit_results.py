@@ -372,9 +372,9 @@ class TestSerialization:
 class TestSummarizeParameters:
     """The single source every reported number is derived from.
 
-    The table, the plot annotation and the TXT/CSV exports all render from
-    ``summarize_parameters``, so its contract is pinned here directly rather
-    than only through those three surfaces.
+    The Fit results view, its saved figure's caption and the TXT/CSV exports
+    all render from ``summarize_parameters``, so its contract is pinned here
+    directly rather than only through those surfaces.
     """
 
     def test_log_twin_appears_exactly_for_the_binding_constants(self):

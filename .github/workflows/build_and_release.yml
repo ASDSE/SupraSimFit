@@ -80,5 +80,8 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
+          # A tag naming an alpha, beta or release candidate (v2.0.0b1, v2.0.0rc1) is a pre-release,
+          # which /releases/latest never returns, so stable builds are not offered it.
+          prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
           files: ./artifacts/**/*.zip
           token: ${{ secrets.GITHUB_TOKEN }}

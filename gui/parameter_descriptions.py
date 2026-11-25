@@ -1,53 +1,50 @@
 """Scientist-facing descriptions of fitted parameters and their bounds.
 
 Each entry maps a parameter key (as used in ``ASSAY_REGISTRY``) to a
-``(title, html_body)`` tuple rendered by
-:class:`gui.widgets.info_button.InfoButton`. Content is written to help a
+``(title, html_body)`` tuple; the help of Binding model
+(:func:`gui.binding.help_html`) shows the descriptions of the model's parameters. Content is written to help a
 scientist decide what to adjust when a fit is poor, not to prove the
 theory from first principles.
 """
 
 from __future__ import annotations
 
-_SCI_NOTE_HTML = """
-<p><b>Scientific Notation</b></p>
-<p><code>1.000e+12</code> means <i>1.0&nbsp;&times;&nbsp;10<sup>12</sup></i>
+#: How a bound is written in scientific notation; the help shows it once, after the parameters.
+SCI_NOTE_HTML = """
+<p><b>Scientific notation</b></p>
+<p><code>1e12</code> means <i>1&nbsp;&times;&nbsp;10<sup>12</sup></i>
 &mdash; the number after <code>e</code> is the power of 10. Negative
-exponents are small values: <code>1.0e-06</code> is 0.000 001.</p>
+exponents are small values: <code>1e-6</code> is 0.000 001.</p>
 """
 
 
-def _with_sci_note(body: str) -> str:
-    return body + _SCI_NOTE_HTML
+_KA_DYE_HTML = """
+<p class="topic">K<sub>a</sub>,dye &mdash; host&ndash;dye association constant</p>
 
-
-_KA_DYE_HTML = _with_sci_note("""
-<h3>K<sub>a,dye</sub> &mdash; Host&ndash;Dye Association Constant</h3>
-
-<p><b>What It Means Physically</b></p>
+<p><b>What it means physically</b></p>
 <p>Equilibrium constant for the reaction
 <i>H + D &#x21CC; HD</i>, in units of M<sup>&minus;1</sup>. A larger
-K<sub>a,dye</sub> means the host binds the dye more tightly. Typical
+K<sub>a</sub>,dye means the host binds the dye more tightly. Typical
 supramolecular host&ndash;dye pairs range from
 10<sup>3</sup>&nbsp;M<sup>&minus;1</sup> (weak) to
 10<sup>8</sup>&nbsp;M<sup>&minus;1</sup> (very tight).</p>
 
-<p><b>Where It Is Fit</b></p>
-<p>K<sub>a,dye</sub> is a free parameter <b>only in the Direct Binding
+<p><b>Where it is fit</b></p>
+<p>K<sub>a</sub>,dye is a free parameter <b>only in the Direct Binding
 Assays</b> (DBA Host&rarr;Dye and DBA Dye&rarr;Host). In IDA and GDA it
-is a <i>known</i> input that you supply in the Assay Configuration
-panel &mdash; those assays fit K<sub>a,guest</sub> instead. A value taken
+is a <i>known</i> input that you supply under Binding model
+&mdash; those assays fit K<sub>a</sub> guest instead. A value taken
 from an earlier DBA fit is known to within that fit&rsquo;s own interval:
-state it under <b>Input Uncertainty</b>, as a &sigma; or as
-the range itself, and the K<sub>a,guest</sub> interval reported covers that
+state it under <b>Input uncertainty</b>, as a &sigma; or as
+the range itself, and the K<sub>a</sub> guest interval reported covers that
 uncertainty rather than assuming the number exact.</p>
 
-<p><b>What It Controls in the Fit</b></p>
+<p><b>What it controls in the fit</b></p>
 <p>Sets the curvature and midpoint of the DBA titration curve. Too
 small &rarr; the curve looks linear (no saturation); too large &rarr;
 the dye is fully complexed from the first point.</p>
 
-<p><b>Bounds Guidance</b></p>
+<p><b>Bounds guidance</b></p>
 <ul>
   <li>Defaults cover roughly 10<sup>&minus;8</sup>&ndash;10<sup>12</sup>
       M<sup>&minus;1</sup> &mdash; wide enough for any realistic
@@ -56,7 +53,7 @@ the dye is fully complexed from the first point.</p>
   <li>If the fitted value sits on a bound, or the confidence interval
       reaches one and is reported as open on that side, widen that side
       rather than clamping it: a bound is not a measurement.</li>
-  <li>If you already know K<sub>a,dye</sub> within an order of
+  <li>If you already know K<sub>a</sub>,dye within an order of
       magnitude, tighten the bounds to that window. The interval is read
       inside the bounds in force, so prior knowledge stated here is
       carried into it.</li>
@@ -64,64 +61,63 @@ the dye is fully complexed from the first point.</p>
       usually means the titration never reached saturation; re-examine
       [H]<sub>0</sub> and [D]<sub>0</sub>.</li>
 </ul>
-""")
+"""
 
-_KA_GUEST_HTML = _with_sci_note("""
-<h3>K<sub>a,guest</sub> &mdash; Host&ndash;Guest Association Constant</h3>
+_KA_GUEST_HTML = """
+<p class="topic">K<sub>a</sub> guest &mdash; host&ndash;guest association constant</p>
 
-<p><b>What It Means Physically</b></p>
+<p><b>What it means physically</b></p>
 <p>Equilibrium constant for <i>H + G &#x21CC; HG</i> in
 M<sup>&minus;1</sup>. The scientific target of IDA and GDA experiments.</p>
 
-<p><b>What It Controls in the Fit</b></p>
+<p><b>What it controls in the fit</b></p>
 <p>In IDA/GDA, it sets how aggressively guest displaces dye from the
-pre-formed HD complex. High K<sub>a,guest</sub> shifts the displacement
+pre-formed HD complex. High K<sub>a</sub> guest shifts the displacement
 curve to lower guest concentrations.</p>
 
-<p><b>Bounds Guidance</b></p>
+<p><b>Bounds guidance</b></p>
 <ul>
   <li>Searched on a log grid, so even the default
       10<sup>&minus;8</sup>&ndash;10<sup>12</sup>&nbsp;M<sup>&minus;1</sup>
       range is cheap to cover.</li>
   <li>If the confidence interval spans decades, check first that
-      K<sub>a,guest</sub> &sdot; [H]<sub>0</sub> is of order 1 at the
+      K<sub>a</sub> guest &sdot; [H]<sub>0</sub> is of order 1 at the
       titration midpoint; otherwise the displacement window is too
       narrow for the data to discriminate.</li>
   <li>A value at the lower bound with the interval open below it means
       guest is too weak to displace the dye under your conditions
       &mdash; decrease [H]<sub>0</sub> or use a weaker indicator.</li>
   <li>The interval reported covers whatever uncertainty you state for the
-      entered inputs under <b>Input Uncertainty</b>, with the interval
+      entered inputs under <b>Input uncertainty</b>, with the interval
       conditional on those inputs shown beside it. If stating a few percent
-      on K<sub>a,dye</sub> or [Host]<sub>0</sub> widens it sharply, your
-      K<sub>a,guest</sub> is limited by those numbers rather than by the
-      titration &mdash; the <i>K<sub>a</sub> Sensitivity</i> tab says which
-      of them it is.</li>
+      on K<sub>a</sub>,dye or [Host]<sub>0</sub> widens it sharply, your
+      K<sub>a</sub> guest is limited by those numbers rather than by the
+      titration &mdash; <i>Sensitivity</i> says which of them it is.</li>
 </ul>
-""")
+"""
 
-_I0_HTML = _with_sci_note("""
-<h3>I<sub>0</sub> &mdash; Baseline Signal</h3>
+_I0_HTML = """
+<p class="topic">I<sub>0</sub> &mdash; baseline signal</p>
 
-<p><b>What It Means Physically</b></p>
+<p><b>What it means physically</b></p>
 <p>The constant term in the signal model: solvent background, detector
 offset, and any non-dye contribution to the measured signal. Units:
 a.u. (arbitrary signal units).</p>
 
-<p><b>What It Controls in the Fit</b></p>
+<p><b>What it controls in the fit</b></p>
 <p>Shifts the whole fitted curve vertically. Because I<sub>0</sub>
 enters additively, it is <b>structurally degenerate</b> with
-I<sub>dye,free</sub>&sdot;[D] when [D]<sub>0</sub> is fixed (IDA and DBA
+I<sub>D</sub>&sdot;[D] when [D]<sub>0</sub> is fixed (IDA and DBA
 host-to-dye). Only
-the combination I<sub>0</sub> + I<sub>dye,free</sub>&sdot;[D]<sub>0</sub>
+the combination I<sub>0</sub> + I<sub>D</sub>&sdot;[D]<sub>0</sub>
 is physically identifiable in that case.</p>
 
-<p><b>Bounds Guidance</b></p>
+<p><b>Bounds guidance</b></p>
 <ul>
   <li>Use the dye-alone calibration intercept as a prior if available
-      (&ldquo;Load Dye-Alone&rdquo; in this panel).</li>
+      (<b>Bounds from dye alone…</b>).</li>
   <li>By default I<sub>0</sub> cannot be negative and has no upper
-      limit (its upper box is empty). If your raw signal has been
+      limit (its upper field is empty). If your raw signal has been
       background-subtracted and can legitimately go below zero, lower
       the bound manually. Where the fit holds I<sub>0</sub> at zero and the
       curve misses the data, the summary says so.</li>
@@ -132,26 +128,25 @@ is physically identifiable in that case.</p>
       other signal coefficients then compensate for it, and the curve
       still fits while none of the three means what it says.</li>
 </ul>
-""")
+"""
 
-_I_DYE_FREE_HTML = _with_sci_note("""
-<h3>I<sub>dye,free</sub> &mdash; Free-Dye Signal Coefficient</h3>
+_I_DYE_FREE_HTML = """
+<p class="topic">I<sub>D</sub> &mdash; free-dye signal coefficient</p>
 
-<p><b>What It Means Physically</b></p>
+<p><b>What it means physically</b></p>
 <p>Molar response of the instrument to free dye: how much signal is
 produced per 1&nbsp;M of uncomplexed dye. Units: a.u.&nbsp;M<sup>&minus;1</sup>.
 Equal to the slope of a &ldquo;Dye Alone&rdquo; calibration.</p>
 
-<p><b>What It Controls in the Fit</b></p>
+<p><b>What it controls in the fit</b></p>
 <p>Scales the part of the signal coming from free dye. Combined with
-I<sub>dye,bound</sub>, it sets the overall dynamic range of the
+I<sub>HD</sub>, it sets the overall dynamic range of the
 titration.</p>
 
-<p><b>Bounds Guidance</b></p>
+<p><b>Bounds guidance</b></p>
 <ul>
-  <li>The best prior is a dye-alone fit &mdash; use the
-      &ldquo;Load Dye-Alone&rdquo; button to constrain this parameter
-      automatically.</li>
+  <li>The best prior is a dye-alone fit &mdash; <b>Bounds from dye alone…</b>
+      constrains this parameter from it.</li>
   <li>The summary stars every parameter the data fix only in
       combination with others. When this one is starred, only the
       combination is a result; tightening this bound from a dye-alone
@@ -159,50 +154,50 @@ titration.</p>
       own.</li>
   <li>Must stay &ge;&nbsp;0 for any physically meaningful instrument.</li>
 </ul>
-""")
+"""
 
-_I_DYE_BOUND_HTML = _with_sci_note("""
-<h3>I<sub>dye,bound</sub> &mdash; Host&ndash;Dye Complex Signal Coefficient</h3>
+_I_DYE_BOUND_HTML = """
+<p class="topic">I<sub>HD</sub> &mdash; host&ndash;dye complex signal coefficient</p>
 
-<p><b>What It Means Physically</b></p>
+<p><b>What it means physically</b></p>
 <p>Molar response of the instrument to the host&ndash;dye complex, in
 a.u.&nbsp;M<sup>&minus;1</sup>. Often very different from
-I<sub>dye,free</sub> because binding changes the dye&rsquo;s environment
+I<sub>D</sub> because binding changes the dye&rsquo;s environment
 (quantum yield, &lambda;<sub>max</sub>, protonation state, etc.).</p>
 
-<p><b>What It Controls in the Fit</b></p>
+<p><b>What it controls in the fit</b></p>
 <p>Sets the saturation level of the titration. If your titration curve
-has reached a clear plateau, I<sub>dye,bound</sub> is the easiest
+has reached a clear plateau, I<sub>HD</sub> is the easiest
 parameter to recover reliably.</p>
 
-<p><b>Bounds Guidance</b></p>
+<p><b>Bounds guidance</b></p>
 <ul>
   <li>If your signal <i>decreases</i> upon binding (turn-off sensor),
       remember this coefficient can legitimately be smaller than
-      I<sub>dye,free</sub>.</li>
+      I<sub>D</sub>.</li>
   <li>It has no upper limit unless you enter one. When a fit returns
       a plateau that doesn&rsquo;t match the data and the summary says
-      I<sub>dye,bound</sub> ended on a bound you entered, widen that
+      I<sub>HD</sub> ended on a bound you entered, widen that
       bound before blaming K<sub>a</sub>.</li>
   <li>Where the dye concentration is held fixed (IDA, DBA host-to-dye), its
-      absolute value is under-determined; trust the difference (I<sub>dye,bound</sub>&nbsp;&minus;&nbsp;I<sub>dye,free</sub>)
+      absolute value is under-determined; trust the difference (I<sub>HD</sub>&nbsp;&minus;&nbsp;I<sub>D</sub>)
       rather than either coefficient alone.</li>
 </ul>
-""")
+"""
 
-_SLOPE_HTML = _with_sci_note("""
-<h3>Slope &mdash; Dye-Alone Calibration Slope</h3>
+_SLOPE_HTML = """
+<p class="topic">Slope &mdash; dye-alone calibration slope</p>
 
-<p><b>What It Means Physically</b></p>
+<p><b>What it means physically</b></p>
 <p>Instrument response per unit dye concentration in the absence of
 host, in a.u.&nbsp;M<sup>&minus;1</sup>. Numerically equal to
-I<sub>dye,free</sub> in the dye-alone assay.</p>
+I<sub>D</sub> in the dye-alone assay.</p>
 
-<p><b>What It Controls in the Fit</b></p>
+<p><b>What it controls in the fit</b></p>
 <p>Sets the steepness of the linear calibration
 <i>S = slope &middot; [D] + intercept</i>.</p>
 
-<p><b>Bounds Guidance</b></p>
+<p><b>Bounds guidance</b></p>
 <ul>
   <li>If the fit slope is negative and your dye gets brighter with
       concentration, recheck your data: something is wrong (inverted
@@ -210,21 +205,21 @@ I<sub>dye,free</sub> in the dye-alone assay.</p>
   <li>Defaults cover a very wide positive range &mdash; you rarely need
       to adjust them for dye-alone calibrations.</li>
 </ul>
-""")
+"""
 
-_INTERCEPT_HTML = _with_sci_note("""
-<h3>Intercept &mdash; Dye-Alone Calibration Intercept</h3>
+_INTERCEPT_HTML = """
+<p class="topic">Intercept &mdash; dye-alone calibration intercept</p>
 
-<p><b>What It Means Physically</b></p>
+<p><b>What it means physically</b></p>
 <p>The extrapolated signal at zero dye concentration in a
 dye-alone experiment: solvent background, autofluorescence, and
 instrument offset rolled into one term, in a.u.</p>
 
-<p><b>What It Controls in the Fit</b></p>
+<p><b>What it controls in the fit</b></p>
 <p>Shifts the calibration line vertically. Gets propagated into
-I<sub>0</sub> of later IDA/DBA fits when you use dye-alone priors.</p>
+I<sub>0</sub> of later IDA/DBA fits when you bound them from a dye-alone calibration.</p>
 
-<p><b>Bounds Guidance</b></p>
+<p><b>Bounds guidance</b></p>
 <ul>
   <li>Allow the intercept to go negative if your data could be
       background-subtracted.</li>
@@ -232,82 +227,82 @@ I<sub>0</sub> of later IDA/DBA fits when you use dye-alone priors.</p>
       systematic baseline issue &mdash; investigate before using the
       result downstream.</li>
 </ul>
-""")
+"""
 
-_KA_HG_HTML = _with_sci_note("""
-<h3>K<sub>a(HG)</sub> &mdash; First Stepwise Association Constant</h3>
-<p><b>What It Means</b></p>
+_KA_HG_HTML = """
+<p class="topic">K<sub>a</sub> HG &mdash; first stepwise association constant</p>
+<p><b>What it means</b></p>
 <p>Association constant for the first binding step <i>H + G &#x21CC; HG</i>
 (M<sup>&minus;1</sup>). Shared by the 1:2 (HG<sub>2</sub>) and 2:1
 (H<sub>2</sub>G) models as the first host&ndash;guest contact.</p>
 <p><b>Identifiability</b></p>
 <p>Searched on a log grid over a wide range. It trades off with the
 second-step constant, so judge it from its confidence interval and from the
-joint region of the pair on the <i>Identifiability</i> tab, not from the
+joint region of the pair on <i>Ka confidence</i>, not from the
 estimate alone. Its interval covers the uncertainty you state for the entered
-inputs under <b>Input Uncertainty</b>; the region of the pair holds them at the
+inputs under <b>Input uncertainty</b>; the region of the pair holds them at the
 values you entered.</p>
-""")
+"""
 
-_KA_HG2_HTML = _with_sci_note("""
-<h3>K<sub>a(HG&#x2082;)</sub> &mdash; Second Stepwise Constant (1:2)</h3>
+_KA_HG2_HTML = """
+<p class="topic">K<sub>a</sub> HG&#x2082; &mdash; second stepwise constant (1:2)</p>
 <p>Association constant for <i>HG + G &#x21CC; HG<sub>2</sub></i>
 (M<sup>&minus;1</sup>), the binding of a second guest. The ratio
-K<sub>a(HG&#x2082;)</sub>/K<sub>a(HG)</sub> reports cooperativity relative to
-the statistical expectation. Strongly correlated with K<sub>a(HG)</sub>, so a
-statement about the two together belongs to the joint region on the
-<i>Identifiability</i> tab, not to the two intervals read side by side.</p>
-""")
+K<sub>a</sub> HG&#x2082;/K<sub>a</sub> HG reports cooperativity relative to
+the statistical expectation. Strongly correlated with K<sub>a</sub> HG, so a
+statement about the two together belongs to the joint region on
+<i>Ka confidence</i>, not to the two intervals read side by side.</p>
+"""
 
-_KA_H2G_HTML = _with_sci_note("""
-<h3>K<sub>a(H&#x2082;G)</sub> &mdash; Second Stepwise Constant (2:1)</h3>
+_KA_H2G_HTML = """
+<p class="topic">K<sub>a</sub> H&#x2082;G &mdash; second stepwise constant (2:1)</p>
 <p>Association constant for <i>HG + H &#x21CC; H<sub>2</sub>G</i>
 (M<sup>&minus;1</sup>), the binding of a second host to the same guest.
-Strongly correlated with K<sub>a(HG)</sub>, so a statement about the two
-together belongs to the joint region on the <i>Identifiability</i> tab, not to
+Strongly correlated with K<sub>a</sub> HG, so a statement about the two
+together belongs to the joint region on <i>Ka confidence</i>, not to
 the two intervals read side by side.</p>
-""")
+"""
 
-_I_G_HTML = _with_sci_note("""
-<h3>I<sub>G</sub> &mdash; Free-Guest Signal Coefficient</h3>
+_I_G_HTML = """
+<p class="topic">I<sub>G</sub> &mdash; free-guest signal coefficient</p>
 <p>Per-molar signal contribution of unbound guest (a.u./M). Like all the
 linear signal coefficients it is only weakly identifiable on its own;
 constrain it with a calibration if a fit looks unstable.</p>
-""")
+"""
 
-_I_H_HTML = _with_sci_note("""
-<h3>I<sub>H</sub> &mdash; Free-Host Signal Coefficient</h3>
+_I_H_HTML = """
+<p class="topic">I<sub>H</sub> &mdash; free-host signal coefficient</p>
 <p>Per-molar signal contribution of unbound host (a.u./M). <b>Pinned to zero
-by default</b> &mdash; most hosts are optically silent. Widen its bounds in
-this panel to fit it.</p>
-""")
+by default</b> &mdash; most hosts are optically silent. Widen its bounds to fit
+it.</p>
+"""
 
-_I_HG_HTML = _with_sci_note("""
-<h3>I<sub>HG</sub> &mdash; 1:1 Complex Signal Coefficient</h3>
+_I_HG_HTML = """
+<p class="topic">I<sub>HG</sub> &mdash; 1:1 complex signal coefficient</p>
 <p>Per-molar signal contribution of the HG complex (a.u./M).</p>
-""")
+"""
 
-_I_HG2_HTML = _with_sci_note("""
-<h3>I<sub>HG&#x2082;</sub> &mdash; 1:2 Complex Signal Coefficient</h3>
+_I_HG2_HTML = """
+<p class="topic">I<sub>HG&#x2082;</sub> &mdash; 1:2 complex signal coefficient</p>
 <p>Per-molar signal contribution of the HG<sub>2</sub> complex (a.u./M).</p>
-""")
+"""
 
-_I_H2G_HTML = _with_sci_note("""
-<h3>I<sub>H&#x2082;G</sub> &mdash; 2:1 Complex Signal Coefficient</h3>
+_I_H2G_HTML = """
+<p class="topic">I<sub>H&#x2082;G</sub> &mdash; 2:1 complex signal coefficient</p>
 <p>Per-molar signal contribution of the H<sub>2</sub>G complex (a.u./M).</p>
-""")
+"""
 
 PARAMETER_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     'Ka_dye': ('K\u2090,dye \u2014 Host\u2013Dye Association Constant', _KA_DYE_HTML),
-    'Ka_guest': ('K\u2090,guest \u2014 Host\u2013Guest Association Constant', _KA_GUEST_HTML),
+    'Ka_guest': ('K\u2090 guest \u2014 Host\u2013Guest Association Constant', _KA_GUEST_HTML),
     'I0': ('I\u2080 \u2014 Baseline Signal', _I0_HTML),
-    'I_dye_free': ('I_dye,free \u2014 Free-Dye Signal Coefficient', _I_DYE_FREE_HTML),
-    'I_dye_bound': ('I_dye,bound \u2014 Bound-Dye Signal Coefficient', _I_DYE_BOUND_HTML),
+    'I_dye_free': ('I_D \u2014 Free-Dye Signal Coefficient', _I_DYE_FREE_HTML),
+    'I_dye_bound': ('I_HD \u2014 Bound-Dye Signal Coefficient', _I_DYE_BOUND_HTML),
     'slope': ('Slope \u2014 Dye-Alone Calibration Slope', _SLOPE_HTML),
     'intercept': ('Intercept \u2014 Dye-Alone Calibration Intercept', _INTERCEPT_HTML),
-    'Ka_HG': ('Kₐ(HG) — First Stepwise Association Constant', _KA_HG_HTML),
-    'Ka_HG2': ('Kₐ(HG₂) — Second Stepwise Constant (1:2)', _KA_HG2_HTML),
-    'Ka_H2G': ('Kₐ(H₂G) — Second Stepwise Constant (2:1)', _KA_H2G_HTML),
+    'Ka_HG': ('Kₐ HG — First Stepwise Association Constant', _KA_HG_HTML),
+    'Ka_HG2': ('Kₐ HG₂ — Second Stepwise Constant (1:2)', _KA_HG2_HTML),
+    'Ka_H2G': ('Kₐ H₂G — Second Stepwise Constant (2:1)', _KA_H2G_HTML),
     'I_G': ('I_G — Free-Guest Signal Coefficient', _I_G_HTML),
     'I_H': ('I_H — Free-Host Signal Coefficient', _I_H_HTML),
     'I_HG': ('I_HG — 1:1 Complex Signal Coefficient', _I_HG_HTML),

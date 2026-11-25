@@ -1,0 +1,845 @@
+# SupraSimFit design system
+
+The design reference for the desktop app's interface: the approved design, final as
+documented here. A design choice it does not settle is put to the owner, never picked
+silently, and the answer becomes part of this document and the tokens.
+
+- **Code.** `gui/design/` is the design system as code: `tokens.py` (colour, space,
+  radius, sizes, type), `stylesheet.py` (the QSS template), `components.py` (the shared
+  controls), `plot_theme.py` (pyqtgraph) and `icons.py`. The code holds every value; this
+  document says how to use them.
+- **Reference screens.** `docs/design/screens/<name>_<light|dark>.jpg` show the approved
+  look of the running app with Demo IDA, its fit and its sensitivity analysis, at 1.5×
+  scale (the main window is 1440 × 900, the Settings and Help windows their own size):
+  every view, an empty session, and the menus and the readout the pointer opens. `uv run python -m docs.design.render --all docs/design/screens` renders
+  them all from the real windows (`SCREENS` in `docs/design/render.py`), so they show
+  what ships; each sensitivity analysis runs at Fixed seed 0 on two processor cores, so a
+  render of the same build draws the same samples. A change to a view is finished when its render (`docs/design/render.py`,
+  the running window drawn off screen) has been compared with the view's references in
+  both themes; a deliberate change to the approved look renders the references again.
+- **Rules for agents.** `gui/CLAUDE.md` is the short, binding version of this document.
+
+Views set no stylesheet of their own.
+
+---
+
+## 1. Principles
+
+1. **The data is the loudest thing on screen.** Chrome is quiet: one surface colour,
+   hairline borders, no gradients, no decorative shadows.
+2. **One meaning per colour.** Accent marks the reported result, selection and keyboard
+   focus, links, the primary action, and work in progress. Amber, green and red mark a
+   result's warnings, passes and errors. Neutral greys carry everything else, with one
+   exception: in the titration plot each replicate has a colour of its own, which names it
+   (`replicate-1` … `replicate-12`); Plot appearance (§8) may draw them all in grey instead.
+3. **Run state lives in three places.** Whether a session or analysis is running, done,
+   out of date or carrying warnings shows as navigation marks, session-switcher lines and
+   the status bar. A result's own warnings and test outcomes show inside its view, as
+   callouts and diagnostic marks. The badge beside the title states neither.
+4. **Every label means exactly what it says.** A number shown with a name is that
+   quantity, in the unit shown. An axis, legend entry or sentence that can be read two
+   ways is a defect.
+5. **Plain language.** Users are chemists, not statisticians or programmers. Sentences say
+   what happened, why, and what to do, in as few words as that takes.
+6. **Light and dark are both first-class.** Every surface, control and plot is designed in
+   both; neither is a recolouring of the other.
+7. **A desktop tool for long sessions.** Dense but calm layouts, keyboard shortcuts for
+   frequent commands, nothing that interrupts work that can be shown in place.
+
+---
+
+## 2. Foundations
+
+### Colour
+
+One map per theme in `tokens.py` (`LIGHT`, `DARK`), the same keys in both. Widgets read
+colours only through a `Theme` — `t.q('token')`, `t['token']`, or `{{token}}` in the
+stylesheet template.
+
+| Token | Use |
+|---|---|
+| `bg-window` | Window background behind surfaces; Settings window; dark segmented-control track |
+| `bg-sidebar` | Sidebar and status bar |
+| `bg-surface` | Toolbar, canvas, side panel, plots, cards |
+| `bg-raised` | Popovers, menus, tooltips; in dark, also the selected segment |
+| `bg-subtle` | Wells: light segmented-control track, neutral badges, inset fields |
+| `bg-hover` | Hover fill of rows, nav items, menu rows and tool buttons |
+| `bg-selected` | Selected nav item and selected list row |
+| `border` / `border-strong` | Hairlines and dividers / control outlines and plot axes |
+| `grid` | Plot grid lines |
+| `text-primary` | Body text, values, titles |
+| `text-secondary` | Labels, captions, axis tick labels, secondary values |
+| `text-tertiary` | Hints, notes, units after a value, shortcuts in menus, column headers of dense tables |
+| `text-disabled` | The text, icon and marks of a disabled control: its label, value, chevron, check and a slider's fill or a toggle's track; the palette's disabled text |
+| `accent`, `accent-hover` | Reported (input-aware) result and fitted curve; selection; 2-px keyboard focus ring and the reveal mark; links; primary button; work in progress (status-bar dot while work runs, the switcher's busy dot, progress rings); the open session switcher's outline and icon tile |
+| `accent-subtle` | Tint behind accent text and marks: Input-aware badge, the switcher's icon tile |
+| `on-accent` | Text and icons on accent |
+| `success`, `warning`, `danger` with `-bg` (and `warning-border`) | A result's passed test, warning or error: diagnostic marks, callouts, messages |
+| `replicate-1` … `replicate-12` | The replicates of the titration plot, one colour each: replicate *n* in the order the data name them A, B, … takes `replicate-n`, in every view and whether or not others are switched off; past twelve the colours repeat with the next mark. The same hue in both themes, lighter in dark |
+| `replicate` | Every replicate's points when Plot appearance (§8) chooses *Grey*; the simulated replicates of Simulation |
+| `replicate-off` | The × of a replicate chip switched off |
+| `series-1`, `series-2` | The two series of the Sobol' chart: S₁ (solid) and S_T (outlined) |
+| `species-dye`, `species-guest`, `species-host`, `species-step2` | The species of Simulation, one hue per partner: the dye and its complex with the host, the guest and its first complex, the free host, the second-step complex (HG₂, H₂G); solid in a complex, dashed when free |
+| `heat-0` … `heat-8` | The heat scale of the sensitivity heatmap, low to high: perceptual and multi-hue (viridis), each stop lighter than the one below |
+| `traffic` | Window controls of an inactive window |
+| `shadow` | Shadows under what floats (popovers, menus, the Settings window) and under a toggle's knob, always at low opacity |
+
+**Contrast.** Every text token meets WCAG AA (4.5 : 1) on every background text is drawn
+on, hover and selection fills included, and each status colour on its own `-bg`.
+`text-disabled` is the one exception, by design: on every ground a disabled control stands
+on (`bg-window`, `bg-sidebar`, `bg-surface`, `bg-raised`, `bg-subtle`) it stands out by more
+than 1.6 : 1, so it still reads as a word, and by at most 3 : 1, two thirds of the AA every
+enabled text keeps, so a disabled control is never taken for an enabled one.
+`tests/unit/gui/test_design_system.py` checks both themes.
+
+**Data marks** may use a token at reduced opacity; text never does. The approved plots
+use: replicate dots and the × of a replicate not used at 80 %, in both themes; the sample histogram `text-secondary` at 62 %
+inside the middle 90 % and 22 % outside; S₁ bars solid `series-1`, S_T bars `series-2` at
+16 % (light) and 24 % (dark) inside a 90 % edge; interval bands `accent` at 8 %. The
+reported result and fitted curve take `accent` (Plot appearance may give the curve another colour); the reading at the inputs as entered takes
+`text-secondary` (its marker line in the sensitivity histogram is dashed `text-primary`,
+its interval a `text-secondary` bracket). Each series and species colour stands out from `bg-surface`
+by 3 : 1, no species takes `accent` or a series colour, and the heat scale rises in
+lightness. Each replicate colour, at the 80 % its points are drawn at, stands out from
+`bg-surface` by 3 : 1 and differs by a CIEDE2000 ΔE of 15 at least from every other
+replicate colour, from the means' `text-primary` and from every colour the fitted curve
+may take. At 80 % a point that overlaps another replicate's still shows its edge; much
+lighter, twelve colours cannot meet both bounds on white. `test_design_system.py`
+checks all of these.
+
+### Type
+
+The platform UI font (SF Pro on macOS, Segoe UI on Windows), four sizes on any screen.
+
+| Role | Size / weight | Use |
+|---|---|---|
+| `metric` | 28 px DemiBold, tabular | The headline value of a view (the reported Ka) |
+| `title` | 20 px DemiBold | Toolbar title |
+| `title-number` | 20 px DemiBold, tabular | A value beside a headline: the second reading of Ka confidence, the spread of Sensitivity |
+| `body`, `body-strong` | 13 px Normal / DemiBold | Text, controls, section titles, selected segments |
+| `number`, `number-strong` | 13 px, tabular | Values in rows and tables |
+| `label`, `small`, `small-number` | 12 px Medium / Normal / tabular | Captions, axis titles, ticks, hints |
+| `overline` | 12 px DemiBold, sentence case, `text-tertiary` | Sidebar group titles, popover headings |
+
+**Plot text** (`PLOT_TEXT`, `plot_font()`) is a scale of its own: the text of every plot —
+the titration, Ka confidence's profiles, strips and joint region, Sensitivity's sample
+histogram, heatmap and plots against each source, Simulation's titration and species —
+and the heads of their saved figures, in the three sizes Plot appearance offers
+(§8). Each step is 2 px up and about one ratio from the last, and the weight is the same
+at every step, so a larger size changes the size of the text and nothing else.
+
+| Step | Tick labels, in-plot labels, figure notes | Axis titles, figure titles |
+|---|---|---|
+| *Standard* | 16 px Normal, tabular | 18 px Medium |
+| *Large* | 18 px Normal, tabular | 20 px Medium |
+| *Larger* | 20 px Normal, tabular | 22 px Medium |
+
+The rows and values of Sensitivity's index chart stay in the window's type: its columns
+line up with the variance budget's table beneath it.
+
+Numbers use tabular figures so columns align. Scientific notation is `1.59 × 10⁸`, thin
+spaces around `×`, superscript exponent — wherever a number stands: views, saved figures,
+the status bar and the reports, every value with its unit (`RMSE 2.36 a.u.`). A field
+writes a number the same way, with every figure it holds (`9 510`, `4.3`, `1.68 × 10⁷`),
+and reads back what it writes as well as what is typed (`1.68e7`); the binding constants,
+inputs and signal parameters each carry one label, written alike in rich and in plain text
+(`Kₐ guest`, `Kₐ,dye`, `I_HD` where a subscript of letters has no plain form). Where a view states an interval in prose or a
+headline it shares one power of ten — `1.14 – 2.08 × 10⁸ M⁻¹`; interval-chart rows and
+the TXT/CSV reports use `estimate [low, high]`.
+
+### Space, size and shape
+
+- **Spacing** (`SPACE`, `space(n)`): 0, 2, 4, 8, 12, 16, 24, 32, 48 px. Margins and
+  spacings take only these.
+- **Fixed sizes** (`SIZE`): sidebar 232, side panel 320 (at least 280), toolbar 52,
+  status bar 28, nav item 28, session switcher 44, controls 28, badges 18, menu rows 32 with a
+  16-px icon and a 14-px check mark; the inputs grid of Input uncertainty: name 168, kind 156,
+  stated in 88 and spread bar 96 px wide, rows 60 px high; the headline column of Fit
+  results, 264; the bars of Sensitivity's sample histogram, 64, its labels and axis added
+  at their text's height; the least height of an analysis
+  plot on screen, 320; the marks of the analysis plots — an estimate or entered point as
+  a 14-px diamond, a 9-px dot where the pointer meets a curve, a 1.25-px whisker with
+  6-px caps — and Simulation's pointer marks, 10 px on the signal and 8 px on each
+  species; a saved figure 900 px wide inside a white margin of 24 (`figure-margin`), each Ka profile or joint region in it 420 px high,
+  the titration plot 600, Simulation's signal and species plots 520 and 400.
+- **Radius** (`RADIUS`): 6 px controls, 8 px cards, 10 px popovers, menus and the
+  Settings window, 2 px the Sobol' index bars; badges and toggles are fully rounded, at
+  half their height.
+- **Durations** (`DURATION`): the reveal mark stays 1500 ms (`reveal-mark`).
+- **Hairlines** are 1 px `border`. Panels are separated by hairlines, not gaps or shadows.
+- **Shadows** only under what floats above the window — popovers, menus, the Settings
+  window: `shadow` (black) at low opacity, deeper in dark than in light.
+
+### Icons
+
+Line icons in the Lucide style (ISC licence) on a 24-unit grid with round caps, tinted
+from a text or accent token: 16 px with stroke 1.75 in controls and navigation, 14 px in
+dense rows, 12 px with stroke 2–2.6 for chevrons and check marks inside fields, chips and
+marks. The set is `gui/design/icons.py`; a new icon is added there in the same style.
+
+### Themes
+
+Appearance follows the System / Light / Dark setting (§8, Settings), applied at once to
+every open window. One app-level object holds the current `Theme` and emits a signal when
+it changes; under *System* it follows the operating system's colour scheme
+(`QStyleHints.colorScheme`). Light and Dark are also the colour scheme Qt is asked for
+(`QStyleHints.setColorScheme`; *System* asks for none), so what Qt takes from the platform
+— native file dialogs, window frames, the menu bar — follows the app's choice, not the
+operating system's. The palette sets every role of every group from the theme (disabled
+text in `text-disabled` on `bg-subtle`), so nothing Qt draws takes a platform colour. The app
+runs `DesignStyle`, Fusion with the icons of a message box drawn from the icon set in the
+theme on screen — a question or a notice in `accent`, a warning in `warning`, an error in
+`danger` — each standing out from the box by 3 : 1 in both themes. On a change it re-applies the
+stylesheet and palette, and every painted component, which reads the theme from that
+object, repaints. **Exported
+figures always use the light plot theme on a white background**, whatever the window
+shows.
+
+### The stylesheet contract
+
+`stylesheet.py` styles widgets by object name and by two dynamic properties; a widget
+without them gets no styling.
+
+| Selector | Set on |
+|---|---|
+| `#Sidebar`, `#StatusBar` | The sidebar and the status bar |
+| `#Toolbar`, `#Canvas`, `#Inspector`, `#InspectorBody` | Toolbar, canvas, side panel and its scrolled body |
+| `role="hairline"` | 1-px dividers |
+| `role="badge"` + `tone="accent"` / `"neutral"` | Badges |
+| `role="link"` | Link buttons |
+| `tone="secondary"` / `"tertiary"` | Labels in those text colours |
+
+---
+
+## 3. The main window
+
+![Fit results](screens/fit_light.jpg)
+
+```
+┌──────────┬──────────────────────────────────────────────────────────────┐
+│ ● ● ●  ▯ │ Title  [summary badge]   Load data ▾  Export ▾ │ ? ▯  [Run] │ toolbar 52
+│ Session ⇅│──────────────────────────────────────────────┬───────────────│
+│          │ Headline                       Detail link → │ Side panel  × │
+│ Design   │                                              │ ▾ Section     │
+│  items   │                                              │               │
+│ Experiment                                              │ ▾ Section     │
+│  items  ✓│ Callout                                      │ ▾ Section     │
+│ Analysis │                                              │ ▸ Section     │
+│  items  ●│ Plot header: title · legend · tools · ⤓     │               │
+│ Presentation  Plot                                      │               │
+│          │                                              │               │
+│ file card│                                              │               │
+├──────────┴──────────────────────────────────────────────┴───────────────┤
+│ ● what is running                                      model line       │ status 28
+└─────────────────────────────────────────────────────────────────────────┘
+  sidebar 232                                               side panel 320
+```
+
+- **Sidebar** (`bg-sidebar`): a 52-px top row with the sidebar toggle — on macOS the
+  sidebar reaches up under a transparent title bar and the row also holds the native
+  window controls; Windows and Linux keep the system's own title bar above the window — the **session
+  switcher**; the navigation in four groups, in the order of the work — *Design*
+  (Simulation), *Experiment* (Measurements, Binding model, Input uncertainty), *Analysis*
+  (Fit results, Ka confidence, Sensitivity), *Presentation* (Plot appearance); and the
+  **file card** at its foot.
+- **Navigation marks** at the right of an item: ✓ done; amber dot — the result carries a
+  warning, read from the very callouts the view shows (a callout in `warning` tone marks
+  its view, and a view with none is never marked amber); hollow ring — out of date, its
+  data or settings changed since it ran; none — not run. The selected item has the `bg-selected` fill and a 3-px accent bar at its left.
+- **File card**: the data behind the session on screen — the file name (`GDA_run1.txt
+  + 2 more` for several) and `<assay> · <n> replicates × <m> points`. Clicking it opens
+  Measurements.
+- **Toolbar** (`bg-surface`): it follows the view on screen — the view title in `title`
+  and its summary badge; at the right *Load data ▾*, *Export ▾*, a divider, Help (the
+  Help window at the view on screen), the side-panel toggle and the **primary button** —
+  *Run fit* (⌘R), *Run analysis* in Sensitivity, *Fit the data* in Simulation — at one
+  fixed width in every view, the width of its widest label, so the toolbar never shifts. It
+  belongs to the session on screen: while that session runs it reads *Stop* (⌘R stops
+  too). *Export ▾* holds: Results file… (⌘S, re-opens with its fit), Report (TXT)…, Table
+  (CSV)…, Raw data…, Plot image…, and Export several… (⇧⌘E); in Simulation it holds
+  Curve image… and Data file….
+- **Canvas** (`bg-surface`): headline first — its row may end in one detail link at the
+  right (*All results and diagnostics →*) — then any callout, then the plot or table.
+  Content left edges share one column.
+- **Side panel** (`bg-surface`, hairline on its left): the view's settings and details in
+  collapsible sections. Its header names it (*Fit details*, *Measurement settings*,
+  *Analysis settings*, *Notes*, *Effect on the fit*, *Simulation settings*), may hold one
+  link (*Reading this plot →*) or menu (Simulation's ⋯), and closes it. Fit results and Ka confidence keep fit
+  quality, diagnostics and notes in the side panel.
+- **Status bar** (`bg-sidebar`): left, a dot — accent while work runs, `text-tertiary`
+  when idle — and a summary of all running work (`2 running · IDA_system fitting ·
+  DBA_HtoD_0411 Sensitivity 62 %`, or `Ready` with the session on screen's last message);
+  clicking it opens the session switcher; right, the model line in `text-tertiary` (`Indicator displacement
+  · 1 binding constant · Profile likelihood, 95 % · Weighted by noise law`).
+- **Menu bar**: *File* (New session ⌘T, Load data…, Open results file…, the export
+  commands, Settings… on Windows and Linux, Quit), *Tools* (Simulate…, which shows Simulation; Open demo
+  data (IDA)), *View* (the side panels and every view),
+  *Help* (SupraSimFit help, at the view on screen, with the platform's help key; Check for
+  updates…). On macOS *Settings…* ⌘, is in the app
+  menu.
+
+**Shortcuts** are written here in macOS notation. In code a command uses Qt's standard
+key where one exists (`QKeySequence.StandardKey`: Open, Save, Close, Preferences, Quit),
+otherwise a `Ctrl+…` sequence, which Qt shows as ⌘ on macOS; every shortcut on screen is
+rendered from its key sequence. A platform with no standard key for a command gives it no
+shortcut.
+
+One primary (filled accent) button per window. Every other toolbar command is a tool
+button.
+
+---
+
+## 4. Sessions and files
+
+A **session is one experiment**: its data, binding model, input uncertainties and
+analyses. A different experiment is a different session. One window holds every open
+session, reached through the session switcher.
+
+![Session switcher](screens/switcher_light.jpg)
+
+- **Session switcher** (top of the sidebar, 44 px): an icon tile, the session's name and
+  `<assay> · <n> replicates`, the number of open sessions, and an accent dot when another
+  session is busy. Clicking opens a popover headed *Open sessions* (⌘1 – ⌘9): one row per
+  session with its name, its second line and a one-line summary at the right — its
+  reported Ka and any warning (`Ka 1.59 × 10⁸ M⁻¹ · 1 warning`, amber dot; a session with
+  two binding constants gives their count, `2 binding constants · 1 warning`), its progress
+  while running (`Fitting · 62 %`, accent ring), or `Needs refit · data changed` (hollow
+  ring) — the session on screen marked with ✓, each session's tile in the icon column of the
+  commands below so names and command labels start on one line; then the commands *New session* ⌘T, *Load
+  data into a new session…* ⇧⌘O, *Open results file…*, *Duplicate <session>*, *Close
+  <session>* ⌘W.
+- **Load data ▾** has four commands: *Add files to this session…* ⌘O, *Replace data…*,
+  *Load data into a new session…* ⇧⌘O and, apart, *Open demo data (IDA)*. Adding keeps
+  every fit; replacing is always an explicit choice. Every load command goes through the
+  session model (`load_files()`, `add_files()`).
+- **The demo** is the bundled IDA titration (`gui.dataset.DEMO_IDA`) with its own settings
+  (`SessionModel.set_up_demo()`: the IDA model at its default conditions and bounds, typical
+  input uncertainties, Outlier removal at its defaults, which Measurement settings then
+  shows), fitted as it loads. It is where data are loaded: *Load data ▾* and *Tools ▸ Open
+  demo data (IDA)* fill the session on screen where it holds nothing, else a new one; the
+  empty state of every view of an empty session — a new session opens on it — fills that
+  session. Its file is a bundled example, inside the app, so no save offers a folder inside
+  the app: every save starts in the data file's own folder, or in Documents where the data
+  are a bundled example or come from no file (`SessionModel.save_folder()`); *Export
+  several…* starts in the folder it last wrote to where that still exists.
+- **Edits of the data in place keep every result.** Adding or removing a file, stating the
+  concentrations in another unit, typing or loading concentrations, and switching the
+  channel of a plate export hide a result made on other data (*Results hidden*) and show
+  it again, unchanged, once the data match it. Only *Replace data…* and removing the last
+  file drop the results. Any change to the data stops the fit or analysis running, which
+  was given the data as they were; the status bar says what changed and what it stopped.
+
+![Load data menu](screens/measurements_load_light.jpg)
+
+- **Files of one session become its replicates** on one shared concentration grid. Files
+  are added later and removed one at a time from the Files table in Measurements. A file
+  on a different grid is refused with a message that says so. A multi-channel file
+  (EnSight) is loaded alone, one channel at a time.
+- **Running work.** Each session runs its own fit or analysis, and work continues when
+  another session is on screen. A running session shows its progress along a thin accent
+  line at the top of its canvas — indeterminate until the work can be counted, then
+  filling — and in its switcher row (ring and `Fitting · 62 %`). Its canvas keeps the last
+  result, marked out of date. The controls that feed the run (binding model, input
+  uncertainties, Sensitivity settings) are locked until it finishes or is stopped. The
+  toolbar's primary button reads *Stop* for the session on screen while it runs; the
+  status bar lists everything running, with no combined percentage, because a fit and a
+  Sobol' run are counted in different units. Each session keeps its own last status
+  message. ⌘O loads into the session on screen and leaves every other session as it is.
+- **Session names.** A session is *New session* until data is loaded, then the first
+  file's name without its extension (`IDA_system`); a results file opens under its saved
+  name, and a duplicate under its original's name with ` copy` (`IDA_system copy`).
+  Double-clicking a name in the switcher renames it.
+- **Closing.** Closing a running session asks first (*Stop the fit and close
+  IDA_system?*) and then stops its work. Closing the last session leaves one empty *New
+  session*, so the window is never blank.
+
+---
+
+## 5. Badges and callouts
+
+- The **badge beside the toolbar title is a summary** of what the view shows or is
+  computed from — `Input-aware · 7 of 8 replicates`, `3 files`, `4 inputs vary`, `Profile
+  likelihood · 95 %`, `Sobol' · N = 1024`, `IDA · 24 points · 3 replicates` — in the
+  `neutral` tone.
+- **Badges elsewhere** label a reading: `accent` for Input-aware; `neutral` for plain
+  labels such as *Inputs as entered* and *Split*.
+- **Callouts** carry a result's warning in its view: an icon, a bold title, one or two
+  sentences, and at most one action link at the right (`Inputs conflict  Together, the
+  inputs moved further from their entered values than you stated.  Show the input
+  shifts`; in Sensitivity, *Review in Ka confidence*). Warning callouts use `warning-bg`
+  with `warning-border`; neutral notes use `bg-subtle`.
+
+---
+
+## 6. Components
+
+`gui/design/components.py` holds every shared control; each exists once, and a new one
+is added there. QSS styles what Qt's widgets can express (§2); the rest is painted from
+the same tokens.
+
+| Component | What it is and its rules |
+|---|---|
+| **Primary button** | Filled accent, `on-accent` icon and label; one per window; fixed width in the toolbar |
+| **Tool button** | Icon and optional text, no border, `bg-hover` on hover; ▾ when it opens a menu; a checked state for toggles (side panel); disabled, its icon and text in `text-disabled` with no hover fill |
+| **Outline button** | `border-strong` outline on `bg-surface`; secondary actions in forms (*Apply*, *Check now*) |
+| **Link** | Accent text with an optional trailing →; navigates or opens detail. A link that names a place reveals it (below) |
+| **Focus ring** | 2 px accent around the focused control, on every keyboard-reachable control |
+| **Reveal mark** | A 2-px `accent` ring with the 8-px card radius, 2 px outside the edge of a place a link revealed and kept inside the scroll area it lies in, for `DURATION['reveal-mark']`; it takes no pointer event, clears early where the place is hidden, and a window shows one at a time. It neither moves nor fades, so it has no reduced-motion form |
+| **Segmented control** | Mutually exclusive options (Fixed / σ / Range, units, modes). Light: `bg-subtle` track, selected segment `bg-surface` with a `border` outline, other labels `text-secondary`. Dark: `bg-window` track, selected segment `bg-raised` lifted by 6 % `text-primary` with a `border-strong` outline, other labels `text-tertiary`. Selected label `body-strong`; single options can be disabled |
+| **Field** | Right-aligned value in a 6-px-radius box, an optional leading symbol inside (`σ`); its unit beside it — a segmented control where the unit is chosen once for a row or section, a menu beside a single value; a disabled state (Fixed seed off) |
+| **Dropdown** | Field-styled box with the current choice and a chevron; opens its choice menu. Its options are written once, as rich text, and shown both on the face and in the menu in the same type role (`number`); the box is as wide as its widest option needs, or the column it sits in where that is wider |
+| **Checkbox** | Box with an accent check; label to its right |
+| **Toggle** | Pill switch for on/off settings in the Settings window; accent when on |
+| **Slider** | Track in accent up to the knob, ticks, and its two end values at either side, each edited in place |
+| **Badge** | Pill, 18 px; tones `neutral` and `accent` (§5) |
+| **Menu** | Popover on `bg-raised`: check mark, icon, label, right-aligned shortcut in `text-tertiary`, separators, optional footer note. Its rows share one column layout measured from what they hold — a check column where a row can be checked, an icon column where a row has an icon, a label column as wide as the widest label, a shortcut column where a row has a shortcut — so the card is as wide as its widest row and every label is shown whole. It opens below its anchor, or above it where the window has more room there; a menu taller than the room is cut to it and scrolls (wheel, arrow keys), and at each edge past which rows are hidden the rows fade into `bg-raised` over 24 px under a 14-px chevron in `text-secondary` pointing to them; the row it opens on, or the keys move to, is scrolled clear of that band. It stays inside the window it opens in |
+| **Choice menu** | The menu of a dropdown, or of a tool whose rows are mutually exclusive choices (the replicate display): every row a choice, the current one marked with an accent check and the menu opened on it, at least as wide as its dropdown. Choosing a row closes it and sets the choice |
+| **Navigation item** | Icon, label, status mark; hover and selected fills (§3) |
+| **Session switcher and popover** | §4; the popover is `bg-raised`, 10-px radius, `border` outline, floating shadow |
+| **File card** | Sidebar foot (§3) |
+| **Side-panel section** | Disclosure header — chevron, `body-strong` title, trailing summary in `text-tertiary`, optionally a warning icon — its content, a hairline below |
+| **Settings group** | Rows separated by hairlines inside a bordered card on `bg-window`; a group title above |
+| **Callout** | §5 |
+| **Empty state** | What a view shows in place of content it does not have yet, centred in the room that content would take: a `title`, one sentence in `text-secondary` at most `measure` wide and, in a session that holds nothing, *Load data…* (outline button) beside *Try the demo data* (link), both filling that session. One rule of the session model (`SessionModel.empty_view()`) gives every view its words, reading the work running: a fit or an analysis on its way is said as running, never as not made. A side panel says its title alone. No view draws empty axes |
+| **Interval chart** | Log-Ka strip comparing intervals: Input-aware in accent, Inputs as entered in `text-secondary`, accepted stretches as bars, estimates as dots, numbers to the right. In the side panel a compact form stacks label and numbers above each bar |
+| **Shift bar** | An input's shift in σ against a ±1 σ band. In Fit details the % stands beside it, σ on hover; in the Ka confidence notes both % and σ |
+| **Replicate chip** | Replicate letter with ✓ when used or × when switched off, `z` when the outlier filter switched it off; click toggles |
+| **Legend row** | Above a plot, right-aligned, each entry drawn with the series' own mark |
+| **Readout** | The values under the pointer: a dotted vertical hairline through the plot(s) with a value tag, and the values in a row above the plot or a card at its top-right corner; in Simulation the species readout row is also the legend. The card is painted: one pass over its fonts' metrics sizes and draws it, so it is always as large as what it reads and the same reading takes the same room; it lets the pointer through to the plot beneath. A row's stroke is the key of a series drawn in the plot; a reading of no series — a heatmap cell's Kₐ, its change and R² — has none, and the card then keeps no room for one |
+| **Table** | Header row in `text-tertiary`, rows separated by hairlines, numbers right-aligned in tabular figures |
+| **Help window** | The app's one help: §8, *Help window* |
+
+Every component meets these rules:
+
+- **Accessible names.** Every control carries an accessible name that says which input
+  it sets, unit included (`Lower bound of Kₐ guest (M⁻¹)`), also where its visible label
+  is a separate rich-text label. No two controls on screen in one window share a name: the
+  model menu of Binding model is *Model in the category*, beside the *Binding model* item
+  of the sidebar.
+- **Fields fit their content.** A numeric field is as wide as the widest value it must
+  show — sign, mantissa and a three-digit exponent, or a ten-digit seed — measured from
+  its font and re-measured when the font changes.
+- **Painted controls ask for their content's room.** Every painted component reports the
+  size its content needs as its size hint and minimum size hint — measured from its fonts
+  and the tokens (a segmented control as many equal segments as it has options, each
+  holding the widest in `body-strong`; a slider room for its handle to travel past its
+  decade ticks), or fixed by its content — so a layout never gives it less; text that may
+  give way, a file name or the session's name, asks for an ellipsis.
+- **No text is cut off.** A line of text wider than the room it is given wraps (a note or
+  hint) or gives way to an ellipsis (a name; a plot description, its whole text on
+  hover); a plain one-line label is never clipped.
+- **Shortcuts in the platform's keys.** Every shortcut shown in a menu, tooltip or hint
+  is rendered from its action's `QKeySequence` in native text (⌘ on macOS, Ctrl
+  elsewhere), never written as a literal.
+- **Data in rich text is escaped.** File names, replicate names and any other text that
+  comes from data are HTML-escaped before they enter a rich-text label.
+- **Results can be copied.** The headline value, intervals and the Fit details tables
+  are selectable.
+- **Selection holds.** Clicking the selected navigation item keeps it selected.
+- **Disabled reads as disabled.** A disabled control draws its text, icon, chevron and
+  marks in `text-disabled`, on the sunken `bg-subtle` where it has a fill, never in
+  `accent`: buttons (a disabled primary on `bg-subtle`), outline buttons, links, fields,
+  menus and their rows, segmented controls, checkboxes, toggles and sliders alike.
+
+---
+
+**Revealing a place.** Every link, callout action and refusal that names a place takes
+the user there in the same steps, whatever is on screen already, so a click always
+answers: the place's view comes on screen; the side panels show where the place is in
+one; every section holding it opens; it is scrolled to the top of its scroll area; the
+focus moves to it — the place itself where Tab reaches it, else the first control in it
+Tab reaches, else the place, so Tab goes on from there; and the reveal mark rings it. A
+refusal reveals its place once its dialog is closed. The places: Measurements'
+concentrations, the first point open for typing (*Concentrations Required*); the headline
+of Fit results (*Show fit results*, *Compare in Fit results*); Diagnostics in Fit details
+(*All results and diagnostics →*); the two readings of Ka confidence (*Review in Ka
+confidence*, the conflict callouts of Fit results and Sensitivity); the input shifts in
+its Notes (*Show the input shifts*); the inputs table of Input uncertainty (*Edit in Input
+uncertainty*, a sensitivity analysis refused for nothing to vary); and the first problem
+a refused run's settings show, with the setting it is about (Binding model, Input
+uncertainty, Sensitivity's Analysis settings). A place a view shows only with a result it
+does not hold yet leaves the view on screen and marks nothing.
+
+## 7. Plots
+
+pyqtgraph draws the data plots (titration, profile, species); the interval chart, the
+sample histogram and the Sobol' bars are painted components. Both read the same tokens.
+`gui/design/plot_theme.py` styles every pyqtgraph plot:
+
+- `bg-surface` background; left and bottom axes only, in `border-strong`; tick labels in
+  `text-secondary`; axis titles with the unit in parentheses (`Guest (µM)`,
+  `Signal (10⁵ a.u.)`, the power of ten that of the largest value drawn). Every plot sets
+  its tick labels, axis titles and in-plot labels at the plot text step of the session's
+  appearance (§2, §8). The axes are sized from that text's metrics (`axis_box()`): the left
+  one holds a four-figure tick label (or the widest label a plot names), its offset, a step
+  and a line of title, the bottom one the outward ticks, a line of tick labels, a step and a
+  line of title — so the axes grow with the text and a title never meets a tick label. An
+  axis title set later is placed again at once, whole and centred on its axis.
+- No y tick marks: horizontal grid lines in `grid` follow the y axis's ticks; 4-px
+  outward x ticks.
+- **Titration series:** each replicate's dots in its own colour (`replicate-n`) at 80 %,
+  6 px; a replicate switched off or left out by the fit as × in its own colour; mean ± SD
+  as 6-px `text-primary` dots with 1-px
+  `text-primary` error bars, capped a hundredth of the x span wide; the fitted curve 2 px
+  accent, round caps. The legend names each replicate drawn by its letter, marked with
+  its point or × in its colour (`A`, `B switched off`, `C left out by the fit`), then
+  *Mean ± SD* and *Fit*. Plot appearance (§8) restyles these marks per session.
+- **Sobol' bars:** S₁ solid in `series-1`, S_T outlined in `series-2`, each with a
+  1.25-px `text-primary` whisker with 6-px caps; an index or whisker past the axis ends in
+  a small arrow at its edge.
+- **Heatmap:** cells on the heat scale (`heat-0` … `heat-8`), empty where no fit was made,
+  a colour bar beside it with its ticks and title, the entered point as a diamond.
+- **Log-Ka strips** (interval chart, histogram) carry no axis title; the shared power of
+  ten and the unit follow the last tick (`× 10⁸ M⁻¹`).
+- **Plot header row** (`PlotHeader`): title in `body-strong`; a short description in
+  `text-tertiary` where the title alone is ambiguous (*raw signal, as loaded*); then at
+  the right the legend row, the view's own tools (replicate display, display unit,
+  enlarge), *Reset view* on an interactive plot, and the image-export button last. Where
+  one line cannot hold them all whole, the legend takes a line of its own under the title
+  line, at the right, as a saved figure's head puts it on a line of its own; the
+  description is cut short, its whole text on hover, only where even the title line
+  cannot hold it. A legend that breaks — Simulation's species readout — breaks there onto
+  further lines between its entries, so no header needs the width of its whole legend.
+- **Interactive plots** — the titration plot of Measurements, Fit results and Plot
+  appearance, and the plots of *Plot against each source* — zoom and pan
+  (`PlotNavigation`); every other plot is static. A drag pans; ⌘-wheel (Ctrl on other
+  platforms) or a pinch zooms about the pointer; a wheel or trackpad scroll without ⌘
+  passes over the plot to the page that holds it, so a scrolling canvas scrolls. A
+  double-click, or the *Reset view* tool (the `rotate` icon), puts the plot back on its
+  home view — auto-range, or for the source plots the frame they opened on; the tool is
+  enabled only while the view is off it. New data, another display unit or new fits put
+  a titration plot back on auto-range, so what is drawn is in view; a theme change or
+  another plot appearance draws the same data again and keeps the user's zoom.
+- Linked plots (signal above species) share the x axis and the left axis width, so their
+  plot areas line up.
+- Exports render with the light theme on white.
+- **Saved figure:** every saved figure stands on white with one margin round it,
+  `figure-margin` (24 px), which both writers put there (`export_stacked()`,
+  `export_widget()`); nothing in a figure brings a margin of its own. Each plot carries,
+  above it, the head its header row states on screen (`figure_head()`) — the title, the
+  description, the legend at the right (on a line of its own under them, still at the
+  right, where one line cannot hold all three, as the screen's header puts it) — then any
+  notes, wrapped to the figure's width; the title reads at the axis titles' size of the
+  session's plot text, the description and notes at its tick labels' size (§2). A saved **titration** is that head
+  above the plot as the view draws it, with its replicate display and appearance: in
+  Fit results, Plot appearance and *Export several…*, the legend of replicates, mean ± SD
+  and fit, and a summary of the fit drawn — one line per binding constant with its
+  reading and interval (`Kₐ guest 1.59 × 10⁸ M⁻¹ (Input-aware), 95 % interval 1.14 –
+  2.08 × 10⁸ M⁻¹`), then `R² 0.9980 · Replicates used 7 of 8 (A switched off)`, and each
+  other fit shown in a line of its numbers; in Measurements, the raw titration under
+  *raw signal, as loaded* and its legend, with no fit.
+
+---
+
+## 8. Views
+
+Each view below is the approved design; its reference screens are in `screens/`.
+
+### Measurements — `measurements_*.jpg`, `measurements_unit_*.jpg`, `empty_*.jpg`
+Canvas: the **Files** table (file, format, replicate letter, points; *Add files…*, × to
+remove one), a one-line note on how added files are used (*Load data into a new
+session…* as its link), and the raw **Titration** plot — each replicate's own points as
+loaded, no mean and no curve, drawn by the one titration plot model with no fit — with a
+*Display unit* menu in its header. While a fit is on view, a neutral callout above the
+plot names it — *Fitted* `Kₐ guest 1.59 × 10⁸ M⁻¹ — the fitted curve is in Fit results.`
+— with the action *Show fit results*; it is absent with no fit, while the results are
+hidden and while a fit runs. With no data loaded the empty state stands in place of the
+files and the plot. Side panel *Measurement settings*: Concentrations (under the small heading *Units in
+the file*, the unit the file's concentrations are stated in — a statement about the file,
+which reinterprets the numbers, kept apart from the plot's *Display unit* — then the
+concentration list, *Load vector…* / *Save vector…*), Replicates (replicate chips,
+*Reset all*), Outlier removal (Z-score threshold, minimum replicates — those of the last
+removal applied, the demo's among them — *Apply* / *Reset*, the last result in a sentence).
+
+### Binding model — `binding_*.jpg`
+A form from the same components as Input uncertainty, under an intro sentence with
+*About this model* (the Help window at Binding model, which describes the model chosen): **Model** — the two-level assay choice
+(category, then model) with a one-line summary of what it fits; **Conditions** — the
+entered conditions as fields with units; **Titrant stock** — *Stay constant* / *Are
+diluted*, then the stock and the concentrations it holds; **Bounds of the fitted
+parameters** with *Reset to defaults* and *Bounds from dye alone…*; **Replicates** — *The
+average* / *Each replicate separately*, with a note on what the choice does (a model with
+no binding constant shows only the note: it is fitted from the average). No side panel.
+
+### Input uncertainty — `uncertainty_*.jpg`
+Canvas: an intro sentence with *About input uncertainty* (the Help window at Input
+uncertainty); **Each input** — one row per
+input on a shared column grid: name and entered value, Fixed / σ / Range, amount, stated
+in (% or unit), the ±2σ span on one shared ±20 % axis, and the span in numbers. A range
+states its *from* and *to* in two fields stacked in the amount column; the unit is the one
+the input's condition is entered in, and the titrant, a series, is stated in % only. A
+fixed input shows no amount. **Shared error sources** with *Add shared source*; **Random error of each addition**.
+Side panel *Effect on the fit*: the interval of the last fit (Input-aware against Inputs
+as entered, compact interval chart), the three tests against what was stated, and
+*Also used by*.
+
+### Fit results — `fit_*.jpg`, `fit_replicates_*.jpg`
+Canvas: the headline — Ka in `metric` with its Input-aware badge and 95 % interval —
+the interval chart against the reading at the inputs as entered, *All results and
+diagnostics →*, any callout, and the **Titration** plot with a replicate-display tool —
+the one control of the session's replicate display: *Replicates and mean ± SD*, *Mean ±
+SD only* or *Replicates only*, which Fit results, Plot appearance and every saved
+titration figure draw alike. With no fit on view the empty state stands in their place
+(*No data loaded*, *Fit running*, or *No fit yet* with the platform shortcut of *Run fit*).
+With two binding constants the headline stacks: one row per Ka (K₁, K₂), each with its
+value, interval and interval-chart rows, above the plot. What an interval needs said
+beside it is its tooltip: what *Split* means on the interval chart, what widened it or
+left a side open on the interval line. A fit of each replicate separately adds one line
+of the single-replicate fits under the headline, why they differ from the interval on
+hover. *All results and diagnostics →* reveals Diagnostics in the Fit details side
+panel (§6). Where the curve is drawn at the inputs the fit
+moved, the plot header says so in its description: *curve drawn at the fitted input
+shifts*.
+
+Side panel *Fit details*, which fits its least width beside the vertical scroll bar and
+never scrolls sideways: Fit quality — a 2 × 2 grid of R² and RMSE, then replicates used
+(`7 of 8`, note `A switched off`) and noise (`0.6 % + 80 a.u.`, note `from replicate
+scatter`, the law's sentence on hover); Replicates — each replicate's own fit and its
+p-value, where each was fitted separately; Diagnostics — each test with its mark, finding
+and p-value, a test that could not run reading its reason, the full sentence of each on
+hover; Parameters (estimate and unit; degenerate ones starred, with one footnote naming
+the total the model holds fixed where its balance ties them, `* Not separately determined
+while the dye total is fixed.`, and a note where a signal parameter ended on an entered
+bound); Input shifts.
+
+### Ka confidence — `confidence_*.jpg`, `confidence_readout_*.jpg`
+Canvas: the two readings side by side (Input-aware in `metric`; Inputs as entered in
+`title-number`, with *Split* where the interval has a gap; each with its 95 % interval and how far
+each end lies from the estimate) — the one reading, Inputs as entered, where every input is
+exact — any callout (*Inputs conflict*, whose *Show the input shifts* reveals the shifts in
+Notes; a neutral notice while the Ka profile is still being worked out, the readings shown
+at once), and **one profile plot per binding constant** holding both profiles: Input-aware
+in `accent`, Inputs as entered in `text-secondary`, each estimate a diamond on its curve,
+each reading's interval as a band in its colour at 8 %. The header row of each plot carries the
+legend (each reading, the accepted Kₐ, the best fit and the 95 % cut-off lines), the enlarge tool (the plots take the whole canvas, the readings and callouts set
+aside) and the image export; the readout card sits at the plot's top-right corner and reads
+the reported estimate until the pointer reads another Ka, its value on a tag at the top of
+the pointer's hairline; the accepted stretches of each reading run in a strip under the plot,
+on its Ka axis. The y axis is **Loss of Fit** (Title Case, the owner's choice) — the likelihood-ratio statistic Δ(−2 ln L) from the best fit — one axis for both profiles,
+0 at the lower of their two best fits: −2 ln of the likelihood each profile is cut on, the
+penalised one counting the stated uncertainty of every input it moves. The lower curve
+explains the data better, and the gap between the two lowest points shows how much letting
+the inputs move helps. Each reading keeps its own 95 % cut-off, a dotted line in its colour named by the legend,
+and accepts a Ka where its curve is at or below that line, so each curve meets its line
+where its interval ends; with two binding constants, where the test allows a larger rise
+because the fit at that Ka holds a signal parameter on its bound, the line steps up and the
+curve runs on unbroken. With two binding constants the canvas scrolls: the profile plots stack, one
+per Ka named by the glossary, with the joint region below them (the accepted pairs in
+`text-secondary`, the best fit marked, each constant's own interval a faint band). A profile
+that could not be worked out is said in a sentence in place of the plots. Side panel *Notes*
+with *Reading this plot →*: Inputs conflict (the shifts in % and σ, with the warning mark
+and p-value in the header) or the input shifts, Reading the curves, Split interval, Open
+sides, Second binding step, What the intervals rest on, What widened the intervals, Joint
+region. Exported figures use the same axis: each plot under its head — its name and legend,
+its readings as a note — the joint region last, without the readout card.
+With no fit on view the empty state stands in place of the readings and plots, as in Fit
+results; a fit of a model with no binding constant says there is no Kₐ to profile.
+
+### Sensitivity — `sensitivity_*.jpg`, `sensitivity_whatif_*.jpg`, `sensitivity_heatmap_*.jpg`
+Canvas, for sensitivity indices: one block per binding constant, named by the glossary
+where there are two (Kₐ HG, Kₐ HG₂). Its headline is the spread of Kₐ from the stated
+inputs (×/÷ factor in `title-number`, 1 SD in decades, the value it is centred on — the fit at the
+inputs as entered — with the spread's sampling interval on hover) beside the sample
+histogram, both readings of the fit marked on it (Input-aware: accent line and band;
+Inputs as entered: dashed line and bracket), and *Plot against each source →*. Then any
+callout: an input conflict of the fit, stated about the inputs together, with *Review in Ka
+confidence* — the samples centre on the inputs as entered — or, without one, the neutral
+*Not a confidence interval* with *Compare in Fit results*; a run that was stopped; a run
+hidden because the data or settings changed since (its note alone, *Results hidden*); a
+run that failed, its reason in plain words above the last result; before any run, the
+refusal to vary nothing, with *Edit in Input uncertainty*. A constant's own callouts
+follow: fits that ran to the Kₐ bounds, or — in place of its bars, budget and what-if — why
+its indices are withheld. With two binding constants the run's callouts stand above both
+blocks, each constant's own callouts inside its block. **Share of the variance, by source**: S₁ and S_T as two bars per
+source, largest first, with their 95 % whiskers and values, and the notes under the chart
+(an S_T below its S₁, sample groups left out). The **Variance budget** table — Source,
+Stated, Elasticity, Variance (under the power of ten its numbers share), Spread if exact,
+each number with its sampling interval, then *Interactions* and *All sources* — its Source
+column as wide as the chart's names, so the bars start where Stated does. **What if one
+source were known better**: *Reduce* (source menu) *to* (¾, ½ or ¼ of the stated
+uncertainty, or exact) and the spread before and after, with the line that says what the
+answer is read from. *Plot against each source →* opens a window of small plots, one per
+source with a draw of its own: each sample's Kₐ against that source's draw in percent of
+the entered value, so a source that matters shows as a trend; the random error of each
+addition is one draw per titration point, and the window says it has no plot.
+
+For a **heatmap**: one map per binding constant, Kₐ coloured on the heat scale (§2, §7)
+with its colour bar, both axes in the inputs' units (the titrant, a series, in percent of
+the concentrations entered), the entered point as a diamond, and the readout card at the
+plot's top-right corner reading the cell under the pointer — its two inputs, Kₐ, its change
+from the entered point and R² — or the entered cell without a pointer.
+
+Before a run the empty state says what to do, naming only the steps still to take, with
+the platform shortcut of *Run analysis*; while one runs and none is held, that it is
+running. Progress shows only where run state does (§1).
+
+Side panel *Analysis settings*: **Run** — mode (Sensitivity indices / Heatmap); for
+indices, sample size N of 1024, 2048 or 4096 with what it costs, and *Fixed seed* with its
+value; for a heatmap, the X axis and the Y axis (input menus), each stated as a σ with its
+span (±1σ, ±2σ or ±3σ, ±2σ to start; an axis stated as a range spans its range and shows
+no span), and the grid (11 × 11, 21 × 21 or 31 × 31, each with its fit count); what stops
+the run stands beside the settings. **Error sources** — the sources the run varies,
+read-only, with *Edit in Input uncertainty →*. **This run** — samples fitted and fits made,
+the sample blocks or the grid, the median R² of the samples, the duration and worker
+processes, the seed used, and whether it was stopped. **Display** — a log₁₀ or a linear Kₐ
+axis. The settings that feed a run lock while one runs. The badge reads what the run shown
+was made with, else the next run: `Sobol' · N = 1024`, `Heatmap · 21 × 21`. A saved figure
+is drawn again in the light theme on white, at the session's plot text: the run's callouts
+as notes; per constant a head of its name, its spread and the samples' fold, then the
+samples and, under its own head and legend, the shares, with its own callouts and the
+chart's notes under them; for a heatmap, each map under its head with its colour bar.
+
+### Plot appearance — `appearance_*.jpg`, `appearance_colour_*.jpg`
+The appearance of the session's **titration plot**: the plot in Measurements and in Fit
+results, and the figure saved from it (also in a batch export); and the size of the text
+of **every plot** of the session — Ka confidence and Sensitivity too — and of the figures
+saved from them, and of Simulation's titration and species. Canvas: a sentence saying what the settings style, then the **Titration**
+plot as Fit results draws it — the fit where there is one, else the data, in the
+session's replicate display — with its
+legend and the image export; with nothing loaded, the empty state. Every
+choice redraws the plot at once, here and in the other views. Side panel *Titration
+plot*, headed by *Reset to defaults* (a link; it gives this session the built-in
+appearance): **Markers** — replicate points and mean points *Small* / *Medium* / *Large*
+(`marker-small` / `marker-medium` / `marker-large`), replicate mark *Circle* / *Square* /
+*Triangle*; **Lines** — fitted curve and error bars *Thin* / *Medium* / *Thick*
+(`stroke-thin` / `stroke-medium` / `stroke-thick`); **Colour** — replicate points, *By
+replicate* (built in: each replicate its `replicate-n`, past twelve the colours again
+with the next mark — circle, square, triangle — after the one chosen) or *Grey* (every
+replicate in `replicate`, one mark), each choice shown with its swatch — the first three replicates' colours
+beside *By replicate*; and fitted curve, *Teal* (`accent`, built in), *Blue* (`series-1`),
+*Magenta* (`series-2`) or *Text colour* (`text-primary`) — never a free colour picker;
+the means and their error bars stay `text-primary`, so no choice draws the replicates in
+the colour of the means; **Text** — plot text *Standard* / *Large* /
+*Larger*, the steps of the plot text (§2): tick labels 16, 18 or 20 px, axis titles 18, 20
+or 22 px, at one weight, in every plot of the session; a saved figure's head follows it, its
+title at the axis titles' size and its description and fit summary at the tick labels'; **New sessions** — *Use for new sessions* (outline button; one click stores the
+whole appearance, and it is enabled while the stored one differs). The built-in appearance is the titration of §7. The form
+feeds no fit or analysis, so it stays open while one runs. The badge reads *Built-in
+appearance* or *Custom appearance*.
+
+Each session holds its own appearance. *Duplicate <session>* copies it, and the session's
+results file records it (`plot_appearance` beside `results`); a session that imports a
+results file takes the appearance it records, and one that records none leaves the
+session's own. *Use for new sessions* stores the appearance in the preferences as the start of every
+session opened later; sessions already open keep their own; with none stored, a new
+session starts from the built-in appearance. A stored appearance this version cannot read
+is never passed over in silence: each new session opens with a warning saying so, starts
+from the built-in appearance.
+
+### Simulation — `simulation_*.jpg`, `simulation_scrolled_*.jpg`, `simulation_overlay_*.jpg`
+The first view of every session, alone in the sidebar group *Design*: the titration a
+binding model predicts, for designing an experiment before it is measured. It keeps a copy
+of a binding model of its own — the session's `SimulationForm`, saved with its ⋯ menu,
+copied by *Duplicate <session>* — so exploring "what if Kₐ were 10× larger" never changes
+what the fit uses: the first time Simulation is shown it takes the binding model, its
+conditions in their units and the titrant stock the session states in Binding model, and
+*Use this session's model* takes them again. The toolbar reads *Simulation* with its
+summary badge (`IDA · 24 points · 3 replicates`), *Export ▾* holds Curve image… (the
+titration above the species on their shared axis as one PNG or SVG in the light theme on
+white, each plot under its title with its legend — the titration's entries and the
+species' names and line styles as the view shows them) and Data file…, and the primary
+button reads *Fit the data*. Canvas: **Titration** (simulated replicates at the
+measurement points, the model drawn continuously, the session's data as rings where they
+are laid over it, its legend entry's × taking them off) above **Species** on the same x
+axis, with the readout at the pointer, whose row breaks onto further lines where the
+canvas is narrow. Both plots, and the curve image saved from them, draw at the session's
+plot text (§8, Plot appearance). Each species takes the colour of its partner —
+`species-dye`, `species-guest`, `species-host`, `species-step2` (§2) — solid in a complex
+and dashed when free; the reported-result accent and the Sobol' series colours are not
+used for species.
+Side panel *Simulation settings*, its ⋯ menu holding *Save settings…*, *Load settings…*
+and *Reset to defaults* (no shortcut: ⌘S is the main window's *Results file…*). A setting
+it cannot take, or a model it cannot compute, is said at its top with the amber mark, and
+the field keeps its value. Model (category and model menus, *Use this session's model*),
+Binding constants (log sliders, M⁻¹), Fixed totals (sliders, unit menus; then *Totals
+during the titration* — *Stay constant* / *Are diluted*, as in Binding model),
+Concentrations (*Overlay this session's data*; *Even steps* or *Custom list*), Noise,
+Signal (coefficient sliders). Each slider's end values are edited in place. The settings
+feed no fit or analysis, so they stay open while one runs.
+
+**Titrant stock.** The totals stay constant until the user chooses *Are diluted*; that
+choice shows the stock concentration with its unit menu (it starts at 10 × the highest
+titrant concentration of the grid as it is then, in the largest unit that keeps it at 1 or
+more), and, where the model has two or more fixed totals, *Stock also contains* with one
+box per total the stock holds at the sample's own concentration. The simulation then
+dilutes through the assay's own `fixed_total()`, the forward model the fit uses. A stock
+no more concentrated than the highest titrant concentration, or one holding every total,
+is refused in plain words at the top of the side panel. Choosing a model goes back to
+constant totals.
+
+**The session's data.** *Overlay this session's data* — disabled, its tooltip saying why,
+while the session holds none — draws the session's replicates in use over the model, named
+as the file card names them, and takes their concentrations as the grid; it follows the
+data as they change (a replicate switched off, a file added) and goes when they are
+cleared.
+
+**Noise** is the two-part law the fit reads off replicates, `var(y) = floor² +
+(proportional · y)²`: *Add measurement noise*, the floor σ in a.u. and the proportional
+part in %, either of which may be 0, the replicates, the seed and *New draw*. *Read from
+session data* fills the floor and the proportional part from the noise law the fitter
+reads off the session's replicates in use; without two or more it is disabled and its
+tooltip says why, and where the replicates show no law the side panel says why in plain
+words. Choosing a model opens it with a floor of 0.5 % of its default curve's range.
+Without noise one noise-free replicate is simulated.
+
+**Fit the data** fits the data exactly as shown — noisy or noise-free — with the binding
+model and its conditions: the fixed totals and the binding constants the model takes as
+entered (Kₐ,dye of an IDA or GDA), each in the unit shown, and the totals constant or
+diluted by the titrant stock as stated here, the stock in its unit with the totals it
+holds. In a session that holds nothing they become its data and its binding model, and
+the session is named after the simulation (*Simulated IDA*, the model's short name); a
+session with data keeps them — measured data are never replaced — and a new session,
+*Simulated IDA*, opens with the simulated data. Neither has a file row. The values of what
+the fit searches for — the binding constants it fits and the signal coefficients — do not
+travel, as starting values or as bounds: the fit searches as it does on measured data.
+The session that fits shows Fit results, and the fit runs.
+
+### Help window — `help_*.jpg`
+The app's one help, a non-modal window of its own beside the main window, one per main
+window: a second request raises it at the section asked for. Sidebar surface: one
+navigation item per section, with the icon of its view — the main window's views in
+sidebar order. Canvas surface: the section's name in `title`, its text
+in `body` at the reading measure (`measure`), selectable. Each section says what its view
+shows and how to read it, then what each group of its side panel does, under the group's
+name as the panel shows it; a section with a plot Demo IDA fills ends on an example that
+reads the demo's numbers. *Binding model* describes the model of the session on screen —
+the model, its conditions, the titrant stock, the bounds, each parameter, the replicates —
+and follows a change of model or of session while it is open. A topic of a section is set
+in `body-strong` with a step of room above it, a sub-head in bold. It opens from the
+toolbar's Help and Help ▸ *SupraSimFit help* at the view on screen, from *About this
+model*, *About input uncertainty* and *Reading this plot →* at their views. It has no buttons; it closes as any window does.
+
+### Settings window — `preferences_*.jpg`
+Opened with ⌘, (*Settings…* in the app menu on macOS; *File ▸ Settings…* on Windows and
+Linux). One short page in three settings groups: **General** (Appearance System / Light
+/ Dark; check for updates when the app starts; the version and *Check now*), **New
+sessions** (concentration unit; plot appearance for new sessions — the one stored by *Use
+for new sessions*, with a way back to the built-in one), **Analysis**
+(processor cores). Changes apply at once; the window has no OK or Cancel.
+
+---
+
+## 9. Writing
+
+| Term | Meaning |
+|---|---|
+| **Input-aware** | The fit and interval with the entered inputs free to move inside their stated uncertainties |
+| **Inputs as entered** | The fit and interval taking every entered input as exact |
+| **Split** | An interval made of separate accepted stretches |
+| **Needs refit** | A result whose data or settings changed after it ran |
+| **Kₐ** | Association constant (never Kd), in M⁻¹, written with its subscript and name: Kₐ guest, Kₐ,dye |
+| **σ / Range / Fixed** | One standard deviation of a normal distribution / drawn evenly between two ends / taken as exact |
+| **Replicate** | One titration series; the files of a session become its replicates |
+| **Session** | One experiment in the window |
+
+- Say what happened, why, and what to do next, in plain words. No exception text, library
+  names or developer phrasing. Name the files or values involved when it helps.
+- Short: one sentence where one will do.
+- A conflict is about the inputs together. No message, note or help text names one input
+  as its cause.
+- An estimate on a Ka bound is written *not limited below / above*, never as a number on
+  that side.
+- Every value carries its unit: concentrations in nM / µM / mM / M, binding constants in
+  M⁻¹, signals in a.u.
+- Labels, titles and commands use sentence case (*Load data*, *Outlier removal*).
+  Commands that open a window or ask for more end in `…`.

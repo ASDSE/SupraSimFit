@@ -81,6 +81,7 @@ passes the range of a double.
 from __future__ import annotations
 
 import copy
+import heapq
 from dataclasses import asdict, dataclass, replace
 from typing import Callable, Mapping, Sequence, TypeVar
 
@@ -138,6 +139,22 @@ SECOND_STEP_LEVEL = 0.005
 # The profile grid is where a one-Ka interval scans and a drawn curve starts.
 _SEARCH_PER_DECADE = 4
 _PROFILE_PER_DECADE = 20
+
+# The plotted curve joins exact points with straight lines. A stretch of it is
+# split while the exact R² at its midpoint misses the line by more than half of
+# its allowance, _CURVE_R2_TOL + _CURVE_DEPTH_TOL × (the curve's best R² − the
+# stretch's highest R²); a stretch that bends one way then stays within the
+# allowance of the exact curve. At the peak that is 1e-6 R². Below it, the
+# allowance is 0.1 % of the depth, so in any view that shows a stretch together
+# with the peak the line is off by less than 0.1 % of the view's height. The
+# curve has corners where a coefficient reaches its bound and jumps where a Ka
+# the model has no speciation for interrupts it, so the stretches with the worst
+# miss for their allowance are split first, a budget of extra evaluations bounds
+# the work, and _CURVE_MIN_STEP, in decades of Ka, stops the splitting at a
+# corner or a jump.
+_CURVE_R2_TOL = 1e-6
+_CURVE_DEPTH_TOL = 1e-3
+_CURVE_MIN_STEP = 1e-6
 
 # Density of the scan over the other Ka wherever a two-Ka interval is decided:
 # its edges, and the search cells read at the profile density. Cut at a fixed
@@ -663,14 +680,14 @@ class Projection:
         for lo, hi in self.ka_bounds.values():
             if not 0.0 < lo:
                 raise FitRefused(
-                    f'An association constant has the lower bound {_ka_text(lo)} under Parameter Bounds. Association '
+                    f'An association constant has the lower bound {_ka_text(lo)} under Binding model. Association '
                     'constants are searched on a logarithmic scale, so both of their bounds must be above zero. '
                     f'Enter a positive lower bound, such as the default of {_ka_text(1e-8)}, and fit again.'
                 )
             if not lo <= hi:
                 raise FitRefused(
                     f'An association constant has a lower bound of {_ka_text(lo)} above its upper bound of '
-                    f'{_ka_text(hi)} under Parameter Bounds. Swap the two bounds and fit again.'
+                    f'{_ka_text(hi)} under Binding model. Swap the two bounds and fit again.'
                 )
         self.free_ka = tuple(k for k, (lo, hi) in self.ka_bounds.items() if lo != hi)
         # A model with two binding constants is stepwise, and the registry lists them in the order of the steps.
@@ -921,7 +938,7 @@ class Projection:
             which = 'its upper bound' if len(self.ka_bounds) == 1 else 'their upper bounds'
             raise FitRefused(
                 f'The binding model has no solution at any association constant {ranges}, so there is no fit. '
-                f'Lower {which} under Parameter Bounds and fit again.'
+                f'Lower {which} under Binding model and fit again.'
             )
         design = self._design(ka)
         row_ssr, coef = self._solve(design)
@@ -1149,6 +1166,21 @@ class Projection:
         """Parameter count ``p`` of the F test: what the best fit fitted (:meth:`fitted_parameters`)."""
         return self.fitted_parameters(fit.ka).count
 
+    def pinned(self, best_rank: int, rank: int) -> int:
+        """Signal parameters a test counts in ``m`` beyond the constrained binding constants.
+
+        A fit of signal-column rank *rank* holds ``best_rank - rank`` of the
+        parameters the best fit fits on a bound. A model with two binding
+        constants counts them: there the plain F test (``m = 1``) covers the
+        true constant in as few as 87.5 % of the titrations where the fit at it
+        pins a coefficient, and with the count in no fewer than 93.5 %
+        (``docs/scientific-summary.md``). A model with one binding constant
+        counts none: its plain test covers at the nominal level, and a count
+        would make the cut-off step along the profile, so that the test accepts
+        a Ka beyond one that fits better and is rejected.
+        """
+        return max(0, best_rank - rank) if len(self.ka_keys) == 2 else 0
+
     def fitted_parameters(
         self, ka: Mapping[str, float], offsets: Mapping[str, float] | None = None
     ) -> FittedParameters:
@@ -1266,7 +1298,8 @@ class Projection:
         ``S_min (1 + kappa m F(level; m, n - p) / (n - p))`` with ``m`` the
         number of constrained binding constants (one for an interval, two for
         the joint region) plus *released*, the parameters the best fit fits and
-        the fit at the tested Ka holds on a bound; ``p`` what the best fit
+        the fit at the tested Ka holds on a bound that the test counts
+        (:meth:`pinned`); ``p`` what the best fit
         fitted (:meth:`n_params`), ``S_min`` floored at ``_R2_RESOLUTION`` of
         the total sum of squares, and ``kappa`` the *inflation*, the design
         effect of :mod:`core.pipeline.inflation` (one: the plain F test).
@@ -1294,11 +1327,13 @@ class Projection:
 
         Every step is widened by the same *inflation*.
 
-        *released* is how far the rank of the signal columns that fit left
-        inside their bounds falls short of the best fit's, so along the binding
-        constants the cut-off is a step function that takes one value per
-        rank. What was fitted comes from the solve that gave the judged
-        residual (:meth:`solved`, :meth:`profile_point`).
+        *released* is :meth:`pinned`: in a model with two binding constants,
+        how far the rank of the signal columns that fit left inside their
+        bounds falls short of the best fit's, so along the binding constants
+        the cut-off is a step function that takes one value per rank; in a
+        model with one, zero, and the cut-off is one level. What was fitted
+        comes from the solve that gave the judged residual (:meth:`solved`,
+        :meth:`profile_point`).
 
         The other binding constant of a two-Ka model is not counted among what
         a tested value gives up when it rests on its bound there. Where it
@@ -1321,7 +1356,7 @@ class Projection:
         cuts: dict[int, float] = {}
 
         def at(rank: int) -> float:
-            released = max(0, fitted - rank)
+            released = self.pinned(fitted, rank)
             if released not in cuts:
                 cuts[released] = self.threshold(fit, level, n_constrained, released, inflation)
             return cuts[released]
@@ -1513,7 +1548,7 @@ class Projection:
         if self.second_step not in self.free_ka:
             return None
         _, value, fitted = self.profile_point(self.second_step, 0.0, _INNER_PER_DECADE)
-        m = 1 + max(0, self.fitted_parameters(fit.ka).rank - fitted.rank)
+        m = 1 + self.pinned(self.fitted_parameters(fit.ka).rank, fitted.rank)
         return _rise_p(value / self._floored(fit) - 1.0, m, self.n_points - self.n_params(fit), inflation)
 
     def _bound_behind(self, ka_key: str, other_ka: float, rise: Callable[[float], float], allowed: float) -> str:
@@ -1736,7 +1771,7 @@ def _require_dof(n_points: int, n_params: int) -> int:
         raise FitRefused(
             f'The data have {n_points} titration points, too few to judge the {n_params} parameters this '
             'model fits, so no fit can be reported. Add titration points, or hold a parameter at one value '
-            'by giving it the same lower and upper bound under Parameter Bounds, and fit again.'
+            'by giving it the same lower and upper bound under Binding model, and fit again.'
         )
     return dof
 
@@ -1784,6 +1819,59 @@ def _ka_grid(lo: float, hi: float, per_decade: int) -> np.ndarray:
         return np.array([lo])
     # Decades as a difference of logarithms: a bound far above the other overflows their ratio.
     return np.geomspace(lo, hi, int(np.ceil((np.log10(hi) - np.log10(lo)) * per_decade)) + 1)
+
+
+def _follow_curves(
+    ssr_at: Callable[[float], np.ndarray], ss_tot: np.ndarray, grid: np.ndarray, ssr: np.ndarray, max_extra: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """*grid* with exact points added until straight lines between them follow every curve.
+
+    *ssr_at* gives each curve's best SSR at a Ka, *ss_tot* each curve's total
+    sum of squares and *ssr* each curve's SSR on *grid*. Every stretch between
+    neighbouring points is checked at its midpoint in log Ka, which becomes a
+    point. A stretch whose midpoint misses the line by more than half its
+    allowance (see ``_CURVE_R2_TOL``) on any curve at R² 0 or above is split,
+    the worst first, until none is left or the evaluations reach *max_extra*.
+    Curves below R² 0 across a stretch are off every plot and do not split it,
+    and neither does a curve the model cannot solve somewhere on the stretch,
+    which is not drawn across it.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        ``(Ka values, SSR per curve)`` in ascending Ka, shapes ``(n,)`` and ``(n, n_curves)``.
+    """
+    kas, ssrs = list(grid), list(ssr)
+    peak = np.max(1.0 - ssr / ss_tot, axis=0)
+    # Stretches to split, worst first: (-worst miss over allowance, tie-breaker, Ka and SSR at start, middle, end).
+    to_split: list[tuple] = []
+
+    def check(ka_a: float, ssr_a: np.ndarray, ka_b: float, ssr_b: np.ndarray) -> None:
+        log_a, log_b = np.log10(ka_a), np.log10(ka_b)
+        if log_b - log_a <= _CURVE_MIN_STEP:
+            return
+        ka_m = 10.0 ** (0.5 * (log_a + log_b))
+        ssr_m = ssr_at(ka_m)
+        kas.append(ka_m)
+        ssrs.append(ssr_m)
+        drawn = np.isfinite(ssr_a) & np.isfinite(ssr_m) & np.isfinite(ssr_b)
+        if not drawn.any():
+            return
+        r2_a, r2_m, r2_b = (1.0 - s[drawn] / ss_tot[drawn] for s in (ssr_a, ssr_m, ssr_b))
+        top = np.maximum(np.maximum(r2_a, r2_b), r2_m)
+        allowance = _CURVE_R2_TOL + _CURVE_DEPTH_TOL * (peak[drawn] - top)
+        miss = np.where(top >= 0.0, np.abs(r2_m - 0.5 * (r2_a + r2_b)) / (0.5 * allowance), 0.0)
+        if miss.max() > 1.0:
+            heapq.heappush(to_split, (-float(miss.max()), len(kas), ka_a, ssr_a, ka_m, ssr_m, ka_b, ssr_b))
+
+    for i in range(grid.size - 1):
+        check(grid[i], ssrs[i], grid[i + 1], ssrs[i + 1])
+    while to_split and len(kas) - grid.size + 2 <= max_extra:
+        _, _, ka_a, ssr_a, ka_m, ssr_m, ka_b, ssr_b = heapq.heappop(to_split)
+        check(ka_a, ssr_a, ka_m, ssr_m)
+        check(ka_m, ssr_m, ka_b, ssr_b)
+    order = np.argsort(kas)
+    return np.array(kas)[order], np.array(ssrs)[order]
 
 
 def _norms(columns: np.ndarray) -> np.ndarray:
@@ -1942,11 +2030,17 @@ def _read_steps(
     so it is halved again only where the profile at one of its points also
     lies above the higher cut-off by no more than the profile changes across
     it: where both lie further above, the profile between them does not reach
-    that cut-off either. Not read either are a stretch both of whose points
-    the test accepts, which lies inside the interval whatever the steps in
-    it, and a stretch with a point the model cannot be solved at, which has no
-    step to find. A step of the rank that leaves the cut-off where it is
-    leaves the excess continuous, so it opens no stretch and is not located.
+    that cut-off either. A stretch both of whose points the test accepts lies
+    inside the interval, but it holds a gap where the profile beside a step
+    lies above the lower of the two cut-offs, which makes the interval split;
+    by the same bound on how far the profile turns, it is read only where the
+    profile at one of its points lies under the lower cut-off by no more than
+    the step, and a half of it again only where the profile at one of its
+    points also lies under that cut-off by no more than the profile changes
+    across it. Not read is a stretch with a point the model cannot be solved
+    at, which has no step to find. A step of the rank that leaves the cut-off
+    where it is leaves the excess continuous, so it opens no stretch and is
+    not located.
     """
 
     def halve(a: float, b: float, top: bool) -> None:
@@ -1954,14 +2048,16 @@ def _read_steps(
         cut_a, cut_b = cut(rank_a), cut(rank_b)
         if (
             cut_a == cut_b
-            or (excess_a <= 0 and excess_b <= 0)
             or not (np.isfinite(excess_a) and np.isfinite(excess_b))
             or np.log10(b) - np.log10(a) <= _LOG_KA_XTOL
         ):
             return
         value_a, value_b = excess_a + cut_a, excess_b + cut_b
         slack = abs(cut_a - cut_b) if top else min(abs(cut_a - cut_b), abs(value_a - value_b))
-        if min(value_a, value_b) > max(cut_a, cut_b) + slack:
+        if excess_a <= 0 and excess_b <= 0:
+            if max(value_a, value_b) < min(cut_a, cut_b) - slack:
+                return
+        elif min(value_a, value_b) > max(cut_a, cut_b) + slack:
             return
         middle = float(10.0 ** (0.5 * (np.log10(a) + np.log10(b))))
         points[middle] = judge(middle)

@@ -1,777 +1,347 @@
-"""FittingSession — one complete fitting workspace (one tab)."""
+"""FittingSession — the view of one session: its views, each a canvas and a side panel, over a SessionModel."""
 
 from __future__ import annotations
 
 import logging
-import math
-import time
-from dataclasses import replace
 from pathlib import Path
 
-import numpy as np
-from PyQt6.QtCore import QEvent, QObject, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
-    QGroupBox,
-    QHBoxLayout,
     QMessageBox,
     QScrollArea,
     QSplitter,
-    QToolButton,
-    QVBoxLayout,
+    QStackedWidget,
     QWidget,
 )
 
-from core.assays.registry import ASSAY_REGISTRY, AssayType
-from core.data_processing.measurement_set import MeasurementSet
-from core.data_processing.plotting import prepare_plot_data
-from core.io.formats.bmg_reader import BMG_PLACEHOLDER_KEY
-from core.pipeline.fit_pipeline import FitConfig, FitResult
-from core.pipeline.inputs import TITRANT, TITRANT_STOCK, ErrorModel, InputSpec, source_name
-from core.pipeline.profile import ProfileSet
-from core.pipeline.reporting import fit_replica_ids, input_replica_ids, parameters_on_bound, summarize_parameters
-from core.pipeline.results_io import verify_imported_result
-from core.pipeline.sensitivity import (
-    _SOBOL_BLOCKS,
-    LONG_RUN_SOLVES,
-    SensitivityMode,
-    SensitivityResult,
-    estimated_fit_count,
-    estimated_model_solves,
-)
-from core.pipeline.varpro import REPLICATE_TEST_MIN, projectable
-from core.units import Q_, Quantity
-from gui import plot_guide, preferences
-from gui.app_state import SessionState
-from gui.dialogs.plot_guide_dialog import show_plot_guide
-from gui.plotting.colors import INK, INK_2, INK_3
+from gui.design import components as C
+from gui.design.appearance import theme
+from gui.design.tokens import SIZE
 from gui.plotting.export import ExportRefused
-from gui.plotting.fit_summary_widget import FitSummaryWidget, same_inputs
-from gui.plotting.identifiability_widget import IdentifiabilityWidget
-from gui.plotting.labels import (
-    and_join,
-    fmt_bound_note,
-    fmt_param_plain,
-    fmt_r2,
-    fmt_sci,
-    fmt_unit_pretty,
-    stated_uncertainty,
-    verdict_headline,
-)
-from gui.plotting.plot_style import PlotStyleWidget
-from gui.plotting.plot_widget import PlotWidget
-from gui.plotting.sensitivity_widget import STOPPING_TEXT, SensitivityWidget
-from gui.widgets.assay_conditions import result_input_labels
-from gui.widgets.assay_config_panel import AssayConfigPanel, plain_number
-from gui.widgets.bounds_panel import BoundsPanel
-from gui.widgets.data_panel import DataPanel
-from gui.widgets.fit_config_panel import FitConfigPanel
-from gui.widgets.flat_tabs import FlatTabWidget
-from gui.widgets.info_button import InfoGroupBox
-from gui.widgets.input_uncertainty_panel import InputUncertaintyPanel
-from gui.widgets.preprocessing_panel import PreprocessingPanel
-from gui.widgets.replica_panel import ReplicaPanel, describe_replicates
-from gui.widgets.sensitivity_panel import SensitivityPanel
-from gui.workers import FitWorker, ProfileWorker, SensitivityWorker, retire
-
-# Height a plot tab's page keeps however far the summary below is dragged up, so
-# the Fit Curve plot keeps its axis labels apart.
-_PLOT_PAGE_MIN_HEIGHT = 250
-
-# The plot tab bar's "?" button: secondary ink on a hairline pill, darker on hover.
-_GUIDE_BUTTON_QSS = f"""
-QToolButton {{
-    color: {INK_2};
-    background: transparent;
-    border: 1px solid #d6d5cf;
-    border-radius: 10px;
-    padding: 2px 9px;
-    margin: 4px 8px 4px 0;
-    font-size: 13px;
-}}
-QToolButton:hover {{
-    color: {INK};
-    border-color: {INK_3};
-}}
-"""
-
-
-def _format_remaining(seconds: float) -> str:
-    """Time left, rounded to something a person would actually say."""
-    if seconds < 60:
-        whole = max(1, round(seconds))
-        return f'{whole} second' + ('' if whole == 1 else 's')
-    minutes = seconds / 60
-    if minutes < 60:
-        return f'{round(minutes)} minute' + ('' if round(minutes) == 1 else 's')
-    hours, rest = divmod(round(minutes), 60)
-    return f'{hours} h {rest:02d} min'
-
-
-class _SidebarScrollArea(QScrollArea):
-    """Vertically-scrolling sidebar whose width follows its content.
-
-    A plain ``QScrollArea`` reports a near-zero width hint regardless of its
-    content, so a ``QSplitter`` will shrink it until the content clips. The
-    sidebar scrolls vertically only, so its width must track the content: we
-    advertise the content's *minimum* width (plus the frame and the vertical
-    scrollbar) as both our minimum and preferred width. The splitter then honors
-    it as the sidebar's floor and shrinks the *other* pane instead — content is
-    never clipped — while the sidebar opens compact (the content minimum) rather
-    than at the widest panel's much larger preferred width.
-
-    When the content's minimum width changes (a panel row widens or narrows),
-    the sidebar takes that width in its splitter at once, or the width the user
-    last dragged it to if that is wider.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._dragged_width = 0
-
-    def remember_dragged_width(self) -> None:
-        """Keep the sidebar's current width as the user's choice (connect to ``QSplitter.splitterMoved``)."""
-        self._dragged_width = self.width()
-
-    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        # QScrollArea already filters its content widget's events. A content
-        # layout change alters this area's size hints, which Qt does not pass
-        # on to the splitter by itself.
-        if obj is self.widget() and event.type() == QEvent.Type.LayoutRequest:
-            self.updateGeometry()
-            self._fit_width()
-        return super().eventFilter(obj, event)
-
-    def _fit_width(self) -> None:
-        """Resize within the splitter to the content's width, or the dragged width if wider."""
-        splitter = self.parentWidget()
-        if not isinstance(splitter, QSplitter) or not splitter.isVisible():
-            return
-        sizes = splitter.sizes()
-        i = splitter.indexOf(self)
-        delta = max(self._content_width(), self._dragged_width) - sizes[i]
-        if delta:
-            sizes[i] += delta
-            sizes[i + 1] -= delta
-            splitter.setSizes(sizes)
-
-    def _content_width(self) -> int:
-        # Width needed to show the content un-clipped: the content's own minimum
-        # width + the frame + the vertical scrollbar. Read from Qt at runtime so
-        # it adapts to platform/style and to the panels' current contents.
-        content = self.widget()
-        if content is None:
-            return 0
-        return content.minimumSizeHint().width() + 2 * self.frameWidth() + self.verticalScrollBar().sizeHint().width()
-
-    def minimumSizeHint(self) -> QSize:
-        hint = super().minimumSizeHint()
-        if self.widget() is not None:
-            hint.setWidth(self._content_width())
-        return hint
-
-    def sizeHint(self) -> QSize:
-        hint = super().sizeHint()
-        if self.widget() is not None:
-            hint.setWidth(self._content_width())
-        return hint
-
-
-_PLOT_STYLE_HELP_HTML = """
-<h3>Plot Style</h3>
-
-<p><b>What This Section Is For</b></p>
-<p>Controls for the interactive plot on the right: which series are
-visible (replicates, average, error bars, fit curves), axis/tick/legend
-font sizes, marker shapes and palette, line widths and colors, and the
-x-axis display unit. Changes apply live &mdash; no need to re-run the
-fit.</p>
-
-<p><b>What Affects What</b></p>
-<ul>
-  <li><b>Visibility</b> &mdash; toggles whole series on or off. Hidden
-      series are not drawn and do not appear in the legend.</li>
-  <li><b>Axes</b> &mdash; font sizes for labels/ticks and the x-axis
-      unit (nM / &micro;M / mM / M). Data is stored in M internally and
-      rescaled at render time.</li>
-  <li><b>Replicates, Dropped replicates, Average Line, Fit Curves, Error
-      Bars</b> &mdash; per-series style groups.</li>
-  <li><b>Legend, Annotations</b> &mdash; toggle the legend and the
-      draggable fit-results overlay.</li>
-</ul>
-
-<p><b>Save and Reuse: Style Templates</b></p>
-<p>You can save the entire Plot Style configuration and reload it
-later, so you don&rsquo;t have to reconfigure fonts, colors, and
-visibility every session.</p>
-<ul>
-  <li><b>Import &rarr; Load Style Template&hellip;</b> &mdash; load a
-      <code>.json</code> template (all controls update at once).</li>
-  <li><b>Export &rarr; Save Style Template</b> &mdash; write the
-      current style to a <code>.json</code> file you can share or
-      commit to your project.</li>
-</ul>
-<p>Style templates round-trip exactly, so they&rsquo;re a good way to
-enforce a consistent look across figures in a paper or lab report.</p>
-
-<p><b>Tip</b></p>
-<p>If the fit-results annotation or the legend ends up in an awkward
-spot, drag them with the mouse. The app remembers the drag position
-until you toggle the corresponding overlay off and back on.</p>
-"""
+from gui.plotting.labels import and_join, stated_uncertainty
+from gui.results import Place
+from gui.session_model import DEMO_UNCERTAINTIES, Change, Refusal, SessionModel
+from gui.views.binding import BindingView
+from gui.views.confidence import ConfidenceView
+from gui.views.fit_results import FitResultsView
+from gui.views.measurements import MeasurementsView
+from gui.views.plot_appearance import PlotAppearanceView
+from gui.views.sensitivity import SensitivityView
+from gui.views.simulation import SimulationView
+from gui.views.uncertainty import UncertaintyView
 
 logger = logging.getLogger(__name__)
 
-_DEMO_IDA_PATH = Path(__file__).parent.parent / 'data' / 'IDA_system.txt'
-
-#: The input uncertainties Demo IDA states: a literature Ka,dye known to about 10 %, and
-#: stock concentrations pipetted to about 3 %. Typical figures, so that the demo's first fit
-#: reports the interval that covers them.
-_DEMO_UNCERTAINTIES = {
-    'Ka_dye': InputSpec.sigma_pct(10.0),
-    'h0': InputSpec.sigma_pct(3.0),
-    'd0': InputSpec.sigma_pct(3.0),
-    TITRANT: InputSpec.sigma_pct(3.0),
-}
-
-_UNCHECKED_NOTE = (
-    'No data are loaded, so these numbers are shown as stored in the file and could not be checked against '
-    'the data. To check them, load the data first and import the results again.'
+#: A session's views as the sidebar groups them: (group, ((view, icon), …)).
+NAVIGATION = (
+    ('Design', (('Simulation', 'scatter'),)),
+    ('Experiment', (('Measurements', 'table'), ('Binding model', 'flask'), ('Input uncertainty', 'sliders'))),
+    ('Analysis', (('Fit results', 'fit'), ('Ka confidence', 'profile'), ('Sensitivity', 'bars'))),
+    ('Presentation', (('Plot appearance', 'palette'),)),
 )
-_FIT_RUNNING_NOTE = (
-    'A fit is already running in this session. Wait for it to finish, or stop it with Cancel Fit, '
-    'then run the fit again.'
-)
-_SENSITIVITY_RUNNING_NOTE = (
-    'A sensitivity analysis is running in this session. Wait for it to finish, or stop it, then run the fit.'
-)
-_FIT_RUNNING_IMPORT_NOTE = (
-    'A fit is running in this session, and its result would replace the imported results when it finishes. '
-    'Wait for it to finish, or stop it with Cancel Fit, then import the results.'
-)
-_FIT_RUNNING_ANALYSIS_NOTE = (
-    'A fit is running in this session. Wait for it to finish, or stop it with Cancel Fit, '
-    'then run the sensitivity analysis.'
-)
-_SENSITIVITY_RUNNING_ANALYSIS_NOTE = (
-    'A sensitivity analysis is already running in this session. Wait for it to finish, or stop it, '
-    'then run the analysis again.'
-)
-_RESULTS_HIDDEN_NOTE = 'Results hidden — they do not describe the data and settings loaded now.'
-
-#: Said of a fit whose reported interval was worked out from other input
-#: uncertainties than the ones set now, which is what the interval accounts for.
-#: Both ways back are offered: the uncertainties of an imported fit are set
-#: under the panel like its conditions, and a fit made here is run again. The
-#: fit's own record fills ``{stated}``, so what to set back is named and not
-#: only pointed at, as the conditions a fit was made with are.
-_INPUTS_CHANGED_NOTE = (
-    'This fit was made with {stated}. The input uncertainties set now differ: set them back under Input '
-    'Uncertainty, or fit again to update the interval.'
-)
-
-#: Read for ``{stated}`` of a fit that was made with every input taken as exact.
-_NO_UNCERTAINTY_STATED = 'every input taken as exact'
-
-#: Said when the titrant stock entered is no more concentrated than the titrant
-#: concentrations measured. The panel cannot make this check — it is the one
-#: that needs the loaded data — and the assay refuses the same thing with the
-#: same sentence once a fit reaches it.
-_STOCK_BELOW_DATA = (
-    'The titrant stock ({stock}) must be more concentrated than the highest titrant concentration in the data '
-    '({highest}): a sample cannot hold more titrant than the stock it was made from. Check the stock '
-    'concentration and its unit.'
-)
-
-#: Said instead where the two concentrations read alike in the unit the form
-#: shows — the stock equals the highest titrant concentration, or is above it by
-#: less than the figures shown. Naming one number twice would read as a value
-#: having to be more concentrated than itself.
-_STOCK_NOT_ABOVE_DATA = (
-    'The titrant stock is no more concentrated than the highest titrant concentration in the data ({highest}): '
-    'a sample cannot hold more titrant than the stock it was made from. Check the stock concentration and its unit.'
-)
-
-#: Said of a sensitivity analysis drawn from other input uncertainties than the
-#: ones set now. They are what the analysis samples, so the spread it reports
-#: and a heatmap's axes are entirely a function of them.
-_SENSITIVITY_INPUTS_NOTE = (
-    'The input uncertainties have changed since this analysis; set them back under Input Uncertainty, or run '
-    'the analysis again.'
-)
-
-#: Why imported results were refused, by :func:`_refusal_reason`; formatted with
-#: ``which`` ("The results" or "2 of the 3 results"), ``name`` and ``imported``.
-_REFUSALS = {
-    'other_data': (
-        '{which} in {name} were made on other data than the data loaded now, so {imported}. '
-        'Load the data they were made on, then import them again.'
-    ),
-    'not_reproduced': (
-        '{which} in {name} were made on the data loaded now, but their numbers could not be reproduced on it, '
-        'so {imported}. The file may come from another version of SupraSimFit. Run the fit again to get results '
-        'for these data.'
-    ),
-    'selection': (
-        '{which} in {name} do not match the data and replicates selected now, so {imported}. The file does not '
-        'record which replicates the fit used. Switch on only those replicates, or load the data they were made '
-        'on, then import them again.'
-    ),
-    'other_record': (
-        '{which} in {name} do not match the data loaded now, so {imported}. '
-        'Load the data they were made on, then import them again.'
-    ),
-    'unchecked': (
-        '{which} in {name} could not be checked against the data loaded now, so {imported}. '
-        'Run the fit again to get results for these data.'
-    ),
-}
+VIEWS = tuple(view for _group, items in NAVIGATION for view, _icon in items)
 
 
-def _refusal_reason(result: FitResult, ms: MeasurementSet) -> str:
-    """Which :data:`_REFUSALS` entry explains why *result* was refused on the loaded data *ms*.
+class _SidePanel(QWidget):
+    """A view's side panel: its name, an optional *link* and a close button over a scrolled body of *content*."""
 
-    A recorded fingerprint tells other data from numbers that do not
-    reproduce on the same data. Without one, a file that does not record its
-    replicates may simply have been made on another replicate selection.
-    """
-    recorded = result.metadata.get('data_fingerprint')
-    if recorded is not None:
-        return 'other_data' if recorded != ms.fingerprint() else 'not_reproduced'
-    return 'selection' if fit_replica_ids(result) is None else 'other_record'
+    close_requested = pyqtSignal()
 
-
-def _capitalized(text: str) -> str:
-    return f'{text[0].upper()}{text[1:]}'
-
-
-def _stated_as(result: FitResult) -> str:
-    """What *result* was told about its inputs and about what they share, read back from its own record.
-
-    Each source named and valued as the Input Uncertainty panel writes it — an
-    input's own uncertainty, after them the ones several inputs share, and last
-    the random error of each addition with its mode and what the replicates
-    are — so a note about a fit made with other uncertainties says which ones
-    they were and they can be set back without opening the file.
-    """
-    errors = ErrorModel.from_dict(result.fit_config)
-    sources = errors.source_specs()
-    if not sources and errors.additions is None:
-        return _NO_UNCERTAINTY_STATED
-    labels = result_input_labels(result.assay_type, result.fit_config)
-    stated = []
-    for key, spec in sources.items():
-        value = (result.conditions or {}).get(key)
-        unit = fmt_unit_pretty(str(value.units)) if isinstance(value, Quantity) else ''
-        # A shared source is named with the inputs it moves, which only the
-        # labels of this fit's own record carry; source_name answers for a
-        # result whose assay this version does not know.
-        name = labels.get(key) or source_name(key, labels)
-        stated.append(f'{name} {stated_uncertainty(spec, unit)}')
-    additions = errors.additions
-    if additions is not None:
-        mode = 'sequential additions into one cuvette' if additions.sequential else 'separately prepared samples'
-        replicates = 'separate titrations' if additions.separate_titrations else 'repeated reads of one titration'
-        stated.append(
-            f'a random error of each addition of σ {additions.sigma_pct:g} % ({mode}; replicates are {replicates})'
-        )
-    return and_join(stated)
+    def __init__(self, title: str, content: QWidget, link: QWidget | None = None):
+        super().__init__()
+        t = theme()
+        self.setObjectName('Inspector')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setMinimumWidth(SIZE['inspector-min'])
+        close = C.tool_button(t, None, 'x')
+        close.setToolTip('Close the side panel')
+        close.setAccessibleName(f'Close {title}')
+        close.clicked.connect(self.close_requested)
+        header = QWidget()
+        header.setFixedHeight(SIZE['toolbar'])
+        links = [link, 2] if link is not None else []
+        header.setLayout(C.hbox(C.label(title, 'body-strong'), None, *links, close, margins=(5, 0, 3, 0)))
+        body = QWidget()
+        body.setObjectName('InspectorBody')
+        body.setLayout(C.vbox(content, None, spacing=0, margins=(5, 0, 5, 5)))
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        # The panel never scrolls sideways: every section fits its least width beside the
+        # vertical scroll bar.
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setWidget(body)
+        self.setLayout(C.vbox(header, self.scroll, spacing=0))
 
 
-def _verdict_note(result: FitResult) -> str:
-    """What the fit's diagnostics say in a few words, for the status bar; ``''`` for a fit that has none.
+class _View(QSplitter):
+    """One view of a session: its canvas, and its side panel when it has one."""
 
-    The headline the summary and the plot show (:func:`verdict_headline`),
-    continuing the sentence the status bar opens. A fit of an assay with no
-    association constant, and a result read from a file written before the
-    diagnostics existed, carry no verdict.
-    """
-    if result.diagnostics is None:
-        return ''
-    headline = verdict_headline(result.diagnostics)[0]
-    return f'{headline[0].lower()}{headline[1:]}'
-
-
-def _open_note(result: FitResult) -> str:
-    """The binding constants whose estimate ran to an end of its search box, in words; ``''`` for none.
-
-    Such an estimate is the box, not a measurement, so the status bar says the
-    data do not limit it rather than reporting a clean fit.
-    """
-    sides = {'low': 'below', 'high': 'above'}
-    return and_join(
-        f'{fmt_param_plain(row.key)} not limited {sides[row.estimate_at_bound]} by the data'
-        for row in summarize_parameters(result)
-        if row.estimate_at_bound and not row.is_log
-    )
-
-
-def _bounds_text(lo: float, hi: float, unit: str) -> str:
-    """A parameter's bounds in plain text: ``1×10⁻⁸ to 1×10¹² M⁻¹``, or ``from 0 a.u. with no upper limit``."""
-    shown_unit = fmt_unit_pretty(unit)
-    low, high = (plain_number(value).replace('-', '−') for value in (lo, hi))
-    if math.isinf(hi):
-        return f'from {low}{f" {shown_unit}" if shown_unit else ""} with no upper limit'
-    return f'{low} to {high} {shown_unit}'.rstrip()
+    def __init__(self, canvas: QWidget, side: _SidePanel | None = None):
+        super().__init__(Qt.Orientation.Horizontal)
+        self.side = side
+        self.setHandleWidth(1)
+        self.setChildrenCollapsible(False)
+        self.addWidget(canvas)
+        if side is not None:
+            self.addWidget(side)
+            self.setStretchFactor(0, 1)
+            self.setStretchFactor(1, 0)
+            self.setSizes([10_000, SIZE['inspector']])
 
 
 class FittingSession(QWidget):
-    """One complete fitting workflow: data → preprocess → configure → fit → visualize.
+    """One session on screen: data → binding model → inputs → fit → analyses, one view at a time.
 
-    Each tab in the main window is one FittingSession.  All state is stored in
-    :class:`SessionState`; widgets communicate via Qt signals coordinated here.
-
-    A result stays on screen only while the loaded selection and the settings
-    match the record it was made on (:meth:`_mismatch_note` is the one test,
-    joined for a sensitivity run by :meth:`_sensitivity_inputs_note`). After
-    every change to the replicates, the conditions, the assay type, the
-    parameter bounds, the replicate mode or the input uncertainties, a result
-    that no longer matches is hidden on every tab behind a note naming what
-    changed, and shown again, unchanged, once they match. A change to the data
-    itself clears the results and discards any work still running.
+    Each session of the main window is one FittingSession. Its state and rules
+    live in :attr:`model`, a :class:`~gui.session_model.SessionModel`: each
+    view edits the model's state, draws what the model's signals say changed,
+    and keeps the parts that need a screen — file dialogs, message boxes and
+    plot images. Its views are the sidebar's (:data:`NAVIGATION`);
+    :meth:`show_view` puts one on screen, under the progress line the session
+    shows while it runs.
 
     Signals
     -------
-    title_changed(str)
-        Emitted when the tab title should change — the loaded dataset's filename,
-        a user-set custom name, or "Untitled".
-    status_message(str)
-        Emitted to update the main window's status bar.
-    actions_changed()
-        Emitted when :meth:`fit_running` or :meth:`hidden_results_note` may
-        have changed, so the window can set its fit action — Run Fit, or
-        Cancel Fit while one runs here — and the result exports.
+    changed()
+        Emitted whenever what the window shows of this session may have
+        changed — a run started, advanced or ended, results were shown or
+        hidden, data or settings changed, or the session was renamed.
+    side_panel_closed()
+        Emitted when the side panel's close button is pressed.
+    view_requested(str, bool)
+        Emitted when the session needs one of its views on screen, with the side
+        panels shown where the flag is set — the first step of :meth:`reveal`.
+    new_session_requested()
+        Emitted by *Load data into a new session…* inside a view.
+    help_requested(str)
+        Emitted by a help link inside a view (*About this model*, *About input
+        uncertainty*, *Reading this plot →*) with the Help section it opens.
     """
 
-    title_changed = pyqtSignal(str)
-    status_message = pyqtSignal(str)
-    actions_changed = pyqtSignal()
+    changed = pyqtSignal()
+    side_panel_closed = pyqtSignal()
+    view_requested = pyqtSignal(str, bool)
+    new_session_requested = pyqtSignal()
+    help_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._state = SessionState()
-        self._fit_worker: FitWorker | None = None
-        self._profile_worker: ProfileWorker | None = None
-        self._plot_note: str | None = None  # the note hiding a fit on the Fit Curve
-        self._sensitivity_worker: SensitivityWorker | None = None
-        self._sensitivity_started = 0.0
-        self._custom_tab_name: str | None = None
-        # The uncertainties as the panel last stated them, so a row that
-        # reports itself without changing them leaves the results alone.
-        self._stated_errors = ErrorModel()
+        self.model = SessionModel(self)
         self._setup_ui()
         self._connect_signals()
 
     # ------------------------------------------------------------------
-    # Public API (called by FittingMainWindow)
+    # Views
     # ------------------------------------------------------------------
 
-    def set_custom_tab_name(self, name: str) -> None:
-        """Set a manual tab name (double-click rename); empty reverts to auto."""
-        self._custom_tab_name = name.strip() or None
-        self._emit_tab_title()
+    def show_view(self, view: str) -> None:
+        """Put *view* (one of :data:`VIEWS`) on screen; Simulation takes the session's binding model the first time."""
+        if view == 'Plot appearance':
+            # Another session may have stored the appearance for new sessions since.
+            self._appearance.refresh_buttons()
+        if view == 'Simulation':
+            self.model.open_simulation()
+        self._stack.setCurrentWidget(self._views[view])
 
-    def _tab_title(self) -> str:
-        """Resolve the tab title: custom name, else dataset stem, else 'Untitled'."""
-        if self._custom_tab_name:
-            return self._custom_tab_name
-        src = self._state.source_file
-        return Path(src).stem if src else 'Untitled'
+    def current_view(self) -> str:
+        widget = self._stack.currentWidget()
+        return next(name for name, page in self._views.items() if page is widget)
 
-    def _emit_tab_title(self) -> None:
-        self.title_changed.emit(self._tab_title())
+    def reveal(self, place: Place) -> None:
+        """Take the user to *place*: its view on screen, the side panel shown where the place is in it, and
+        the place shown there (:func:`gui.design.components.reveal`); the concentrations with the first
+        point open for typing."""
+        view, target = self._place(place)
+        page = self._views[view]
+        in_side = target is not None and page.side is not None and page.side.isAncestorOf(target)
+        self.view_requested.emit(view, in_side)
+        if target is None:
+            return
+        C.reveal(theme(), target)
+        if place is Place.CONCENTRATIONS:
+            self._measurements.grid.edit(0)
 
-    def fit_running(self) -> bool:
-        """Whether a fit started in this session is still running."""
-        return self._fit_worker is not None
+    def _place(self, place: Place) -> tuple[str, QWidget | None]:
+        """The view *place* is in and its widget, ``None`` where the view shows no such place now."""
+        if place is Place.CONCENTRATIONS:
+            return 'Measurements', self._measurements.conc_section
+        if place is Place.FIT:
+            return 'Fit results', self._results.headline
+        if place is Place.DIAGNOSTICS:
+            return 'Fit results', self._results.diagnostics_section
+        if place is Place.READINGS:
+            return 'Ka confidence', self._confidence.header_host
+        if place is Place.SHIFTS:
+            return 'Ka confidence', self._confidence.sections.get('conflict')
+        if place is Place.INPUTS:
+            return 'Input uncertainty', self._uncertainty.table
+        view = {
+            Place.BINDING_PROBLEM: 'Binding model',
+            Place.INPUT_PROBLEM: 'Input uncertainty',
+            Place.ANALYSIS_PROBLEM: 'Sensitivity',
+        }[place]
+        # A problem is shown beside the setting it is about: the place is the two together.
+        problems = [p for p in self._views[view].findChildren(C.Problem) if not p.isHidden()]
+        return view, problems[0].parentWidget() if problems else None
 
-    def sensitivity_running(self) -> bool:
-        """Whether a sensitivity analysis started in this session is still running."""
-        return self._sensitivity_worker is not None
+    def has_side_panel(self, view: str) -> bool:
+        """Whether *view* has a side panel."""
+        return self._views[view].side is not None
 
-    def busy_note(self) -> str | None:
-        """Why the fit cannot start now — the work already running here — or ``None`` when it can.
+    def set_side_panels_visible(self, visible: bool) -> None:
+        """Show or hide the side panel of every view."""
+        for page in self._views.values():
+            if page.side is not None:
+                page.side.setVisible(visible)
 
-        One analysis at a time per session: the two share the machine's
-        processors, and each is reported against the inputs set while it ran.
-        """
-        if self.fit_running():
-            return _FIT_RUNNING_NOTE
-        if self.sensitivity_running():
-            return _SENSITIVITY_RUNNING_NOTE
+    def run_primary(self, view: str) -> None:
+        """The toolbar's primary action in *view*: stop the work running here, else run the analysis or the fit."""
+        if self.model.running():
+            self.model.stop()
+        elif view == 'Sensitivity':
+            self.run_sensitivity()
+        else:
+            self.run_fit()
+
+    def view_badge(self, view: str) -> str | None:
+        """The summary beside the title of *view*, or ``None`` for a view that states none yet."""
+        if view == 'Simulation':
+            return self._simulation.badge()
+        if view == 'Measurements':
+            return self._measurements.badge()
+        if view == 'Binding model':
+            return self._binding.badge()
+        if view == 'Input uncertainty':
+            return self._uncertainty.badge()
+        if view == 'Fit results':
+            return self._results.badge()
+        if view == 'Ka confidence':
+            return self._confidence.badge()
+        if view == 'Sensitivity':
+            return self._sensitivity.badge()
+        if view == 'Plot appearance':
+            return self._appearance.badge()
         return None
 
-    def running_work(self) -> str:
-        """What this session has running, named for a message, or ``''`` when nothing is."""
-        running = ('fit', self.fit_running()), ('sensitivity analysis', self.sensitivity_running())
-        return ' and '.join(name for name, is_running in running if is_running)
+    def _plot_widget_of(self, view: str):
+        return {
+            'Simulation': self._simulation,
+            'Measurements': self._measurements,
+            'Fit results': self._results,
+            'Ka confidence': self._confidence,
+            'Sensitivity': self._sensitivity,
+            'Plot appearance': self._appearance,
+        }.get(view)
 
-    def plot_export_note(self) -> str | None:
-        """Why the plot on the tab on screen cannot be saved — or ``None`` when it can."""
-        widget = self._plot_tabs.currentWidget()
-        state = self._state
-        if widget is self._plot_widget:
-            if state.measurement_set is None and not state.fit_results:
-                return 'There is nothing on the Fit Curve tab yet. Load a measurement file, then save it.'
-            return None
-        if widget is self._identifiability_widget:
-            if not self._identifiability_widget.has_chart():
-                return 'There is no identifiability chart to save yet. Run a fit, then save it.'
-            return self._fit_view()[1]
-        if state.sensitivity_result is None:
-            return 'There is no sensitivity analysis to save yet. Run one, then save it.'
-        return state.sensitivity_note
-
-    def hidden_results_note(self) -> str | None:
-        """Why result exports and picks are unavailable: the note of the latest fit when every held fit is hidden.
-
-        ``None`` while any result is shown, or when none is held: exports and
-        picks then act on the shown results only.
-        """
-        return self._fit_view()[1]
-
-    def cancel_running(self) -> None:
-        """Ask every background run this session started to stop, without waiting for any of it.
-
-        Each run ends at its next cancel check, so asking all of them first
-        lets them stop side by side; waiting for one before asking the next
-        would add up their stopping times on the interface thread.
-        """
-        for worker in (self._fit_worker, self._profile_worker, self._sensitivity_worker):
-            if worker is not None:
-                worker.cancel()
-
-    def cancel_fit(self) -> None:
-        """Stop the fit running in this session, leaving the tab as it was before it started.
-
-        A cancelled fit reports nothing, so whatever the tabs showed — the
-        previous fit and its Ka profile, where there was one — still stands,
-        and the next fit can start as soon as this one has stopped.
-        """
-        if self._fit_worker is None:
-            return
-        self._stop_fit()
-        self.status_message.emit('Fit cancelled — nothing on the tab was changed.')
-
-    def shutdown(self) -> None:
-        """Stop every background run this session started and wait for its thread to end.
-
-        Called before the tab or the window closes.
-        """
-        self.cancel_running()
-        self._stop_fit()
-        self._stop_profile()
-        self._stop_sensitivity()
-
-    def _assay_problems(self, ms: MeasurementSet) -> list[str]:
-        """Why the assay as configured cannot describe the loaded data, one sentence per problem; empty when it can.
-
-        The Assay Configuration panel's own checks, and the one that needs the
-        data: a sample cannot hold more titrant than the stock it was made
-        from, so the stock has to be more concentrated than every titrant
-        concentration measured. A stock that has not been entered at all is
-        already the panel's first sentence, so it is not measured against the
-        data as well.
-        """
-        panel = self._assay_panel
-        problems = panel.problems()
-        stock = panel.current_conditions().get(TITRANT_STOCK)
-        if stock is None or not stock.magnitude > 0:
-            return problems
-        concentrations = np.asarray(ms.concentrations, dtype=float)
-        finite = concentrations[np.isfinite(concentrations)]
-        if finite.size and float(finite.max()) >= stock.magnitude:
-            entered = panel.format_condition(TITRANT_STOCK, stock)
-            highest = panel.format_condition(TITRANT_STOCK, Q_(float(finite.max()), 'M'))
-            problems.append(
-                _STOCK_NOT_ABOVE_DATA.format(highest=highest)
-                if entered == highest
-                else _STOCK_BELOW_DATA.format(stock=entered, highest=highest)
+    def plot_export_note(self, view: str) -> str | None:
+        """Why the plot of *view* cannot be saved — or ``None`` when it can."""
+        widget = self._plot_widget_of(view)
+        model = self.model
+        if widget is None:
+            return (
+                'This view has no plot to save. Open Simulation, Measurements, Fit results, Ka confidence, '
+                'Sensitivity or Plot appearance.'
             )
-        return problems
+        if widget is self._simulation:
+            refusal = model.fit_refusal()
+            return None if refusal is None else refusal.message
+        if widget is self._measurements:
+            return None if model.measurement_set is not None else 'There is no titration yet. Load data, then save it.'
+        if widget is self._results or widget is self._appearance:
+            if model.measurement_set is None and not model.fit_results:
+                return 'There is no titration plot yet. Load a measurement file, then save it.'
+            return None
+        if widget is self._confidence:
+            if not self._confidence.has_plot():
+                return 'There is no Ka confidence plot to save yet. Run a fit and wait for its profile, then save it.'
+            return model.hidden_results_note()
+        if model.sensitivity_result is None:
+            return 'There is no sensitivity analysis to save yet. Run one, then save it.'
+        return model.sensitivity_note
+
+    # ------------------------------------------------------------------
+    # Commands
+    # ------------------------------------------------------------------
+
+    def add_files(self) -> None:
+        """Ask for files and add them to this session as further replicates."""
+        self._measurements.add_files()
+
+    def replace_data(self) -> bool:
+        """Ask for files and load them in place of this session's data; whether anything was loaded."""
+        return self._measurements.replace_data()
 
     def run_fit(self) -> None:
-        """Start a background fitting run on a copy of the loaded data, so later changes never reach it."""
+        """Start a background fit of the loaded data with the settings shown; where it cannot start, say why
+        and show the place holding what to change."""
         self._finish_edits()
-        ms = self._state.measurement_set
-        if ms is None:
-            QMessageBox.warning(self, 'No Data', 'Load a measurement file first.')
-            return
-        busy = self.busy_note()
-        if busy is not None:
-            QMessageBox.warning(self, 'Already Running', busy)
-            return
+        refusal = self.model.run_fit()
+        if refusal is not None:
+            self._refuse(refusal)
 
-        # Placeholder guard — fitting with column indices 1..N as
-        # concentrations would silently produce meaningless Ka values.
-        # Source-agnostic: any plate-reader import that lacks concentrations
-        # sets this flag, regardless of instrument.
-        if ms.metadata.get(BMG_PLACEHOLDER_KEY):
-            QMessageBox.warning(
-                self,
-                'Concentrations Required',
-                'This dataset has placeholder concentrations. Enter the real '
-                'concentration vector in the Data panel before running the fit.',
-            )
-            self._data_panel.focus_concentration_table()
-            return
-
-        assay_problems = self._assay_problems(ms)
-        if assay_problems:
-            QMessageBox.warning(
-                self,
-                'Assay Configuration',
-                'The fit cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in assay_problems),
-            )
-            return
-
-        bound_problems = self._bounds_panel.problems()
-        if bound_problems:
-            QMessageBox.warning(
-                self,
-                'Parameter Bounds',
-                'The fit cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in bound_problems),
-            )
-            return
-
-        input_problems = self._input_panel.problems()
-        if input_problems:
-            QMessageBox.warning(
-                self,
-                'Input Uncertainty',
-                'The fit cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in input_problems),
-            )
-            return
-
-        assay_cls = self._assay_panel.get_assay_class()
-        conditions = self._assay_panel.current_conditions()
-        config = self._fit_panel.current_config()
-        custom_bounds = self._bounds_panel.current_bounds()
-        if custom_bounds:
-            config = replace(config, custom_bounds=custom_bounds)
-        # The uncertainties, the random error of each addition included, widen
-        # the reported interval to cover them; a fit that cannot be made with
-        # the inputs as free as they were stated to be names them in its
-        # refusal the way the panel names them.
-        config = replace(
-            config,
-            errors=self._input_panel.current_errors(),
-            input_labels=self._input_panel.input_labels(),
-        )
-
-        fitting = 'Fitting…'
-        if (
-            config.per_replica
-            and 1 < ms.n_active < REPLICATE_TEST_MIN
-            and projectable(self._assay_panel.current_assay_type())
-        ):
-            # With fewer replicates than the replicate test can judge, every active
-            # one is averaged; said in the one message the bar keeps while it fits.
-            fitting = (
-                f'Fitting {ms.n_active} replicates — too few to test against each other (the test needs three), '
-                'so all of them are used…'
-            )
-
-        self._fit_worker = FitWorker(
-            ms.with_active(ms.active_replica_ids),
-            assay_cls,
-            conditions,
-            config,
-            source_file=self._state.source_file,
-            parent=self,
-        )
-        self._fit_worker.finished.connect(self._on_fit_complete)
-        self._fit_worker.error.connect(self._on_fit_error)
-        self._fit_worker.start()
-        self.actions_changed.emit()
-        self.status_message.emit(fitting)
+    def _refuse(self, refusal: Refusal) -> None:
+        """Say why a run cannot start, then show the place holding what to change."""
+        QMessageBox.warning(self, refusal.title, refusal.message)
+        if refusal.place is not None:
+            self.reveal(refusal.place)
 
     def load_demo_ida(self) -> None:
-        """Load the bundled IDA demo dataset and fit it with the demo's own settings.
+        """Load the bundled IDA demo dataset into this session and fit it with the demo's own settings
+        (:meth:`SessionModel.set_up_demo`).
 
-        The same settings whatever the session held before, and what they are
-        is said on the status bar:
-
-        - the IDA assay with its default conditions (Ka,dye 16.8 MM⁻¹,
-          [Host]₀ 4.3 µM, [Dye]₀ 6 µM) and constant totals;
-        - the IDA default parameter bounds;
-        - the input uncertainties of :data:`_DEMO_UNCERTAINTIES` — Ka,dye
-          σ 10 %, [Host]₀, [Dye]₀ and the titrant σ 3 % each — and no shared
-          source or error of the additions, so the first fit reports the
-          interval that covers them, with the conditional one beside it;
-        - the replicates averaged without the per-replicate test;
-        - Outlier Removal applied as the panel is set (its defaults unless changed).
+        What the settings are is said on the status bar while the fit runs.
         """
-        if not _DEMO_IDA_PATH.exists():
-            QMessageBox.warning(self, 'Demo Data Missing', f'Could not find:\n{_DEMO_IDA_PATH}')
+        if not self.set_up_demo_ida():
             return
-        busy = self.busy_note()
-        if busy is not None:
-            QMessageBox.warning(self, 'Already Running', busy)
-            return
-
-        self._assay_panel.set_assay_type(AssayType.IDA)
-        self._bounds_panel.reset_to_defaults()
-        self._input_panel.set_specs(_DEMO_UNCERTAINTIES)
-        self._fit_panel.set_config(FitConfig(per_replica=False))
-
-        # Loading resets the replicates and clears the results.
-        self._data_panel.load_file(str(_DEMO_IDA_PATH))
-        self._preprocess_panel.apply()
         self.run_fit()
-        if self.fit_running():
-            labels = self._input_panel.input_labels()
+        if self.model.fit_running():
+            labels = self.model.settings.input_labels
             stated = and_join(
-                f'{labels[key]} {stated_uncertainty(spec, "")}' for key, spec in _DEMO_UNCERTAINTIES.items()
+                f'{labels[key]} {stated_uncertainty(spec, "")}' for key, spec in DEMO_UNCERTAINTIES.items()
             )
-            self.status_message.emit(f'Demo settings: {stated} — fitting…')
+            self.model.show_status(f'Demo settings: {stated} — fitting…')
 
-    def _default_save_name(self, suffix: str, tag: str = '') -> str:
-        """Build a default save filename based on the loaded dataset's stem.
+    def set_up_demo_ida(self) -> bool:
+        """State the demo's settings and load its data (:meth:`SessionModel.set_up_demo`), without fitting them.
 
-        Falls back to the ``source_file`` on the most recent fit result when
-        no dataset is currently loaded (e.g. after importing results whose
-        source file is missing on disk).
+        Returns whether the data are loaded; where they are not, a message box said why.
         """
-        src = self._state.source_file
-        if not src and self._state.fit_results:
-            src = self._state.fit_results[-1].source_file
-        if not src:
-            return f'{tag or "output"}{suffix}'
-        stem = Path(src).stem
-        return f'{stem}{("_" + tag) if tag else ""}{suffix}'
+        refusal = self.model.set_up_demo()
+        if refusal is not None:
+            QMessageBox.warning(self, refusal.title, refusal.message)
+        return refusal is None
 
-    def _default_filename_base(self) -> str:
-        """Stem-only version of :meth:`_default_save_name` (no tag, no suffix)."""
-        src = self._state.source_file
-        if not src and self._state.fit_results:
-            src = self._state.fit_results[-1].source_file
-        return Path(src).stem if src else 'output'
+    def _default_save_path(self, suffix: str, tag: str = '') -> str:
+        """Where a save starts: a name from the stem of the session's data file (:meth:`SessionModel.dataset_file`)
+        in the folder :meth:`SessionModel.save_folder` offers."""
+        src = self.model.dataset_file()
+        name = f'{tag or "output"}{suffix}' if not src else f'{Path(src).stem}{("_" + tag) if tag else ""}{suffix}'
+        return str(self.model.save_folder() / name)
 
     def _finish_edits(self) -> None:
-        """Finish a conditions edit still being typed, and check the results against the settings as they read now.
+        """Check the results against the settings as they read now, a condition still being typed included.
 
         An action run from a shortcut leaves the focus in the field being typed
         into, so no edit has ended by itself before the action reads the form.
         """
-        self._assay_panel.finish_edit()
-        self._show_results()
+        self.model.check_results()
 
     def _can_export_results(self) -> bool:
         """Whether there are shown results to export, checked against the settings as they read now; says why not."""
         self._finish_edits()
-        note = self.hidden_results_note()
+        note = self.model.hidden_results_note()
         if note is not None:
             QMessageBox.warning(self, 'Results Hidden', note)
             return False
-        if not self._state.fit_results:
+        if not self.model.fit_results:
             QMessageBox.information(self, 'No Results', 'Run a fit first.')
             return False
         return True
 
     def _replica_order(self) -> list[str] | None:
-        ms = self._state.measurement_set
+        ms = self.model.measurement_set
         return None if ms is None else list(ms.replica_ids)
 
     def export_results(self) -> None:
@@ -779,42 +349,42 @@ class FittingSession(QWidget):
         if not self._can_export_results():
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Fit Results', self._default_save_name('.json', 'results'), 'JSON (*.json)'
+            self, 'Export Fit Results', self._default_save_path('.json', 'results'), 'JSON (*.json)'
         )
         if not path:
             return
         from gui.session import export_results
 
-        export_results(self._state.fit_results, path)
-        self.status_message.emit(f'Results exported to {path}')
+        export_results(self.model.fit_results, path, self.model.plot_appearance)
+        self.model.show_status(f'Results exported to {path}')
 
     def export_results_txt(self) -> None:
         """Export current fit results as a human-readable text report."""
         if not self._can_export_results():
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Results (TXT)', self._default_save_name('.txt', 'results'), 'Text files (*.txt)'
+            self, 'Export Results (TXT)', self._default_save_path('.txt', 'results'), 'Text files (*.txt)'
         )
         if not path:
             return
         from gui.session import export_results_txt
 
-        export_results_txt(self._state.fit_results, path, replica_ids=self._replica_order())
-        self.status_message.emit(f'Results exported to {path}')
+        export_results_txt(self.model.fit_results, path, replica_ids=self._replica_order())
+        self.model.show_status(f'Results exported to {path}')
 
     def export_results_csv(self) -> None:
         """Export current fit results as a machine-readable CSV table."""
         if not self._can_export_results():
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Results (CSV)', self._default_save_name('.csv', 'results'), 'CSV files (*.csv)'
+            self, 'Export Results (CSV)', self._default_save_path('.csv', 'results'), 'CSV files (*.csv)'
         )
         if not path:
             return
         from gui.session import export_results_csv
 
-        export_results_csv(self._state.fit_results, path, replica_ids=self._replica_order())
-        self.status_message.emit(f'Results exported to {path}')
+        export_results_csv(self.model.fit_results, path, replica_ids=self._replica_order())
+        self.model.show_status(f'Results exported to {path}')
 
     def export_raw_data(self) -> None:
         """Export the currently loaded raw measurements to TXT or CSV.
@@ -822,14 +392,14 @@ class FittingSession(QWidget):
         The output format is chosen by the file extension and round-trips
         through the existing :class:`TxtReader` and :class:`CsvReader`.
         """
-        ms = self._state.measurement_set
+        ms = self.model.measurement_set
         if ms is None:
             QMessageBox.information(self, 'No Data', 'Load a measurement file first.')
             return
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Export Raw Data',
-            self._default_save_name('.txt'),
+            self._default_save_path('.txt'),
             'Text file (*.txt);;CSV file (*.csv)',
         )
         if not path:
@@ -848,6 +418,7 @@ class FittingSession(QWidget):
                     path = str(Path(path).with_suffix('.txt'))
                 write_measurements_txt(ms, path)
         except Exception:
+            logger.exception('Could not save the raw data to %s', path)
             QMessageBox.warning(
                 self,
                 'Export Error',
@@ -855,118 +426,99 @@ class FittingSession(QWidget):
                 'you have permission to write there.',
             )
             return
-        self.status_message.emit(f'Raw data exported to {path}')
+        self.model.show_status(f'Raw data exported to {path}')
+
+    def export_simulated_data(self) -> None:
+        """Save Simulation's simulated replicates, exactly as drawn, as a measurement file."""
+        self._simulation.export_data()
 
     def import_results(self) -> None:
         """Import fit results from JSON, check each against the loaded data, and show those that describe it.
 
         With no data loaded, the results' source file is loaded first when it
-        still exists. Each result is then checked by
-        :func:`~core.pipeline.results_io.verify_imported_result`: one that
-        does not describe the loaded data, or whose check fails, is refused
-        with the reason (:func:`_refusal_reason`); the others replace the held
-        results and are shown or hidden like a fit made here. The replicate
-        selection is never changed. Without data the stored numbers are shown
-        with a note that they could not be checked, and with data loaded a
-        notice names the results the check could not judge. Refused while a fit runs,
-        whose result would replace the imported ones as it finished.
+        still exists. The model checks each result
+        (:meth:`~gui.session_model.SessionModel.check_imported`): the ones it
+        refuses are named with the reason, the others replace the held results
+        and are shown or hidden like a fit made here. The replicate selection is
+        never changed. Without data the stored numbers are shown with a note
+        that they could not be checked, and with data loaded a notice names the
+        results the check could not judge. Refused while a fit runs, whose
+        result would replace the imported ones as it finished.
         """
-        if self.fit_running():
-            QMessageBox.warning(self, 'Fit Running', _FIT_RUNNING_IMPORT_NOTE)
+        refusal = self.model.import_refusal()
+        if refusal is not None:
+            QMessageBox.warning(self, refusal.title, refusal.message)
             return
         path, _ = QFileDialog.getOpenFileName(self, 'Import Fit Results', '', 'JSON (*.json);;All files (*)')
         if not path:
             return
-        from gui.session import import_results
+        from gui.session import import_appearance, import_results
 
         try:
             results = import_results(path)
         except Exception:
+            logger.exception('Could not import results from %s', path)
             QMessageBox.warning(
                 self,
                 'Import Error',
                 'Could not import these results. Make sure the file is a results file (.json) exported by SupraSimFit.',
             )
             return
-        name = Path(path).name
-        if self._state.measurement_set is None and results:
+        if self.model.measurement_set is None and results:
             source_file = results[-1].source_file
             if source_file and Path(source_file).exists():
-                self._data_panel.load_file(source_file)
-        ms = self._state.measurement_set
+                self.model.load_files([source_file])
 
-        accepted: list[FitResult] = []
-        refused: dict[str, int] = {}  # reason -> how many results it refuses
-        rescored = unverified = False
-        for result in results:
-            try:
-                status, checked = verify_imported_result(result, ms)
-            except Exception:
-                logger.exception('Could not check imported result %s against the loaded data', result.id)
-                status, checked = 'unchecked', result
-            if status in ('different_data', 'unchecked'):
-                reason = 'unchecked' if status == 'unchecked' else _refusal_reason(result, ms)
-                refused[reason] = refused.get(reason, 0) + 1
-                continue
-            rescored = rescored or status == 'rescored_legacy'
-            unverified = unverified or (status == 'unverifiable' and ms is not None)
-            accepted.append(checked)
-        if refused:
-            imported = 'nothing was imported' if not accepted else 'they were left out'
-            paragraphs = []
-            for reason, count in refused.items():
-                which = 'The results' if count == len(results) else f'{count} of the {len(results)} results'
-                paragraphs.append(_REFUSALS[reason].format(which=which, name=name, imported=imported))
-            QMessageBox.warning(self, 'Results Not Imported', '\n\n'.join(paragraphs))
-            if not accepted:
+        check = self.model.check_imported(results, Path(path).name)
+        if check.refusal is not None:
+            QMessageBox.warning(self, 'Results Not Imported', check.refusal)
+            if not check.accepted:
                 return
+        try:
+            appearance = import_appearance(path)
+        except ValueError as exc:
+            appearance = None
+            QMessageBox.information(self, 'Imported Results', f'{exc} The plot keeps this session’s own appearance.')
+        self.model.show_imported(check.accepted, path, appearance)
+        if self.model.measurement_set is None:
+            # A results file opens under the name of the data it was made from.
+            source = check.accepted[-1].source_file if check.accepted else None
+            self.model.set_custom_name(Path(source or path).stem)
+        if check.notice is not None:
+            QMessageBox.information(self, 'Imported Results', check.notice)
 
-        # Imported fits carry no Ka profile; the tab waits for the next fit.
-        self._clear_identifiability()
-        self._state.held_fit_results = accepted
-        self._show_results(force=True)
-        self.status_message.emit(f'Imported {len(accepted)} result(s) from {path}')
+    def export_plot(self, view: str) -> None:
+        """Save the plot of *view*.
 
-        notices = []
-        if rescored:
-            notices.append(
-                f'Some numbers stored in {name} did not describe the replicates each fit used, so the R², RMSE and '
-                'curve were recomputed on those replicates.'
-            )
-        if unverified:
-            notices.append(
-                f'Some results in {name} could not be checked against the data loaded now, because this version '
-                'cannot recompute their R² and RMSE closely enough to tell. They are shown as stored in the file; '
-                'fit the data again to get results that are checked.'
-            )
-        if notices:
-            QMessageBox.information(self, 'Imported Results', '\n\n'.join(notices))
-
-    def export_plot(self) -> None:
-        """Save the plot on the tab that is showing.
-
-        The Fit Curve tab offers PNG or SVG. The Identifiability and Ka
-        Sensitivity tabs are saved whole, as one picture, which only PNG can
-        carry: see :func:`~gui.plotting.export.export_widget`. An edit still
-        being typed is finished first, so the picture matches the settings.
+        Simulation's titration above its species, and the titration of Measurements, Fit
+        results and Plot appearance, are saved as PNG or SVG, under their heads (:meth:`~gui.views.titration.TitrationPlot.export_image`). Ka
+        confidence and Sensitivity are saved as one picture of several plots, which only PNG
+        can carry: see :func:`~gui.plotting.export.export_widget`. An edit still being
+        typed is finished first, so the picture matches the settings.
         """
         self._finish_edits()
-        note = self.plot_export_note()
+        note = self.plot_export_note(view)
         if note is not None:
             QMessageBox.warning(self, 'Save Plot', note)
             return
-        widget = self._plot_tabs.currentWidget()
+        widget = self._plot_widget_of(view)
         # A whole tab is saved as one picture, which rules out SVG; see
         # gui.plotting.export.export_widget.
         tag, formats = {
-            self._plot_widget: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
-            self._identifiability_widget: ('identifiability', 'PNG image (*.png)'),
-            self._sensitivity_widget: ('sensitivity', 'PNG image (*.png)'),
+            self._simulation: (
+                f'simulation_{self.model.simulation.assay_type.name}',
+                'PNG image (*.png);;SVG vector (*.svg)',
+            ),
+            self._measurements: ('titration', 'PNG image (*.png);;SVG vector (*.svg)'),
+            self._results: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
+            self._appearance: ('', 'PNG image (*.png);;SVG vector (*.svg)'),
+            self._confidence: ('confidence', 'PNG image (*.png)'),
+            self._sensitivity: ('sensitivity', 'PNG image (*.png)'),
         }[widget]
         path, _ = QFileDialog.getSaveFileName(
             self,
             'Save Plot',
-            self._default_save_name('.png', tag),
+            self._default_save_path('.png', tag),
             formats,
         )
         if not path:
@@ -977,6 +529,7 @@ class FittingSession(QWidget):
             QMessageBox.warning(self, 'Save Plot', str(exc))
             return
         except Exception:
+            logger.exception('Could not save the plot to %s', path)
             QMessageBox.warning(
                 self,
                 'Export Error',
@@ -984,1070 +537,136 @@ class FittingSession(QWidget):
                 'have permission to write there.',
             )
             return
-        self.status_message.emit(f'Plot saved to {path}')
+        self.model.show_status(f'Plot saved to {path}')
 
-    def open_export_multiple_dialog(self, *, select_all_default: bool) -> None:
-        """Show the consolidated multi-artefact export dialog, once an edit still being typed is finished."""
+    def open_export_multiple_dialog(self) -> None:
+        """Show Export several…, once an edit still being typed is finished, and say in the status bar what it wrote."""
         self._finish_edits()
         from gui.dialogs.export_multiple_dialog import ExportMultipleDialog
 
-        dlg = ExportMultipleDialog(self, select_all_default=select_all_default, parent=self)
+        dlg = ExportMultipleDialog(self, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            outcomes = dlg.outcomes
-            successes = sum(1 for _l, _p, e in outcomes if e is None)
-            if successes:
-                folder = outcomes[0][1].parent
-                self.status_message.emit(f'Exported {successes}/{len(outcomes)} artefact(s) to {folder}')
-
-    def save_style_template(self) -> None:
-        """Save current plot style settings to a JSON file."""
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            'Save Style Template',
-            'style_template.json',
-            'JSON (*.json)',
-        )
-        if not path:
-            return
-        from gui.plotting.plot_style import save_style_json
-
-        style = self._style_widget.widget.current_style()
-        save_style_json(style, path)
-        self.status_message.emit(f'Style template saved to {path}')
-
-    def load_style_template(self) -> None:
-        """Load plot style settings from a JSON file."""
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            'Load Style Template',
-            '',
-            'JSON (*.json);;All files (*)',
-        )
-        if not path:
-            return
-        try:
-            from gui.plotting.plot_style import load_style_json
-
-            style = load_style_json(path)
-            self._style_widget.widget.load_style(style)
-            # Reflect the loaded x_unit in the Data panel's Display Unit
-            # combo so the two stay in sync after a style import.
-            loaded_unit = style.get('axes', {}).get('x_unit')
-            if loaded_unit:
-                self._state.display_unit = loaded_unit
-                self._data_panel.set_display_unit(loaded_unit)
-            self.status_message.emit(f'Style template loaded from {path}')
-        except Exception:
-            QMessageBox.warning(
-                self,
-                'Load Error',
-                'Could not load this style template. Make sure it is a style file (.json) exported by SupraSimFit.',
-            )
+            written = [path for _label, path, error in dlg.outcomes if error is None]
+            if written:
+                files = f'{len(written)} file{"" if len(written) == 1 else "s"}'
+                self.model.show_status(f'Exported {files} to {written[0].parent}')
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
     def _setup_ui(self) -> None:
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        self._simulation = SimulationView(self.model, self)
+        self._measurements = MeasurementsView(self.model, self)
+        self._binding = BindingView(self.model, self)
+        self._uncertainty = UncertaintyView(self.model, self)
+        self._results = FitResultsView(self.model, self)
+        self._confidence = ConfidenceView(self.model, self)
+        self._sensitivity = SensitivityView(self.model, self)
+        self._appearance = PlotAppearanceView(self.model, self)
 
-        splitter = QSplitter()
-        splitter.setChildrenCollapsible(False)
-        outer.addWidget(splitter)
+        def side(title: str, *widgets: QWidget, link: QWidget | None = None) -> _SidePanel:
+            content = QWidget()
+            content.setLayout(C.vbox(*widgets, spacing=5))
+            panel = _SidePanel(title, content, link)
+            panel.close_requested.connect(self.side_panel_closed)
+            return panel
 
-        # ---- Left panel (scrollable) --------------------------------
-        # The sidebar scrolls vertically only; its width is driven by the
-        # content's own size hints (see _SidebarScrollArea). The splitter honors
-        # that as the sidebar's minimum and shrinks the plot pane instead, so the
-        # content is never clipped. No max-width cap and childrenCollapsible(False)
-        # keep it freely widenable yet never collapsible to zero.
-        self._sidebar_scroll = _SidebarScrollArea()
-        self._sidebar_scroll.setWidgetResizable(True)
-        self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left_scroll = self._sidebar_scroll
-
-        left_container = QWidget()
-        left_layout = QVBoxLayout(left_container)
-        left_layout.setSpacing(6)
-        left_layout.setContentsMargins(6, 6, 6, 6)
-
-        self._data_panel = DataPanel(initial_display_unit=self._state.display_unit)
-        self._preprocess_panel = PreprocessingPanel()
-        self._replica_panel = ReplicaPanel()
-        self._assay_panel = AssayConfigPanel()
-        self._input_panel = InputUncertaintyPanel()
-        self._fit_panel = FitConfigPanel()
-        self._sensitivity_panel = SensitivityPanel()
-        self._bounds_panel = BoundsPanel()
-        self._style_widget = _Grouped(
-            'Plot Style',
-            PlotStyleWidget(),
-            info_title='Plot Style',
-            info_html=_PLOT_STYLE_HELP_HTML,
-        )
-
-        for widget in (
-            self._data_panel,
-            self._preprocess_panel,
-            self._replica_panel,
-            self._assay_panel,
-            self._input_panel,
-            self._fit_panel,
-            self._sensitivity_panel,
-            self._bounds_panel,
-            self._style_widget,
-        ):
-            left_layout.addWidget(widget)
-
-        left_layout.addStretch()
-        left_scroll.setWidget(left_container)
-        splitter.addWidget(left_scroll)
-        splitter.splitterMoved.connect(left_scroll.remember_dragged_width)
-
-        # ---- Right panel (tabbed plot area + summary, vertically resizable)
-        right_splitter = QSplitter(Qt.Orientation.Vertical)
-        right_splitter.setChildrenCollapsible(False)
-
-        # Tabbed plot area (flat/minimal, white pane):
-        # Fit Curve | Identifiability | Ka Sensitivity.
-        self._plot_widget = PlotWidget()
-        self._identifiability_widget = IdentifiabilityWidget()
-        self._sensitivity_widget = SensitivityWidget()
-        self._plot_tabs = FlatTabWidget(white_pane=True)
-        self._plot_tabs.addTab(self._plot_widget, 'Fit Curve')
-        self._plot_tabs.addTab(self._identifiability_widget, 'Identifiability')
-        self._plot_tabs.addTab(self._sensitivity_widget, 'Ka Sensitivity')
-        guide_button = QToolButton()
-        guide_button.setText('? How to read this plot')
-        guide_button.setToolTip('Open the guide to reading the plot on this tab')
-        guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        guide_button.setStyleSheet(_GUIDE_BUTTON_QSS)
-        guide_button.clicked.connect(self._show_plot_guide)
-        self._plot_tabs.setCornerWidget(guide_button, Qt.Corner.TopRightCorner)
-
-        # Every plot page's floor is _PLOT_PAGE_MIN_HEIGHT, whichever tab is showing:
-        # dragging the summary up stops where a plot is still readable, and a page
-        # whose content is taller scrolls or clips rather than limiting the drag.
-        # Only the page on screen sets the tabs' width (FlatTabWidget).
-        for index in range(self._plot_tabs.count()):
-            self._plot_tabs.widget(index).setMinimumHeight(_PLOT_PAGE_MIN_HEIGHT)
-
-        self._summary_widget = FitSummaryWidget()
-
-        right_splitter.addWidget(self._plot_tabs)
-        right_splitter.addWidget(self._summary_widget)
-        right_splitter.setStretchFactor(0, 1)
-        right_splitter.setStretchFactor(1, 1)
-        splitter.addWidget(right_splitter)
-
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        # No explicit initial split: the sidebar opens at its content-driven
-        # sizeHint width and the plot (stretch factor 1) takes the rest.
-
-        # Open the panels that follow the assay on the default assay type. The
-        # heatmap axes are the uncertainty panel's inputs, named as it names them.
-        assay_type = self._assay_panel.current_assay_type()
-        self._bounds_panel.set_assay_type(assay_type)
-        self._input_panel.set_assay_type(assay_type)
-        self._sensitivity_panel.set_assay_type(assay_type)
-        self._name_inputs()
-        self._on_conditions_changed()
-
-        # Push the initial display unit into PlotStyleWidget so the style
-        # dict reflects the DataPanel's combo from the first emission.
-        self._style_widget.widget.set_x_unit(self._state.display_unit)
+        self._views: dict[str, _View] = {
+            'Simulation': _View(
+                self._simulation.canvas, side('Simulation settings', self._simulation.side, link=self._simulation.more)
+            ),
+            'Measurements': _View(self._measurements.canvas, side('Measurement settings', self._measurements.side)),
+            'Binding model': _View(self._binding.canvas),
+            'Input uncertainty': _View(self._uncertainty.canvas, side('Effect on the fit', self._uncertainty.side)),
+            'Fit results': _View(self._results.canvas, side('Fit details', self._results.side)),
+            'Ka confidence': _View(
+                self._confidence.canvas, side('Notes', self._confidence.side, link=self._confidence.guide_link)
+            ),
+            'Sensitivity': _View(self._sensitivity.canvas, side('Analysis settings', self._sensitivity.side)),
+            'Plot appearance': _View(
+                self._appearance.canvas, side('Titration plot', self._appearance.side, link=self._appearance.reset)
+            ),
+        }
+        self._stack = QStackedWidget()
+        for view in VIEWS:
+            self._stack.addWidget(self._views[view])
+        self._progress_line = C.ProgressLine(theme())
+        self.setLayout(C.vbox(self._progress_line, self._stack, spacing=0))
+        self.show_view('Fit results')
 
     # ------------------------------------------------------------------
     # Signal wiring
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
-        self._data_panel.data_loaded.connect(self._on_data_loaded)
-        self._data_panel.data_cleared.connect(self._on_data_cleared)
-        self._data_panel.display_unit_changed.connect(self._on_display_unit_changed)
+        self._measurements.new_session_link.clicked.connect(self.new_session_requested)
+        # Every empty state loads into this session: the files asked for, or the demo, which it fits.
+        for view in (self._measurements, self._results, self._confidence, self._sensitivity, self._appearance):
+            view.empty_state.load.clicked.connect(self.replace_data)
+            view.empty_state.demo.clicked.connect(self.load_demo_ida)
 
-        self._preprocess_panel.preprocessing_applied.connect(self._on_preprocessing_applied)
-        self._preprocess_panel.preprocessing_reset.connect(self._on_preprocessing_reset)
-
-        self._replica_panel.replicas_changed.connect(self._on_replicas_changed)
-
-        self._assay_panel.assay_type_changed.connect(self._on_assay_type_changed)
-        self._assay_panel.assay_type_changed.connect(self._sensitivity_panel.set_assay_type)
-        self._assay_panel.conditions_changed.connect(self._on_conditions_changed)
-        self._assay_panel.conditions_edited.connect(self._show_results)
-
-        # The uncertainties are what a fit's interval accounts for, so a change
-        # to them puts the fit on screen out of date with the panel.
-        self._input_panel.specs_changed.connect(self._on_input_specs_changed)
-
-        # A result was made under the bounds and the replicate mode set then.
-        self._fit_panel.config_changed.connect(self._show_results)
-        self._bounds_panel.bounds_changed.connect(self._show_results)
-
-        self._sensitivity_panel.run_requested.connect(self.run_sensitivity)
-        # Cancel is offered in two places: the sidebar panel and the running tab.
-        self._sensitivity_panel.cancel_requested.connect(self._cancel_sensitivity)
-        self._sensitivity_widget.cancel_requested.connect(self._cancel_sensitivity)
-
-        # Direct widget-to-widget: style → every plot tab
-        self._style_widget.widget.style_changed.connect(self._plot_widget.apply_style)
-        self._style_widget.widget.style_changed.connect(self._identifiability_widget.apply_style)
-        self._style_widget.widget.style_changed.connect(self._sensitivity_widget.apply_style)
-
-        # The summary under the tabs shows the samples of a sensitivity run while its tab is current.
-        self._plot_tabs.currentChanged.connect(
-            lambda _: self._summary_widget.show_samples(self._plot_tabs.currentWidget() is self._sensitivity_widget)
-        )
-        # Save Plot saves the tab on screen, so what it can do changes with the tab.
-        self._plot_tabs.currentChanged.connect(lambda _: self.actions_changed.emit())
-
-        # A fit and an analysis each read the uncertainties as they were when it
-        # started, so the rows stay as they were read until it ends.
-        self.actions_changed.connect(
-            lambda: self._input_panel.set_running(self.fit_running() or self.sensitivity_running())
-        )
+        for view in (self._measurements, self._uncertainty, self._results, self._confidence, self._sensitivity):
+            view.reveal_requested.connect(self.reveal)
+        self._confidence.save_requested.connect(lambda: self.export_plot('Ka confidence'))
+        for section, link in (
+            ('Binding model', self._binding.help_link),
+            ('Input uncertainty', self._uncertainty.help_link),
+            ('Ka confidence', self._confidence.guide_link),
+        ):
+            link.clicked.connect(lambda _checked=False, section=section: self.help_requested.emit(section))
+        self._results.save_plot.clicked.connect(lambda: self.export_plot('Fit results'))
+        self._appearance.save_plot.clicked.connect(lambda: self.export_plot('Plot appearance'))
+        self._measurements.save_plot.clicked.connect(lambda: self.export_plot('Measurements'))
+        self._simulation.save_plot.clicked.connect(lambda: self.export_plot('Simulation'))
+        # The views follow the model first, connected as they were built; then the window.
+        self.model.changed.connect(self._on_changed)
+        self.model.warning.connect(lambda title, message: QMessageBox.warning(self, title, message))
 
     # ------------------------------------------------------------------
-    # Slots
+    # Panel slots
     # ------------------------------------------------------------------
 
-    def _on_data_loaded(self, ms: MeasurementSet) -> None:
-        # Both describe the data being replaced, so neither can be left running.
-        stopped = self.running_work()
-        self._stop_fit()
-        self._state.measurement_set = ms
-        self._state.source_file = self._data_panel.current_path()
-        self._emit_tab_title()
-        self._state.held_fit_results = []
-        self._preprocess_panel.set_measurement_set(ms)
-        self._replica_panel.set_measurement_set(ms)
-        self._summary_widget.set_replica_ids(ms.replica_ids)
-        self._identifiability_widget.set_replica_ids(ms.replica_ids)
-        self._clear_identifiability()
-        self._clear_sensitivity()
-        self._show_results(force=True)
-        active = ms.n_active
-        total = ms.n_replicas
-        loaded = f'Loaded: {ms.n_points} pts × {total} replicates — {active}/{total} active'
-        self.status_message.emit(f'{loaded} — the running {stopped} was stopped' if stopped else loaded)
+    def _on_changed(self, what: Change) -> None:
+        """Show the work running once it changed, then let the window draw the session again."""
+        if what & (Change.RUN | Change.PROFILE | Change.PROGRESS):
+            self._show_running()
+        self.changed.emit()
 
-    def _on_data_cleared(self) -> None:
-        stopped = self.running_work()
-        self._stop_fit()
-        self._state.measurement_set = None
-        self._state.source_file = None
-        self._emit_tab_title()
-        self._state.held_fit_results = []
-        self._replica_panel.clear()
-        self._summary_widget.set_replica_ids(None)
-        self._identifiability_widget.set_replica_ids(None)
-        self._clear_identifiability()
-        self._clear_sensitivity()
-        self._show_results(force=True)
-        if stopped:
-            self.status_message.emit(f'Data cleared — the running {stopped} was stopped')
-
-    def _on_preprocessing_applied(self) -> None:
-        self._replica_panel.refresh()
-        self._show_results(redraw=True)
-        ms = self._state.measurement_set
-        if ms:
-            self.status_message.emit(f'Outlier removal applied — {ms.n_active}/{ms.n_replicas} replicates active')
-
-    def _on_preprocessing_reset(self) -> None:
-        self._replica_panel.refresh()
-        self._show_results(redraw=True)
-        self.status_message.emit('Replicates reset — all active')
-
-    def _on_replicas_changed(self) -> None:
-        self._show_results(redraw=True)
-
-    def _on_assay_type_changed(self, assay_type: AssayType) -> None:
-        self._bounds_panel.set_assay_type(assay_type)
-        # The new assay has its own inputs: the uncertainty rows are rebuilt for
-        # them first, and the heatmap axes then offer exactly those inputs.
-        self._input_panel.set_assay_type(assay_type)
-        self._name_inputs()
-        meta = ASSAY_REGISTRY[assay_type]
-        self._update_axis_labels(meta.x_label, meta.y_label, meta.y_unit)
-
-    def _on_input_specs_changed(self) -> None:
-        """Check the results against the error sources again, once the sources themselves have changed.
-
-        The panel reports itself whenever a row is touched, which includes a
-        set value arriving from the conditions form as it is typed. Only a
-        change to what the panel states can put a result out of date, so the
-        results are left alone until one happens.
-        """
-        stated = self._input_panel.current_errors()
-        if stated != self._stated_errors:
-            self._stated_errors = stated
-            self._show_results()
-
-    def _name_inputs(self) -> None:
-        """Offer the heatmap axes the selected assay's inputs, named as the uncertainty panel names them.
-
-        A finished fit names its own inputs from the assay it was made for
-        (:func:`~gui.widgets.assay_conditions.result_input_labels`), so what is
-        reported about a fit does not follow the assay selected now.
-        """
-        self._sensitivity_panel.set_inputs(self._input_panel.input_labels())
-
-    def _on_conditions_changed(self) -> None:
-        """Give both panels the conditions' set values, which an uncertainty in percent is read against."""
-        conditions = self._assay_panel.current_conditions()
-        self._input_panel.set_nominal_values(conditions)
-        self._sensitivity_panel.set_nominal_values(conditions)
-
-    def _on_display_unit_changed(self, unit: str) -> None:
-        """DataPanel announces a new plot-display unit — propagate to plot."""
-        self._state.display_unit = unit
-        self._style_widget.widget.set_x_unit(unit)
-
-    def _on_fit_complete(self, result: FitResult) -> None:
-        worker = self._fit_worker
-        if self.sender() is not worker:
-            return  # a fit whose data were replaced while it ran
-        self._fit_worker = None
-        retire(worker)
-        self.actions_changed.emit()
-
-        # The fit is held, then shown or hidden by the selection as it is now.
-        self._state.held_fit_results = [result]
-        self._show_results(force=True)
-        # The previous fit's profile describes data this one replaces, and only
-        # one profile worker is reachable at a time: drop it through the one
-        # path that sees its thread out.
-        self._stop_profile()
-        if projectable(AssayType[result.assay_type]):
-            # Profile the replicates the fit used, so the tab describes the same data.
-            ms = worker.ms.with_active(fit_replica_ids(result))
-            # Until the profiles arrive the tab says they are being computed.
-            self._identifiability_widget.show_profile_pending(result, result.assay_type)
-            # The fit already worked out the penalised profiles behind its
-            # interval: the tab draws those, rather than computing them again,
-            # with the weights and design effects the fit ran with.
-            self._profile_worker = ProfileWorker(
-                ms, worker.assay_cls, worker.conditions, worker.config, result, parent=self
-            )
-            self._profile_worker.finished.connect(self._on_profile_complete)
-            self._profile_worker.error.connect(self._on_profile_error)
-            self._profile_worker.start()
-        else:
-            self._identifiability_widget.update_fit(result, None, result.assay_type)
-
-        left_out = self._left_out_text(result, worker.ms.replica_ids)
-        hidden = self._state.hidden_fit_notes.get(result.id)
-        if hidden is not None:
-            self.status_message.emit(f'Fit complete but hidden — {hidden}')
-        else:
-            used = fit_replica_ids(result) or []
-            given = input_replica_ids(result) or used
-            counted = f', {len(used)} of {len(given)} replicates used' if given else ''
-            if (
-                result.fit_config.get('per_replicate')
-                and 'replicate_test' not in result.metadata
-                and 1 < len(given) < REPLICATE_TEST_MIN
-            ):
-                counted += ', too few to test against each other'
-            on_bound = fmt_bound_note(parameters_on_bound(result))
-            open_ka = _open_note(result)
-            verdict = _verdict_note(result)
-            self.status_message.emit(
-                f'Fit complete — R²={fmt_r2(result.r_squared)}, RMSE={fmt_sci(result.rmse)}{counted}'
-                f'{f" ({left_out})" if left_out else ""}{f" — {open_ka}" if open_ka else ""}'
-                f'{f" — {on_bound}" if on_bound else ""}{f" — {verdict}" if verdict else ""}'
-            )
-
-    @staticmethod
-    def _left_out_text(result: FitResult, replica_ids) -> str:
-        """The replicates the fit left out and why, named as the sidebar names them; ``''`` when it used every one."""
-        failures = result.metadata.get('replica_failures') or {}
-        if not failures:
-            return ''
-        return '; '.join(
-            f'{_capitalized(describe_replicates([rid], replica_ids))} left out: {reason}'
-            for rid, reason in failures.items()
-        )
-
-    def _on_fit_error(self, msg: str) -> None:
-        worker = self._fit_worker
-        if self.sender() is not worker:
-            return
-        self._fit_worker = None
-        retire(worker)
-        self.actions_changed.emit()
-        QMessageBox.warning(self, 'Fit Error', msg)
-        self.status_message.emit(f'Fit failed: {msg}')
-
-    def _stop_fit(self) -> None:
-        """Stop a fit still running and wait for it, so its result is never shown and its thread is gone."""
-        worker = self._fit_worker
-        if worker is None:
-            return
-        self._fit_worker = None
-        worker.cancel()
-        retire(worker)
-        self.actions_changed.emit()
-
-    def _stop_profile(self) -> None:
-        """Stop the Ka profile still being computed and see its thread out."""
-        worker = self._profile_worker
-        if worker is None:
-            return
-        self._profile_worker = None
-        worker.cancel()
-        retire(worker)
-
-    def _stop_sensitivity(self) -> None:
-        """Stop a sensitivity run still going and wait for it, which also ends its worker processes."""
-        worker = self._sensitivity_worker
-        if worker is None:
-            return
-        self._sensitivity_worker = None
-        worker.cancel()
-        retire(worker)
-        self._sensitivity_panel.set_running(False)
-        self.actions_changed.emit()
-
-    # ------------------------------------------------------------------
-    # Identifiability (Ka profile)
-    # ------------------------------------------------------------------
-
-    def _on_profile_complete(self, profile: ProfileSet) -> None:
-        worker = self._profile_worker
-        if self.sender() is not worker:
-            return  # the fit this profile belongs to has been replaced
-        self._profile_worker = None
-        retire(worker)
-        result = self._state.held_fit_results[-1]
-        self._identifiability_widget.update_fit(result, profile, result.assay_type)
-
-    def _on_profile_error(self, msg: str) -> None:
-        worker = self._profile_worker
-        if self.sender() is not worker:
-            return
-        self._profile_worker = None
-        retire(worker)
-        result = self._state.held_fit_results[-1]
-        self._identifiability_widget.update_fit(result, None, result.assay_type)
-        QMessageBox.warning(self, 'Identifiability', f'{msg}\n\nThe fit itself is unaffected and is still shown.')
-
-    def _clear_identifiability(self) -> None:
-        """Empty the Identifiability tab and stop any Ka profile still being computed."""
-        self._stop_profile()
-        self._identifiability_widget.clear()
-
-    def _show_plot_guide(self) -> None:
-        """Open Help ▸ Reading the plots at the section for the plot tab on screen."""
-        sections = {
-            self._plot_widget: plot_guide.FIT_CURVE,
-            self._identifiability_widget: plot_guide.IDENTIFIABILITY,
-            self._sensitivity_widget: plot_guide.SENSITIVITY,
-        }
-        show_plot_guide(self, sections[self._plot_tabs.currentWidget()])
+    def copy_from(self, other: FittingSession) -> None:
+        """Take a copy of what *other* states — data, binding model, input uncertainties, simulation — and none of its
+        results."""
+        self.model.copy_from(other.model)
 
     # ------------------------------------------------------------------
     # Ka sensitivity analysis
     # ------------------------------------------------------------------
 
     def run_sensitivity(self) -> None:
-        """Start a background Ka input-sensitivity run."""
+        """Start a background Ka input-sensitivity run, once the user has accepted what a long one costs."""
         self._finish_edits()
-        ms = self._state.measurement_set
-        if ms is None:
-            QMessageBox.warning(self, 'No Data', 'Load a measurement file first.')
+        refusal = self.model.sensitivity_refusal(self.model.analysis_problems())
+        if refusal is not None:
+            self._refuse(refusal)
             return
-        if self.fit_running():
-            QMessageBox.warning(self, 'Already Running', _FIT_RUNNING_ANALYSIS_NOTE)
-            return
-        if self.sensitivity_running():
-            QMessageBox.warning(self, 'Already Running', _SENSITIVITY_RUNNING_ANALYSIS_NOTE)
-            return
-
-        if not projectable(self._assay_panel.current_assay_type()):
-            QMessageBox.warning(
-                self,
-                'Sensitivity Analysis',
-                'The selected assay has no association constant for the analysis to follow. '
-                'Pick a binding assay to run a sensitivity analysis.',
-            )
-            return
-
-        assay_problems = self._assay_problems(ms)
-        if assay_problems:
-            QMessageBox.warning(
-                self,
-                'Assay Configuration',
-                'The analysis cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in assay_problems),
-            )
-            return
-
-        bound_problems = self._bounds_panel.problems()
-        if bound_problems:
-            QMessageBox.warning(
-                self,
-                'Parameter Bounds',
-                'The analysis cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in bound_problems),
-            )
-            return
-
-        input_problems = self._input_panel.problems()
-        if input_problems:
-            QMessageBox.warning(
-                self,
-                'Input Uncertainty',
-                'The analysis cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in input_problems),
-            )
-            return
-
-        # The analysis draws the inputs from the error sources stated in the
-        # shared panel, the same ones the fit's interval accounts for.
-        errors = self._input_panel.current_errors()
-        if not errors.varies:
-            QMessageBox.warning(
-                self,
-                'Sensitivity Analysis',
-                'Every input is set to fixed under Input Uncertainty, so the analysis has nothing to vary. '
-                'Choose a σ or a range for at least one input.',
-            )
-            return
-        problems = self._sensitivity_panel.run_problems(errors)
-        if problems:
-            QMessageBox.warning(
-                self,
-                'Sensitivity Analysis',
-                'The analysis cannot start:\n\n' + '\n'.join(f'• {problem}' for problem in problems),
-            )
-            return
-        sens_config = self._sensitivity_panel.current_config(errors)
-
-        assay_cls = self._assay_panel.get_assay_class()
-        conditions = self._assay_panel.current_conditions()
-        fit_config = self._fit_panel.current_config()
-        custom_bounds = self._bounds_panel.current_bounds()
-        if custom_bounds:
-            fit_config = replace(fit_config, custom_bounds=custom_bounds)
-
-        # Every fit the run makes: the perturbations, the refits the
-        # elasticities take, and the baseline.
-        n_inputs = len(self._input_panel.input_labels())
-        curve_fits = estimated_fit_count(sens_config, n_inputs) + 1
-        worker_count = preferences.worker_count()
-        if (
-            estimated_model_solves(sens_config, fit_config, self._assay_panel.current_assay_type(), n_inputs)
-            > LONG_RUN_SOLVES
+        config = self.model.analysis_config()
+        cost = self.model.sensitivity_cost_note(config)
+        if cost is not None and QMessageBox.question(self, 'This Will Take a While', cost) != (
+            QMessageBox.StandardButton.Yes
         ):
-            spread = 'one at a time' if worker_count == 1 else f'{worker_count} at a time'
-            reply = QMessageBox.question(
-                self,
-                'This Will Take a While',
-                f'Your data will be re-fitted about {curve_fits:,} times to measure how much '
-                f'the result moves, {spread}.\n\nYou can stop it at any point once it starts, '
-                f'and the progress bar will estimate the time left.\n\n'
-                f'Start the analysis?',
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-
-        self._sensitivity_worker = SensitivityWorker(
-            ms.with_active(ms.active_replica_ids),
-            assay_cls,
-            conditions,
-            fit_config,
-            sens_config,
-            max_workers=worker_count,
-            input_labels=self._input_panel.input_labels(),
-            parent=self,
-        )
-        self._sensitivity_worker.progress.connect(self._on_sensitivity_progress)
-        self._sensitivity_worker.finished.connect(self._on_sensitivity_complete)
-        self._sensitivity_worker.stopped.connect(self._on_sensitivity_stopped)
-        self._sensitivity_worker.error.connect(self._on_sensitivity_error)
-
-        self._sensitivity_started = time.monotonic()
-        self._summary_widget.show_running(sens_config.mode)
-        self._sensitivity_widget.show_running()
-        self._sensitivity_panel.set_running(True)
-        self._plot_tabs.setCurrentWidget(self._sensitivity_widget)
-        self._sensitivity_worker.start()
-        self.actions_changed.emit()
-        self.status_message.emit('Running sensitivity analysis…')
-
-    def _on_sensitivity_progress(self, done: int, total: int) -> None:
-        """Report progress, with a time estimate once there is enough to judge.
-
-        A run that has been asked to stop reports that instead: the counts still
-        arrive from the fits that were already running, and a rising count in
-        the status bar beside a page that says it is stopping reads as two
-        contradictory answers.
-        """
-        self._sensitivity_widget.set_progress(done, total)
-        if self._sensitivity_worker is not None and self._sensitivity_worker.cancelled:
-            self.status_message.emit(STOPPING_TEXT)
             return
-        elapsed = time.monotonic() - self._sensitivity_started
-        if 3 <= done < total and elapsed > 0:
-            remaining = elapsed / done * (total - done)
-            self.status_message.emit(f'Analysing — {done:,} of {total:,}, about {_format_remaining(remaining)} left')
-        else:
-            self.status_message.emit(f'Analysing — {done:,} of {total:,}')
-
-    def _on_sensitivity_complete(self, result) -> None:
-        worker = self._sensitivity_worker
-        if self.sender() is not worker:
-            return  # a run whose data were replaced while it went
-        self._sensitivity_worker = None
-        cancelled = worker is not None and worker.cancelled
-        retire(worker)
-        self._state.sensitivity_result = result
-        # Shown or hidden by the selection as it is now, before any tab draws it.
-        self._show_results()
-        self._sensitivity_widget.update_result(result)
-        self._summary_widget.set_sensitivity(result)
-        self._identifiability_widget.update_sensitivity(result)
-        self._sensitivity_panel.set_running(False)
-        self.actions_changed.emit()
-        hidden = self._state.sensitivity_note
-        if hidden is not None:
-            # The counts describe a result no tab is showing, so the note takes their place.
-            self.status_message.emit(f'Sensitivity {"stopped" if cancelled else "complete"} but hidden — {hidden}')
-            return
-        # Counted as the cost dialog and the progress bar count: every fit the
-        # run makes, the baseline included. The baseline is this result, so it
-        # succeeded; only the perturbed fits could have failed.
-        planned = result.n_planned + 1
-        succeeded = result.n_success + 1
-        if cancelled and result.mode is SensitivityMode.SOBOL:
-            # A stopped Sobol run keeps whole sample blocks only, and is counted as the tab counts it.
-            self.status_message.emit(
-                f'Sensitivity stopped — the results rest on the {result.n_blocks_finished} of {_SOBOL_BLOCKS} '
-                'sample blocks that finished before you cancelled'
-            )
-        elif cancelled:
-            self.status_message.emit(
-                f'Sensitivity stopped — {succeeded:,} of {planned:,} fits succeeded before you cancelled'
-            )
-        else:
-            self.status_message.emit(f'Sensitivity complete — {succeeded:,} of {planned:,} fits succeeded')
-
-    def _on_sensitivity_stopped(self) -> None:
-        """A run cancelled before it had a single finished fit: there is nothing to show for it."""
-        worker = self._sensitivity_worker
-        if self.sender() is not worker:
-            return  # a run whose data were replaced while it went
-        self._sensitivity_worker = None
-        retire(worker)
-        self._show_previous_sensitivity()
-        self._sensitivity_panel.set_running(False)
-        self.actions_changed.emit()
-        self.status_message.emit('Sensitivity stopped — no fits had finished')
-
-    def _on_sensitivity_error(self, msg: str) -> None:
-        worker = self._sensitivity_worker
-        if self.sender() is not worker:
-            return  # a run whose data were replaced while it went
-        self._sensitivity_worker = None
-        retire(worker)
-        self.actions_changed.emit()
-        self._show_previous_sensitivity()
-        QMessageBox.warning(self, 'Sensitivity Analysis', msg)
-        self._sensitivity_panel.set_running(False)
-        self.status_message.emit(f'Sensitivity failed: {msg}')
-
-    def _show_previous_sensitivity(self) -> None:
-        """Take the Ka Sensitivity tab off the progress page: back to what it showed before the run."""
-        previous = self._state.sensitivity_result
-        if previous is None:
-            self._sensitivity_widget.clear()
-        else:
-            self._sensitivity_widget.update_result(previous)
-        self._summary_widget.set_sensitivity(previous)
-
-    def _clear_sensitivity(self) -> None:
-        """Drop the sensitivity result from the Ka Sensitivity tab and the summary, and stop a run still going.
-
-        The stopped run's signals reach nothing, so its result never describes
-        data it was not computed on.
-        """
-        self._stop_sensitivity()
-        self._state.sensitivity_result = None
-        self._state.sensitivity_note = None
-        self._sync_notes()
-        self._sensitivity_widget.clear()
-        self._sensitivity_panel.set_running(False)
-        self._summary_widget.set_sensitivity(None)
-
-    def _cancel_sensitivity(self) -> None:
-        if self._sensitivity_worker is not None:
-            self._sensitivity_worker.cancel()
-            self.status_message.emit(STOPPING_TEXT)
+        refusal = self.model.run_sensitivity(config)
+        if refusal is not None:
+            self._refuse(refusal)
 
     # ------------------------------------------------------------------
-    # Showing and hiding results
+    # Model slots
     # ------------------------------------------------------------------
 
-    def _mismatch_note(
-        self, result: FitResult | None, what: str, redo: str, *, uncertainties: bool = True
-    ) -> str | None:
-        """Why *result* does not describe the loaded selection, as a short plain note; ``None`` when it does.
-
-        The one match test for every result the session holds. *result*
-        matches when it was made on the loaded data (the same
-        ``data_fingerprint``), every replicate it used is active and every
-        active replicate was given to it, its conditions equal the entered ones
-        by value (a unit switch changes nothing) and describe the same dilution
-        by the titrant, its assay type is the one selected, it was made under
-        the parameter bounds and in the replicate mode set now (the bounds
-        decide where the search runs and whether an interval end is open, the
-        mode which replicates the fit keeps), and — for a fit, whose interval
-        accounts for them — the error sources it was made with are the ones set
-        now. The note names what differs and how to undo it. *what* names the
-        result ("fit") and *redo* how to make a new one ("run the fit again").
-        With no data loaded the replicates cannot be compared. *uncertainties*
-        is ``False`` for a sensitivity analysis' baseline, which is fitted with
-        the uncertainties stripped because the analysis draws them itself; the
-        analysis' own record of them is compared by
-        :meth:`_sensitivity_inputs_note`.
-        """
-        ms = self._state.measurement_set
-        opening = f'This {what} was made'
-        made = opening
-        changes: list[str] = []
-        fixes: list[str] = []
-        if result is None or ms is not None:
-            recorded = None if result is None else result.metadata.get('data_fingerprint')
-            if recorded is None:
-                return (
-                    f'This {what} does not record the data it was made on, so it cannot be shown. {_capitalized(redo)}.'
-                )
-            if recorded != ms.fingerprint():
-                return f'This {what} was made on other data than the data loaded now. {_capitalized(redo)}.'
-            used, given = fit_replica_ids(result), input_replica_ids(result)
-            if used is None or given is None:
-                return (
-                    f'This {what} does not record which replicates it was made on, so it cannot be shown. '
-                    f'{_capitalized(redo)}.'
-                )
-
-            order, active = ms.replica_ids, ms.active_replica_ids
-            made += f' on {describe_replicates(used, order)}'
-            for ids, state, fix in (
-                ([rid for rid in used if rid not in active], 'off', 'back on'),
-                ([rid for rid in active if rid not in given], 'on', 'off'),
-            ):
-                if ids:
-                    many = len(ids) > 1
-                    changes.append(f'{describe_replicates(ids, order)} {"are" if many else "is"} now {state}')
-                    fixes.append(f'switch {"them" if many else "it"} {fix}')
-
-        panel = self._assay_panel
-        assay_type = panel.current_assay_type()
-        if result.assay_type != assay_type.name:
-            theirs = ASSAY_REGISTRY[AssayType[result.assay_type]].display_name
-            made += f' for {theirs}'
-            changes.append(f'the assay is now {ASSAY_REGISTRY[assay_type].display_name}')
-            fixes.append(f'switch the assay back to {theirs}')
+    def _show_running(self) -> None:
+        """Show the work running here on the progress line."""
+        model = self.model
+        if model.running():
+            self._progress_line.set_progress(model.progress_fraction())
         else:
-            entered = panel.current_conditions()
-            if not same_inputs(result.conditions, entered):
-                keys = [
-                    key
-                    for key, value in result.conditions.items()
-                    if key in entered
-                    and panel.condition_name(key) is not None
-                    and not same_inputs({key: value}, {key: entered[key]})
-                ]
-                if keys:
-                    stored = {key: panel.format_condition(key, result.conditions[key]) for key in keys}
-                    made += ' with ' + and_join([f'{panel.condition_name(key)} = {stored[key]}' for key in keys])
-                    changes += [
-                        f'{panel.condition_name(key)} is now {panel.format_condition(key, entered[key])}'
-                        for key in keys
-                    ]
-                    fixes.append(f'set it back to {stored[keys[0]]}' if len(keys) == 1 else 'set them back')
-                dilution, dilution_fixes = self._dilution_mismatch(result.conditions, entered)
-                changes += dilution
-                fixes += dilution_fixes
-                # Only what the conditions themselves said: a replicate switched
-                # off is already in `changes` and does not name this difference.
-                if not keys and not dilution:
-                    changes.append('the assay conditions entered now differ from its own')
-                    fixes.append('enter its conditions again')
-            bounds, bound_fixes = self._bounds_mismatch(result)
-            changes += bounds
-            fixes += bound_fixes
-            recorded_mode = result.fit_config.get('per_replicate')
-            per_replica = self._fit_panel.current_config().per_replica
-            # A calibration without a binding constant is fitted from the average in either mode.
-            if recorded_mode is not None and projectable(assay_type) and recorded_mode != per_replica:
-                changes.append(f'fitting each replicate separately is now switched {"on" if per_replica else "off"}')
-                fixes.append(f'switch it back {"off" if per_replica else "on"}')
-
-        if not changes:
-            used = ErrorModel.from_dict(result.fit_config)
-            if uncertainties and used != self._input_panel.current_errors():
-                return _INPUTS_CHANGED_NOTE.format(stated=_stated_as(result))
-            return None
-        fix = fixes[0] if len(fixes) == 1 else 'change these back'
-        # A dilution difference names nothing the result was made with — the
-        # choice is on or off — so with nothing else differing the note has no
-        # opening clause to carry and starts at the change itself.
-        head = f'{made}. ' if made != opening else ''
-        return f'{head}{_capitalized(and_join(changes))}. {_capitalized(fix)}, or {redo}.'
-
-    def _bounds_mismatch(self, result: FitResult) -> tuple[list[str], list[str]]:
-        """Which parameter bounds differ from the ones *result* was made under, and how to undo it.
-
-        Two empty lists when none does. A record lists only the bounds that
-        differ from the registry defaults, so a parameter it does not list was
-        made under its default; a record with no bounds entry at all is not
-        compared. A row that cannot be read describes no bounds, so it differs
-        from any.
-        """
-        if 'custom_bounds' not in result.fit_config:
-            return [], []
-        meta = ASSAY_REGISTRY[AssayType[result.assay_type]]
-        recorded = result.fit_config['custom_bounds'] or {}
-        changes: list[str] = []
-        fixes: list[str] = []
-        for key, shown in self._bounds_panel.shown_bounds().items():
-            unit = meta.units.get(key, '')
-            if key in recorded:
-                lo, hi, recorded_unit = recorded[key]
-                made = [
-                    Q_(-math.inf if lo is None else lo, recorded_unit),
-                    Q_(math.inf if hi is None else hi, recorded_unit),
-                ]
-            else:
-                made = [bound if isinstance(bound, Quantity) else Q_(bound, unit) for bound in meta.default_bounds[key]]
-            made_values = [float(bound.to(unit).magnitude) for bound in made]
-            name = fmt_param_plain(key)
-            if shown is None:
-                changes.append(f'the {name} bounds cannot be read now')
-            else:
-                shown_values = [float(bound.to(unit).magnitude) for bound in shown]
-                if np.allclose(shown_values, made_values, rtol=1e-12, atol=0.0):
-                    continue
-                changes.append(f'the {name} bounds are now {_bounds_text(*shown_values, unit)}')
-            fixes.append(f'set them back to {_bounds_text(*made_values, unit)}')
-        return changes, fixes
-
-    def _dilution_mismatch(self, stored: dict, entered: dict) -> tuple[list[str], list[str]]:
-        """What changed about the dilution by the titrant, and how to undo it; two empty lists when nothing did.
-
-        The two differences a key-by-key comparison of the conditions cannot
-        name: a result made with the additions diluting the sample carries the
-        titrant stock and a result made with the totals constant carries
-        neither dilution key, so switching the choice adds or removes a key
-        rather than changing one; and which fixed concentrations the stock
-        itself holds is a list of keys, not a value a condition field shows.
-        """
-        was, now = TITRANT_STOCK in stored, TITRANT_STOCK in entered
-        if was != now:
-            return (
-                [f'the dilution by the titrant is now switched {"on" if now else "off"}'],
-                [f'switch it {"off" if now else "back on"}'],
-            )
-        if not now:
-            return [], []
-        stored_in = tuple(stored.get('stock_contains') or ())
-        entered_in = tuple(entered.get('stock_contains') or ())
-        if set(stored_in) == set(entered_in):
-            return [], []
-        return (
-            [
-                f'the titrant stock is now stated to contain {self._contains_text(entered_in)}'
-                if entered_in
-                else 'the titrant stock is now stated to contain none of the fixed concentrations'
-            ],
-            [
-                f'tick {self._contains_text(stored_in)} under the titrant stock again'
-                if stored_in
-                else 'untick every concentration under the titrant stock again'
-            ],
-        )
-
-    def _contains_text(self, keys: tuple[str, ...]) -> str:
-        """The concentrations *keys* names, as the conditions form labels them."""
-        return and_join([self._assay_panel.condition_name(key) or key for key in keys])
-
-    def _sensitivity_inputs_note(self, result: SensitivityResult) -> str | None:
-        """Why *result* no longer describes the uncertainties set now; ``None`` while it does.
-
-        The analysis draws its samples from the error sources it was run with,
-        so the Ka spread, the Sobol' indices and a heatmap's axis ranges are
-        entirely a function of them; the run records them in
-        ``config.errors``. A heatmap holds every input but its two axes at its
-        set value and records only those two, so only what it recorded is
-        compared.
-        """
-        used = result.config.errors
-        stated = self._input_panel.current_errors()
-        if result.config.mode is SensitivityMode.HEATMAP:
-            stated = ErrorModel(specs={key: stated.specs[key] for key in used.specs if key in stated.specs})
-        return None if used == stated else _SENSITIVITY_INPUTS_NOTE
-
-    def _show_results(self, *, redraw: bool = False, force: bool = False) -> None:
-        """Show every held result whose record matches the loaded selection, and hide the rest behind a note.
-
-        Runs after each change to the selection: a replicate switched on or
-        off, Outlier Removal, a finished edit of the conditions or a new assay
-        type. No number is recomputed: a hidden result is shown again exactly
-        as it was. The tabs are redrawn only when a result is shown or hidden;
-        *redraw* also redraws the Fit Curve, for a change to its points, and
-        *force* redraws every tab, for new results. A change that hides a
-        result replaces the status bar's message about it, which described
-        results the tabs no longer show.
-        """
-        state = self._state
-        notes: dict[str, str] = {}
-        for result in state.held_fit_results:
-            note = self._mismatch_note(result, 'fit', 'run the fit again')
-            if note is not None:
-                notes[result.id] = note
-        sensitivity_note = None
-        if state.sensitivity_result is not None:
-            sensitivity_note = self._mismatch_note(
-                state.sensitivity_result.baseline_fit,
-                'sensitivity analysis',
-                'run the analysis again',
-                uncertainties=False,
-            ) or self._sensitivity_inputs_note(state.sensitivity_result)
-        changed = notes != state.hidden_fit_notes or sensitivity_note != state.sensitivity_note
-        state.hidden_fit_notes = notes
-        state.sensitivity_note = sensitivity_note
-        self._sync_notes()
-        if changed and (notes or sensitivity_note):
-            self.status_message.emit(_RESULTS_HIDDEN_NOTE)
-        if changed or force:
-            self._render_results()
-        elif redraw:
-            self._refresh_plot()
-
-    def _fit_view(self) -> tuple[FitResult | None, str | None]:
-        """The fit the summary describes, and the note hiding it (``None`` while it is shown).
-
-        The latest shown fit, or the latest held fit when every one is hidden.
-        """
-        shown = self._state.fit_results
-        if shown:
-            return shown[-1], None
-        held = self._state.held_fit_results
-        return (held[-1], self._state.hidden_fit_notes[held[-1].id]) if held else (None, None)
-
-    def _sync_notes(self) -> None:
-        """Give the summary, Identifiability and Ka Sensitivity the notes that hide their results."""
-        state = self._state
-        _, fit_note = self._fit_view()
-        held = state.held_fit_results
-        profiled_note = state.hidden_fit_notes.get(held[-1].id) if held else None
-        self._summary_widget.show_mismatch(fit_note, state.sensitivity_note)
-        self._identifiability_widget.show_mismatch(profiled_note, state.sensitivity_note)
-        self._sensitivity_widget.show_mismatch(state.sensitivity_note)
-
-    def _render_results(self) -> None:
-        """Put the held fit results on the Fit Curve and the summary, shown or hidden."""
-        fit, _note = self._fit_view()
-        self._refresh_plot()
-        if fit is None:
-            self._summary_widget.clear()
-        else:
-            unchecked = _UNCHECKED_NOTE if self._state.measurement_set is None else None
-            self._summary_widget.update_result(fit, unchecked=unchecked)
-        self.actions_changed.emit()
-
-    def _refresh_plot(self) -> None:
-        """Draw the loaded points with the curves of the shown fits, and say which held fits are hidden.
-
-        When every held fit is hidden, the note of the latest one replaces the
-        fits; when only some are, the shown curves stay and a note names the
-        hidden ones. With no data loaded only the shown curves are drawn.
-        The axes are labelled for the assay type of the fit the summary
-        reports, or of the selected assay when none is shown.
-        """
-        state = self._state
-        ms = state.measurement_set
-        shown = state.fit_results
-        if ms is None and not state.held_fit_results:
-            return
-        assay_type = AssayType[shown[-1].assay_type] if shown else self._assay_panel.current_assay_type()
-        meta = ASSAY_REGISTRY[assay_type]
-        if ms is not None:
-            plot_data = prepare_plot_data(ms, shown, show_dropped=True)
-        else:
-            plot_data = {
-                'concentrations': state.held_fit_results[-1].x_fit.magnitude,
-                'active_replicas': [],
-                'dropped_replicas': [],
-                'average': None,
-                'fits': [{'x': r.x_fit.magnitude, 'y': r.y_fit.magnitude, 'label': 'Fit', 'id': r.id} for r in shown],
-            }
-        self._plot_widget.update_plot(plot_data, x_label=meta.x_label, y_label=meta.y_label, y_unit=meta.y_unit)
-        self._plot_widget.set_fit_results(shown)
-        self._set_plot_note(self.hidden_results_note())
-        self._plot_widget.show_hidden_results(self._other_hidden_note())
-
-    def _other_hidden_note(self) -> str | None:
-        """A note naming the held fits that are hidden while others are shown; ``None`` otherwise."""
-        state = self._state
-        hidden = [r for r in state.held_fit_results if r.id in state.hidden_fit_notes]
-        if not state.fit_results or not hidden:
-            return None
-        n = len(hidden)
-        head = f'{n} of the {len(state.held_fit_results)} fits {"is" if n == 1 else "are"} hidden and not drawn.'
-        latest = self._mismatch_note(hidden[-1], 'hidden fit' if n == 1 else 'latest hidden fit', 'run the fit again')
-        return f'{head} {latest}'
-
-    def _set_plot_note(self, note: str | None) -> None:
-        """Hide the Fit Curve's fit behind *note*, or show it with ``None``; the plot redraws only on a change."""
-        if note != self._plot_note:
-            self._plot_note = note
-            self._plot_widget.show_mismatch(note)
-
-    def _update_axis_labels(self, x: str, y: str, y_unit: str) -> None:
-        self._plot_widget.set_axis_labels(x, y, y_unit)
-
-
-class _GroupedPlain(QGroupBox):
-    """Thin wrapper that places an existing widget inside a QGroupBox."""
-
-    def __init__(self, title: str, widget: QWidget, parent=None):
-        super().__init__(title, parent)
-        self.widget = widget
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(widget)
-
-
-class _GroupedWithInfo(InfoGroupBox):
-    """Plain wrapper around :class:`InfoGroupBox` exposing ``self.widget``."""
-
-    def __init__(
-        self,
-        title: str,
-        widget: QWidget,
-        info_title: str,
-        info_html: str,
-        parent=None,
-    ):
-        super().__init__(title, info_title, info_html, parent)
-        self.widget = widget
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(widget)
-
-
-def _Grouped(
-    title: str,
-    widget: QWidget,
-    parent=None,
-    info_title: str | None = None,
-    info_html: str | None = None,
-):
-    """Factory: return a plain or info-bearing group-box wrapper."""
-    if info_html is not None:
-        return _GroupedWithInfo(title, widget, info_title or title, info_html, parent)
-    return _GroupedPlain(title, widget, parent)
+            self._progress_line.stop()

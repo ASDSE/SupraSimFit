@@ -28,7 +28,6 @@ pytest.importorskip('PyQt6')
 from core.assays.ida import IDAAssay  # noqa: E402
 from core.assays.registry import AssayType  # noqa: E402
 from core.data_processing.measurement_set import MeasurementSet  # noqa: E402
-from core.pipeline.fit_pipeline import FitConfig  # noqa: E402
 from core.pipeline.inputs import SharedSource, shared_key  # noqa: E402
 from core.pipeline.results_io import verify_imported_result  # noqa: E402
 from core.units import Q_  # noqa: E402
@@ -93,20 +92,22 @@ def make_session(qapp, monkeypatch):
     def build():
         session = FittingSession()
         built.append(session)
-        session._assay_panel.set_assay_type(AssayType.IDA)
-        for key, value in (('Ka_dye', IDA_TRUE['Ka_dye']), ('h0', IDA_TRUE['h0']), ('d0', IDA_TRUE['d0'])):
-            session._assay_panel._field_widgets[key].setValue(value)
-        session._assay_panel._stock_widget.setValue(_STOCK.magnitude)
-        session._assay_panel._dilution_combo.setCurrentIndex(1)
-        session._input_panel._add_shared_row(_SHARED)
-        session._input_panel.specs_changed.emit()
-        session._fit_panel.set_config(FitConfig(per_replica=False))
-        session._data_panel.data_loaded.emit(_diluted_data())
+        binding = session.model.binding
+        binding.set_assay(AssayType.IDA)
+        for key in ('Ka_dye', 'h0', 'd0'):
+            binding.set_value(key, IDA_TRUE[key])
+        binding.set_value('titrant_stock', _STOCK.magnitude)
+        binding.set_diluted(True)
+        binding.set_per_replica(False)
+        session.model.binding_edited()
+        session.model.uncertainty.add_source(_SHARED)
+        session.model.uncertainty_edited()
+        session.model.load(_diluted_data(), None)
         return session, dialogs
 
     yield build
     for session in built:
-        session.shutdown()
+        session.model.shutdown()
 
 
 def test_a_diluted_fit_with_a_shared_source_is_read_back_as_the_fit_it_was(qapp, make_session, tmp_path):
@@ -115,8 +116,8 @@ def test_a_diluted_fit_with_a_shared_source_is_read_back_as_the_fit_it_was(qapp,
 
     fitting, dialogs = make_session()
     fitting.run_fit()
-    _wait_until(qapp, lambda: fitting._state.fit_results)
-    (made,) = fitting._state.fit_results
+    _wait_until(qapp, lambda: fitting.model.fit_results)
+    (made,) = fitting.model.fit_results
     assert dialogs == [], 'nothing about the configuration stopped the fit'
 
     # The two facts are in the fit's own record, where every report reads them.
@@ -136,8 +137,7 @@ def test_a_diluted_fit_with_a_shared_source_is_read_back_as_the_fit_it_was(qapp,
 
     # A second session, set up the same way, shows the imported fit with no note.
     other, _ = make_session()
-    other._state.held_fit_results = [checked]
-    other._show_results(force=True)
+    other.model.show_imported([checked], str(path))
 
-    assert other._state.fit_results == [checked]
-    assert other.hidden_results_note() is None
+    assert other.model.fit_results == [checked]
+    assert other.model.hidden_results_note() is None

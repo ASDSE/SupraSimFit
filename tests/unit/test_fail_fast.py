@@ -264,8 +264,8 @@ class TestFitRefusals:
     @pytest.mark.parametrize(
         'bounds, says',
         [
-            ((0.0, 1e12), 'lower bound 0 M⁻¹ under Parameter Bounds'),
-            ((-1e6, 1e12), 'lower bound -1e\\+06 M⁻¹ under Parameter Bounds'),
+            ((0.0, 1e12), 'lower bound 0 M⁻¹ under Binding model'),
+            ((-1e6, 1e12), 'lower bound -1e\\+06 M⁻¹ under Binding model'),
             ((1e9, 1e6), 'lower bound of 1×10⁹ M⁻¹ above its upper bound of 1×10⁶ M⁻¹'),
         ],
         ids=['zero', 'negative', 'inverted'],
@@ -316,7 +316,7 @@ class TestInputsTooFreeForTheData:
 
         message = str(refused.value)
         assert '[Host]₀' in message and 'Guest (titrant)' in message
-        assert 'Input Uncertainty' in message, 'the message has to say where to change it'
+        assert 'Input uncertainty' in message, 'the message has to say where to change it'
         assert 'h0' not in message, 'a message shows the labels the panel writes, never a dict key'
 
     def test_inputs_the_data_determine_take_the_same_room_and_the_fit_is_refused(self):

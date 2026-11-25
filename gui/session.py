@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
-import math
+import logging
 import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -20,16 +20,19 @@ from core.pipeline.reporting import (
     fit_replica_ids,
     input_replica_ids,
     parameters_on_bound,
+    replica_order,
     summarize_parameters,
 )
 from core.pipeline.sensitivity import SensitivityMode
 from core.pipeline.varpro import SECOND_STEP_LEVEL
 from core.units import Quantity
+from gui.plot_appearance import PlotAppearance
 from gui.plotting.export import ExportRefused
 from gui.plotting.labels import (
     NO_UNCERTAINTY,
     NOT_RUN,
     SPLIT_NOTE,
+    _display_label,
     fmt_against,
     fmt_bound_note,
     fmt_concentration,
@@ -38,8 +41,10 @@ from gui.plotting.labels import (
     fmt_log10,
     fmt_misfit,
     fmt_p,
+    fmt_param_plain,
     fmt_percent,
     fmt_r2,
+    fmt_rmse,
     fmt_sci,
     fmt_stat,
     fmt_unit_pretty,
@@ -56,46 +61,56 @@ from gui.plotting.labels import (
     verdict_sentence,
     widening_sentences,
 )
+from gui.sensitivity import budget_csv_rows, budget_refusal
 from gui.widgets.assay_conditions import result_input_labels
-from gui.widgets.replica_panel import _display_label
 
 if TYPE_CHECKING:
     from gui.fitting_session import FittingSession
 
+logger = logging.getLogger(__name__)
 
-def export_results(results: list[FitResult], path: str | Path) -> None:
-    """Export a list of FitResult objects to a JSON file.
 
-    Parameters
-    ----------
-    results : list[FitResult]
-        Fit results to export.
-    path : str or Path
-        Output file path (should have ``.json`` extension).
+def export_results(results: list[FitResult], path: str | Path, appearance: PlotAppearance | None = None) -> None:
+    """Write *results* to the results file *path* (JSON), with the session's plot *appearance* when given.
+
+    The file is an object: ``results``, the list of :meth:`FitResult.to_dict` records, and
+    ``plot_appearance``, the :meth:`PlotAppearance.to_dict` record of the session's
+    titration plot.
     """
-    path = Path(path)
-    data = [r.to_dict() for r in results]
-    path.write_text(json.dumps(data, indent=2))
+    record: dict = {'results': [r.to_dict() for r in results]}
+    if appearance is not None:
+        record['plot_appearance'] = appearance.to_dict()
+    Path(path).write_text(json.dumps(record, indent=2))
+
+
+def _read_results_file(path: str | Path) -> dict:
+    """The results file *path* as an object of ``results`` and an optional ``plot_appearance``.
+
+    A file holding a list of results, or one result's record, records no plot appearance.
+    """
+    raw = json.loads(Path(path).read_text())
+    if isinstance(raw, list):
+        return {'results': raw}
+    return raw if 'results' in raw else {'results': [raw]}
 
 
 def import_results(path: str | Path) -> list[FitResult]:
-    """Import fit results from a JSON file created by :func:`export_results`.
+    """The fit results of the results file *path*, written by :func:`export_results`."""
+    return [FitResult.from_dict(d) for d in _read_results_file(path)['results']]
 
-    Parameters
-    ----------
-    path : str or Path
-        Path to the JSON file.
 
-    Returns
-    -------
-    list[FitResult]
-        Reconstructed FitResult objects.
+def import_appearance(path: str | Path) -> PlotAppearance | None:
+    """The plot appearance the results file *path* records, or ``None`` where it records none.
+
+    Raises ``ValueError``, in words for the user, on a record this version cannot read.
     """
-    path = Path(path)
-    raw = json.loads(path.read_text())
-    if isinstance(raw, dict):
-        raw = [raw]
-    return [FitResult.from_dict(d) for d in raw]
+    record = _read_results_file(path).get('plot_appearance')
+    if record is None:
+        return None
+    try:
+        return PlotAppearance.from_dict(record)
+    except ValueError as exc:
+        raise ValueError(f'{Path(path).name} records a plot appearance this version cannot read. {exc}') from None
 
 
 #: Said of a result that carries no interval for a binding constant it reports.
@@ -104,15 +119,15 @@ _NO_INTERVAL_NOTE = (
     'without a confidence interval. Fit the data again to get the interval.'
 )
 
-#: What a starred row means, in the words the summary table on screen uses.
+#: What a starred row means, in the words Fit details uses on screen.
 _DEGENERATE_NOTE = (
     'The data fix only a combination of the starred values, not each one on its own: many different sets of '
     'them draw the same curve. Each starred value is one member of that family. It reconstructs the fitted '
     'curve correctly and is not a measurement of that one coefficient.'
 )
 
-#: What to do about an interval the data leave open, per side, in the words the
-#: Identifiability tab uses.
+#: What to do about an interval the data leave open, per side, in the words Ka
+#: confidence uses.
 _OPEN_ADVICE = {
     'low': ('the data cannot rule out a lower Ka. Points at a higher titrant concentration would pin it down.'),
     'high': (
@@ -133,7 +148,7 @@ _UNSOLVABLE_NOTE = (
 #: the value it produces and not reported as one.
 _LIMITED_BY_NOTE = (
     'the fit is rejected beyond {edge} only because {other} cannot go past its bound there; the data alone set no '
-    'limit on this side. If you know {other}, hold it at that value under Parameter Bounds (equal lower and upper '
+    'limit on this side. If you know {other}, hold it at that value under Binding model (equal lower and upper '
     'bound); otherwise only data that determine it close this side.'
 )
 
@@ -143,37 +158,44 @@ def _replicate_record(
 ) -> tuple[list[str], list[tuple[str, str]]] | None:
     """The replicates *result* used and those it left out, with the reason, as the user names them.
 
-    A replicate is named by its display label (A, B, …) when *replica_ids*, the
-    loaded data's replicate order, holds every replicate the result names, and
-    by its id otherwise. ``None`` when the result does not record its replicates.
+    ``None`` when the result does not record its replicates.
     """
     used = fit_replica_ids(result)
     if used is None:
         return None
     given = input_replica_ids(result) or used
     reasons = result.metadata.get('replica_failures') or {}
-    left_out = [rid for rid in given if rid not in used]
-    named = list(dict.fromkeys([*used, *given]))
-    order = list(replica_ids or ())
-    if all(rid in order for rid in named):
-        name = {rid: _display_label(order.index(rid)) for rid in named}
-    else:
-        name = {rid: rid for rid in named}
-    return [name[rid] for rid in used], [(name[rid], reasons.get(rid, '')) for rid in left_out]
+    name = _replicate_names(result, replica_ids)
+    return [name.get(rid, rid) for rid in used], [
+        (name.get(rid, rid), reasons.get(rid, '')) for rid in given if rid not in used
+    ]
 
 
 def _replicate_names(result: FitResult, replica_ids: Sequence[str] | None) -> dict[str, str]:
-    """Every replicate *result* names, mapped to the name the user reads for it."""
+    """Every replicate *result* names, mapped to the name the user reads for it.
+
+    Its display label (A, B, …) where the replicate order — *replica_ids*, the loaded
+    data's, else the order *result* records — holds every replicate the result names,
+    as Fit details names them; its id otherwise.
+    """
     given = input_replica_ids(result) or fit_replica_ids(result) or []
-    order = list(replica_ids or ())
+    order = replica_order(result, replica_ids) or []
     if given and all(rid in order for rid in given):
         return {rid: _display_label(order.index(rid)) for rid in given}
     return {rid: rid for rid in given}
 
 
 def _row_label(spec: ParameterSummary) -> str:
-    """Plain-text row label; log twins are named ``log10(<key>)``."""
+    """The CSV's ``parameter`` cell: the parameter's key, the on-disk identifier of the file format; log twins
+    ``log10(<key>)``."""
     return f'log10({spec.key})' if spec.is_log else spec.key
+
+
+def _report_label(spec: ParameterSummary) -> str:
+    """A row of the text report: the parameter by its one label in plain text (``Kₐ guest``), log twins
+    ``log10(Kₐ guest)``."""
+    name = fmt_param_plain(spec.key)
+    return f'log10({name})' if spec.is_log else name
 
 
 def _row_unit(spec: ParameterSummary) -> str:
@@ -190,7 +212,7 @@ def _row_unit(spec: ParameterSummary) -> str:
 
 
 def _fmt_report(spec: ParameterSummary, value: float) -> str:
-    """One number of *spec*'s row as the text report writes it, the way the summary table on screen writes it.
+    """One number of *spec*'s row as the text report writes it, the way Fit results writes it on screen.
 
     A log₁₀ row goes through :func:`~gui.plotting.labels.fmt_log10`, so a
     value is never written coarser than the spread of the replicates' own
@@ -306,7 +328,7 @@ _DILUTION_KEYS = (TITRANT_STOCK, 'stock_contains')
 
 
 def _conditions_lines(result: FitResult) -> list[str]:
-    """The entered conditions, named as the Assay Configuration panel names them and in the unit they read in.
+    """The entered conditions, named as Binding model names them and in the unit they read in.
 
     A concentration reads in the largest unit the form offers that leaves it
     at 1 or more, and a binding constant in M⁻¹ with ``×10ⁿ`` notation, both
@@ -519,7 +541,8 @@ def export_results_csv(results: list[FitResult], path: str | Path, *, replica_id
         Output file path (should have ``.csv`` extension).
     replica_ids : sequence of str, optional
         Replicate ids of the loaded data in their order, so replicates are named
-        by their display labels; without it they are named by id.
+        by their display labels; without it, by the order each result records,
+        and by id where it records none.
     """
     path = Path(path)
     columns = (
@@ -730,7 +753,7 @@ def _replicates_block(result: FitResult, replica_ids: Sequence[str] | None) -> l
     p_values = test.get('p_values') or {}
     ka_keys = [spec.key for spec in summarize_parameters(result) if spec.is_log]
 
-    headers = ('Replicate', *(f'own {key}' for key in ka_keys), 'own R²', 'p-value', 'In the fit')
+    headers = ('Replicate', *(f'own {fmt_param_plain(key)}' for key in ka_keys), 'own R²', 'p-value', 'In the fit')
     rows: list[tuple[str, ...]] = []
     for rid in given:
         own = fits.get(rid)
@@ -743,7 +766,7 @@ def _replicates_block(result: FitResult, replica_ids: Sequence[str] | None) -> l
                 names.get(rid, rid),
                 *values,
                 fmt_r2(own.r_squared),
-                '—' if p is None else f'{p:.2g}',
+                '—' if p is None else fmt_p(p).removeprefix('p = ').removeprefix('p '),
                 'used' if rid in used else 'left out',
             )
         )
@@ -795,7 +818,8 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
         Output file path (should have ``.txt`` extension).
     replica_ids : sequence of str, optional
         Replicate ids of the loaded data in their order, so the report names
-        replicates by their display labels; without it they are named by id.
+        replicates by their display labels; without it, by the order each result
+        records, and by id where it records none.
     """
     path = Path(path)
     lines: list[str] = []
@@ -843,7 +867,7 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 ('Parameter', 'Estimate', heading, 'Units'),
                 [
                     (
-                        f'{_row_label(spec)}{" *" if spec.degenerate else ""}',
+                        f'{_report_label(spec)}{" *" if spec.degenerate else ""}',
                         _estimate_text(spec, spec.estimate, spec.interval, spec.interval_open, spec.estimate_at_bound),
                         _interval_cell(spec, result, ka_keys),
                         _row_unit(spec),
@@ -867,14 +891,16 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                     spec.conditional_at_bound,
                 )
                 lines.append(
-                    f'  Conditional on the entered inputs: {spec.key} = {estimate} {bracket} {_row_unit(spec)}'.rstrip()
+                    f'  Conditional on the entered inputs: {fmt_param_plain(spec.key)} = {estimate} {bracket} {_row_unit(spec)}'.rstrip()
                 )
                 if spec.conditional_split:
-                    lines.extend(_wrapped(f'{spec.key} conditional on the entered inputs: {SPLIT_NOTE}'))
+                    lines.extend(
+                        _wrapped(f'{fmt_param_plain(spec.key)} conditional on the entered inputs: {SPLIT_NOTE}')
+                    )
         replicates = replicate_summary(
             [spec for spec in specs if spec.key in ka_keys and not spec.is_log],
             len(fit_replica_ids(result) or ()),
-            lambda spec: spec.key,
+            lambda spec: fmt_param_plain(spec.key),
             lambda spec: fmt_unit_pretty(spec.unit),
         )
         if replicates:
@@ -888,7 +914,7 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 continue
             if spec.interval_split:
                 lines.append('')
-                lines.extend(_wrapped(f'{spec.key}: {SPLIT_NOTE}'))
+                lines.extend(_wrapped(f'{fmt_param_plain(spec.key)}: {SPLIT_NOTE}'))
             # A lower side the one-step test opened is said by its sentence below.
             step_unshown = spec.one_step_p is not None and spec.one_step_p > SECOND_STEP_LEVEL
             sides = zip(
@@ -900,14 +926,14 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
                 lines.append('')
                 if limited_by:
                     note = _LIMITED_BY_NOTE.format(
-                        edge=f'{_fmt_report(spec, edge)} {_row_unit(spec)}'.strip(), other=limited_by
+                        edge=f'{_fmt_report(spec, edge)} {_row_unit(spec)}'.strip(), other=fmt_param_plain(limited_by)
                     )
                 else:
                     note = _UNSOLVABLE_NOTE if unsolvable else _OPEN_ADVICE[side]
-                lines.extend(_wrapped(f'{spec.key}: open at the {side} end — {note}'))
+                lines.extend(_wrapped(f'{fmt_param_plain(spec.key)}: open at the {side} end — {note}'))
             if spec.one_step_p is not None:
                 lines.append('')
-                lines.extend(_wrapped(one_step_sentence(spec.key, spec.one_step_p)))
+                lines.extend(_wrapped(one_step_sentence(fmt_param_plain(spec.key), spec.one_step_p)))
         region = region_sentence(result)
         for sentence in [*widening_sentences(specs, result, lambda key: key), *([region] if region else [])]:
             lines.append('')
@@ -927,7 +953,7 @@ def export_results_txt(results: list[FitResult], path: str | Path, *, replica_id
         # Fit quality
         lines.append('FIT QUALITY')
         lines.append('-' * 60)
-        lines.append(f'  RMSE:          {fmt_value(result.rmse)} {fmt_unit_pretty("au")}')
+        lines.append(f'  RMSE:          {fmt_rmse(result.rmse)}')
         lines.append(f'  R²:            {fmt_r2(result.r_squared)}')
         # A dye-alone calibration is a line fitted by fit_linear_assay, which
         # reads no noise law and needs none.
@@ -1004,30 +1030,31 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
     """Build the list of artefacts exportable from a FittingSession.
 
     Preconditions:
-    - Raw data / fit curve plot: a measurement set is loaded.
-    - Identifiability plot: the tab holds a chart.
-    - Fit results (JSON/TXT/CSV): a result is shown; exported are the shown results.
-    - Ka sensitivity plot: a sensitivity analysis is shown.
-    - Ka uncertainty budget: the shown analysis reports sensitivity indices,
+    The labels name each file as the views and the Export menu do.
+
+    - Raw data / titration plot: a measurement set is loaded.
+    - Kₐ confidence plot: the view holds a profile plot.
+    - Results file, report, table: a result is shown; exported are the shown results.
+    - Sensitivity plot: a sensitivity analysis is shown.
+    - Kₐ uncertainty budget: the shown analysis reports sensitivity indices,
       which is what a budget is split from; a heatmap has none.
-    - Style template: always available (style widget is always present).
 
     While every held result is hidden, the result artefacts give the note
     hiding them as the reason, as the window's own export actions do.
     """
-    state = session._state
-    ms_loaded = state.measurement_set is not None
-    has_results = bool(state.fit_results)
-    has_sensitivity = state.sensitivity_result is not None and state.sensitivity_note is None
-    has_budget = has_sensitivity and state.sensitivity_result.mode is SensitivityMode.SOBOL
-    # The Identifiability tab is cleared by an import of results fitted elsewhere,
-    # so what it has to save is a question for the tab, not for the held results.
-    has_identifiability = session._identifiability_widget.has_chart()
+    model = session.model
+    ms_loaded = model.measurement_set is not None
+    has_results = bool(model.fit_results)
+    has_sensitivity = model.sensitivity_result is not None and model.sensitivity_note is None
+    has_budget = has_sensitivity and model.sensitivity_result.mode is SensitivityMode.SOBOL
+    # An import of results fitted elsewhere carries no Ka profile, so what Ka
+    # confidence has to save is a question for the view, not for the held results.
+    has_confidence = session._confidence.has_plot()
 
     no_data_msg = 'Load a measurement file first.'
-    no_fit_msg = session.hidden_results_note() or 'Run a fit first.'
-    no_identifiability_msg = session.hidden_results_note() or 'Run a fit in this session first.'
-    no_sensitivity_msg = state.sensitivity_note or 'Run a sensitivity analysis first.'
+    no_fit_msg = model.hidden_results_note() or 'Run a fit first.'
+    no_confidence_msg = model.hidden_results_note() or 'Run a fit in this session and wait for its Kₐ profile.'
+    no_sensitivity_msg = model.sensitivity_note or 'Run a sensitivity analysis first.'
     no_budget_msg = (
         no_sensitivity_msg
         if not has_sensitivity
@@ -1038,60 +1065,47 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         write_measurements_csv,
         write_measurements_txt,
     )
-    from gui.plotting.plot_style import save_style_json
 
     def _write_raw_txt(path: Path) -> None:
-        write_measurements_txt(state.measurement_set, str(path))
+        write_measurements_txt(model.measurement_set, str(path))
 
     def _write_raw_csv(path: Path) -> None:
-        write_measurements_csv(state.measurement_set, str(path))
+        write_measurements_csv(model.measurement_set, str(path))
 
     def _write_results_json(path: Path) -> None:
-        export_results(state.fit_results, path)
+        export_results(model.fit_results, path, model.plot_appearance)
 
-    replica_ids = state.measurement_set.replica_ids if ms_loaded else None
+    replica_ids = model.measurement_set.replica_ids if ms_loaded else None
 
     def _write_results_txt(path: Path) -> None:
-        export_results_txt(state.fit_results, path, replica_ids=replica_ids)
+        export_results_txt(model.fit_results, path, replica_ids=replica_ids)
 
     def _write_results_csv(path: Path) -> None:
-        export_results_csv(state.fit_results, path, replica_ids=replica_ids)
+        export_results_csv(model.fit_results, path, replica_ids=replica_ids)
 
     def _write_fit_plot(path: Path) -> None:
-        session._plot_widget.export_image(str(path))
+        session._results.export_image(str(path))
 
-    def _write_identifiability(path: Path) -> None:
-        session._identifiability_widget.export_image(str(path))
+    def _write_confidence(path: Path) -> None:
+        session._confidence.export_image(str(path))
 
     def _write_sensitivity(path: Path) -> None:
-        session._sensitivity_widget.export_image(str(path))
+        session._sensitivity.export_image(str(path))
 
     def _write_budget_csv(path: Path) -> None:
-        """The budget table as the Ka Sensitivity tab reports it, one row per source and Ka."""
-        result = state.sensitivity_result
-        budgets = (result.budget or {}).values()
+        """The variance budget as Sensitivity reports it, one row per source and Ka (:func:`gui.sensitivity.budget_csv_rows`)."""
+        result = model.sensitivity_result
         # A Sobol run always has a budget per binding constant; whether it holds
         # a number is the question, and a file of empty cells answers nothing.
-        if result.budget and all((result.withheld or {}).get(key) for key in result.budget):
-            raise ExportRefused(
-                'This analysis gives no uncertainty budget: for every binding constant the Ka Sensitivity tab '
-                'says why its numbers are withheld. See that tab.'
-            )
-        if not any(math.isfinite(budget.variance) for budget in budgets):
-            raise ExportRefused(
-                'This analysis reports no uncertainty budget: too few of its samples have a fit to split the '
-                'spread of Ka between the sources. Run the analysis again.'
-            )
-        rows = session._sensitivity_widget.budget_rows()
+        refusal = budget_refusal(result)
+        if refusal is not None:
+            raise ExportRefused(refusal)
+        rows = budget_csv_rows(result)
         columns = list(dict.fromkeys(key for row in rows for key in row))
         with path.open('w', encoding='utf-8', newline='') as handle:
             writer = csv.DictWriter(handle, columns, restval='')
             writer.writeheader()
             writer.writerows(rows)
-
-    def _write_style(path: Path) -> None:
-        style = session._style_widget.widget.current_style()
-        save_style_json(style, path)
 
     return [
         ExportableArtefact(
@@ -1112,7 +1126,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='results_json',
-            label='Fit results (JSON)',
+            label='Results file (JSON)',
             suffix='_results.json',
             available=has_results,
             unavailable_reason=no_fit_msg,
@@ -1120,7 +1134,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='results_txt',
-            label='Fit results (TXT report)',
+            label='Report (TXT)',
             suffix='_results.txt',
             available=has_results,
             unavailable_reason=no_fit_msg,
@@ -1128,7 +1142,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='results_csv',
-            label='Fit results (CSV table)',
+            label='Table (CSV)',
             suffix='_results.csv',
             available=has_results,
             unavailable_reason=no_fit_msg,
@@ -1136,7 +1150,7 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='fit_png',
-            label='Fit curve plot (PNG)',
+            label='Titration plot (PNG)',
             suffix='_fit.png',
             available=ms_loaded,
             unavailable_reason=no_data_msg,
@@ -1144,23 +1158,23 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='fit_svg',
-            label='Fit curve plot (SVG)',
+            label='Titration plot (SVG)',
             suffix='_fit.svg',
             available=ms_loaded,
             unavailable_reason=no_data_msg,
             writer=_write_fit_plot,
         ),
         ExportableArtefact(
-            key='identifiability_png',
-            label='Identifiability plot (PNG)',
-            suffix='_identifiability.png',
-            available=has_identifiability,
-            unavailable_reason=no_identifiability_msg,
-            writer=_write_identifiability,
+            key='confidence_png',
+            label='Kₐ confidence plot (PNG)',
+            suffix='_confidence.png',
+            available=has_confidence,
+            unavailable_reason=no_confidence_msg,
+            writer=_write_confidence,
         ),
         ExportableArtefact(
             key='sensitivity_png',
-            label='Ka sensitivity plot (PNG)',
+            label='Sensitivity plot (PNG)',
             suffix='_sensitivity.png',
             available=has_sensitivity,
             unavailable_reason=no_sensitivity_msg,
@@ -1168,18 +1182,11 @@ def build_artefacts(session: 'FittingSession') -> list[ExportableArtefact]:
         ),
         ExportableArtefact(
             key='budget_csv',
-            label='Ka uncertainty budget (CSV)',
+            label='Kₐ uncertainty budget (CSV)',
             suffix='_budget.csv',
             available=has_budget,
             unavailable_reason=no_budget_msg,
             writer=_write_budget_csv,
-        ),
-        ExportableArtefact(
-            key='style_json',
-            label='Style template (JSON)',
-            suffix='_style.json',
-            available=True,
-            writer=_write_style,
         ),
     ]
 
@@ -1203,6 +1210,9 @@ def export_batch(
         try:
             art.writer(dest)
             outcomes.append((art.label, dest, None))
+        except ExportRefused as exc:
+            outcomes.append((art.label, dest, exc))
         except Exception as exc:
+            logger.exception('Could not export %s to %s', art.label, dest)
             outcomes.append((art.label, dest, exc))
     return outcomes
