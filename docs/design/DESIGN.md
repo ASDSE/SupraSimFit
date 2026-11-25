@@ -610,8 +610,8 @@ exact — any callout (*Inputs conflict*, whose *Show the input shifts* reveals 
 Notes; a neutral notice while the Ka profile is still being worked out, the readings shown
 at once), and **one profile plot per binding constant** holding both profiles: Input-aware
 in `accent`, Inputs as entered in `text-secondary`, each estimate a diamond on its curve,
-the reported interval as an `accent` band at 8 %. The header row of each plot carries the
-legend, the enlarge tool (the plots take the whole canvas, the readings and callouts set
+each reading's interval as a band in its colour at 8 %. The header row of each plot carries the
+legend (each reading, the accepted Kₐ, the best fit and the 95 % cut-off lines), the enlarge tool (the plots take the whole canvas, the readings and callouts set
 aside) and the image export; the readout card sits at the plot's top-right corner and reads
 the reported estimate until the pointer reads another Ka, its value on a tag at the top of
 the pointer's hairline; the accepted stretches of each reading run in a strip under the plot,
@@ -619,7 +619,7 @@ on its Ka axis. The y axis is **Δ(−2 ln L) from the best fit**, one axis for 
 0 at the lower of their two best fits: −2 ln of the likelihood each profile is cut on, the
 penalised one counting the stated uncertainty of every input it moves. The lower curve
 explains the data better, and the gap between the two lowest points shows how much letting
-the inputs move helps. Each reading keeps its own 95 % cut-off, a dotted line in its colour,
+the inputs move helps. Each reading keeps its own 95 % cut-off, a dotted line in its colour named by the legend,
 and accepts a Ka where its curve is at or below that line, so each curve meets its line
 where its interval ends; with two binding constants, where the test allows a larger rise
 because the fit at that Ka holds a signal parameter on its bound, the line steps up and the

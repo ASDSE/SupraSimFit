@@ -2765,8 +2765,9 @@ class LegendRow(QWidget):
     (the fitted or model curve, or the reported reading), ``line-other`` (a fit shown beside
     the reported one), ``line-secondary`` (the reading at the inputs as entered), ``bars``
     (the accepted stretches of both readings), ``bar`` (those of the one reading at the inputs
-    as entered) and ``diamond`` (a best fit). A kind ending in ``+band`` draws its mark over
-    the accent tint of a shaded interval, for the reading whose interval the plot shades.
+    as entered), ``diamond`` (a best fit), and ``cuts`` / ``cut`` (the dotted cut-off lines of
+    both readings, or of the one at the inputs as entered). A kind ending in ``+band`` draws its
+    mark over the tint of a shaded interval in the colour of its line.
 
     ``dots`` may and ``cross`` does name one replicate, ``(kind, text, index)`` with its place in
     the data's order: the entry is then one point or one × in that replicate's colour and mark,
@@ -2840,9 +2841,10 @@ class LegendRow(QWidget):
         for kind, txt, *index in self.items:
             if kind.endswith('+band'):
                 kind = kind.removesuffix('+band')
+                tint = 'text-secondary' if kind == 'line-secondary' else 'accent'
                 p.fillPath(
                     _rounded(QRectF(x + 1, cy - 7, 14, 14), RADIUS['control'] / 2),
-                    t.q('accent', 0.16 if t.dark else 0.14),
+                    t.q(tint, 0.16 if t.dark else 0.14),
                 )
             if index:
                 colour, symbol = self.replicate_mark(index[0])
@@ -2892,6 +2894,13 @@ class LegendRow(QWidget):
                 for color, dy in pairs:
                     pen = QPen(t.q(color), 3)
                     pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+                    p.setPen(pen)
+                    p.drawLine(QPointF(x + 1, cy + dy), QPointF(x + 15, cy + dy))
+            elif kind in ('cuts', 'cut'):
+                pairs = (('accent', -2.5), ('text-secondary', 2.5)) if kind == 'cuts' else (('text-secondary', 0),)
+                for color, dy in pairs:
+                    pen = QPen(t.q(color), 1.25)
+                    pen.setDashPattern([2, 3])
                     p.setPen(pen)
                     p.drawLine(QPointF(x + 1, cy + dy), QPointF(x + 15, cy + dy))
             elif kind == 'diamond':

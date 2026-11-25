@@ -278,8 +278,9 @@ class Curve:
     *cut* is the reading's own 95 % cut-off at each *x*, on the same axis: one level for a
     model with one binding constant, stepping up with two where the fit at a Ka holds a
     signal parameter on its bound. *estimate* is the reading's estimate on the curve, ``None``
-    where it rests on an end of its search box; *stretches* are the Ka (1/M) the reading
-    accepts, one per stretch of a split interval.
+    where it rests on an end of its search box; *band* its interval in log₁₀ Ka, shaded in
+    its colour; *stretches* are the Ka (1/M) the reading accepts, one per stretch of a split
+    interval.
     """
 
     label: str
@@ -288,6 +289,7 @@ class Curve:
     y: np.ndarray
     cut: np.ndarray
     estimate: tuple[float, float] | None = None
+    band: tuple[float, float] | None = None
     stretches: list[tuple[float, float]] = field(default_factory=list)
 
     def at(self, x: float) -> float:
@@ -318,8 +320,8 @@ class ProfilePlot:
     """One binding constant's profile plot: its curves (Inputs as entered first, drawn underneath), axes and view.
 
     *x_range* is the default view in log₁₀ Ka and *y_range* in Δ(−2 ln L); *ticks*
-    ``(log₁₀ Ka, label)`` share the power of ten the axis title states; *band* is the
-    reported interval, shaded; *stepped* says whether a cut-off steps inside the default view.
+    ``(log₁₀ Ka, label)`` share the power of ten the axis title states; *cut_label* names the
+    cut-off lines in the legend; *stepped* says whether a cut-off steps inside the default view.
     """
 
     key: str
@@ -331,7 +333,6 @@ class ProfilePlot:
     ticks: list[tuple[float, str]]
     unit: str
     exponent: int | None
-    band: tuple[float, float] | None = None
     cut_label: str = '95 % cut-off'
     stepped: bool = False
 
@@ -374,7 +375,8 @@ def curve(label: str, color: str, profile, n: int, estimate: float | None, at_bo
     y = np.where(np.isfinite(r2), deviance(r2, n), np.nan)
     stretches = [] if interval is None else R.accepted_stretches(grid, r2, r2_cut, *interval)
     mark = None if at_bound or estimate is None else (math.log10(estimate), _read(x, y, math.log10(estimate)))
-    return Curve(label, color, x, y, deviance(r2_cut, n), mark, stretches)
+    band = None if interval is None else (math.log10(interval[0]), math.log10(interval[1]))
+    return Curve(label, color, x, y, deviance(r2_cut, n), mark, band, stretches)
 
 
 def _shifted(c: Curve, by: float) -> Curve:
@@ -444,7 +446,6 @@ def profile_plot(fit: FitResult, profile) -> ProfilePlot | None:
         ticks=[(math.log10(v), R.tick_label(v, e)) for v in ticks],
         unit=unit,
         exponent=e,
-        band=None if spec.interval is None else tuple(math.log10(v) for v in spec.interval),
         cut_label=f'{level} cut-off'.strip(),
         stepped=any(np.any(np.diff(c.cut[(c.x >= lo) & (c.x <= hi)]) != 0) for c in curves),
     )

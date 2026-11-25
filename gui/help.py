@@ -169,11 +169,11 @@ estimate a diamond.</li>
 explained at that K<sub>a</sub> than by the best fit on the plot, on the scale the 95&thinsp;% test is
 read on. Both curves share this axis, so the lower curve explains the data better, and the gap
 between their lowest points shows how much letting the inputs move helps.</li>
-<li>Dotted lines: the cut-off of each reading, in its colour. Where a curve is at or below its own
+<li>Dotted lines (<i>95&thinsp;% cut-off</i> in the legend): the cut-off of each reading, in its colour. Where a curve is at or below its own
 line, that reading accepts the K<sub>a</sub>, so each curve meets its line where its interval ends.
 With two binding constants a line steps up where the fit at a K<sub>a</sub> holds a signal parameter
 on its bound: the test then allows a larger rise.</li>
-<li>Shaded band: the reported interval. Strip under the plot: the K<sub>a</sub> each reading
+<li>Shaded bands: each reading&rsquo;s interval, in its colour. Strip under the plot: the K<sub>a</sub> each reading
 accepts, one bar per stretch.</li>
 <li>Card at the top right: each curve&rsquo;s &Delta;(&minus;2&nbsp;ln&nbsp;L) at the K<sub>a</sub> under the pointer,
 and whether each reading accepts it; without the pointer, at the reported estimate.</li>

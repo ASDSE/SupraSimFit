@@ -37,14 +37,8 @@ from gui.plotting.export import export_widget, figure_head
 from gui.plotting.labels import THIN, fmt_param_plain
 from gui.session_model import Change, SessionModel
 
-#: The legend row of a profile plot: both readings, their accepted Ka and the best fit.
-LEGEND = [
-    ('line', R.INPUT_AWARE),
-    ('line-secondary', R.AS_ENTERED),
-    ('bars', 'Accepted Kₐ'),
-    ('diamond', 'Best fit'),
-]
-LEGEND_ONE = [('line-secondary', R.AS_ENTERED), ('bar', 'Accepted Kₐ'), ('diamond', 'Best fit')]
+#: The opacity of a reading's shaded interval, by its colour and the theme (light, dark).
+BAND_ALPHA = {'accent': {False: 0.08, True: 0.07}, 'text-secondary': {False: 0.08, True: 0.07}}
 
 
 def _clear(layout: QLayout) -> None:
@@ -103,7 +97,6 @@ class ProfileFigure(QWidget):
         self.curves: dict[str, pg.PlotDataItem] = {}
         self.markers: dict[str, pg.ScatterPlotItem] = {}
         self.cut_lines: dict[str, pg.PlotDataItem] = {}
-        self.cut_labels: list[pg.TextItem] = []
         self._draw(pi)
         self.strip = self._strip()
 
@@ -141,37 +134,28 @@ class ProfileFigure(QWidget):
 
     def _draw(self, pi: pg.PlotItem) -> None:
         t, plot = self.t, self.plot
-        if plot.band is not None:
+        # Each reading's interval, shaded in its colour.
+        self.bands: dict[str, pg.LinearRegionItem] = {}
+        for curve in plot.curves:
+            if curve.band is None:
+                continue
             band = pg.LinearRegionItem(
-                values=plot.band,
+                values=curve.band,
                 movable=False,
-                brush=pg.mkBrush(t.q('accent', 0.07 if t.dark else 0.08)),
+                brush=pg.mkBrush(t.q(curve.color, BAND_ALPHA[curve.color][t.dark])),
                 pen=pg.mkPen(None),
             )
             for line in band.lines:
                 line.setPen(pg.mkPen(None))
             band.setZValue(-11)
             pi.addItem(band, ignoreBounds=True)
-            self.band = band
-        # Each reading's own cut-off, dotted in its colour, labelled under its right end: past an interval its curve
-        # runs above the line, so the label stands clear of it. One label where two lines run close.
-        y_lo, y_hi = plot.y_range
-        ends = []
+            self.bands[curve.label] = band
+        # Each reading's own cut-off, dotted in its colour; the legend names them.
         for curve in plot.curves:
             line = pg.PlotDataItem(curve.x, curve.cut, pen=_dotted(t, curve.color), connect='finite')
             line.setZValue(1.5)
             pi.addItem(line, ignoreBounds=True)
             self.cut_lines[curve.label] = line
-            end = curve.cut_at(plot.x_range[1])
-            if math.isfinite(end) and y_lo <= end <= y_hi:
-                ends.append(end)
-        for end in sorted(ends):
-            if self.cut_labels and end - self.cut_labels[-1].pos().y() < 0.06 * (y_hi - y_lo):
-                continue
-            label = _tag(t, plot.cut_label, (1, -0.05), self.step)
-            label.setPos(plot.x_range[1], end)
-            pi.addItem(label, ignoreBounds=True)
-            self.cut_labels.append(label)
         for curve in plot.curves:
             accent = curve.color == 'accent'
             pen = pg.mkPen(t.q(curve.color), width=px(2.25 if accent else 1.75))
@@ -776,9 +760,16 @@ class ConfidenceView(QObject):
 
 
 def _legend(plot: CF.ProfilePlot) -> list[tuple[str, str]]:
-    """The legend of *plot*: the reported reading's chip carries the tint of the shaded interval behind it."""
-    items = list(LEGEND if len(plot.curves) > 1 else LEGEND_ONE)
-    if plot.band is not None:
-        kind, text = items[0]
-        items[0] = (f'{kind}+band', text)
-    return items
+    """The legend of *plot*: each reading's line over the tint of its shaded interval, the accepted Kₐ, the best fit
+    and the cut-off lines."""
+    kinds = {'accent': 'line', 'text-secondary': 'line-secondary'}
+    items = [
+        (f'{kinds[c.color]}+band' if c.band is not None else kinds[c.color], c.label) for c in reversed(plot.curves)
+    ]
+    two = len(plot.curves) > 1
+    return [
+        *items,
+        ('bars' if two else 'bar', 'Accepted Kₐ'),
+        ('diamond', 'Best fit'),
+        ('cuts' if two else 'cut', plot.cut_label),
+    ]

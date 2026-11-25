@@ -293,23 +293,17 @@ def test_the_notes_of_a_fit_with_no_binding_constant_say_so_not_that_there_is_no
     assert not view.no_fit.isHidden() and view.no_fit.text() == CF.NO_KA
 
 
-def test_the_legend_has_an_accent_swatch_for_the_shaded_reported_interval(qapp, session, demo):
-    """With every input exact the band behind the curve is the plot's only accent mark; the legend says what it is."""
-    from PyQt6.QtGui import QColor
-
+def test_the_legend_names_the_shaded_interval_and_the_cut_off_of_the_one_reading(qapp, session, demo):
+    """With every input exact the one reading's interval is shaded in its colour; the legend carries that tint on its
+    swatch and names the cut-off line, which the plot no longer labels."""
     fit, profile = demo
     _show(session, fit, profile)
     (legend,) = [w for w in session._confidence.plots_host.findChildren(C.LegendRow)]
-    image = legend.grab().toImage()
-    accent = QColor(session._confidence.t['accent'])
+    (figure,) = session._confidence.figures
 
-    def is_tint(x, y):
-        c = QColor(image.pixel(x, y))
-        # Accent laid thinly over the surface: the accent's hue, faintly saturated.
-        return c.saturation() > 10 and abs(c.hue() - accent.hue()) < 20
-
-    tinted = sum(is_tint(x, y) for x in range(image.width()) for y in range(image.height()))
-    assert tinted > 20
+    assert ('line-secondary+band', 'Inputs as entered') in legend.items
+    assert ('cut', '95\u202f% cut-off') in legend.items
+    assert list(figure.bands) == ['Inputs as entered']
 
 
 def test_each_plot_header_sits_closer_to_its_own_plot_than_to_the_one_above(qapp, session):

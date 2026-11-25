@@ -458,7 +458,8 @@ def test_the_input_aware_curve_is_drawn_beside_inputs_as_entered_with_its_own_es
         assert drawn.estimate[1] == pytest.approx(np.nanmin(drawn.y), abs=1e-9)
     assert min(input_aware.estimate[1], as_entered.estimate[1]) == pytest.approx(0.0, abs=1e-9)
     assert input_aware.stretches == [(reported.low, reported.high)]
-    assert plot.band == (math.log10(reported.low), math.log10(reported.high))
+    assert input_aware.band == (math.log10(reported.low), math.log10(reported.high))
+    assert as_entered.band == (math.log10(entered.low), math.log10(entered.high))
     # The view frames both readings.
     assert plot.x_range[0] < math.log10(min(reported.low, entered.low))
     assert math.log10(max(reported.high, entered.high)) < plot.x_range[1]
