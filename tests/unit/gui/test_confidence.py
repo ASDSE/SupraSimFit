@@ -174,7 +174,7 @@ def test_the_readout_reads_each_curve_as_drawn_and_judges_it_by_its_stretches(st
     assert (gap_row.label, gap_row.verdict) == ('Inputs as entered', 'rejected')
     assert float(gap_row.value) > entered.cut_at(in_gap)
     assert (best_row.verdict, best_row.value) == ('accepted', '0.0')
-    assert plot.readout_title(inside).startswith('Δ(−2 ln L) at ') and plot.readout_title(inside).endswith('M⁻¹')
+    assert plot.readout_title(inside).startswith('Loss of Fit at ') and plot.readout_title(inside).endswith('M⁻¹')
 
 
 def test_the_input_aware_curve_is_drawn_through_its_edges_on_its_own_scale():

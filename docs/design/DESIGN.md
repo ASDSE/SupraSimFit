@@ -615,7 +615,7 @@ legend (each reading, the accepted Kₐ, the best fit and the 95 % cut-off lines
 aside) and the image export; the readout card sits at the plot's top-right corner and reads
 the reported estimate until the pointer reads another Ka, its value on a tag at the top of
 the pointer's hairline; the accepted stretches of each reading run in a strip under the plot,
-on its Ka axis. The y axis is **Δ(−2 ln L) from the best fit**, one axis for both profiles,
+on its Ka axis. The y axis is **Loss of Fit** (Title Case, the owner's choice) — the likelihood-ratio statistic Δ(−2 ln L) from the best fit — one axis for both profiles,
 0 at the lower of their two best fits: −2 ln of the likelihood each profile is cut on, the
 penalised one counting the stated uncertainty of every input it moves. The lower curve
 explains the data better, and the gap between the two lowest points shows how much letting

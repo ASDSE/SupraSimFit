@@ -53,9 +53,8 @@ from gui.plotting.labels import (
 from gui.widgets.assay_conditions import result_input_labels
 
 #: The y axis of every profile plot.
-Y_TITLE = 'Δ(−2 ln L) from the best fit'
-#: What the readout card reads at the pointer.
-READOUT = 'Δ(−2 ln L)'
+#: The likelihood-ratio statistic Δ(−2 ln L) from the plot's lower best fit, named in words; Title Case, as the owner chose.
+Y_TITLE = 'Loss of Fit'
 #: The default view runs from just below the best fit to this many cut-off rises above the higher curve's minimum.
 Y_RISES = 3.0
 #: Share of the y span left below 0, so the diamonds on it are seen whole.
@@ -337,11 +336,11 @@ class ProfilePlot:
     stepped: bool = False
 
     def readout_title(self, x: float) -> str:
-        """``Δ(−2 ln L) at 1.70 × 10⁸ M⁻¹``: what the readout card at *x* (log₁₀ Ka) reads."""
+        """``Loss of Fit at 1.70 × 10⁸ M⁻¹``: what the readout card at *x* (log₁₀ Ka) reads."""
         ka = 10.0**x
         e = self.exponent
         number = fmt_value(ka) if e is None else f'{fmt_value(ka / 10.0**e)}{times_ten(e)}'
-        return f'{READOUT} at {number} {self.unit}'
+        return f'{Y_TITLE} at {number} {self.unit}'
 
     def chip(self, x: float) -> str:
         """The pointer's Ka at the top of its hairline, in the axis's own power of ten."""
@@ -668,7 +667,8 @@ def notes(fit: FitResult, profile_set=None, replica_order: Sequence[str] | None 
     aware = any(len(p.curves) > 1 for p in plots) or not reports_conditional(fit)
     reading = [
         'Each curve shows, at every Kₐ, how much worse the data are explained than by the best fit on the plot, '
-        'as Δ(−2 ln L): 0 is that best fit, and a lower curve explains the data better. Each reading has its own 95 % cut-off, the dotted line in its colour; '
+        'as its loss of fit — the likelihood-ratio statistic Δ(−2 ln L): 0 is that best fit, and a lower curve '
+        'explains the data better. Each reading has its own 95 % cut-off, the dotted line in its colour; '
         'where its curve is at or below that line, the reading accepts that Kₐ.'
     ]
     if aware:

@@ -165,9 +165,9 @@ the fit.</p>
 <ul>
 <li>Curves: <i>Input-aware</i> in the accent colour, <i>Inputs as entered</i> in grey, each
 estimate a diamond.</li>
-<li>Up the plot, <b>&Delta;(&minus;2&nbsp;ln&nbsp;L) from the best fit</b>: how much worse the data are
-explained at that K<sub>a</sub> than by the best fit on the plot, on the scale the 95&thinsp;% test is
-read on. Both curves share this axis, so the lower curve explains the data better, and the gap
+<li>Up the plot, <b>Loss of Fit</b>: how much worse the data are explained at that K<sub>a</sub> than by
+the best fit on the plot, which stands at 0. It is the likelihood-ratio statistic,
+&Delta;(&minus;2&nbsp;ln&nbsp;L), the scale the 95&thinsp;% test is read on. Both curves share this axis, so the lower curve explains the data better, and the gap
 between their lowest points shows how much letting the inputs move helps.</li>
 <li>Dotted lines (<i>95&thinsp;% cut-off</i> in the legend): the cut-off of each reading, in its colour. Where a curve is at or below its own
 line, that reading accepts the K<sub>a</sub>, so each curve meets its line where its interval ends.
@@ -175,7 +175,7 @@ With two binding constants a line steps up where the fit at a K<sub>a</sub> hold
 on its bound: the test then allows a larger rise.</li>
 <li>Shaded bands: each reading&rsquo;s interval, in its colour. Strip under the plot: the K<sub>a</sub> each reading
 accepts, one bar per stretch.</li>
-<li>Card at the top right: each curve&rsquo;s &Delta;(&minus;2&nbsp;ln&nbsp;L) at the K<sub>a</sub> under the pointer,
+<li>Card at the top right: each curve&rsquo;s loss of fit at the K<sub>a</sub> under the pointer,
 and whether each reading accepts it; without the pointer, at the reported estimate.</li>
 <li>Joint region, with two binding constants: the pairs the data accept together, the best fit
 marked and each constant&rsquo;s own interval a faint band. It reaches beyond the bands where the
