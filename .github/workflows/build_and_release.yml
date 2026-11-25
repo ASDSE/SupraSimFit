@@ -53,7 +53,8 @@ jobs:
 
       - name: Package artifact (Windows)
         if: runner.os == 'Windows'
-        run: Compress-Archive -Path 'dist\SupraSimFit\*' -DestinationPath "SupraSimFit-${{ github.ref_name }}-windows.zip"
+        # The folder itself, so unzipping gives one SupraSimFit folder rather than its files loose.
+        run: Compress-Archive -Path 'dist\SupraSimFit' -DestinationPath "SupraSimFit-${{ github.ref_name }}-windows.zip"
         shell: pwsh
 
       - name: Upload artifact
@@ -70,6 +71,19 @@ jobs:
       contents: write
 
     steps:
+      # A tag naming an alpha, beta or release candidate (v2.0.0b1, v2.0.0rc1) is a pre-release,
+      # which /releases/latest never returns, so stable builds are not offered it.
+      - name: Read the kind of release from the tag
+        id: kind
+        run: |
+          if [[ "${GITHUB_REF_NAME#v}" =~ (a|b|rc)[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "body=This is a beta for testing; results may change before the stable release. The macOS app is not signed: the first time, right-click it and choose Open." >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "body=The macOS app is not signed: the first time, right-click it and choose Open." >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -80,8 +94,8 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          # A tag naming an alpha, beta or release candidate (v2.0.0b1, v2.0.0rc1) is a pre-release,
-          # which /releases/latest never returns, so stable builds are not offered it.
-          prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
+          prerelease: ${{ steps.kind.outputs.prerelease == 'true' }}
+          body: ${{ steps.kind.outputs.body }}
+          generate_release_notes: true
           files: ./artifacts/**/*.zip
           token: ${{ secrets.GITHUB_TOKEN }}
