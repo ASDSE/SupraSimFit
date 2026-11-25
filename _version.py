@@ -13,6 +13,10 @@ tag manually::
 
 The pushed ``v*`` tag triggers build_and_release.yml, whose first step
 verifies the tag matches this value before building.
+
+A beta is a pre-release version in PEP 440 form, ``2.0.0b1`` tagged
+``v2.0.0b1`` (``a`` and ``rc`` likewise): it is published as a GitHub
+pre-release, which stable builds are never offered and beta builds are.
 """
 
 __version__ = '1.5.0'

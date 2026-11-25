@@ -1,7 +1,9 @@
 """Background check for newer SupraSimFit releases on GitHub.
 
-Queries the GitHub REST API's ``/releases/latest`` endpoint, parses the
-response, and emits a structured payload the GUI can consume. Designed
+Queries the GitHub REST API — ``/releases/latest``, the newest stable
+release, from a stable build, and the newest published release of any kind
+from a pre-release build (:func:`newest_release`), so a beta is offered only
+to those already running one — parses the response, and emits a structured payload the GUI can consume. Designed
 to mirror the :class:`gui.workers.FitWorker` pattern (QThread with
 ``finished``/``error`` signals).
 """
@@ -16,7 +18,7 @@ from typing import Any
 from packaging.version import InvalidVersion, Version
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from _version import __github_repo__
+from _version import __github_repo__, __version__
 
 
 def is_newer(remote_tag: str, local: str) -> bool:
@@ -35,8 +37,26 @@ def is_newer(remote_tag: str, local: str) -> bool:
         return False
 
 
+def newest_release(releases: list[dict]) -> dict | None:
+    """The published release of highest version among *releases*, pre-releases included.
+
+    Drafts and tags that are not versions are left out; ``None`` when nothing is left.
+    """
+    best, best_version = None, None
+    for release in releases:
+        if release.get('draft'):
+            continue
+        try:
+            version = Version(str(release.get('tag_name', '')).lstrip('v'))
+        except InvalidVersion:
+            continue
+        if best_version is None or version > best_version:
+            best, best_version = release, version
+    return best
+
+
 class UpdateCheckWorker(QThread):
-    """Query GitHub ``/releases/latest`` for the configured repo.
+    """Query GitHub for the newest release this build should be offered.
 
     Signals
     -------
@@ -56,19 +76,21 @@ class UpdateCheckWorker(QThread):
     error = pyqtSignal(str)
 
     _URL = f'https://api.github.com/repos/{__github_repo__}/releases/latest'
+    _ALL_URL = f'https://api.github.com/repos/{__github_repo__}/releases?per_page=30'
     _TIMEOUT_S = 5.0
 
     def run(self) -> None:
         try:
+            beta = Version(__version__).is_prerelease
             req = urllib.request.Request(
-                self._URL,
+                self._ALL_URL if beta else self._URL,
                 headers={
                     'Accept': 'application/vnd.github+json',
                     'User-Agent': 'SupraSimFit-updater',
                 },
             )
             with urllib.request.urlopen(req, timeout=self._TIMEOUT_S) as resp:
-                data: dict[str, Any] = json.load(resp)
+                data: Any = json.load(resp)
         except urllib.error.HTTPError as exc:
             self.error.emit(f'The update server returned an error (HTTP {exc.code}). Please try again later.')
             return
@@ -76,6 +98,11 @@ class UpdateCheckWorker(QThread):
             self.error.emit('Could not reach the update server. Check your internet connection and try again.')
             return
 
+        if beta:
+            data = newest_release(data if isinstance(data, list) else [])
+            if data is None:
+                self.error.emit('The update server returned an unexpected response. Please try again later.')
+                return
         try:
             info = {
                 'latest_version': data['tag_name'],
