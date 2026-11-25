@@ -2,9 +2,9 @@
 
 Readings, notes and callouts are checked on hand-built fits, against numbers written in
 the test. The curves are checked on real profiles — the bundled IDA demo at the inputs as
-entered, and a small input-aware fit — against the property that defines them: the scaled
-drop is an exact rescaling of each reading's own test, so the drawn curve meets the
-cut-off line at 1 where the reported interval ends. A split interval with a stepped cut-off,
+entered, and a small input-aware fit — against the property that defines them: each drawn
+curve meets its own reading's cut-off where the reported interval ends, and both readings
+share one Δ(−2 ln L) axis, so the depth between their minima is kept. A split interval with a stepped cut-off,
 which only a model with two binding constants produces, is checked on a profile written out
 in the test.
 """
@@ -20,6 +20,7 @@ import pytest
 pytest.importorskip('PyQt6')
 
 from core.pipeline.diagnostics import FitDiagnostics, InputShift  # noqa: E402
+from core.pipeline.input_aware import AwareProfile  # noqa: E402
 from core.pipeline.profile import JointRegion, ProfileResult, ProfileSet  # noqa: E402
 from core.pipeline.varpro import KaInterval  # noqa: E402
 from core.units import Q_  # noqa: E402
@@ -33,11 +34,12 @@ PLOT_PX = 760
 
 
 def _crossings(curve: CF.Curve) -> np.ndarray:
-    """log₁₀ Ka where the drawn polyline of *curve* crosses 1, read off its points independently."""
+    """log₁₀ Ka where the drawn polyline of *curve* crosses its own cut-off, read off its points independently."""
     out = []
-    for x0, x1, y0, y1 in zip(curve.x[:-1], curve.x[1:], curve.y[:-1], curve.y[1:]):
-        if np.all(np.isfinite([x0, x1, y0, y1])) and (y0 - 1.0) * (y1 - 1.0) <= 0 and y0 != y1:
-            out.append(x0 + (1.0 - y0) * (x1 - x0) / (y1 - y0))
+    over = curve.y - curve.cut
+    for x0, x1, d0, d1 in zip(curve.x[:-1], curve.x[1:], over[:-1], over[1:]):
+        if np.all(np.isfinite([x0, x1, d0, d1])) and d0 * d1 <= 0 and d0 != d1:
+            out.append(x0 - d0 * (x1 - x0) / (d1 - d0))
     return np.array(out)
 
 
@@ -118,7 +120,7 @@ def test_a_drop_close_to_minus_100_percent_is_not_rounded_to_it():
 
 
 def test_the_drawn_curve_meets_the_cut_off_line_where_the_reported_interval_ends(demo):
-    """Exact rescaling: every closed edge is a crossing of 1 by the drawn line, within a pixel at the default size."""
+    """Every closed edge is a crossing of the reading's cut-off by the drawn line, within a pixel at the default size."""
     fit, profile = demo
     plot = CF.profile_plot(fit, profile.profiles['Ka_guest'])
     (entered,) = plot.curves
@@ -127,14 +129,15 @@ def test_the_drawn_curve_meets_the_cut_off_line_where_the_reported_interval_ends
     crossings = _crossings(entered)
     for edge in (interval.low, interval.high):
         assert np.min(np.abs(crossings - math.log10(edge))) < _pixel(plot)
-    assert entered.estimate == (math.log10(fit.parameters['Ka_guest'].magnitude), 0.0)
+    assert entered.estimate[0] == math.log10(fit.parameters['Ka_guest'].magnitude)
+    assert entered.estimate[1] == pytest.approx(0.0, abs=1e-9), 'the one best fit on the plot stands at 0'
     # The view frames both ends and the estimate, with room either side to see the curve leave the line.
     assert plot.x_range[0] < math.log10(interval.low) and math.log10(interval.high) < plot.x_range[1]
 
 
-def test_a_split_interval_draws_its_stretches_and_the_step_of_the_cut_off_as_a_riser(stepped):
-    """Below the step the fit holds a signal parameter on its bound, the test allows a larger drop and the curve
-    steps down."""
+def test_a_split_interval_draws_its_stretches_under_a_cut_off_that_steps(stepped):
+    """Below the step the fit holds a signal parameter on its bound and the test allows a larger rise: the cut-off
+    steps up there and the curve itself runs on unbroken."""
     fit, profile = stepped
     plot = CF.profile_plot(fit, profile.profiles['Ka_guest'])
     (entered,) = plot.curves
@@ -143,17 +146,18 @@ def test_a_split_interval_draws_its_stretches_and_the_step_of_the_cut_off_as_a_r
     assert interval.split and len(entered.stretches) == 2
     (first, second) = entered.stretches
     assert first[0] == interval.low and second[1] == interval.high and first[1] < second[0]
-    # The curve breaks at the step and a riser carries it across, from above the line down to below it.
-    assert plot.stepped and np.isnan(entered.y).sum() == len(entered.risers) >= 1
-    assert any(y0 < 1.0 < y1 or y1 < 1.0 < y0 for _x, y0, y1 in entered.risers)
-    # Every drawn point inside a stretch is at or under the line, every one between them over it.
-    finite = np.isfinite(entered.x)
-    ka = 10.0 ** entered.x[finite]
-    y = entered.y[finite]
+    assert plot.stepped and np.all(np.isfinite(entered.y))
+    # Δ(−2 ln L) = 20 ln(1 − R²) from the best fit: the cut-off of the plain test, and four times its fall below t = 5.5.
+    t = entered.x
+    plain, lowered = 20 * np.log((1 - (0.99 - 0.045)) / 0.01), 20 * np.log((1 - (0.99 - 0.18)) / 0.01)
+    assert entered.cut == pytest.approx(np.where(t < 5.5, lowered, plain), rel=1e-12)
+    # Every drawn point inside a stretch is at or under its cut-off, every one between them over it.
+    ka = 10.0**t
     gap = (ka > first[1]) & (ka < second[0])
-    assert np.all(y[gap] > 1.0)
+    assert np.all(entered.y[gap] > entered.cut[gap])
     for lo, hi in entered.stretches:
-        assert np.all(y[(ka >= lo) & (ka <= hi)] <= 1.0 + 1e-6)
+        inside = (ka >= lo) & (ka <= hi)
+        assert np.all(entered.y[inside] <= entered.cut[inside] + 1e-9)
 
 
 def test_the_readout_reads_each_curve_as_drawn_and_judges_it_by_its_stretches(stepped):
@@ -167,26 +171,55 @@ def test_the_readout_reads_each_curve_as_drawn_and_judges_it_by_its_stretches(st
     (gap_row,) = CF.readout(plot, in_gap)
     (best_row,) = CF.readout(plot, inside)
 
-    assert (gap_row.label, gap_row.verdict) == ('Inputs as entered', 'rejected') and float(gap_row.value) > 1.0
-    assert (best_row.verdict, best_row.value) == ('accepted', '0.00')
-    assert plot.readout_title(inside).startswith('Scaled drop at ') and plot.readout_title(inside).endswith('M⁻¹')
+    assert (gap_row.label, gap_row.verdict) == ('Inputs as entered', 'rejected')
+    assert float(gap_row.value) > entered.cut_at(in_gap)
+    assert (best_row.verdict, best_row.value) == ('accepted', '0.0')
+    assert plot.readout_title(inside).startswith('Δ(−2 ln L) at ') and plot.readout_title(inside).endswith('M⁻¹')
 
 
 def test_the_input_aware_curve_is_drawn_through_its_edges_on_its_own_scale():
-    """A small input-aware fit: its penalised profile, as drawn, crosses 1 within a pixel of each reported edge."""
+    """A small input-aware fit: its penalised profile, as drawn, crosses its cut-off within a pixel of each edge."""
     from tests.unit.test_input_aware import _IDA_SIGMAS, _aware, _ida
 
     assay, projection = _ida(15, 0.01, 2)
     fit, aware = _aware(assay, projection, _IDA_SIGMAS)
     profile = aware.profiles['Ka_guest']
     interval = profile.interval
-    drawn = CF.curve('Input-aware', 'accent', profile, aware.fit.ka['Ka_guest'], '', (interval.low, interval.high))
+    drawn = CF.curve(
+        'Input-aware', 'accent', profile, assay.n_points, aware.fit.ka['Ka_guest'], '', (interval.low, interval.high)
+    )
 
     pixel = max(math.log10(interval.high / interval.low) * (1 + 2 * CF.X_PAD), CF.MIN_SPAN) / PLOT_PX
     crossings = _crossings(drawn)
     for edge in (interval.low, interval.high):
         assert np.min(np.abs(crossings - math.log10(edge))) < pixel
     assert drawn.stretches == [(interval.low, interval.high)]
+
+
+def test_both_readings_share_one_axis_so_the_depth_between_their_best_fits_shows():
+    """Δ(−2 ln L) is read from the lower best fit for both curves, never each from its own: a reading whose inputs
+    moved and explain the data better sits lower by n ln of the ratio of the two smallest residuals."""
+    n, t = 12, np.linspace(5.0, 7.0, 201)
+    grid = 10.0**t
+    aware_r2 = 0.999 - 0.5 * (t - 6.1) ** 2  # best residual 0.001 of SS_tot
+    entered_r2 = aware_r2 - 0.009 - 0.2 * (t - 6.1) ** 2  # best residual 0.01: ten times larger
+    aware = AwareProfile(
+        'Ka_guest', grid, n * np.log(1 - aware_r2), aware_r2, np.zeros((t.size, 1)),
+        threshold=n * np.log(1 - 0.995), r2_threshold=0.995, minimum=n * np.log(0.001),
+        interval=KaInterval(10**6.0, 10**6.2, False, False, 0.95, 9),
+    )  # fmt: skip
+    profile = ProfileResult(
+        'Ka_guest', grid, entered_r2, 10**6.1, 0.99, KaInterval(10**6.0, 10**6.2, False, False, 0.95, 9),
+        0.985, n, 3, False, aware=aware,
+    )  # fmt: skip
+    plot = CF.profile_plot(aware_result(), profile)
+    entered, moved = plot.curves
+
+    assert np.nanmin(moved.y) == pytest.approx(0.0, abs=1e-9)
+    assert np.nanmin(entered.y) == pytest.approx(n * np.log(0.01 / 0.001), rel=1e-6)
+    # Each reading keeps its own cut-off on that axis: the rise its own test allows above its own minimum.
+    assert moved.cut == pytest.approx(n * np.log((1 - 0.995) / 0.001), rel=1e-12)
+    assert entered.cut == pytest.approx(n * np.log((1 - 0.985) / 0.001), rel=1e-12)
 
 
 def _bump_profile(interval: KaInterval | None) -> ProfileResult:
@@ -419,8 +452,11 @@ def test_the_input_aware_curve_is_drawn_beside_inputs_as_entered_with_its_own_es
     crossings = _crossings(input_aware)
     for edge in (reported.low, reported.high):
         assert np.min(np.abs(crossings - math.log10(edge))) < _pixel(plot)
-    assert input_aware.estimate == (math.log10(estimate), 0.0)
-    assert as_entered.estimate == (math.log10(entered_estimate), 0.0)
+    # Each diamond on its own curve's lowest point; the lower of the two stands at 0.
+    for drawn, at in ((input_aware, estimate), (as_entered, entered_estimate)):
+        assert drawn.estimate[0] == math.log10(at)
+        assert drawn.estimate[1] == pytest.approx(np.nanmin(drawn.y), abs=1e-9)
+    assert min(input_aware.estimate[1], as_entered.estimate[1]) == pytest.approx(0.0, abs=1e-9)
     assert input_aware.stretches == [(reported.low, reported.high)]
     assert plot.band == (math.log10(reported.low), math.log10(reported.high))
     # The view frames both readings.

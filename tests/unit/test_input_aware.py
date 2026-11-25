@@ -1143,8 +1143,8 @@ def test_a_multi_row_projection_is_refused():
         input_aware(projection, projection.fit(), _sigma_constraints(assay, {'h0': 0.03}))
 
 
-def test_the_scaled_drop_of_the_penalised_profile_is_one_at_its_edges_and_its_test_is_the_f_test(ida_case):
-    """``(P - P_min) / (cut - P_min)`` is the curve Ka confidence draws: 0 at the optimum, 1 at each closed edge.
+def test_the_penalised_profile_meets_its_cut_off_at_its_edges_and_its_test_is_the_f_test(ida_case):
+    """The penalised profile is at its minimum at the estimate and on its cut-off at each closed edge.
 
     The allowed rise of a point that pins nothing the optimum fits is
     ``n log(1 + F(1, nu) / nu)``, written out here independently.
@@ -1154,10 +1154,11 @@ def test_the_scaled_drop_of_the_penalised_profile_is_one_at_its_edges_and_its_te
     n, dof = assay.n_points, profile.interval.dof
     assert profile.minimum == result.fit.objective
     assert profile.threshold - profile.minimum == pytest.approx(n * np.log1p(f_dist.ppf(LEVEL, 1, dof) / dof))
-    drop = profile.scaled_drop()
-    assert drop[profile.grid == result.fit.ka['Ka_guest']] == pytest.approx(0.0, abs=1e-12)
+    # How far each point lies below its own cut-off, in units of the rise the test allows there.
+    short = (profile.cut - profile.objective) / (profile.cut - profile.minimum)
+    assert profile.objective[profile.grid == result.fit.ka['Ka_guest']] == pytest.approx(profile.minimum, abs=1e-12)
     for edge in (profile.interval.low, profile.interval.high):
-        assert drop[profile.grid == edge] == pytest.approx(1.0, abs=1e-6)
+        assert short[profile.grid == edge] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_the_drawn_penalised_profile_crosses_the_cut_off_at_each_closed_edge(ida_case):
@@ -1168,10 +1169,10 @@ def test_the_drawn_penalised_profile_crosses_the_cut_off_at_each_closed_edge(ida
     """
     _assay, _projection, _fit, result = ida_case
     profile = result.profiles['Ka_guest']
-    logs, drop = np.log10(profile.grid), profile.scaled_drop()
+    logs = np.log10(profile.grid)
     for edge, outward in ((profile.interval.low, -1), (profile.interval.high, 1)):
         (at,) = np.flatnonzero(profile.grid == edge)
         for side in (-1, 1):
             beside = at + side
             assert 0 < side * (logs[beside] - logs[at]) <= 0.02
-            assert (drop[beside] > 1.0) == (side == outward)
+            assert (profile.objective[beside] > profile.cut[beside]) == (side == outward)

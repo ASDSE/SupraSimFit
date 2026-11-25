@@ -224,8 +224,8 @@ _PATH_TOL = 1e-3
 # so the pass after that finds nothing new.
 _MAX_PASSES = 4
 # Share of the acceptance excess by which drawing must bring a point the interval
-# was cut from lower for the interval to be cut again: a thousandth of the
-# cut-off on the scaled-drop axis, below anything a plot or an edge shows, and
+# was cut from lower for the interval to be cut again: a thousandth of the rise
+# the cut-off allows above the optimum, below anything a plot or an edge shows, and
 # well above the 1e-4 of the objective to which the inner solve converges along
 # a kink (the excess is n log(1 + kappa m F / nu) >= 3.8).
 _FALL = 1e-3
@@ -350,18 +350,6 @@ class AwareProfile:
             object.__setattr__(self, 'cut', np.full(self.grid.shape, self.threshold))
         if self.r2_cut is None:
             object.__setattr__(self, 'r2_cut', np.full(self.grid.shape, self.r2_threshold))
-
-    def scaled_drop(self) -> np.ndarray:
-        """The profile on *grid* as a share of the rise its own test allows there: ``(P - P_min) / (cut - P_min)``.
-
-        0 at the optimum and 1 where a point meets its own cut-off, so the
-        closed edges of the interval, roots of the profile minus that
-        cut-off, are where it is 1; not a number where the model has no
-        solution.
-        """
-        with np.errstate(invalid='ignore'):
-            drop = (self.objective - self.minimum) / (self.cut - self.minimum)
-        return np.where(np.isfinite(drop), drop, np.nan)
 
 
 @dataclass(frozen=True)

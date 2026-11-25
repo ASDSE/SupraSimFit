@@ -29,13 +29,13 @@ DEMO: dict[str, str] = {
     'aware': '1.59\u202f×\u202f10⁸',
     'aware_interval': '1.14 – 2.08\u202f×\u202f10⁸ M⁻¹',
     'entered': '2.81\u202f×\u202f10⁸',
-    'entered_interval': '1.52 – 4.50\u202f×\u202f10⁸ M⁻¹',
+    'entered_interval': '1.74 – 4.50\u202f×\u202f10⁸ M⁻¹',
     'conflict': 'Inputs conflict',
     'p_moved': 'p = 0.32',
     'p_entered': 'p ≤ 0.005',
-    'gap': '1.56 – 1.74\u202f×\u202f10⁸ M⁻¹',
-    'card_aware': '0.00',
-    'card_entered': '1.39',
+    'depth': '44.5',
+    'card_aware': '0.0',
+    'card_entered': '54.2',
     'seed': '0',
     'n': '1024',
     'spread': '×/÷\u00a01.19',
@@ -154,7 +154,7 @@ several inputs move the curve almost alike.</li>
 
 <p><b>Example: Demo IDA.</b> The headline reads K<sub>a</sub> guest {aware} M⁻¹, 95&thinsp;%
 interval {aware_interval}, <i>Input-aware</i>; <i>Inputs as entered</i> gives {entered}
-M⁻¹, {entered_interval}, marked <i>Split</i>. The callout <i>{conflict}</i> says the inputs
+M⁻¹, {entered_interval}. The callout <i>{conflict}</i> says the inputs
 together moved further than you stated. Under Diagnostics the curve fits the data with the inputs
 moved ({p_moved}) and misses them at the inputs as entered ({p_entered}).</p>
 """
@@ -165,30 +165,33 @@ the fit.</p>
 <ul>
 <li>Curves: <i>Input-aware</i> in the accent colour, <i>Inputs as entered</i> in grey, each
 estimate a diamond.</li>
-<li>Up the plot, the <b>scaled drop</b>: how far the fit at that K<sub>a</sub> falls from its
-best, as a share of the drop its own 95&thinsp;% test allows. The dotted line at 1 is the
-cut-off: where a curve is at or below it, that reading accepts the K<sub>a</sub>, so each curve
-crosses 1 exactly where its interval ends.</li>
-<li>Dotted riser, with two binding constants: where the fit at a K<sub>a</sub> holds a signal
-parameter on its bound, the test allows a larger drop and the curve steps down.</li>
+<li>Up the plot, <b>&Delta;(&minus;2&nbsp;ln&nbsp;L) from the best fit</b>: how much worse the data are
+explained at that K<sub>a</sub> than by the best fit on the plot, on the scale the 95&thinsp;% test is
+read on. Both curves share this axis, so the lower curve explains the data better, and the gap
+between their lowest points shows how much letting the inputs move helps.</li>
+<li>Dotted lines: the cut-off of each reading, in its colour. Where a curve is at or below its own
+line, that reading accepts the K<sub>a</sub>, so each curve meets its line where its interval ends.
+With two binding constants a line steps up where the fit at a K<sub>a</sub> holds a signal parameter
+on its bound: the test then allows a larger rise.</li>
 <li>Shaded band: the reported interval. Strip under the plot: the K<sub>a</sub> each reading
 accepts, one bar per stretch.</li>
-<li>Card at the top right: each curve&rsquo;s scaled drop at the K<sub>a</sub> under the pointer,
+<li>Card at the top right: each curve&rsquo;s &Delta;(&minus;2&nbsp;ln&nbsp;L) at the K<sub>a</sub> under the pointer,
 and whether each reading accepts it; without the pointer, at the reported estimate.</li>
 <li>Joint region, with two binding constants: the pairs the data accept together, the best fit
 marked and each constant&rsquo;s own interval a faint band. It reaches beyond the bands where the
 two constants trade off against each other.</li>
 </ul>
 <p>Good: a curve that climbs steeply on both sides of its diamond. Worrying: a curve that stays
-under 1 to the edge of the plot &mdash; the data do not limit K<sub>a</sub> on that side, and the
+under its cut-off line to the edge of the plot &mdash; the data do not limit K<sub>a</sub> on that side, and the
 reading says <i>not limited below</i> or <i>above</i>. <i>Notes</i>, the side panel, says what
 the intervals rest on and what would close an open side.</p>
 
-<p><b>Example: Demo IDA.</b> The <i>Input-aware</i> curve has its diamond at {aware} M⁻¹ and crosses 1 at
-the ends of its interval, {aware_interval}. The <i>Inputs as entered</i> curve, diamond at
-{entered} M⁻¹, rises above 1 again over {gap}: the gap that makes its interval <i>Split</i>. Without
-the pointer the card reads {card_aware} for Input-aware and {card_entered} for Inputs as entered: at
-the reported estimate one reading accepts K<sub>a</sub> and the other rejects it.</p>
+<p><b>Example: Demo IDA.</b> The <i>Input-aware</i> curve has its diamond at {aware} M⁻¹, at 0, and meets
+its cut-off line at the ends of its interval, {aware_interval}. The <i>Inputs as entered</i> curve, diamond at
+{entered} M⁻¹, lies {depth} higher at its lowest point: with every input held where it was entered, the data
+are explained much less well. Without the pointer the card reads {card_aware} for Input-aware and
+{card_entered} for Inputs as entered: at the reported estimate one reading accepts K<sub>a</sub> and the other
+rejects it.</p>
 """
 
 _SENSITIVITY = """

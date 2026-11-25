@@ -3,8 +3,8 @@
 Canvas: the two readings side by side — Input-aware (accent badge) and Inputs as entered,
 with *Split* where its interval has a gap; the one reading where every input is exact —
 then any callout, and **one profile plot per binding constant** holding both profiles on
-the scaled-drop axis, so both cross one cut-off line at 1 where their intervals end. Each
-plot carries the best fit of each reading, its readout card (the scaled drop of each curve
+one Δ(−2 ln L) axis, 0 at the lower best fit, each with its own 95 % cut-off line in its colour.
+Each plot carries the best fit of each reading, its readout card (the Δ(−2 ln L) of each curve
 under the pointer, and whether that Ka is accepted), the enlarge tool and the image export,
 and under it a strip of the Ka each reading accepts. With two binding constants the plots
 stack, one per constant, with the joint region below them. Side panel *Notes*, headed by
@@ -80,7 +80,7 @@ def _tag(t: Theme, text: str, anchor, step: str, filled: bool = False) -> pg.Tex
 class ProfileFigure(QWidget):
     """One binding constant's profile plot over the strip of the Ka each reading accepts.
 
-    The plot reads each curve's scaled drop against one cut-off line at 1; the strip shares
+    The plot reads both curves on one Δ(−2 ln L) axis, each against its own cut-off line; the strip shares
     its log-Ka axis. Its text is at plot text *step*. With *interactive* the pointer draws a
     hairline with its Ka at the top and the readout card reads every curve there; elsewhere
     the card reads the reported estimate.
@@ -91,18 +91,19 @@ class ProfileFigure(QWidget):
         self.t, self.plot, self.step = t, plot, step
         self.main = pg.PlotWidget()
         self.main.setFrameShape(QFrame.Shape.NoFrame)
-        pi = apply_plot_theme(self.main, t, '', CF.Y_TITLE, step, [(v, f'{v:g}') for v in CF.Y_TICKS])
+        pi = apply_plot_theme(self.main, t, '', CF.Y_TITLE, step)
         bottom = pi.getAxis('bottom')
         bottom.setTicks([plot.ticks])
         bottom.setStyle(showValues=False, tickLength=space(2))
         bottom.showLabel(False)
         bottom.setHeight(space(2) + space(1))
         pi.setXRange(*plot.x_range, padding=0)
-        pi.setYRange(*CF.Y_RANGE, padding=0)
+        pi.setYRange(*plot.y_range, padding=0)
         pi.getViewBox().setMouseEnabled(x=False, y=False)
         self.curves: dict[str, pg.PlotDataItem] = {}
         self.markers: dict[str, pg.ScatterPlotItem] = {}
-        self.risers: list[pg.PlotDataItem] = []
+        self.cut_lines: dict[str, pg.PlotDataItem] = {}
+        self.cut_labels: list[pg.TextItem] = []
         self._draw(pi)
         self.strip = self._strip()
 
@@ -152,14 +153,25 @@ class ProfileFigure(QWidget):
             band.setZValue(-11)
             pi.addItem(band, ignoreBounds=True)
             self.band = band
-        cut = pg.InfiniteLine(pos=CF.CUT, angle=0, pen=_dotted(t, 'text-secondary'), movable=False)
-        cut.setZValue(1.5)
-        pi.addItem(cut, ignoreBounds=True)
-        self.cut_line = cut
-        label = _tag(t, plot.cut_label, (1, 1.05), self.step)
-        label.setPos(plot.x_range[1], CF.CUT)
-        pi.addItem(label, ignoreBounds=True)
-        self.cut_label = label
+        # Each reading's own cut-off, dotted in its colour, labelled under its right end: past an interval its curve
+        # runs above the line, so the label stands clear of it. One label where two lines run close.
+        y_lo, y_hi = plot.y_range
+        ends = []
+        for curve in plot.curves:
+            line = pg.PlotDataItem(curve.x, curve.cut, pen=_dotted(t, curve.color), connect='finite')
+            line.setZValue(1.5)
+            pi.addItem(line, ignoreBounds=True)
+            self.cut_lines[curve.label] = line
+            end = curve.cut_at(plot.x_range[1])
+            if math.isfinite(end) and y_lo <= end <= y_hi:
+                ends.append(end)
+        for end in sorted(ends):
+            if self.cut_labels and end - self.cut_labels[-1].pos().y() < 0.06 * (y_hi - y_lo):
+                continue
+            label = _tag(t, plot.cut_label, (1, -0.05), self.step)
+            label.setPos(plot.x_range[1], end)
+            pi.addItem(label, ignoreBounds=True)
+            self.cut_labels.append(label)
         for curve in plot.curves:
             accent = curve.color == 'accent'
             pen = pg.mkPen(t.q(curve.color), width=px(2.25 if accent else 1.75))
@@ -169,12 +181,6 @@ class ProfileFigure(QWidget):
             item.setZValue(3.2 if accent else 3)
             pi.addItem(item, ignoreBounds=True)
             self.curves[curve.label] = item
-            # The jump where the cut-off steps, dotted so it reads as a step of the test, not as the curve.
-            for x, y0, y1 in curve.risers:
-                riser = pg.PlotDataItem([x, x], [y0, y1], pen=_dotted(t, curve.color))
-                riser.setZValue(2.9)
-                pi.addItem(riser, ignoreBounds=True)
-                self.risers.append(riser)
             if curve.estimate is not None:
                 marker = pg.ScatterPlotItem(
                     x=[curve.estimate[0]],
@@ -301,7 +307,7 @@ class ProfileFigure(QWidget):
         self.card.move(rect.right() - self.card.width() - space(3), rect.top() + space(3))
         self.card.raise_()
         if self.tag.isVisible():
-            top = self.main.mapFromScene(vb.mapViewToScene(QPointF(self.pointer_x, CF.Y_RANGE[1])))
+            top = self.main.mapFromScene(vb.mapViewToScene(QPointF(self.pointer_x, self.plot.y_range[1])))
             self.tag.move(round(top.x() - self.tag.width() / 2), rect.top())
             self.tag.raise_()
 
@@ -467,7 +473,7 @@ class ConfidenceView(QObject):
         """The figure :meth:`export_image` saves, laid out and shown off screen; the caller closes it.
 
         Drawn again in the light theme on white, at the session's plot text, on the same
-        scaled-drop axis, each plot under its title and legend and its readings in one line,
+        Δ(−2 ln L) axis, each plot under its title and legend and its readings in one line,
         set apart from the plot above it; the readout card is left out, a saved figure having
         no pointer.
         """

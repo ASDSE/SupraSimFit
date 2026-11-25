@@ -11,6 +11,7 @@ from __future__ import annotations
 import sys
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
 pytest.importorskip('PyQt6')
@@ -58,17 +59,16 @@ def test_the_help_examples_are_the_numbers_demo_ida_shows(qapp):
     aware, entered = header.readings
     assert (aware.label, entered.label) == (R.INPUT_AWARE, R.AS_ENTERED)
     assert (aware.value, aware.interval) == (DEMO['aware'], DEMO['aware_interval'])
-    assert (entered.value, entered.interval, entered.split) == (DEMO['entered'], DEMO['entered_interval'], True)
+    assert (entered.value, entered.interval, entered.split) == (DEMO['entered'], DEMO['entered_interval'], False)
     assert R.callouts(fit, None)[0].title == DEMO['conflict']
     tests = {row.name: row for row in R.test_rows(fit)}
     assert tests['misfit'].tone == 'success' and tests['misfit'].p == DEMO['p_moved']
     assert tests['conditional_misfit'].tone == 'warning' and tests['conditional_misfit'].p == DEMO['p_entered']
 
-    # Ka confidence: the gap of the split reading, and the card at the reported estimate.
+    # Ka confidence: how much higher the lowest point of Inputs as entered lies, and the card at the reported estimate.
     plot = Cf.profile_plot(fit, profile.profiles['Ka_guest'])
     curves = {c.label: c for c in plot.curves}
-    (_, gap_lo), (gap_hi, _) = curves[R.AS_ENTERED].stretches
-    assert R.headline_interval(gap_lo, gap_hi, False, False, 'M⁻¹') == DEMO['gap']
+    assert f'{np.nanmin(curves[R.AS_ENTERED].y):.1f}' == DEMO['depth']
     card = {row.label: row for row in Cf.readout(plot, curves[R.INPUT_AWARE].estimate[0])}
     assert (card[R.INPUT_AWARE].value, card[R.INPUT_AWARE].verdict) == (DEMO['card_aware'], 'accepted')
     assert (card[R.AS_ENTERED].value, card[R.AS_ENTERED].verdict) == (DEMO['card_entered'], 'rejected')

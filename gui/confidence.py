@@ -8,11 +8,13 @@ profile plot per binding constant (:func:`profile_plot`) with the pointer's read
 (:func:`readout`), the joint region of a stepwise model (:func:`joint_region`), and the
 sections of the *Notes* side panel (:func:`notes`).
 
-The plots read each profile as its **scaled drop**: its rise above its own minimum over
-the rise its own 95 % test allows at that Ka
-(:meth:`~core.pipeline.profile.ProfileResult.scaled_drop`,
-:meth:`~core.pipeline.input_aware.AwareProfile.scaled_drop`). That is an exact rescaling
-of each test, so both curves cross one cut-off line at 1 where the reported intervals end.
+The plots read both profiles on **one axis, Δ(−2 ln L) from the lower of the two best
+fits** (:func:`deviance`): ``n · ln S`` for the conditional profile and the penalised objective
+``n · ln S + z'z`` for the Input-aware one — −2 ln of the Gaussian likelihood with its noise
+profiled out, and of the Gaussian uncertainty stated for each input — the same quantity
+where no input moves, so a curve drawn lower explains the data better at that Ka and the
+depth between the two minima shows. Each reading keeps its own 95 % cut-off, drawn as its own line, so each curve meets
+its line where its interval ends.
 Every reported number comes from :func:`~core.pipeline.reporting.summarize_parameters`
 and is written by :mod:`gui.results` and :mod:`gui.plotting.labels`; nothing is computed
 again here.
@@ -22,7 +24,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -50,12 +52,14 @@ from gui.plotting.labels import (
 )
 from gui.widgets.assay_conditions import result_input_labels
 
-#: The y axis of every profile plot, and the one level its cut-off line stands at.
-Y_TITLE = 'Scaled drop'
-CUT = 1.0
-#: The default span of the y axis and its ticks: the best fit at 0, the cut-off at 1, and room to see the curves leave.
-Y_RANGE = (-0.3, 3.3)
-Y_TICKS = (0.0, 1.0, 2.0, 3.0)
+#: The y axis of every profile plot.
+Y_TITLE = 'Δ(−2 ln L) from the best fit'
+#: What the readout card reads at the pointer.
+READOUT = 'Δ(−2 ln L)'
+#: The default view runs from just below the best fit to this many cut-off rises above the higher curve's minimum.
+Y_RISES = 3.0
+#: Share of the y span left below 0, so the diamonds on it are seen whole.
+Y_PAD = 0.04
 
 #: Share of the Ka span the default view adds on either side, so each curve is seen
 #: rising past its cut-off outside its interval.
@@ -269,30 +273,30 @@ def callouts(
 
 @dataclass(frozen=True)
 class Curve:
-    """One reading's profile as drawn: x in log₁₀ Ka, y its scaled drop.
+    """One reading's profile as drawn: x in log₁₀ Ka, y its Δ(−2 ln L) from the plot's lower best fit.
 
-    *x* and *y* break (NaN) where the curve's cut-off steps; each step is a *riser*,
-    ``(x, y before, y after)``, drawn dotted so it reads as a step of the test and not as
-    the curve. *estimate* is the reading's estimate on the curve, ``None`` where it rests
-    on an end of its search box; *stretches* are the Ka (1/M) the reading accepts, one per
-    stretch of a split interval.
+    *cut* is the reading's own 95 % cut-off at each *x*, on the same axis: one level for a
+    model with one binding constant, stepping up with two where the fit at a Ka holds a
+    signal parameter on its bound. *estimate* is the reading's estimate on the curve, ``None``
+    where it rests on an end of its search box; *stretches* are the Ka (1/M) the reading
+    accepts, one per stretch of a split interval.
     """
 
     label: str
     color: str
     x: np.ndarray
     y: np.ndarray
-    risers: list[tuple[float, float, float]] = field(default_factory=list)
+    cut: np.ndarray
     estimate: tuple[float, float] | None = None
     stretches: list[tuple[float, float]] = field(default_factory=list)
 
     def at(self, x: float) -> float:
         """The curve's height at *x* (log₁₀ Ka) as drawn — straight between its points; NaN off its ends."""
-        finite = np.isfinite(self.x) & np.isfinite(self.y)
-        xs, ys = self.x[finite], self.y[finite]
-        if xs.size == 0 or not xs[0] <= x <= xs[-1]:
-            return math.nan
-        return float(np.interp(x, xs, ys))
+        return _read(self.x, self.y, x)
+
+    def cut_at(self, x: float) -> float:
+        """The reading's cut-off at *x* (log₁₀ Ka); NaN off the curve's ends."""
+        return _read(self.x, self.cut, x)
 
     def accepts(self, x: float) -> bool:
         """Whether the reading accepts the Ka at *x* (log₁₀ Ka): inside one of its stretches."""
@@ -300,13 +304,22 @@ class Curve:
         return any(lo * (1 - 1e-9) <= ka <= hi * (1 + 1e-9) for lo, hi in self.stretches)
 
 
+def _read(xs: np.ndarray, ys: np.ndarray, x: float) -> float:
+    """*ys* at *x*, straight between the finite points; NaN off their ends."""
+    finite = np.isfinite(xs) & np.isfinite(ys)
+    xs, ys = xs[finite], ys[finite]
+    if xs.size == 0 or not xs[0] <= x <= xs[-1]:
+        return math.nan
+    return float(np.interp(x, xs, ys))
+
+
 @dataclass(frozen=True)
 class ProfilePlot:
-    """One binding constant's profile plot: its curves (Inputs as entered first, drawn underneath), axis and view.
+    """One binding constant's profile plot: its curves (Inputs as entered first, drawn underneath), axes and view.
 
-    *x_range* is the default view in log₁₀ Ka; *ticks* ``(log₁₀ Ka, label)`` share the
-    power of ten the axis title states; *band* is the reported interval, shaded; *stepped* says
-    whether a curve steps inside the default view.
+    *x_range* is the default view in log₁₀ Ka and *y_range* in Δ(−2 ln L); *ticks*
+    ``(log₁₀ Ka, label)`` share the power of ten the axis title states; *band* is the
+    reported interval, shaded; *stepped* says whether a cut-off steps inside the default view.
     """
 
     key: str
@@ -314,6 +327,7 @@ class ProfilePlot:
     x_title: str
     curves: list[Curve]
     x_range: tuple[float, float]
+    y_range: tuple[float, float]
     ticks: list[tuple[float, str]]
     unit: str
     exponent: int | None
@@ -322,11 +336,11 @@ class ProfilePlot:
     stepped: bool = False
 
     def readout_title(self, x: float) -> str:
-        """``Scaled drop at 1.70 × 10⁸ M⁻¹``: what the readout card at *x* (log₁₀ Ka) reads."""
+        """``Δ(−2 ln L) at 1.70 × 10⁸ M⁻¹``: what the readout card at *x* (log₁₀ Ka) reads."""
         ka = 10.0**x
         e = self.exponent
         number = fmt_value(ka) if e is None else f'{fmt_value(ka / 10.0**e)}{times_ten(e)}'
-        return f'{Y_TITLE} at {number} {self.unit}'
+        return f'{READOUT} at {number} {self.unit}'
 
     def chip(self, x: float) -> str:
         """The pointer's Ka at the top of its hairline, in the axis's own power of ten."""
@@ -334,25 +348,38 @@ class ProfilePlot:
         return fmt_value(ka) if self.exponent is None else fmt_value(ka / 10.0**self.exponent)
 
 
-def _breaks(x: np.ndarray, y: np.ndarray, cut: np.ndarray) -> tuple[np.ndarray, np.ndarray, list]:
-    """*x* and *y* with a break wherever *cut* steps between neighbours, and the risers there."""
-    steps = np.flatnonzero(np.diff(cut) != 0)
-    risers = [(float(x[i]), float(y[i]), float(y[i + 1])) for i in steps if np.isfinite(y[i]) and np.isfinite(y[i + 1])]
-    return np.insert(x, steps + 1, np.nan), np.insert(y, steps + 1, np.nan), risers
+def deviance(r2, n: int) -> np.ndarray:
+    """``n · ln(1 − R²)``: −2 ln L of a profile, up to one constant shared by both readings.
+
+    The conditional profile's R² is ``1 − S/SS_tot`` and the penalised profile's
+    ``1 − exp(P/n)/SS_tot`` (:class:`~core.pipeline.input_aware.AwareProfile`), on the same
+    weighted ``SS_tot``, so this is ``n · ln S`` and ``P`` less the same ``n · ln SS_tot``:
+    their differences are differences of the objective, and where every input stays where
+    it was entered the two are equal. Not a number where R² is not.
+    """
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return n * np.log(1.0 - np.asarray(r2, dtype=float))
 
 
-def curve(label: str, color: str, profile, estimate: float | None, at_bound: str, interval) -> Curve:
+def curve(label: str, color: str, profile, n: int, estimate: float | None, at_bound: str, interval) -> Curve:
     """The drawn curve of one reading of *profile* — a :class:`~core.pipeline.profile.ProfileResult` or an
-    :class:`~core.pipeline.input_aware.AwareProfile` — with its estimate and the stretches of *interval* it accepts.
+    :class:`~core.pipeline.input_aware.AwareProfile` — on the Δ(−2 ln L) axis of *n* titration points, unshifted,
+    with its cut-off, its estimate and the stretches of *interval* it accepts.
 
     A Ka the profile was read at twice is drawn once.
     """
     grid, keep = np.unique(np.asarray(profile.grid, dtype=float), return_index=True)
     r2, r2_cut = np.asarray(profile.r2, dtype=float)[keep], np.asarray(profile.r2_cut, dtype=float)[keep]
-    x, y, risers = _breaks(np.log10(grid), np.asarray(profile.scaled_drop(), dtype=float)[keep], r2_cut)
+    x = np.log10(grid)
+    y = np.where(np.isfinite(r2), deviance(r2, n), np.nan)
     stretches = [] if interval is None else R.accepted_stretches(grid, r2, r2_cut, *interval)
-    mark = None if at_bound or estimate is None else (math.log10(estimate), 0.0)
-    return Curve(label, color, x, y, risers, mark, stretches)
+    mark = None if at_bound or estimate is None else (math.log10(estimate), _read(x, y, math.log10(estimate)))
+    return Curve(label, color, x, y, deviance(r2_cut, n), mark, stretches)
+
+
+def _shifted(c: Curve, by: float) -> Curve:
+    mark = None if c.estimate is None else (c.estimate[0], c.estimate[1] - by)
+    return replace(c, y=c.y - by, cut=c.cut - by, estimate=mark)
 
 
 def profile_plot(fit: FitResult, profile) -> ProfilePlot | None:
@@ -361,7 +388,8 @@ def profile_plot(fit: FitResult, profile) -> ProfilePlot | None:
     Inputs as entered is the conditional curve; Input-aware the fit's penalised profile,
     or — where no input moves and a stated error of the additions widens the reported
     interval — the same curve under that wider cut-off. With every input exact the one
-    reading is Inputs as entered.
+    reading is Inputs as entered. Both stand on one Δ(−2 ln L) axis, 0 at the lower of their
+    best fits.
     """
     if profile.interval is None:
         return None
@@ -371,10 +399,13 @@ def profile_plot(fit: FitResult, profile) -> ProfilePlot | None:
         entered = (spec.estimate, spec.estimate_at_bound, spec.interval)
     else:
         entered = (spec.conditional_estimate, spec.conditional_at_bound, spec.conditional_interval)
-    curves = [curve(R.AS_ENTERED, 'text-secondary', profile, *entered)]
+    n = profile.n_points
+    curves = [curve(R.AS_ENTERED, 'text-secondary', profile, n, *entered)]
     aware = profile.aware
     if aware is not None and not conditional_only:
-        curves.append(curve(R.INPUT_AWARE, 'accent', aware, spec.estimate, spec.estimate_at_bound, spec.interval))
+        curves.append(curve(R.INPUT_AWARE, 'accent', aware, n, spec.estimate, spec.estimate_at_bound, spec.interval))
+    floor = min(float(np.nanmin(c.y)) for c in curves)
+    curves = [_shifted(c, floor) for c in curves]
     # Every estimate and interval end, both readings: the view frames them and a fifth of their span beside.
     shown = [entered, (spec.estimate, spec.estimate_at_bound, spec.interval)][: len(curves)]
     logs = [
@@ -392,6 +423,11 @@ def profile_plot(fit: FitResult, profile) -> ProfilePlot | None:
     drawn = np.log10(profile.grid)
     # Never past the drawn curve, and never inside what the readings ask for.
     lo, hi = max(lo - pad, min(float(drawn[0]), lo)), min(hi + pad, max(float(drawn[-1]), hi))
+    # Up the plot: from the lower best fit to a few of its own cut-off rises above each curve's minimum.
+    top = max(
+        float(np.nanmin(c.y)) + Y_RISES * max(float(np.nanmin(c.cut)) - float(np.nanmin(c.y)), 0.0) for c in curves
+    )
+    top = top if top > 0 else 1.0
     ticks = R.nice_ticks(10.0**lo, 10.0**hi)
     e = R.shared_power(ticks)
     unit = fmt_unit_pretty(spec.unit)
@@ -404,18 +440,19 @@ def profile_plot(fit: FitResult, profile) -> ProfilePlot | None:
         x_title=f'{name} ({scale}, log scale)',
         curves=curves,
         x_range=(lo, hi),
+        y_range=(-Y_PAD * top, top),
         ticks=[(math.log10(v), R.tick_label(v, e)) for v in ticks],
         unit=unit,
         exponent=e,
         band=None if spec.interval is None else tuple(math.log10(v) for v in spec.interval),
         cut_label=f'{level} cut-off'.strip(),
-        stepped=any(lo <= x <= hi for c in curves for x, _y0, _y1 in c.risers),
+        stepped=any(np.any(np.diff(c.cut[(c.x >= lo) & (c.x <= hi)]) != 0) for c in curves),
     )
 
 
 @dataclass(frozen=True)
 class ReadoutRow:
-    """One curve at the pointer: its name and colour, its scaled drop there and whether that Ka is accepted."""
+    """One curve at the pointer: its name and colour, its Δ(−2 ln L) there and whether that Ka is accepted."""
 
     label: str
     color: str
@@ -428,7 +465,7 @@ def readout(plot: ProfilePlot, x: float) -> list[ReadoutRow]:
     rows = []
     for drawn in reversed(plot.curves):
         y = drawn.at(x)
-        value = '—' if math.isnan(y) else f'{y:.2f}'
+        value = '—' if math.isnan(y) else f'{y:.1f}'
         rows.append(ReadoutRow(drawn.label, drawn.color, value, 'accepted' if drawn.accepts(x) else 'rejected'))
     return rows
 
@@ -629,20 +666,21 @@ def notes(fit: FitResult, profile_set=None, replica_order: Sequence[str] | None 
     plots = [p for p in plots if p is not None]
     aware = any(len(p.curves) > 1 for p in plots) or not reports_conditional(fit)
     reading = [
-        'Each curve shows how far the fit falls from its best at each Kₐ, as a share of the drop its own 95 % '
-        'test allows there: 0 is the best fit, 1 is the cut-off. Where a curve is at or below 1, that Kₐ is '
-        'accepted.'
+        'Each curve shows, at every Kₐ, how much worse the data are explained than by the best fit on the plot, '
+        'as Δ(−2 ln L): 0 is that best fit, and a lower curve explains the data better. Each reading has its own 95 % cut-off, the dotted line in its colour; '
+        'where its curve is at or below that line, the reading accepts that Kₐ.'
     ]
     if aware:
         reading.append(
             'Input-aware scores each fit by its residual plus a penalty for every input’s move, measured against '
-            'the uncertainty you stated; Inputs as entered by the residual alone. Each curve is read against its '
-            'own test, so both meet the one line at 1 where their intervals end.'
+            'the uncertainty you stated; Inputs as entered by the residual alone. Inputs as entered is one of the '
+            'fits Input-aware can choose, so its curve never runs below the Input-aware curve. The gap between the '
+            'two lowest points shows how much better the data are explained once the inputs may move.'
         )
     if any(p.stepped for p in plots):
         reading.append(
             'Where the fit at a Kₐ has to hold a signal parameter at its bound, it gives up that parameter as well as '
-            'Kₐ, so the test allows it a larger drop and the curve steps down there (dotted).'
+            'Kₐ, so the test allows it a larger rise and the cut-off steps up there.'
         )
     reading.append('Point at the plot to read every curve at any Kₐ.')
     if plots:

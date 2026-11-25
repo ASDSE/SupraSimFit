@@ -192,18 +192,6 @@ class ProfileResult:
         if self.r2_top is None:
             self.r2_top = self.best_r2
 
-    def scaled_drop(self) -> np.ndarray:
-        """The profile on *grid* as a share of the rise its own F test allows there.
-
-        ``(S - S_min) / (cut - S_min)``, read on the R² axis, which is affine
-        in the residual: 0 at the best fit and 1 where a point meets its own
-        cut-off, so the closed edges of the interval, roots of the profile
-        minus that cut-off, are where it is 1; not a number where the model
-        has no solution.
-        """
-        with np.errstate(invalid='ignore', divide='ignore'):
-            return (self.r2_top - self.r2) / (self.r2_top - self.r2_cut)
-
 
 @dataclass
 class JointRegion:

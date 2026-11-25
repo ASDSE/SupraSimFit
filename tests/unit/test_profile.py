@@ -278,7 +278,7 @@ def test_ida_demo_interval_matches_the_reference():
 def test_a_one_ka_profile_is_cut_at_one_level_where_the_fit_pins_a_signal_parameter():
     # Below the estimate the demo's fit holds the offset on zero, which the best fit leaves
     # free. A model with one binding constant counts nothing for it: the cut-off is the
-    # plain F test everywhere, so the scaled drop does not jump and the interval is one range.
+    # plain F test everywhere, so the cut-off does not step and the interval is one range.
     ms = _demo_ms()
     profile = fit_profile(ms, IDAAssay, _DEMO_CONDITIONS, _AVERAGE).profiles['Ka_guest']
     assay = ms.to_assay(IDAAssay, conditions=_DEMO_CONDITIONS, use_average=True)
@@ -976,24 +976,25 @@ def test_the_penalised_curve_lies_above_the_fixed_input_one(uncertain_ida):
 
 
 # ---------------------------------------------------------------------------
-# The scaled drop Ka confidence draws
+# The cut-off each profile is read against
 # ---------------------------------------------------------------------------
 
 
-def test_the_scaled_drop_is_one_exactly_where_the_reported_interval_ends():
-    """The rise over the best fit over the rise the F test allows: 0 at the best fit, 1 at each closed edge.
+def test_the_profile_meets_its_cut_off_exactly_where_the_reported_interval_ends():
+    """The profile reaches the R² the F test allows at each closed edge, and only there.
 
     The allowed rise is checked against the F test written out independently,
     ``S_min kappa m F(m, n - p) / (n - p)``, at every drawn point; the edges are
-    roots of the profile minus that cut-off, so the curve meets 1 there to the
-    root finder's tolerance. In a model with two binding constants the cut-off
-    steps (``m`` above 1 wherever the fit holds a signal parameter on a bound
-    that the best fit leaves free); on this titration the lower edge of Ka_HG
-    lies on such a step, and the ratio follows it.
+    roots of the profile minus that cut-off, so the curve meets it there to the
+    root finder's tolerance, measured as a share of the rise the test allows. In a
+    model with two binding constants the cut-off steps (``m`` above 1 wherever the
+    fit holds a signal parameter on a bound that the best fit leaves free); on this
+    titration the lower edge of Ka_HG lies on such a step, and the edge follows it.
     """
     profile = fit_profile(_hg2_ms(n_points=12, frac=0.005, seed=0), HG2Assay, _HG2_CONDITIONS, _HG2_AVERAGE)
     profile = profile.profiles['Ka_HG']
-    drop = profile.scaled_drop()
+    # How far each point lies below its own cut-off, in units of the rise the test allows there.
+    short = (profile.r2_cut - profile.r2) / (profile.r2_top - profile.r2_cut)
     dof = profile.n_points - profile.n_params
     allowed = (profile.r2_top - profile.r2_cut) / (1.0 - profile.r2_top)
     # One numerator degree of freedom for the constrained Ka, one more per pinned signal parameter.
@@ -1003,16 +1004,16 @@ def test_the_scaled_drop_is_one_exactly_where_the_reported_interval_ends():
     counts = counts[:, 0]
     assert counts[profile.grid == profile.best_ka] == 1
     assert counts[profile.grid == profile.interval.low] == 2, 'the lower edge lies where the cut-off steps'
-    assert drop[profile.grid == profile.best_ka] == pytest.approx(0.0, abs=1e-12)
+    assert profile.r2[profile.grid == profile.best_ka] == pytest.approx(profile.r2_top, abs=1e-12)
     for edge in (profile.interval.low, profile.interval.high):
-        assert drop[profile.grid == edge] == pytest.approx(1.0, abs=1e-6)
+        assert short[profile.grid == edge] == pytest.approx(0.0, abs=1e-6)
     inside = (profile.grid > profile.interval.low) & (profile.grid < profile.interval.high)
     outside = (profile.grid < profile.interval.low) | (profile.grid > profile.interval.high)
-    assert np.all(drop[outside] > 1.0) and np.nanmin(drop[inside]) >= 0.0
+    assert np.all(short[outside] > 0.0) and np.nanmax(profile.r2[inside]) <= profile.r2_top + 1e-12
 
 
-def test_a_reported_interval_at_a_larger_design_effect_reads_one_at_its_own_edges_on_the_same_curve():
-    """No input moves and a stated error of the additions widens the reported cut-off: one curve, two scales."""
+def test_a_reported_interval_at_a_larger_design_effect_meets_its_own_cut_off_on_the_same_curve():
+    """No input moves and a stated error of the additions widens the reported cut-off: one curve, two cut-offs."""
     x, y = _make_ida_data(IDA_TRUE, n_points=12)
     ms = _single(x, _homoscedastic(y, 0.005, 4))
     projection = _projection(ms, IDAAssay, _IDA_CONDITIONS, _AVERAGE)
@@ -1024,8 +1025,10 @@ def test_a_reported_interval_at_a_larger_design_effect_reads_one_at_its_own_edge
     assert reported.threshold - reported.minimum == pytest.approx(
         n * np.log1p(2.5 * f_dist.ppf(varpro.LEVEL, 1, dof) / dof), rel=1e-12
     )
-    drop, conditional = reported.scaled_drop(), profile.scaled_drop()
     for edge in (reported.interval.low, reported.interval.high):
-        assert drop[reported.grid == edge] == pytest.approx(1.0, abs=1e-6)
+        at = reported.grid == edge
+        rise = reported.cut[at] - reported.minimum
+        assert (reported.cut[at] - reported.objective[at]) / rise == pytest.approx(0.0, abs=1e-6)
     # The same Ka the conditional curve rejects can be accepted by the wider test, never the reverse.
-    assert np.all(drop[conditional <= 1.0] <= 1.0)
+    accepted_conditional = profile.r2 >= profile.r2_cut
+    assert np.all(reported.objective[accepted_conditional] <= reported.cut[accepted_conditional])

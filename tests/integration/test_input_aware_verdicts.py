@@ -39,12 +39,14 @@ def aware():
 
 def test_every_drawn_point_is_judged_as_the_interval_judges_it(aware):
     interval = aware.interval
-    logs, drop = np.log10(aware.grid), aware.scaled_drop()
+    logs = np.log10(aware.grid)
+    # How far each point rises above its own cut-off, in units of the rise the test allows there.
+    over = (aware.objective - aware.cut) / (aware.cut - aware.minimum)
     low, high = np.log10(interval.low), np.log10(interval.high)
     inside = (logs > low + 1e-9) & (logs < high - 1e-9)
     outside = (logs < low - 1e-9) | (logs > high + 1e-9)
-    rejected_inside = logs[inside & (drop > 1.0 + 1e-9)]
-    accepted_outside = logs[outside & (drop < 1.0)]
+    rejected_inside = logs[inside & (over > 1e-9)]
+    accepted_outside = logs[outside & (over < 0.0)]
     assert accepted_outside.size == 0, f'accepted outside the interval at log Ka {accepted_outside}'
     if interval.split:
         assert rejected_inside.size > 0, 'a split interval with no rejected Ka drawn inside it'

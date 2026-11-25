@@ -44,8 +44,8 @@ _STRETCH = (7.4, 8.9)
 _STEP = 1 / 200
 # Where the readout of the reported issue was taken (log10 Ka).
 _READ_AT = 8.376
-# Tolerance in units of the cut-off (the scaled-drop axis): the drawn curve follows
-# the profile to 0.1 % of its depth, a few thousandths at a drop of 2 to 3.
+# Tolerance in units of the rise the cut-off allows: the drawn curve follows the
+# profile to 0.1 % of its depth, a few thousandths at two to three such rises.
 _TOL = 0.01
 
 
@@ -81,11 +81,11 @@ def demo():
         for x in xs.tolist():
             point = problem.solve({'Ka_guest': 10.0**x}, point)
             profile[x] = min(profile[x], point.value)
-    return aware, profile
+    return aware, profile, assay.n_points
 
 
 def test_every_drawn_point_is_the_lowest_solution_over_the_inputs(demo):
-    aware, profile = demo
+    aware, profile, _n = demo
     logs = np.log10(aware.grid)
     span = aware.cut - aware.minimum
     shown = (logs >= _STRETCH[0]) & (logs <= _STRETCH[1])
@@ -99,8 +99,9 @@ def test_every_drawn_point_is_the_lowest_solution_over_the_inputs(demo):
 
 
 def test_the_readout_reads_the_profile_between_the_drawn_points(demo):
-    aware, profile = demo
-    drawn = curve('Input-aware', 'accent', aware, None, '', None)
+    aware, profile, n = demo
+    drawn = curve('Input-aware', 'accent', aware, n, None, '', None)
     i = int(np.argmin(np.abs(np.log10(aware.grid) - _READ_AT)))
-    true = (profile[_READ_AT] - aware.minimum) / (aware.cut[i] - aware.minimum)
-    assert drawn.at(_READ_AT) == pytest.approx(true, abs=_TOL)
+    rise = aware.cut[i] - aware.minimum
+    # Read from the curve's own lowest point, the readout is the profile's rise above its minimum.
+    assert drawn.at(_READ_AT) - np.nanmin(drawn.y) == pytest.approx(profile[_READ_AT] - aware.minimum, abs=_TOL * rise)
