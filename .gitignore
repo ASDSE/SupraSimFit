@@ -215,6 +215,9 @@ validation/results/
 graphify-out/cost.json
 graphify-out/cache/
 graphify-out/wiki/**
+graphify-out/.graphify_analysis.json
+graphify-out/.graphify_build.json
+graphify-out/.graphify_partition_cache.json
 .graphify_python
 graph.html
 

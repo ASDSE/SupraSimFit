@@ -1,0 +1,111 @@
+name: Knowledge graph
+
+# Owns graphify-out/ on main: every push to main re-extracts the graph from the
+# committed files and pushes the result back with the deploy key. The bot's own
+# commit touches only graphify-out/, so paths-ignore keeps it from triggering a
+# second run.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['graphify-out/**']
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Full re-scan (graphify extract --force); ignores the incremental baseline and the semantic cache
+        type: boolean
+        default: false
+
+concurrency:
+  group: graphify
+
+permissions:
+  contents: read
+
+jobs:
+  graph:
+    runs-on: ubuntu-latest
+    environment: graph
+    steps:
+      # Build from the tip of main, so a queued run covers every push before it.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          ssh-key: ${{ secrets.GRAPHIFY_DEPLOY_KEY }}
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install graphify (pinned in the graph dependency group)
+        run: uv sync --locked --only-group graph
+
+      # graphify keeps its AST and LLM (semantic) caches in graphify-out/cache/
+      # (gitignored). Semantic entries are keyed by file content, so an older
+      # cache is still valid and saves LLM calls.
+      - uses: actions/cache@v4
+        with:
+          path: graphify-out/cache
+          key: graphify-${{ hashFiles('uv.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            graphify-${{ hashFiles('uv.lock') }}-
+            graphify-
+
+      - name: Keep the previous graph for comparison
+        run: cp graphify-out/graph.json "$RUNNER_TEMP/previous-graph.json"
+
+      - name: Extract
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: claude-opus-5-5
+          PYTHONHASHSEED: '0'
+        run: uv run --no-sync graphify extract . --backend claude ${{ inputs.force && '--force' || '' }}
+
+      # extract stops at graph.json; cluster-only clusters it and writes
+      # GRAPH_REPORT.md, reusing the committed community labels (no LLM call).
+      # A forced run names every community afresh with `label`.
+      - name: Cluster and report
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: claude-opus-5-5
+          PYTHONHASHSEED: '0'
+        run: uv run --no-sync graphify ${{ inputs.force && 'label . --backend claude' || 'cluster-only .' }} --no-viz
+
+      - name: Check the graph
+        run: |
+          python3 - "$RUNNER_TEMP/previous-graph.json" <<'EOF'
+          import json, os, sys
+
+          graph = json.load(open('graphify-out/graph.json'))
+          previous = json.load(open(sys.argv[1]))
+          nodes = graph['nodes']
+
+          missing = sorted({n['source_file'] for n in nodes if n.get('source_file') and not os.path.exists(n['source_file'])})
+          if missing:
+              sys.exit(f'{len(missing)} node source files do not exist: {missing[:20]}')
+
+          before, after = len(previous['nodes']), len(nodes)
+          print(f'nodes: {before} -> {after}; links: {len(previous["links"])} -> {len(graph["links"])}')
+          if after < 0.8 * before:
+              sys.exit(f'node count collapsed: {before} -> {after}')
+          EOF
+
+      - name: Commit and push
+        run: |
+          # built_at_commit changes on every run; only a change to the graph itself is worth a commit.
+          if python3 - "$RUNNER_TEMP/previous-graph.json" <<'EOF'
+          import json, sys
+          strip = lambda g: {k: v for k, v in g.items() if k != 'built_at_commit'}
+          sys.exit(0 if strip(json.load(open(sys.argv[1]))) == strip(json.load(open('graphify-out/graph.json'))) else 1)
+          EOF
+          then
+            echo "Graph unchanged; nothing to commit."
+            exit 0
+          fi
+          git config user.name graphify-bot
+          git config user.email graphify-bot@users.noreply.github.com
+          git add graphify-out
+          git commit -m "chore: refresh knowledge graph"
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" != "$(git rev-parse HEAD~1)" ]; then
+            echo "main moved during the run; the run queued for the newer push refreshes the graph."
+            exit 0
+          fi
+          git push origin HEAD:main

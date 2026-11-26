@@ -31,6 +31,9 @@ dev = [
     "sphinx-design>=0.7.0",
     "sphinxawesome-theme>=6.0.0",
 ]
+graph = [
+    "graphifyy[anthropic]==0.9.120",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
