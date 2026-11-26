@@ -25,3 +25,5 @@ CLAUDE.md
 .codex/
 AGENTS.md
 .agents/
+docs/design/screens/
+tests/fixtures/
