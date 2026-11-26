@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Full re-scan (graphify extract --force); ignores the incremental baseline and the semantic cache
+        description: Full re-scan (graphify extract --force); ignores the incremental baseline and the semantic cache, accepts a graph that deduplication shrank, and renames every community
         type: boolean
         default: false
 
@@ -44,7 +44,7 @@ jobs:
       # graphify keeps its AST and LLM (semantic) caches in graphify-out/cache/
       # (gitignored). Semantic entries are keyed by file content, so an older
       # cache is still valid and saves LLM calls.
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: graphify-out/cache
           key: graphify-${{ hashFiles('uv.lock') }}-${{ github.run_id }}
@@ -60,7 +60,15 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_MODEL: claude-opus-5-5
           PYTHONHASHSEED: '0'
-        run: uv run --no-sync graphify extract . --backend claude ${{ inputs.force && '--force' || '' }}
+        run: uv run --no-sync graphify extract . --backend claude ${{ inputs.force && '--force --allow-dedup-shrink' || '' }}
+
+      # Saved whatever the later steps make of the graph: the LLM results are paid
+      # for, and graphify marks an entry it could not complete as partial.
+      - uses: actions/cache/save@v4
+        if: always() && hashFiles('graphify-out/cache/**') != ''
+        with:
+          path: graphify-out/cache
+          key: graphify-${{ hashFiles('uv.lock') }}-${{ github.run_id }}
 
       # extract stops at graph.json; cluster-only clusters it and writes
       # GRAPH_REPORT.md, reusing the committed community labels (no LLM call).
